@@ -6,6 +6,122 @@
 > do not describe the whole current managed lane. Historical evidence remains
 > historical, and every unexecuted acceptance obligation stays explicit.
 
+## macOS connector lifecycle slice (THR-360, C1+C2)
+
+The source `happyranch-connector` CLI selects systemd on Linux and a per-user
+LaunchAgent on macOS. Other platforms refuse service management with `error:`
+and a nonzero exit. Linux unit rendering, dedicated-account installation,
+systemctl argv and service-error text stay unchanged. Lifecycle errors, including
+missing systemctl, now reach the CLI error boundary without a traceback.
+
+On macOS the founder's own user owns
+`~/Library/LaunchAgents/ai.happyranch.connector.plist`; no admin, sudo or
+system-wide LaunchDaemon is used. The existing `system` setting must be false.
+The default Linux unit name maps to this fixed label; an explicit custom
+reverse-DNS `unit_name` selects an independent agent. `ProgramArguments` contains
+an absolute executable and the source config path (or explicit `exec_start`);
+no config contents, token, bearer or credential environment is embedded.
+Custom argv must also contain no secrets. Stdout/stderr go to
+`~/Library/Logs/HappyRanch/<label>.{stdout,stderr}.log`. This slice installs the
+service definition only: it does not stage or migrate credentials, policy or
+trust state. The source config must remain available. Frozen-app entry dispatch
+and paths that survive bundle moves/updates remain pending.
+
+Rendered plists explicitly set `LimitLoadToSessionType` to the array
+`["Aqua", "Background"]`, permitting GUI-login and headless user sessions.
+Install/upgrade render this key when replacing an older definition; validation
+still accepts old backups without it, and rollback restores their original bytes.
+`Disabled=true`, exact-label overrides and all other rendered keys are unchanged.
+
+The backend probes `gui/<current uid>` first. An explicit `Could not find
+domain for` response, or exit 125 with `Domain does not support specified
+action` (for example SSH/Jenkins without an Aqua session), permits a
+`user/<current uid>` probe. Fallback occurs only if that probe succeeds;
+otherwise the error names both domain diagnostics. Other GUI errors refuse.
+The selected domain is pinned for the operation; later launchctl failures never
+switch domains or escalate privileges.
+
+Without GUI login, an explicitly started `user/<uid>` service runs for the
+current boot/background session while that domain exists. It does not establish
+logged-out or reboot persistence. Autoload of `~/Library/LaunchAgents` after
+boot requires a GUI login; a headless session requires an existing user domain
+and explicit start. The packaged Mac app runs in the GUI domain.
+
+- `install` round-trips the plist through stdlib `plistlib` before writing an
+  owner-only file; replacing a plist first creates an owner-only backup under
+  `LaunchAgents/backups`. Backups are written to a nonselectable temporary file,
+  flushed and fsynced, then atomically renamed into the backup set; failed
+  reads/writes never publish an empty or partial candidate.
+  Installation does not bootstrap/start the process.
+  `enable`/`disable` use launchctl's service-target overrides and do not stop a
+  loaded process. `install --no-enable` leaves existing enablement unchanged;
+  a fresh plist defaults to disabled, so it does not autostart at login.
+  Overrides match the exact label; sibling/custom/probe labels do not affect
+  it. Without an exact override, the plist's `Disabled` value applies;
+  malformed exact-label overrides refuse.
+- `start` bootstraps an unloaded agent or kickstarts a loaded agent. A manual
+  start of a disabled agent temporarily enables it for bootstrap and restores
+  its disabled override, preserving the absence of login autostart.
+  `restart` uses `kickstart -k` and requires an already loaded agent.
+- `KeepAlive=true` recovers after every process exit, including SIGKILL and exit
+  zero; `ThrottleInterval=10` limits repeated rapid launches. `stop` bootouts the
+  service and confirms it is unloaded, so KeepAlive cannot undo the stop.
+  `uninstall` bootouts, disables and removes the plist, and is idempotent when
+  already absent. launchd may retain the label's disabled override; uninstall
+  does not edit launchd's private preference database or remove logs/backups.
+- `status` parses top-level `launchctl print` state/PID/last-exit information
+  into `ServiceStatus`, with macOS-only `domain` (`gui/<uid>` or `user/<uid>`)
+  and nullable `last_exit_code` and `last_exit_signal`. An installed/unloaded
+  service differs from a missing plist; permission/domain errors never count as absence. Exit observations
+  disappear after bootout. A running PID proves process state only, never
+  listener readiness. Only the exact top-level `state = running` with a
+  positive PID reports active/running. `waiting`, `not running`, `spawn scheduled`,
+  `xpcproxy`, `exited`, `exiting`, `penalty box` and any other nonempty state
+  report inactive with PID zero; `sub_state` preserves the raw state, capped at
+  2048 characters. Missing/empty state, duplicate observed fields, malformed
+  numeric fields, unbalanced braces or quotes, and running without a valid PID
+  refuse. Nested fields are ignored; braces inside double-quoted values (including
+  escaped quotes/backslashes) do not affect nesting.
+- `upgrade` backs up and replaces the plist, then bootouts/bootstraps so launchd
+  rereads the new definition. Failed startup attempts restore the backup and
+  verify recovery; explicit `rollback` restores the latest backup and likewise
+  verifies a running process. The chosen backup is fully read and validated
+  before bootout; invalid candidates refuse while the live service stays
+  untouched. This is process verification, not readiness.
+
+`run` already tolerates absent `NOTIFY_SOCKET` (notification returns false and
+is not required to enter the foreground loop). Darwin-specific readiness
+publication, startup deadlines and watchdog integration are **pending PR 2**;
+this slice claims none. macOS credential handling, managed installer, sidecar
+build/readiness, signing, app bundling, Swift coexistence and packaged-app
+acceptance also remain pending. The Swift in-app HomeConnector is untouched;
+never enable both listeners together.
+
+Native evidence is supplied by the `connector-launchd` Mac-mini suite for QA:
+a unique harmless `/bin/sleep` agent, install/start/running PID, SIGKILL/new PID,
+stop/unloaded, uninstall/absent, and cleanup receipts. It uses no connector
+network listener or token and records the actual launchd domain. Source/fake
+coverage is not native acceptance, and no native job is run by the maker.
+On start failure, the probe records plist lint, mode/owner versus current UID,
+session types and a label-filtered launchd log excerpt before cleanup. Optional
+observations share the original deadline/caps; their errors never replace the
+start failure. Scratch removal is recorded after disposal even on failure.
+`connector_launchd.status_observations` retains each lifecycle step's last raw
+service `print` and `print-disabled` excerpts (at most 2048 characters each),
+with actual exit codes, before parsing can fail. Steps cover initial absence,
+install/start, running polls, recovery, stop/stopped, uninstall/absent and cleanup.
+Exceptions retain their type/diagnostic and any available raw output; an
+unavailable command output is null, never an inferred observation. Polls continue
+through inactive/unknown states to the original deadline; timeout and malformed
+output still fail. These diagnostics add no commands or budget extension.
+
+References: Apple's [LaunchAgent guide](https://developer.apple.com/library/archive/documentation/MacOSX/Conceptual/BPSystemStartup/Chapters/CreatingLaunchdJobs.html)
+and [launchd plist manual](https://github.com/apple-oss-distributions/launchd/blob/main/man/launchd.plist.5).
+Apple's [loader source](https://github.com/apple-oss-distributions/launchd/blob/main/support/launchctl.c)
+also documents the Aqua default under session filtering and accepts session-type
+arrays; the older manpage describes only the string form. This does not establish
+the OS cause of a particular bootstrap failure; native lifecycle proof is required.
+
 - **Generic remote jobs S1 contracts + dark S2 persistence.** `runtime/remote_jobs/` contains
   strict immutable v1 models, canonical UTF-8 JSON/SHA-256 helpers, whole-job
   bundle validation, the corrected four-part pre-run reuse identity, and the

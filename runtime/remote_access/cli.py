@@ -1,6 +1,6 @@
-"""Linux connector CLI (THR-097 phase unit 3 + Unit 3A).
+"""Connector CLI (THR-097 phase unit 3 + Unit 3A).
 
-Operator surface for the supervised Linux connector:
+Operator surface for the supervised connector:
 
 - ``run`` — the systemd ``Type=notify`` foreground loop (readiness-gated
   listener; SIGTERM/SIGINT stop the listener before exit). Requires
@@ -9,7 +9,7 @@ Operator surface for the supervised Linux connector:
   closed (exit 1) when the config has no concrete provider/listener at all
   — READY=1 is never emitted without a proven bound listener.
 - ``install`` / ``uninstall`` / ``start`` / ``stop`` / ``restart`` /
-  ``enable`` / ``disable`` / ``status`` — systemd service lifecycle.
+  ``enable`` / ``disable`` / ``status`` — platform service lifecycle.
 - ``readiness`` — evaluate the five gates; exit 0 only when ready.
 - ``diagnose`` — redacted local diagnostics (never the daemon bearer, never
   pairing codes/credentials).
@@ -36,6 +36,7 @@ from pathlib import Path
 
 from runtime.remote_access.lab_provider import LAB_ONLY_BANNER
 from runtime.remote_access.pairing import PairingError, PairingManager
+from runtime.remote_access.service_manager import ServiceManagerError
 from runtime.remote_access.state_store import CorruptTrustStateError, StateStoreError
 from runtime.remote_access.supervisor import (
     ConnectorConfig,
@@ -49,7 +50,7 @@ _DEFAULT_CONFIG = "~/.happyranch/remote_access/config.json"
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="happyranch-connector",
-        description="HappyRanch supervised Linux remote-access connector (THR-097 unit 3 / unit 3A)",
+        description="HappyRanch supervised remote-access connector (THR-097 unit 3 / unit 3A)",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -58,13 +59,13 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--config", default=_DEFAULT_CONFIG, help="connector config JSON path")
         return p
 
-    run = add_lifecycle("run", "foreground readiness loop (systemd Type=notify)")
+    run = add_lifecycle("run", "foreground readiness loop")
     run.add_argument("--lab-only", action="store_true", help="required when the config carries a lab provider")
     run.add_argument("--diy", action="store_true", help="required when the config carries the Supported-DIY provider")
     run.add_argument("--managed", action="store_true", help="required when the config carries managed sidecar ingress")
-    install = add_lifecycle("install", "render + install the systemd unit")
+    install = add_lifecycle("install", "render + install the platform service")
     install.add_argument("--no-enable", action="store_true", help="do not enable on boot")
-    add_lifecycle("uninstall", "stop, disable, and remove the systemd unit")
+    add_lifecycle("uninstall", "stop, disable, and remove the platform service")
     add_lifecycle("start", "start the connector service")
     add_lifecycle("stop", "stop the connector service")
     add_lifecycle("restart", "restart the connector service")
@@ -138,8 +139,11 @@ def main(argv: list[str] | None = None) -> int:
             print("error: config carries managed sidecar ingress; pass --managed", file=sys.stderr)
             return 1
 
-    supervisor = ConnectorSupervisor(config=config)
     try:
+        supervisor = ConnectorSupervisor(
+            config=config,
+            config_path=Path(args.config).expanduser().resolve() if sys.platform == "darwin" else None,
+        )
         if args.command == "run":
             return _run_foreground(supervisor)
         if args.command == "install":
@@ -191,7 +195,7 @@ def main(argv: list[str] | None = None) -> int:
             return 0 if outcome.ok else 1
         if args.command in {"pair", "list-devices", "revoke", "remove-device", "pairing-status", "recovery"}:
             return _run_ceremony(args, supervisor)
-    except (ConnectorConfigError, OSError, RuntimeError) as exc:
+    except (ConnectorConfigError, ServiceManagerError, OSError, RuntimeError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     return 1
