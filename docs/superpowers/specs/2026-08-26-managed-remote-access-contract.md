@@ -648,7 +648,14 @@ backup before bootout; invalid candidates leave the running service untouched.
 
 Status reports the selected `domain` (`gui/<uid>` or `user/<uid>`),
 loaded/running/PID and nullable last-exit code/signal from launchctl; absent,
-unloaded and inaccessible are distinct. Running is not readiness. Existing foreground notification already degrades without systemd,
+unloaded and inaccessible are distinct. Only exact top-level `state = running`
+with a positive PID claims active/running. `waiting`, `not running`, `spawn scheduled`,
+`xpcproxy`, `exited`, `exiting`, `penalty box` and all other nonempty states remain
+inactive, with PID zero and raw `sub_state` capped at 2048 characters. Missing/empty
+state, duplicate observed fields, malformed numeric fields, unbalanced braces or
+quotes, and running without a valid PID refuse. Nested job/process fields do not
+replace top-level state; braces inside double-quoted values, including escaped
+quotes/backslashes, do not change depth. Running is not readiness. Existing foreground notification already degrades without systemd,
 but macOS readiness/watchdog publication is pending PR 2. Credentials and
 state layout, the per-user managed installer, Darwin sidecar and readiness,
 signing, frozen entry/bundling, Swift coexistence and packaged-app acceptance
@@ -666,6 +673,14 @@ PID, stop/unloaded, uninstall/absent, plus guaranteed cleanup attempts and
 explicit incomplete-cleanup errors. Before domain selection it records UID,
 `launchctl managername`, both domain print exit codes and capped diagnostics;
 it retains these facts on selection failure and records a selected domain only
-on success. QA owns execution on the existing Mac-mini job; no new job or trigger is introduced.
+on success. Per-step `status_observations` retains the last raw service `print`
+and `print-disabled` excerpts (each <=2048 characters) and actual exit codes
+for absence, install/start, running/recovery polls, stop/stopped, uninstall/absent
+and cleanup. Parser failures retain the already captured raw text; command
+exceptions retain available output or null when unavailable, plus a bounded
+error diagnostic. Inactive/unknown states keep polling until the original deadline;
+malformed output and exhaustion still fail. Capture adds no commands and preserves
+the 90-second observation and 1MiB command-output caps.
+QA owns execution on the existing Mac-mini job; no new job or trigger is introduced.
 Neither fake-runner tests nor this stand-in prove network, credentials,
 readiness, sidecar, installer or packaged-app acceptance.

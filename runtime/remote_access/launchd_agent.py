@@ -71,24 +71,45 @@ class LaunchdStatus(ServiceStatus):
 def parse_launchctl_print(label: str, output: str, *, enabled: bool) -> LaunchdStatus:
     """Read only top-level fields; nested endpoint/process state is not job state.
 
-    launchctl print is diagnostic text rather than a stable machine API. Unknown
-    or malformed required fields refuse instead of inventing a running process.
+    launchctl print is diagnostic text rather than a stable machine API. Only
+    running with a positive PID claims activity. Other nonempty states (including
+    future vocabulary) remain inactive; malformed required fields still refuse.
     """
     props: dict[str, str] = {}
     depth = 0
+    quoted = False
+    escaped = False
     for line in output.splitlines():
-        if depth == 1 and " = " in line:
+        if depth == 1 and not quoted and " = " in line:
             key, _, value = line.strip().partition(" = ")
             if key in {"state", "pid", "last exit code", "last terminating signal"}:
                 if key in props:
                     raise ServiceManagerError("duplicate launchctl print field")
                 props[key] = value
-        depth += line.count("{") - line.count("}")
+        for char in line:
+            if escaped:
+                escaped = False
+            elif quoted and char == "\\":
+                escaped = True
+            elif char == '"':
+                quoted = not quoted
+            elif not quoted:
+                if char == "{":
+                    depth += 1
+                elif char == "}":
+                    depth -= 1
+                    if depth < 0:
+                        raise ServiceManagerError("unbalanced launchctl print braces")
     state = props.get("state")
-    if depth != 0 or state not in {"running", "waiting", "not running", "spawn scheduled", "exited"}:
-        raise ServiceManagerError("unrecognized launchctl print state")
+    if depth != 0 or quoted:
+        raise ServiceManagerError("unbalanced launchctl print braces or quotes")
+    if state is None or not state.strip():
+        raise ServiceManagerError("missing launchctl print state")
     try:
-        pid = int(props.get("pid", "0"))
+        pid_text = props.get("pid", "0")
+        if re.fullmatch(r"-?[0-9]+", pid_text) is None:
+            raise ValueError("invalid pid")
+        pid = int(pid_text)
         code = props.get("last exit code")
         last_exit = None
         if code not in {None, "(never exited)"}:
@@ -109,7 +130,7 @@ def parse_launchctl_print(label: str, output: str, *, enabled: bool) -> LaunchdS
         raise ServiceManagerError("launchctl running state has no valid pid")
     return LaunchdStatus(
         unit_name=label, active_state="active" if state == "running" else "inactive",
-        sub_state=state, load_state="loaded", pid=pid,
+        sub_state=state[:2048], load_state="loaded", pid=pid if state == "running" else 0,
         unit_file_state="enabled" if enabled else "disabled",
         last_exit_code=last_exit, last_exit_signal=last_signal,
     )

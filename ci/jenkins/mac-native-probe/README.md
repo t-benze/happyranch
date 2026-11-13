@@ -587,17 +587,20 @@ held diagnosed correction; source changes never replenish or submit that budget.
 
 QA may select this source suite at the reviewed exact `SOURCE_SHA` using the
 existing string parameter. Do not change the Jenkins config. The maker does
-not run this job. Manager TASK-15950 step 6 raises PR 1's native cap from 4 to 5,
-permitting one further run after build26's user-domain bootstrap failure.
-Build20's GUI-domain refusal, build22's parser refusal and build24's rejection
-of `disabled services = (no disabled services)` were genuine code failures.
-Build26 accepted that sentinel and installed, then `bootstrap user/502` failed
-with exit 5 / Input/output error; it is a genuine failure. Service/plist absence
-was recorded, but probe scratch removal was not recorded on its exception path.
-The founder goal ledger is currently 4 of 8 native runs used and becomes 5 of 8
-only after the future authorized fifth run executes; this maker leg consumes
-zero runs. The founder allowance remains 8 total. If run 5 fails, no further
-PR 1 run is authorized; the manager must re-plan the three remaining goal runs.
+not run this job. Manager TASK-15950 step7 raises PR1's native cap from 5 to 6,
+permitting exactly one future run (run 6/8) after round7 code review, for
+independently authorized QA.
+Builds 20,22,24,26,28 are all genuine failed/spent runs: domain selection,
+print-disabled block, empty sentinel, bootstrap/session shape, then print-state
+parsing respectively. Build28 passed install/bootstrap and then status refused;
+the rejected raw print was not archived, so its exact state is unknown.
+The goal ledger remains Mac mini 5/8 used; run 6/8 is charged only after execution.
+This maker leg consumes zero runs. The founder allowance stays 8 total, with the remaining two
+runs reserved for one combined later-slice acceptance and one reserve. If run6 fails,
+PR1 runs end without further founder approval; the manager escalates with a
+recommendation rather than running again. PR budget remains 1/10.
+Review round-cap decision (code-review-gate-rules): EM FIX, exactly ONE further
+round 7, NATIVE-3 only, source TASK-15950 step7. No round8 is authorized.
 
 The suite calls the real `LaunchdServiceManager` with a unique UUID label
 `ai.happyranch.connector-probe-<uuid>` and `/bin/sleep 300`. It writes a
@@ -655,6 +658,27 @@ After selection and before the first status/lifecycle step, context also records
 characters of diagnostic output). It starts null until observed. This command
 shares the existing deadline and output cap; its code is recorded directly,
 not inferred from a later parser exception.
+
+Every lifecycle step retains bounded raw diagnostics in
+`connector_launchd.status_observations`: `absence`, `install`, `start`,
+`wait_running`, `recovery`, `stop`, `stopped`, `uninstall`, `absent`, and `cleanup`
+contain their observed `print` and/or `print_disabled` records. Each record keeps
+its actual exit code and the first <=2048 raw characters, including whitespace;
+repeated polls replace that step's record with its last observation. Capture occurs
+before status parsing, so parser failures keep the rejected raw text. Exceptions
+record type and <=512 diagnostic characters plus raw output when available;
+`excerpt: null` explicitly means the command supplied no output (for example,
+the streaming helper's own timeout/cap exception). Failure stays failure.
+This observes existing commands, adding no native calls or time allowance.
+Only exact top-level `running` with a positive PID reports active/running.
+`waiting`, `not running`, `spawn scheduled`, `xpcproxy`, `exited`, `exiting`,
+`penalty box` and unknown nonempty states report inactive/PID zero, preserving
+raw state in `sub_state` up to 2048 characters. Missing/empty state, unbalanced
+braces/quotes, duplicate fields, malformed numbers and running without a valid
+PID refuse. Quoted braces and escaped quotes/backslashes do not change nesting;
+nested state/PID fields do not replace job state. The start/recovery loops keep
+polling inactive/unknown states until their unchanged deadlines, and never turn
+a timeout or parser failure into PASS. The 90-second/1MiB budgets remain.
 
 Any start/bootstrap failure records `connector_launchd.start_failure` before
 cleanup: `plist` contains mode, owner UID, current UID and rendered

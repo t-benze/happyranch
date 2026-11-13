@@ -5,6 +5,7 @@ import io
 import json
 import os
 import plistlib
+import subprocess
 import tempfile
 from pathlib import Path
 import unittest
@@ -360,6 +361,82 @@ class LaunchdObservations(unittest.TestCase):
             with self.subTest(text=text), self.assertRaises(ServiceManagerError):
                 parse_launchctl_print(LABEL, text, enabled=True)
 
+    def test_print_job_states_only_running_exposes_pid(self) -> None:
+        states = ("running", "waiting", "not running", "spawn scheduled", "xpcproxy",
+                  "exited", "exiting", "penalty box", "future launchd state", "Running", "u" * 3000)
+        for raw in states:
+            for pid_line in ("pid = 1234", "") if raw != "running" else ("pid = 1234",):
+                with self.subTest(state=raw[:40], pid=pid_line):
+                    text = f"{TARGET} = {{\n state = {raw}\n {pid_line}\n}}"
+                    state = parse_launchctl_print(LABEL, text, enabled=True)
+                    self.assertEqual(state.sub_state, raw[:2048])
+                    self.assertEqual(state.pid, 1234 if raw == "running" else 0)
+                    self.assertEqual(state.active_state, "active" if raw == "running" else "inactive")
+                    self.assertEqual(state.running, raw == "running")
+
+    def test_print_nested_sections_and_quoted_braces(self) -> None:
+        # Synthetic production-shaped print: nested process/endpoint state is
+        # distinct from job state; escaped quotes/backslashes occur in argv.
+        text = rf'''{TARGET} = {{
+    path = "/Users/example/Library/LaunchAgents/{LABEL}.plist"
+    arguments = {{
+        "/bin/sleep"
+        "literal \"{{ in an argument"
+        "escaped backslash \\"
+    }}
+    environment = {{
+        TEMPLATE => "value {{"
+        state = waiting
+        pid = 999
+    }}
+    endpoints = {{
+        "ai.example.endpoint" = {{
+            state = not running
+            port = 0x123
+        }}
+    }}
+    resource coalition = {{
+        id = 84
+        type = resource
+        state = active
+    }}
+    state = running
+    pid = 1234
+    last exit code = 78: EX_CONFIG
+    last terminating signal = Killed: 9
+}}
+'''
+        state = parse_launchctl_print(LABEL, text, enabled=False)
+        self.assertEqual((state.active_state, state.sub_state, state.pid), ("active", "running", 1234))
+        self.assertEqual((state.last_exit_code, state.last_exit_signal, state.unit_file_state), (78, 9, "disabled"))
+        closed = text.replace('TEMPLATE => "value {"', 'TEMPLATE => "value }"')
+        self.assertEqual(parse_launchctl_print(LABEL, closed, enabled=True).pid, 1234)
+
+    def test_print_missing_duplicate_numeric_and_brace_errors_refuse(self) -> None:
+        cases = {
+            "missing state": RUNNING.replace("state = running", "unrelated = running"),
+            "empty state": RUNNING.replace("state = running", "state = "),
+            "duplicate state": RUNNING.replace("state = running", "state = running\n state = waiting"),
+            "duplicate pid": RUNNING.replace("pid = 1234", "pid = 1234\n pid = 4321"),
+            "duplicate exit": RUNNING.replace("last exit code = 0", "last exit code = 0\n last exit code = 1"),
+            "duplicate signal": RUNNING.replace("last exit code = 0", "last terminating signal = 9\n last terminating signal = 15"),
+            "missing pid": RUNNING.replace("pid = 1234", "unrelated = 1234"),
+            "zero pid": RUNNING.replace("pid = 1234", "pid = 0"),
+            "negative pid": RUNNING.replace("pid = 1234", "pid = -1"),
+            "bad pid": RUNNING.replace("pid = 1234", "pid = bad"),
+            "underscore pid": RUNNING.replace("pid = 1234", "pid = 1_234"),
+            "decimal pid": RUNNING.replace("pid = 1234", "pid = 1234.0"),
+            "bad exit": RUNNING.replace("last exit code = 0", "last exit code = bad"),
+            "bad signal": RUNNING.replace("last exit code = 0", "last terminating signal = Killed: bad"),
+            "unknown malformed pid": RUNNING.replace("state = running", "state = future state").replace("pid = 1234", "pid = bad"),
+            "missing close": RUNNING[:-2],
+            "extra close": RUNNING + "}\n",
+            "premature close": "}\n{\n" + RUNNING,
+        }
+        for name, text in cases.items():
+            with self.subTest(case=name), self.assertRaises(ServiceManagerError):
+                parse_launchctl_print(LABEL, text, enabled=True)
+
     def test_not_loaded_and_failed_print_are_distinct(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
@@ -514,6 +591,113 @@ class LaunchdLifecycle(unittest.TestCase):
 
 
 class NativeProbeContext(unittest.TestCase):
+    def test_lifecycle_status_excerpts_and_transient_polling(self) -> None:
+        for never_running in (False, True):
+            with self.subTest(never_running=never_running), tempfile.TemporaryDirectory() as folder:
+                report = {}
+                loaded = False
+                pending = []
+                now = 1000.0
+                pid = 1234
+                outputs = {}
+                def command(argv: list[str], env: dict[str, str], cwd: Path, deadline: float, **kwargs: object) -> tuple[int, bytes]:
+                    nonlocal loaded
+                    self.assertEqual(kwargs.get("output_cap", 1048576), 1048576)
+                    label = report["connector_launchd"]["label"]
+                    if argv[:2] == ["launchctl", "managername"]:
+                        return 0, b"Aqua"
+                    if argv[:2] == ["launchctl", "print-disabled"]:
+                        return 0, f'disabled services = {{\n "{label}" => false\n}}'.encode()
+                    if argv[:2] == ["launchctl", "print"]:
+                        if argv[2] in (DOMAIN, f"user/{os.getuid()}"):
+                            return 0, b"domain context"
+                        if not loaded:
+                            text = f'Could not find service "{label}" in domain' + "a" * 3000
+                            return 113, text.encode()
+                        raw = pending.pop(0) if pending else ("future launchd state" if never_running else "running")
+                        text = f'{argv[2]} = {{\n state = {raw}\n pid = {pid}\n note = "' + "z" * 3000 + '"\n}\n'
+                        outputs[raw] = text
+                        return 0, text.encode()
+                    if argv[:2] == ["launchctl", "bootstrap"]:
+                        loaded = True
+                        pending[:] = ["future launchd state", "xpcproxy"]
+                    elif argv[:2] == ["launchctl", "bootout"]:
+                        loaded = False
+                    else:
+                        self.assertIn(argv[1], ("enable", "disable"))
+                    return 0, b""
+                def sleep(seconds: float) -> None:
+                    nonlocal now
+                    now += seconds
+                def kill(target_pid: int, sig: int) -> None:
+                    nonlocal pid
+                    self.assertEqual((target_pid, sig), (1234, suite_connector_launchd.signal.SIGKILL))
+                    pid = 4321
+                    pending[:] = ["exiting", "penalty box"]
+                with patch.object(suite_connector_launchd, "_command", side_effect=command), patch.object(Path, "home", return_value=Path(folder)), patch.object(suite_connector_launchd.time, "monotonic", side_effect=lambda: now), patch.object(suite_connector_launchd.time, "sleep", side_effect=sleep), patch.object(suite_connector_launchd.os, "kill", side_effect=kill):
+                    if never_running:
+                        with self.assertRaisesRegex(TimeoutError, "did not reach running"):
+                            suite_connector_launchd.run(report)
+                    else:
+                        suite_connector_launchd.run(report)
+                section = json.loads(json.dumps(report))["connector_launchd"]
+                observations = section.get("status_observations", {})
+                self.assertIn("absence", observations)
+                self.assertEqual(observations["absence"]["print"]["exit_code"], 113)
+                self.assertEqual(len(observations["absence"]["print"]["excerpt"]), 2048)
+                self.assertIn("print_disabled", observations["absence"])
+                if never_running:
+                    self.assertGreaterEqual(now, 1030)
+                    self.assertLess(now, 1031)
+                    self.assertEqual(observations["wait_running"]["print"]["excerpt"], outputs["future launchd state"][:2048])
+                    self.assertEqual(observations["wait_running"]["error"], "TimeoutError")
+                    self.assertNotIn("started", [c["name"] for c in section["checks"]])
+                else:
+                    for step in ("wait_running", "recovery", "stopped", "absent"):
+                        self.assertIn("print", observations[step])
+                        self.assertIn("print_disabled", observations[step])
+                    self.assertIn("pid = 1234", observations["wait_running"]["print"]["excerpt"])
+                    self.assertIn("pid = 4321", observations["recovery"]["print"]["excerpt"])
+                    self.assertEqual(observations["recovery"]["print"]["excerpt"], outputs["running"][:2048])
+                    self.assertEqual(len(observations["recovery"]["print"]["excerpt"]), 2048)
+                    self.assertEqual([c["name"] for c in section["checks"]], ["unique_service_absent_before_install", "installed", "started", "keepalive_restarted", "stopped", "uninstalled", "scratch_removed"])
+                self.assertTrue(section["cleanup"]["service_absent"])
+                self.assertIn("print", observations["cleanup"])
+                self.assertTrue(section["scratch_removed"])
+
+    def test_status_exception_retains_raw_excerpt_before_cleanup(self) -> None:
+        for failure in ("parser", "nonzero", "timeout", "no_output", "disabled"):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as folder:
+                report = {}
+                raw = "  malformed observation " + "q" * 3000 + "\n"
+                def command(argv: list[str], env: dict[str, str], cwd: Path, deadline: float, **kwargs: object) -> tuple[int, bytes]:
+                    label = report["connector_launchd"]["label"]
+                    if argv[:2] == ["launchctl", "managername"]:
+                        return 0, b"Aqua"
+                    if argv[:2] == ["launchctl", "print-disabled"]:
+                        return (5, raw.encode()) if failure == "disabled" else (0, b"disabled services = {\n}\n")
+                    if argv[2] in (DOMAIN, f"user/{os.getuid()}"):
+                        return 0, b"domain context"
+                    self.assertEqual(argv, ["launchctl", "print", f"{DOMAIN}/{label}"])
+                    if failure == "timeout":
+                        raise subprocess.TimeoutExpired(argv, 10, output=raw.encode())
+                    if failure == "no_output":
+                        raise TimeoutError("observation expired without available output")
+                    return (1 if failure == "nonzero" else 0), raw.encode()
+                expected = subprocess.TimeoutExpired if failure == "timeout" else TimeoutError if failure == "no_output" else ServiceManagerError
+                with patch.object(suite_connector_launchd, "_command", side_effect=command), patch.object(Path, "home", return_value=Path(folder)):
+                    with self.assertRaises(expected):
+                        suite_connector_launchd.run(report)
+                section = json.loads(json.dumps(report))["connector_launchd"]
+                observed = section.get("status_observations", {}).get("absence", {})
+                self.assertEqual(observed.get("error"), expected.__name__)
+                self.assertEqual(observed["print"]["excerpt"], None if failure == "no_output" else raw[:2048])
+                if failure == "disabled":
+                    self.assertEqual(observed["print_disabled"]["excerpt"], raw[:2048])
+                self.assertEqual(section["cleanup"], {"not_installed": True})
+                self.assertEqual(section["checks"], [{"name": "scratch_removed", "status": "PASS"}])
+                self.assertTrue(section["scratch_removed"])
+
     def test_context_precedes_failed_domain_selection(self) -> None:
         unsupported = "Could not print domain: 125: Domain does not support specified action"
         user = f"user/{os.getuid()}"

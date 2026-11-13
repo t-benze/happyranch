@@ -74,7 +74,14 @@ and explicit start. The packaged Mac app runs in the GUI domain.
   and nullable `last_exit_code` and `last_exit_signal`. An installed/unloaded
   service differs from a missing plist; permission/domain errors never count as absence. Exit observations
   disappear after bootout. A running PID proves process state only, never
-  listener readiness. Unknown print shapes refuse rather than invent state.
+  listener readiness. Only the exact top-level `state = running` with a
+  positive PID reports active/running. `waiting`, `not running`, `spawn scheduled`,
+  `xpcproxy`, `exited`, `exiting`, `penalty box` and any other nonempty state
+  report inactive with PID zero; `sub_state` preserves the raw state, capped at
+  2048 characters. Missing/empty state, duplicate observed fields, malformed
+  numeric fields, unbalanced braces or quotes, and running without a valid PID
+  refuse. Nested fields are ignored; braces inside double-quoted values (including
+  escaped quotes/backslashes) do not affect nesting.
 - `upgrade` backs up and replaces the plist, then bootouts/bootstraps so launchd
   rereads the new definition. Failed startup attempts restore the backup and
   verify recovery; explicit `rollback` restores the latest backup and likewise
@@ -99,6 +106,14 @@ On start failure, the probe records plist lint, mode/owner versus current UID,
 session types and a label-filtered launchd log excerpt before cleanup. Optional
 observations share the original deadline/caps; their errors never replace the
 start failure. Scratch removal is recorded after disposal even on failure.
+`connector_launchd.status_observations` retains each lifecycle step's last raw
+service `print` and `print-disabled` excerpts (at most 2048 characters each),
+with actual exit codes, before parsing can fail. Steps cover initial absence,
+install/start, running polls, recovery, stop/stopped, uninstall/absent and cleanup.
+Exceptions retain their type/diagnostic and any available raw output; an
+unavailable command output is null, never an inferred observation. Polls continue
+through inactive/unknown states to the original deadline; timeout and malformed
+output still fail. These diagnostics add no commands or budget extension.
 
 References: Apple's [LaunchAgent guide](https://developer.apple.com/library/archive/documentation/MacOSX/Conceptual/BPSystemStartup/Chapters/CreatingLaunchdJobs.html)
 and [launchd plist manual](https://github.com/apple-oss-distributions/launchd/blob/main/man/launchd.plist.5).
