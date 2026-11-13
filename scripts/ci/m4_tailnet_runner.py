@@ -23,7 +23,8 @@ import urllib.request
 from datetime import datetime, timezone
 
 from m4_tailnet_client import (Bridge, EXPECTED, NATIVE_HOST, ROUTE, application_probe, build_archive, control_get,
-                              exception_class, safe_join_diagnostics, safe_derp_diagnostics)
+                              exception_class, safe_join_diagnostics, safe_derp_diagnostics,
+                              prove_packet_path, safe_packet_diagnostics, PACKET_PROOF_COUNTS)
 
 REPOSITORY = 't-benze/happyranch'
 COORDINATION_PR = 1449
@@ -335,7 +336,13 @@ def run(scratch: Path, output: Path) -> None:
         orgs = call('GET', '/api/v1/orgs', paired)
         assert orgs['status'] == 200 and [org['slug'] for org in orgs['body']['orgs']] == ['m2-synthetic']
         set_phase('DERP-exposure')
-        record['checks'].append(dict(name='DERP-path', **bridge.call('derp-proof')))
+        packet_diagnostic = dict(label='unknown', **{key: 0 for key in PACKET_PROOF_COUNTS})
+        try:
+            identity = inbox.wait('relay-identity', 60)
+            assert set(identity) == {'identity'}, 'runtime identity handoff shape'
+            record['checks'].append(dict(name='DERP-path', **prove_packet_path(bridge, scratch, str(address), paired, packet_diagnostic, identity['identity'])))
+        finally:
+            record['packet_diagnostics'] = safe_packet_diagnostics(packet_diagnostic)
         allowed(paired)
         before = control_get('/health')
         assert before['status'] == 200 and control_get(ROUTE)['status'] == 404
@@ -356,11 +363,15 @@ def run(scratch: Path, output: Path) -> None:
         cleanup_errors = []
         if bridge is not None and bridge.derp_diagnostics is not None:
             record['derp_diagnostics'] = safe_derp_diagnostics(bridge.derp_diagnostics)
+        if 'derp_diagnostics' in record or 'packet_diagnostics' in record:
             # Land the closed evidence in both public sinks before private
             # logs/state are removed; the final summary also records cleanup.
             try:
                 (output / 'client-summary.json').write_text(json.dumps(record, indent=2) + '\n')
-                print('M4 public DERP evidence ' + json.dumps(record['derp_diagnostics']), flush=True)
+                if 'derp_diagnostics' in record:
+                    print('M4 public DERP evidence ' + json.dumps(record['derp_diagnostics']), flush=True)
+                if 'packet_diagnostics' in record:
+                    print('M4 public packet evidence ' + json.dumps(record['packet_diagnostics']), flush=True)
             except Exception:
                 cleanup_errors.append('derp-evidence-publication')
         if bridge is not None:
@@ -386,7 +397,7 @@ def run(scratch: Path, output: Path) -> None:
         record['runner_return_code'] = 1 if record['status'] == 'FAIL' else 0
         (output / 'client-summary.json').write_text(json.dumps(record, indent=2) + '\n')
         print('M4 public client evidence ' + json.dumps({key: record[key] for key in
-              ('phase', 'phases', 'failure', 'join_diagnostics', 'bridge_error_class', 'derp_diagnostics', 'runner_return_code',
+              ('phase', 'phases', 'failure', 'join_diagnostics', 'bridge_error_class', 'derp_diagnostics', 'packet_diagnostics', 'runner_return_code',
                'worker_return_code_before_cleanup', 'worker_return_code') if key in record}), flush=True)
     assert not cleanup_errors, 'native client cleanup failed'
     print('Native client checks complete; host VM cleanup receipt still required', flush=True)

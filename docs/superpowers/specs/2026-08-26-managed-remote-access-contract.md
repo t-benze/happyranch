@@ -133,16 +133,49 @@ logtail writes, including DERP-connected evidence; nil embedder Logf supplies no
 backend stderr copy. The initial drain can also consume startup UDP logs despite
 24h delay. This proves an unavailable evidence channel in that source
 configuration, while the exact native6 assertion remains unproved without its
-private logs/control response. This delivery takes diagnostics-only path(c).
-The harness adds only closed `derp_diagnostics`, written to client-summary.json
-and Actions stdout before private cleanup and retained in the final summary:
-fixed labels plus bounded integer counts and sorted/capped numeric region IDs
-(exact fields/caps in the runbook). Unknown labels reproject to `unknown`; no raw
-logs, paths, keys, addresses or URLs leave the private worker. Actual connected
-region set{999}, UDP-disable evidence, subsequent allowed200 and exposure probes
-remain mandatory, with all original deadlines. No weaker evidence is substituted.
-Any bridge/logger/C-ABI/dependency or acceptance-contract alternative is a STOP
-item for the manager; no new native/Linux join, dispatch or issuance is granted.
+private logs/control response. That source delivery took diagnostics-only path(c).
+Its closed `derp_diagnostics` remains corroboration (fixed labels and bounded
+integer counts/region IDs; unknown labels reproject to unknown, no raw text).
+The subsequent M4 packet-proof delivery replaces the unavailable log acceptance
+gate with an independent bounded native observation: existing macOS tcpdump on
+pktap,all, no PID/endpoint/BPF filter, complete parsed/captured/received counts,
+zero kernel/interface drops, positive start and child stop/reap, and strict35s,
+2,000,000-byte per-file and4096-packet limits. Missing/partial/unsupported
+metadata or evidence refuses. Two existing lsof observations of the exact
+still-running native PID require positive TCP sockets and no UDP socket.
+A fresh unmocked real-daemon200 during capture, zero native UDP packets on all
+interfaces and bidirectional native TCP payload exclusively with VM443 establish
+the observed relay route: pinned Tailscale's peer transport is UDP or DERP; the
+current-run guest identity check observes the effective region/node from the
+exact live Headscale invocation's startup journal, requiring singleton999 and
+the VM hostname/443, IPv4 and STUN3478. Pinned live executable/argv, boot/start
+identity and unchanged pre-launch config fingerprints must match; all
+HEADSCALE_*/DERP_*/TS_* environment overrides, upstream URLs/paths, auto-update,
+mesh and unknown config keys refuse. Pinned empty-map-plus-embedded composition
+fixes the map under these runtime-validated input assumptions, rather than
+reading an in-memory client/server map. The authenticated Cloud Assistant result
+binds SHA and fresh recipient digest before the existing operator/run/attempt/
+SHA/key/expiry-bound identity envelope. Missing/malformed/foreign-run/stale
+(older than120s) identity, wrong/multiple regions or wrong endpoints refuse;
+contradictory log regions veto passing packets. Missing logs alone remain
+nonfatal. Configuration/join/control connection counts alone never pass. A guest
+capture alone misses UDP dropped by the unchanged security group.
+The original separate allowed200 and live exposure probes follow only after
+this gate; their order and existing worker deadlines stay unchanged.
+`packet_diagnostics` exports closed labels and bounded integer counts only to
+pre-cleanup/final summary and Actions, never addresses/PIDs/tuples/URLs/keys/raw
+headers/payloads. Raw capture text stays in private runner scratch and existing
+finally/always-cleanup removes it. The runbook defines exact labels, limits,
+strength argument and UDP sensitivity control. This is an observation of one
+process/request window, relying on OS metadata/counters and the authenticated
+unchanged fixture/bridge and guest root, with the pinned process loading the
+unchanged snapshotted inputs and no hostile root memory tampering; it is no
+universal future-UDP/topology or signed-app/Swift/GUI claim. Native observer/transport acceptance remains NOT RUN premerge.
+The identity repair extends guest/control harness drivers and requires one
+conditional VM-only premerge observation/cleanup pass. No product/C ABI/bridge/
+C host/dependency/logtail/workflow change or new native/Linux join, dispatch or
+issuance allowance follows.
+All failed/spent history remains unchanged.
 
 **Execution boundary:** JOB-6610 and JOB-6615 both failed at Linux outside join;
 JOB-6615 classified tcp-connect without endpoint attribution. JOB-6618, the ONE

@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import ctypes
 import http.client
+import ipaddress
 import io
 import json
 import math
@@ -43,6 +44,242 @@ DIAGNOSTIC_LABELS = ('dns', 'tcp-connect', 'tls-verify', 'tls-reset', 'control-u
 BRIDGE_ERROR_CLASSES = {'state-dir', 'log-dir', 'executable', 'control-url', 'already-started', 'not-initialised', 'unknown'}
 DERP_PROOF_LABELS = {'no-log-files', 'log-budget', 'no-decodable-entries', 'region-missing',
                      'region-unexpected', 'udp-disable-missing', 'unknown', 'passed'}
+
+PACKET_PROOF_LABELS = {'unknown', 'capture-unavailable', 'capture-start', 'capture-budget',
+                       'capture-deadline', 'capture-cleanup', 'capture-incomplete', 'capture-format',
+                       'metadata-missing', 'udp-observed', 'udp-socket-observed', 'socket-evidence',
+                       'relay-endpoint-unexpected', 'relay-traffic-missing', 'request-failed', 'passed'}
+PACKET_PROOF_LABELS.update({'identity-missing', 'identity-malformed', 'identity-stale',
+                            'identity-region', 'identity-endpoint', 'identity-upstream', 'identity-log-conflict'})
+IDENTITY_COUNTS = dict(region_count=1, region=999, node_count=1, endpoint_matches=1,
+                       upstream_count=0, auto_update=0, mesh_count=0)
+PACKET_PROOF_COUNTS = ('packet_count', 'native_packet_count', 'udp_count', 'udp_socket_count',
+                       'tcp_socket_observations', 'relay_tx_bytes', 'relay_rx_bytes')
+
+
+def require_relay_identity(value: object, diagnostic: dict) -> int:
+    """Only an authenticated, current envelope may supply this projection."""
+    diagnostic['label'] = 'identity-missing'
+    assert isinstance(value, dict) and value, 'missing runtime relay identity'
+    diagnostic['label'] = 'identity-malformed'
+    assert set(value) == {'label', 'observed_at', *IDENTITY_COUNTS}, 'runtime identity shape'
+    assert value['label'] == 'passed' and all(type(value[key]) is int for key in ('observed_at', *IDENTITY_COUNTS)), 'runtime identity types/status'
+    assert all(0 <= value[key] <= 16_000_000 for key in IDENTITY_COUNTS), 'runtime identity bounds'
+    diagnostic['label'] = 'identity-stale'
+    assert 0 <= int(time.time()) - value['observed_at'] <= 120, 'runtime identity freshness'
+    diagnostic['label'] = 'identity-region'
+    assert value['region_count'] == value['node_count'] == 1 and value['region'] == 999, 'runtime region identity'
+    diagnostic['label'] = 'identity-endpoint'
+    assert value['endpoint_matches'] == 1, 'runtime relay endpoint'
+    diagnostic['label'] = 'identity-upstream'
+    assert value['upstream_count'] == value['auto_update'] == value['mesh_count'] == 0, 'runtime relay sources'
+    return value['region']
+
+
+def safe_packet_diagnostics(value: object) -> dict:
+    value = value if isinstance(value, dict) else {}
+    label = value.get('label')
+    return dict(label=label if isinstance(label, str) and label in PACKET_PROOF_LABELS else 'unknown',
+                **{key: min(value[key], 16_000_000) if type(value.get(key)) is int and value[key] >= 0 else 0
+                   for key in PACKET_PROOF_COUNTS})
+
+
+def packet_evidence(text: str, pid: int, diagnostic: dict) -> None:
+    """Apple tcpdump -tt -nn -q -k PD, without a PID/endpoint filter.
+
+    Reject unattributed egress rather than hiding it with a metadata filter.
+    Reverse tuples attribute incoming kernel packets to observed native egress.
+    Addresses and tuples remain private, never part of the returned projection.
+    """
+    rows = []
+    flows = set()
+    for line in text.splitlines():
+        diagnostic['label'] = 'capture-format'
+        prefix = re.fullmatch(r'[0-9]+\.[0-9]+ \(([^)]*)\) (.+)', line)
+        assert prefix, 'packet prefix'
+        metadata, body = prefix.groups()
+        diagnostic['packet_count'] += 1
+        # ARP is not an IP transport. Keep it in completeness accounting; no
+        # capture filter may hide unattributed UDP or unread packets.
+        if body.startswith('ARP, '):
+            continue
+        match = re.fullmatch(r'(IP6?) (\S+) > (\S+): (tcp |UDP, length )([0-9]+)', body)
+        assert match, 'packet format'
+        _, source, destination, protocol, size = match.groups()
+        fields = metadata.split(', ')
+        direction = [part for part in fields if part in {'in', 'out'}]
+        assert len(direction) == 1 and all(part in {'in', 'out'} or re.fullmatch(r'(?:e?proc) [0-9]+', part) for part in fields), 'metadata format'
+        identities = [int(part.split()[1]) for part in fields if part.startswith(('proc ', 'eproc '))]
+        diagnostic['label'] = 'metadata-missing'
+        assert (identities and all(identity > 0 for identity in identities)) or direction == ['in'], 'unattributed egress'
+        native = pid in identities
+        diagnostic['native_packet_count'] += int(native)
+        diagnostic['label'] = 'capture-format'
+        assert int(size) <= 65535, 'packet size'
+        endpoints = []
+        for endpoint in (source, destination):
+            host, port = endpoint.rsplit('.', 1)
+            endpoints.append((str(ipaddress.ip_address(host)), int(port)))
+            assert 0 < int(port) <= 65535, 'port range'
+        origin, target = endpoints
+        if native and protocol != 'tcp ':
+            diagnostic['udp_count'] += 1
+        if native and direction == ['out'] and protocol == 'tcp ':
+            diagnostic['label'] = 'relay-endpoint-unexpected'
+            assert target == (PUBLIC_IP, 443), 'unexpected native TCP destination'
+            flows.add((origin, target))
+            diagnostic['relay_tx_bytes'] += int(size)
+        rows.append((origin, target, protocol, int(size), direction[0]))
+    diagnostic['label'] = 'udp-observed'
+    assert diagnostic['udp_count'] == 0, 'native UDP observed'
+    for origin, target, protocol, size, direction in rows:
+        if direction == 'in' and protocol == 'tcp ' and (target, origin) in flows:
+            diagnostic['relay_rx_bytes'] += size
+    diagnostic['label'] = 'relay-traffic-missing'
+    assert diagnostic['relay_tx_bytes'] > 0 and diagnostic['relay_rx_bytes'] > 0, 'missing bidirectional relay payload'
+
+
+class PacketCapture:
+    """One private macOS capture, with OS-enforced lifetime and file limits."""
+
+    seconds = 35
+    byte_limit = 2_000_000
+    packet_limit = 4096
+
+    def __init__(self, scratch: Path, diagnostic: dict) -> None:
+        self.diagnostic = diagnostic
+        self.process: subprocess.Popen | None = None
+        self.started = time.monotonic()
+        self.paths = [scratch / 'packet-private.txt', scratch / 'packet-private.stderr']
+        self.streams = []
+
+    def start(self) -> None:
+        self.diagnostic['label'] = 'capture-unavailable'
+        assert sys.platform == 'darwin' and Path('/usr/sbin/tcpdump').is_file() and Path('/usr/sbin/lsof').is_file(), 'native capture tools required'
+        for path in self.paths:
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            self.streams.append(os.fdopen(fd, 'wb'))
+        # Existing Python/OS tools only. Limits are set AFTER sudo's policy and
+        # survive exec; no setting, dependency, routing or firewall is changed.
+        launcher = '''import resource,select,signal,subprocess,sys
+signal.signal(signal.SIGALRM,signal.SIG_DFL)
+signal.alarm(45)
+def limits():
+    resource.setrlimit(resource.RLIMIT_FSIZE,(2000000,2000000))
+    signal.alarm(35)
+child=subprocess.Popen(sys.argv[1:],stdin=subprocess.DEVNULL,preexec_fn=limits)
+ready=select.select([sys.stdin],[],[],35)[0]
+stopped=bool(ready) and sys.stdin.buffer.readline(16)==b'stop\\n'
+early=child.poll() is not None
+if not early:
+    child.send_signal(signal.SIGINT)
+try:
+    code=child.wait(timeout=5)
+except subprocess.TimeoutExpired:
+    child.kill()
+    child.wait(timeout=5)
+    code=125
+print('M4_CAPTURE_END=%d:%d'%(code,int(early or not stopped)),flush=True)
+'''
+        self.process = subprocess.Popen(
+            ['/usr/bin/sudo', '-n', sys.executable, '-I', '-c', launcher,
+             '/usr/sbin/tcpdump', '-i', 'pktap,all', '-nn', '-tt', '-q', '-k', 'PD',
+             '--immediate-mode', '-K', '-s', '512', '-B', '4096', '-c', str(self.packet_limit)],
+            stdin=subprocess.PIPE, stdout=self.streams[0], stderr=self.streams[1])
+        self.diagnostic['label'] = 'capture-start'
+        deadline = min(self.started + self.seconds, time.monotonic() + 5)
+        while time.monotonic() < deadline:
+            raw = self.paths[1].read_bytes()
+            assert len(raw) < 65536 and self.process.poll() is None, 'capture startup failed'
+            if b'listening on' in raw and b'PKTAP' in raw:
+                return
+            time.sleep(0.05)
+        raise RuntimeError('capture startup deadline')
+
+    def sockets(self, pid: int) -> None:
+        self.diagnostic['label'] = 'socket-evidence'
+        result = subprocess.run(['/usr/sbin/lsof', '-nP', '-a', '-p', str(pid), '-i', '-FpfP'],
+                                capture_output=True, timeout=5, check=False)
+        assert result.returncode == 0 and not result.stderr and len(result.stdout) < 65536, 'socket observation unavailable'
+        lines = result.stdout.decode('ascii').splitlines()
+        assert lines and lines[0] == 'p' + str(pid), 'socket identity'
+        assert all(re.fullmatch(r'p[0-9]+|f[0-9]+|P(?:TCP|UDP)', line) for line in lines), 'socket format'
+        self.diagnostic['udp_socket_count'] += lines.count('PUDP')
+        self.diagnostic['label'] = 'udp-socket-observed'
+        assert 'PUDP' not in lines, 'native UDP socket observed'
+        self.diagnostic['label'] = 'socket-evidence'
+        assert 'PTCP' in lines, 'missing positive native TCP socket control'
+        self.diagnostic['tcp_socket_observations'] += 1
+
+    def stop(self) -> None:
+        try:
+            if self.process is not None:
+                if self.process.poll() is None:
+                    assert self.process.stdin is not None
+                    self.process.stdin.write(b'stop\n')
+                    self.process.stdin.flush()
+                    self.process.stdin.close()
+                # The root supervisor owns and waits for its exact child. No
+                # process-name search, PID inference or broad signal is needed.
+                self.process.wait(timeout=max(1, self.started + 50 - time.monotonic()))
+        finally:
+            for stream in self.streams:
+                stream.close()
+
+    def evidence(self, pid: int) -> None:
+        diagnostic = self.diagnostic
+        diagnostic['label'] = 'capture-budget'
+        assert all(p.stat().st_size < self.byte_limit for p in self.paths), 'capture byte budget'
+        raw, errors = [p.read_text() for p in self.paths]
+        diagnostic['label'] = 'capture-deadline'
+        assert time.monotonic() < self.started + self.seconds, 'capture deadline'
+        diagnostic['label'] = 'capture-incomplete'
+        assert self.process is not None and self.process.returncode == 0, 'capture did not finish cleanly'
+        assert raw.endswith('M4_CAPTURE_END=0:0\n'), 'capture child not positively stopped/reaped'
+        raw = raw.removesuffix('M4_CAPTURE_END=0:0\n')
+        captured = re.findall(r'^([0-9]+) packets captured$', errors, re.M)
+        received = re.findall(r'^([0-9]+) packets received by filter$', errors, re.M)
+        dropped = re.findall(r'^([0-9]+) packets dropped by kernel$', errors, re.M)
+        interface_drops = re.findall(r'^([0-9]+) packets dropped by interface$', errors, re.M)
+        assert len(captured) == len(received) == len(dropped) == 1 and captured == received and dropped == ['0'] and all(value == '0' for value in interface_drops), 'missing/dropped/unread capture evidence'
+        diagnostic['label'] = 'capture-budget'
+        assert int(captured[0]) < self.packet_limit, 'capture packet budget'
+        packet_evidence(raw, pid, diagnostic)
+        diagnostic['label'] = 'capture-incomplete'
+        assert int(captured[0]) == diagnostic['packet_count'], 'partial packet stream'
+
+
+def prove_packet_path(bridge: Bridge, scratch: Path, address: str, credential: str, diagnostic: dict, identity: object) -> dict:
+    """Observe the real native peer request; old filch data is corroboration only."""
+    capture = PacketCapture(scratch, diagnostic)
+    try:
+        capture.start()
+        # Preserve PR1459's useful closed log diagnostic. Missing log evidence
+        # alone cannot establish or refute the packet/sockets proof; a
+        # contradictory observed region still vetoes success below.
+        try:
+            bridge.call('derp-proof')
+        except RuntimeError:
+            pass
+        assert bridge.process.poll() is None, 'native process unavailable'
+        capture.sockets(bridge.process.pid)
+        diagnostic['label'] = 'request-failed'
+        assert bridge.call('request', address=address, method='GET', path=ROUTE, credential=credential) == {'status': 200, 'body': EXPECTED}, 'proof real-daemon response'
+        capture.sockets(bridge.process.pid)
+        assert bridge.process.poll() is None, 'native process ended during proof'
+    finally:
+        try:
+            capture.stop()
+        except Exception:
+            diagnostic['label'] = 'capture-cleanup'
+            raise
+    capture.evidence(bridge.process.pid)
+    region = require_relay_identity(identity, diagnostic)
+    diagnostic['label'] = 'identity-log-conflict'
+    log = bridge.derp_diagnostics
+    assert log.get('label') != 'region-unexpected' and not set(log.get('matched_regions', [])) - {region}, 'contradictory runtime/log identity'
+    diagnostic['label'] = 'passed'
+    return dict(region=region, **safe_packet_diagnostics(diagnostic))
 
 
 def safe_derp_diagnostics(value: object) -> dict:

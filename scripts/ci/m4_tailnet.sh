@@ -18,6 +18,20 @@ start_fixture() {
   systemd-run --unit="$unit" --property=MemoryAccounting=yes --property=MemoryMax=600M "$@"
 }
 hs() { "$M2_WORK/headscale" --config "$M2_WORK/config.yaml" "$@"; }
+relay_observation() {
+  "$python" - "$1" <<'PY_RELAY'
+import json, sys
+sys.path.insert(0, 'scripts/ci')
+from m4_tailnet_control import guest_relay_identity, snapshot_relay_launch
+try:
+    if sys.argv[1] == 'snapshot':
+        snapshot_relay_launch()
+    else:
+        print(json.dumps(guest_relay_identity(initial=sys.argv[1] == 'initial')))
+except Exception:
+    raise SystemExit('M4 runtime relay identity refused; private details withheld') from None
+PY_RELAY
+}
 certificate_cache() {
   /usr/bin/python3 - "$cert_cache" "$1" <<'PY_CACHE'
 import json, os, stat, subprocess, sys
@@ -126,9 +140,11 @@ log:
 EOF
   # Explicit direction and one TCP port; no allow-all default or client tags.
   printf '%s\n' '{"acls":[{"action":"accept","proto":"tcp","src":["m4client"],"dst":["m4home:443"]}]}' > "$M2_WORK/acl.json"
+  relay_observation snapshot
   start_fixture "${fixtures[0]}" "$M2_WORK/headscale" serve --config "$M2_WORK/config.yaml"
   # Static cached combined PEM certificate/key: no ACME manager or issuance.
   wait_for curl -q --silent --fail --connect-timeout 2 --max-time 4 --output /dev/null https://47-238-219-200.sslip.io/health
+  relay_observation initial
   certificate_cache check
   hs users create m4home
   hs users create m4client
@@ -349,6 +365,7 @@ case ${1:-} in
   install) install_product ;;
   enroll|pair-main|pair-revoked|pair-ready) handoff "$1" ;;
   handoff-check) handoff_check ;;
+  relay-identity) relay_observation current ;;
   exposure-sockets) exposure_sockets ;;
   devices) sudo -u happyranch "$python" -m runtime.remote_access.cli list-devices --config /etc/happyranch/connector.json ;;
   nodes) nodes ;;
@@ -359,5 +376,5 @@ case ${1:-} in
   teardown) teardown_vm ;;
   clean-state) clean_state ;;
   remove-cert-cache) clean_state; certificate_cache remove ;;
-  *) fail 'expected prepare|install|enroll|pair-main|pair-revoked|pair-ready|handoff-check|exposure-sockets|devices|nodes|revoke|logs|attribution|purge|teardown|clean-state|remove-cert-cache' ;;
+  *) fail 'expected prepare|install|enroll|pair-main|pair-revoked|pair-ready|handoff-check|relay-identity|exposure-sockets|devices|nodes|revoke|logs|attribution|purge|teardown|clean-state|remove-cert-cache' ;;
 esac
