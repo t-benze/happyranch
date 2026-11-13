@@ -121,6 +121,17 @@ release identity checks remain independent. The former six-closure standard is r
 Run the full [Mac build contract](../app/mac/README.md) from clean reviewed
 source.
 
+The existing Jenkins `happyranch-mac-native-probe` toolchain suite independently
+provisions official SHA256-pinned uv 0.12.21, Node 24.19.0 LTS (bundled npm) and
+Go 1.23.12 Darwin/arm64 into its private scratch. Preflight requires their exact
+versions and paths; GOROOT/GOPATH/Go caches are private and GOTOOLCHAIN=local,
+with GOFLAGS unchanged. This uses the same conservative Go line described below;
+newer maintained compatibility remains unestablished. The reviewed job template
+increases only timeout 30->90min and per-file cap 32->256MiB; other caps stay fixed.
+Native provisioner proof follows merge + manager config apply because the live
+32MiB cap rejects the 52,234,372-byte Node archive. No app build/run occurs in
+that preflight. See the [probe contract](../ci/jenkins/mac-native-probe/README.md).
+
 The full hosted candidate workflow bootstraps native arm64 Go **1.23.12** using
 `actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e` (v7.0.0), with
 shared setup caching disabled and job-wide `GOTOOLCHAIN=local`. Before native
@@ -133,6 +144,20 @@ maintenance; newer maintained compatibility is not established. See the
 [source provenance and maintenance limit](../app/mac/README.md#internal-candidate-build).
 The prior hosted missing-Go failure remains a failure; corrected native build,
 archive/linkage and compatibility remain UNEXECUTED pending independent QA.
+
+The editable root's complete build-only backend closure is pinned in
+[`build-backend-requirements.txt`](build-backend-requirements.txt): hatchling 1.27.0,
+packaging 26.0, pathspec 0.12.1, pluggy 1.6.0, trove-classifiers 2026.9.21.13 and
+editables 0.5 (including the editable hook dependency). The freezer creates the
+fresh project venv with its admitted managed Python, installs only these wheels
+with `uv pip install --require-hashes --only-binary :all:`, then runs frozen sync
+with `--no-build-isolation-package happyranch`. This prevents implicit backend
+resolution and supports uv 0.12.21 without newer build-hash flags. All other
+packages retain their existing isolation. packaging/pluggy match uv.lock;
+no runtime dependency, version or runtime lockfile entry changes. Official PyPI
+version JSON supplies the wheel URLs/SHA256. Missing transitive pins and
+mismatched hashes refuse before the root build. This is Python editable-backend
+verification, not native compilation or frozen-app acceptance.
 
 Freezer-only work is supported **only in a disposable checkout**:
 

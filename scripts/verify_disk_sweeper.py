@@ -5940,12 +5940,165 @@ def c47():
                 limits='Real disposable Git/files and existing census seam; synthetic index.lock created/healed only by this fixture, never a host lock or writer-liveness inference')
 
 
+def c48() -> dict[str, object]:
+    """Real guard CLI + Git policy + unchanged sweeper dirty/removal gates."""
+    observations, failures = [], []
+    source = Path(__file__).resolve().parents[1]
+    writer = source / 'runtime/tools/worktree_guard.py'
+    mirror = source / 'runtime/skills/bundled/make-worktree/worktree_guard.py'
+    for variant in ('guard-only', 'missing-info', 'no-final-newline', 'existing-line',
+                    'tracked-modified', 'staged', 'negated', 'subdirectory',
+                    'other-untracked', 'unwritable', 'symlink-gitignore',
+                    'symlink-info-parent', 'symlink-config', 'hardlink-tracked',
+                    'info-not-directory', 'exclude-directory',
+                    'missing-exclude'):
+        try:
+            with fixture() as f:
+                repo = f.workspace / 'repos/project'
+                repo.mkdir(parents=True)
+                f.git(repo, 'init', '-q')
+                f.git(repo, 'config', 'user.name', 'Disposable fixture')
+                f.git(repo, 'config', 'user.email', 'fixture@example.invalid')
+                (repo / 'source').write_text('committed\n')
+                (repo / '.gitignore').write_text('!/.worktree-guard.json\n' if variant == 'negated' else 'ignored/\n')
+                if variant == 'tracked-modified':
+                    (repo / '.worktree-guard.json').write_text('{}\n')
+                f.git(repo, 'add', '.')
+                f.git(repo, 'commit', '-qm', 'fixture without guard ignore')
+                repo, target = f.worktree('TASK-1')
+                exclude = repo / '.git/info/exclude'
+                before = b'# preserve this local policy\n/custom\n'
+                if variant == 'no-final-newline':
+                    before = before.rstrip(b'\n')
+                if variant == 'existing-line':
+                    before += b'/.worktree-guard.json'  # also repair the final newline
+                exclude.write_bytes(before)
+                if variant == 'missing-info':
+                    exclude.unlink()
+                    exclude.parent.rmdir()
+                    before = b''
+                unsafe = variant in ('symlink-gitignore', 'symlink-info-parent',
+                                     'symlink-config', 'hardlink-tracked',
+                                     'info-not-directory', 'exclude-directory')
+                protected = None
+                if unsafe or variant == 'missing-exclude':
+                    exclude.unlink()
+                if variant == 'symlink-info-parent':
+                    exclude.parent.rmdir()
+                    policy = repo / 'policy'
+                    policy.mkdir()
+                    protected = policy / 'exclude'
+                    protected.write_bytes(before)
+                    f.git(repo, 'add', 'policy/exclude')
+                    f.git(repo, 'commit', '-qm', 'tracked policy')
+                    exclude.parent.symlink_to(policy, target_is_directory=True)
+                elif variant in ('symlink-gitignore', 'symlink-config', 'hardlink-tracked'):
+                    protected = repo / ('.git/config' if variant == 'symlink-config' else '.gitignore')
+                    if variant == 'hardlink-tracked':
+                        os.link(protected, exclude)
+                    else:
+                        exclude.symlink_to(protected)
+                elif variant == 'info-not-directory':
+                    exclude.parent.rmdir()
+                    protected = exclude.parent
+                    protected.write_bytes(before)
+                elif variant == 'exclude-directory':
+                    # Git cannot read a directory as excludes. Keep a dirty
+                    # tracked baseline to exercise its existing hash detection.
+                    (repo / 'source').write_text('dirty baseline\n')
+                    exclude.mkdir()
+                    protected = exclude / 'policy'
+                    protected.write_bytes(before)
+                elif variant == 'missing-exclude':
+                    before = b''
+                protected_before = protected.read_bytes() if protected else None
+                if variant == 'unwritable':
+                    exclude.chmod(0o444)
+                if variant == 'staged':
+                    f.git(target, 'add', '-f', '.worktree-guard.json')
+                if variant == 'subdirectory':
+                    (target / 'sub').mkdir()
+                    (target / 'sub/.worktree-guard.json').write_text('keep\n')
+                if variant == 'other-untracked':
+                    (target / 'other').write_text('keep\n')
+                def guard(script: Path, command: str) -> str:
+                    argv = [sys.executable, str(script), command, '--worktree-root', str(target)]
+                    if command == 'setup':
+                        argv += ['--primary-root', str(repo), '--task-id', 'TASK-1']
+                    result = subprocess.run(argv, capture_output=True, text=True, timeout=10)
+                    assert result.returncode == 0, (variant, argv, result.stdout, result.stderr)
+                    return result.stdout
+                try:
+                    setup = guard(writer, 'setup')
+                    if unsafe:
+                        if protected:
+                            assert protected.read_bytes() == protected_before, (variant, 'protected target bytes changed')
+                        assert 'WARNING: Could not exclude guard file' in setup, (variant, setup)
+                        assert 'WARNING: Could not exclude guard file' in guard(mirror, 'setup'), variant
+                        if protected:
+                            assert protected.read_bytes() == protected_before, (variant, 'protected target bytes changed on repeat')
+                    else:
+                        first = exclude.read_bytes()
+                        guard(mirror, 'setup')
+                        assert exclude.read_bytes() == first, (variant, 'duplicate/rewrite on setup')
+                        if variant == 'unwritable':
+                            assert first == before and 'WARNING' in setup, (variant, first, setup)
+                        else:
+                            expected = before + (b'\n' if before and not before.endswith(b'\n') else b'')
+                            if b'/.worktree-guard.json' not in before.splitlines():
+                                expected += b'/.worktree-guard.json\n'
+                            assert first == expected, (variant, first, expected)
+                            assert first.splitlines().count(b'/.worktree-guard.json') == 1
+                    assert 'GUARD PASS' in guard(writer, 'verify')
+                    # A failed exclude write must leave detection active too.
+                    (repo / 'source').write_text('accidental primary edit\n')
+                    result = subprocess.run([sys.executable, str(writer), 'verify', '--worktree-root', str(target)], capture_output=True, text=True)
+                    assert result.returncode == 1 and 'GUARD FAILED' in result.stderr, (variant, result.stdout, result.stderr)
+                    violation_exit = result.returncode
+                    (repo / 'source').write_text('dirty baseline\n' if variant == 'exclude-directory' else 'committed\n')
+                    assert 'GUARD PASS' in guard(writer, 'verify')
+                    removable = variant in ('guard-only', 'missing-info', 'missing-exclude', 'no-final-newline', 'existing-line')
+                    dirty = subprocess.run(['git', '-C', str(target), 'status', '--porcelain=v1', '-z', '--untracked-files=all'], capture_output=True)
+                    if variant == 'exclude-directory':
+                        assert dirty.returncode != 0, (variant, dirty)
+                    else:
+                        assert dirty.returncode == 0 and bool(dirty.stdout) is not removable, (variant, dirty)
+                    report = f.sweep(seconds=20)
+                    if unsafe:
+                        assert row(report, target)['state'] == 'retained' and target.exists(), report
+                        result = subprocess.run(['git', '-C', str(repo), 'worktree', 'remove', str(target)], capture_output=True)
+                        assert result.returncode != 0 and target.exists(), (variant, result)
+                        if protected:
+                            assert protected.read_bytes() == protected_before, (variant, 'protected target bytes changed after enforcement')
+                    elif removable:
+                        assert row(report, target)['state'] == 'removed' and not target.exists(), report
+                        assert str(target) not in f.git(repo, 'worktree', 'list', '--porcelain')
+                        assert 'task/TASK-1' in f.git(repo, 'branch', '--list')
+                    else:
+                        retained(report, target, 'dirty_or_untracked')
+                        result = subprocess.run(['git', '-C', str(repo), 'worktree', 'remove', str(target)], capture_output=True)
+                        assert result.returncode != 0 and target.exists(), (variant, result)
+                    observations.append(dict(variant=variant, state=row(report, target)['state'],
+                                             reason=row(report, target).get('reason'), guard_detection=True,
+                                             setup_exit=0, violation_exit=violation_exit,
+                                             unsafe_exclude=unsafe, warning='WARNING: Could not exclude guard file' in setup,
+                                             protected_bytes_unchanged=(protected.read_bytes() == protected_before) if protected else None))
+                finally:
+                    if variant == 'unwritable':
+                        exclude.chmod(0o644)
+        except Exception as exc:
+            failures.append(dict(variant=variant, error=type(exc).__name__ + ': ' + str(exc)[:3000]))
+    assert not failures, dict(passed=observations, failures=failures)
+    return dict(variants=observations, git=subprocess.check_output(['git', '--version'], text=True).strip(),
+                limits='Disposable clones only; no real-clone rollout, daemon restart, mount or Darwin execution')
+
+
 if __name__=='__main__':
     parser=argparse.ArgumentParser(description=__doc__)
     selection=parser.add_mutually_exclusive_group()
     selection.add_argument('--corrections-only', action='store_true', help='THR307seq117/134: C1-C7, S1-S5 (8-12) and per-org settlement (13); no historical/isolation cases')
     selection.add_argument('--correction-cases', type=int, nargs='+', choices=range(1, 14), help='select finite cases within the corrections lane')
-    selection.add_argument('--cases',type=int,nargs='+',choices=range(1,48))
+    selection.add_argument('--cases',type=int,nargs='+',choices=range(1,49))
     selection.add_argument('--isolation-case',choices=('mount','root'),help='only the private executable namespace fixture; exit77 if unavailable')
     args=parser.parse_args()
     # The private helper alone is mapped root; the driver retains its ordinary
@@ -5981,7 +6134,8 @@ if __name__=='__main__':
             purposes += ('Fresh native writer and hold at final effect boundaries',)
             purposes += ('Fresh topology after eligible inventory and healed-refusal latch', 'Mount arrival through production detection seam after inventory',)
             purposes += ('Dynamic base equivalence for final-census TASK arrivals and local churn',)
-            for number,(fn,purpose) in enumerate(zip((c1,c2,c3,c4,c5,c6,c7,c8,c9,c10,c11,c12,c13,c14,c15,c16,c17,c18,c19,c20,c21,c22,c23,c24,c25,c26,c27,c28,c29,c30,c31,c32,c33,c34,c35,c36,c37,c38,c39,c40,c41,c42,c43,c44,c45,c46,c47),purposes),1):
+            purposes += ('Runtime guard local exclude and unchanged non-force removal',)
+            for number,(fn,purpose) in enumerate(zip((c1,c2,c3,c4,c5,c6,c7,c8,c9,c10,c11,c12,c13,c14,c15,c16,c17,c18,c19,c20,c21,c22,c23,c24,c25,c26,c27,c28,c29,c30,c31,c32,c33,c34,c35,c36,c37,c38,c39,c40,c41,c42,c43,c44,c45,c46,c47,c48),purposes),1):
                 if args.cases is None or number in args.cases:
                     if number in (3, 4):
                         RESULTS.append(dict(case=number, purpose=purpose, result='SUPERSEDED', reason='THR307 seq117 removed OS-process eligibility; historical source not executed'))

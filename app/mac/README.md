@@ -298,6 +298,17 @@ literal False gate are retired by THR104seq260. Concrete failed original-text
 rows still refuse. Source delivery grants no native execution, signing,
 deployment or release authority.
 
+The existing Jenkins `happyranch-mac-native-probe` toolchain suite independently
+provisions official SHA256-pinned uv 0.12.21, Node 24.19.0 LTS (bundled npm) and
+Go 1.23.12 Darwin/arm64 into its private scratch. Preflight requires their exact
+versions and paths; GOROOT/GOPATH/Go caches are private and GOTOOLCHAIN=local,
+with GOFLAGS unchanged. This uses the same conservative Go line described below;
+newer maintained compatibility remains unestablished. The reviewed job template
+increases only timeout 30->90min and per-file cap 32->256MiB; other caps stay fixed.
+Native provisioner proof follows merge + manager config apply because the live
+32MiB cap rejects the 52,234,372-byte Node archive. No app build/run occurs in
+that preflight. See the [probe contract](../../ci/jenkins/mac-native-probe/README.md).
+
 The existing hosted workflow installs exact native arm64 Go **1.23.12** with
 `actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e` (v7.0.0), with
 shared setup caching disabled. Before packaging it logs PATH, the resolved Go

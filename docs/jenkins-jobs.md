@@ -16,6 +16,16 @@ This PR852 distribution is a **candidate pending independent review, QA and exac
 
 The separate existing `happyranch-mac-native-probe` Freestyle job uses the
 [reviewed template and bounds](../ci/jenkins/mac-native-probe/README.md).
+Its `toolchain` suite provisions exact hash-pinned uv 0.12.21 and Node 24.19.0
+LTS (bundled npm) and Go 1.23.12 from official release tarballs into job scratch, then observes
+packaging tools and free space. Only child-process PATH changes; no host install
+occurs. Source-side pins at SOURCE_SHA and the bootstrap bounds are documented
+in the probe README. All three versions and scratch paths are required; Go
+root/path/caches remain private with GOTOOLCHAIN=local and unchanged GOFLAGS.
+The freezer separately hash-installs the editable backend closure without
+changing runtime manifests/uv.lock. A source preflight does not
+prove a packaged-app build or acceptance result. The Node tarball 52,234,372B
+exceeds the live 32MiB cap: native proof waits for merge + manager config apply.
 After immutable checkout/identity, its stdlib-only bootstrap takes the measured
 18-package `cleanup-helpers` import set from the checkout's `uv.lock` into a
 scratch-only venv without pip. It requires macOS arm64 regular CPython 3.14,
@@ -25,8 +35,8 @@ Missing wheels, network/validation failures and unsafe ZIP members fail closed.
 Direct HTTPS to `files.pythonhosted.org` is required; proxies/redirects are refused.
 
 Bounds: 16 MiB/wheel, 64 MiB total downloads, 128 MiB extracted payload, 20,000
-ZIP members and 300 seconds bootstrap time inside the existing 30-minute job.
-Bootstrap and probe share a 32 MiB per-file cap (`ulimit -f 32768` in non-POSIX
+ZIP members and 300 seconds bootstrap time inside the template 90-minute job.
+Bootstrap and probe share a 256MiB per-file cap (`ulimit -f 262144` in non-POSIX
 Bash, 1024-byte units; see the linked Apple Bash 3.2 source). Build/probe logs
 remain 4 MiB each, identity 64 KiB, console 1 MiB plus its fixed marker. Output
 caps fail nonzero. HOME/cache/user-site/temp writes stay in scratch; cleanup

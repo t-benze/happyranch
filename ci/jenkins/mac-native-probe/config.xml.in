@@ -158,8 +158,8 @@ run_probe() {
   } 2>&1 | capture_log "$WORKSPACE/evidence/identity.txt" "$((IDENTITY_LIMIT_BYTES - 22))"
   (
     # Bash -p (not POSIX mode): -f uses 1024-byte blocks, including Apple 3.2.
-    # One 32 MiB per-file cap covers both dependency bootstrap and probe.json.
-    ulimit -f 32768
+    # One 256 MiB per-file cap covers both dependency bootstrap and probe.json.
+    ulimit -f 262144
     unset PYTHONPATH PYTHONHOME
     export HOME="$scratch/home" XDG_CACHE_HOME="$scratch/cache"
     export PIP_CACHE_DIR="$scratch/cache/pip" PIP_NO_CACHE_DIR=1 PIP_CONFIG_FILE=/dev/null
@@ -399,7 +399,7 @@ scratch=$(mktemp -d "$WORKSPACE/native-probe.XXXXXX")
   </publishers>
   <buildWrappers>
     <hudson.plugins.build__timeout.BuildTimeoutWrapper>
-      <strategy class="hudson.plugins.build_timeout.impl.AbsoluteTimeOutStrategy"><timeoutMinutes>30</timeoutMinutes></strategy>
+      <strategy class="hudson.plugins.build_timeout.impl.AbsoluteTimeOutStrategy"><timeoutMinutes>90</timeoutMinutes></strategy>
       <operationList><hudson.plugins.build__timeout.operations.AbortOperation/></operationList>
     </hudson.plugins.build__timeout.BuildTimeoutWrapper>
   </buildWrappers>
