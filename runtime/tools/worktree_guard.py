@@ -20,6 +20,7 @@ import hashlib
 import json
 import os
 import shlex
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -65,15 +66,47 @@ def _ensure_guard_excluded(common_dir: Path) -> None:
     """Best-effort root-only ignore shared by this clone's linked worktrees."""
     exclude = common_dir / "info" / "exclude"
     try:
-        exclude.parent.mkdir(exist_ok=True)
-        with exclude.open("a+b") as stream:
-            stream.seek(0)
-            content = stream.read()
-            rule = b"/.worktree-guard.json"
-            if content and not content.endswith(b"\n"):
-                stream.write(b"\n")
-            if rule not in content.splitlines():
-                stream.write(rule + b"\n")
+        # Pin the literal info directory rather than following an aliased parent.
+        try:
+            exclude.parent.mkdir()
+        except FileExistsError:
+            pass
+        parent = exclude.parent.lstat()
+        if not stat.S_ISDIR(parent.st_mode):
+            raise OSError("exclude parent is not a literal directory")
+        directory_flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
+        parent_fd = os.open(exclude.parent, directory_flags)
+        try:
+            opened_parent = os.fstat(parent_fd)
+            if (opened_parent.st_dev, opened_parent.st_ino) != (parent.st_dev, parent.st_ino):
+                raise OSError("exclude parent changed while opening")
+            try:
+                entry = os.stat("exclude", dir_fd=parent_fd, follow_symlinks=False)
+            except FileNotFoundError:
+                entry = None
+            if entry is not None and (not stat.S_ISREG(entry.st_mode) or entry.st_nlink != 1):
+                raise OSError("exclude is not a single-link regular file")
+            flags = os.O_RDWR | os.O_APPEND | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0)
+            if entry is None:
+                flags |= os.O_CREAT | os.O_EXCL
+            fd = os.open("exclude", flags, 0o666, dir_fd=parent_fd)
+            with os.fdopen(fd, "a+b") as stream:
+                opened = os.fstat(stream.fileno())
+                current = os.stat("exclude", dir_fd=parent_fd, follow_symlinks=False)
+                if (not stat.S_ISREG(opened.st_mode) or opened.st_nlink != 1
+                        or not stat.S_ISREG(current.st_mode) or current.st_nlink != 1
+                        or (opened.st_dev, opened.st_ino) != (current.st_dev, current.st_ino)
+                        or (entry is not None and (opened.st_dev, opened.st_ino) != (entry.st_dev, entry.st_ino))):
+                    raise OSError("exclude is unsafe or changed while opening")
+                stream.seek(0)
+                content = stream.read()
+                rule = b"/.worktree-guard.json"
+                if content and not content.endswith(b"\n"):
+                    stream.write(b"\n")
+                if rule not in content.splitlines():
+                    stream.write(rule + b"\n")
+        finally:
+            os.close(parent_fd)
     except OSError as exc:
         # Ignoring the snapshot is optional; recording/enforcing it is not.
         print(f"WARNING: Could not exclude guard file in {exclude}: {exc}")

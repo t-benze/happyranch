@@ -378,7 +378,11 @@ normal hooks/static checks remain mandatory. Python units stay retired.
 `/.worktree-guard.json` to each clone's shared common-dir `info/exclude`. Git's
 root-only ignore makes an untracked root guard clean for status and non-force
 removal. Modified tracked/staged, negated and subdirectory guards, plus other
-untracked files, remain dirty. An unwritable exclude leaves guard enforcement
+untracked files, remain dirty.
+Aliased or unsafe excludes warn and are skipped without changing target bytes:
+a symlinked/non-directory `info` parent, a symlinked or multiply linked final
+file, or any non-regular final file. Setup and guard enforcement continue.
+An unwritable exclude leaves guard enforcement
 active and, absent another ignore rule, the worktree dirty. Existing clones gain
 the line only on their next guard setup; the 91 observed guard-only dirty trees
 are not a removal promise. Dirty/removal/containment and every other cleanup gate

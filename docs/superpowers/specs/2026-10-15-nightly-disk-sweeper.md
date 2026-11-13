@@ -537,6 +537,10 @@ non-force removal accepts it. Modified tracked/staged guards, `.gitignore`
 negation, subdirectory guards and other untracked files remain dirty. The sweeper's
 dirty check, non-force removal, containment and all other gates are unchanged.
 
+Aliased or unsafe excludes warn and are skipped without changing target bytes:
+a symlinked/non-directory `info` parent, a symlinked or multiply linked final
+file, or any non-regular final file. Setup and guard enforcement continue.
+
 Exclude writes are best-effort: failure warns but setup still writes the snapshot
 and verification still detects primary-checkout edits. Without another ignore
 rule, that guard remains dirty and the sweeper keeps the worktree. Existing clones

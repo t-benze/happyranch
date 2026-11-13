@@ -338,7 +338,11 @@ cleanup authority.
 Guard setup best-effort adds the root-only `/.worktree-guard.json` rule to
 that clone's shared common-dir `info/exclude` (THR-307 seq337 step 4). Existing
 clones gain it only on their next guard setup; this skill does not bulk-edit Git
-metadata. Unwritable excludes leave guard enforcement active and, without another
+metadata.
+Aliased or unsafe excludes warn and are skipped without changing target bytes:
+a symlinked/non-directory `info` parent, a symlinked or multiply linked final
+file, or any non-regular final file. Setup and guard enforcement continue.
+Unwritable excludes leave guard enforcement active and, without another
 ignore rule, the file dirty. Modified tracked/staged guards, `.gitignore` negation,
 subdirectory guards and other untracked files stay dirty. This changes no cleanup
 gate or non-force removal rule; 91 observed guard-only dirty worktrees is not a

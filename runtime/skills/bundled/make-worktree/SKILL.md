@@ -102,6 +102,9 @@ Git status and non-force worktree removal. Modified tracked or staged guards,
 a `.gitignore` negation, subdirectory guards and other untracked files still
 count as dirty. If the exclude cannot be written, setup still records and
 verifies the guard; without another ignore rule the file remains dirty.
+Aliased or unsafe excludes warn and are skipped without changing target bytes:
+a symlinked/non-directory `info` parent, a symlinked or multiply linked final
+file, or any non-regular final file. Setup and guard enforcement continue.
 Existing clones gain the rule only on their next guard setup; no bulk rollout
 or removal is promised. The 91 observed guard-only dirty worktrees were an
 observation, not a promise that later safety gates will permit removal.

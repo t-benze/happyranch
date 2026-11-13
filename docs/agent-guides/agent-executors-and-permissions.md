@@ -689,6 +689,9 @@ At setup the same writer best-effort ensures the exact root-only rule
 existing content and a final newline without duplicate rules on re-setup.
 The ignore update creates missing `info/` and leaves `.gitignore`, config and
 tracked files untouched.
+Aliased or unsafe excludes warn and are skipped without changing target bytes:
+a symlinked/non-directory `info` parent, a symlinked or multiply linked final
+file, or any non-regular final file. Setup and guard enforcement continue.
 An unwritable exclude warns without disabling snapshot creation or verification;
 without another ignore rule the guard stays dirty. Git still reports modified
 tracked/staged, negated or subdirectory guards and other untracked files. Existing

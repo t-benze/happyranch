@@ -5948,7 +5948,10 @@ def c48() -> dict[str, object]:
     mirror = source / 'runtime/skills/bundled/make-worktree/worktree_guard.py'
     for variant in ('guard-only', 'missing-info', 'no-final-newline', 'existing-line',
                     'tracked-modified', 'staged', 'negated', 'subdirectory',
-                    'other-untracked', 'unwritable'):
+                    'other-untracked', 'unwritable', 'symlink-gitignore',
+                    'symlink-info-parent', 'symlink-config', 'hardlink-tracked',
+                    'info-not-directory', 'exclude-directory',
+                    'missing-exclude'):
         try:
             with fixture() as f:
                 repo = f.workspace / 'repos/project'
@@ -5974,6 +5977,41 @@ def c48() -> dict[str, object]:
                     exclude.unlink()
                     exclude.parent.rmdir()
                     before = b''
+                unsafe = variant in ('symlink-gitignore', 'symlink-info-parent',
+                                     'symlink-config', 'hardlink-tracked',
+                                     'info-not-directory', 'exclude-directory')
+                protected = None
+                if unsafe or variant == 'missing-exclude':
+                    exclude.unlink()
+                if variant == 'symlink-info-parent':
+                    exclude.parent.rmdir()
+                    policy = repo / 'policy'
+                    policy.mkdir()
+                    protected = policy / 'exclude'
+                    protected.write_bytes(before)
+                    f.git(repo, 'add', 'policy/exclude')
+                    f.git(repo, 'commit', '-qm', 'tracked policy')
+                    exclude.parent.symlink_to(policy, target_is_directory=True)
+                elif variant in ('symlink-gitignore', 'symlink-config', 'hardlink-tracked'):
+                    protected = repo / ('.git/config' if variant == 'symlink-config' else '.gitignore')
+                    if variant == 'hardlink-tracked':
+                        os.link(protected, exclude)
+                    else:
+                        exclude.symlink_to(protected)
+                elif variant == 'info-not-directory':
+                    exclude.parent.rmdir()
+                    protected = exclude.parent
+                    protected.write_bytes(before)
+                elif variant == 'exclude-directory':
+                    # Git cannot read a directory as excludes. Keep a dirty
+                    # tracked baseline to exercise its existing hash detection.
+                    (repo / 'source').write_text('dirty baseline\n')
+                    exclude.mkdir()
+                    protected = exclude / 'policy'
+                    protected.write_bytes(before)
+                elif variant == 'missing-exclude':
+                    before = b''
+                protected_before = protected.read_bytes() if protected else None
                 if variant == 'unwritable':
                     exclude.chmod(0o444)
                 if variant == 'staged':
@@ -5987,34 +6025,52 @@ def c48() -> dict[str, object]:
                     argv = [sys.executable, str(script), command, '--worktree-root', str(target)]
                     if command == 'setup':
                         argv += ['--primary-root', str(repo), '--task-id', 'TASK-1']
-                    result = subprocess.run(argv, capture_output=True, text=True)
+                    result = subprocess.run(argv, capture_output=True, text=True, timeout=10)
                     assert result.returncode == 0, (variant, argv, result.stdout, result.stderr)
                     return result.stdout
                 try:
                     setup = guard(writer, 'setup')
-                    first = exclude.read_bytes()
-                    guard(mirror, 'setup')
-                    assert exclude.read_bytes() == first, (variant, 'duplicate/rewrite on setup')
-                    if variant == 'unwritable':
-                        assert first == before and 'WARNING' in setup, (variant, first, setup)
+                    if unsafe:
+                        if protected:
+                            assert protected.read_bytes() == protected_before, (variant, 'protected target bytes changed')
+                        assert 'WARNING: Could not exclude guard file' in setup, (variant, setup)
+                        assert 'WARNING: Could not exclude guard file' in guard(mirror, 'setup'), variant
+                        if protected:
+                            assert protected.read_bytes() == protected_before, (variant, 'protected target bytes changed on repeat')
                     else:
-                        expected = before + (b'\n' if before and not before.endswith(b'\n') else b'')
-                        if b'/.worktree-guard.json' not in before.splitlines():
-                            expected += b'/.worktree-guard.json\n'
-                        assert first == expected, (variant, first, expected)
-                        assert first.splitlines().count(b'/.worktree-guard.json') == 1
+                        first = exclude.read_bytes()
+                        guard(mirror, 'setup')
+                        assert exclude.read_bytes() == first, (variant, 'duplicate/rewrite on setup')
+                        if variant == 'unwritable':
+                            assert first == before and 'WARNING' in setup, (variant, first, setup)
+                        else:
+                            expected = before + (b'\n' if before and not before.endswith(b'\n') else b'')
+                            if b'/.worktree-guard.json' not in before.splitlines():
+                                expected += b'/.worktree-guard.json\n'
+                            assert first == expected, (variant, first, expected)
+                            assert first.splitlines().count(b'/.worktree-guard.json') == 1
                     assert 'GUARD PASS' in guard(writer, 'verify')
                     # A failed exclude write must leave detection active too.
                     (repo / 'source').write_text('accidental primary edit\n')
                     result = subprocess.run([sys.executable, str(writer), 'verify', '--worktree-root', str(target)], capture_output=True, text=True)
                     assert result.returncode == 1 and 'GUARD FAILED' in result.stderr, (variant, result.stdout, result.stderr)
-                    (repo / 'source').write_text('committed\n')
+                    violation_exit = result.returncode
+                    (repo / 'source').write_text('dirty baseline\n' if variant == 'exclude-directory' else 'committed\n')
                     assert 'GUARD PASS' in guard(writer, 'verify')
-                    removable = variant in ('guard-only', 'missing-info', 'no-final-newline', 'existing-line')
-                    dirty = f.git(target, 'status', '--porcelain=v1', '-z', '--untracked-files=all')
-                    assert bool(dirty) is not removable, (variant, dirty)
+                    removable = variant in ('guard-only', 'missing-info', 'missing-exclude', 'no-final-newline', 'existing-line')
+                    dirty = subprocess.run(['git', '-C', str(target), 'status', '--porcelain=v1', '-z', '--untracked-files=all'], capture_output=True)
+                    if variant == 'exclude-directory':
+                        assert dirty.returncode != 0, (variant, dirty)
+                    else:
+                        assert dirty.returncode == 0 and bool(dirty.stdout) is not removable, (variant, dirty)
                     report = f.sweep(seconds=20)
-                    if removable:
+                    if unsafe:
+                        assert row(report, target)['state'] == 'retained' and target.exists(), report
+                        result = subprocess.run(['git', '-C', str(repo), 'worktree', 'remove', str(target)], capture_output=True)
+                        assert result.returncode != 0 and target.exists(), (variant, result)
+                        if protected:
+                            assert protected.read_bytes() == protected_before, (variant, 'protected target bytes changed after enforcement')
+                    elif removable:
                         assert row(report, target)['state'] == 'removed' and not target.exists(), report
                         assert str(target) not in f.git(repo, 'worktree', 'list', '--porcelain')
                         assert 'task/TASK-1' in f.git(repo, 'branch', '--list')
@@ -6023,9 +6079,12 @@ def c48() -> dict[str, object]:
                         result = subprocess.run(['git', '-C', str(repo), 'worktree', 'remove', str(target)], capture_output=True)
                         assert result.returncode != 0 and target.exists(), (variant, result)
                     observations.append(dict(variant=variant, state=row(report, target)['state'],
-                                             reason=row(report, target).get('reason'), guard_detection=True))
+                                             reason=row(report, target).get('reason'), guard_detection=True,
+                                             setup_exit=0, violation_exit=violation_exit,
+                                             unsafe_exclude=unsafe, warning='WARNING: Could not exclude guard file' in setup,
+                                             protected_bytes_unchanged=(protected.read_bytes() == protected_before) if protected else None))
                 finally:
-                    if exclude.exists():
+                    if variant == 'unwritable':
                         exclude.chmod(0o644)
         except Exception as exc:
             failures.append(dict(variant=variant, error=type(exc).__name__ + ': ' + str(exc)[:3000]))
