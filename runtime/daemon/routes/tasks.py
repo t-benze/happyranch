@@ -17,6 +17,7 @@ from contextlib import ExitStack, contextmanager, nullcontext
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from fastapi import Depends, APIRouter, File, HTTPException, Query, Request, UploadFile, status
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
@@ -58,6 +59,9 @@ from runtime.orchestrator._paths import OrgPaths
 from runtime.orchestrator.escalation_reason import derive_current_escalation_reason
 from runtime.orchestrator.task_pause import assert_origin_unheld, origin_guard
 from runtime.orchestrator.task_wait_readers import ChildWaitBudget, derive_child_wait
+
+if TYPE_CHECKING:
+    from runtime.orchestrator.agent_def import AgentDef
 
 logger = logging.getLogger(__name__)
 
@@ -523,12 +527,12 @@ def _require_task_active(task_id: str, task: TaskRecord | None) -> None:
 
 
 def _task_to_dict(t: TaskRecord, org: OrgState, budget: ChildWaitBudget, origins: dict[str, dict]) -> dict:
+    """Serialize DB-derived fields; add the selection view after DB ownership."""
     # Wire convention: every other task-shaped response (submit POST, recall)
     # exposes the primary key as `task_id`; thread routes do the same via
     # their own helpers. Rename here so list + detail responses match.
     d = t.model_dump(exclude={"executor_pid"})
     d["task_id"] = d.pop("id")
-    d.update(_task_selection_view(t, org))
     d.update(origins[t.id])
     d["child_wait"] = derive_child_wait(org.db, t, budget)
     return d
@@ -539,13 +543,22 @@ def _task_to_dict(t: TaskRecord, org: OrgState, budget: ChildWaitBudget, origins
 MAX_OUTPUT_BYTES = 200 * 1024
 
 
-def _task_selection_view(task: TaskRecord, org: OrgState) -> dict:
+def _task_selection_view(
+    task: TaskRecord, org: OrgState, definitions: dict[str, AgentDef | None] | None = None,
+) -> dict:
+    """Read current agent defaults without DB ownership; cache per response only."""
     from runtime.orchestrator.task_selection import selection_view
     assigned = task.assigned_agent
     # Retained tasks may outlive their team in the current roster.
     if not assigned and org.teams is not None and task.team in org.teams.teams():
         assigned = org.teams.executable_manager_for_team(task.team)
-    definition = prompt_loader.load_agent(OrgPaths(root=org.root), assigned) if assigned else None
+    if definitions is None:
+        definitions = {}
+    definition = None
+    if assigned:
+        if assigned not in definitions:
+            definitions[assigned] = prompt_loader.load_agent(OrgPaths(root=org.root), assigned)
+        definition = definitions[assigned]
     return selection_view(task, definition)
 
 
@@ -837,10 +850,11 @@ def list_tasks(
             budget = ChildWaitBudget()
             origins = org.db.get_task_thread_origins([t.id for t in tasks])
             next_cursor = tasks[-1].id if len(tasks) == limit else None
-            return {
-                "tasks": [{**_task_to_dict(t, org, budget, origins), "pause": _pause_projection(org, t.id)} for t in tasks],
-                "next_cursor": next_cursor,
-            }
+            result_tasks = [{**_task_to_dict(t, org, budget, origins), "pause": _pause_projection(org, t.id)} for t in tasks]
+        definitions: dict[str, AgentDef | None] = {}
+        for task, data in zip(tasks, result_tasks):
+            data.update(_task_selection_view(task, org, definitions))
+        return {"tasks": result_tasks, "next_cursor": next_cursor}
     except (CensusReadUnavailable, TaskThreadOriginUnavailable) as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
@@ -882,10 +896,10 @@ def list_roots(
                 d["severity_rollup"] = getattr(t, '_severity_rollup', t.status.value)
                 d["direct_revisits"] = revisits_map.get(t.id, [])
                 result_tasks.append(d)
-            return {
-                "tasks": result_tasks,
-                "next_cursor": next_cursor,
-            }
+        definitions: dict[str, AgentDef | None] = {}
+        for task, data in zip(tasks, result_tasks):
+            data.update(_task_selection_view(task, org, definitions))
+        return {"tasks": result_tasks, "next_cursor": next_cursor}
     except (CensusReadUnavailable, TaskThreadOriginUnavailable) as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
@@ -992,7 +1006,7 @@ def get_task(task_id: str, org: OrgDep) -> dict:
                     break
 
             origins = org.db.get_task_thread_origins([task.id])
-            return {
+            result = {
                 "task": _task_to_dict(task, org, ChildWaitBudget(), origins),
                 "results": org.db.get_task_results(task_id),
                 "audit_log": audit_log,
@@ -1013,6 +1027,8 @@ def get_task(task_id: str, org: OrgDep) -> dict:
                 "work_status": derive_work_status(task, audit_log),
                 "pause": _pause_projection(org, task_id),
             }
+        result["task"].update(_task_selection_view(task, org))
+        return result
     except (CensusReadUnavailable, TaskThreadOriginUnavailable) as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 

@@ -3040,6 +3040,15 @@ Traps:
 
 ## Task selections and thread confirmation (THR-356)
 
+Task GET/list/roots gather task records and all DB-derived fields in their
+coherent read view, then release DB ownership before loading current agent
+defaults for the selection view. Each response loads each resolved agent at
+most once, including missing definitions. The captured task record supplies the
+override tuple and assigned agent even if the task is deleted or reassigned
+after the DB read. Retained tasks without an assigned agent still use the team's
+executable manager; a missing definition leaves unoverridden effective fields
+null. The selection keys and per-field source rules are unchanged.
+
 Ordinary manager handoffs accept optional `model` and `reasoning_effort` on
 `delegate`, each `then` leg, and each `fanout`/`parallel` child, including
 pipeline-carrier nested legs. PR1's resolver validates the whole decision
