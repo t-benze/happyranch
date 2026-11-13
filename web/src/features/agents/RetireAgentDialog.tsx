@@ -4,6 +4,10 @@
  * The daemon route is the only eligibility authority: the dialog states the
  * consequences, sends one request, and shows a refusal as the server gave it
  * while the agent stays active. No client-side eligibility rule lives here.
+ *
+ * A failure that is not a server refusal (no answer, a server fault, 404)
+ * leaves the outcome unknown, so the dialog re-reads the roster: an agent that
+ * is gone is treated as retired, and nothing is claimed if that read fails.
  */
 import { useRef, useState } from 'react';
 import {
@@ -15,7 +19,7 @@ import {
   DialogTitle,
 } from '@/design-system/primitives/Dialog';
 import { Button } from '@/design-system/primitives/Button';
-import { useRetireAgent } from '@/hooks/agents';
+import { useAgentsList, useRetireAgent } from '@/hooks/agents';
 import { useTranslation } from '@/hooks/i18n';
 import { classifyRetireError, renderAgentError, type RetireErrorView } from './strings';
 
@@ -38,28 +42,55 @@ export function RetireAgentDialog({
 }: RetireAgentDialogProps): JSX.Element {
   const { t } = useTranslation();
   const retire = useRetireAgent();
+  const roster = useAgentsList();
   const [error, setError] = useState<RetireErrorView | null>(null);
+  /** What is known about the agent after a failure; `unconfirmed` claims nothing. */
+  const [state, setState] = useState<'unchanged' | 'stillListed' | 'unconfirmed'>('unchanged');
+  // Covers the request and the roster check after an unknown outcome.
+  const [busy, setBusy] = useState(false);
+  const [checking, setChecking] = useState(false);
   // Synchronous latch: a second activation before React re-renders is dropped.
   const inFlight = useRef(false);
 
   const onConfirm = async () => {
     if (inFlight.current) return;
     inFlight.current = true;
+    setBusy(true);
     setError(null);
     try {
       await retire.mutateAsync({ agentName });
       onRetired(agentName);
     } catch (err: unknown) {
-      setError(classifyRetireError(err));
+      const view = classifyRetireError(err);
+      if (view.outcome === 'refused') {
+        setState('unchanged');
+        setError(view);
+        return;
+      }
+      // Unknown outcome: the request may have been applied. Settlement already
+      // dropped every earlier roster read, so this one is newer than the request.
+      setChecking(true);
+      const fresh = await roster.refetch().catch(() => null);
+      const listed = fresh === null || fresh.isError || fresh.data === undefined
+        ? null
+        : fresh.data.agents.some((a) => a.name === agentName);
+      if (listed === false) {
+        onRetired(agentName);
+        return;
+      }
+      setState(listed === null ? 'unconfirmed' : 'stillListed');
+      setError(view);
     } finally {
       inFlight.current = false;
+      setChecking(false);
+      setBusy(false);
     }
   };
 
   const hidden = error ? error.conflicts.length - SHOWN_CONFLICTS : 0;
 
   return (
-    <Dialog open onOpenChange={(open) => { if (!open && !retire.isPending) onClose(); }}>
+    <Dialog open onOpenChange={(open) => { if (!open && !busy) onClose(); }}>
       <DialogContent closeLabel={t('common.close')}>
         <DialogHeader>
           <DialogTitle>{t('agents.retire.title', { name: displayName })}</DialogTitle>
@@ -89,13 +120,17 @@ export function RetireAgentDialog({
             {error.code !== null && (
               <p className="text-text-secondary text-xs">{t('agents.retire.refusal.code', { code: error.code })}</p>
             )}
-            <p className="text-text-secondary text-xs">{t('agents.retire.refusal.unchanged')}</p>
+            <p className="text-text-secondary text-xs">
+              {state === 'unchanged' ? t('agents.retire.refusal.unchanged')
+                : state === 'stillListed' ? t('agents.retire.outcome.stillListed')
+                : t('agents.retire.outcome.unconfirmed')}
+            </p>
           </div>
         )}
         <DialogFooter>
-          <Button variant="ghost" onClick={onClose} disabled={retire.isPending}>{t('common.cancel')}</Button>
-          <Button variant="destructive" loading={retire.isPending} onClick={() => void onConfirm()}>
-            {retire.isPending ? t('agents.retire.pending') : t('agents.retire.confirm')}
+          <Button variant="ghost" onClick={onClose} disabled={busy}>{t('common.cancel')}</Button>
+          <Button variant="destructive" loading={busy} onClick={() => void onConfirm()}>
+            {checking ? t('agents.retire.checking') : busy ? t('agents.retire.pending') : t('agents.retire.confirm')}
           </Button>
         </DialogFooter>
       </DialogContent>

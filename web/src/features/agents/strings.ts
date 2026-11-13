@@ -88,13 +88,20 @@ export interface RetireErrorView {
   members: string[];
   /** Server code, when the headline does not already show it. */
   code: string | null;
+  /**
+   * `refused`: the server answered and declined, so the agent is unchanged.
+   * `unknown`: no answer, a server fault, or 404 (the agent may already be
+   * retired) — only a fresh roster read says whether the agent is still active.
+   */
+  outcome: 'refused' | 'unknown';
 }
 
 const text = (value: unknown): string | null =>
   typeof value === 'string' && value.trim() !== '' ? value : null;
 
 export function classifyRetireError(err: unknown): RetireErrorView {
-  const source = (err ?? {}) as { code?: unknown; detail?: unknown };
+  const source = (err ?? {}) as { code?: unknown; detail?: unknown; status?: unknown };
+  const status = typeof source.status === 'number' ? source.status : null;
   const detail = (source.detail !== null && typeof source.detail === 'object' ? source.detail : {}) as {
     message?: unknown; reason?: unknown; conflicts?: unknown; members?: unknown;
   };
@@ -119,5 +126,6 @@ export function classifyRetireError(err: unknown): RetireErrorView {
     conflicts,
     members,
     code: known || message !== null ? code : null,
+    outcome: status !== null && status >= 400 && status < 500 && status !== 404 ? 'refused' : 'unknown',
   };
 }

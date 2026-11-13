@@ -233,11 +233,21 @@ export const realAgentsApi: AgentsApi = {
       onSettled: (_receipt, _error, { agentName }) => {
         // Active roster, teams (an emptied manager team is removed), the
         // identity list behind the Terminated tab, and the retained source.
-        qc.invalidateQueries({ queryKey: ['agents', slug] });
-        qc.invalidateQueries({ queryKey: ['teams', slug] });
-        qc.invalidateQueries({ queryKey: ['agent-enrollments', slug] });
-        qc.invalidateQueries({ queryKey: ['identities', slug] });
-        qc.invalidateQueries({ queryKey: ['knowledge', slug, 'retired', agentName] });
+        const affected = [
+          ['agents', slug],
+          ['teams', slug],
+          ['agent-enrollments', slug],
+          ['identities', slug],
+          ['knowledge', slug, 'retired', agentName],
+        ];
+        for (const queryKey of affected) {
+          // A read still in flight may have captured the registry before the
+          // retirement. invalidateQueries alone would join a first load (no
+          // cached data yet) and store its late result as fresh, so drop every
+          // in-flight read first; the invalidation then starts a new one.
+          void qc.cancelQueries({ queryKey });
+          void qc.invalidateQueries({ queryKey });
+        }
       },
     });
   },

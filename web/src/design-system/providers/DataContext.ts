@@ -391,7 +391,11 @@ export interface AgentsApi {
     { slug: string; agentName: string }, import('@/lib/api/types').AgentSummary | undefined
   >;
   useAgentsList: () => QueryLike<{ agents: import('@/lib/api/agents').AgentSummary[] }> & {
-    refetch: () => Promise<unknown>;
+    /** Resolves with the settled read: `isError` is true when this read failed. */
+    refetch: () => Promise<{
+      data: { agents: import('@/lib/api/agents').AgentSummary[] } | undefined;
+      isError: boolean;
+    }>;
   };
   /** Pending enrollments — `status` filter narrows the file scan. */
   useEnrollmentsList: (
