@@ -5180,7 +5180,7 @@ def c41():
                 limits='Pointers, HEAD and all stat censuses retained; full Step3 topology/native/mount race proof unfinished')
 
 
-def c42():
+def c42(*, native: bool = False) -> dict:
     """Current ownership after the last scan/comparison/remove/repair census."""
     variants = {
         'task_reopened': ("UPDATE tasks SET status='in_progress' WHERE id='TASK-2'", "UPDATE tasks SET status='completed' WHERE id='TASK-2'", 'task_or_root_not_terminal:in_progress'),
@@ -5190,6 +5190,79 @@ def c42():
         'job_status_unknown': ("UPDATE jobs SET status='unrecognised'", "UPDATE jobs SET status='completed'", 'unknown_job_status'),
         'job_ancestry_unknown': ("INSERT INTO jobs VALUES('missing','running')", "DELETE FROM jobs WHERE status='running'", 'unknown_missing_or_cyclic_lineage'),
     }
+    if native:
+        variants = {label: (None, None, reason) for label, reason in (
+            ('writer_settled', 'team_move_cleanup_owner_unavailable'),
+            ('writer_unknown', 'team_move_cleanup_owner_unavailable'),
+            ('writer_replaced', 'team_move_cleanup_owner_unavailable'),
+            ('native_hold', 'team_move_native_held'))}
+
+    def native_state(f: Fixture, label: str) -> tuple:
+        # Canonical shipping schema and actual persistent native readers/writers.
+        # All identities/admission below are synthetic validator data; no route,
+        # runtime owner, service or live org is invoked or authorized.
+        import hashlib
+        import threading
+        import runtime.infrastructure.database  # noqa: F401
+        from runtime.infrastructure.db.audit import AuditMixin
+        from runtime.infrastructure.producer_admission import NativeWriterLifecycle, NativeWriterStore
+        from runtime.infrastructure.team_move_store import (TEAM_MOVE_SCHEMA_SQL, Diagnostic, FounderAdmission,
+                                                            Phase, TeamMoveStore, validate_team_move_schema)
+        f.db.row_factory = sqlite3.Row
+        f.db.execute(TEAM_MOVE_SCHEMA_SQL); f.db.commit()
+        class Audit(AuditMixin):
+            def __init__(self) -> None:
+                self._conn, self._lock = f.db, threading.RLock()
+        db = Audit()
+        store = NativeWriterStore(db, f.org.name)
+        initial = NativeWriterLifecycle(org_slug=f.org.name, writer_id='synthetic-disk-sweep', publisher='disk_sweep')
+        store.save_uncommitted(initial); f.db.commit()
+        saved_audit = [tuple(row) for row in f.db.execute("SELECT * FROM audit_log WHERE action='team_move_native_writer' ORDER BY id")]
+        hold = {}
+        def change() -> None:
+            if label == 'native_hold':
+                z = '0' * 64
+                expected = {n + '_digest': z for n in ('canonical', 'roster', 'naming', 'profile', 'dependency', 'policy', 'skill_selection', 'permission')}
+                expected.update(authority_namespace='synthetic', authority_generation=1, authority_digest=z, agent_revisions=[z, z])
+                identity = dict(device=0, inode=1, mode=448)
+                empty_digest = hashlib.sha256(b'').hexdigest()
+                request = dict(version=1, org_slug=f.org.name, source_team='consultant', target_team='default',
+                    target_principal='founder', affected_agents=['consultant_codex', 'consultant_head'], demote='consultant_head',
+                    retire_source=True, drain_threads=False, expected=expected,
+                    files=[dict(path=p, identity=identity, before_base64='', before_digest=empty_digest,
+                                after_base64='', after_digest=empty_digest) for p in
+                           ('org/agents/consultant_codex.md', 'org/agents/consultant_head.md', 'org/teams.yaml')],
+                    workspaces=[dict(agent_id=a, path=str(f.base / 'synthetic-workspaces' / a), identity=identity)
+                                for a in ('consultant_codex', 'consultant_head')])
+                hold.update(TeamMoveStore(db, f.org.name).reserve(operation_key='synthetic-only',
+                    request_bytes=json.dumps(request, sort_keys=True, separators=(',', ':')).encode(),
+                    admission=FounderAdmission(principal='founder', boundary='_require_human', org_slug=f.org.name,
+                                               admission_id='synthetic-validator-data', admitted_at='2026-11-13T00:00:00+00:00')))
+            elif label == 'writer_replaced':
+                f.db.execute("DELETE FROM audit_log WHERE action='team_move_native_writer'")
+                store.save_uncommitted(initial.model_copy(update={'writer_id': 'synthetic-replacement'})); f.db.commit()
+            else:
+                store.save_uncommitted(initial.model_copy(update={'state': 'settled' if label == 'writer_settled' else 'unknown'}))
+                f.db.commit()
+            assert validate_team_move_schema(f.db, org_slug=f.org.name)
+            current = store.history_uncommitted()
+            if label == 'writer_replaced': assert initial.writer_id not in current and 'synthetic-replacement' in current
+            elif label != 'native_hold': assert current[initial.writer_id].state == ('settled' if label == 'writer_settled' else 'unknown')
+        def heal() -> None:
+            if label == 'native_hold':
+                TeamMoveStore(db, f.org.name).transition(hold['operation_id'], expected_revision=1,
+                    phase=Phase.ABANDONED, diagnostic=Diagnostic(code='synthetic-release'))
+            else:
+                # Fixture-only snapshot restoration. An ended native writer
+                # cannot reopen; this grants no production settlement/recovery.
+                f.db.execute("DELETE FROM audit_log WHERE action='team_move_native_writer'")
+                f.db.executemany('INSERT INTO audit_log(id,task_id,agent,action,payload,timestamp) VALUES(?,?,?,?,?,?)', saved_audit)
+                f.db.commit()
+                assert [tuple(row) for row in f.db.execute("SELECT * FROM audit_log WHERE action='team_move_native_writer' ORDER BY id")] == saved_audit
+            assert validate_team_move_schema(f.db, org_slug=f.org.name)
+            assert store.history_uncommitted()[initial.writer_id] == initial
+        return initial.writer_id, change, heal
+
     old = ownership_base()
     observations, failures = [], []
     for phase in ('scratch', 'worktree'):
@@ -5210,6 +5283,7 @@ def c42():
                                 repo, path = f.worktree('TASK-2')
                                 f.db.execute("UPDATE tasks SET parent_task_id='TASK-1' WHERE id='TASK-2'")
                             f.db.execute("INSERT INTO jobs VALUES('TASK-3','completed')"); f.db.commit()
+                            writer_id, change_native, heal_native = native_state(f, label) if native else (None, None, None)
                             before = candidate_contents(path)
                             refs = f.git(repo, 'show-ref') if repo else None
                             events, actions, result = [], [], {}
@@ -5218,7 +5292,9 @@ def c42():
                             original_admit, original_rows = module.admit, module.registrations
                             original_git, original_mutate = module.git, module.mutate
                             def change():
-                                f.db.execute(sql); f.db.commit(); events.append('changed_after_' + boundary)
+                                if native: change_native()
+                                else: f.db.execute(sql); f.db.commit()
+                                events.append('changed_after_' + boundary)
                             def snapshot(root, deadline, **kwargs):
                                 tree = original_snapshot(root, deadline, **kwargs)
                                 if Path(root) == path:
@@ -5258,14 +5334,15 @@ def c42():
                                     assert target.get('reason') == expected, (name, target)
                                     # Heal the real synthetic row. A new current read
                                     # passes, but the night's decision cannot retry.
-                                    f.db.execute(heal); f.db.commit()
-                                    module.Evidence(f.org, time.monotonic() + 5).ownership(path, f.workspace, path.name)
+                                    if native: heal_native()
+                                    else: f.db.execute(heal); f.db.commit()
+                                    module.Evidence(f.org, time.monotonic() + 5, writer_id=writer_id, writing=native).ownership(path, f.workspace, path.name)
                                     events.append('healed_after_refusal')
                             with patch.object(module, 'snapshot', snapshot), patch.object(module, 'trees_equal', equal), \
                                     patch.object(module, 'admit', admit), patch.object(module, 'registrations', registrations), \
                                     patch.object(module, 'git', git), patch.object(module, 'mutate', mutate):
                                 report = module.sweep_org(f.org, time.monotonic() + 20, mode='on', now=NOW,
-                                                          result=result, checkpoint=checkpoint)
+                                                          result=result, checkpoint=checkpoint, writer_id=writer_id)
                             target = row(report, path)
                             if module is old:
                                 if boundary == 'repair_census':
@@ -5289,7 +5366,7 @@ def c42():
                                 deadline = time.monotonic() + 10
                                 candidate = dict(phase=phase, path=str(path), workspace=str(f.workspace))
                                 if repo: candidate['repo'] = str(repo)
-                                module.admit(candidate, module.Evidence(f.org, deadline), deadline, now=NOW)
+                                module.admit(candidate, module.Evidence(f.org, deadline, writer_id=writer_id, writing=native), deadline, now=NOW)
                                 assert row(report, path)['state'] == target['state']
                             decisions.append(dict(state=target['state'], reason=target.get('reason'), actions=actions, events=events))
                     observations.append(dict(variant=name, result='PASS', base=decisions[0], new=decisions[1]))
@@ -5297,9 +5374,10 @@ def c42():
                     failures.append(dict(variant=name, error=str(exc)[:2000]))
     assert not failures, dict(passed=observations, failures=failures)
     return dict(variants=observations, equivalence_differences=[
-        'Late ownership races: base removes, or attempts permission repair at repair_census; current refuses after last observations. '
+        ('Late native writer/hold races: ' if native else 'Late task/job ownership races: ') +
+        'base removes, or attempts permission repair at repair_census; current refuses after last observations. '
         'Before any remove it is retained; after first attempted Git remove it remains partial_or_unknown under existing classification.'],
-        limits='Actual disposable SQLite/Git/filesystem; synthetic no-effect first Git refusal only for repair/retry entry; native holds are separate')
+        limits='Actual disposable SQLite/Git/filesystem/native records; synthetic no-effect first Git refusal only for repair/retry entry. Native audit snapshot restoration is fixture-only, never reopening authority.')
 
 
 def c43():
@@ -5395,12 +5473,17 @@ def c43():
                 limits='Scratch base lacks the cheap-root healing boundary; no identical dynamic-history claim there. Cheap root age only; an old root still needs every current recursive admission. C40 owns later age races.')
 
 
+def c44() -> dict:
+    """Installed native writer and hold changes after slow work stay latched."""
+    return c42(native=True)
+
+
 if __name__=='__main__':
     parser=argparse.ArgumentParser(description=__doc__)
     selection=parser.add_mutually_exclusive_group()
     selection.add_argument('--corrections-only', action='store_true', help='THR307seq117/134: C1-C7, S1-S5 (8-12) and per-org settlement (13); no historical/isolation cases')
     selection.add_argument('--correction-cases', type=int, nargs='+', choices=range(1, 14), help='select finite cases within the corrections lane')
-    selection.add_argument('--cases',type=int,nargs='+',choices=range(1,44))
+    selection.add_argument('--cases',type=int,nargs='+',choices=range(1,45))
     selection.add_argument('--isolation-case',choices=('mount','root'),help='only the private executable namespace fixture; exit77 if unavailable')
     args=parser.parse_args()
     # The private helper alone is mapped root; the driver retains its ordinary
@@ -5433,7 +5516,8 @@ if __name__=='__main__':
             purposes += ('Candidate-scoped auxiliary reads with exhaustive fresh topology',)
             purposes += ('Current ownership at final scan remove repair retry boundaries',)
             purposes += ('Cheap recent-root keep ordering and healed refusal latch',)
-            for number,(fn,purpose) in enumerate(zip((c1,c2,c3,c4,c5,c6,c7,c8,c9,c10,c11,c12,c13,c14,c15,c16,c17,c18,c19,c20,c21,c22,c23,c24,c25,c26,c27,c28,c29,c30,c31,c32,c33,c34,c35,c36,c37,c38,c39,c40,c41,c42,c43),purposes),1):
+            purposes += ('Fresh native writer and hold at final effect boundaries',)
+            for number,(fn,purpose) in enumerate(zip((c1,c2,c3,c4,c5,c6,c7,c8,c9,c10,c11,c12,c13,c14,c15,c16,c17,c18,c19,c20,c21,c22,c23,c24,c25,c26,c27,c28,c29,c30,c31,c32,c33,c34,c35,c36,c37,c38,c39,c40,c41,c42,c43,c44),purposes),1):
                 if args.cases is None or number in args.cases:
                     if number in (3, 4):
                         RESULTS.append(dict(case=number, purpose=purpose, result='SUPERSEDED', reason='THR307 seq117 removed OS-process eligibility; historical source not executed'))
