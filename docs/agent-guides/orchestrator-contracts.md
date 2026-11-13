@@ -2162,6 +2162,8 @@ Frozen daemons invoke the fixed hidden `--cleanup-helper worktree-safety` and
 post-action checks. Source installs keep the existing Python script argv. The
 dispatch executes the same bundled scripts before daemon startup; unavailable
 scanner evidence still retains and never grants removal (Darwin scanner is S4).
+The same closed dispatcher supports `repository-git`/`repository-reader` in daemon
+and CLI (see [runtime configuration](runtime-and-configuration.md#frozen-cleanup-helpers-thr-346-s3)).
 
 The release-bundled `workspace-cleanup/scripts/worktree_safety.py` is the shared
 Git preservation, recursive snapshot and protected-identity owner for the root

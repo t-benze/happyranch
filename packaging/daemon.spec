@@ -43,7 +43,11 @@ _common_analysis_kwargs = dict(
     # memory_collection hashes MemoryStore.render_memory_digest at import.
     # Keep this module's source beside the frozen loader path in BOTH lanes,
     # while retaining the ordinary PYZ bytecode/import behavior.
-    module_collection_mode={'runtime.infrastructure.learnings_store': 'pyz+py'},
+    module_collection_mode={
+        'runtime.infrastructure.learnings_store': 'pyz+py',
+        # Fixed run_path entry preserves the pre-import child resource limits.
+        'runtime.workflows.repository_artifact_objects': 'pyz+py',
+    },
     binaries=[],
     datas=[
         *_runtime_data,
@@ -65,6 +69,7 @@ _common_analysis_kwargs = dict(
         # Fixed cleanup entry; worktree scripts already travel in _runtime_data
         # via the wheel's runtime/skills/bundled force-include inventory.
         'runtime.daemon.cleanup_helpers',
+        'runtime.workflows.repository_artifact_objects',
         'runtime.daemon.disk_sweeper',
         'runtime.orchestrator.run_step',
         'runtime.orchestrator.fanout',

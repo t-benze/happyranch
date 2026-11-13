@@ -31,11 +31,18 @@ after the private install. The spec uses standard Analysis/PYZ/EXE/COLLECT, sepa
 daemon+CLI archives and collision-checked shared data/native inputs.
 
 Both Analysis lanes select standard `module_collection_mode` `pyz+py` only for
-`runtime.infrastructure.learnings_store`. This retains its ordinary PYZ bytecode
+`runtime.infrastructure.learnings_store` and
+`runtime.workflows.repository_artifact_objects`. The former retains its ordinary
+PYZ bytecode
 and actual source at `_internal/runtime/infrastructure/learnings_store.py`, where
 the frozen loader can supply `inspect.getsource(MemoryStore.render_memory_digest)`
-for the existing import-time renderer digest. Other modules keep their existing
-collection modes. Frozen `--help` remains a required native check; source retention
+for the existing import-time renderer digest. The repository module's fixed shipped
+source lets the closed helper dispatcher apply child limits before product imports;
+both binaries accept `--cleanup-helper repository-git ...` and
+`--cleanup-helper repository-reader ...`. See the
+[exact child protocol](../docs/agent-guides/runtime-and-configuration.md#frozen-cleanup-helpers-thr-346-s3).
+Other modules keep their existing collection modes.
+Frozen `--help` remains a required native check; source retention
 alone does not qualify later memory-collection identity or refusal diagnostics.
 
 The existing Darwin PyInstaller6.21.0 wheel remains pinned with its original
