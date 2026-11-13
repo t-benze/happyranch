@@ -6,6 +6,79 @@
 > do not describe the whole current managed lane. Historical evidence remains
 > historical, and every unexecuted acceptance obligation stays explicit.
 
+## macOS connector lifecycle slice (THR-360, C1+C2)
+
+The source `happyranch-connector` CLI selects systemd on Linux and a per-user
+LaunchAgent on macOS. Other platforms refuse service management with `error:`
+and a nonzero exit. Linux unit rendering, dedicated-account installation,
+systemctl argv and service-error text stay unchanged. Lifecycle errors, including
+missing systemctl, now reach the CLI error boundary without a traceback.
+
+On macOS the founder's own user owns
+`~/Library/LaunchAgents/ai.happyranch.connector.plist`; no admin, sudo or
+system-wide LaunchDaemon is used. The existing `system` setting must be false.
+The default Linux unit name maps to this fixed label; an explicit custom
+reverse-DNS `unit_name` selects an independent agent. `ProgramArguments` contains
+an absolute executable and the source config path (or explicit `exec_start`);
+no config contents, token, bearer or credential environment is embedded.
+Custom argv must also contain no secrets. Stdout/stderr go to
+`~/Library/Logs/HappyRanch/<label>.{stdout,stderr}.log`. This slice installs the
+service definition only: it does not stage or migrate credentials, policy or
+trust state. The source config must remain available. Frozen-app entry dispatch
+and paths that survive bundle moves/updates remain pending.
+
+The backend probes `gui/<current uid>` first. Only an explicit missing-domain
+response permits `user/<current uid>` fallback for a headless login. That domain
+is checked and pinned for the operation; unavailable/refused domains and failed
+launchctl commands return errors, without admin fallback. A headless user-domain
+service lasts only as long as that user domain; this does not establish boot or
+logged-out persistence. Login autoload of `~/Library/LaunchAgents` is a GUI-login
+mechanism; headless start requires an existing user domain and explicit start.
+
+- `install` round-trips the plist through stdlib `plistlib` before writing an
+  owner-only file; replacing a plist first creates an owner-only backup under
+  `LaunchAgents/backups`. Installation does not bootstrap/start the process.
+  `enable`/`disable` use launchctl's service-target overrides and do not stop a
+  loaded process. `install --no-enable` leaves existing enablement unchanged;
+  a fresh plist defaults to disabled, so it does not autostart at login.
+- `start` bootstraps an unloaded agent or kickstarts a loaded agent. A manual
+  start of a disabled agent temporarily enables it for bootstrap and restores
+  its disabled override, preserving the absence of login autostart.
+  `restart` uses `kickstart -k` and requires an already loaded agent.
+- `KeepAlive=true` recovers after every process exit, including SIGKILL and exit
+  zero; `ThrottleInterval=10` limits repeated rapid launches. `stop` bootouts the
+  service and confirms it is unloaded, so KeepAlive cannot undo the stop.
+  `uninstall` bootouts, disables and removes the plist, and is idempotent when
+  already absent. launchd may retain the label's disabled override; uninstall
+  does not edit launchd's private preference database or remove logs/backups.
+- `status` parses top-level `launchctl print` state/PID/last-exit information
+  into `ServiceStatus`, with macOS-only nullable `last_exit_code` and
+  `last_exit_signal`. An installed/unloaded service differs from a missing
+  plist; permission/domain errors never count as absence. Exit observations
+  disappear after bootout. A running PID proves process state only, never
+  listener readiness. Unknown print shapes refuse rather than invent state.
+- `upgrade` backs up and replaces the plist, then bootouts/bootstraps so launchd
+  rereads the new definition. Failed startup attempts restore the backup and
+  verify recovery; explicit `rollback` restores the latest backup and likewise
+  verifies a running process. This is process verification, not readiness.
+
+`run` already tolerates absent `NOTIFY_SOCKET` (notification returns false and
+is not required to enter the foreground loop). Darwin-specific readiness
+publication, startup deadlines and watchdog integration are **pending PR 2**;
+this slice claims none. macOS credential handling, managed installer, sidecar
+build/readiness, signing, app bundling, Swift coexistence and packaged-app
+acceptance also remain pending. The Swift in-app HomeConnector is untouched;
+never enable both listeners together.
+
+Native evidence is supplied by the `connector-launchd` Mac-mini suite for QA:
+a unique harmless `/bin/sleep` agent, install/start/running PID, SIGKILL/new PID,
+stop/unloaded, uninstall/absent, and cleanup receipts. It uses no connector
+network listener or token and records the actual launchd domain. Source/fake
+coverage is not native acceptance, and no native job is run by the maker.
+
+References: Apple's [LaunchAgent guide](https://developer.apple.com/library/archive/documentation/MacOSX/Conceptual/BPSystemStartup/Chapters/CreatingLaunchdJobs.html)
+and [launchd plist manual](https://github.com/apple-oss-distributions/launchd/blob/main/man/launchd.plist.5).
+
 - **Generic remote jobs S1 contracts + dark S2 persistence.** `runtime/remote_jobs/` contains
   strict immutable v1 models, canonical UTF-8 JSON/SHA-256 helpers, whole-job
   bundle validation, the corrected four-part pre-run reuse identity, and the

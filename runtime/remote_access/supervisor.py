@@ -75,7 +75,8 @@ from runtime.remote_access.readiness import ConnectorReadiness, ReadinessReport
 from runtime.remote_access.service_manager import (
     ServiceManagerError,
     ServiceStatus,
-    SystemdServiceManager,
+    ServiceManager,
+    service_manager,
     UpgradeOutcome,
 )
 from runtime.remote_access.state import TrustStateStore
@@ -240,7 +241,8 @@ class ConnectorSupervisor:
         self,
         *,
         config: ConnectorConfig,
-        manager: SystemdServiceManager | None = None,
+        manager: ServiceManager | None = None,
+        config_path: Path | None = None,
         state_store: TrustStateStore | None = None,
         policy: RoutePolicyConsumer | None = None,
         readiness: ConnectorReadiness | None = None,
@@ -250,6 +252,7 @@ class ConnectorSupervisor:
     ) -> None:
         self.config = config
         self._manager = manager
+        self._config_path = config_path
         self._state_store = state_store
         self._policy = policy
         self._readiness = readiness
@@ -275,9 +278,9 @@ class ConnectorSupervisor:
     # ── construction helpers (CLI path) ───────────────────────────────────
 
     @property
-    def manager(self) -> SystemdServiceManager:
+    def manager(self) -> ServiceManager:
         if self._manager is None:
-            self._manager = SystemdServiceManager(system=self.config.system)
+            self._manager = service_manager(system=self.config.system)
         return self._manager
 
     @property
@@ -674,6 +677,28 @@ class ConnectorSupervisor:
             managed_dir_root=cfg.managed_dir_root,
         )
 
+    def _launch_agent_text(self) -> str:
+        """Source CLI lifecycle only; credential/state installer and bundle entry are later slices."""
+        from runtime.remote_access.launchd_agent import render_launch_agent
+
+        if self.config.system:
+            raise ServiceManagerError("macOS connector requires a per-user LaunchAgent (system=false)")
+        args = self.config.exec_start
+        if args is None:
+            if getattr(sys, "frozen", False):
+                raise ServiceManagerError("bundled macOS connector entry point is not available yet")
+            if self._config_path is None:
+                raise ServiceManagerError("macOS install requires the source config path or explicit exec_start")
+            args = (sys.executable, "-m", "runtime.remote_access.cli", "run",
+                    "--config", str(self._config_path.resolve()))
+            if self.config.lab is not None:
+                args += ("--lab-only",)
+            if self.config.diy is not None:
+                args += ("--diy",)
+            if self.config.managed is not None:
+                args += ("--managed",)
+        return render_launch_agent(self.config.unit_name, tuple(args))
+
     def install(self, *, enable: bool = True) -> Path:
         """Stage config/state/policy into the declared managed directories and
         install the rendered unit. The source trust state is only an initial
@@ -683,6 +708,11 @@ class ConnectorSupervisor:
         reinstall/upgrade-recovery), refuses same-generation conflicts, and
         stages any monotonic advance transactionally. A corrupt or partial
         source state refuses installation (fail closed)."""
+        if sys.platform == "darwin":
+            return self.manager.install(self._launch_agent_text(), self.config.unit_name, enable=enable)
+        # Select before staging so unsupported hosts refuse without writing files.
+        if sys.platform != "linux":
+            self.manager
         managed = self._managed_config()
         return self._install_managed(managed, enable=enable)
 
@@ -880,6 +910,10 @@ class ConnectorSupervisor:
         return self.manager.status(self.config.unit_name)
 
     def upgrade(self, *, verify_start: bool = True) -> UpgradeOutcome:
+        if sys.platform == "darwin":
+            return self.manager.upgrade(
+                self._launch_agent_text(), self.config.unit_name, verify_start=verify_start
+            )
         return self.manager.upgrade(
             render_connector_unit(self.unit_spec()), self.config.unit_name, verify_start=verify_start
         )

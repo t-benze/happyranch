@@ -600,3 +600,49 @@ JOB-6610/6615/6618; premerge JOB-6641/6643/6644/6647; JOB-6699 and JOB-6722.
 No allowance is replenished.
 
 Custody boundary (engineering_manager TASK-15621): the no-raw-address/PID/tuple/payload rule applies to the packet-proof and capture-diagnostic public fields. The pre-existing reviewed pairs handoff payload synthetic tailnet address and VM service journal metadata are existing public surfaces and are outside that assertion; credentials, enrollment/pairing material and raw capture lines remain forbidden everywhere.
+
+
+## 20. macOS home lifecycle foundation (THR-360 C1+C2)
+
+The per-user LaunchAgent lifecycle foundation is implemented in
+`runtime/remote_access/launchd_agent.py` behind the service-manager protocol.
+The maintained [macOS lifecycle contract](../../agent-guides/contracts/remote-access-and-remote-jobs.md#macos-connector-lifecycle-slice-thr-360-c1c2)
+defines paths, domain selection, CLI behavior and residual work. This additive
+section narrows the historical macOS-home future-work entry: source service
+management exists; macOS-home conformance and production readiness do not.
+
+The founder's own macOS user owns the LaunchAgent, without admin or a
+LaunchDaemon. The fixed default label is `ai.happyranch.connector`, under
+`~/Library/LaunchAgents`, with owner-only plist/backup files and user Library
+logs. `plistlib` round-trip validates syntax before replacement. Arguments
+reference the source config without copying credentials into the plist. Linux
+continues using its existing systemd backend, argv, units and dedicated account.
+All CLI lifecycle service-manager failures now print `error:` and exit nonzero.
+
+The manager prefers `gui/<uid>` and tries `user/<uid>` only after an explicit
+missing GUI-domain response; refusal of the selected domain is an error.
+Headless operation requires that user domain to exist; boot/logged-out
+persistence is unproven. Install enables login startup unless `--no-enable`
+preserves the existing setting (fresh plist disabled); it does not start.
+Start bootstraps or kickstarts while preserving prior disablement, restart
+uses `kickstart -k` on a loaded service, stop bootouts, and uninstall bootouts,
+disables and removes the plist idempotently. Enable/disable alone do not stop
+an existing process. `KeepAlive=true` recovers on every exit; the ten-second
+throttle limits rapid retries. Upgrade/rollback reread replaced plists through
+bootout/bootstrap, back up owner-only files and verify process recovery.
+
+Status reports loaded/running/PID and nullable last-exit code/signal from
+launchctl; absent, unloaded and inaccessible are distinct. Running is not
+readiness. Existing foreground notification already degrades without systemd,
+but macOS readiness/watchdog publication is pending PR 2. Credentials and
+state layout, the per-user managed installer, Darwin sidecar and readiness,
+signing, frozen entry/bundling, Swift coexistence and packaged-app acceptance
+remain future work. No change to Swift HomeConnector is included.
+
+The source-only `connector-launchd` native suite uses a unique harmless sleep
+program, not the real connector: install, start and PID, SIGKILL and replacement
+PID, stop/unloaded, uninstall/absent, plus guaranteed cleanup attempts and
+explicit incomplete-cleanup errors. It records the actual domain. QA owns
+execution on the existing Mac-mini job; no new job or trigger is introduced.
+Neither fake-runner tests nor this stand-in prove network, credentials,
+readiness, sidecar, installer or packaged-app acceptance.

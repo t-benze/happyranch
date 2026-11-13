@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[2]
-SUITES = ("truth", "teardown", "disk-sweep", "cleanup-helpers", "case-safety", "inode-telemetry", "supervisor", "repo-refresh", "cleanup-process-use")
+SUITES = ("truth", "teardown", "disk-sweep", "cleanup-helpers", "case-safety", "inode-telemetry", "supervisor", "repo-refresh", "cleanup-process-use", "connector-launchd")
 PROC_PIDTBSDINFO = 3
 
 
@@ -1431,7 +1431,12 @@ def main() -> int:
         signal.signal(signal.SIGTERM, interrupt)
         signal.signal(signal.SIGINT, interrupt)
         try:
-            if args.suite == 'cleanup-helpers':
+            if args.suite == 'connector-launchd':
+                sys.path.insert(0, str(ROOT))
+                from scripts.mac_native.suite_connector_launchd import run as connector_launchd
+
+                connector_launchd(report)
+            elif args.suite == 'cleanup-helpers':
                 cleanup_helpers(report, args.frozen_daemon)
             elif args.suite == 'case-safety':
                 sys.path.insert(0, str(ROOT))

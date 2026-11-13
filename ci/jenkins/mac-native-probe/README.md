@@ -3,7 +3,8 @@
 `happyranch-mac-native-probe` is the **one** new job authorized by Founder
 THR-346 msg6 (root TASK-15047, S0 TASK-15050). It observes Darwin prerequisites
 for the frozen Mac app. S0 does not build the app, run a daemon, fix runtime
-code, install tools, or change the host. Connector/launchd work is excluded.
+code, install tools, or change the host. The later explicitly authorized
+connector-launchd suite below permits its bounded stand-in LaunchAgent lifecycle.
 
 The job already exists. Founder THR-346 msg20 authorizes updating that **same**
 job only from a reviewed and merged `config.xml.in`. The engineering manager or
@@ -515,3 +516,56 @@ absence verified before fixture disposal; cleanup uncertainty exits nonzero.
 Admitted kernel I/O is not hard-preemptible. Native execution is a separate
 manager-owned leg: PR1 used1/3 (build14), PR2 receives execution2, one
 held diagnosed correction; source changes never replenish or submit that budget.
+
+
+## Connector LaunchAgent lifecycle (`SUITE=connector-launchd`, THR-360 C1+C2)
+
+QA may select this source suite at the reviewed exact `SOURCE_SHA` using the
+existing string parameter. Do not change the Jenkins config. The maker does
+not run this job. PR 1 has at most two native runs: the second is permitted
+only for an infrastructure failure in the first, never a code failure.
+
+The suite calls the real `LaunchdServiceManager` with a unique UUID label
+`ai.happyranch.connector-probe-<uuid>` and `/bin/sleep 300`. It writes a
+per-user plist under the job's private HOME `Library/LaunchAgents` and directs
+empty stand-in stdout/stderr to private scratch. It uses no network, daemon,
+real connector, token, sudo or installed tool. The selected domain is the
+actual OS user's `gui/<uid>`, or existing `user/<uid>` after an explicit absent
+GUI domain; it is recorded as `connector_launchd.domain`. Bootstrap refusal
+is a failure, not a skipped/pass result or reason to escalate privileges.
+
+Checks: unique target absent -> install -> start -> running/PID -> SIGKILL
+that PID -> new running PID via KeepAlive -> stop -> unloaded/not running ->
+uninstall -> absent. The suite has a 90-second observation deadline, command
+timeouts clipped to that deadline, 30-second start/recovery windows and a
+15-second reserve. launchctl observations are streamed with a 1MiB cap; the JSON
+contains only fixed checks, numbers, domain, label and cleanup facts. The sleep
+process writes nothing, so it cannot fill a log or reach the per-file cap.
+
+A finally block always attempts bootout and checks absence, then removes only
+that UUID plist, including on catchable interruption/failure. Cleanup starts only
+after initial target absence was proven, so a pre-existing collision is preserved. Cleanup commands
+have independent five-second deadlines plus at most three seconds each
+for command-group reaping (up to sixteen seconds beyond the observation deadline). Incomplete cleanup fails the probe and records the partial receipt;
+SIGKILL/host loss still cannot promise cleanup. launchctl may keep the label's
+disabled override after uninstall; no private launchd database is edited.
+Temp logs/scratch are removed by the owning temporary-directory context.
+This stays within the existing 30-minute job and per-file/log caps.
+
+`probe.json` includes `connector_launchd.checks`, the actual domain/PIDs and
+`cleanup.service_absent`, `cleanup.plist_absent`, `cleanup.bootout_exit`, plus
+scratch removal. Nonzero bootout is expected if already uninstalled, but only
+a service-not-found print response proves absence. A successful stand-in proves
+LaunchAgent lifecycle/recovery only, not connector readiness, credentials,
+installer, sidecar, bundling, signing or packaged-app acceptance.
+
+Focused fake-runner tests (outside the retired Python suite):
+
+```sh
+python -B -m unittest scripts.mac_native.test_connector_launchd -v
+```
+
+They observe plist/backup contents, modes, exact launchctl/systemctl argv,
+platform refusal, real-shaped diagnostic parsing and clean CLI error output.
+They do not contact a real service manager. Existing systemd integration tests
+remain unchanged and SKIPPED under THR-243 seq42; no retired unit suite is run.
