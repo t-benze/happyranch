@@ -237,7 +237,7 @@ for sentinel in (False, True):
                            'L6-missing-'+str(sentinel)+'-'+repr(config))
 for raw, marker in (('broken',None), ('[]','{"version":true}'), ('[]','{"version":3}'),
                     ('[]','{"version":2,"extra":0}'), ('[]','{"version":2,"version":2}'),
-                    (None,'{"version":2}')):
+                    (None,'{"version":2}'), (b'[]',None), ('[]',b'{"version":2}')):
     try:
         with literal_reviewer_fixture(raw=raw, marker=marker):
             startup_expect(False, 'L6-corrupt-pair-refused-'+str((raw,marker)))
