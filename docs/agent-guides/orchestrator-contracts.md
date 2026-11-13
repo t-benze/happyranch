@@ -1761,8 +1761,17 @@ the existing status index before unfinished rows are fetched in original rowid
 order. Finished orphan jobs still skip lineage. Workspace evidence, terminal
 owner/root and native writer/hold checks keep their meanings. Task-row reuse is
 limited to one transaction, never a later scan, remove, repair or retry. No schema,
-index, classification, census frequency or checkpoint change is made by this
-reader change. There is no two-pass ordering without real-night step 1 data.
+index, classification or census-frequency change is made by this reader change.
+There is no two-pass ordering without real-night step 1 data.
+
+Worker report publication batches up to 32 nonmutating checkpoint requests.
+The initial report, first initialized org state, outer run boundaries, every org
+exit/error/expiry and each removal intent still flush through the unchanged
+exclusive-pending, no-follow,
+descriptor-relative atomic writer. Intent is published before fresh destructive
+admission; publication refusal prevents that deletion. A crash may leave older
+keep progress, never a completed-night claim or a confirmed unpublished effect.
+The parent still must prove stop/reap and publish closure before night.complete.
 
 THR307 seq337 package step 2 uses the review revision 3 coverage definition.
 The authoritative classification table is `_CLASSIFICATION` in `disk_sweeper.py`.

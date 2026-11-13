@@ -228,10 +228,23 @@ still holds the org; candidate-own ancestry uncertainty still holds the item.
 
 This portion does not reduce admission/census frequency or change report
 publication, tree checks, retry, classification, completion, policy or keys.
-Inventory-only keeps, reduced topology work and batched checkpoints remain the
-rest of the approved step 3 package. Two-pass ordering is absent: real-night step 1
+Inventory-only keeps and reduced topology work remain the rest of the approved
+step 3 package. Two-pass ordering is absent: real-night step 1
 data is not yet available. The reader alone does not establish a real-night speed
 or under-ten-minute result.
+
+Worker publication batches up to 32 nonmutating checkpoint requests. The initial
+report, first initialized org state, outer run boundaries, every org exit/error/expiry
+and every mutation-in-flight
+intent flush immediately through the unchanged atomic writer (exclusive pending
+inode, literal no-follow parents, descriptor-relative replacement). A removal
+intent is persisted before its final fresh admission, so a failed publication
+prevents deletion. Suppressed progress writes confer no admission authority;
+all ownership, topology, tree, remove/repair/retry and post-effect checks remain.
+An interrupted batch may leave older keep/removal progress in an incomplete
+report; an unconfirmed intent remains unknown, never a confirmed effect. Only
+the existing parent's actual stop/reap proof and safe final publication can make
+night.complete true. Reports, org audits and their keys remain compatible.
 
 Admission takes two complete no-follow snapshots with intervening ownership/Git
 refresh and final root/Git validation. On-mode mutation repeats the entire

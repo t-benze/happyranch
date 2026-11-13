@@ -1497,30 +1497,46 @@ def sweep(roots: list[str], deadline: float, summary: Path, *, dry_run: bool, sc
                   policy='thr307-ended-root-one-hour-all-orgs',
                   previous_interrupted_removals=(_history.get() or {}).get('interrupted_removals', []),
                   measurement_history={k: v for k, v in (_history.get() or {}).items() if k not in ('paths', 'interrupted_removals')})
-    def checkpoint():
+    pending_checkpoints = 0
+    initialized_org = None
+    def checkpoint(*, force: bool = False) -> None:
+        nonlocal pending_checkpoints, initialized_org
+        pending_checkpoints += 1
+        current = report['orgs'][-1] if report['orgs'] else {}
+        # Nonmutating progress may lag by a bounded batch. The last published
+        # run stays incomplete; it cannot claim unpublished keeps or effects.
+        # Always persist mutation intent BEFORE the final fresh admission, and
+        # flush each org exit (including expiry/error) under its observer.
+        if (not force and pending_checkpoints < 32 and 'stop_cause' not in current
+                and not ('phases' in current and current is not initialized_org)
+                and not any(c.get('state') == 'mutation_in_flight' for c in current.get('candidates', []))):
+            return
         atomic_json(summary, report)
-    checkpoint()
+        pending_checkpoints = 0
+        if 'phases' in current:
+            initialized_org = current
+    checkpoint(force=True)
     measurement_seen, removal_seen = set(), set()
     if runtime_root is not None:
         report['runtime_discovery'] = 'unknown'
-        checkpoint()
+        checkpoint(force=True)
         try:
             with directory(runtime_root / 'orgs', deadline) as fd:
                 roots = [str(runtime_root / 'orgs' / name) for name in names(fd, deadline) if name not in ('_pending', '_archive')]
             report.update(runtime_discovery='complete', unreached_orgs=roots.copy())
         except Exception as exc:
             report.update(error=str(exc), unreached_orgs=None, stop_cause=_stop_cause(exc))
-            checkpoint()
+            checkpoint(force=True)
             return report
     report['selected_org_roots'] = roots.copy()
-    checkpoint()
+    checkpoint(force=True)
     try:
         for root in sorted(roots):
             check(deadline)
             item = dict(org=Path(root).name, outcome='incomplete')
             report['orgs'].append(item)
             report['unreached_orgs'].remove(root)
-            checkpoint()
+            checkpoint(force=True)
             try:
                 config_path = Path(root) / 'org/config.yaml'
                 load_org_config(OrgPaths(Path(root)))
@@ -1534,7 +1550,7 @@ def sweep(roots: list[str], deadline: float, summary: Path, *, dry_run: bool, sc
                 raise
             except Exception as exc:
                 item.update(outcome='error', error=str(exc) or type(exc).__name__, stop_cause='error')
-            checkpoint()
+            checkpoint(force=True)
         report['outcome'] = 'complete' if all(o['outcome'] == 'complete' for o in report['orgs']) else 'incomplete'
         report['stop_cause'] = 'error' if any(o.get('error') or o.get('outcome') == 'error' for o in report['orgs']) else 'finished'
     except Expired as exc:
@@ -1549,7 +1565,7 @@ def sweep(roots: list[str], deadline: float, summary: Path, *, dry_run: bool, sc
     except OSError:
         report['disk_free_percent_context_only'] = None
     _finalize_night(report)
-    checkpoint()
+    checkpoint(force=True)
     return report
 
 

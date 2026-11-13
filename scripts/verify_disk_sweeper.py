@@ -4480,12 +4480,138 @@ def c33():
                 limits='disposable Linux fixture only; no real-night timing, under-ten-minute target, Darwin or absence-of-loss proof')
 
 
+def c34():
+    """Batched real publication retains crash intent and refuses unsafe paths."""
+    observations, failures = [], []
+    old = ownership_base()
+    with fixture() as f:
+        for index in range(40): f.scratch(f'TASK-{index + 1}', status='in_progress')
+        before = candidate_contents(*(f.workspace / '.happyranch/task-tmp').iterdir())
+        reports, writes = [], []
+        for label, module in (('base', old), ('new', ds)):
+            summary = f.base / 'daemon/disk-sweep' / (label + '.json')
+            real_publication, published = module.atomic_json, []
+            def publication(path, value):
+                real_publication(path, value)
+                published.append(json.loads(path.read_text()))
+            with patch.object(module, 'atomic_json', publication):
+                reports.append(module.sweep([str(f.org)], time.monotonic() + 20, summary,
+                    dry_run=False, scheduled_date='2026-11-13', revision='checkpoint-fixture'))
+            writes.append(len(published))
+            assert all(not p.get('night', {}).get('complete', False) for p in published), label
+            for item in reports[-1]['orgs'][0]['candidates']:
+                assert item['state'] == 'retained' and item['reason'] == 'task_or_root_not_terminal:in_progress', item
+        assert ownership_decisions(reports[0]['orgs'][0], f.base) == ownership_decisions(reports[1]['orgs'][0], f.base)
+        assert writes[1] < writes[0] / 4, writes
+        assert candidate_contents(*(f.workspace / '.happyranch/task-tmp').iterdir()) == before
+        assert reports[1]['night']['reasons'] == ['supervisor_closure_unproven'], reports[1]['night']
+        observations.append(dict(variant='forty_located_keeps', base_writes=writes[0], new_writes=writes[1], decision_differences=[]))
+        # Abrupt process death while unpublished keep progress is in memory.
+        original, calls = ds.Evidence.ownership, []
+        def interrupted(self, *args):
+            calls.append(args[2])
+            if len(calls) == 3: raise KeyboardInterrupt('synthetic abrupt stop between batches')
+            return original(self, *args)
+        summary = f.base / 'daemon/disk-sweep/crash-keeps.json'
+        try:
+            with patch.object(ds.Evidence, 'ownership', interrupted):
+                ds.sweep([str(f.org)], time.monotonic() + 20, summary,
+                    dry_run=False, scheduled_date='2026-11-13', revision='checkpoint-fixture')
+        except KeyboardInterrupt:
+            pass
+        else:
+            raise AssertionError('crash was not reached')
+        saved = ds._read_json(summary)
+        assert saved['outcome'] == 'incomplete' and 'finished_at' not in saved, saved
+        assert not saved.get('night', {}).get('complete', False)
+        assert not any(c['state'] in ('removed', 'eligible') for o in saved['orgs'] for c in o.get('candidates', []))
+        observations.append(dict(variant='crash_between_keep_batches', calls=len(calls), persisted_outcome=saved['outcome']))
+
+    for phase in ('scratch', 'worktree'):
+        try:
+            with fixture() as f:
+                if phase == 'scratch': path = f.scratch('TASK-1')
+                else: _, path = f.worktree('TASK-1')
+                before = candidate_contents(path)
+                summary = f.base / 'daemon/disk-sweep/crash-intent.json'
+                reached = []
+                def crash():
+                    saved = ds._read_json(summary)
+                    target = row(saved['orgs'][0], path)
+                    assert target['state'] == 'mutation_in_flight', (phase, target)
+                    records = saved['orgs'][0]['interrupted_removals']
+                    assert len(records) == 1 and records[0]['path'] == str(path) and records[0]['effect'] == 'unknown', records
+                    assert not saved.get('night', {}).get('complete', False) and saved['outcome'] == 'incomplete'
+                    reached.append('persisted_before_effect')
+                    raise KeyboardInterrupt('synthetic abrupt stop before removal')
+                original_git = ds.git
+                def git(repo, deadline, *args):
+                    if args[:2] == ('worktree', 'remove'): crash()
+                    return original_git(repo, deadline, *args)
+                def mutate(*args, **kwargs): crash()
+                try:
+                    with patch.object(time, 'time', return_value=NOW), patch.object(ds, 'git', git), patch.object(ds, 'mutate', mutate):
+                        ds.sweep([str(f.org)], time.monotonic() + 20, summary,
+                            dry_run=False, scheduled_date='2026-11-13', revision='checkpoint-fixture')
+                except KeyboardInterrupt:
+                    pass
+                assert reached == ['persisted_before_effect'] and candidate_contents(path) == before, (phase, reached)
+                observations.append(dict(variant='crash_before_' + phase + '_remove', persisted_intent=True, effects=False))
+        except AssertionError as exc:
+            failures.append(dict(variant=phase, error=str(exc)[:2000]))
+
+    for variant in ('pending_file', 'pending_symlink', 'pending_hardlink', 'final_hardlink', 'parent_symlink'):
+        try:
+            with fixture() as f:
+                path = f.scratch('TASK-1')
+                before = candidate_contents(path)
+                summary = f.base / 'daemon/disk-sweep/refused.json'
+                sentinel = f.base / 'sentinel'; sentinel.write_bytes(b'protected publication sentinel\n')
+                original, changes = ds.admit, []
+                saved_path = summary
+                pending = summary.with_name(summary.name + '.pending')
+                def admit(*args, **kwargs):
+                    nonlocal saved_path
+                    tree = original(*args, **kwargs)
+                    if not changes:
+                        changes.append('after_inventory_before_delete')
+                        if variant == 'pending_file': pending.write_bytes(b'unowned pending\n')
+                        elif variant == 'pending_symlink': pending.symlink_to(sentinel)
+                        elif variant == 'pending_hardlink': os.link(sentinel, pending)
+                        elif variant == 'final_hardlink': os.link(summary, f.base / 'other-report-link')
+                        else:
+                            held = f.base / 'held-reports'
+                            summary.parent.rename(held); summary.parent.symlink_to(held, target_is_directory=True)
+                            saved_path = held / summary.name
+                    return tree
+                refused = None
+                try:
+                    with patch.object(ds, 'admit', admit), patch.object(time, 'time', return_value=NOW):
+                        ds.sweep([str(f.org)], time.monotonic() + 20, summary,
+                            dry_run=False, scheduled_date='2026-11-13', revision='checkpoint-fixture')
+                except (OSError, ds.Retain) as exc:
+                    refused = str(exc)
+                assert changes == ['after_inventory_before_delete'] and refused, (variant, changes, refused)
+                assert path.exists(), (variant, 'candidate removed before safe intent publication')
+                assert candidate_contents(path) == before and sentinel.read_bytes() == b'protected publication sentinel\n', variant
+                # The hardlinked-target variant intentionally makes the
+                # production reader refuse too; inspect our fixture bytes.
+                saved = json.loads(saved_path.read_text())
+                assert saved['outcome'] == 'incomplete' and not saved.get('night', {}).get('complete', False), (variant, saved)
+                if variant == 'pending_file': assert pending.read_bytes() == b'unowned pending\n'
+                observations.append(dict(variant=variant, refusal=refused, effects=False, sentinel='unchanged'))
+        except AssertionError as exc:
+            failures.append(dict(variant=variant, error=str(exc)[:2000]))
+    assert not failures, dict(passed=observations, failures=failures)
+    return dict(variants=observations, limits='sampled disposable publication/crash boundaries; no physical power-loss durability or real-night performance claim')
+
+
 if __name__=='__main__':
     parser=argparse.ArgumentParser(description=__doc__)
     selection=parser.add_mutually_exclusive_group()
     selection.add_argument('--corrections-only', action='store_true', help='THR307seq117/134: C1-C7, S1-S5 (8-12) and per-org settlement (13); no historical/isolation cases')
     selection.add_argument('--correction-cases', type=int, nargs='+', choices=range(1, 14), help='select finite cases within the corrections lane')
-    selection.add_argument('--cases',type=int,nargs='+',choices=range(1,34))
+    selection.add_argument('--cases',type=int,nargs='+',choices=range(1,35))
     selection.add_argument('--isolation-case',choices=('mount','root'),help='only the private executable namespace fixture; exit77 if unavailable')
     args=parser.parse_args()
     # The private helper alone is mapped root; the driver retains its ordinary
@@ -4510,7 +4636,8 @@ if __name__=='__main__':
             purposes += ('Production-sized bounded history and invalid-report visibility',)
             purposes += ('Coverage and uncertainty classification', 'Located missing-folder residue', 'Durable previous-night records', 'Reporting-only interrupted removals')
             purposes += ('Indexed ownership equivalence with pinned base', 'Fresh ownership after inventory and latched refusals', 'Production-sized base/new disposable measurement')
-            for number,(fn,purpose) in enumerate(zip((c1,c2,c3,c4,c5,c6,c7,c8,c9,c10,c11,c12,c13,c14,c15,c16,c17,c18,c19,c20,c21,c22,c23,c24,c25,c26,c27,c28,c29,c30,c31,c32,c33),purposes),1):
+            purposes += ('Batched checkpoint equivalence, crash honesty and safe publication',)
+            for number,(fn,purpose) in enumerate(zip((c1,c2,c3,c4,c5,c6,c7,c8,c9,c10,c11,c12,c13,c14,c15,c16,c17,c18,c19,c20,c21,c22,c23,c24,c25,c26,c27,c28,c29,c30,c31,c32,c33,c34),purposes),1):
                 if args.cases is None or number in args.cases:
                     if number in (3, 4):
                         RESULTS.append(dict(case=number, purpose=purpose, result='SUPERSEDED', reason='THR307 seq117 removed OS-process eligibility; historical source not executed'))
