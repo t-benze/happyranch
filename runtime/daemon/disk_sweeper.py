@@ -955,8 +955,9 @@ class Evidence:
         if conn.execute('SELECT 1 FROM team_move_operations WHERE active_slot=1').fetchone():
             raise Retain('team_move_native_held')
 
-    @observed('ownership')
-    def ownership(self, path: Path, workspace: Path, task_id: str) -> None:
+    @contextmanager
+    def _connection(self) -> Iterator[sqlite3.Connection]:
+        """One consistent read; caller never carries it across filesystem work."""
         check(self.deadline)
         # Opening mode=ro cannot create/upgrade a production database.
         conn = sqlite3.connect((self.org / 'happyranch.db').as_uri() + '?mode=ro', uri=True, timeout=.1)
@@ -970,51 +971,58 @@ class Evidence:
             # old full-table reader's duplicate-key refusal for that case too.
             if len(conn.execute('SELECT id FROM tasks WHERE id IS NULL LIMIT 2').fetchall()) > 1:
                 raise _LineageUnknown('unknown_conflicting_lineage', 'org_unavailable')
-            tasks = {}
+            yield conn
+        finally:
+            conn.close()
 
-            def ancestry(owner, finding):
-                seen = set()
-                while True:
-                    check(self.deadline)
-                    if not isinstance(owner, str) or not owner:
-                        raise _LineageUnknown('unknown_malformed_job_or_task_lineage', finding)
-                    if owner in seen:
-                        raise _LineageUnknown('unknown_missing_or_cyclic_lineage', finding)
-                    if owner not in tasks:
-                        row = conn.execute('SELECT id,parent_task_id,status,assigned_agent FROM tasks WHERE id=?', (owner,)).fetchone()
-                        if row is None:
-                            raise _LineageUnknown('unknown_missing_or_cyclic_lineage', finding)
-                        tasks[owner] = dict(row)
-                    seen.add(owner)
-                    row = tasks[owner]
-                    parent = row['parent_task_id']
-                    if parent is None:
-                        return owner
-                    if not isinstance(parent, str) or not parent:
-                        raise _LineageUnknown('unknown_conflicting_lineage', finding)
-                    owner = parent
+    def _ownership(self, conn: sqlite3.Connection, workspace: Path, task_id: str, records: dict) -> None:
+        """Same evaluator for refusal inventory and fresh, independent admission."""
+        tasks = records.setdefault('tasks', {})
 
-            root = ancestry(task_id, 'candidate_lineage_unknown')
-            owner = tasks[task_id]
-            if owner['assigned_agent'] != workspace.name:
-                raise Retain('unknown_owner_workspace')
-            for row in (owner, tasks[root]):
-                if row['status'] not in TERMINAL:
-                    raise Retain('task_or_root_not_terminal:' + str(row['status']))
-            # Actual recorded workspace evidence, not TASK-like basename alone.
-            observed = []
-            for row in conn.execute("SELECT payload FROM audit_log WHERE task_id=? AND action='session_start'", (task_id,)):
+        def ancestry(owner, finding):
+            seen = set()
+            while True:
                 check(self.deadline)
-                payload = json.loads(row[0])
-                if not isinstance(payload, dict) or not isinstance(payload.get('workspace'), str):
-                    raise Retain('unknown_workspace_evidence')
-                observed.append(payload['workspace'])
-            if not observed or set(observed) != {str(workspace)}:
-                raise Retain('unknown_missing_or_conflicting_workspace_evidence')
-            # Enumerate ALL statuses, including unknown/NULL values, through
-            # the existing status index. Only unfinished rows need owner reads.
-            # Preserve the old table traversal's rowid order: an earlier active
-            # job refusal must not be replaced by a later unknown-job refusal.
+                if not isinstance(owner, str) or not owner:
+                    raise _LineageUnknown('unknown_malformed_job_or_task_lineage', finding)
+                if owner in seen:
+                    raise _LineageUnknown('unknown_missing_or_cyclic_lineage', finding)
+                if owner not in tasks:
+                    row = conn.execute('SELECT id,parent_task_id,status,assigned_agent FROM tasks WHERE id=?', (owner,)).fetchone()
+                    if row is None:
+                        raise _LineageUnknown('unknown_missing_or_cyclic_lineage', finding)
+                    tasks[owner] = dict(row)
+                seen.add(owner)
+                row = tasks[owner]
+                parent = row['parent_task_id']
+                if parent is None:
+                    return owner
+                if not isinstance(parent, str) or not parent:
+                    raise _LineageUnknown('unknown_conflicting_lineage', finding)
+                owner = parent
+
+        root = ancestry(task_id, 'candidate_lineage_unknown')
+        owner = tasks[task_id]
+        if owner['assigned_agent'] != workspace.name:
+            raise Retain('unknown_owner_workspace')
+        for row in (owner, tasks[root]):
+            if row['status'] not in TERMINAL:
+                raise Retain('task_or_root_not_terminal:' + str(row['status']))
+        # Actual recorded workspace evidence, not TASK-like basename alone.
+        observed = []
+        for row in conn.execute("SELECT payload FROM audit_log WHERE task_id=? AND action='session_start'", (task_id,)):
+            check(self.deadline)
+            payload = json.loads(row[0])
+            if not isinstance(payload, dict) or not isinstance(payload.get('workspace'), str):
+                raise Retain('unknown_workspace_evidence')
+            observed.append(payload['workspace'])
+        if not observed or set(observed) != {str(workspace)}:
+            raise Retain('unknown_missing_or_conflicting_workspace_evidence')
+        # Enumerate ALL statuses, including unknown/NULL values, through
+        # the existing status index. Only unfinished rows need owner reads.
+        # Preserve the old table traversal's rowid order: an earlier active
+        # job refusal must not be replaced by a later unknown-job refusal.
+        if 'jobs' not in records:
             jobs = []
             for status, in conn.execute('SELECT DISTINCT status FROM jobs'):
                 check(self.deadline)
@@ -1023,18 +1031,52 @@ class Evidence:
                         check(self.deadline)
                         jobs.append(row)
             jobs.sort(key=lambda row: row['rowid'])
-            # Task rows above are memoized within this transaction only. Every
-            # ownership call opens a new current read, including after scans,
-            # before removal, and on the existing repair/retry admissions.
-            for row in jobs:
-                check(self.deadline)
-                if row['status'] not in ('pending', 'queued', 'running'):
-                    raise Retain('unknown_job_status')
-                job_root = ancestry(row['task_id'], 'job_lineage_unknown')
-                if job_root == root:
-                    raise Retain('active_job:' + row['status'])
-        finally:
-            conn.close()
+            records['jobs'] = jobs
+        jobs = records['jobs']
+        # Task rows above are memoized within this transaction only. Every
+        # ownership call opens a new current read, including after scans,
+        # before removal, and on the existing repair/retry admissions.
+        for row in jobs:
+            check(self.deadline)
+            if row['status'] not in ('pending', 'queued', 'running'):
+                raise Retain('unknown_job_status')
+            job_root = ancestry(row['task_id'], 'job_lineage_unknown')
+            if job_root == root:
+                raise Retain('active_job:' + row['status'])
+
+    @observed('ownership')
+    def ownership(self, path: Path, workspace: Path, task_id: str) -> None:
+        with self._connection() as conn:
+            self._ownership(conn, workspace, task_id, {})
+
+    @observed('ownership')
+    def inventory(self, candidates: list[dict]) -> dict[str, Exception]:
+        """Read task/job inventory once. Return failures only, never clearance."""
+        refused = {}
+        if not candidates:
+            return refused
+        try:
+            with self._connection() as conn:
+                tasks = {}
+                for row in conn.execute('SELECT id,parent_task_id,status,assigned_agent FROM tasks'):
+                    check(self.deadline)
+                    tasks[row['id']] = dict(row)
+                records = dict(tasks=tasks)
+                for candidate in candidates:
+                    check(self.deadline)
+                    try:
+                        self._ownership(conn, Path(candidate['workspace']), Path(candidate['path']).name, records)
+                    except Expired:
+                        raise
+                    except Exception as exc:
+                        refused[candidate['path']] = exc.with_traceback(None)
+        except Expired:
+            raise
+        except Exception as exc:
+            # An unavailable inventory is uncertainty, never an empty success.
+            return {candidate['path']: exc.with_traceback(None) for candidate in candidates}
+        return refused
+
 
 
 
@@ -1367,6 +1409,7 @@ def sweep_org(org: Path, deadline: float, *, mode: str, checkpoint=lambda: None,
 
     try:
         candidates = discover(org, deadline, inventory=result, checkpoint=report_checkpoint, retained=retained)
+        refusals = evidence.inventory(candidates)
         report_checkpoint()
         for candidate in candidates:
             check(deadline)
@@ -1383,6 +1426,8 @@ def sweep_org(org: Path, deadline: float, *, mode: str, checkpoint=lambda: None,
                 local = retained.get(candidate.get('repo'), {}).get(candidate['path'])
                 if local:
                     raise Retain(local[0])
+                if candidate['path'] in refusals:
+                    raise refusals[candidate['path']]
                 tree = admit(candidate, evidence, deadline, now=now, retained=retained)
                 amount, _ = allocated(tree, measured_inodes)
                 phase['measured_allocated_bytes'] += amount

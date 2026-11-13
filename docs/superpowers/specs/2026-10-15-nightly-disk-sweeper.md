@@ -223,15 +223,25 @@ and indexed reads of every unfinished or unknown/NULL-status row. Rows retain
 original rowid encounter order, including active-before-unknown refusal priority.
 Finished completed/failed/rejected rows never need their historical owner resolved.
 The existing audit task-id index supports the unchanged complete workspace check.
+After discovery, one consistent org inventory reads tasks and unfinished/unknown
+job states once, with the same workspace/lineage evaluator and refusal priority.
+Only its failed answers survive: they are final KEEP decisions even if the
+underlying condition later heals. Successful answers are discarded. Every
+existing admission still opens its own fresh connection and transaction; neither
+task/job inventory nor its earlier native-writer observation authorizes removal,
+repair or retry. Inventory failure retains uncertainty rather than implying an
+empty census. Pointer/topology admission frequency is unchanged in this partial
+implementation; reducing it still requires the complete section 5.2 proof.
 No schema, new index or migration is introduced. Unknown status/active-job lineage
 still holds the org; candidate-own ancestry uncertainty still holds the item.
 
-This portion does not reduce admission/census frequency or change report
-publication, tree checks, retry, classification, completion, policy or keys.
-Inventory-only keeps and reduced topology work remain the rest of the approved
-step 3 package. Two-pass ordering is absent: real-night step 1
-data is not yet available. The reader alone does not establish a real-night speed
-or under-ten-minute result.
+Task/job refusal inventory removes repeated ownership work for final keeps.
+The existing fresh delete admissions, census/tree checks, retry, classification,
+completion, policy and keys remain. Topology inventory, cheaper full admission
+and filesystem keep screening remain unfinished parts of the approved step 3
+package. Two-pass ordering is absent: real-night step 1 data is not yet available.
+These partial changes do not establish real-night speed or an under-ten-minute
+result.
 
 Worker publication batches up to 32 nonmutating checkpoint requests. The initial
 report, first initialized org state, outer run boundaries, every org exit/error/expiry
