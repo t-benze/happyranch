@@ -20,7 +20,8 @@ def run(report: dict[str, Any]) -> None:
     label = f"ai.happyranch.connector-probe-{uuid.uuid4().hex}"
     checks: list[dict[str, Any]] = []
     uid = os.getuid()
-    context: dict[str, Any] = {"uid": uid, "managername": None, "domains": {}, "selected_domain": None}
+    context: dict[str, Any] = {"uid": uid, "managername": None, "domains": {},
+                               "selected_domain": None, "print_disabled": None}
     section: dict[str, Any] = {"label": label, "checks": checks, "cleanup": {},
                                "context": context, "domain": None}
     report["connector_launchd"] = section
@@ -56,6 +57,8 @@ def run(report: dict[str, Any]) -> None:
                 context["domains"][candidate] = {"exit_code": code, "diagnostic": output.strip()[:512]}
             domain = manager.domain
             section["domain"] = context["selected_domain"] = domain
+            code, output = command(["launchctl", "print-disabled", domain])
+            context["print_disabled"] = {"exit_code": code, "diagnostic": output.strip()[:512]}
             check("unique_service_absent_before_install", manager.status(label).load_state == "not-found")
             plist = render_launch_agent(label, ("/bin/sleep", "300"), logs_dir=scratch)
             owned = True  # Absence proven; cleanup owns any partial installation.

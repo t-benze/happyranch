@@ -182,15 +182,32 @@ class LaunchdServiceManager:
         raise ServiceManagerError(f"launchctl print {target} failed ({code}): {output.strip()[:200]}")
 
     def _enabled(self, name: str) -> bool:
-        output = self._call("print-disabled", self.domain)
-        if not re.search(r"disabled services\s*=\s*\{", output) or not output.rstrip().endswith("}"):
-            raise ServiceManagerError("unrecognized launchctl print-disabled output")
-        entries = re.findall(r'^\s*"' + re.escape(launchd_label(name)) + r'"([^\n]*)$', output, re.M)
+        domain = self.domain
+        code, output = self._run(["launchctl", "print-disabled", domain], timeout=10.0)
+        diagnostic = f"launchctl print-disabled {domain} (exit {code}): {output.strip()[:512]}"
+        if code:
+            raise ServiceManagerError(f"{diagnostic}; command failed")
+        # Only this flat block owns service overrides. A following section's
+        # closing brace must not stand in for a missing disabled-block brace.
+        block: list[str] | None = None
+        for line in output.splitlines():
+            if block is None:
+                if re.fullmatch(r"\s*disabled services\s*=\s*\{\s*", line):
+                    block = []
+            elif line.strip() == "}":
+                break  # Ignore login-item associations and everything after.
+            elif not line.lstrip().startswith('"') and re.search(r"=\s*\{\s*$", line):
+                raise ServiceManagerError(f"unrecognized launchctl print-disabled output; {diagnostic}")
+            else:
+                block.append(line)
+        else:
+            raise ServiceManagerError(f"unrecognized launchctl print-disabled output; {diagnostic}")
+        entries = re.findall(r'^\s*"' + re.escape(launchd_label(name)) + r'"([^\n]*)$', "\n".join(block), re.M)
         if entries:
-            match = re.fullmatch(r'\s*=>\s*(true|false)\s*', entries[0])
+            match = re.fullmatch(r'\s*=>\s*(true|false|disabled|enabled)\s*', entries[0])
             if len(entries) != 1 or match is None:
-                raise ServiceManagerError("malformed launchctl disabled override")
-            return match[1] == "false"
+                raise ServiceManagerError(f"malformed launchctl disabled override; {diagnostic}")
+            return match[1] in {"false", "enabled"}
         path = self._path(name)
         return path.exists() and not self._validated(path.read_text(), name).get("Disabled", False)
 

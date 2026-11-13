@@ -190,12 +190,15 @@ class LaunchdObservations(unittest.TestCase):
     def test_disabled_overrides_use_exact_label_or_plist_fallback(self) -> None:
         cases = []
         for sibling in (f"{LABEL}.worker", f"{LABEL}-probe-12345678-abcd"):
-            for override in ("true", "false"):
+            for override in ("true", "false", "disabled", "enabled"):
                 for disabled in (True, False):
                     cases.append((sibling, override, disabled, not disabled))
         # Exact overrides take precedence over the opposite plist default.
         cases += [(LABEL, "true", False, False), (LABEL, "false", True, True),
-                  (LABEL, "maybe", False, None), (LABEL, "", True, None)]
+                  (LABEL, "disabled", False, False), (LABEL, "enabled", True, True),
+                  (LABEL, "maybe", False, None), (LABEL, "", True, None),
+                  (LABEL, "disabled extra", False, None),
+                  (LABEL, f'disabled\n "{LABEL}" => enabled', False, None)]
         for key, override, disabled, expected in cases:
             with self.subTest(key=key, override=override, disabled=disabled), tempfile.TemporaryDirectory() as folder:
                 root = Path(folder)
@@ -216,8 +219,10 @@ class LaunchdObservations(unittest.TestCase):
                 manager = LaunchdServiceManager(unit_dir=root, run=runner)
                 if expected is None:
                     for operation in ("status", "start"):
-                        with self.assertRaisesRegex(ServiceManagerError, "malformed launchctl disabled override"):
+                        with self.assertRaisesRegex(ServiceManagerError, "malformed launchctl disabled override") as raised:
                             getattr(manager, operation)(LABEL)
+                        self.assertIn("exit 0", str(raised.exception))
+                        self.assertIn(observation[2][:512], str(raised.exception))
                 else:
                     state = manager.status(LABEL)
                     self.assertEqual(state.load_state, "unloaded")
@@ -226,6 +231,43 @@ class LaunchdObservations(unittest.TestCase):
                     state = manager.status(LABEL)
                     self.assertTrue(state.running)
                     self.assertEqual(state.unit_file_state, "enabled" if expected else "disabled")
+                self.assertFalse(runner.rows)
+
+    def test_print_disabled_block_boundaries_and_diagnostics(self) -> None:
+        cases = [
+            (0, 'disabled services = {\n}', True),
+            (0, f'\n \tdisabled services \t= \t{{ \t\n\n\t "{LABEL}"  =>  enabled \t\n \t}} \t\n\n', True),
+            (0, f'disabled services = {{\n "{LABEL}" => disabled\n}}\n'
+                f'login item associations = {{\n "{LABEL}" => enabled\n}}\ntrailing diagnostic', False),
+            # Exact-looking rows outside the disabled block never override the plist.
+            (0, f'disabled services = {{\n}}\nlogin item associations = {{\n'
+                f' "{LABEL}" => disabled\n}}\n "{LABEL}" => malformed', True),
+            (0, f'login item associations = {{\n "{LABEL}" => disabled\n}}', None),
+            (0, f'disabled services = {{\n "{LABEL}" => disabled\n', None),
+            (0, f'disabled services = {{\nlogin item associations = {{\n "{LABEL}" => enabled\n}}', None),
+            (0, 'unrecognized output ' + 'x' * 600, None),
+            (5, 'print-disabled denied ' + 'y' * 600, None),
+        ]
+        for code, output, expected in cases:
+            with self.subTest(code=code, output=output), tempfile.TemporaryDirectory() as folder:
+                root = Path(folder)
+                value = plistlib.loads(render_launch_agent(LABEL, ("/bin/sleep", "20"), logs_dir=root).encode())
+                value["Disabled"] = False
+                (root / f"{LABEL}.plist").write_bytes(plistlib.dumps(value))
+                runner = Runner(self, [row("print", DOMAIN), *absent(),
+                                       row("print-disabled", DOMAIN, code=code, output=output)])
+                manager = LaunchdServiceManager(unit_dir=root, run=runner)
+                if expected is None:
+                    with self.assertRaises(ServiceManagerError) as raised:
+                        manager.status(LABEL)
+                    message = str(raised.exception)
+                    self.assertIn("print-disabled", message)
+                    self.assertIn(f"exit {code}", message)
+                    self.assertIn(output.strip()[:512], message)
+                    if len(output.strip()) > 512:
+                        self.assertNotIn(output.strip()[:513], message)
+                else:
+                    self.assertEqual(manager.status(LABEL).unit_file_state, "enabled" if expected else "disabled")
                 self.assertFalse(runner.rows)
 
     def test_domain_selection_and_honest_refusal(self) -> None:
@@ -474,6 +516,8 @@ class NativeProbeContext(unittest.TestCase):
                         return 125, unsupported.encode()
                     if argv == ["launchctl", "print", user]:
                         return (0 if user_available else 1), b"user context"
+                    if argv == ["launchctl", "print-disabled", user]:
+                        return 0, b"disabled services = {\n}\n"
                     self.assertTrue(user_available)
                     self.assertEqual(argv[:2], ["launchctl", "print"])
                     self.assertTrue(argv[2].startswith(f"{user}/ai.happyranch.connector-probe-"))
@@ -491,10 +535,44 @@ class NativeProbeContext(unittest.TestCase):
                 self.assertEqual(context["domains"][DOMAIN], {"exit_code": 125, "diagnostic": unsupported})
                 self.assertEqual(context["domains"][user], {"exit_code": 0 if user_available else 1, "diagnostic": "user context"})
                 self.assertEqual(context["selected_domain"], user if user_available else None)
+                self.assertIn("print_disabled", context)
+                self.assertEqual(context["print_disabled"],
+                                 {"exit_code": 0, "diagnostic": "disabled services = {\n}"} if user_available else None)
                 self.assertEqual(section["domain"], context["selected_domain"])
                 self.assertEqual(section["cleanup"], {"not_installed": True})
                 self.assertEqual(section["checks"], [])
                 self.assertEqual(calls[:3], [["launchctl", "managername"], ["launchctl", "print", DOMAIN], ["launchctl", "print", user]])
+
+    def test_print_disabled_context_precedes_status_failure(self) -> None:
+        for code in (0, 5):
+            with self.subTest(code=code), tempfile.TemporaryDirectory() as folder:
+                report = {}
+                output = "  actual print-disabled output " + "z" * 600 + "\n"
+                expected = {"exit_code": code, "diagnostic": output.strip()[:512]}
+                calls = []
+                def command(argv: list[str], env: dict[str, str], cwd: Path, deadline: float, **kwargs: object) -> tuple[int, bytes]:
+                    calls.append(argv)
+                    self.assertEqual(kwargs.get("output_cap"), 1048576)
+                    if argv == ["launchctl", "managername"]:
+                        return 0, b"Background"
+                    if argv in (["launchctl", "print", DOMAIN], ["launchctl", "print", f"user/{os.getuid()}"]):
+                        return 0, b"domain context"
+                    if argv == ["launchctl", "print-disabled", DOMAIN]:
+                        return code, output.encode()
+                    self.assertEqual(argv[:2], ["launchctl", "print"])
+                    self.assertTrue(argv[2].startswith(f"{DOMAIN}/ai.happyranch.connector-probe-"))
+                    # This is the first status observation, before any lifecycle effect.
+                    self.assertEqual(report["connector_launchd"]["context"].get("print_disabled"), expected)
+                    return 1, b"service observation denied"
+                with patch.object(suite_connector_launchd, "_command", side_effect=command), patch.object(Path, "home", return_value=Path(folder)):
+                    with self.assertRaisesRegex(ServiceManagerError, "service observation denied"):
+                        suite_connector_launchd.run(report)
+                section = json.loads(json.dumps(report))["connector_launchd"]
+                self.assertEqual(section["context"]["print_disabled"], expected)
+                self.assertEqual(section["context"]["selected_domain"], DOMAIN)
+                self.assertEqual(section["checks"], [])
+                self.assertEqual(section["cleanup"], {"not_installed": True})
+                self.assertEqual(calls[-2], ["launchctl", "print-disabled", DOMAIN])
 
 
 if __name__ == "__main__":

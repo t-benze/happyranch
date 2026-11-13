@@ -587,8 +587,11 @@ held diagnosed correction; source changes never replenish or submit that budget.
 
 QA may select this source suite at the reviewed exact `SOURCE_SHA` using the
 existing string parameter. Do not change the Jenkins config. The maker does
-not run this job. PR 1 has at most two native runs: the second is permitted
-only for an infrastructure failure in the first, never a code failure.
+not run this job. Manager TASK-15950 step 4 permits PR 1 a third native run
+after build22's print-disabled parser-compatibility failure. Build20's GUI-domain
+refusal and build22's parser refusal were code failures, not infrastructure
+failures. The founder goal ledger is currently 2 of 8 native runs used and will
+be 3 of 8 after that authorized third run; this maker leg consumes zero runs.
 
 The suite calls the real `LaunchdServiceManager` with a unique UUID label
 `ai.happyranch.connector-probe-<uuid>` and `/bin/sleep 300`. It writes a
@@ -635,6 +638,11 @@ deadline unchanged. `selected_domain` and `connector_launchd.domain` start null
 and are set only on successful selection. Earlier facts remain available if a
 later context command or domain selection fails; unreached facts remain null or
 absent. These diagnostic observations do not guarantee the domain stays usable.
+After selection and before the first status/lifecycle step, context also records
+`print_disabled` for the selected domain (actual exit code and at most 512
+characters of diagnostic output). It starts null until observed. This command
+shares the existing deadline and output cap; its code is recorded directly,
+not inferred from a later parser exception.
 
 `probe.json` also includes `connector_launchd.checks`, the actual domain/PIDs and
 `cleanup.service_absent`, `cleanup.plist_absent`, `cleanup.bootout_exit`, plus
