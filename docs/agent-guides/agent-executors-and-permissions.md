@@ -684,6 +684,17 @@ skill computes the workspace root as 5 parents above the task worktree
 exists. It is a narrow, non-permission tool with no DB, API, schema, audit,
 auth, notification, or sandbox footprint.
 
+At setup the same writer best-effort ensures the exact root-only rule
+`/.worktree-guard.json` in the clone's shared common-dir `info/exclude`, preserving
+existing content and a final newline without duplicate rules on re-setup.
+The ignore update creates missing `info/` and leaves `.gitignore`, config and
+tracked files untouched.
+An unwritable exclude warns without disabling snapshot creation or verification;
+without another ignore rule the guard stays dirty. Git still reports modified
+tracked/staged, negated or subdirectory guards and other untracked files. Existing
+clones gain the line only on their next guard setup. The 91 guard-only dirty
+observations do not promise removal; every cleanup owner's other gates still apply.
+
 The same skill makes completion ordering explicit: once publication work is
 done, attempt safe worktree cleanup or record
 `worktree-deferred: <specific reason>` in the existing completion risks, then

@@ -211,7 +211,7 @@ Every admission, including permission repair and the one Git retry, requires:
   chmod mode/ctime changes may be recognized on Git retry, with all other gates
   refreshed; unknown changes never receive that exception.
 
-### Indexed current ownership reads (THR307 seq337 step 3, reader portion)
+### Delivered cost changes (THR307 seq337 step 3, PR #1473)
 
 Every existing `Evidence.ownership` call opens its own `mode=ro` connection and
 read transaction, checks the actual native writer/optional hold, and then reads
@@ -231,7 +231,7 @@ signatures are revalidated no-follow before status; changed/unsafe locations
 hold the clone. Positive
 mapping/clean-status observations are discarded; every deletion still performs
 all existing fresh admissions. Inventory cannot supply successful delete authority.
-This partial implementation does not yet reduce destructive census frequency.
+The delivered Step 3 does not reduce destructive census frequency.
 
 The fresh census also compares recorded shared-directory, reciprocal-pointer and
 pointer-parent identities and literal membership with discovery through the existing
@@ -301,8 +301,8 @@ existing admission still opens its own fresh connection and transaction; neither
 task/job inventory nor its earlier native-writer observation authorizes removal,
 repair or retry. Inventory failure retains uncertainty rather than implying an
 empty census. Destructive pointer/topology admission frequency is unchanged in
-this partial implementation; reducing it still requires the complete section 5.2
-proof. Final dirty/guard/mapping keeps do not repeat those admissions.
+the delivered Step 3; any later reduction still requires the complete review
+section 5.2 proof. Final dirty/guard/mapping keeps do not repeat those admissions.
 No schema, new index or migration is introduced. Unknown status/active-job lineage
 still holds the org; candidate-own ancestry uncertainty still holds the item.
 
@@ -315,11 +315,11 @@ still runs. Earlier recent retention can change the first reason where dirt or a
 bad guard has not yet been inspected. A located recent keep satisfies the same
 coverage definition; already observed uncertainty remains latched.
 The existing fresh delete admissions, census/tree checks, retry, classification,
-completion, policy and keys remain. The complete safety proof for cheaper
-destructive admission remains an unfinished part of the approved step 3 package.
-Two-pass ordering is absent: real-night step 1 data is not yet available.
-These partial changes do not establish real-night speed or an under-ten-minute
-result.
+completion, policy and keys remain. Step 3 is delivered with these scoped cost
+changes; destructive census frequency was not reduced. Any later reduction needs
+its own complete safety proof. Two-pass ordering is absent: real-night step 1
+data is not yet available. Native mount and Darwin behavior remain unverified.
+Delivery does not establish real-night speed or an under-ten-minute result.
 
 Worker publication batches up to 32 nonmutating checkpoint requests. The initial
 report, first initialized org state, outer run boundaries, every org exit/error/expiry
@@ -525,6 +525,27 @@ zone/window/date, discovery status, outcome, retained reasons/paths, dirty paths
 known eligible leftovers, unreached counts/orgs and errors. In-flight checkpoint
 survives ordinary worker interruption; report failure is never fabricated success.
 
+### Runtime guard ignore (THR-307 seq337 package step 4)
+
+The guard writer, `runtime/tools/worktree_guard.py` and its byte-identical bundled
+make-worktree copy, ensures `/.worktree-guard.json` in the clone's common-dir
+`info/exclude` on setup. It creates missing `info/`, preserves existing bytes and
+terminates the file with a newline, without duplicating the exact rule on repeated
+setup. The ignore update does not edit `.gitignore`, Git config or tracked files. This is Git's
+own root-only ignore policy: an untracked root guard disappears from status and
+non-force removal accepts it. Modified tracked/staged guards, `.gitignore`
+negation, subdirectory guards and other untracked files remain dirty. The sweeper's
+dirty check, non-force removal, containment and all other gates are unchanged.
+
+Exclude writes are best-effort: failure warns but setup still writes the snapshot
+and verification still detects primary-checkout edits. Without another ignore
+rule, that guard remains dirty and the sweeper keeps the worktree. Existing clones
+gain the line only when runtime next sets up a guard; this change performs no
+one-time rollout. The 91 observed guard-only dirty worktrees are an observation,
+not a removal promise. Disposable Git 2.53.0 fixtures confirmed status (including
+`--porcelain=v1 -z --untracked-files=all`) and non-force removal semantics; native
+mount/Darwin and real-night behavior remain unverified.
+
 ### Coverage and classification (THR-307 seq337 package step 2)
 
 This is the approved behavior change after the measurement-only baseline:
@@ -532,7 +553,8 @@ outcome labels use coverage and empty-scope prune no longer runs. The three
 censuses per topology call, candidate admission, final ownership, nested `.git`,
 containment, non-force removal, retry, timeout and stop policy are unchanged.
 Removing prune also removes its one final topology call; no admission proof is
-removed. `.worktree-guard.json` ignore and cost reduction remain later steps.
+removed. Step 3 cost changes are delivered (PR #1473), with destructive census
+frequency unchanged. Step 4 guard ignore is described above.
 
 `_CLASSIFICATION` is the authoritative scope/coverage table:
 

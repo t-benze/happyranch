@@ -4,7 +4,7 @@ This is a stdlib-only, zero-dependency module delivered alongside the
 make-worktree system-contract skill. It is NOT importable from other
 HappyRanch modules — the skill delivers it as a standalone executable
 script into ``runtime/skills/bundled/make-worktree/worktree_guard.py`` for
-agent workspace injection.
+agent workspace injection. Keep both copies byte-identical.
 
 Commands:
     python worktree_guard.py setup --worktree-root ... --primary-root ... [--task-id ...]
@@ -59,6 +59,24 @@ def _git_common_dir(path: Path) -> Path:
     if not p.is_absolute():
         p = (path / p).resolve()
     return p.resolve()
+
+
+def _ensure_guard_excluded(common_dir: Path) -> None:
+    """Best-effort root-only ignore shared by this clone's linked worktrees."""
+    exclude = common_dir / "info" / "exclude"
+    try:
+        exclude.parent.mkdir(exist_ok=True)
+        with exclude.open("a+b") as stream:
+            stream.seek(0)
+            content = stream.read()
+            rule = b"/.worktree-guard.json"
+            if content and not content.endswith(b"\n"):
+                stream.write(b"\n")
+            if rule not in content.splitlines():
+                stream.write(rule + b"\n")
+    except OSError as exc:
+        # Ignoring the snapshot is optional; recording/enforcing it is not.
+        print(f"WARNING: Could not exclude guard file in {exclude}: {exc}")
 
 
 def _worktree_metadata_dir(worktree: Path) -> Path | None:
@@ -307,6 +325,8 @@ def cmd_setup(
 
     # ── Remove stale pre-PR #607 HappyRanch hook configuration ─────
     _clear_stale_worktree_hook(wt)
+
+    _ensure_guard_excluded(wt_common)
 
     # ── Baseline primary checkout state ─────────────────────────────
     baseline = _baseline_primary(pr)

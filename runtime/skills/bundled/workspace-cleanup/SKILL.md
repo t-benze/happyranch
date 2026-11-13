@@ -335,6 +335,15 @@ agents. It is invoked two ways, and both use exactly this contract:
 Both markers identify the same skill. No other skill, task, or prompt grants
 cleanup authority.
 
+Guard setup best-effort adds the root-only `/.worktree-guard.json` rule to
+that clone's shared common-dir `info/exclude` (THR-307 seq337 step 4). Existing
+clones gain it only on their next guard setup; this skill does not bulk-edit Git
+metadata. Unwritable excludes leave guard enforcement active and, without another
+ignore rule, the file dirty. Modified tracked/staged guards, `.gitignore` negation,
+subdirectory guards and other untracked files stay dirty. This changes no cleanup
+gate or non-force removal rule; 91 observed guard-only dirty worktrees is not a
+removal promise.
+
 ## Scope
 
 You may only ever consider paths inside **your own workspace**:
