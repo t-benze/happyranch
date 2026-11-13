@@ -342,3 +342,22 @@ remain; no cleanup/activation authority follows. These source changes have no
 behavioral/migration/recovery proof; integration INCLUDING callback SKIPPED24342,
 Python units RETIRED. Retained C3 admission/native-writer hooks grant no
 live move or cleanup authority.
+
+
+## Founder-only retirement
+
+Manager-session `manage-agent terminate` is unchanged: only quiescent workers
+in the caller's team; managers still return `manager_terminate_forbidden`.
+Founder can instead use `happyranch agents retire <name> --org ORG`, backed by
+`POST /api/v1/orgs/{slug}/agents/{agent_name}/retire` and the existing Founder
+bearer. This grants no agent-session retirement authority or permission to use
+ambient credentials. Both paths preserve the AgentDef/workspace in `_terminated`
+and retain memory/history, with the same future-work cleanup and rollback.
+
+Founder may also retire a quiescent manager together with its empty team.
+All workers, including pending enrollments, must be resolved first
+(`team_not_empty`). A display/task routing team cannot retire
+(`default_team_retire_forbidden`, `task_default_team_retire_forbidden`), nor a
+team with pending/in-progress/escalated tasks (`team_has_open_tasks`).
+Human-managed teams have no agent manager and are outside this operation.
+Other teams, routing pointers and historical team-keyed policy rows stay intact.
