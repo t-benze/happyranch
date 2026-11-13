@@ -92,12 +92,13 @@ and explicit start. The packaged Mac app runs in the GUI domain.
 ### macOS readiness, status and recovery (THR-360 C3, PR 2)
 
 The foreground connector owns `<managed-state-root>/<label>.readiness.json`.
-**Provisional path assumption:** reuse the existing `managed_dir_root` plus
-`state_dir` resolution: by default
-`~/.local/state/happyranch-connector/ai.happyranch.connector.readiness.json`.
-Both config values remain overridable and custom labels use separate files.
-C4 will settle the final macOS layout; this slice adds no credential path or
-migration. Status and supervisor construction never create the record.
+C4's final default is
+`~/Library/Application Support/HappyRanch/connector/happyranch-connector/ai.happyranch.connector.readiness.json`.
+The state root is `~/Library/Application Support/HappyRanch/connector/<state_dir>`;
+an explicit `managed_dir_root` still replaces the root preceding `<state_dir>`.
+Custom labels use separate readiness files. Status and supervisor construction
+never create the record. The provisional C3 `~/.local/state` layout was never
+released or deployed, so there is no migration or compatibility reader.
 
 Each record has `pid`, `process_started_at` (wall time at foreground run entry),
 `ready`, nullable `last_healthy_wall_time`, increasing `sequence`, and a fixed
@@ -108,6 +109,11 @@ false on readiness/listener loss, and false on shutdown. Loss retains the
 exception text, token, key or bearer is stored. Publication uses an exclusive
 0600 temporary file in the same directory, flush/fsync then atomic rename;
 failed writes retain the previous complete file and remove the pending file.
+Directory traversal opens each literal component without following symlinks.
+Missing directories are created 0700; an existing writable state leaf must be
+owned by the current euid with mode 0700. Existing ancestor modes are preserved.
+Publication and pending-file cleanup use the pinned parent descriptor, and
+status likewise refuses aliased parents without reading through them.
 
 A separate in-process watchdog starts before the first publication and uses
 monotonic time. Only a completed healthy pass, including publication, renews
@@ -140,10 +146,48 @@ process-birth identity. The watchdog depends on its Python thread being
 scheduled; it cannot promise recovery from host sleep or a runtime/GIL-wide
 freeze. Wall-clock discontinuity may temporarily report stale readiness; the
 restart deadline remains monotonic. No native proof is claimed in PR 2 and the
-sleep-agent native suite is unchanged. macOS credential handling, managed
+sleep-agent native suite is unchanged. The managed
 installer, sidecar build/readiness, signing, app bundling, Swift coexistence and
 packaged-app acceptance remain pending. The Swift in-app HomeConnector is
 untouched; never enable both listeners together.
+
+### macOS credentials and state paths (THR-360 C4, PR 3)
+
+The founder-accepted macOS posture is a connector running as the founder's own
+user and reading the local daemon token directly. `daemon_token_path` is required
+explicitly. For the bundled Mac app it points to
+`~/Library/Application Support/HappyRanch/daemon.token` (expand `~` before use).
+`AppDelegate.resolvedDaemonHome()` selects that home and `EnvironmentSanitizer`
+passes it as `HAPPYRANCH_DAEMON_HOME` to the daemon. In contrast,
+`runtime.runtime.token_file()` defaults to `~/.happyranch/daemon.token` outside
+that app environment, so the connector does not infer its token path from it.
+Both configured `credentials_directory` and presence of `CREDENTIALS_DIRECTORY`
+(even empty) refuse on Darwin with a fixed configuration error; no systemd
+credential source or fallback is used.
+
+`DarwinFileDaemonCredentialProvider` retains the file-provider interface and
+opens a literal, non-symlink, regular, single-link file owned by the current
+euid, with no group/other mode bits. It verifies named/open inode identity and
+metadata before and after a bounded read, rejects empty/whitespace, invalid UTF8
+and files larger than 64 KiB, and reports only a fixed non-secret failure reason.
+It follows no symlink in any parent. Linux provider selection and both existing
+Linux credential readers retain their previous semantics and bytes.
+
+`launchd_files.DARWIN_ENROLLMENT_KEY_PATH` defines
+`~/Library/Application Support/HappyRanch/connector/happyranch-connector/enrollment.key`.
+With overrides, C5/C6 use `<managed-state-root>/enrollment.key`.
+`credentials.read_darwin_enrollment()` accepts an absolute literal path and
+returns a bytearray after the same no-follow, inode, owner, single-link and
+bounded/nonempty checks, requiring exactly 0600. This is the Linux installer's
+key contract with current-euid ownership instead of root ownership; no group
+ownership requirement is added. It never stages or enrolls a key. C5 installer
+and C6 sidecar consumption remain future work; callers expand the default
+constant with `.expanduser()` before passing it to the reader. Plists/config arguments and
+CLI/status observations carry paths, never daemon-token or enrollment-key values.
+The retained standalone connector venue exercises real files, modes, symlinks,
+hardlinks and FIFOs on Linux with Darwin selection; alternate-euid checks use
+test-side identity substitution against real stat ownership. Native Darwin
+credential/path execution is NOT RUN in C4 (no Mac mini run authorized).
 
 Native evidence is supplied by the `connector-launchd` Mac-mini suite for QA:
 a unique harmless `/bin/sleep` agent, install/start/running PID, SIGKILL/new PID,

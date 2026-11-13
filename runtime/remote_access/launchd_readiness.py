@@ -11,13 +11,14 @@ import json
 import math
 import os
 import stat
-import tempfile
 import threading
 import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
 from runtime.remote_access.launchd_agent import LaunchdStatus
+from runtime.remote_access.launchd_files import literal_directory
 from runtime.remote_access.service_manager import ServiceManagerError
 
 WATCHDOG_EXIT_CODE = 75
@@ -88,23 +89,25 @@ class LaunchdReadiness:
         return True
 
     def _publish(self) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        temporary: Path | None = None
         self._record["sequence"] += 1
-        try:
+        with literal_directory(self.path.parent, create=True) as parent:
+            temporary = f".{self.path.name}.{uuid.uuid4().hex}"
             # Same exclusive 0600 temp + flush/fsync + rename publication as
             # launchd_agent's backup. Failed writes retain the prior complete file.
-            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=self.path.parent,
-                                             prefix=f".{self.path.name}.", delete=False) as stream:
-                temporary = Path(stream.name)
-                os.fchmod(stream.fileno(), 0o600)
-                json.dump(self._record, stream, sort_keys=True, allow_nan=False)
-                stream.flush()
-                os.fsync(stream.fileno())
-            os.replace(temporary, self.path)
-        finally:
-            if temporary is not None:
-                temporary.unlink(missing_ok=True)
+            descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                                 0o600, dir_fd=parent)
+            try:
+                with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+                    os.fchmod(stream.fileno(), 0o600)
+                    json.dump(self._record, stream, sort_keys=True, allow_nan=False)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                os.replace(temporary, self.path.name, src_dir_fd=parent, dst_dir_fd=parent)
+            finally:
+                try:
+                    os.unlink(temporary, dir_fd=parent)
+                except FileNotFoundError:
+                    pass
 
 
 @dataclass(frozen=True)
@@ -138,7 +141,8 @@ def _record_object(pairs: list[tuple[str, object]]) -> dict:
 
 def _read_record(path: Path) -> tuple[str, dict]:
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with literal_directory(path.parent) as parent:
+            fd = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
         with os.fdopen(fd, "rb") as stream:
             info = os.fstat(stream.fileno())
             if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
