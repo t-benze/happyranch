@@ -223,6 +223,16 @@ and indexed reads of every unfinished or unknown/NULL-status row. Rows retain
 original rowid encounter order, including active-before-unknown refusal priority.
 Finished completed/failed/rejected rows never need their historical owner resolved.
 The existing audit task-id index supports the unchanged complete workspace check.
+Discovery's once-per-clone topology census is also retained privately for KEEP
+answers. In existing candidate order after ownership refusals, worktree guard,
+known mapping/lock/branch and dirty-status failures are final for the night,
+including after healing. Own directory identities and reciprocal pointer
+signatures are revalidated no-follow before status; changed/unsafe locations
+hold the clone. Positive
+mapping/clean-status observations are discarded; every deletion still performs
+all existing fresh admissions. No inventory mapping enters a destructive gate.
+This partial implementation does not yet reduce destructive census frequency.
+
 After discovery, one consistent org inventory reads tasks and unfinished/unknown
 job states once, with the same workspace/lineage evaluator and refusal priority.
 Only its failed answers survive: they are final KEEP decisions even if the
@@ -230,15 +240,16 @@ underlying condition later heals. Successful answers are discarded. Every
 existing admission still opens its own fresh connection and transaction; neither
 task/job inventory nor its earlier native-writer observation authorizes removal,
 repair or retry. Inventory failure retains uncertainty rather than implying an
-empty census. Pointer/topology admission frequency is unchanged in this partial
-implementation; reducing it still requires the complete section 5.2 proof.
+empty census. Destructive pointer/topology admission frequency is unchanged in
+this partial implementation; reducing it still requires the complete section 5.2
+proof. Final dirty/guard/mapping keeps do not repeat those admissions.
 No schema, new index or migration is introduced. Unknown status/active-job lineage
 still holds the org; candidate-own ancestry uncertainty still holds the item.
 
 Task/job refusal inventory removes repeated ownership work for final keeps.
 The existing fresh delete admissions, census/tree checks, retry, classification,
-completion, policy and keys remain. Topology inventory, cheaper full admission
-and filesystem keep screening remain unfinished parts of the approved step 3
+completion, policy and keys remain. Cheaper full destructive admission and
+recursive-age keep screening remain unfinished parts of the approved step 3
 package. Two-pass ordering is absent: real-night step 1 data is not yet available.
 These partial changes do not establish real-night speed or an under-ten-minute
 result.

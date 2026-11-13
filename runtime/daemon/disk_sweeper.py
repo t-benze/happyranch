@@ -1090,7 +1090,7 @@ def _retain_linked_descendants(path: Path, rows: dict[str, dict], deadline: floa
     check(deadline)
 
 
-def _worktree_gate(candidate: dict, deadline: float, retained: dict | None = None) -> tuple:
+def _worktree_guard(candidate: dict, deadline: float) -> None:
     path = Path(candidate["path"])
     task_id = path.name
     guard = read_json(path / '.worktree-guard.json', deadline, 4 * 1024 * 1024)
@@ -1098,6 +1098,49 @@ def _worktree_gate(candidate: dict, deadline: float, retained: dict | None = Non
             or guard.get('worktree_root') != str(path)
             or guard.get('primary_root') != candidate['repo']):
         raise Retain('unknown_worktree_owner')
+
+
+def _worktree_location(path: Path, repo: Path, rows: _Registrations, deadline: float) -> None:
+    """Never send Git through an own mapping changed since discovery."""
+    try:
+        entry = rows.linked[str(path)]
+        for parent in (repo, repo / '.git', repo / '.git/worktrees', entry, path.parent, path):
+            with directory(parent, deadline) as fd:
+                if identity(os.fstat(fd)) != rows.topology[str(parent)]:
+                    raise Retain(f'changed_registration_entry:{parent}')
+        for pointer in (entry / 'gitdir', entry / 'commondir', path / '.git'):
+            seen, _ = _metadata_file(pointer, deadline)
+            if seen != rows.topology[str(pointer)]:
+                raise Retain(f'metadata_changed:{pointer}')
+    except Expired:
+        raise
+    except Exception as exc:
+        raise _RegistrationUnknown(f'unknown_git_registrations:{repo / ".git/worktrees"}: {exc}') from exc
+
+
+def worktree_inventory(candidate: dict, topology: dict, deadline: float) -> Exception | None:
+    """Inspect cheap keeps in candidate order; success never admits deletion."""
+    try:
+        path = Path(candidate['path'])
+        _worktree_guard(candidate, deadline)
+        rows = topology[candidate['repo']]
+        rows.require(path, deadline)
+        _worktree_location(path, Path(candidate['repo']), rows, deadline)
+        dirty = git(path, deadline, 'status', '--porcelain=v1', '-z', '--untracked-files=all')
+        if dirty:
+            candidate['dirty_paths'] = dirty.split('\0')
+            raise Retain('dirty_or_untracked')
+    except Expired:
+        raise
+    except Exception as exc:
+        return exc.with_traceback(None)
+    return None
+
+
+def _worktree_gate(candidate: dict, deadline: float, retained: dict | None = None) -> tuple:
+    path = Path(candidate['path'])
+    task_id = path.name
+    _worktree_guard(candidate, deadline)
     repo = Path(candidate['repo'])
     rows = registrations(repo, deadline, retained=retained)
     rows.require(path, deadline)
@@ -1208,7 +1251,7 @@ def _discovery_scope(path: Path, inventory: dict, deadline: float, checkpoint: C
             raise Expired('discovery checkpoint failed; global stop: ' + str(exc)) from exc
 
 
-def discover(org: Path, deadline: float, *, inventory: dict | None = None, checkpoint: Callable[[], None] = lambda: None, retained: dict | None = None) -> list[dict]:
+def discover(org: Path, deadline: float, *, inventory: dict | None = None, checkpoint: Callable[[], None] = lambda: None, retained: dict | None = None, topology: dict | None = None) -> list[dict]:
     """Stable ordering of known candidates; uncertain scopes are never empty."""
     inventory = inventory if inventory is not None else {}
     inventory.update(candidates=[], discovery_scopes=[], scope_classifications={}, exclusions=[], deferred_arrivals=[], discovery='unknown', discovery_root=str(org / 'workspaces'),
@@ -1275,6 +1318,8 @@ def discover(org: Path, deadline: float, *, inventory: dict | None = None, check
                                 if finding == 'arrival': inventory['deferred_arrivals'].append(path)
                             if str(repo) not in rows:
                                 raise Retain('unknown_git_primary_registration')
+                            if topology is not None:
+                                topology[str(repo)] = rows
                             prefix = repo / '.claude/worktrees'
                             for literal in rows.linked.keys() | rows.residues.keys():
                                 check(deadline)
@@ -1408,7 +1453,8 @@ def sweep_org(org: Path, deadline: float, *, mode: str, checkpoint=lambda: None,
     uncertain_repos = set()
 
     try:
-        candidates = discover(org, deadline, inventory=result, checkpoint=report_checkpoint, retained=retained)
+        topology = {}
+        candidates = discover(org, deadline, inventory=result, checkpoint=report_checkpoint, retained=retained, topology=topology)
         refusals = evidence.inventory(candidates)
         report_checkpoint()
         for candidate in candidates:
@@ -1428,6 +1474,9 @@ def sweep_org(org: Path, deadline: float, *, mode: str, checkpoint=lambda: None,
                     raise Retain(local[0])
                 if candidate['path'] in refusals:
                     raise refusals[candidate['path']]
+                if candidate['phase'] == 'worktree':
+                    refusal = worktree_inventory(candidate, topology, deadline)
+                    if refusal is not None: raise refusal
                 tree = admit(candidate, evidence, deadline, now=now, retained=retained)
                 amount, _ = allocated(tree, measured_inodes)
                 phase['measured_allocated_bytes'] += amount

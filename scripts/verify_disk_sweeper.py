@@ -3841,13 +3841,13 @@ def c25():
             metrics = candidate['measurement']
             counters = report['measurements']['clones'][str(repo)]
             assert report['measurements']['errors']['count'] == 0, report
-            assert len(calls) == counters['topology_reads'] == (2 if dirty else 9), (calls, counters)
-            assert counters['censuses'] == (6 if dirty else 27), counters
-            assert counters['ownership_reads'] == (1 if dirty else 4), counters
+            assert len(calls) == counters['topology_reads'] == (1 if dirty else 9), (calls, counters)
+            assert counters['censuses'] == (3 if dirty else 27), counters
+            assert counters['ownership_reads'] == (0 if dirty else 4), counters
             assert counters['entries_walked'] == sum(snapshots), (counters, snapshots)
-            assert counters['git']['worktree list']['calls'] == (2 if dirty else 9), counters
-            assert counters['git']['status']['calls'] == (1 if dirty else 6), counters
-            assert counters['git']['rev-parse']['calls'] == (3 if dirty else 18), counters
+            assert counters['git']['worktree list']['calls'] == (1 if dirty else 9), counters
+            assert counters['git']['status']['calls'] == (1 if dirty else 7), counters
+            assert counters['git'].get('rev-parse', {}).get('calls', 0) == (0 if dirty else 18), counters
             assert ('rev-list' not in counters['git']) if dirty else counters['git']['rev-list']['calls'] == 6
             assert counters['gitdir_gone_count'] == 0, counters
             for value in counters['git'].values():
@@ -4696,12 +4696,103 @@ def c35():
     return dict(variants=observations, limits='ownership inventory only; topology/candidate race proof remains required')
 
 
+def c36():
+    """Same-input keep decisions, negative healing latch and one clone census."""
+    observations, failures = [], []
+    old = ownership_base()
+    expected = dict(tracked='dirty_or_untracked', untracked='dirty_or_untracked',
+                    guard='unknown_worktree_owner', locked='git_unregistered_locked_or_prunable',
+                    branch='unknown_worktree_branch_owner', active='task_or_root_not_terminal:in_progress')
+    for label in (*expected, 'clean'):
+        with fixture() as f:
+            ownership_indexes(f); repo, path = f.worktree('TASK-1')
+            if label in ('tracked', 'active'): (path / 'source').write_text('changed\n')
+            if label == 'untracked': (path / 'new-file').write_text('new\n')
+            if label == 'guard': (path / '.worktree-guard.json').write_text('{}')
+            if label == 'locked': f.git(repo, 'worktree', 'lock', str(path))
+            if label == 'branch':
+                f.git(repo, 'branch', 'other', 'HEAD'); f.git(path, 'symbolic-ref', 'HEAD', 'refs/heads/other')
+            if label == 'active':
+                f.db.execute("UPDATE tasks SET status='in_progress'"); f.db.commit()
+            reports = [module.sweep_org(f.org, time.monotonic() + 20, mode='dry_run', now=NOW) for module in (old, ds)]
+            assert ownership_decisions(reports[0], f.base) == ownership_decisions(reports[1], f.base), (label, reports)
+            target = reports[1]['candidates'][0]
+            assert target['state'] == ('eligible' if label == 'clean' else 'retained'), (label, target)
+            if label in expected: assert target['reason'] == expected[label], (label, target)
+            observations.append(dict(variant='base_equivalence/' + label, decision=target['state'], reason=target.get('reason')))
+    for direction in ('negative_heals', 'positive_changes'):
+        for label in ('tracked', 'untracked', 'guard', 'locked'):
+            try:
+                with fixture() as f:
+                    ownership_indexes(f); repo, path = f.worktree('TASK-1')
+                    guard = (path / '.worktree-guard.json').read_bytes()
+                    original_inventory, original_admit = ds.worktree_inventory, ds.admit
+                    events, admissions, result = [], [], {}
+                    def change():
+                        if label == 'tracked': (path / 'source').write_text('changed\n')
+                        if label == 'untracked': (path / 'new-file').write_text('new\n')
+                        if label == 'guard': (path / '.worktree-guard.json').write_text('{}')
+                        if label == 'locked': f.git(repo, 'worktree', 'lock', str(path))
+                    def heal():
+                        if label == 'tracked': (path / 'source').write_text('committed\n')
+                        if label == 'untracked': (path / 'new-file').unlink()
+                        if label == 'guard': (path / '.worktree-guard.json').write_bytes(guard)
+                        if label == 'locked': f.git(repo, 'worktree', 'unlock', str(path))
+                    if direction == 'negative_heals': change()
+                    def inventory(*args, **kwargs):
+                        refused = original_inventory(*args, **kwargs)
+                        if direction == 'negative_heals':
+                            assert str(refused) == expected[label], (label, refused)
+                            heal()
+                        else:
+                            assert refused is None, (label, refused)
+                            change()
+                        events.append('changed_after_worktree_inventory')
+                        return refused
+                    def admit(*args, **kwargs):
+                        admissions.append(args[0]['path']); return original_admit(*args, **kwargs)
+                    def checkpoint():
+                        target = next((c for c in result.get('candidates', []) if c['path'] == str(path)), None)
+                        if direction == 'positive_changes' and target and target['state'] == 'retained' and len(events) == 1:
+                            assert target['reason'] == expected[label], (label, target)
+                            heal(); events.append('healed_after_refusal')
+                    with patch.object(ds, 'worktree_inventory', inventory), patch.object(ds, 'admit', admit):
+                        report = ds.sweep_org(f.org, time.monotonic() + 20, mode='on', now=NOW, result=result, checkpoint=checkpoint)
+                    retained(report, path, expected[label])
+                    assert (path / 'source').read_text() == 'committed\n' and not (path / 'new-file').exists()
+                    assert (path / '.worktree-guard.json').read_bytes() == guard
+                    assert f.git(repo, 'rev-parse', 'refs/heads/task/TASK-1').strip()
+                    assert bool(admissions) == (direction == 'positive_changes'), (direction, label, admissions)
+                    assert events == (['changed_after_worktree_inventory'] if direction == 'negative_heals' else
+                                      ['changed_after_worktree_inventory', 'healed_after_refusal']), events
+                    # Healing is real; it cannot grant this night a second try.
+                    ds.admit(dict(phase='worktree', path=str(path), workspace=str(f.workspace), repo=str(repo)),
+                             ds.Evidence(f.org, time.monotonic() + 10), time.monotonic() + 10, now=NOW)
+                    observations.append(dict(variant=direction + '/' + label, result='PASS', reason=expected[label], admissions=len(admissions)))
+            except AssertionError as exc:
+                failures.append(dict(variant=direction + '/' + label, error=str(exc)[:2000]))
+    with fixture() as f:
+        ownership_indexes(f)
+        for index in range(40):
+            repo, path = f.worktree(f'TASK-{index + 1}'); (path / 'source').write_text('changed\n')
+        reports = [module.sweep_org(f.org, time.monotonic() + 30, mode='on', now=NOW) for module in (old, ds)]
+        assert ownership_decisions(reports[0], f.base) == ownership_decisions(reports[1], f.base), reports
+        before, after = [r['measurements']['counters'] for r in reports]
+        if after['topology_reads'] != 1 or after['censuses'] != 3 or not after['censuses'] < before['censuses']:
+            failures.append(dict(variant='forty_dirty_keeps_one_clone_inventory', base=before, new=after))
+        assert all(c['state'] == 'retained' and c['reason'] == 'dirty_or_untracked' for c in reports[1]['candidates'])
+        observations.append(dict(variant='forty_dirty_keeps_one_clone_inventory', base_censuses=before['censuses'],
+                                 new_censuses=after['censuses'], new_topology_reads=after['topology_reads'], decision_differences=[]))
+    assert not failures, dict(passed=observations, failures=failures)
+    return dict(variants=observations, limits='Keep-only topology/guard/status inventory; destructive topology path remains unchanged')
+
+
 if __name__=='__main__':
     parser=argparse.ArgumentParser(description=__doc__)
     selection=parser.add_mutually_exclusive_group()
     selection.add_argument('--corrections-only', action='store_true', help='THR307seq117/134: C1-C7, S1-S5 (8-12) and per-org settlement (13); no historical/isolation cases')
     selection.add_argument('--correction-cases', type=int, nargs='+', choices=range(1, 14), help='select finite cases within the corrections lane')
-    selection.add_argument('--cases',type=int,nargs='+',choices=range(1,36))
+    selection.add_argument('--cases',type=int,nargs='+',choices=range(1,37))
     selection.add_argument('--isolation-case',choices=('mount','root'),help='only the private executable namespace fixture; exit77 if unavailable')
     args=parser.parse_args()
     # The private helper alone is mapped root; the driver retains its ordinary
@@ -4728,7 +4819,8 @@ if __name__=='__main__':
             purposes += ('Indexed ownership equivalence with pinned base', 'Fresh ownership after inventory and latched refusals', 'Production-sized base/new disposable measurement')
             purposes += ('Batched checkpoint equivalence, crash honesty and safe publication',)
             purposes += ('Org ownership inventory, refusal latch and fresh positive invalidation',)
-            for number,(fn,purpose) in enumerate(zip((c1,c2,c3,c4,c5,c6,c7,c8,c9,c10,c11,c12,c13,c14,c15,c16,c17,c18,c19,c20,c21,c22,c23,c24,c25,c26,c27,c28,c29,c30,c31,c32,c33,c34,c35),purposes),1):
+            purposes += ('Clone keep inventory, dirty cost and healed-refusal latch',)
+            for number,(fn,purpose) in enumerate(zip((c1,c2,c3,c4,c5,c6,c7,c8,c9,c10,c11,c12,c13,c14,c15,c16,c17,c18,c19,c20,c21,c22,c23,c24,c25,c26,c27,c28,c29,c30,c31,c32,c33,c34,c35,c36),purposes),1):
                 if args.cases is None or number in args.cases:
                     if number in (3, 4):
                         RESULTS.append(dict(case=number, purpose=purpose, result='SUPERSEDED', reason='THR307 seq117 removed OS-process eligibility; historical source not executed'))

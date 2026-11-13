@@ -69,9 +69,16 @@ only; a failed observation stays kept even if it later heals. The same evaluator
 preserves refusal priority. Successful inventory answers are discarded: every
 existing delete, repair and retry admission opens an independent current read,
 including after slow work. Transaction-local task/job rows are never reused as
-delete authority. There is no schema, index or classification change. Topology
-admission frequency remains unchanged in this partial implementation. There is
-no two-pass ordering without real-night step 1 data.
+delete authority. Discovery retains its once-per-clone topology inventory for
+KEEP decisions only. In existing candidate order after ownership refusals, guard,
+known mapping/lock/branch and dirty-status refusals are final for the night, even
+after healing. Own directory identities and reciprocal pointer signatures are
+revalidated no-follow before status; unsafe changed locations hold the clone. A clean
+status or successful mapping check is discarded. Kept items perform no later
+admission; deletion still repeats every existing fresh topology, ownership and
+tree gate. There is no schema, index or classification change. Cheaper destructive
+admission remains unfinished in this partial implementation. There is no two-pass
+ordering without real-night step 1 data.
 
 Worker report publication batches up to 32 nonmutating checkpoint requests.
 The initial report, first initialized org state, outer run boundaries, every org
