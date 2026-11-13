@@ -1,20 +1,39 @@
 {
   "uv": {
     "version": "0.12.21",
-    "url": "https://github.com/astral-sh/uv/releases/download/0.12.21/uv-aarch64-apple-darwin.tar.gz",
     "sha256": "b88bda573e566ef9bced66b155fe0408626fbbc053aee1c30ba686f0728c9447",
-    "checksum_source": "https://github.com/astral-sh/uv/releases/download/0.12.21/uv-aarch64-apple-darwin.tar.gz.sha256"
+    "checksum_source": "https://github.com/astral-sh/uv/releases/download/0.12.21/uv-aarch64-apple-darwin.tar.gz.sha256",
+    "origins": [
+      "https://github.com/astral-sh/uv/releases/download/0.12.21/uv-aarch64-apple-darwin.tar.gz"
+    ],
+    "official_sources": [
+      "https://github.com/astral-sh/uv/releases/tag/0.12.21"
+    ]
   },
   "node": {
     "version": "24.19.0",
-    "url": "https://nodejs.org/dist/v24.19.0/node-v24.19.0-darwin-arm64.tar.gz",
     "sha256": "8294b7aa9b03997481c06babf1e8b270c859358f27da57a11509afe537ac381d",
-    "checksum_source": "https://nodejs.org/dist/v24.19.0/SHASUMS256.txt"
+    "checksum_source": "https://nodejs.org/dist/v24.19.0/SHASUMS256.txt",
+    "origins": [
+      "https://nodejs.org/dist/v24.19.0/node-v24.19.0-darwin-arm64.tar.gz"
+    ],
+    "official_sources": [
+      "https://nodejs.org/dist/v24.19.0/"
+    ]
   },
   "go": {
     "version": "1.23.12",
-    "url": "https://go.dev/dl/go1.23.12.darwin-arm64.tar.gz",
     "sha256": "5bfa117e401ae64e7ffb960243c448b535fe007e682a13ff6c7371f4a6f0ccaa",
-    "checksum_source": "https://go.dev/dl/?mode=json&include=all"
+    "checksum_source": "https://go.dev/dl/?mode=json&include=all",
+    "origins": [
+      "https://go.dev/dl/go1.23.12.darwin-arm64.tar.gz",
+      "https://dl.google.com/go/go1.23.12.darwin-arm64.tar.gz",
+      "https://golang.google.cn/dl/go1.23.12.darwin-arm64.tar.gz"
+    ],
+    "official_sources": [
+      "https://go.dev/dl/",
+      "https://github.com/golang/website/blob/master/internal/dl/server.go",
+      "https://github.com/golang/website/blob/master/cmd/golangorg/server.go"
+    ]
   }
 }

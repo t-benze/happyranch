@@ -72,6 +72,8 @@ class ToolchainTests(unittest.TestCase):
 
             def observe(argv: list[str], *_args: object) -> dict[str, Any]:
                 if argv[0] == "/bin/bash":
+                    if argv[-1] in ("claude", "codex"):
+                        return {"exit_code": 1, "output": ""}
                     value = paths.get(argv[-1], "/usr/bin/" + argv[-1])
                 elif argv[0] == "/usr/bin/file":
                     value = "Mach-O 64-bit executable arm64"
@@ -107,6 +109,49 @@ class ToolchainTests(unittest.TestCase):
         row = command([sys.executable, "-c", "raise SystemExit(0)"], time.monotonic() - 1)
         self.assertIsNone(row["exit_code"])
         self.assertIn("deadline", row["error"])
+
+    def test_executor_observation_is_non_gating_and_discards_auth_output(self) -> None:
+        from scripts.mac_native.toolchain import HOST_PATH
+
+        for auth_exit in (0, 1, 2, None):
+            with self.subTest(auth_exit=auth_exit), tempfile.TemporaryDirectory() as directory:
+                calls = []
+
+                def observe(argv: list[str], _deadline: float, env: dict) -> dict:
+                    calls.append(argv)
+                    self.assertEqual(env["PATH"], HOST_PATH)
+                    self.assertEqual(env["HOME"], directory)
+                    if argv[0] == "/bin/bash":
+                        # Missing Claude must not hide an available Codex.
+                        return {"exit_code": 0 if argv[-1] == "codex" else 1,
+                                "output": "/usr/local/bin/codex" if argv[-1] == "codex" else ""}
+                    if argv[-1] == "--version":
+                        return {"exit_code": 0, "output": "codex-cli 1.2.3"}
+                    return {"exit_code": auth_exit, "output": "synthetic-secret-account-and-key-preview"}
+
+                def fail_provision(_scratch: Path, _pins: dict, _deadline: float, attempts: list) -> None:
+                    attempts.append({"artifact": "go", "curl_exit_code": 28})
+                    raise RuntimeError("all official origins failed")
+
+                with (patch.dict(os.environ, {"TMPDIR": directory, "HOME": directory}),
+                      patch("scripts.mac_native.suite_toolchain.command", side_effect=observe),
+                      patch("scripts.mac_native.toolchain.provision", side_effect=fail_provision)):
+                    report: dict[str, Any] = {}
+                    with self.assertRaisesRegex(RuntimeError, "official origins"):
+                        run(report)
+                section = report["toolchain"]
+                executors = section["executor_feasibility"]["executors"]
+                self.assertEqual(executors["claude"]["path"], None)
+                self.assertEqual(executors["codex"]["version"], "codex-cli 1.2.3")
+                expected = ("CREDENTIALS_PRESENT_SESSION_UNTESTED" if auth_exit == 0 else
+                            "NOT_AUTHENTICATED_OR_STATUS_FAILED" if auth_exit == 1 else "UNAVAILABLE")
+                self.assertEqual(executors["codex"]["auth_status"], expected)
+                self.assertNotIn("synthetic-secret", str(report))
+                self.assertFalse(section["executor_feasibility"]["session_started"])
+                self.assertFalse(section["ready"])
+                self.assertEqual(section["provisioning"]["attempts"], [{"artifact": "go", "curl_exit_code": 28}])
+                self.assertEqual([argv[1:] for argv in calls if argv[0] != "/bin/bash"],
+                                 [["--version"], ["login", "status"]])
 
 
 if __name__ == "__main__":

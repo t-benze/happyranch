@@ -50,11 +50,62 @@ The next run does not sweep previous scratch. Jenkins retains 20 builds/30 days.
 and Go **1.23.12** from official Darwin arm64 release tarballs. The exact URLs,
 SHA256 and official checksum sources are reviewed at `SOURCE_SHA` in
 [`toolchain-pins.json`](../../../scripts/mac_native/toolchain-pins.json).
-The source-side provisioner downloads with curl (10s connect, at most 90s/file,
-128MiB/file) inside one 240s budget. It verifies SHA256 **before** opening each
+The source-side provisioner downloads directly with curl (10s connect, at most
+90s/artifact across its origins, 128MiB per combined archive, with the resume
+offset subtracted from curl's transfer cap) inside one 240s provisioning
+budget. Each attempt uses the remaining artifact/provisioning time, reserving
+at most 5s per later origin and at most 20% of that remaining time for fallback
+(Go's first attempt: about 80s). Unspent time stays available to later origins.
+The process deadline allows up to 1s to collect curl's final metrics,
+clipped by the original artifact/provisioning deadlines. There are no curl
+retries, ambient proxies, curl config or credentials. It verifies SHA256 **before** opening each
 archive; a mismatch refuses extraction. Safe tar extraction also limits members
 (20,000 per archive, 30,000 aggregate), each file (256MiB) and total payload (768MiB). Partial trees are never
 reused; the existing job EXIT trap deletes them with its private scratch.
+
+Origins are attempted in pins-file order, once each. Every origin uses the same
+artifact SHA256; curl [resumes](https://curl.se/docs/manpage.html#-C) the same
+partial file across these listed origins for that exact pinned artifact.
+There is no cross-artifact or cross-run reuse. A checksum mismatch deletes the
+file and stops immediately, without trying to hide it through fallback.
+
+| Artifact | Ordered official origins | Official source |
+| --- | --- | --- |
+| Go 1.23.12 Darwin arm64 | `go.dev/dl/`, `dl.google.com/go/`, `golang.google.cn/dl/` | [Go downloads](https://go.dev/dl/), [Go's download handler redirects to dl.google.com](https://github.com/golang/website/blob/master/internal/dl/server.go), [Go's server registers the China site/download handlers](https://github.com/golang/website/blob/master/cmd/golangorg/server.go) |
+| Node 24.19.0 Darwin arm64 | `nodejs.org/dist/v24.19.0/` | [Official release directory](https://nodejs.org/dist/v24.19.0/) |
+| uv 0.12.21 Darwin arm64 | `github.com/astral-sh/uv/releases/download/0.12.21/` | [Astral release](https://github.com/astral-sh/uv/releases/tag/0.12.21) |
+
+The Go front ends can redirect to the same Google download host; these origins
+do not promise independent connectivity. No third-party mirrors are allowed.
+`provisioning.attempts` survives failure and records artifact/origin, actual curl
+exit (including signal termination), bounded stderr tail (2048 bytes), all ten
+`-w` metrics, and whether the hash passed. Metrics are `http_code`, `url_effective`,
+`num_redirects`, `remote_ip`, `time_namelookup`, `time_connect`, `time_appconnect`,
+`time_starttransfer`, `time_total`, `size_download`. Unavailable metrics are null.
+Each attempt also records `resume_from_bytes`, `archive_bytes`, `bytes_received`
+(nonnegative file growth during this attempt) and `elapsed_seconds` from the
+local monotonic clock. These independent observations remain available after a
+deadline kill where file metadata is readable; they do not invent curl metrics.
+Already available complete metric lines are retained even after a partial
+write-out; kill-time pipe draining is nonblocking and capped at 64KiB per pipe.
+Only numeric metrics and validated IPs survive; effective URLs omit userinfo,
+query, fragment and unrecognized paths, including signed GitHub asset paths.
+Only recognized curl network-error lines survive in stderr; arbitrary messages
+retain their curl code with detail omitted. Headers/cookies, account identifiers,
+credentials and raw authentication output are never reported. Curl's stdout is
+retained up to 8192 bytes and stderr as a rolling 2048-byte tail while draining;
+there are at most five attempts. No verbose/header dump is enabled.
+
+Before provisioning, a separate non-gating 30s observation records the effective
+user/uid and whether `claude`/`codex` resolve on the fixed host PATH, a parsed
+`--version`, and exit-only [Claude `auth status`](https://code.claude.com/docs/en/cli-reference)
+or [Codex `login status`](https://developers.openai.com/codex/cli/reference/).
+The existing 5s/command and 1024-byte cap apply. The existing job's isolated HOME
+is preserved: host-stored login is **unverified**, and no credential file is
+inspected/copied or session started. Exit 0 means credentials present/session
+untested; exit 1 means unauthenticated or status failed; unsupported/failed/timed
+out commands stay unavailable. This evidence remains in `executor_feasibility`
+even if the first download fails; it does not gate `ready` or prove a real session.
 
 Only this suite's child processes receive the three scratch bin directories
 prepended to the fixed job host PATH. No host PATH file, ~/.local, Homebrew,
@@ -96,13 +147,14 @@ or runtime dependency update is included.
 The observation phase has one 90s deadline, five seconds/command and 1024 output
 bytes/command. Scratch free bytes are recorded. No app build/run occurs.
 
-**Native proof deferred:** the live job still has its 32MiB cap. The selected Node
-tarball is 52,234,372 bytes, already larger than that cap before extraction.
-Do not run this head under the live configuration. After independent review,
-QA, merge and manager-owned template application, a separately authorized
-exact-head toolchain run must prove provisioning and scratch cleanup. Existing
-build 18 at af00de26 remains historical FAILURE (missing uv/wrong Node), not proof
-of the new provisioner. No app-build or packaged-run allowance is spent here.
+**Native proof:** build 19 at d9ff2f85 reached the first Go download after the
+locked bootstrap, then failed with curl 28 and no transfer diagnostics. It proves
+neither toolchain readiness nor a packaged app. A separately authorized exact-head
+source probe must establish the new diagnostics/provisioning and scratch cleanup;
+verify live job limits and exact-SHA fetch capability read-only before submission.
+If no official origin for an artifact is reachable without a proxy, host/job
+change or new credential, stop and report to the founder; do not work around it.
+No app-build or packaged-run allowance is spent here.
 
 Portable checks, outside the retired Python unit suite:
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import pwd
 import re
 import selectors
 import signal
@@ -85,19 +86,58 @@ def accepted(name: str, row: dict[str, Any]) -> bool:
     return re.search(patterns[name], version) is not None
 
 
+def executor_feasibility(deadline: float) -> dict[str, Any]:
+    """Observe existing CLIs only; retain no raw authentication command output."""
+    from scripts.mac_native.toolchain import HOST_PATH
+
+    env = dict(os.environ, PATH=HOST_PATH)
+    result: dict[str, Any] = {
+        "user": pwd.getpwuid(os.geteuid()).pw_name, "uid": os.geteuid(),
+        "path": HOST_PATH, "session_started": False,
+        "auth_scope": "existing job environment with isolated HOME; host-stored login unverified",
+        "executors": {},
+    }
+    for name, flags in (("claude", ["auth", "status"]), ("codex", ["login", "status"])):
+        lookup = command(["/bin/bash", "-p", "-c", 'command -v "$1"', "toolchain", name], deadline, env)
+        path = lookup["output"] if lookup["exit_code"] == 0 else None
+        row: dict[str, Any] = {"path": path, "version": None, "auth_status": "UNAVAILABLE"}
+        result["executors"][name] = row
+        if not path or not Path(path).is_absolute():
+            continue
+        version = command([path, "--version"], deadline, env)
+        row["version_exit_code"] = version["exit_code"]
+        match = re.fullmatch(r"(?:codex-cli )?[0-9]+\.[0-9]+\.[0-9]+(?: \(Claude Code\))?", version["output"])
+        if version["exit_code"] == 0 and match:
+            row["version"] = match[0]
+        status = command([path, *flags], deadline, env)
+        # Exit-only observation deliberately discards account/email/key previews
+        # and errors. Older CLIs without the status subcommand stay unavailable.
+        row["auth_command"] = flags
+        row["auth_exit_code"] = status["exit_code"]
+        if status["exit_code"] == 0:
+            row["auth_status"] = "CREDENTIALS_PRESENT_SESSION_UNTESTED"
+        elif status["exit_code"] == 1:
+            row["auth_status"] = "NOT_AUTHENTICATED_OR_STATUS_FAILED"
+    return result
+
+
 def run(report: dict[str, Any]) -> None:
     from scripts.mac_native.toolchain import PINS, parse_pins, provision
 
-    provision_deadline = time.monotonic() + 240
     section: dict[str, Any] = {"tools": {}, "build_ran": False, "ready": False}
     report["toolchain"] = section
+    # Non-gating and recorded even if the first download fails. Keep the fixed
+    # job environment; never redirect these commands to the user's real HOME.
+    section["executor_feasibility"] = executor_feasibility(time.monotonic() + 30)
+    provision_deadline = time.monotonic() + 240
     scratch = Path(os.environ.get("TMPDIR", ""))
     if not scratch.is_absolute() or not scratch.is_dir():
         raise RuntimeError("toolchain requires the job scratch TMPDIR")
     scratch = scratch.resolve()
     pins = parse_pins(PINS.read_text(encoding="utf-8"))
-    section["provisioning"] = {"pins": pins, "completed": False}
-    env = provision(scratch / "native-toolchain", pins, provision_deadline)
+    section["provisioning"] = {"pins": pins, "completed": False, "attempts": []}
+    env = provision(scratch / "native-toolchain", pins, provision_deadline,
+                    section["provisioning"]["attempts"])
     section["provisioning"]["completed"] = True
     deadline = time.monotonic() + 90
     # statvfs reads free space without creating any fixture or cache.

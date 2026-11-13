@@ -128,9 +128,16 @@ versions and paths; GOROOT/GOPATH/Go caches are private and GOTOOLCHAIN=local,
 with GOFLAGS unchanged. This uses the same conservative Go line described below;
 newer maintained compatibility remains unestablished. The reviewed job template
 increases only timeout 30->90min and per-file cap 32->256MiB; other caps stay fixed.
-Native provisioner proof follows merge + manager config apply because the live
-32MiB cap rejects the 52,234,372-byte Node archive. No app build/run occurs in
-that preflight. See the [probe contract](../ci/jenkins/mac-native-probe/README.md).
+Build 19 reached the first Go download but failed with curl 28; readiness is
+unproven. The source preflight now records bounded per-origin curl exit/stderr
+and metrics, uses ordered official Go origins with the same SHA256 pin and
+unchanged 90s/artifact, 240s provisioning budget. Attempts use remaining time
+with small fallback reserves and resume the same pinned partial; a bad final
+hash deletes it and refuses extraction. Deadline-kill diagnostics retain file
+byte deltas/elapsed time and available curl metrics. It records non-gating executor version/exit-only
+auth status on the fixed host PATH before downloads. Isolated HOME is preserved;
+host-stored login and a real session remain unverified. No proxy, host/job change
+or credential workaround is permitted. No app build/run occurs in that preflight. See the [probe contract](../ci/jenkins/mac-native-probe/README.md).
 
 The full hosted candidate workflow bootstraps native arm64 Go **1.23.12** using
 `actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e` (v7.0.0), with
