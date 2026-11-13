@@ -192,6 +192,9 @@ class LaunchdServiceManager:
         block: list[str] | None = None
         for line in output.splitlines():
             if block is None:
+                if re.fullmatch(r"\s*disabled services\s*=\s*\(no disabled services\)\s*", line):
+                    block = []
+                    break  # The observed empty sentinel is already complete.
                 if re.fullmatch(r"\s*disabled services\s*=\s*\{\s*", line):
                     block = []
             elif line.strip() == "}":

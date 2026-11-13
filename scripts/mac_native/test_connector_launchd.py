@@ -199,14 +199,22 @@ class LaunchdObservations(unittest.TestCase):
                   (LABEL, "maybe", False, None), (LABEL, "", True, None),
                   (LABEL, "disabled extra", False, None),
                   (LABEL, f'disabled\n "{LABEL}" => enabled', False, None)]
-        for key, override, disabled, expected in cases:
-            with self.subTest(key=key, override=override, disabled=disabled), tempfile.TemporaryDirectory() as folder:
+        cases = [(f'disabled services = {{\n "{key}" => {override}\n}}', disabled, expected)
+                 for key, override, disabled, expected in cases]
+        # Verbatim print-disabled receipt from native build24 (exit 0).
+        empty = "disabled services = (no disabled services)"
+        for disabled in (True, False):
+            for output in (empty, "\n \t" + empty.replace(" = ", " \t= \t") + " \t\n",
+                           empty + f'\nlogin item associations = {{\n "{LABEL}" => malformed\n}}'):
+                cases.append((output, disabled, not disabled))
+        for output, disabled, expected in cases:
+            with self.subTest(output=output, disabled=disabled), tempfile.TemporaryDirectory() as folder:
                 root = Path(folder)
                 path = root / f"{LABEL}.plist"
                 value = plistlib.loads(render_launch_agent(LABEL, ("/bin/sleep", "20"), logs_dir=root).encode())
                 value["Disabled"] = disabled
                 path.write_bytes(plistlib.dumps(value))
-                observation = row("print-disabled", DOMAIN, output=f'disabled services = {{\n "{key}" => {override}\n}}')
+                observation = row("print-disabled", DOMAIN, output=output)
                 rows = [row("print", DOMAIN), *absent(), observation, observation]
                 if expected is not None:
                     if not expected:
@@ -245,6 +253,7 @@ class LaunchdObservations(unittest.TestCase):
             (0, f'login item associations = {{\n "{LABEL}" => disabled\n}}', None),
             (0, f'disabled services = {{\n "{LABEL}" => disabled\n', None),
             (0, f'disabled services = {{\nlogin item associations = {{\n "{LABEL}" => enabled\n}}', None),
+            (0, 'disabled services = (no services)', None),
             (0, 'unrecognized output ' + 'x' * 600, None),
             (5, 'print-disabled denied ' + 'y' * 600, None),
         ]

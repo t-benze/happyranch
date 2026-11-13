@@ -587,11 +587,13 @@ held diagnosed correction; source changes never replenish or submit that budget.
 
 QA may select this source suite at the reviewed exact `SOURCE_SHA` using the
 existing string parameter. Do not change the Jenkins config. The maker does
-not run this job. Manager TASK-15950 step 4 permits PR 1 a third native run
-after build22's print-disabled parser-compatibility failure. Build20's GUI-domain
-refusal and build22's parser refusal were code failures, not infrastructure
-failures. The founder goal ledger is currently 2 of 8 native runs used and will
-be 3 of 8 after that authorized third run; this maker leg consumes zero runs.
+not run this job. Manager TASK-15950 step 5 raises PR 1's native cap from 3 to 4,
+permitting one further run after build24's empty print-disabled sentinel failure.
+Build20's GUI-domain refusal, build22's parser refusal and build24's rejection
+of `disabled services = (no disabled services)` were genuine code failures.
+The founder goal ledger is currently 3 of 8 native runs used and becomes 4 of 8
+only after the future authorized fourth run executes; this maker leg consumes
+zero runs. The founder allowance remains 8 total.
 
 The suite calls the real `LaunchdServiceManager` with a unique UUID label
 `ai.happyranch.connector-probe-<uuid>` and `/bin/sleep 300`. It writes a
