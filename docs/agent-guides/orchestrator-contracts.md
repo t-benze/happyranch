@@ -1754,6 +1754,23 @@ When starting a feature, read the relevant design doc first and follow existing 
 
 ## Independent nightly disk sweep (THR307)
 
+THR307 seq337 package step 1 adds observation-only candidate `measurement`,
+org/clone `measurements`, run/org `stop_cause` and bounded once-per-run retained
+report history. A report-count or aggregate-byte boundary preserves validated
+dates and exposes `measurement_history.status=bounded_window`, `reports` and
+`bytes_read`; `kept_since` is the earliest recorded retained date in the window
+actually read, including safe carried dates, not an exhaustive-history claim.
+Invalid/unsafe or individually oversized reports still expose unavailable
+history and discard partial dates. The existing loader-code `revision`,
+report/audit keys and empty-task/daemon envelope keep their meanings; the audit
+retains the same org projection. No extra candidate observation or
+measurement-only publication is added. Kept size is `unknown` without an existing
+complete snapshot; interrupted effects after the last checkpoint remain unknown.
+See the maintained nightly
+sweeper spec, “Measurement-only additions”, for exact counter/history bounds,
+write-confirmation lag and measurement-failure behavior. This grants no cleanup
+or configuration authority.
+
 One daemon-wide operator control is `<daemon_home>/disk-sweep/stop.json`.
 Its only supported content is a JSON object containing exactly `stop` with a
 real Boolean: `{"stop":true}` suspends scheduled deletion for all orgs;

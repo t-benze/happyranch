@@ -16,9 +16,86 @@ import stat
 import sys
 import time
 from collections import Counter
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
+from contextvars import ContextVar
+from functools import wraps
 from pathlib import Path
 from threading import Lock
+from typing import Any
+
+
+# Observation is invocation-local and has no authority over the operation. In
+# particular, neither clock nor observer failure may escape into a safety gate.
+_observer = ContextVar('disk_sweep_observer', default=None)
+
+
+def observe(event: str, phase: str = '', **values: Any) -> None:
+    observer = _observer.get()
+    if observer is None:
+        return
+    try:
+        observer.record(event, phase, **values)
+    except Exception as exc:
+        try:
+            observer.errors['count'] += 1
+            if len(observer.errors['types']) < 8:
+                observer.errors['types'].append(type(exc).__name__[:64])
+        except Exception:
+            pass
+
+
+def measurement_clock() -> float | None:
+    try:
+        return time.perf_counter()
+    except Exception as exc:
+        observe('measurement_error', error=type(exc).__name__)
+        return None
+
+
+def measurement_elapsed(started: float | None) -> float | None:
+    try:
+        ended = measurement_clock()
+        return max(0, ended - started) if started is not None and ended is not None else None
+    except Exception as exc:
+        observe('measurement_error', error=type(exc).__name__)
+        return None
+
+
+@contextmanager
+def observing(event: str, *args: Any, **kwargs: Any) -> Iterator[None]:
+    started = measurement_clock()
+    observe(event, 'start', args=args, kwargs=kwargs)
+    error = None
+    try:
+        yield
+    except BaseException as exc:
+        error = exc
+        raise
+    finally:
+        observe(event, 'finish', args=args, kwargs=kwargs, error=error,
+                duration=measurement_elapsed(started))
+
+
+def observed(event: str) -> Callable:
+    """Time existing calls, including unsuccessful ones, without extra I/O."""
+    def decorate(function: Callable) -> Callable:
+        @wraps(function)
+        def call(*args: Any, **kwargs: Any) -> Any:
+            started = measurement_clock()
+            observe(event, 'start', args=args, kwargs=kwargs)
+            value, error = None, None
+            try:
+                value = function(*args, **kwargs)
+                return value
+            except BaseException as exc:
+                error = exc
+                raise
+            finally:
+                observe(event, 'finish', args=args, kwargs=kwargs, value=value,
+                        error=error, duration=measurement_elapsed(started))
+        return call
+    return decorate
 
 
 class Retain(RuntimeError):
@@ -202,6 +279,7 @@ def mounts(deadline: float) -> set[str]:
     return result
 
 
+@observed('snapshot')
 def snapshot(path: Path, deadline: float, *, scratch: bool = False) -> dict[str, os.stat_result]:
     """Complete no-follow tree stat, including root; ctime AND mtime age.
 
@@ -219,6 +297,8 @@ def snapshot(path: Path, deadline: float, *, scratch: bool = False) -> dict[str,
         def walk(fd, relative):
             check(deadline)
             s = os.fstat(fd)
+            if not relative:
+                observe('entry')
             absolute = str(path / relative) if relative else str(path)
             if s.st_dev != device or absolute in mountpoints:
                 raise Retain('filesystem_boundary')
@@ -227,6 +307,7 @@ def snapshot(path: Path, deadline: float, *, scratch: bool = False) -> dict[str,
                 check(deadline)
                 rel = f'{relative}/{name}' if relative else name
                 s = os.stat(name, dir_fd=fd, follow_symlinks=False)
+                observe('entry')
                 if s.st_dev != device or str(path / rel) in mountpoints:
                     raise Retain('filesystem_boundary')
                 if stat.S_ISDIR(s.st_mode):
@@ -262,6 +343,7 @@ def allocated(tree: dict[str, os.stat_result], seen: set[tuple]) -> tuple[int, i
     return total, exclusive
 
 
+@observed('mutation')
 def mutate(path: Path, tree: dict, deadline: float, *, remove: bool, scratch: bool = False) -> dict:
     """One admitted operation: contained permission repair and optional removal.
 
@@ -298,6 +380,7 @@ def mutate(path: Path, tree: dict, deadline: float, *, remove: bool, scratch: bo
             check(deadline)
             expected = tree[relative]
             current = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+            observe('entry')
             if not matches(current, expected):
                 raise Retain('tree_changed_before_mutation')
             if str(path / relative) in mountpoints or current.st_dev != original.st_dev:
