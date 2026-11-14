@@ -348,6 +348,18 @@ and prelaunch-cancelled events. Request/scope/authority/principal/effect/host-ke
 corruption, final-projection mismatch, event digest/gap and native task cancellation
 mismatch must reach the exact draft-history refusal in all four phases. The
 stored prelaunch history contains no host/session/result or native-settlement claim.
+Two retained document revisions also exercise their joined-event/round/replay
+closures: the first uses the historical opaque preimage with exactly three
+approved receipts, and the second uses a canonical explicit subject with two
+receipts. Both must remain readable together without selecting the newest
+round for an older event. Fifteen corruption rows cover each revision's stored
+digest/round/event revision, the prior event preimage, missing or mismatched
+replay, incomplete receipts, request scope/generation/status and receipt
+proof/scope/generation/outcome. All four phases require the original exact
+semantic refusal and no stale certificate. The original first-submission digest
+case corrupts bytes against the stored digest so the new receipt FK does not
+mask its semantic boundary; the first-round case uses an unused wrong revision
+so the new unique revision does not stop fixture preparation.
 Inert template publication and canonical registration rows prepare private
 storage; historical activation/submission rows do not invoke retired services
 or confer admission. All four first/local/external/uncommitted phases compare
@@ -356,8 +368,8 @@ the complete reader's exact semantic refusal and preserve transaction ownership.
 pin/native/mark/output/schema/index/FK rows inside explicit caller transactions,
 including restored triggers and rollback followed by a fresh complete read.
 Full, `--sequential-reuse` and `--sequential-corruption` include both additions.
-Retained handoff/revision, Coding setup/mapping/run and physical-corruption
-coverage remain separate requirements.
+Retained handoff/revision-operation/native closure, Coding setup/mapping/run and
+physical-corruption coverage remain separate requirements.
 For A0b-2's capacity disposition, see the [storage contract](runbooks/sequential-workflow-storage.md):
 installed happyranch's default FIRST/attempted NEXT is recorded as expected
 refusal with zero changes/certificate/observer leaks and an original-base

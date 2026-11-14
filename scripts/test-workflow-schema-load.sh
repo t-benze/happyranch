@@ -467,6 +467,39 @@ if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--seque
              'document-root', 'doc-session', str(result), 'synthetic-author'))
         conn.execute('INSERT INTO workflow_rounds VALUES (?,?,?,?,?)',
             ('doc-round', 'doc-instance', 'doc-submission', 1, 'reviewing'))
+        # Retain both revisions and their original review closures. The first
+        # joined event uses the historical opaque preimage; the second has an
+        # explicit canonical subject. Neither may silently select the newest
+        # round. These are archival storage rows, not reviewer invocations.
+        content2 = b'Synthetic historical document revision two'
+        conn.execute('INSERT INTO workflow_submissions VALUES (?,?,?,?,?,?,?,?,?,?)',
+            ('doc-submission-2', 'doc-instance', 2, content2, digest(content2), None,
+             'document-root', 'doc-session', str(result), 'synthetic-author'))
+        conn.execute('INSERT INTO workflow_rounds VALUES (?,?,?,?,?)',
+            ('doc-round-2', 'doc-instance', 'doc-submission-2', 2, 'reviewing'))
+        for revision, round_id, submission_id, content in (
+                (1, 'doc-round', 'doc-submission', content),
+                (2, 'doc-round-2', 'doc-submission-2', content2)):
+            for reviewer in range(3 if revision == 1 else 2):
+                request_id = f'doc-review-{revision}-{reviewer}'
+                review_scope = encode(dict(round_id=round_id, reviewer=reviewer))
+                proof = encode(dict(synthetic_receipt=request_id))
+                conn.execute('INSERT INTO workflow_review_requests VALUES (?,?,?,?,?,?,?,?)',
+                    (request_id, round_id, f'synthetic-reviewer-{reviewer}', 1,
+                     review_scope, digest(review_scope), 'approved', None))
+                conn.execute('INSERT INTO workflow_review_receipts VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+                    ('receipt-' + request_id, request_id, submission_id, digest(content), 1,
+                     digest(review_scope), proof, digest(proof), 'approved', None, stamp))
+            event_id = f'doc-event-joined-{revision}'
+            body = (b'Synthetic historical opaque joined request' if revision == 1 else
+                encode(dict(instance_id='doc-instance', round_id=round_id,
+                    submission_id=submission_id, submission_digest=digest(content),
+                    revision=revision, event_kind='joined')))
+            conn.execute('INSERT INTO workflow_events VALUES (?,?,?,?,?,?,?)',
+                (event_id, 'doc-instance', revision, 'joined', body,
+                 digest(b'joined' + body) if revision == 1 else digest(body), stamp))
+            conn.execute('INSERT INTO workflow_operation_replays VALUES (?,?,?,?,?,?)',
+                ('scratch', 'synthetic-manager', event_id, digest(body), 'doc-instance', event_id))
         # Stored prelaunch cancellation only. No retired dispatcher, session,
         # callback, host witness or native settlement is invoked or invented.
         projection_keys = ('state', 'is_current', 'cancellation_requested', 'claim_token',
@@ -519,6 +552,8 @@ if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--seque
                       'workflow_authorization_revisions', 'workflow_binding_snapshots', 'workflow_contexts',
                       'workflow_instances', 'workflow_activations', 'workflow_active_activations',
                       'workflow_submissions', 'workflow_rounds',
+                      'workflow_review_requests', 'workflow_review_receipts',
+                      'workflow_events', 'workflow_operation_replays',
                       'workflow_draft_dispatch_intents', 'workflow_draft_dispatch_events'):
             assert conn.execute('SELECT count(*) FROM ' + table).fetchone()[0] > 0, table + ' document fixture is empty'
 
@@ -606,8 +641,8 @@ if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--seque
             ('document activation namespace', "UPDATE workflow_activations SET authority_namespace='wrong'", 'workflow_source_data_corrupt'),
             ('document activation identity', "UPDATE workflow_activations SET template_identity_id='doc-other-identity'", 'workflow_source_data_corrupt'),
             ('document active pointer', 'UPDATE workflow_active_activations SET activation_revision=2', 'workflow_source_data_corrupt'),
-            ('document submission digest', "UPDATE workflow_submissions SET submission_digest='bad'", 'workflow_submission_data_corrupt'),
-            ('document round revision', 'UPDATE workflow_rounds SET current_revision=2', 'workflow_submission_data_corrupt'),
+            ('document submission digest', "UPDATE workflow_submissions SET submission_bytes=x'00' WHERE id='doc-submission'", 'workflow_submission_data_corrupt'),
+            ('document round revision', "UPDATE workflow_rounds SET current_revision=3 WHERE id='doc-round'", 'workflow_submission_data_corrupt'),
             ('document intent request', "UPDATE workflow_draft_dispatch_intents SET request_digest='bad'", 'workflow_draft_data_corrupt'),
             ('document intent scope', "UPDATE workflow_draft_dispatch_intents SET task_scope_digest='bad'", 'workflow_draft_data_corrupt'),
             ('document intent authority', "UPDATE workflow_draft_dispatch_intents SET authority_digest='bad'", 'workflow_draft_data_corrupt'),
@@ -627,6 +662,30 @@ if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--seque
             ('Coding built-in version link', "UPDATE workflow_template_identity_versions SET content_digest='bad' WHERE template_identity_id IN (SELECT id FROM workflow_template_identities WHERE namespace='release/happyranch')", 'coding_registered_release_history_invalid'),
         )
         document_coding_names = {name for name, _, _ in document_coding_corruptions}
+        # Full historical error text is part of the differential oracle. Rows
+        # distinguish malformed preimages/replays from a missing joined closure.
+        joined_refusal = ('workflow_legacy_event_unmappable: event=doc-event-joined-1 '
+            'instance=doc-instance; source owner must restore authentic '
+            'submission/round/event/replay archival closure')
+        document_review_corruptions = (
+            ('document second submission digest', "UPDATE workflow_submissions SET submission_bytes=x'00' WHERE revision=2", 'workflow_submission_data_corrupt'),
+            ('document second round revision', "UPDATE workflow_rounds SET current_revision=3 WHERE id='doc-round-2'", 'workflow_submission_data_corrupt'),
+            ('document prior event revision', "UPDATE workflow_events SET revision=3 WHERE id='doc-event-joined-1'", 'workflow_submission_data_corrupt'),
+            ('document prior event digest', "UPDATE workflow_events SET event_digest='bad' WHERE id='doc-event-joined-1'", joined_refusal),
+            ('document joined replay digest', "UPDATE workflow_operation_replays SET request_digest='bad' WHERE effect_id='doc-event-joined-1'", joined_refusal),
+            ('document joined replay missing', "DELETE FROM workflow_operation_replays WHERE effect_id='doc-event-joined-1'", joined_refusal + '; candidates=[]'),
+            ('document joined receipt missing', "DELETE FROM workflow_review_receipts WHERE id='receipt-doc-review-1-0'", joined_refusal + '; candidates=[]'),
+            ('document joined request scope', "UPDATE workflow_review_requests SET request_scope_digest='bad' WHERE id='doc-review-1-0'", joined_refusal + '; candidates=[]'),
+            ('document joined request generation', "UPDATE workflow_review_requests SET assignment_generation=2 WHERE id='doc-review-1-0'", joined_refusal + '; candidates=[]'),
+            ('document joined receipt proof', "UPDATE workflow_review_receipts SET proof_digest='bad' WHERE id='receipt-doc-review-1-0'", joined_refusal + '; candidates=[]'),
+            ('document joined receipt scope', "UPDATE workflow_review_receipts SET request_scope_digest='bad' WHERE id='receipt-doc-review-1-0'", joined_refusal + '; candidates=[]'),
+            ('document joined receipt generation', "UPDATE workflow_review_receipts SET assignment_generation=2 WHERE id='receipt-doc-review-1-0'", joined_refusal + '; candidates=[]'),
+            ('document joined request status', "UPDATE workflow_review_requests SET status='changes_requested' WHERE id='doc-review-1-0'", joined_refusal + '; candidates=[]'),
+            ('document joined receipt outcome', "UPDATE workflow_review_receipts SET outcome='changes_requested' WHERE id='receipt-doc-review-1-0'", joined_refusal + '; candidates=[]'),
+            ('document second event revision', "UPDATE workflow_events SET revision=3 WHERE id='doc-event-joined-2'", 'workflow_submission_data_corrupt'),
+        )
+        document_coding_names.update(name for name, _, _ in document_review_corruptions)
+        document_coding_corruptions += document_review_corruptions
         refusal_codes.update({name: code for name, _, code in document_coding_corruptions})
         if sys.argv[1:] == ['--retained-corruption']:
             corruptions = ()
