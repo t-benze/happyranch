@@ -119,6 +119,8 @@ export interface TaskRecord {
   brief: string;
   status: TaskStatus;
   block_kind: BlockKind | null;
+  /** Wire shape: a JSON-encoded string array of job IDs (or null); parse defensively. */
+  blocked_on_job_ids?: string | null;
   assigned_agent: string | null;
   parent_task_id: string | null;
   revisit_of_task_id: string | null;

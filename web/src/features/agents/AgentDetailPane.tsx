@@ -1,4 +1,3 @@
-import { resolveTaskWaitingQualifier, taskWaitingLabels } from '@/shared/tasks/child-wait';
 import { AddressableNameEditor } from '@/shared/identities/AddressableNameEditor';
 import { useIdentityPresentation } from '@/hooks/identities';
 import { IdentityName } from '@/shared/identities/IdentityName';
@@ -18,7 +17,7 @@ import { SystemPromptEditor } from './SystemPromptEditor';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { MessageCircle, Plus, X, AlertCircle } from 'lucide-react';
-import { TaskCard } from '@/design-system/patterns/TaskCard';
+import { AgentTaskCard } from './AgentTaskCard';
 import { Button } from '@/design-system/primitives/Button';
 import {
   useAgentsList,
@@ -695,9 +694,8 @@ export function AgentDetailPane({ agentName, onClose, onStartThread, onRetired }
             <ul className="space-y-2">
               {tasksQuery.data.tasks.map((task) => (
                 <li key={task.task_id}>
-                  <TaskCard
+                  <AgentTaskCard
                     task={task}
-                    waitingQualifier={resolveTaskWaitingQualifier(task, taskWaitingLabels(t))}
                     agentLabel={task.assigned_agent ? <IdentityName canonicalId={task.assigned_agent} /> : undefined}
                     to={taskRoutes.detail(task.task_id)}
                     density={density}
