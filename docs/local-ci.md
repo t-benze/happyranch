@@ -1,5 +1,21 @@
 # Local CI
 
+## Focused founder cancellation coverage (#596 minimal wake)
+
+```sh
+uv run --frozen pytest scripts/test_task_cancel.py -v --tb=short
+```
+
+These checks reuse the existing synthetic-org ASGI fixture from
+`scripts/test_agent_retirement.py`, with real SQLite and queue publication and
+without daemon lifespan, listeners, workers or executors. They cover post-commit
+parent wake outside DB locks, cascade/point stops, root stops, live siblings,
+terminal races and mixed-owner delivery/refusal. Mixed-owner delivery is isolated
+at its existing return boundary; these checks do not prove workflow history or
+native containment. This standalone script venue stays outside retired Python
+units and adds no required CI check or E2E trigger. General integration remains
+SKIPPED under THR-243 seq42.
+
 ## Focused root Pause/Resume coverage (THR-359)
 
 ```sh

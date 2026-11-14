@@ -2787,6 +2787,19 @@ async def cancel_task(
                             if not coding_task:
                                 pids_without_control.append((tid, agent, pid))
 
+        # Notify only the parent above the committed cancellation batch, outside
+        # DB locks. Workflow owners can include ancestors of the requested node
+        # and return tasks in a different order from the ordinary subtree walk.
+        if to_cancel and org.orchestrator is not None:
+            from runtime.orchestrator.run_step import _enqueue_parent_if_waiting
+            cancelled_ids = set(to_cancel)
+            for tid in to_cancel:
+                cancelled = org.db.get_task(tid)
+                if cancelled is not None and cancelled.parent_task_id not in cancelled_ids:
+                    if cancelled.parent_task_id is not None:
+                        _enqueue_parent_if_waiting(org.orchestrator, tid)
+                    break
+
         # Phase 1b: fire thread followup for every cancelled task that had NO live
         # subprocess at cancel time.
         #

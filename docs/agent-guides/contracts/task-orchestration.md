@@ -5,6 +5,16 @@
 > extends an earlier one, the later section controls; sections marked
 > "Historical" are retained evidence, not current instructions.
 
+## Founder cancellation and delegated parent wake
+
+After the founder task-cancel route commits, it calls the existing parent-wake
+helper once for the topmost newly cancelled node, outside DB locks. Workflow
+owners may include ancestors of the requested node in that batch. A root batch,
+refused or rolled-back cancellation, or an empty replay produces no wake call.
+The helper retains ownership checks and wakes a delegated parent only when all
+its children are terminal; cancelled descendants are never individually notified.
+This does not add stale-parent detection or restart/replacement tooling.
+
 ## Manager model and effort handoffs (THR-356)
 
 Ordinary manager handoffs accept optional `model` and `reasoning_effort` on
