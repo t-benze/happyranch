@@ -1036,7 +1036,7 @@ native17/19 unknown stall causes are not resolved by these deadlines.
 
 The separate Mac `tsnet-bridge` archive now exposes `tsnet_init_managed`,
 `tsnet_up_managed`, `tsnet_cancel`, and `tsnet_conn_dial_managed`. Swift managed
-lane selection, enrollment-key custody and join UI are subsequent slices.
+lane selection is implemented in PR1b; Keychain custody and join UI are the next slice.
 Legacy init remains ephemeral; legacy Start starts the engine without waiting
 for Running/IP. Managed selection makes both legacy dial exports refuse `-17`.
 
@@ -1076,3 +1076,53 @@ These local cases cover refusal, state admission, cancellation and bounded
 unreachable enrollment. Real enrollment/empty-key reopen and N1–N6/P1 require
 an authorized disposable tailnet; Swift entrypoint/sink tests belong to PR1b.
 Passing local cases do not establish those live-network or macOS results.
+
+
+## Managed ClientBridge lane (PR1b)
+
+`ClientBridge(..., lane: .managed)` explicitly selects the persistent embedded
+engine. The default `.diy` keeps “Connect to Remote Runtime” over system
+Tailscale/NWConnection. GUI developer environment enrollment/transport settings
+are removed: `HAPPYRANCH_TSNET_AUTH_KEY`, `HAPPYRANCH_TSNET_CONTROL_URL`,
+`HAPPYRANCH_TSNET_HOSTNAME`, and `HAPPYRANCH_TSNET_TRANSPORT` do not select or
+configure a GUI connection. Managed failure never switches to DIY.
+
+PR2 calls `joinManagedNetwork(key:controlURL:hostname:stateDirectory:)` only after
+successful login-Keychain deletion. `ManagedEnrollmentKey(taking:byteCount:)`
+takes ownership of a malloc/calloc allocation; the positive byte count covers
+the entire initialized allocation including its final NUL. The caller must
+neither access nor free it afterwards. No enrollment-key String API is supplied.
+The bridge checks bounded NUL termination, wipes with `explicit_bzero` before
+free on all exits, and wipes immediately after configure-only native init,
+before Up. This is custody minimization, not forensic erasure. The bridge never
+reads enrollment configuration from the environment or publishes raw native
+errors. `resumeManagedNetwork` explicitly uses a one-byte empty key.
+
+One serial native owner runs init/Up with a single 120-second Up bound.
+Cancellation latches via `tsnet_cancel`, rejects late callbacks, settles Close
+and outstanding dials before releasing ownership. Busy attempts refuse without
+replay. Cancel/timeout can leave enrollment complete and the key consumed.
+Disconnect closes traffic and retains the saved profile; another attempt is
+explicit. Target host/port are immutable: changing either requires a new bridge,
+empty-key membership reopen and fresh pairing. Native peer-change `-18` closes
+the engine/pin and discards the pairing credential; `-17` (not a current peer)
+and `-18` have distinct fixed errors, separate from pairing 403 and unreachable.
+
+Pairing uses the managed-only dial, partial writes and bounded (64 KiB)
+fragmented HTTP responses under one maximum 30-second deadline. Timeout or task
+cancellation closes the handle; the pairing code is never retried. The first
+managed remote dial is pairing. HTTP, SSE, upgrade traffic and health probes
+then share the same managed dial/read/write/close boundary; only local WebView
+loopback sockets use Network.framework. The app publishes CLIENT online only
+after a successful runtime health request through the paired bridge.
+
+From `app/mac`, the existing Mac venues are `swift build` and `swift test`.
+`ClientBridgeTests.swift` retains the DIY pairing/forwarding keepers and adds
+explicit-lane, refusal, fixed-error, audience-change and owned-buffer cases.
+An unjoined refusal is lane-admission evidence only. Running-engine N1–N6,
+P1 encrypted success, fragmentation/deadline with a real managed peer, and
+zero-byte sinks require an authorized disposable tailnet and native archive.
+They are NOT RUN on Linux. Buffer non-reuse is observable in Swift tests;
+zero-before-free is source reviewed, not observed after free or through a
+production test hook. Keychain/UI/screenshots remain PR2; release pins and
+owner-run signing remain PR3. No manual main-only Mac workflow is dispatched.

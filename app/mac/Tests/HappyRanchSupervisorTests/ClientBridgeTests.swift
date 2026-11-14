@@ -1,6 +1,7 @@
 import Testing
 import Foundation
 import Network
+import Darwin
 @testable import HappyRanchSupervisor
 
 // MARK: - Thread-safe result container
@@ -1218,36 +1219,143 @@ private final class FakePairingServer: @unchecked Sendable {
     }
 }
 
-// MARK: - Tsnet transport flag default test
+// MARK: - Explicit lane / owned enrollment boundary (PR1b)
 
-@Test("ClientBridge.useTsnetTransport defaults to false (NWConnection path)")
-func testUseTsnetTransportDefaultsToFalse() {
-    // The flag is a static let read once at class load from
-    // HAPPYRANCH_TSNET_TRANSPORT env var.  When the env var is NOT set
-    // (which is the case in test runs), the default MUST be false.
-    //
-    // This test ensures the off-by-default contract is upheld — the
-    // existing NWConnection/Tailscale path remains the DEFAULT path.
-    #expect(ClientBridge.useTsnetTransport == false,
-        "useTsnetTransport must default to false — NWConnection path is the default")
-}
+@Suite("Managed ClientBridge selection", .serialized)
+struct ManagedClientBridgeTests {
+    @Test("DIY remains the default; managed selection is explicit")
+    func explicitLaneSelection() {
+        let diy = ClientBridge(homeConnectorHost: "127.0.0.1", homeConnectorPort: 8443)
+        let managed = ClientBridge(homeConnectorHost: "127.0.0.1", homeConnectorPort: 8443, lane: .managed)
+        #expect(diy.lane == .diy)
+        #expect(managed.lane == .managed)
+    }
 
-// MARK: - Tsnet engine lifecycle test
+    @Test("Unjoined managed pairing never selects the reachable DIY listener")
+    func unjoinedManagedPairingHasNoFallback() async throws {
+        let ports = allocatePortPair()
+        let server = FakePairingServer(port: ports.homeConnector, responseStatus: 200, responseCredential: "synthetic-credential")
+        try server.start()
+        defer { server.stop() }
+        let bridge = ClientBridge(homeConnectorHost: "127.0.0.1", homeConnectorPort: ports.homeConnector, lane: .managed)
+        do {
+            try await bridge.redeemPairing(code: "SYNTHETIC", homeHost: "127.0.0.1", homePort: ports.homeConnector)
+            Issue.record("Unjoined managed pairing unexpectedly succeeded")
+        } catch let error as RedeemPairingError {
+            #expect(error == .managed(.unavailable))
+        }
+        #expect(bridge.deviceCredential == nil)
+        #expect(server.receivedRequests.isEmpty)
+        // This owns Swift lane admission only, not Running-engine N3 proof.
+    }
 
-@Test("tsnet engine init fails cleanly when HAPPYRANCH_TSNET_AUTH_KEY is absent")
-func testTsnetEngineInitFailsWithoutAuthKey() async throws {
-    // The tsnet lifecycle is guarded behind the off-by-default flag.
-    // When the flag is on but the required config env var is not set,
-    // ensureTsnetEngine() returns a clean error — it does NOT silently
-    // proceed to an uninitialised engine, and it does NOT crash.
-    //
-    // In test runs, HAPPYRANCH_TSNET_AUTH_KEY is not set, and the
-    // stub tsnet_* symbols always return -1.  This test validates the
-    // Swift-level guard (auth key check) fires first, before we even
-    // call into the C-ABI.
-    let error = ClientBridge.ensureTsnetEngine()
-    #expect(error != nil,
-        "ensureTsnetEngine must return an error when HAPPYRANCH_TSNET_AUTH_KEY is not set")
-    #expect(error!.contains("HAPPYRANCH_TSNET_AUTH_KEY"),
-        "Error message must mention the missing env var: got '\(error!)'")
+    @Test("Unpaired managed forwarding cannot send a credential to a DIY sink")
+    func unpairedManagedForwardingHasNoFallback() async throws {
+        let ports = allocatePortPair()
+        let server = FakeHomeConnectorServer(port: ports.homeConnector)
+        try server.start()
+        defer { server.stop() }
+        let bridge = ClientBridge(homeConnectorHost: "127.0.0.1", homeConnectorPort: ports.homeConnector, lane: .managed)
+        try bridge.start()
+        defer { bridge.stop() }
+        for _ in 0..<50 {
+            if bridge.bridgePort != nil { break }
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+        let port = try #require(bridge.bridgePort)
+        let (_, response) = try await URLSession.shared.data(from: URL(string: "http://127.0.0.1:\(port)/api/v1/health")!)
+        #expect((response as? HTTPURLResponse)?.statusCode == 502)
+        #expect(server.receivedRequests.isEmpty)
+    }
+
+    @Test("Managed target change discards credential and requires fresh pairing")
+    func changedTargetDiscardsAuthority() async throws {
+        let bridge = ClientBridge(homeConnectorHost: "100.64.0.1", homeConnectorPort: 8443, lane: .managed)
+        bridge.deviceCredential = "synthetic-previous-credential"
+        do {
+            try await bridge.redeemPairing(code: "SYNTHETIC", homeHost: "100.64.0.2", homePort: 8443)
+            Issue.record("Changed audience unexpectedly accepted")
+        } catch let error as RedeemPairingError {
+            #expect(error == .managed(.peerChanged))
+        }
+        #expect(bridge.deviceCredential == nil)
+    }
+
+    @Test("Managed ABI errors remain fixed and distinct from pairing 403")
+    func fixedManagedErrors() {
+        #expect(RedeemPairingError.managedDialFailure(-17) == .managed(.targetNotPeer))
+        #expect(RedeemPairingError.managedDialFailure(-18) == .managed(.peerChanged))
+        #expect(RedeemPairingError.managedDialFailure(-14) == .connectionFailed("Unreachable"))
+        #expect(RedeemPairingError.managedDialFailure(-13) == .connectionFailed("Request timed out"))
+        #expect(ManagedNetworkError.result(-17) == .targetNotPeer)
+        #expect(ManagedNetworkError.result(-18) == .peerChanged)
+        #expect(ManagedNetworkError.result(-17).localizedDescription == "Managed target must be a current tailnet peer")
+        #expect(ManagedNetworkError.result(-18).localizedDescription == "Managed peer unavailable or changed; reconnect and pair again")
+        #expect(RedeemPairingError.managed(.targetNotPeer) != .refused)
+        #expect(RedeemPairingError.managed(.peerChanged) != .connectionFailed("Unreachable"))
+        let expected: [ManagedNetworkError] = [.invalidConfiguration, .busy, .canceled, .deadline, .backend, .unavailable, .stateFailure]
+        for (offset, category) in expected.enumerated() {
+            #expect(ManagedNetworkError.result(Int32(-10 - offset)) == category)
+            #expect(!category.localizedDescription.isEmpty)
+        }
+        #expect(ManagedNetworkError.result(-999) == .backend)
+    }
+
+    @Test("Runtime health requires pairing and never follows a remote redirect")
+    func runtimeHealthStaysOnBridge() async throws {
+        let ports = allocatePortPair()
+        let server = FakeHomeConnectorServer(port: ports.homeConnector)
+        try server.start()
+        defer { server.stop() }
+        let bridge = ClientBridge(homeConnectorHost: "127.0.0.1", homeConnectorPort: ports.homeConnector)
+        try bridge.start()
+        defer { bridge.stop() }
+        for _ in 0..<50 {
+            if bridge.bridgePort != nil { break }
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+        _ = try #require(bridge.bridgePort)
+        #expect(await bridge.checkRuntimeHealth() == false)
+        #expect(server.receivedRequests.isEmpty)
+        bridge.deviceCredential = "synthetic-device-credential"
+        #expect(await bridge.checkRuntimeHealth())
+        #expect(server.receivedRequests.last?.contains("GET /api/v1/health ") == true)
+        #expect(server.receivedRequests.last?.contains("X-HappyRanch-Device-Credential: synthetic-device-credential") == true)
+        server.responseStatus = 302
+        server.responseHeaders["Location"] = "http://127.0.0.1:\(ports.homeConnector)/redirect-must-not-be-followed"
+        #expect(await bridge.checkRuntimeHealth() == false)
+        #expect(server.receivedRequests.count == 2)
+    }
+
+    @Test("Owned enrollment allocation cannot be replayed after consume or failure")
+    func ownedKeyIsSingleUse() throws {
+        let allocation = try #require(malloc(4))
+        allocation.initializeMemory(as: UInt8.self, repeating: 65, count: 4)
+        let key = ManagedEnrollmentKey(taking: allocation, byteCount: 4)
+        // Buffer bytes/terminator are validated before native init; malformed
+        // input also destroys custody. No observation after free is attempted.
+        #expect(throws: ManagedNetworkError.invalidConfiguration) {
+            try key.consume { _ in Issue.record("Malformed allocation reached init") }
+        }
+        #expect(throws: ManagedNetworkError.invalidConfiguration) { try key.consume { _ in } }
+        let validAllocation = try #require(strdup("synthetic"))
+        let valid = ManagedEnrollmentKey(taking: UnsafeMutableRawPointer(validAllocation), byteCount: 10)
+        #expect(try valid.consume { String(cString: $0) } == "synthetic")
+        #expect(throws: ManagedNetworkError.invalidConfiguration) { try valid.consume { _ in } }
+    }
+
+    @Test("Join validation failures destroy the transferred key without environment fallback")
+    func invalidJoinDiscardsKey() async throws {
+        let allocation = try #require(strdup("synthetic"))
+        let key = ManagedEnrollmentKey(taking: UnsafeMutableRawPointer(allocation), byteCount: 10)
+        let bridge = ClientBridge(homeConnectorHost: "100.64.0.1", homeConnectorPort: 8443, lane: .managed)
+        do {
+            try await bridge.joinManagedNetwork(key: key, controlURL: "http://invalid.example", hostname: "synthetic", stateDirectory: "/invalid")
+            Issue.record("Insecure control URL accepted")
+        } catch let error as ManagedNetworkError {
+            #expect(error == .invalidConfiguration)
+        }
+        #expect(throws: ManagedNetworkError.invalidConfiguration) { try key.consume { _ in } }
+        #expect(bridge.deviceCredential == nil)
+    }
 }
