@@ -275,6 +275,16 @@ include repeat fail-closed selection, freeze or finalization refusal; an
 uncontrolled external write remains a source defect requiring correction.
 No new native run, helper/test harness or release acceptance follows.
 
+The process census loads its shared Darwin script from
+`_internal/runtime/skills/bundled/workspace-cleanup/scripts/darwin_process.py`,
+relative to the archived module's `__file__`; the spec copies that directory
+through the wheel data inventory. The lazy binding opens the OS install name
+`/usr/lib/libproc.dylib` directly, including on shared-cache-only systems, without
+a filesystem-existence check or a hidden `ctypes.util` discovery dependency.
+The operational process-group probe uses `/bin/sleep`, independent of PATH.
+Native health still decides selection and preserves honest passthrough fallback.
+These source changes do not establish frozen Mac acceptance.
+
 `license-mapping.json` and `notices/` retain original installed license texts,
 versions, input inclusion and hashes. Go compilation dependencies and web source
 maps add original module/package texts and inclusion mappings during the full

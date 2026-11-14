@@ -121,7 +121,7 @@ class MacOSProcessGroupBackend:
         probe_error = None
         try:
             child = subprocess.Popen(
-                ["sleep", "0.2"],
+                ["/bin/sleep", "0.2"],
                 start_new_session=True,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
