@@ -34,7 +34,12 @@ def _git_child() -> None:
             or sys.argv[3] not in ('sha1', 'sha256')
             or sys.argv[4] not in ('check', 'body')):
         raise SystemExit(2)
-    resource.setrlimit(resource.RLIMIT_AS, (134217728, 134217728))
+    # Darwin RLIMIT_AS (also RLIMIT_RSS) rejects caps below the current VM
+    # map, including large reserved mappings. Retain inherited AS there: no
+    # new hard memory cap. READ_LIMIT/BLOB_LIMIT/COPY_LIMIT, deadline/output
+    # caps and the CPU/FSIZE limits still bound work; see packaging/README.md.
+    if sys.platform != 'darwin':
+        resource.setrlimit(resource.RLIMIT_AS, (134217728, 134217728))
     resource.setrlimit(resource.RLIMIT_CPU, (5, 5))
     resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
     resource.setrlimit(resource.RLIMIT_FSIZE, (0, 0))
@@ -65,7 +70,10 @@ if __name__ == '__main__':
     # The reader worker is isolated from user site/env and uses this installed
     # source's fixed package root, never a selected repository helper path.
     import resource
-    resource.setrlimit(resource.RLIMIT_AS, (268435456, 268435456))
+    # Same Darwin policy as the Git child: inherited AS, no new hard memory
+    # cap; application byte/deadline/output bounds and CPU remain mandatory.
+    if sys.platform != 'darwin':
+        resource.setrlimit(resource.RLIMIT_AS, (268435456, 268435456))
     resource.setrlimit(resource.RLIMIT_CPU, (5, 5))
     resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
     resource.setrlimit(resource.RLIMIT_NOFILE, (64, 64))

@@ -134,7 +134,10 @@ The first observes both real Popen argv boundaries in source/simulated-frozen
 mode, executes both fixed child entries through daemon and CLI source launches,
 rejects unknown names/paths and malformed child arguments, and checks source
 Python import isolation plus stdlib-only Git dispatch and its exact resource
-limits. The second runs the existing packaging assertion over
+limits. It also simulates Darwin rejecting AS caps through both real child
+entries, checks inherited AS with all remaining limits applied, and injects
+selected-limit failures to require fatal refusal before child work. Linux's
+real AS assertions remain. The second runs the existing packaging assertion over
 both shipping Analysis inputs. Neither freezes an app or proves packaged Mac
 execution. No existing native probe suite exercises repository object children;
 that proof remains with the manager's packaged-app check. Required CI remains

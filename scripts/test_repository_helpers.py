@@ -104,6 +104,7 @@ class RepositoryHelperTests(unittest.TestCase):
         code = '''
 import builtins, os, resource, runpy, sys
 entry = sys.argv[1]
+inherited_as = resource.getrlimit(resource.RLIMIT_AS)
 sys.argv = [entry, '--cleanup-helper', 'repository-git', '/nonexistent', 'sha1', 'check']
 original_import, original_exec = builtins.__import__, os.execve
 def guarded_import(name, *args, **kwargs):
@@ -111,7 +112,9 @@ def guarded_import(name, *args, **kwargs):
         raise RuntimeError('product import before Git limits')
     return original_import(name, *args, **kwargs)
 def limited_exec(*args):
-    for limit, expected in ((resource.RLIMIT_AS, 134217728), (resource.RLIMIT_CPU, 5),
+    expected_as = inherited_as if sys.platform == 'darwin' else (134217728, 134217728)
+    assert resource.getrlimit(resource.RLIMIT_AS) == expected_as
+    for limit, expected in ((resource.RLIMIT_CPU, 5),
                            (resource.RLIMIT_CORE, 0), (resource.RLIMIT_FSIZE, 0),
                            (resource.RLIMIT_NOFILE, 32)):
         assert resource.getrlimit(limit) == (expected, expected)
@@ -127,6 +130,96 @@ runpy.run_module(entry, run_name='__main__')
                 self.assertIn(b'LIMITS-SET', result.stderr)
                 self.assertIn(b'not a git repository', result.stderr)
                 self.assertNotIn(b'product import before Git limits', result.stderr)
+
+    def test_children_platform_limits(self) -> None:
+        """Darwin AS rejection and Linux caps both permit real child output."""
+        code = '''
+import builtins, os, resource, runpy, sys, time
+entry, child, platform = sys.argv[1:]
+native_platform = sys.platform
+inherited_as = resource.getrlimit(resource.RLIMIT_AS)
+original_set, original_import, original_exec = resource.setrlimit, builtins.__import__, os.execve
+def set_limit(limit, value):
+    if limit == resource.RLIMIT_AS and platform == 'darwin':
+        # CPython maps Darwin setrlimit EINVAL to this ValueError.
+        raise ValueError('current limit exceeds maximum limit')
+    original_set(limit, value)
+    # Only limit selection is simulated; product imports use the real host.
+    sys.platform = native_platform
+def check_limits():
+    size = 134217728 if child == 'repository-git' else 268435456
+    expected_as = inherited_as if platform == 'darwin' else (size, size)
+    assert resource.getrlimit(resource.RLIMIT_AS) == expected_as
+    for limit, expected in ((resource.RLIMIT_CPU, 5), (resource.RLIMIT_CORE, 0),
+                           (resource.RLIMIT_NOFILE, 32 if child == 'repository-git' else 64)):
+        assert resource.getrlimit(limit) == (expected, expected)
+    if child == 'repository-git':
+        assert resource.getrlimit(resource.RLIMIT_FSIZE) == (0, 0)
+    os.write(2, b'LIMITS-SET\\n')
+def guarded_import(name, *args, **kwargs):
+    if name == 'runtime.orchestrator._paths':
+        check_limits()
+    return original_import(name, *args, **kwargs)
+def limited_exec(*args):
+    check_limits()
+    original_exec(*args)
+resource.setrlimit, builtins.__import__, os.execve = set_limit, guarded_import, limited_exec
+sys.argv = [entry, '--cleanup-helper', child, '/nonexistent',
+            *(['sha1', 'check'] if child == 'repository-git' else [str(time.monotonic() + 5)])]
+sys.platform = platform
+sys.frozen = True
+runpy.run_module(entry, run_name='__main__')
+'''
+        for entry in ('runtime.daemon', 'cli.main'):
+            for child in ('repository-git', 'repository-reader'):
+                for platform in ('linux', 'darwin'):
+                    with self.subTest(entry=entry, child=child, platform=platform):
+                        result = subprocess.run([sys.executable, '-B', '-c', code, entry, child, platform],
+                            input=b'{}', capture_output=True, cwd=ROOT, timeout=10)
+                        self.assertIn(b'LIMITS-SET', result.stderr, result.stderr)
+                        if child == 'repository-git':
+                            self.assertEqual(result.returncode, 128, result.stderr)
+                            self.assertIn(b'not a git repository', result.stderr)
+                        else:
+                            self.assertEqual(result.returncode, 0, result.stderr)
+                            self.assertEqual(json.loads(result.stdout)['error'],
+                                             'workflow_repository_storage_corrupt')
+
+    def test_resource_failures_stop_children(self) -> None:
+        """Every applied limit remains mandatory before either child can work."""
+        code = '''
+import resource, runpy, sys, time
+entry, child, platform, failing = sys.argv[1:]
+native_platform = sys.platform
+original_set = resource.setrlimit
+def set_limit(limit, value):
+    if limit != resource.RLIMIT_AS:
+        sys.platform = native_platform
+    if limit == getattr(resource, failing):
+        raise ValueError('synthetic limit refusal')
+    original_set(limit, value)
+resource.setrlimit = set_limit
+sys.argv = [entry, '--cleanup-helper', child, '/nonexistent',
+            *(['sha1', 'check'] if child == 'repository-git' else [str(time.monotonic() + 5)])]
+sys.platform = platform
+runpy.run_module(entry, run_name='__main__')
+'''
+        for entry in ('runtime.daemon', 'cli.main'):
+            for child in ('repository-git', 'repository-reader'):
+                for platform in ('linux', 'darwin'):
+                    limits = ['RLIMIT_CPU', 'RLIMIT_CORE', 'RLIMIT_NOFILE']
+                    if platform == 'linux':
+                        limits.insert(0, 'RLIMIT_AS')
+                    if child == 'repository-git':
+                        limits.append('RLIMIT_FSIZE')
+                    for limit in limits:
+                        with self.subTest(entry=entry, child=child, platform=platform, limit=limit):
+                            result = subprocess.run([sys.executable, '-B', '-c', code,
+                                entry, child, platform, limit], input=b'{}', capture_output=True,
+                                cwd=ROOT, timeout=10)
+                            self.assertEqual(result.returncode, 1, result.stderr)
+                            self.assertIn(b'ValueError: synthetic limit refusal', result.stderr)
+                            self.assertEqual(result.stdout, b'')
 
     def test_source_git_isolated_from_python_environment(self) -> None:
         from runtime.daemon.cleanup_helpers import helper_argv

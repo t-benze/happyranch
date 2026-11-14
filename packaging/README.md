@@ -42,6 +42,30 @@ both binaries accept `--cleanup-helper repository-git ...` and
 `--cleanup-helper repository-reader ...`. See the
 [exact child protocol](../docs/agent-guides/runtime-and-configuration.md#frozen-cleanup-helpers-thr-346-s3).
 Other modules keep their existing collection modes.
+
+Repository children keep Linux `RLIMIT_AS` soft/hard caps of 134217728 bytes
+(Git, 128 MiB) and 268435456 bytes (reader, 256 MiB). On Darwin they retain
+the inherited AS soft/hard limits, without setting a new process-memory cap.
+Darwin aliases `RLIMIT_RSS` to `RLIMIT_AS`; XNU rejects a new AS ceiling below
+the current VM-map size, including reserved address space. macOS processes
+reserve very large virtual address ranges: these small caps can therefore fail
+before Git exec or reader imports, and even an accepted cap could prevent Git
+from loading. Clamping against inherited soft/hard limits alone does not account
+for current VM-map size. There is no claim of a 128/256 MiB AS or resident-memory
+bound on Darwin. See [XNU AS validation](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.1.9/bsd/kern/kern_resource.c#L1647-L1654)
+and [CPython's EINVAL mapping](https://github.com/python/cpython/blob/v3.14.3/Modules/resource.c#L287-L296).
+
+Both platforms retain CPU `(5,5)`, CORE `(0,0)`, Git FSIZE `(0,0)` and NOFILE
+`(32,32)` / reader NOFILE `(64,64)`. The reader has no added FSIZE limit.
+Failures applying any selected limit remain fatal; no setrlimit exception is
+ignored. Existing application bounds still contain repository work:
+`READ_LIMIT=8388608`, `BLOB_LIMIT=65536`, `COPY_LIMIT=67108864`, the shared
+five-second deadline, the reader's 1048576-byte command cap, and bounded Git
+header/body and parent reader-output capture. These bound data/work/output,
+not total process RSS or reserved virtual address space on Darwin. The reader
+alarm and parent kill/reap supervision remain unchanged. Actual Darwin/frozen
+execution remains a separate native acceptance check.
+
 Frozen `--help` remains a required native check; source retention
 alone does not qualify later memory-collection identity or refusal diagnostics.
 
