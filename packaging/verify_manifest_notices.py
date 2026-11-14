@@ -307,7 +307,7 @@ def run(scratch, stdlib=None):
     bindir = scratch / 'bin'
     bindir.mkdir()
     ditto = bindir / 'ditto'
-    ditto.write_text('#!' + sys.executable + '\nimport pathlib,sys,zipfile\napp=pathlib.Path(sys.argv[-2]); dest=pathlib.Path(sys.argv[-1])\nassert sys.argv[1:4]==["-c","-k","--keepParent"]\nwith zipfile.ZipFile(dest,"x",zipfile.ZIP_DEFLATED) as z:\n for p in sorted(app.rglob("*")): z.write(p,"HappyRanch.app/"+p.relative_to(app).as_posix())\n')
+    ditto.write_text('#!' + sys.executable + '\nimport pathlib,sys,zipfile\napp=pathlib.Path(sys.argv[-2]); dest=pathlib.Path(sys.argv[-1])\nassert sys.argv[1:-2]==["-c","-k","--norsrc","--noextattr","--noqtn","--noacl","--keepParent"]\nwith zipfile.ZipFile(dest,"x",zipfile.ZIP_DEFLATED) as z:\n for p in sorted(app.rglob("*")): z.write(p,"HappyRanch.app/"+p.relative_to(app).as_posix())\n')
     ditto.chmod(0o755)
     env = dict(os.environ, PATH=str(bindir) + ':' + os.environ['PATH'])
     archive = ['bash', str(SOURCE / 'app/mac/scripts/archive-app.sh'), str(app), str(output), '1.0.1', '1.0.1', SOURCE_SHA, SOURCE_TREE, 'arm64', 'portable-fixture']
