@@ -65,7 +65,12 @@ additional offline identity is admitted. Each original retains its source bounda
 The full build collects notices after assembly, validates resources/basic app,
 checks frozen CLI/catalog, records unsigned trust observations, archives and
 reconciles actual ZIP/notice bytes and release identity. The retained resource
-catalog/runtime is unchanged. Failure diagnostics use the current `basic` stage
+path/mode inventory is unchanged. Resource sizes and SHA-256 come from the exact
+Git commit/tree recorded in the app plist, with optional independently supplied
+`--source-sha`/`--source-tree` constraints. The selected verifier checkout supplies
+Git objects by default; `--source` selects another repository. Live checkout
+contents never supply expected bytes. Missing objects or tree/mode disagreement
+refuse; bundle and ZIP members must still match. Failure diagnostics use the current `basic` stage
 (its output remains `native.json`); REACHED records an attempted stage, including
 a failed attempt, and never asserts success.
 
@@ -128,8 +133,11 @@ versions and paths; GOROOT/GOPATH/Go caches are private and GOTOOLCHAIN=local,
 with GOFLAGS unchanged. This uses the same conservative Go line described below;
 newer maintained compatibility remains unestablished. The reviewed job template
 increases only timeout 30->90min and per-file cap 32->256MiB; other caps stay fixed.
-Build 19 reached the first Go download but failed with curl 28; readiness is
-unproven. The source preflight now records bounded per-origin curl exit/stderr
+Build23 at PR1485 head `5b66b30` proved source-toolchain readiness with
+uv0.12.21, Node24.19.0/npm, Go1.23.12, Swift6.3.2, Xcode26.5 and Python3.
+Build19's curl28 remains historical failure evidence. Packaged execution, signing
+and host login remain unverified; the separate `SUITE=packaged` observes a
+scratch-installed unsigned build. The source preflight records bounded per-origin curl exit/stderr
 and metrics, uses ordered official Go origins with the same SHA256 pin and
 unchanged 90s/artifact, 240s provisioning budget. Attempts use remaining time
 with small fallback reserves and resume the same pinned partial; a bad final
@@ -191,6 +199,11 @@ prefix must agree in the private installation, with raw stdlib beneath that
 base; every raw root is admitted through the existing no-follow ancestry/FD,
 owner/mode/device and identity rechecks before physical executable comparisons.
 The admitted raw base prefix remains the expectation for the project venv.
+Venv creation also uses `--python cpython@3.12.10`: in pinned uv0.12.21 a
+concrete executable-path request enables minor-version-link upgrades, routing
+`home`/`sys.base_prefix` through `cpython-3.12-…`. The patch-bearing request
+keeps them on the real CPython3.12.10 directory. No directory alias exemption or
+no-follow/owner/mode/device check is changed.
 Frozen sync and both run commands share explicit absolute project/directory,
 patch-bearing `--python cpython@3.12.10` and managed-only/no-download arguments, with
 `UV_PROJECT_ENVIRONMENT` fixed to exported-source/.venv. Both runs disable
@@ -403,13 +416,13 @@ complete manifest inventory and retained originals pass the new shipping gate.
 
 The failure bundle preserves complete small files (up to 262144 bytes) as
 `.diagnostic` and larger complete files as `.diagnostic.gz`, with no JSON byte
-tails. A fixed 50-input allowlist covers available Analysis/daemon and CLI PYZ
+tails. A fixed 53-input allowlist covers available Analysis/daemon and CLI PYZ
 TOC descriptors, native/data union, Python/toolchain, Go inputs/members, link
 map and component/notice provenance plus per-command CLI/catalog/trust results.
 Inputs are capped at 8 MiB each and 32 MiB total; stored bulk is capped at
-2 MiB each and 8 MiB total. Three independent critical files (build failure,
-native failure and all eleven symbol observations) each have a 262144-byte
-budget. At most 106 files and 128 KiB of metadata describe source hashes/sizes,
+2 MiB each and 8 MiB total. Four independent critical files (resource failure,
+build failure, native failure and all eleven symbol observations) each have a 262144-byte
+budget. At most 108 files and 128 KiB of metadata describe source hashes/sizes,
 whole-file identity/gzip encoding, original/retained/omitted byte and known row
 counts. Missing or uncountable inputs use null counts, never zero-loss claims;
 malformed, unsafe or over-cap inputs get valid explicit loss records. The
@@ -478,12 +491,25 @@ bash app/mac/scripts/verify-release.sh licenses \
   --freezer-output-sha256 "$FREEZER_OUTPUT" --freezer-copy-sha256 "$FREEZER_COPY"
 ```
 
-Resource expectations are the accepted 29-member source baseline, with regular
-file type, mode, size and hash. Catalog expectations compare every list field
+Resource expectations retain the accepted 29 paths and regular-file modes.
+Expected size, SHA-256 and blob identity are derived from the selected committed
+source; all source identity, resource reads and the build Git archive export
+ignore local Git object replacements. Standalone verification needs those Git
+objects locally. Build/archive callers constrain the selected source SHA/tree.
+Real bundle or ZIP mismatches
+still fail with `RESOURCE_VERIFICATION_FAILED` / `RESOURCE_MISMATCH`. Catalog expectations compare every list field
 and validation key, replacing only the relocated app prefix. Capture actual
 frozen CLI `skills catalog list --json` and `validate --json` outside checkout,
 without root/policy overrides; exit zero alone is insufficient. Ordinary-reader
 execution stays explicitly UNEXECUTED.
+
+Archive mode compares membership before ZIP notice/resource/member lookups, so
+missing entries produce structured `ARCHIVE_IDENTITY_MISMATCH` diagnostics.
+Sorted extra/absent names (first64 each, at most256 JSON bytes/name) include total,
+omitted and truncated-name counts plus duplicate count. Unknown metadata is still
+refused. The shipping archive passes the existing dedicated error-evidence path
+through the build trap and packaged harness into the collected probe, preserving
+the report after scratch removal independently of the command tail.
 
 After all prerequisites, `ditto -c -k --keepParent` creates
 `HappyRanch-VERSION-BUILD-arm64.zip`. `archive --app APP --archive ZIP --run-id ID`

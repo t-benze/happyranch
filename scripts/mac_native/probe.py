@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[2]
-SUITES = ("truth", "teardown", "disk-sweep", "cleanup-helpers", "case-safety", "inode-telemetry", "supervisor", "repo-refresh", "cleanup-process-use", "toolchain", "connector-launchd", "connector-managed")
+SUITES = ("truth", "teardown", "disk-sweep", "cleanup-helpers", "case-safety", "inode-telemetry", "supervisor", "repo-refresh", "cleanup-process-use", "toolchain", "packaged", "connector-launchd", "connector-managed")
 PROC_PIDTBSDINFO = 3
 
 
@@ -1423,6 +1423,10 @@ def main() -> int:
         tree_worker(args.tree_worker)
         return 0
     report: dict[str, Any] = {"platform": sys.platform, "suite": args.suite}
+    if args.suite == 'packaged':
+        sys.path.insert(0, str(ROOT))
+        from scripts.mac_native.suite_packaged import initial_steps
+        report['steps'] = initial_steps('SKIPPED: Darwin-only' if sys.platform != 'darwin' else 'not reached')
     code = 0
     if sys.platform != "darwin":
         report["skipped"] = True
@@ -1431,7 +1435,12 @@ def main() -> int:
         signal.signal(signal.SIGTERM, interrupt)
         signal.signal(signal.SIGINT, interrupt)
         try:
-            if args.suite == 'toolchain':
+            if args.suite == 'packaged':
+                sys.path.insert(0, str(ROOT))
+                from scripts.mac_native.suite_packaged import run as packaged
+
+                packaged(report)
+            elif args.suite == 'toolchain':
                 sys.path.insert(0, str(ROOT))
                 from scripts.mac_native.suite_toolchain import run as toolchain
 
@@ -1487,8 +1496,8 @@ def main() -> int:
             print(f"Filesystem: {report['filesystem']}", file=sys.stderr)
         if "internal_error" in report:
             print(report["internal_error"], file=sys.stderr)
-    encoded = json.dumps(report, indent=None if args.suite == 'cleanup-process-use' else 2,
-                         separators=(',', ':') if args.suite == 'cleanup-process-use' else None,
+    encoded = json.dumps(report, indent=None if args.suite in ('cleanup-process-use', 'packaged') else 2,
+                         separators=(',', ':') if args.suite in ('cleanup-process-use', 'packaged') else None,
                          sort_keys=True) + "\n"
     if args.suite == "disk-sweep" and len(encoded.encode("utf-8")) > 65536:
         raise RuntimeError("disk-sweep report exceeds 64KiB")

@@ -114,8 +114,8 @@ host cache or persistent tool installation is changed. uv/npm/Go caches are
 under the private toolchain directory, including GOROOT/GOPATH/GOMODCACHE/GOCACHE.
 `GOTOOLCHAIN=local` prevents automatic Go downloads; GOFLAGS is inherited unchanged. Existing job HOME/temp/user-site isolation
 and locked Python-library bootstrap remain unchanged. Other suites do not fetch
-these tools. A future packaging suite must explicitly use the returned process
-environment; this PR does not implement or execute packaged-app acceptance.
+these tools, except `packaged`, which explicitly reuses the returned process
+environment for its separately authorized app build and frozen observations.
 
 The packaging wrapper already isolates npm/Go/Swift/uv caches under output
 scratch. Its freezer overrides `UV_PYTHON_INSTALL_DIR` with its reserved
@@ -151,8 +151,10 @@ bytes/command. Scratch free bytes are recorded. No app build/run occurs.
 **Native proof:** build 19 at d9ff2f85 reached the first Go download after the
 locked bootstrap, then failed with curl 28 and no transfer diagnostics. It proves
 neither toolchain readiness nor a packaged app. A separately authorized exact-head
-source probe must establish the new diagnostics/provisioning and scratch cleanup;
-verify live job limits and exact-SHA fetch capability read-only before submission.
+source probe subsequently established readiness in build23 at PR1485 head
+`5b66b30`: uv0.12.21, Node24.19.0/npm, Go1.23.12, Swift6.3.2, Xcode26.5 and
+Python3. Packaged execution, signing and host login remain unverified. Verify
+live job limits and exact-SHA fetch capability read-only before any submission.
 If no official origin for an artifact is reachable without a proxy, host/job
 change or new credential, stop and report to the founder; do not work around it.
 No app-build or packaged-run allowance is spent here.
@@ -471,6 +473,100 @@ Run that command under an external <=60-second timeout and output/file caps;
 record it as Linux source/simulated-frozen logic only. Do not use Linux results
 as native or frozen proof. Python units remain retired; integration stays skipped.
 
+
+## Packaged app observation
+
+`SUITE=packaged` / `python3 -B scripts/mac_native/probe.py --suite packaged`
+is one source-only harness entry for a separately authorized Mac run. It builds
+exact `SOURCE_SHA` with `prepare_web_originals.py` and the documented
+`app/mac/scripts/build-app.sh` → `packaging/build_daemon.sh` path. It provisions
+the existing pins only in job scratch, clears the job's PYTHON bootstrap controls
+only for the freezer's documented environment admission, and installs with ditto
+under scratch. It performs no signing, host install, login or release publishing;
+no release/feed URL is supplied or baked by this suite.
+Only this suite's build child appends `-modcacherw` to inherited GOFLAGS, so the
+wrapper's private Go module cache remains removable by the existing outer EXIT.
+The provisioner and parent environment retain their original GOFLAGS.
+The completed build is consumed from `OUTPUT/HappyRanch.app` after the wrapper's
+final move. Its fixed 29 resource paths/modes are checked against committed Git
+blobs for that exact build SHA/tree, independently of live checkout contents.
+On a resource verification failure, the wrapper writes the whole error list to
+`diagnostics/resource-failure.json` (maximum49152B), preserves it as critical
+bounded diagnostics, and the harness copies its parsed report, byte count and
+SHA-256 into `probe.json.packaged.build_failure_evidence` before outer EXIT.
+The entire list survives collection independently of the2KiB command tail.
+Archive membership failures use that same dedicated error file and transport.
+Before any ZIP member lookup, archive verification reports sorted `extra` and
+`absent` lists, total counts, omitted counts, truncated-name counts and duplicate
+count. Each list retains at most64 names; each name's JSON encoding is at most
+256 bytes. The original archive failure remains a refusal, including unknown
+macOS metadata members. These diagnostics survive build trap, harness capture
+and the collected probe after scratch removal; they do not identify build29's
+lost member names or prove an AppleDouble cause.
+The final EXIT collector writes compact JSON so diagnostic rows do not expand
+past its existing64KiB artifact limit; it preserves all parsed values.
+
+`probe.json.steps` always has keys `1`–`8`, each with name and
+PASS/FAIL/NOT_RUN plus bounded evidence. Linux reports every step NOT_RUN with
+SKIPPED reason. The fields cover build identity; private installation/home;
+launch; health + root HTML + one JS/CSS asset; a normal daemon task session and
+cancel with parent/child PID/PGID census; frozen cleanup; stop and final census;
+and outer EXIT cleanup. HTTP fetches prove serving, not browser rendering.
+
+The Jenkins fallback uses the bundle's own daemon, exact app argv, home cwd
+and operational child environment, plus an explicit private TMPDIR for helper
+workspace isolation. The bundled AppDelegate persists NSHomeDirectory/Library
+on launch, so the harness cannot guarantee GUI HOME isolation in this context. AppKit launch and Quit are explicitly NOT_RUN;
+step7 observes the equivalent bundled-daemon TERM5s/KILL2s stop and absence of
+run-owned processes. The census retains only PID/PPID/PGID, never host argv.
+
+Exit-only auth observation uses only the isolated Jenkins HOME. An authenticated
+executor runs the minimal real task; otherwise the ordinary custom CLI Connect
+route admits a declared deterministic scratch CLI. Its child consumes the full
+prompt and returns its actual response during normal Connect conformance; the
+wrapper transports that response. The real task creates a child and waits for
+normal task cancellation. No store/eligibility edits, fake approval, production
+seam or host credential access is used. `real_executor_session=NOT_RUN` records
+the exact unavailable/unauthenticated status when that fallback is used.
+
+Step6 invokes the frozen manual disk-sweep preview (including its worker
+relaunch), frozen worktree-safety snapshot and PR1479 repository-git child protocol,
+and observes the daemon's actual terminal cleanup receipt for a registered
+scratch task worktree. Execution is distinct from reclamation: the normal safety
+policy may retain that worktree, `worktree_removed` reports the actual result,
+and disk-sweep deletion remains NOT_RUN. No gate is weakened to obtain removal.
+A helper failure or missing candidate receipt fails the step.
+
+Step8 is NOT_RUN at JSON emission because the existing outer EXIT trap has not
+yet executed. After exact-build terminal observation, collect both archived
+artifacts and run the source-side join (new output path):
+
+```sh
+python3 -B scripts/mac_native/collect_packaged.py --probe /owned/probe.json --identity /owned/identity.txt --source-sha "$SOURCE_SHA" --output /owned/collected-probe.json
+```
+
+The collector requires matching source/suite identities and joins the sole actual
+`scratch_removed` receipt: true→PASS, false→FAIL, absent→NOT_RUN. Duplicate or
+malformed receipts refuse. It preserves the archived originals and all other
+steps. There is no predicted cleanup PASS or job configuration change. GUI/provider/signing/update
+acceptance cannot be inferred from these narrower observations.
+
+One invocation allows provisioning240s, web-original acquisition900s, build2700s,
+installation120s, bounded startup/session/helper/stop phases within the existing
+90min job. Individual command output is drained with a4MiB cap and2KiB retained
+tail/hash/byte count; helpers have smaller caps, HTTP responses1–4MiB,
+ps1MiB/8192rows, report60000B before dispatcher formatting. Existing256MiB/file
+limits remain. Task-owned processes are stopped/reaped before return where
+possible; any remaining census or teardown uncertainty fails step7. Outer EXIT
+owns scratch disposal even on failure. No automatic resubmission is permitted.
+
+Portable manual harness checks (outside retired Python units/required CI):
+`python3 -B -m unittest scripts.mac_native.test_packaged -v`. These cover Linux
+skip fields, census selection, command failure/output/time bounds, patch-bearing
+freezer argv, child-only Go cache flags, exact-source resource/ZIP mutation
+rejection, complete failure-list collection, completed app location and final
+EXIT receipt collection.
+They neither build nor execute the product.
 
 ## S7 case-safety suite
 

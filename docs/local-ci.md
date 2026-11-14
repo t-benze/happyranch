@@ -29,13 +29,11 @@ integration remains SKIPPED under THR-243 seq42, not PASS.
 C7 adds frozen argv/default-or-explicit helper, missing/moved executable drift,
 and real hidden-dispatch parser coverage to the installer selection. The bundle
 selection reuses `packaging/verify_manifest_notices.py` with the existing
-verifier's SHA-checked historical resource blobs; its default current-source
-baseline checks remain intact. It checks the actual notice collector/validator,
+verifier's exact committed-source resource blobs. It checks the actual notice collector/validator,
 the portable basic bundle reader with synthetic Mach-O headers, and both
 signing scripts' actual inventory function. No codesign, app build, packaged
-execution or native launchd acceptance is implied. Current-source resource
-baseline drift is outside this focused selection and must be reconciled by the
-packaged-app owner before that acceptance.
+execution or native launchd acceptance is implied. Packaged resource expectations
+now derive from committed Git identity; the fixed path/mode checks remain.
 
 ## Frozen repository child launch regressions (THR-346 P2)
 
@@ -200,7 +198,10 @@ GOTOOLCHAIN=local, GOFLAGS unchanged. The freezer hash-installs its full build-o
 backend closure before building the editable root without backend isolation;
 runtime manifests/uv.lock remain unchanged. Newer Go compatibility remains unestablished.
 The reviewed template has 90min/256MiB per file; live application belongs to the
-manager. Build 19 failed with curl 28 on Go; native readiness remains unproven.
+manager. Build 23 at PR1485 head `5b66b30` proved source-toolchain readiness
+(uv0.12.21, Node24.19.0/npm, Go1.23.12, Swift6.3.2, Xcode26.5, Python3).
+Build19's curl28 remains historical failure evidence. Packaged execution, signing
+and host login remain unverified.
 Per-origin curl diagnostics include byte deltas/elapsed time after deadline kills.
 Official Go attempts use remaining time with small fallback reserves and resume
 the same pinned partial within unchanged 90s/artifact and 240s total bounds;
@@ -210,7 +211,11 @@ are source probe observations, not packaged proof. Portable parsing/checksum/PAT
 transfer-diagnostic and tool-evidence checks run with
 `python3 -B -m unittest scripts.mac_native.test_toolchain scripts.mac_native.test_provisioning -v`.
 This focused manual venue remains outside retired Python units and required
-lint/static CI. No packaged-app suite or app build/run is included here.
+lint/static CI. The separate `SUITE=packaged` checks a scratch-installed app;
+see the [suite contract](../ci/jenkins/mac-native-probe/README.md#packaged-app-observation).
+Its portable harness checks run with
+`python3 -B -m unittest scripts.mac_native.test_packaged -v`; Linux reports all
+eight steps NOT_RUN/SKIPPED, never native PASS.
 
 Behavioral tests and builds are outside all/pre-push/required merge checks.
 Normal hooks stay enabled; never bypass hooks or the guarded worktree.

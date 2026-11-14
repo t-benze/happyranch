@@ -19,210 +19,36 @@ from pathlib import Path
 NOTICE_HELPER = sys.argv.pop(1)
 notices = __import__('runpy').run_path(NOTICE_HELPER)
 
-# Same 29 required resource members; exact originals at base 052e5dac.
-BASELINE = [{'path': 'LICENSE',
-  'size': 11358,
-  'sha256': 'cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30',
-  'git_mode': '100644',
-  'posix_mode': '0644',
-  'blob_oid': 'd645695673349e3947e8e5ae42332d0ac3164cd7',
-  'prior_member': True},
- {'path': 'runtime/skills/README.md',
-  'size': 997,
-  'sha256': 'e70e2fa70d0a15f8ed6ed9f231ffc0fcd0bc904967bb477a9e25c57035b6748d',
-  'git_mode': '100644',
-  'posix_mode': '0644',
-  'blob_oid': 'c54753667ef6b9d98b98bd59f7f09accbf55c6c7',
-  'prior_member': True},
- {'path': 'runtime/skills/bundled/create-skill/SKILL.md',
-  'size': 10114,
-  'sha256': '624d00966e4fba54156d1c76f09fb780de673c30be55203c6733fcf7375050c7',
-  'git_mode': '100644',
-  'posix_mode': '0644',
-  'blob_oid': '99c19ab116a6e131db7d756186481d31ca5ea5cc',
-  'prior_member': True},
- {'path': 'runtime/skills/bundled/dream/SKILL.md',
-  'size': 14118,
-  'sha256': '91fd7d70f9a96a2e2802379c95df91ee001cd3f46febf67377d413ba4f6ae1fb',
-  'git_mode': '100644',
-  'posix_mode': '0644',
-  'blob_oid': '1dbe6352f801e9b4124b4fb47d19701341e9a983',
-  'prior_member': True},
- {'path': 'runtime/skills/bundled/jobs/SKILL.md',
-  'size': 34623,
-  'sha256': '890a5536a059161ee166842758746544e63b0d23353d22b4d992eaca9c67db05',
-  'git_mode': '100644',
-  'posix_mode': '0644',
-  'blob_oid': '7752b2305e0ce3a995925f16005e7f6f7de22258',
-  'prior_member': True},
- {'path': 'runtime/skills/bundled/make-worktree/SKILL.md',
-  'size': 7683,
-  'sha256': '043f7c10ede6dc819c31948af32baa46558ad2ebf08d8d7961e5c1d581f192c4',
-  'git_mode': '100644',
-  'posix_mode': '0644',
-  'blob_oid': 'e03aab54639a87e490a57db948526164e0c87d82',
-  'prior_member': True},
- {'path': 'runtime/skills/bundled/make-worktree/worktree_guard.py',
-  'size': 25604,
-  'sha256': 'dd115fa2e23c2a446c7524ef3f726c69631129c1b4f65eab9f69234df13a3bab',
-  'git_mode': '100644',
-  'posix_mode': '0644',
-  'blob_oid': 'eedfa92de82e9c304f7440c98d0b47ad0cc1306c',
-  'prior_member': False},
- {'path': 'runtime/skills/bundled/manage-agent/SKILL.md',
-  'size': 31293,
-  'sha256': '5f1813f54321107a91cc7d3d8c29c6388830c8b4827335a9c77213929345bcd2',
-  'git_mode': '100644',
-  'posix_mode': '0644',
-  'blob_oid': '6a29e7bd0a6b0efca64fb6270e82d9eeea17b972',
-  'prior_member': True},
- {'path': 'runtime/skills/bundled/manage-repo/SKILL.md',
-  'size': 4444,
-  'sha256': '69044ddd5501eef9c2b5e5440d91bb5f46a40ed38173b4c066b0f076252a1e38',
-  'git_mode': '100644',
-  'posix_mode': '0644',
-  'blob_oid': '846d5e33899804e82cfc4705e4dea610933773e4',
-  'prior_member': True},
- {'path': 'runtime/skills/bundled/reflection/SKILL.md',
-  'size': 4716,
-  'sha256': '807d07fad177cd9047d839e6946344ad12db1ca67b18934911d626cbc5915946',
-  'git_mode': '100644',
-  'posix_mode': '0644',
-  'blob_oid': 'fd5fb640513d1bec3ef06cfa083d6e4baac28cbd',
-  'prior_member': True},
- {'path': 'runtime/skills/bundled/start-task/SKILL.md',
-  'size': 42403,
-  'sha256': '1c473622db4ee27d3731f4531c15fe7e63cf495d9cde6f81018a57a44376f644',
-  'git_mode': '100644',
-  'posix_mode': '0644',
-  'blob_oid': '9cb8dd21ce56ae46963384e0ce72ee1d8961e17a',
-  'prior_member': True},
- {'path': 'runtime/skills/bundled/thread/SKILL.md',
-  'size': 25987,
-  'sha256': 'c6e335d3eec9c4b66923f69e1516997a6df3a60a98c7c1d6ab398f27bac76d59',
-  'git_mode': '100644',
-  'posix_mode': '0644',
-  'blob_oid': '91f963035b326e32ba0d626672bb05399097706f',
-  'prior_member': True},
- {'path': 'runtime/skills/bundled/todos/SKILL.md',
-  'size': 26543,
-  'sha256': 'cd262078043bbfabf74f5edd8e723a75d5658df51b4712527eaa76e6078c6945',
-  'git_mode': '100644',
-  'posix_mode': '0644',
-  'blob_oid': '9eeaf04c8d84b78a794e448b453413704865d1b1',
-  'prior_member': True},
- {'path': 'runtime/skills/bundled/workspace-cleanup/SKILL.md',
-  'size': 61825,
-  'sha256': 'c5157e6aab3fcb664f070f732d39850615744b45ccf45808e8d13ad1d8dbc32b',
-  'git_mode': '100644',
-  'posix_mode': '0644',
-  'blob_oid': 'ce71b9b6d3c1cdbff7fd4a6f697b8fdcc1e8eff6',
-  'prior_member': True},
- {'path': 'runtime/skills/bundled/workspace-cleanup/scripts/check_path_use.py',
-  'size': 82540,
-  'sha256': '6d39214e1b20c93d7899f6e54bcc0d4f9f657c59b76f9e6e059bf3047fbfe3d4',
-  'git_mode': '100644',
-  'posix_mode': '0644',
-  'blob_oid': '4ba3223e72bdb7bd54ad97a305bfe9e6be5ebd7a',
-  'prior_member': False},
- {'path': 'runtime/skills/bundled/workspace-cleanup/scripts/observe_cleanup_batch.py',
-  'size': 43384,
-  'sha256': 'b3626364938f21e06875878ea4d713d8aa3afe7c4dc8ece99928323bec905fdb',
-  'git_mode': '100644',
-  'posix_mode': '0644',
-  'blob_oid': '8cf408fc474e45e9f44cdfb2f657c55a8ec72ac0',
-  'prior_member': False},
- {'path': 'runtime/skills/bundled/workspace-cleanup/scripts/prepare_cleanup.py',
-  'size': 36215,
-  'sha256': '048b009d186e5acfc2ca033125f62597d6d3ac9bc60ff2cdbcbf77a09c98329c',
-  'git_mode': '100644',
-  'posix_mode': '0644',
-  'blob_oid': '6d483e3b20b8b82dffbdc5ce39be5ec300796c8b',
-  'prior_member': False},
- {'path': 'runtime/skills/bundled/workspace-cleanup/scripts/run_cleanup_batch.py',
-  'size': 23349,
-  'sha256': 'e524933bf62729f292faadbd3836a994a08d4cd98c09fab8b41154aeb631feac',
-  'git_mode': '100644',
-  'posix_mode': '0644',
-  'blob_oid': '07847b5c9a52b4f42101dad44cef0330b270054e',
-  'prior_member': False},
- {'path': 'runtime/skills/bundled/workspace-cleanup/scripts/run_cleanup_candidate.sh',
-  'size': 58643,
-  'sha256': '32808665c1a200b67af9eedee6cafa5155197dcf05fb22624c0ae919ba091a3b',
-  'git_mode': '100755',
-  'posix_mode': '0755',
-  'blob_oid': '99f95780de48c71fb19ae0e12e7208cd11dd2952',
-  'prior_member': True},
- {'path': 'runtime/skills/bundled/workspace-cleanup/scripts/worktree_safety.py',
-  'size': 23134,
-  'sha256': '63a2dc11e7c8c6748a1746b4f9fac2dffdf44895980234c8756c6fb5e4bea719',
-  'git_mode': '100644',
-  'posix_mode': '0644',
-  'blob_oid': 'ead2c7e00e4e37b4f1b5aaca7c977be1361efbf1',
-  'prior_member': False},
- {'path': 'runtime/skills/manage-agent/SKILL.md',
-  'size': 6765,
-  'sha256': '990afaf025e4ccf5412ec24a226b03c6657e17fb06dec7f3df10f6941366cd86',
-  'git_mode': '100644',
-  'posix_mode': '0644',
-  'blob_oid': '0cde16e32c8cef07bda4f7d203ee03151a210f07',
-  'prior_member': True},
- {'path': 'runtime/skills/manage-agent/skill.yaml',
-  'size': 518,
-  'sha256': '660f5dcd6567c4c942adfe0cee2536e7ddb23be6a271124d2ee1e94b12252b12',
-  'git_mode': '100644',
-  'posix_mode': '0644',
-  'blob_oid': '6cfc61404a385ce0725d24f3fb6c36467b74189b',
-  'prior_member': True},
- {'path': 'runtime/skills/manage-repo/SKILL.md',
-  'size': 2451,
-  'sha256': 'd1d50e9ce0cba365a6f369f3a4ebd5960505d7548fb5c3a299c67efbbca21c6b',
-  'git_mode': '100644',
-  'posix_mode': '0644',
-  'blob_oid': '1ba97ab805327cd362188fb503e3bdcd28353e7d',
-  'prior_member': True},
- {'path': 'runtime/skills/manage-repo/skill.yaml',
-  'size': 503,
-  'sha256': '0bdb6d5a067f891efaa96959eaaad6d2fa3659d9d41c5a0b0da3873290617561',
-  'git_mode': '100644',
-  'posix_mode': '0644',
-  'blob_oid': '2123917f873e1f3f2bffcbadc12c40521f008b25',
-  'prior_member': True},
- {'path': 'runtime/skills/reflection/SKILL.md',
-  'size': 4716,
-  'sha256': '807d07fad177cd9047d839e6946344ad12db1ca67b18934911d626cbc5915946',
-  'git_mode': '100644',
-  'posix_mode': '0644',
-  'blob_oid': 'fd5fb640513d1bec3ef06cfa083d6e4baac28cbd',
-  'prior_member': True},
- {'path': 'runtime/skills/reflection/skill.yaml',
-  'size': 376,
-  'sha256': '1e5da8233e72bddca513862232d950618aaba2e75da048553e4737d573a1b393',
-  'git_mode': '100644',
-  'posix_mode': '0644',
-  'blob_oid': 'e877c075b6120ec51277283e3011e5aeddb2c82e',
-  'prior_member': True},
- {'path': 'skills/README.md',
-  'size': 613,
-  'sha256': 'fa31cc0c372c943bad5c859102ecd3ef99144f60be2ced61e46b2d994d20b320',
-  'git_mode': '100644',
-  'posix_mode': '0644',
-  'blob_oid': 'dd30ab57830a1b37977184c70eb1edec26b029c1',
-  'prior_member': True},
- {'path': 'skills/happyranch/SKILL.md',
-  'size': 22255,
-  'sha256': '9f2ce3fbcc04833e6d7af60bc2e458f1382229b8774b89217cb8dd59855b97b3',
-  'git_mode': '100644',
-  'posix_mode': '0644',
-  'blob_oid': '8419dfca4cbe7a63e0c54a81a6c9b6924a12c9c6',
-  'prior_member': True},
- {'path': 'skills/happyranch/scripts/happyranch',
-  'size': 727,
-  'sha256': '8983ce21caab00a3de5a939c4bc6a12a075110fd7096cdf6be17ed983cd89d2b',
-  'git_mode': '100755',
-  'posix_mode': '0755',
-  'blob_oid': '8a77db50cee8a7cb7f60b542f5c51f59c2dd8a7a',
-  'prior_member': True}]
+# Required paths and modes are fixed; content identity follows the committed source.
+BASELINE = [{'path': 'LICENSE', 'posix_mode': '0644'},
+ {'path': 'runtime/skills/README.md', 'posix_mode': '0644'},
+ {'path': 'runtime/skills/bundled/create-skill/SKILL.md', 'posix_mode': '0644'},
+ {'path': 'runtime/skills/bundled/dream/SKILL.md', 'posix_mode': '0644'},
+ {'path': 'runtime/skills/bundled/jobs/SKILL.md', 'posix_mode': '0644'},
+ {'path': 'runtime/skills/bundled/make-worktree/SKILL.md', 'posix_mode': '0644'},
+ {'path': 'runtime/skills/bundled/make-worktree/worktree_guard.py', 'posix_mode': '0644'},
+ {'path': 'runtime/skills/bundled/manage-agent/SKILL.md', 'posix_mode': '0644'},
+ {'path': 'runtime/skills/bundled/manage-repo/SKILL.md', 'posix_mode': '0644'},
+ {'path': 'runtime/skills/bundled/reflection/SKILL.md', 'posix_mode': '0644'},
+ {'path': 'runtime/skills/bundled/start-task/SKILL.md', 'posix_mode': '0644'},
+ {'path': 'runtime/skills/bundled/thread/SKILL.md', 'posix_mode': '0644'},
+ {'path': 'runtime/skills/bundled/todos/SKILL.md', 'posix_mode': '0644'},
+ {'path': 'runtime/skills/bundled/workspace-cleanup/SKILL.md', 'posix_mode': '0644'},
+ {'path': 'runtime/skills/bundled/workspace-cleanup/scripts/check_path_use.py', 'posix_mode': '0644'},
+ {'path': 'runtime/skills/bundled/workspace-cleanup/scripts/observe_cleanup_batch.py', 'posix_mode': '0644'},
+ {'path': 'runtime/skills/bundled/workspace-cleanup/scripts/prepare_cleanup.py', 'posix_mode': '0644'},
+ {'path': 'runtime/skills/bundled/workspace-cleanup/scripts/run_cleanup_batch.py', 'posix_mode': '0644'},
+ {'path': 'runtime/skills/bundled/workspace-cleanup/scripts/run_cleanup_candidate.sh', 'posix_mode': '0755'},
+ {'path': 'runtime/skills/bundled/workspace-cleanup/scripts/worktree_safety.py', 'posix_mode': '0644'},
+ {'path': 'runtime/skills/manage-agent/SKILL.md', 'posix_mode': '0644'},
+ {'path': 'runtime/skills/manage-agent/skill.yaml', 'posix_mode': '0644'},
+ {'path': 'runtime/skills/manage-repo/SKILL.md', 'posix_mode': '0644'},
+ {'path': 'runtime/skills/manage-repo/skill.yaml', 'posix_mode': '0644'},
+ {'path': 'runtime/skills/reflection/SKILL.md', 'posix_mode': '0644'},
+ {'path': 'runtime/skills/reflection/skill.yaml', 'posix_mode': '0644'},
+ {'path': 'skills/README.md', 'posix_mode': '0644'},
+ {'path': 'skills/happyranch/SKILL.md', 'posix_mode': '0644'},
+ {'path': 'skills/happyranch/scripts/happyranch', 'posix_mode': '0755'}]
 CATALOG = {'status': 'SOURCE_DERIVED_EXPECTATIONS_NOT_OBSERVED',
  'commands': ['BUNDLED_CLI skills catalog list --json',
               'BUNDLED_CLI skills catalog validate --json'],
@@ -315,8 +141,17 @@ def fail(code, detail):
                             'exit': 1, 'available': False, 'approved_url': None})
         except (OSError, ValueError):
             print('NATIVE_FAILURE_EVIDENCE_WRITE_REFUSED', file=sys.stderr)
-    print(json.dumps({'error': code, 'detail': detail, 'available': False,
-                      'approved_url': None}), file=sys.stderr)
+    value = {'error': code, 'detail': detail, 'available': False, 'approved_url': None}
+    membership = (code == 'ARCHIVE_IDENTITY_MISMATCH' and isinstance(detail, dict)
+                  and detail.get('reason') == 'archive membership')
+    if (code == 'RESOURCE_VERIFICATION_FAILED' or membership) and getattr(a, 'resource_evidence', None):
+        raw = (json.dumps(value, sort_keys=True) + '\n').encode()
+        if len(raw) > 49152:
+            raise ValueError('RESOURCE_EVIDENCE_CAP_EXCEEDED')
+        fd = os.open(a.resource_evidence, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, 'wb') as stream:
+            stream.write(raw)
+    print(json.dumps(value), file=sys.stderr)
     raise SystemExit(1)
 
 
@@ -371,13 +206,13 @@ def safe_new(path, source=None):
 def source_identity(source, sha, tree):
     if not re.fullmatch('[0-9a-f]{40}', sha) or not re.fullmatch('[0-9a-f]{40}', tree):
         fail('SOURCE_IDENTITY_INVALID', [sha, tree])
-    actual = run('git', '-C', str(source), 'rev-parse', 'HEAD').strip()
-    actual_tree = run('git', '-C', str(source), 'rev-parse', 'HEAD^{tree}').strip()
+    actual = run('git', '--no-replace-objects', '-C', str(source), 'rev-parse', 'HEAD').strip()
+    actual_tree = run('git', '--no-replace-objects', '-C', str(source), 'rev-parse', 'HEAD^{tree}').strip()
     if actual != sha:
         fail('SOURCE_COMMIT_MISMATCH', [sha, actual])
     if actual_tree != tree:
         fail('SOURCE_TREE_MISMATCH', [tree, actual_tree])
-    dirty = run('git', '-C', str(source), 'status', '--porcelain', '--untracked-files=all')
+    dirty = run('git', '--no-replace-objects', '-C', str(source), 'status', '--porcelain', '--untracked-files=all')
     if dirty:
         fail('SOURCE_NOT_CLEAN', dirty)
 
@@ -459,7 +294,40 @@ def zip_inventory(archive):
     return inventory_identity(rows)
 
 
-def resources(app, archive=None):
+def resource_baseline(source, sha, tree):
+    """Read original Git objects, ignoring local replacement refs and checkout bytes."""
+    if not re.fullmatch('[0-9a-f]{40}', sha) or not re.fullmatch('[0-9a-f]{40}', tree):
+        fail('SOURCE_IDENTITY_INVALID', [sha, tree])
+    if run('git', '--no-replace-objects', '-C', str(source), 'rev-parse', '--verify', sha + '^{commit}').strip() != sha:
+        fail('SOURCE_COMMIT_MISMATCH', sha)
+    if run('git', '--no-replace-objects', '-C', str(source), 'rev-parse', '--verify', sha + '^{tree}').strip() != tree:
+        fail('SOURCE_TREE_MISMATCH', tree)
+    rows = []
+    for required in BASELINE:
+        path = required['path']
+        entry = run('git', '--no-replace-objects', '-C', str(source), 'ls-tree', sha, '--', path).strip()
+        fields = entry.split(None, 3)
+        mode = '100755' if required['posix_mode'] == '0755' else '100644'
+        if len(fields) != 4 or fields[0] != mode or fields[1] != 'blob' or fields[3] != path:
+            fail('SOURCE_RESOURCE_INVALID', path)
+        blob = subprocess.run(['git', '--no-replace-objects', '-C', str(source), 'cat-file', 'blob', fields[2]],
+                              capture_output=True, timeout=60, check=True).stdout
+        rows.append({**required, 'size': len(blob), 'sha256': hashlib.sha256(blob).hexdigest(),
+                     'blob_oid': fields[2], 'git_mode': mode})
+    return rows
+
+
+def selected_resources(app, source, sha=None, tree=None):
+    info = plistlib.loads(notices['read'](app / 'Contents/Info.plist', app))
+    selected_sha, selected_tree = info.get('GitCommitSHA', ''), info.get('GitTreeSHA', '')
+    if sha is not None and sha != selected_sha:
+        fail('SOURCE_COMMIT_MISMATCH', [sha, selected_sha])
+    if tree is not None and tree != selected_tree:
+        fail('SOURCE_TREE_MISMATCH', [tree, selected_tree])
+    return resource_baseline(source, selected_sha, selected_tree)
+
+
+def resources(app, archive=None, *, source=None, source_sha=None, source_tree=None):
     rows, errors = [], []
     entries = None
     if archive:
@@ -470,7 +338,7 @@ def resources(app, archive=None):
         if any(not n.startswith('HappyRanch.app/') or '..' in Path(n).parts for n in names):
             fail('ARCHIVE_IDENTITY_MISMATCH', 'expected single HappyRanch.app root')
         entries = {i.filename: i for i in z.infolist()}
-    for row in BASELINE:
+    for row in selected_resources(app, source or Path(NOTICE_HELPER).resolve().parents[3], source_sha, source_tree):
         relative = member(row)
         path = app / relative
         identity = {'source': row['path'], 'app_member': relative,
@@ -659,11 +527,11 @@ def native(app, archive, link_map):
             'link_map_sha256': digest(link_map), 'minimum_os_execution': 'UNEXECUTED'}
 
 
-def basic(app):
+def basic(app, **selection):
     """Concrete bundle contract and native architecture, without linker proof."""
     import struct
     notices['safe_path'](app, app)
-    resources(app)
+    resources(app, **selection)
     info = plistlib.loads(notices['read'](app / 'Contents/Info.plist', app))
     expected = {'CFBundleExecutable': 'HappyRanch', 'CFBundlePackageType': 'APPL',
                 'CFBundleIdentifier': 'ai.happyranch.HappyRanchApp',
@@ -739,7 +607,15 @@ q.add_argument('--source', type=Path, required=True)
 q.add_argument('--output-dir', type=Path, required=True)
 q.add_argument('--app', type=Path, required=True)
 q.add_argument('--mapping', type=Path, required=True)
+for name in ('resources', 'basic', 'archive'):
+    parser = s.choices[name]
+    parser.add_argument('--source', type=Path, default=Path(NOTICE_HELPER).resolve().parents[3])
+    parser.add_argument('--source-sha')
+    parser.add_argument('--source-tree')
+    parser.add_argument('--resource-evidence', type=Path)
 a = p.parse_args()
+selection = ({key: getattr(a, key) for key in ('source', 'source_sha', 'source_tree')}
+             if a.mode in ('resources', 'basic', 'archive') else {})
 if a.mode == 'native':
     NATIVE_EVIDENCE_DIR = a.evidence_dir
 try:
@@ -756,7 +632,7 @@ try:
               'version': a.version, 'build': a.build, 'arch': a.arch, 'output': str(output),
               'preflight': 'VALIDATED_NO_BUILD_EFFECTS'})
     elif a.mode == 'resources':
-        emit(resources(a.app, a.archive))
+        emit(resources(a.app, a.archive, **selection))
     elif a.mode == 'inventory':
         if not a.app.is_dir() or a.app.is_symlink():
             fail('APP_MISSING', str(a.app))
@@ -797,13 +673,37 @@ try:
               'classification': classification, 'installed_manual_semantics_review': 'REQUIRED',
               'signature_notary_staple_acceptance': 'UNPROVEN', 'available': False, 'approved_url': None})
     elif a.mode == 'archive':
-        basic(a.app)
+        basic(a.app, **selection)
+        inv = inventory(a.app)
+        with zipfile.ZipFile(a.archive) as z:
+            expected_names = {'HappyRanch.app/' + r['path'] + ('/' if r['type'] == 'directory' else '') for r in inv['members']}
+            names = z.namelist()
+            actual_names = set(names) - {'HappyRanch.app/'}
+            extra = sorted(actual_names - expected_names)
+            absent = sorted(expected_names - actual_names)
+            duplicates = len(names) - len(set(names))
+            if extra or absent or duplicates:
+                # Keep the existing 48KiB error/probe transport bounded even
+                # for long names, control characters and escaped Unicode.
+                detail = {'reason': 'archive membership', 'duplicate_count': duplicates,
+                          'member_limit': 64, 'name_json_bytes_limit': 256}
+                for key, values in (('extra', extra), ('absent', absent)):
+                    selected, truncated = [], 0
+                    for name in values[:64]:
+                        prefix = name[:256]
+                        while len(json.dumps(prefix).encode()) > 256:
+                            prefix = prefix[:-1]
+                        truncated += prefix != name
+                        selected.append(prefix)
+                    detail.update({key: selected, key + '_count': len(values),
+                                   key + '_omitted': max(0, len(values) - 64),
+                                   key + '_truncated_names': truncated})
+                fail('ARCHIVE_IDENTITY_MISMATCH', detail)
         notice_receipt = notices['validate'](a.app)
         if notices['validate_archive'](a.archive) != notice_receipt:
             fail('MANIFEST_NOTICE_ARCHIVE_MISMATCH', 'candidate and archive notice receipts differ')
-        resources(a.app, a.archive)
+        resources(a.app, a.archive, **selection)
         with zipfile.ZipFile(a.archive) as z:
-            inv = inventory(a.app)
             for row in inv['members']:
                 name = 'HappyRanch.app/' + row['path'] + ('/' if row['type'] == 'directory' else '')
                 entry = z.getinfo(name)
@@ -813,9 +713,6 @@ try:
                     fail('ARCHIVE_IDENTITY_MISMATCH', name + ': bytes')
                 if row['type'] == 'symlink' and z.read(entry).decode() != row['target']:
                     fail('ARCHIVE_IDENTITY_MISMATCH', name + ': symlink')
-            expected_names = {'HappyRanch.app/' + r['path'] + ('/' if r['type'] == 'directory' else '') for r in inv['members']}
-            if set(z.namelist()) - {'HappyRanch.app/'} != expected_names:
-                fail('ARCHIVE_IDENTITY_MISMATCH', 'extra or absent members')
         info = plistlib.loads((a.app / 'Contents/Info.plist').read_bytes())
         emit({'role': 'unsigned-inner-zip', 'filename': a.archive.name,
               'size': a.archive.stat().st_size, 'sha256': digest(a.archive),
@@ -914,7 +811,7 @@ try:
         emit({'local_reconciliation': 'MATCHED_TRANSFORM_RELATIONS' if a.transform_chain else 'MATCHED_UNSIGNED_INNER_BYTES', 'available': False,
               'approved_url': None, 'signing_chain': 'SUPPLIED_RELATIONS_ONLY' if a.transform_chain else 'UNEXECUTED', 'public_admission_owner': 'TASK-11196'})
     elif a.mode == 'basic':
-        emit(basic(a.app))
+        emit(basic(a.app, **selection))
     elif a.mode == 'licenses':
         mapping = json.loads(notices['read'](a.mapping, a.output_dir, notices['MAX_JSON']))
         emit(notices['validate'](a.app, a.source, a.output_dir, mapping))

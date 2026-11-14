@@ -107,7 +107,8 @@ inputs += [(name, 'scratch/freeze-work/' + src, kind) for name, src, kind in (
 inputs += [(f'cli-{i}.{suffix}', f'diagnostics/cli-{i}.{suffix}', kind)
            for i in range(7) for suffix, kind in
            (('stdout', 'text'), ('stderr', 'text'), ('json', 'json'))]
-critical = [('native-failure.json', 'diagnostics/native-failure.json', 'json'),
+critical = [('resource-failure.json', 'diagnostics/resource-failure.json', 'json'),
+            ('native-failure.json', 'diagnostics/native-failure.json', 'json'),
             ('native-symbols.json', 'diagnostics/native-symbols.json', 'json')]
 FILE_READ = 8 * 1024 * 1024; TOTAL_READ = 32 * 1024 * 1024
 FILE_STORED = 2 * 1024 * 1024; TOTAL_STORED = 8 * 1024 * 1024
@@ -227,13 +228,13 @@ manifest = {**summary, 'inspection_stages': {name: ('REACHED' if i <= reached el
             'complete_files': sum(r['complete'] for r in rows),
             'partial_or_missing_files': sum(not r['complete'] for r in rows),
             'bulk_read_bytes': read_bytes, 'bulk_stored_bytes': stored_bytes,
-            'caps': {'input_files': 52, 'output_files': 106,
+            'caps': {'input_files': len(critical + inputs), 'output_files': 2 * len(critical + inputs) + 2,
                      'input_per_file': FILE_READ, 'input_total': TOTAL_READ,
                      'stored_per_file': FILE_STORED, 'stored_total': TOTAL_STORED,
-                     'critical_per_file': CRITICAL, 'critical_files': 3,
+                     'critical_per_file': CRITICAL, 'critical_files': len(critical) + 1,
                      'metadata_total': 131072},
             'scope': 'AVAILABLE_ALLOWLISTED_EVIDENCE_ONLY_NOT_RELEASE_CLOSURE'}
-assert len(rows) == 52
+assert len(rows) == len(critical + inputs)
 encoded = encode(manifest)
 # Fixed field names and short dispositions bound all sidecars and this index.
 assert len(encoded) + sum(len(encode(r)) for r in rows) < 131072
@@ -247,7 +248,7 @@ PYFAIL
 trap finish EXIT
 SOURCE="$OUTPUT/scratch/source"
 mkdir "$SOURCE"
-git -c tar.umask=0022 -C "$REPO_ROOT" archive "$SOURCE_SHA" | tar -xp -C "$SOURCE"
+git --no-replace-objects -c tar.umask=0022 -C "$REPO_ROOT" archive "$SOURCE_SHA" | tar -xp -C "$SOURCE"
 PROJECT="$SOURCE/app/mac"
 APP="$OUTPUT/scratch/HappyRanch.app"
 export TMPDIR="$OUTPUT/scratch/tmp"
@@ -366,9 +367,10 @@ python3 "$SOURCE/app/mac/scripts/manifest_notices.py" collect --source "$SOURCE"
     --output "$OUTPUT" --mapping "$OUTPUT/diagnostics/license-mapping.json" > "$OUTPUT/diagnostics/manifest-notices.json"
 STAGE=verification
 INSPECTION_STAGE=resources
-bash "$VERIFY" resources --app "$APP" > "$OUTPUT/diagnostics/resources.json"
+bash "$VERIFY" resources --app "$APP" --source "$REPO_ROOT" --source-sha "$SOURCE_SHA" --source-tree "$SOURCE_TREE" \
+    --resource-evidence "$OUTPUT/diagnostics/resource-failure.json" > "$OUTPUT/diagnostics/resources.json"
 INSPECTION_STAGE=basic
-bash "$VERIFY" basic --app "$APP" > "$OUTPUT/diagnostics/native.json"
+bash "$VERIFY" basic --app "$APP" --source "$REPO_ROOT" --source-sha "$SOURCE_SHA" --source-tree "$SOURCE_TREE" > "$OUTPUT/diagnostics/native.json"
 # Requested frozen entry-point inspection outside source, with bounded subprocess
 # timeouts and no checkout/PYTHONPATH/development tool search path.
 INSPECTION_STAGE=cli
@@ -402,9 +404,9 @@ ZIP="$OUTPUT/HappyRanch-${VERSION}-${BUILD}-${ARCH}.zip"
 bash "$SCRIPT_DIR/archive-app.sh" "$APP" "$OUTPUT" "$VERSION" "$BUILD" "$SOURCE_SHA" "$SOURCE_TREE" "$ARCH" "$RUN_ID"
 # Recheck the actual source before any success finalization. The output still
 # exists, so use the read-only Git observations rather than new-path admission.
-test "$(git -C "$REPO_ROOT" rev-parse HEAD)" = "$SOURCE_SHA"
-test "$(git -C "$REPO_ROOT" rev-parse HEAD^{tree})" = "$SOURCE_TREE"
-test -z "$(git -C "$REPO_ROOT" status --porcelain --untracked-files=all)"
+test "$(git --no-replace-objects -C "$REPO_ROOT" rev-parse HEAD)" = "$SOURCE_SHA"
+test "$(git --no-replace-objects -C "$REPO_ROOT" rev-parse HEAD^{tree})" = "$SOURCE_TREE"
+test -z "$(git --no-replace-objects -C "$REPO_ROOT" status --porcelain --untracked-files=all)"
 bash "$VERIFY" inventory --app "$APP" > "$OUTPUT/diagnostics/app-inventory.json"
 mv "$APP" "$OUTPUT/HappyRanch.app"
 cp "$OUTPUT/diagnostics/inner-zip.json" "$OUTPUT/build-receipt.json"

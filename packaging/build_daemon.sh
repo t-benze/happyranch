@@ -173,7 +173,9 @@ UV_PROJECT_ARGS=(--project "$REPO_ROOT" --directory "$REPO_ROOT"
 # The editable root's backend is not part of uv.lock. Populate its complete
 # wheel-only closure with mandatory hashes before building; no implicit backend
 # resolution is permitted. Runtime packages still use the unchanged frozen lock.
-uv venv --no-config --python "$MANAGED_PYTHON" --managed-python --no-python-downloads "$REPO_ROOT/.venv"
+# A path request enables uv's minor-link upgrades even when the path is concrete.
+# The patch request keeps venv home/base_prefix on the admitted real directory.
+uv venv --no-config --python "$PYTHON_REQUEST" --managed-python --no-python-downloads "$REPO_ROOT/.venv"
 uv pip install --no-config --python "$REPO_ROOT/.venv/bin/python" --no-python-downloads \
     --require-hashes --only-binary :all: --requirements "$REPO_ROOT/packaging/build-backend-requirements.txt"
 uv sync "${UV_PROJECT_ARGS[@]}" --group build --frozen --no-build-isolation-package happyranch

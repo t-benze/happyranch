@@ -93,8 +93,12 @@ not query Apple, unlock a Keychain or change credential policy.
 The separate existing Jenkins native probe has reviewed source
 for scratch-only uv 0.12.21/Node 24.19.0 LTS/Go 1.23.12 provisioning and 90min/256MiB limits
 (THR-346 msg86); see the [probe contract](../../ci/jenkins/mac-native-probe/README.md).
-This changes no signing-host prerequisites or release route. Build 19 failed on
-the first Go download (curl 28), so native readiness remains unproven. Source
+This changes no signing-host prerequisites or release route. Build23 at PR1485
+head `5b66b30` proved source-toolchain readiness: uv0.12.21, Node24.19.0/npm,
+Go1.23.12, Swift6.3.2, Xcode26.5 and Python3. Build19's first-Go curl28 remains
+historical failure evidence; packaged execution, signing and host login remain
+unverified. The separately authorized `SUITE=packaged` records those runtime
+observations without granting signing or release authority. Source
 diagnostics retain bounded curl exit/stderr/timing metrics per official origin;
 ordered Go fallback shares the same hash pin and unchanged 90s/artifact, 240s
 total budget. Each attempt uses remaining time with small fallback reserves,
@@ -435,6 +439,16 @@ No publication performed.
 > original; skip building/downloading it. Preserve any existing signing state,
 > sign and submit once using my existing Keychain, and return the report for
 > THR-104. Stop for me at an OS prompt, ambiguity or non-Accepted result.
+
+Packaged resource verification retains29 fixed paths/modes and reads expected
+size/hash from the build's committed Git SHA/tree. Source identity and resource
+reads and the build Git archive export ignore local Git object replacements.
+Standalone resource/basic/ZIP inspection requires the corresponding Git objects
+(`--source` can select that repository); the build and archive transitions
+constrain the expected identity.
+A verification failure retains the complete bounded resource error list in the
+packaged probe artifact before scratch removal. See the
+[packaged observation contract](../../ci/jenkins/mac-native-probe/README.md#packaged-app-observation).
 
 ## Managed connector sidecar source target (C6a)
 
