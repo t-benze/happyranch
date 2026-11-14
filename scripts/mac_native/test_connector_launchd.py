@@ -458,6 +458,68 @@ class LaunchdObservations(unittest.TestCase):
 
 
 class LaunchdLifecycle(unittest.TestCase):
+    def test_stop_settles_sigtermed_or_refuses_at_deadline(self) -> None:
+        for outcome in ("absent", "loaded", "denied", "domain-lost", "malformed"):
+            with self.subTest(outcome=outcome), tempfile.TemporaryDirectory() as folder:
+                root = Path(folder)
+                path = root / f"{LABEL}.plist"
+                original = render_launch_agent(LABEL, ("/bin/sleep", "20"), logs_dir=root)
+                path.write_text(original)
+                clock = [0.0]
+                sleeps = []
+                rows = [row("print", DOMAIN), row("print", TARGET, output=RUNNING), row("bootout", TARGET)]
+                calls = []
+                def run(argv: list[str], *, timeout: float = 10.0) -> tuple[int, str]:
+                    calls.append(argv)
+                    self.assertGreater(timeout, 0)
+                    if rows:
+                        expected, code, output = rows.pop(0)
+                        self.assertEqual(argv, ["launchctl", *expected])
+                        return code, output
+                    self.assertLessEqual(timeout, 30 - clock[0])
+                    self.assertTrue(path.exists(), "plist removed before verified absence")
+                    if argv == ["launchctl", "print", DOMAIN]:
+                        return 1, "permission denied"
+                    self.assertEqual(argv, ["launchctl", "print", TARGET])
+                    if clock[0] < 1 or outcome == "loaded":
+                        return 0, RUNNING.replace("state = running", "state = SIGTERMed")
+                    if outcome == "denied":
+                        return 1, "permission denied"
+                    if outcome == "malformed":
+                        return 0, "unparseable print"
+                    return 113, MISSING
+                def sleep(seconds: float) -> None:
+                    self.assertGreater(seconds, 0)
+                    self.assertLessEqual(seconds, .5)
+                    sleeps.append(seconds)
+                    clock[0] += seconds
+                # Successful missing-service evidence must re-probe the domain.
+                original_run = run
+                def observed(argv: list[str], *, timeout: float = 10.0) -> tuple[int, str]:
+                    if not rows and outcome == "absent" and argv == ["launchctl", "print", DOMAIN]:
+                        calls.append(argv)
+                        return 0, "domain present"
+                    return original_run(argv, timeout=timeout)
+                manager = LaunchdServiceManager(unit_dir=root, run=observed, poll_seconds=.5)
+                with patch("runtime.remote_access.launchd_agent.time.monotonic", side_effect=lambda: clock[0]), \
+                        patch("runtime.remote_access.launchd_agent.time.sleep", side_effect=sleep):
+                    if outcome == "absent":
+                        try:
+                            manager.stop(LABEL)
+                        except ServiceManagerError as error:
+                            self.fail(f"stop refused transient SIGTERMed before absence: {error}")
+                        self.assertEqual(clock[0], 1)
+                    else:
+                        with self.assertRaises(ServiceManagerError) as error:
+                            manager.stop(LABEL)
+                        self.assertGreaterEqual(clock[0], 1)
+                        if outcome == "loaded":
+                            self.assertEqual(str(error.exception), "LaunchAgent still loaded after bootout")
+                            self.assertEqual(clock[0], 30)
+                self.assertTrue(sleeps)
+                self.assertEqual(path.read_text(), original)
+                self.assertEqual(calls.count(["launchctl", "bootout", TARGET]), 1)
+
     def test_failed_backup_publication_keeps_original_running(self) -> None:
         for fault in ("read", "write", "fsync", "replace"):
             with self.subTest(fault=fault), tempfile.TemporaryDirectory() as folder:
