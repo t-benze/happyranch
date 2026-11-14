@@ -85,7 +85,8 @@ class ManagedDarwinInstaller(unittest.TestCase):
                          logs=root / "Library/Logs/HappyRanch")
             with patch("sys.platform", "darwin"), patch.object(Path, "home", return_value=root), \
                     patch("os.path.expanduser", side_effect=lambda path: str(root) + path[1:] if path == "~" or path.startswith("~/") else path), \
-                    patch.object(installer, "ManagedInstaller") as linux:
+                    patch.object(installer, "ManagedInstaller") as linux, \
+                    patch("runtime.remote_access.launchd_installer.observe", return_value={"state": "clear", "message": ""}):
                 # Base-production RED is safe even on a root Linux host.
                 linux.return_value = Mock()
                 self.paths = paths
@@ -461,7 +462,8 @@ class ManagedDarwinInstaller(unittest.TestCase):
             self.assertTrue(value["KeepAlive"])
             self.assertEqual(value["ThrottleInterval"], 10)
             self.assertTrue(value["Disabled"])
-            self.assertNotIn("EnvironmentVariables", value)
+            self.assertEqual(value.get("EnvironmentVariables"), {"HOME": str(p["root"]),
+                **({"TMPDIR": os.environ["TMPDIR"]} if "TMPDIR" in os.environ else {})})
             self.assertEqual(value["ProgramArguments"], [str(p["binary"]), "--config", str(p["state"] / "sidecar.json"),
                 "--readiness-file", str(p["side_state"] / f"{SIDECAR_LABEL}.readiness.json"),
                 "--watchdog-interval", "30.000000000s", "--credential-file", str(p["state"] / "enrollment.key")])

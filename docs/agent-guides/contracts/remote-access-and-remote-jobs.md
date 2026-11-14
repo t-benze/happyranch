@@ -148,8 +148,8 @@ freeze. Wall-clock discontinuity may temporarily report stale readiness; the
 restart deadline remains monotonic. No native proof is claimed in PR 2 and the
 sleep-agent native suite is unchanged. C5's managed installer is described below;
 C6a delivers Go sidecar build/readiness, C6-loss supplies connector-loss exit,
-and C6b below delivers Python integration. Signing, app bundling, Swift
-coexistence and packaged-app acceptance remain pending. The Swift in-app
+and C6b below delivers Python integration. C7 below delivers frozen
+entry/bundling; C8 below delivers Swift coexistence. Signing and packaged-app acceptance remain pending. The Swift in-app
 HomeConnector is untouched; never enable both listeners together.
 
 ### macOS credentials and state paths (THR-360 C4, PR 3)
@@ -209,7 +209,7 @@ retained; the installer never reads or copies the token.
 Assumption: the absolute installing Python interpreter has `runtime.remote_access.cli`
 installed/importable outside the checkout. Plist argv uses that source entry:
 `<python> -m runtime.remote_access.cli run --managed --config <managed-state-root>/config.json`.
-No bundle path is invented; a frozen interpreter refuses. The config is copied
+C7 below defines the separate frozen bundle entry. The config is copied
 and repointed to `policy.json` and `trust-state.json` under C4's final
 `~/Library/Application Support/HappyRanch/connector/happyranch-connector` layout.
 Policy bytes are copied; existing trust snapshots/anchors and other state are
@@ -262,8 +262,9 @@ file, config and stored key. The existing same-user rename-race limitation appli
 
 The standalone installer tests use temporary filesystem objects and scripted
 launchctl observations, with ZERO Mac-mini runs for C5. Native acceptance is
-NOT RUN. C6a/C6b deliver sidecar/key integration; frozen entry/bundling and
-Swift coexistence remain C7/C8. Never enable both Swift HomeConnector and this connector.
+NOT RUN. C6a/C6b deliver sidecar/key integration; C7/C8 below deliver frozen
+entry/bundling and Swift coexistence. Combined native acceptance is still
+unproven. Never enable both Swift HomeConnector and this connector.
 
 Native evidence is supplied by the `connector-launchd` Mac-mini suite for QA:
 a unique harmless `/bin/sleep` agent, install/start/running PID, SIGKILL/new PID,
@@ -635,8 +636,9 @@ The existing standalone `scripts.mac_native.test_connector_launchd` and
 `test_connector_installer` venues exercise real temporary files and scripted
 launchctl boundaries; they prove neither native launchd nor actual Go enrollment.
 C6b uses ZERO Mac-mini runs (goal native usage remains 6/8). C7 below adds frozen
-entry/bundling and signing enumeration. C8 retains coexistence and combined
-packaged/native acceptance. No new check or CI trigger is added.
+entry/bundling and signing enumeration. C8 below supplies coexistence and the
+combined source/native suite. Packaged acceptance remains separate. No new
+check or CI trigger is added.
 
 ### macOS bundled connector entry and sidecar (THR-360 C7, PR 8)
 
@@ -679,3 +681,62 @@ native recovery. Combined acceptance remains open and depends on the separate
 THR-346 packaged-app check pending founder approval. Budget: PR8/10, Mac mini
 6/8 used, slice 0. Linux, the Swift connector, required checks and CI triggers
 remain unchanged.
+
+### C8 — Swift coexistence and combined source acceptance (PR 9)
+
+Before Darwin managed `install`, `start`, `restart` or `enable` performs any
+managed file write or launchctl operation, it reads the current user's TCP
+listeners through OS-shipped `/usr/sbin/lsof` (`-nP -a -u <uid> -iTCP:8443
+-sTCP:LISTEN -Fpun`). A non-loopback listener on 8443 refuses with a fixed,
+secret-free Swift HomeConnector message. A failed, malformed, diagnostic-bearing,
+oversized (64 KiB) or timed-out (5s) inventory also refuses. Loopback listeners,
+including the managed connector, do not conflict. `status` and `check-drift`
+include `coexistence.state` (`clear`, `conflict`, `unavailable`) and a fixed
+message; composite ready also requires clear inventory. Stop, disable and
+uninstall remain available. No Swift preference is invented, and the app's
+connector is never stopped or modified by the managed installer.
+
+The signal follows the shipped Swift HomeConnector's port 8443 and tailnet-IP
+binding. An unrelated current-user non-loopback listener on that port is a
+false positive. The read-only observation cannot serialize a later Swift start,
+and a future Swift port change would escape detection until parity is updated.
+Operators must still avoid enabling both listeners. This is same-user
+cooperative admission, not an atomic exclusion mechanism.
+
+Both managed plists now pin `EnvironmentVariables.HOME` to the installing
+process's home and `TMPDIR` when set. No credentials are placed in environment
+or argv, and launchctl's shared environment is never changed. Both keys are
+part of plist drift comparison: a changed installing HOME/TMPDIR requires
+uninstall/reinstall. The generic LaunchAgent renderer's default remains unchanged.
+Source mode still requires an absolute interpreter that can import the checkout
+outside its working directory; no product PYTHONPATH or WorkingDirectory is added.
+
+The new allowlisted `connector-managed` native suite uses the existing job's
+private HOME/TMPDIR and fixed UID-scoped labels `ai.happyranch.connector` and
+`ai.happyranch.tsnet-sidecar`. Before managed effects it proves both services
+absent in `user/<uid>` and selectable `gui/<uid>`, and both private plists absent.
+Any collision or unavailable observation fails closed without installing or
+cleaning preexisting targets. Cleanup ownership begins only after this proof.
+The source suite stages an offline scratch venv/.pth using already-bootstrapped
+packages, provisions the existing pinned Go1.23.12 toolchain, builds the checked-out
+sidecar with readonly modules, then drives the real source installer CLI.
+It exercises both-agent install/start/status, exact connector PID SIGKILL and
+KeepAlive replacement, stop/drift, coexistence refusal using its own temporary
+non-loopback 8443 listener (occupied port refuses), normal uninstall and purge.
+Status is recorded verbatim as bounded JSON; the sidecar must remain not ready
+with a valid negative readiness record (running-not-ready, starting or PID-mismatch
+while launchd retries). Missing/corrupt records and fabricated ready are rejected.
+Synthetic config/policy/enrollment/token files and a loopback unavailable control
+endpoint provide no real enrollment or daemon. No real credentials are used.
+Bounded raw launchctl print/print-disabled excerpts and finally-path service,
+plist and scratch receipts survive failures. Cleanup uncertainty is a failure;
+any suite-local retained scratch remains subject to the existing job EXIT trap.
+The existing connector-launchd stand-in suite is unchanged.
+
+C8 maker delivery uses ZERO Mac-mini runs (PRs 9/10; Mac mini 6/8 used).
+The combined native suite is NOT RUN in this leg. Its future run proves source
+CLI/native lifecycle only: real tailnet enrollment/readiness is unproven, as are
+login/reboot persistence and packaged execution. Packaged-app connector acceptance
+depends on the separate THR-346 packaged-app check, pending founder approval.
+No Jenkins config, dependency, Swift, Linux, Go-source/inventory, signing identity,
+CI trigger or required lint/static check changes are included.

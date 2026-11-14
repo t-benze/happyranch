@@ -760,3 +760,56 @@ They observe plist/backup contents, modes, exact launchctl/systemctl argv,
 platform refusal, real-shaped diagnostic parsing and clean CLI error output.
 They do not contact a real service manager. Existing systemd integration tests
 remain unchanged and SKIPPED under THR-243 seq42; no retired unit suite is run.
+
+## Combined managed connector source suite (THR-360 C8)
+
+`SUITE=connector-managed` extends the existing Python allowlist; the existing
+Jenkins string parameter requires no configuration edit. This leg does not
+submit a native run. The existing connector-launchd suite stays unchanged.
+
+The suite requires the job's private HOME/TMPDIR and bootstrapped interpreter.
+It proves both fixed service targets absent in user/<uid> and selectable
+gui/<uid>, and both private plists absent before it owns any managed effects.
+A collision, unavailable domain observation or occupied fixture port fails
+closed; it never stops or removes a preexisting service. No UUID-label override,
+subject monkeypatch or shared launchctl setenv is used.
+
+An offline scratch venv/.pth references this checkout and the job's existing
+locked packages. Import failure reports the exact missing module before a build
+or installation; no network Python install is attempted. It uses the existing
+`toolchain.provision` path (240s) with pinned Go1.23.12/GOTOOLCHAIN=local, then
+builds the real checked-out Go command with CGO disabled, GOWORK=off and
+-mod=readonly (<=2700s). Go module fetches may occur; no module/source change is
+made. Lifecycle has <=240s inside one <=3300s suite budget, plus <=100s finally
+cleanup. With the existing <=300s Python bootstrap this fits the 90-minute job.
+Cold-build completion within this budget is NOT yet proven on the Mac mini.
+Commands retain <=1MiB output each; excerpts are <=2048 characters for launchctl
+and build observations and <=8192 for CLI results. Existing 4MiB job log caps and
+256MiB per-file limits are unchanged. Exceeding a bound fails the suite.
+
+Synthetic config/policy/enrollment/daemon-token files and an unavailable loopback
+control endpoint drive the real `python -m runtime.remote_access.installer`
+install/start/status, connector SIGKILL/KeepAlive recovery, stop/check-drift,
+normal uninstall and uninstall --purge. Both plists pin the private HOME/TMPDIR.
+The exact composite status is retained; sidecar readiness must be false with a
+valid negative record, including launchd startup/retry states. Missing/corrupt
+records cannot pass. A temporary wildcard TCP8443 listener checks refusal of
+install/start/restart/enable and conflict reporting from status/check-drift;
+it is closed on exit. No real daemon or tailnet/control server is started.
+Raw bounded launchctl print/print-disabled observations accompany each lifecycle
+step; finally cleanup reports exact owned-service/plist absence and scratch
+removal. Failed native cleanup preserves uncertainty and fails; suite-local
+retention is still subject to the existing parent job EXIT scratch removal.
+Uncatchable termination/agent loss retains the existing job's limitations.
+
+Claims require a separately authorized native run at an exact reviewed SHA.
+This suite does not prove real tailnet enrollment/readiness, packaged-app
+connector execution, login/reboot persistence or signing. Packaged-app acceptance
+still depends on the separate THR-346 check pending founder approval. Budget for
+this maker leg: PRs 9/10, Mac mini 6/8, zero submitted runs.
+
+Portable focused checks in the existing standalone venue:
+
+```sh
+python -B -m unittest scripts.mac_native.test_connector_managed scripts.mac_native.test_connector_installer -v
+```
