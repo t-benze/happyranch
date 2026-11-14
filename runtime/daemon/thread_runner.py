@@ -37,6 +37,7 @@ from runtime.models import (
 from runtime.orchestrator.executors import (
     ExecutorResult,
     _meaningful_stderr,
+    _SESSION_LIFETIME_PREAMBLE,
 )
 from runtime.orchestrator.executor_registry import build_executor, get_registry
 from runtime.orchestrator.host_supervisor import (
@@ -71,6 +72,53 @@ logger = logging.getLogger(__name__)
 # multi-KB stdout/stderr tail can't bloat the audit row.
 _REASON_DETAIL_CAP = 2000
 _REASON_DIAGNOSTIC_LINE_CAP = 900
+
+# 512 KiB of UTF-8, including the executor-added session-lifetime preamble,
+# instructions and per-phase suffixes. This is the documented large-stdin
+# canary floor, not a provider token/context limit.
+# Keep local admission conservative and provider-independent; no config knob.
+THREAD_PROMPT_MAX_BYTES = 512 * 1024
+
+
+def _bound_thread_prompt(
+    prompt: str, *, messages: list[ThreadMessage], mandatory_from_seq: int,
+    rebuild: Callable[[list[ThreadMessage]], str] | None,
+) -> tuple[str, list[int]] | None:
+    """Keep the newest optional prefix history that fits, never a partial message.
+
+    Everything from the claimed start onward is mandatory. For isolated
+    bootstrap/followup turns the triggering sequence is the mandatory start.
+    The canonical load stays uncapped; only its presentation is reduced.
+    """
+    # Every built-in executor adds this same preamble on direct and supervised
+    # launches (including phase reentry). Bound the final payload, not just the
+    # runner-built portion; retain one provider-independent admission limit.
+    available = THREAD_PROMPT_MAX_BYTES - len(_SESSION_LIFETIME_PREAMBLE.encode("utf-8"))
+    if len(prompt.encode("utf-8")) <= available:
+        return prompt, [m.seq for m in messages]
+    if rebuild is None:
+        return None
+    optional = next((i for i, m in enumerate(messages) if m.seq >= mandatory_from_seq), len(messages))
+    if optional == 0:
+        return None
+
+    def candidate(start: int) -> str:
+        return "Earlier optional thread history omitted to fit the prompt limit.\n\n" + rebuild(messages[start:])
+
+    bounded = candidate(optional)
+    if len(bounded.encode("utf-8")) > available:
+        return None
+    # Binary search avoids one whole-prompt rebuild per historical message.
+    # Each candidate retains a contiguous suffix: most-recent-first selection.
+    low, high = 1, optional
+    while low < high:
+        mid = (low + high) // 2
+        trial = candidate(mid)
+        if len(trial.encode("utf-8")) <= available:
+            high, bounded = mid, trial
+        else:
+            low = mid + 1
+    return bounded, [m.seq for m in messages[high:]]
 
 
 def _executor_error_detail(result, rc) -> str:
@@ -810,6 +858,7 @@ def build_thread_prompt(
     repo_refresh_note: str = "",
     active_policy_section: str = "",
     name_metadata=None,
+    history_omitted: bool = False,
 ) -> str:
     from runtime.orchestrator.active_authority_policy import assert_no_reserved_team_policy_header
     triggering = next((m for m in messages if m.seq == triggering_seq), None)
@@ -840,7 +889,7 @@ def build_thread_prompt(
         f"Participants: {parts_str}.\n"
         f"current_time: {current_time}{skills_block}{repo_refresh_block}\n"
         f"Started: {thread.started_at.isoformat()}. {forwarded}\n\n"
-        f"Full message history follows. Most recent message is at the bottom.\n\n"
+        f"{'Retained' if history_omitted else 'Full'} message history follows. Most recent message is at the bottom.\n\n"
         f"---\n{history}\n\n"
         f"You have been invoked because:\n  {note}\n\n"
         f"Your invocation_token for this turn is: {invocation_token}\n"
@@ -1546,25 +1595,17 @@ async def _run_invocation_owned(
                 eligible=policy_teams.is_team_manager(inv.agent_name),
             )
         )
-        if can_resume:
-            new_messages = [m for m in messages if m.seq > last_seq]
-            triggering = next((m for m in messages if m.seq == inv.triggering_seq), None)
-            prompt = build_thread_delta_prompt(
-                thread=thread, new_messages=new_messages,
-                invocation_token=invocation_token, invoked_agent=inv.agent_name,
-                purpose=inv.purpose.value, triggering_seq=inv.triggering_seq,
-                triggering_message=triggering, org_config=org_config,
-                managed_skills_index=managed_skills_index,
-                repo_refresh_note=repo_refresh_note,
-                active_policy_section=active_policy_section,
-                name_metadata=read_name_metadata(org_state),
-                participant_ids=[p.agent_name for p in participants],
-            )
-            resume_sid = stored_sid
-            shown_seqs = [m.seq for m in new_messages]
-        else:
-            prompt = build_thread_prompt(
-                thread=thread, participants=participants, messages=messages,
+        # Guardrail notes and delivery instructions are part of the byte bound.
+        escalation_note = _maybe_unresolved_escalations_note(
+            messages=messages, org_state=org_state,
+            purpose=inv.purpose.value, invoked_agent=inv.agent_name,
+        )
+
+        def _full_prompt(
+            selected: list[ThreadMessage], *, suffix: str = "", note: str = escalation_note,
+        ) -> str:
+            body = build_thread_prompt(
+                thread=thread, participants=participants, messages=selected,
                 invocation_token=invocation_token, invoked_agent=inv.agent_name,
                 purpose=inv.purpose.value, triggering_seq=inv.triggering_seq,
                 org_config=org_config,
@@ -1572,20 +1613,30 @@ async def _run_invocation_owned(
                 repo_refresh_note=repo_refresh_note,
                 active_policy_section=active_policy_section,
                 name_metadata=read_name_metadata(org_state),
+                history_omitted=len(selected) < len(messages),
             )
-            shown_seqs = [m.seq for m in messages]
+            if suffix:
+                return body + "\n" + (note + "\n" if note else "") + range_note + suffix
+            return body + ("\n" + note if note else "") + range_note
 
-        # Guardrail: surface unresolved escalated tasks from this thread so a
-        # manager continuation dispatch includes the explicit resolves linkage.
-        escalation_note = _maybe_unresolved_escalations_note(
-            messages=messages,
-            org_state=org_state,
-            purpose=inv.purpose.value,
-            invoked_agent=inv.agent_name,
-        )
-        if escalation_note:
-            prompt += "\n" + escalation_note
-        prompt += range_note
+        def _initial_prompt(selected: list[ThreadMessage]) -> str:
+            if not can_resume:
+                return _full_prompt(selected)
+            return build_thread_delta_prompt(
+                thread=thread, new_messages=selected,
+                invocation_token=invocation_token, invoked_agent=inv.agent_name,
+                purpose=inv.purpose.value, triggering_seq=inv.triggering_seq,
+                triggering_message=next((m for m in messages if m.seq == inv.triggering_seq), None),
+                org_config=org_config, managed_skills_index=managed_skills_index,
+                repo_refresh_note=repo_refresh_note, active_policy_section=active_policy_section,
+                name_metadata=read_name_metadata(org_state),
+                participant_ids=[p.agent_name for p in participants],
+            ) + ("\n" + escalation_note if escalation_note else "") + range_note
+
+        prompt_messages = [m for m in messages if m.seq > last_seq] if can_resume else messages
+        prompt = _initial_prompt(prompt_messages)
+        resume_sid = stored_sid if can_resume else None
+        shown_seqs = [m.seq for m in prompt_messages]
 
         audit = AuditLogger(org_state.db)
 
@@ -1629,7 +1680,27 @@ async def _run_invocation_owned(
         def _on_throttle_event(action: str, payload: dict) -> None:
             org_state.db.insert_audit_log(inv.thread_id, inv.agent_name, action, payload)
 
-        def _invoke(run_prompt: str, resume: str | None) -> _InvokeResult:
+        def _invoke(
+            run_prompt: str, resume: str | None, *,
+            run_messages: list[ThreadMessage] | None = None,
+            rebuild: Callable[[list[ThreadMessage]], str] | None = None,
+        ) -> _InvokeResult:
+            nonlocal shown_seqs
+            bounded = _bound_thread_prompt(
+                run_prompt, messages=run_messages or [], rebuild=rebuild,
+                mandatory_from_seq=claim.running_from_seq if claim else inv.triggering_seq,
+            )
+            if bounded is None:
+                # This result never enters the executor/throttle/supervisor or
+                # a native launch attempt. Do not classify it as no-callback.
+                return _InvokeResult(result=ExecutorResult(
+                    success=False, duration_seconds=0, session_id=session_id,
+                    error=f"prompt_too_large: exceeds {THREAD_PROMPT_MAX_BYTES} UTF-8 bytes with mandatory context",
+                    failure_category="prompt_too_large", provider_launched=False,
+                ))
+            run_prompt, selected_seqs = bounded
+            if run_messages is not None:
+                shown_seqs = selected_seqs
             control = move_owner.abort_control
             with control.lock:
                 control.mode, control.launched, control.worker_running = None, False, True
@@ -1889,15 +1960,37 @@ async def _run_invocation_owned(
                 seq=inv.triggering_seq, kind="invocation_settled", status="failed",
             )
 
+        async def _settle_prompt_too_large(phase: _InvokeResult) -> bool:
+            result = phase.result
+            if result is None or result.failure_category != "prompt_too_large":
+                return False
+            reason = result.error or "prompt_too_large: mandatory context exceeds limit"
+            _settle_failure(result, status=ThreadInvocationStatus.FAILED, reason=reason)
+            audit.log_thread_invocation_failed(
+                inv.thread_id, agent=inv.agent_name, token=invocation_token,
+                purpose=inv.purpose.value, reason=reason,
+            )
+            await _publish_invocation_event(
+                org_state, thread_id=inv.thread_id, agent_name=inv.agent_name,
+                seq=inv.triggering_seq, kind="invocation_settled", status="failed",
+            )
+            return True
+
         # Spawn subprocess in a thread pool (executors are synchronous).
         fallback_executed = move_owner.state.phase != "initial"
         if move_owner.state.phase != "initial":
             resume_sid = None
+        phase_suffix = ""
         if move_owner.state.phase == "nudge":
-            prompt += "\nYou MUST post exactly one genuine terminal reply or decline for this invocation.\n"
+            phase_suffix = "\nYou MUST post exactly one genuine terminal reply or decline for this invocation.\n"
+            prompt += phase_suffix
         try:
             loop = asyncio.get_event_loop()
-            phase = await _await_invocation_worker(org_state, move_owner, lambda: _invoke(prompt, resume_sid))
+            phase = await _await_invocation_worker(org_state, move_owner, lambda: _invoke(
+                prompt, resume_sid, run_messages=prompt_messages,
+                rebuild=lambda selected: _initial_prompt(selected) + phase_suffix))
+            if await _settle_prompt_too_large(phase):
+                return
             if phase.terminal_reason in _INTERRUPTED_TERMINALS:
                 await _settle_interrupted(phase)
                 return
@@ -1927,16 +2020,6 @@ async def _run_invocation_owned(
                 # fallible hold check may defer. Re-entry cannot retain the
                 # known-evicted pointer, even if fallback never launches.
                 move_owner.start_phase("fallback")
-                full_prompt = build_thread_prompt(
-                    thread=thread, participants=participants, messages=messages,
-                    invocation_token=invocation_token, invoked_agent=inv.agent_name,
-                    purpose=inv.purpose.value, triggering_seq=inv.triggering_seq,
-                    org_config=org_config,
-                    managed_skills_index=managed_skills_index,
-                    repo_refresh_note=repo_refresh_note,
-                    active_policy_section=active_policy_section,
-                    name_metadata=read_name_metadata(org_state),
-                )
                 # Re-apply the guardrail for the fallback prompt too.
                 escalation_note2 = _maybe_unresolved_escalations_note(
                     messages=messages,
@@ -1944,14 +2027,16 @@ async def _run_invocation_owned(
                     purpose=inv.purpose.value,
                     invoked_agent=inv.agent_name,
                 )
-                if escalation_note2:
-                    full_prompt += "\n" + escalation_note2
-                full_prompt += range_note
+                full_prompt = _full_prompt(messages, note=escalation_note2)
                 shown_seqs = [m.seq for m in messages]
                 resume_sid = None
                 fallback_executed = True
                 phase = await _await_invocation_worker(
-                    org_state, move_owner, lambda: _invoke(full_prompt, None))
+                    org_state, move_owner, lambda: _invoke(
+                        full_prompt, None, run_messages=messages,
+                        rebuild=lambda selected: _full_prompt(selected, note=escalation_note2)))
+                if await _settle_prompt_too_large(phase):
+                    return
                 if phase.terminal_reason in _INTERRUPTED_TERMINALS:
                     await _settle_interrupted(phase)
                     return
@@ -2089,24 +2174,13 @@ async def _run_invocation_owned(
                     [p.agent_name for p in participants],
                 ) + nudge_prompt
                 retry_resume_sid: str | None = result.agent_session_id
+                retry_messages = None
+                retry_rebuild = None
             else:
                 # Non-resumable executor: rebuild full prompt + corrective note.
-                retry_prompt = (
-                    build_thread_prompt(
-                        thread=thread, participants=participants, messages=messages,
-                        invocation_token=invocation_token, invoked_agent=inv.agent_name,
-                        purpose=inv.purpose.value, triggering_seq=inv.triggering_seq,
-                        org_config=org_config,
-                        managed_skills_index=managed_skills_index,
-                        active_policy_section=active_policy_section,
-                        repo_refresh_note=repo_refresh_note,
-                        name_metadata=read_name_metadata(org_state),
-                    )
-                    + "\n"
-                    + (escalation_note + "\n" if escalation_note else "")
-                    + range_note
-                    + nudge_prompt
-                )
+                retry_rebuild = lambda selected: _full_prompt(selected, suffix=nudge_prompt)
+                retry_prompt = retry_rebuild(messages)
+                retry_messages = messages
                 retry_resume_sid = None
                 # Update shown_seqs for non-resumable (full prompt rebuild).
                 shown_seqs = [m.seq for m in messages]
@@ -2122,7 +2196,9 @@ async def _run_invocation_owned(
             retry_phase: _InvokeResult | None = None
             try:
                 retry_phase = await _await_invocation_worker(
-                    org_state, move_owner, lambda: _invoke(retry_prompt, retry_resume_sid))
+                    org_state, move_owner, lambda: _invoke(
+                        retry_prompt, retry_resume_sid, run_messages=retry_messages,
+                        rebuild=retry_rebuild))
             except DeferredTeamMove:
                 raise
             except Exception as exc:
@@ -2133,6 +2209,8 @@ async def _run_invocation_owned(
                 retry_result = None
                 retry_exc = exc
             else:
+                if await _settle_prompt_too_large(retry_phase):
+                    return
                 if retry_phase.terminal_reason in _INTERRUPTED_TERMINALS:
                     await _settle_interrupted(retry_phase)
                     return

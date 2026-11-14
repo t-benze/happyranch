@@ -150,126 +150,176 @@ struct RemoteConnectionView: View {
         }
     }
 
-    // MARK: - CLIENT view
-
-    @ViewBuilder
     private var clientView: some View {
-        Text("Connect to Remote Runtime")
-            .font(.title2)
-            .fontWeight(.semibold)
+        RemoteClientForm(model: appDelegate.managedJoin)
+    }
+}
 
-        if appDelegate.isConnecting {
-            HStack(spacing: 8) {
-                ProgressView()
-                    .scaleEffect(0.7)
-                    .frame(width: 16, height: 16)
-                Text("Connecting...")
-                    .font(.callout)
-            }
-        }
+/// The same remote form for both lanes. Only this private, non-restored draft
+/// holds the SecureField text; no enrollment text enters AppDelegate state.
+private struct RemoteClientForm: View {
+    @EnvironmentObject var appDelegate: AppDelegate
+    @ObservedObject var model: ManagedJoinModel
+    @State private var enrollmentKey = ""
+    @State private var confirmingRevocation = false
 
-        // Connection state badge
-        connectionStateBadge
+    private var managed: Bool { appDelegate.clientLane == .managed }
+    private var busy: Bool { appDelegate.isConnecting || model.busy }
 
-        // Error display
-        if let error = appDelegate.clientConnectError {
-            HStack(spacing: 6) {
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .foregroundColor(.red)
-                Text(error)
-                    .font(.callout)
-                    .foregroundColor(.red)
-            }
-            .padding(8)
-            .background(
-                RoundedRectangle(cornerRadius: 6)
-                    .fill(Color.red.opacity(0.1))
-            )
-        }
-
-        if appDelegate.clientBridge == nil {
-            // Input form
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Home Tailnet Address")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                TextField("e.g. 100.64.0.1", text: $appDelegate.clientHomeHost)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(maxWidth: 300)
-
-                Text("Home Connector Port")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                TextField("e.g. 8443", text: $appDelegate.clientHomePort)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(maxWidth: 200)
-
-                Text("Pairing Code")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                TextField("8-character code from home", text: $appDelegate.clientPairingCode)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(maxWidth: 300)
-
-                Button("Connect") {
-                    appDelegate.connectToRemote()
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                Text("Connect to Remote Runtime").font(.title2).fontWeight(.semibold)
+                Picker("Network", selection: $appDelegate.clientLane) {
+                    Text("DIY Tailscale").tag(ClientBridge.Lane.diy)
+                    Text("Managed network").tag(ClientBridge.Lane.managed)
                 }
-                .buttonStyle(.borderedProminent)
-                .disabled(appDelegate.isConnecting)
-                .padding(.top, 8)
-            }
-        } else {
-            // Connected state
-            HStack(spacing: 6) {
-                Image(systemName: "checkmark.circle.fill")
-                    .foregroundColor(.green)
-                Text("Connected to home runtime")
-                    .font(.callout)
-            }
+                .pickerStyle(.segmented)
+                .disabled(busy || appDelegate.clientBridge != nil || model.bridge != nil)
 
-            Button("Disconnect") {
-                appDelegate.disconnectRemote()
+                if managed { managedSection }
+                else if appDelegate.isConnecting { ProgressView("Connecting…") }
+
+                if !managed, appDelegate.connectionState != .tailnetNotDetected || appDelegate.clientBridge != nil {
+                    HStack(spacing: 6) {
+                        Circle().fill(appDelegate.connectionState == .online ? Color.green : Color.gray).frame(width: 8, height: 8)
+                        Text(diyStateLabel).font(.caption).foregroundColor(.secondary)
+                    }
+                }
+                if let error = appDelegate.clientConnectError {
+                    Label(error, systemImage: "exclamationmark.triangle.fill")
+                        .foregroundColor(.red).font(.callout)
+                }
+
+                if appDelegate.clientBridge == nil {
+                    targetFields
+                    Text("Pairing Code").font(.caption).foregroundColor(.secondary)
+                    if managed {
+                        SecureField("8-character code from home", text: $appDelegate.clientPairingCode)
+                            .textFieldStyle(.roundedBorder).frame(maxWidth: 300)
+                            .disabled(busy || !model.canPair)
+                    } else {
+                        TextField("8-character code from home", text: $appDelegate.clientPairingCode)
+                            .textFieldStyle(.roundedBorder).frame(maxWidth: 300)
+                    }
+                    Button(managed ? "Pair & Connect" : "Connect") { appDelegate.connectToRemote() }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(busy || (managed && !model.canPair))
+                } else {
+                    Label(managed ? model.phase.message : "Connected to home runtime",
+                          systemImage: appDelegate.connectionState == .online ? "checkmark.circle.fill" : "network")
+                    Button("Disconnect") { appDelegate.disconnectRemote() }
+                        .buttonStyle(.bordered).tint(.red)
+                }
+                if managed, busy, model.phase != .checkingKeychain {
+                    Button("Cancel") {
+                        enrollmentKey = ""
+                        appDelegate.cancelManagedConnection()
+                    }.disabled(model.phase == .canceling)
+                }
+                if managed, model.canConfirmRevoked {
+                    Button("Device was revoked / Rejoin") {
+                        model.requestRevocation()
+                        confirmingRevocation = model.revocationConfirmation != nil
+                    }
+                        .foregroundColor(.red)
+                        .confirmationDialog("Only confirm if your operator revoked this device. Denial or timeout alone does not prove revocation.",
+                                            isPresented: $confirmingRevocation, presenting: model.revocationConfirmation) { profile in
+                            Button("Confirm \(profile.hostname) (\(profile.uuid)) was revoked", role: .destructive) {
+                                enrollmentKey = ""
+                                appDelegate.confirmManagedRevocation()
+                            }
+                            Button("Cancel", role: .cancel) { model.cancelRevocation() }
+                        } message: { profile in
+                            Text("Membership: \(profile.hostname) · \(profile.uuid)\nControl server: \(profile.controlURL)")
+                        }
+                }
             }
-            .buttonStyle(.bordered)
-            .tint(.red)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .task { if managed { model.prepare() } }
+        .onChange(of: appDelegate.clientLane) { _, lane in
+            enrollmentKey = ""
+            appDelegate.clientConnectError = nil
+            if lane == .managed { model.prepare() }
+        }
+        .onDisappear { enrollmentKey = "" }
     }
 
-    // MARK: - Connection state badge
-
-    @ViewBuilder
-    private var connectionStateBadge: some View {
-        let state = appDelegate.connectionState
-        if state != .tailnetNotDetected || appDelegate.clientBridge != nil {
-            HStack(spacing: 6) {
-                Circle()
-                    .fill(stateColor(for: state, isConnecting: appDelegate.isConnecting))
-                    .frame(width: 8, height: 8)
-                Text(stateLabel(for: state, isConnecting: appDelegate.isConnecting))
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-            }
-        }
-    }
-
-    private func stateColor(for state: ConnectionState, isConnecting: Bool) -> Color {
-        if isConnecting { return .orange }
-        switch state {
-        case .online: return .green
-        case .reconnecting: return .orange
-        case .offline, .pairedUnreachable: return .red
-        case .tailnetNotDetected: return .gray
-        }
-    }
-
-    private func stateLabel(for state: ConnectionState, isConnecting: Bool) -> String {
-        if isConnecting { return "Connecting…" }
-        switch state {
+    private var diyStateLabel: String {
+        if appDelegate.isConnecting { return "Connecting…" }
+        switch appDelegate.connectionState {
         case .online: return "Connected"
         case .reconnecting: return "Reconnecting…"
         case .offline: return "Disconnected"
         case .pairedUnreachable: return "Unreachable"
         case .tailnetNotDetected: return "Tailscale not detected"
+        }
+    }
+
+    private var targetFields: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Home Tailnet Address").font(.caption).foregroundColor(.secondary)
+            TextField("e.g. 100.64.0.1 or full tailnet DNS name", text: $appDelegate.clientHomeHost)
+                .textFieldStyle(.roundedBorder).frame(maxWidth: 350)
+            Text("Home Connector Port").font(.caption).foregroundColor(.secondary)
+            TextField("e.g. 8443", text: $appDelegate.clientHomePort)
+                .textFieldStyle(.roundedBorder).frame(maxWidth: 200)
+        }
+        .disabled(managed && (busy || model.bridge != nil))
+    }
+
+    @ViewBuilder
+    private var managedSection: some View {
+        if let host = model.confirmedControlHost {
+            Text("Control server: \(host)").font(.caption).foregroundColor(.secondary)
+        }
+        Text(model.phase.message)
+            .font(.callout)
+            .accessibilityIdentifier("managed-join-status")
+        if model.busy { ProgressView().controlSize(.small) }
+        if model.bridge == nil, !model.busy {
+            Text("1 · Join managed network").font(.headline)
+            TextField("Trusted control server URL (https://…)", text: $model.controlURL)
+                .textFieldStyle(.roundedBorder)
+            if let url = try? ManagedJoinModel.validatedControlURL(model.controlURL),
+               let host = URL(string: url)?.host {
+                Text("Control server: \(host)").font(.caption).foregroundColor(.secondary)
+            }
+            SecureField("Single-use enrollment key", text: $enrollmentKey)
+                .textFieldStyle(.roundedBorder)
+                .disabled(!model.custodyReady)
+            Text("Enter the home address and port below before joining. They stay fixed for pairing. The key field is cleared on submission; this does not guarantee forensic memory erasure.")
+                .font(.caption).foregroundColor(.secondary)
+            Button("Join Network") {
+                let bytes = Data(enrollmentKey.utf8)
+                enrollmentKey = ""
+                appDelegate.clientConnectError = nil
+                model.join(key: bytes, homeHost: appDelegate.clientHomeHost, port: appDelegate.clientHomePort)
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(!model.custodyReady || enrollmentKey.isEmpty)
+
+            if !model.profiles.isEmpty {
+                Picker("Saved membership", selection: $model.selectedProfileID) {
+                    Text("Choose explicitly…").tag("")
+                    ForEach(model.profiles) { profile in
+                        Text("\(profile.hostname) · \(profile.phase)").tag(profile.uuid)
+                    }
+                }
+                Button("Check saved membership") {
+                    enrollmentKey = ""
+                    appDelegate.clientConnectError = nil
+                    model.resume(homeHost: appDelegate.clientHomeHost, port: appDelegate.clientHomePort)
+                }
+                .disabled(!model.custodyReady || model.selectedProfileID.isEmpty)
+                Text("No key is replayed. Missing or conflicting saved state is refused. Cancellation cannot undo remote registration; ask your operator to remove an unused device.")
+                    .font(.caption).foregroundColor(.secondary)
+            }
+            Button("Check Keychain and saved profiles") { enrollmentKey = ""; model.refreshCustody() }
+        } else if !model.busy {
+            Text("2 · Pair with home runtime").font(.headline)
+            Button("Change target / Disconnect membership") { appDelegate.disconnectRemote() }
         }
     }
 }
