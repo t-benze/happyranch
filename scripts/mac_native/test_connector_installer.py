@@ -13,7 +13,9 @@ import sys
 import tempfile
 import unittest
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Iterator
 from unittest.mock import Mock, patch
 
@@ -791,6 +793,221 @@ class ManagedDarwinInstaller(unittest.TestCase):
                         self.assertFalse(pending.exists())
                         self.assertFalse(p["plist"].exists())
                         self.assertEqual(self.command(["uninstall"] + (["--purge"] if purge else []), self.uninstall_rows())[0], 0)
+
+
+class ManagedLinuxDebInstaller(unittest.TestCase):
+    """The retained installer venue also drives Linux root= with fake commands."""
+
+    @contextmanager
+    def host(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder).resolve()
+            prefix = root / 'opt/happyranch-desktop'
+            for name in ('bin/happyranch-tsnet-sidecar', 'python/bin/python3.12'):
+                path = prefix / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b'#!/bin/sh\nexit 99\n')
+                path.chmod(0o755)
+            (prefix / 'python/bin/python3').symlink_to('python3.12')
+            for path in (root / 'opt', prefix, *[p for p in prefix.rglob('*') if p.is_dir()]):
+                path.chmod(0o755)
+            operator = root / 'operator'
+            operator.mkdir(mode=0o700)
+            private(operator / 'daemon.token', TOKEN)
+            private(operator / 'enrollment.key', KEY)
+            connector = dict(tenant_id='tenant-B1a', home_id='home-B1a', connector_id='connector-B1a',
+                daemon_port=8766, daemon_token_path='/etc/happyranch/daemon.token',
+                policy_path='/etc/happyranch/policy.json', state_path='/var/lib/happyranch-connector/trust-state.json',
+                system=True, service_user='happyranch', service_group='happyranch', managed=dict(bind_port=18443))
+            sidecar = dict(StateDir='/var/lib/happyranch-tsnet-sidecar', ControlURL='https://control.example.invalid:8443',
+                RoleIdentity='home-sidecar-B1a', ExpectedPeer='synthetic-peer-B1a', DERPPolicy='private-only',
+                ListenAddr=':443', ConnectorAddr='127.0.0.1:18443')
+            artifact = json.loads((Path(__file__).resolve().parents[2] / 'runtime/remote_access/route_policy.json').read_text())
+            policy = dict(schema_version=1, artifact_version=artifact['version'], revision=1, state='active',
+                issued_at=(datetime.now(timezone.utc) - timedelta(seconds=10)).isoformat(), max_age_seconds=3600, artifact=artifact)
+            for name, value in (('connector', connector), ('sidecar', sidecar), ('policy', policy)):
+                private(operator / f'{name}.json', json.dumps(value).encode())
+            manager = Mock()
+            manager.show_properties.side_effect = lambda name, _: dict(FragmentPath=str(root / 'etc/systemd/system' / name),
+                DropInPaths='', NeedDaemonReload='no', ActiveState='active')
+            owner = (os.geteuid(), os.getegid())
+            user = SimpleNamespace(pw_uid=owner[0], pw_gid=owner[1], pw_shell='/usr/sbin/nologin', pw_dir='/nonexistent')
+            options = dict(root=root, root_owner=owner, manager=manager, layout='deb',
+                lookup_user=lambda _: user, lookup_group=lambda _: SimpleNamespace(gr_gid=owner[1]))
+            instance = installer.ManagedInstaller(**options)
+            inputs = dict(connector_config=operator / 'connector.json', sidecar_config=operator / 'sidecar.json',
+                policy_file=operator / 'policy.json', daemon_token_source=operator / 'daemon.token')
+            yield root, instance, inputs, manager, options
+
+    def test_linux_unit_layout_bytes(self):
+        # Source digests captured at base 10dbfaf20; deb changes only ExecStart.
+        expected = {
+            'source': ('417e9b7ed1476778c57c28393b1968ab4933649b085b56b7536800a59013a6f5',
+                       '39b1590d41608b9c2f6bbbff5225d5fa4a2af0ba7761812dc68540b5da9be931'),
+            'deb': ('8722f992e0c31b8fe58ed886a973d17d3bf373822445ae46355fa2b0bd09955b',
+                    '005c001b6ed75959782bee9d5ca08746e504db62371994a46745b1905d528aae')}
+        for layout, hashes in expected.items():
+            with self.subTest(layout=layout):
+                units = installer.managed_units(layout)
+                for name, digest in zip(installer.UNITS, (*hashes, '6db43ed94332e3c23b1ae71fef4272aad19c2c90f72360cd8493dc9934e114ca')):
+                    self.assertEqual(hashlib.sha256(units[name].encode()).hexdigest(), digest)
+        self.assertEqual(installer.managed_units(), installer.managed_units('source'))
+        from runtime.remote_access.systemd_unit import SidecarUnitSpec, render_sidecar_unit
+        self.assertIn('ExecStart=/custom/sidecar --config ', render_sidecar_unit(SidecarUnitSpec(binary_path='/custom/sidecar')))
+
+    def test_linux_deb_provision_install_and_drift(self):
+        with self.host() as (root, instance, inputs, manager, options):
+            prefix = root / 'opt/happyranch-desktop'
+            before = {p: p.lstat() for p in (prefix, *prefix.rglob('*'))}
+            real_installer = installer.ManagedInstaller
+            def factory(**kwargs):
+                return real_installer(**(options | kwargs))
+            arguments = ['provision', '--layout', 'deb']
+            for name, path in inputs.items():
+                arguments += ['--' + name.replace('_', '-'), str(path)]
+            with patch.object(installer, 'ManagedInstaller', side_effect=factory), patch('sys.platform', 'linux'):
+                self.assertEqual(installer.main(arguments), 0)
+            manager.assert_not_called()
+            self.assertEqual(manager.method_calls, [])
+            config_dir = root / 'etc/happyranch'
+            for name in ('connector', 'sidecar', 'policy'):
+                path = config_dir / f'{name}.json'
+                self.assertEqual(path.read_bytes(), (root / 'operator' / path.name).read_bytes())
+                self.assertEqual((path.stat().st_uid, path.stat().st_gid, stat.S_IMODE(path.stat().st_mode)), (*options['root_owner'], 0o640))
+            self.assertEqual((config_dir / 'daemon.token').read_bytes(), TOKEN)
+            self.assertEqual(stat.S_IMODE((config_dir / 'daemon.token').stat().st_mode), 0o600)
+            record = json.loads((config_dir / 'provision.json').read_text())
+            self.assertEqual(record['token_source'], str(inputs['daemon_token_source']))
+            self.assertEqual(record['token_sha256'], hashlib.sha256(TOKEN).hexdigest())
+            self.assertTrue((root / 'var/lib/happyranch-connector').is_dir())
+            self.assertEqual(stat.S_IMODE((root / 'var/lib/happyranch-tsnet-sidecar').stat().st_mode), 0o700)
+            with patch.object(installer, 'ManagedInstaller', side_effect=factory), patch('sys.platform', 'linux'):
+                self.assertEqual(installer.main(['install', '--layout', 'deb', '--enrollment-key-file', str(root / 'operator/enrollment.key')]), 0)
+            manager.start.assert_called_once_with(installer.UNITS[2], timeout=250.0)
+            self.assertFalse((config_dir / 'enrollment.key').exists())
+            self.assertFalse((root / 'etc/credstore/happyranch-tsnet-enrollment').is_symlink())
+            fresh = installer.ManagedInstaller(**options)
+            self.assertEqual(set(fresh.check_drift()), set(installer.UNITS))
+            default_layout = installer.ManagedInstaller(**(options | {'layout': 'source'}))
+            self.assertEqual(set(default_layout.check_drift()), set(installer.UNITS))
+            self.assertEqual({p: p.lstat() for p in before}, before)
+            self.assertFalse((root / 'opt/happyranch').exists())
+            with self.assertRaisesRegex(installer.InstallerError, 'destination exists'):
+                instance.provision(**inputs)
+
+    def test_linux_deb_payload_refusals(self):
+        for case in ('missing-sidecar', 'writable-prefix', 'foreign-prefix', 'missing-python', 'python-link'):
+            with self.subTest(case=case), self.host() as (root, instance, inputs, manager, _):
+                prefix = root / 'opt/happyranch-desktop'
+                if case == 'missing-sidecar':
+                    (prefix / 'bin/happyranch-tsnet-sidecar').unlink()
+                elif case == 'writable-prefix':
+                    prefix.chmod(0o775)
+                elif case == 'missing-python':
+                    (prefix / 'python/bin/python3.12').unlink()
+                elif case == 'python-link':
+                    (prefix / 'python/bin/python3').unlink()
+                    (prefix / 'python/bin/python3').symlink_to('/bin/true')
+                original = os.fstat
+                inode = prefix.stat().st_ino
+                def metadata(fd):
+                    info = original(fd)
+                    if case == 'foreign-prefix' and info.st_ino == inode:
+                        values = list(info)
+                        values[4] += 1  # Simulate foreign ownership on this exact directory only.
+                        return os.stat_result(values)
+                    return info
+                with patch('os.fstat', side_effect=metadata), self.assertRaises(installer.InstallerError):
+                    instance.provision(**inputs)
+                self.assertFalse((root / 'etc/happyranch').exists())
+                self.assertEqual(manager.method_calls, [])
+
+    def test_linux_provision_input_refusals(self):
+        for case in ('missing-policy', 'invalid-policy', 'expired-policy', 'home-state', 'root-sidecar-state',
+                     'token-mode', 'literal-8765', 'sidecar-8765', 'duplicate-json'):
+            with self.subTest(case=case), self.host() as (root, instance, inputs, manager, _):
+                if case == 'missing-policy':
+                    inputs['policy_file'].unlink()
+                elif case in ('invalid-policy', 'expired-policy'):
+                    value = json.loads(inputs['policy_file'].read_text())
+                    if case == 'invalid-policy':
+                        value['artifact'] = {}
+                    else:
+                        value['issued_at'] = '2000-01-01T00:00:00+00:00'
+                    private(inputs['policy_file'], json.dumps(value).encode())
+                elif case in ('home-state', 'literal-8765'):
+                    value = json.loads(inputs['connector_config'].read_text())
+                    if case == 'home-state':
+                        value.pop('state_path')
+                    else:
+                        value['managed']['bind_port'] = 8765
+                    private(inputs['connector_config'], json.dumps(value).encode())
+                elif case in ('root-sidecar-state', 'sidecar-8765'):
+                    value = json.loads(inputs['sidecar_config'].read_text())
+                    value['StateDir' if case == 'root-sidecar-state' else 'ConnectorAddr'] = '/' if case == 'root-sidecar-state' else '127.0.0.1:8765'
+                    private(inputs['sidecar_config'], json.dumps(value).encode())
+                elif case == 'duplicate-json':
+                    private(inputs['sidecar_config'], b'{"StateDir":"a","StateDir":"b"}')
+                else:
+                    inputs['daemon_token_source'].chmod(0o644)
+                with self.assertRaises(installer.InstallerError) as error:
+                    instance.provision(**inputs)
+                self.assertNotIn(TOKEN.decode(), str(error.exception))
+                self.assertFalse((root / 'etc/happyranch').exists())
+                self.assertEqual(manager.method_calls, [])
+
+    def test_linux_deb_start_requires_provision(self):
+        for case in ('missing-record', 'missing-config', 'invalid-config', 'invalid-record', 'wrong-layout'):
+            with self.subTest(case=case), self.host() as (root, instance, inputs, manager, _):
+                instance.provision(**inputs)
+                directory = root / 'etc/happyranch'
+                if case.startswith('missing'):
+                    (directory / ('provision.json' if case == 'missing-record' else 'sidecar.json')).unlink()
+                elif case == 'invalid-config':
+                    (directory / 'connector.json').write_text('{}')
+                else:
+                    record = json.loads((directory / 'provision.json').read_text())
+                    record['layout'] = 'source' if case == 'wrong-layout' else None
+                    (directory / 'provision.json').write_text(json.dumps(record))
+                with self.assertRaises(installer.InstallerError):
+                    instance.install(enrollment_key_file=root / 'operator/enrollment.key')
+                self.assertEqual(manager.method_calls, [])
+                self.assertFalse((root / 'etc/systemd/system').exists())
+                self.assertFalse((directory / 'enrollment.key').exists())
+
+    def test_linux_deb_start_failure_preserves_cleanup(self):
+        from runtime.remote_access.service_manager import ServiceManagerError
+        with self.host() as (root, instance, inputs, manager, _):
+            instance.provision(**inputs)
+            manager.start.side_effect = ServiceManagerError('synthetic start failure')
+            with self.assertRaises(installer.InstallerError):
+                instance.install(enrollment_key_file=root / 'operator/enrollment.key')
+            manager.stop.assert_called_once_with(installer.UNITS[2], timeout=50.0)
+            self.assertFalse((root / 'etc/happyranch/enrollment.key').exists())
+            self.assertFalse((root / 'etc/credstore/happyranch-tsnet-enrollment').is_symlink())
+            self.assertTrue((root / 'etc/systemd/system' / installer.UNITS[0]).is_file())
+            self.assertTrue((root / 'etc/happyranch/provision.json').is_file())
+
+    def test_linux_deb_token_and_unit_drift(self):
+        for case in ('source-rotation', 'staged-rotation', 'both-rotated', 'source-missing', 'unit-drift'):
+            with self.subTest(case=case), self.host() as (root, instance, inputs, manager, options):
+                instance.provision(**inputs)
+                instance.install(enrollment_key_file=root / 'operator/enrollment.key')
+                if case in ('source-rotation', 'both-rotated'):
+                    private(inputs['daemon_token_source'], b'synthetic-rotated-token')
+                if case in ('staged-rotation', 'both-rotated'):
+                    private(root / 'etc/happyranch/daemon.token', b'synthetic-rotated-token')
+                if case == 'source-missing':
+                    inputs['daemon_token_source'].unlink()
+                if case == 'unit-drift':
+                    (root / 'etc/systemd/system' / installer.UNITS[1]).write_text('[Service]\nExecStart=/bin/true\n')
+                manager.reset_mock()
+                with self.assertRaisesRegex(installer.InstallerError, 'token|digest'):
+                    installer.ManagedInstaller(**options).check_drift()
+                if case != 'unit-drift':
+                    self.assertEqual(manager.method_calls, [])
+                manager.start.assert_not_called()
+                manager.stop.assert_not_called()
 
 
 @contextmanager

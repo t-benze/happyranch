@@ -94,6 +94,14 @@ python -B -m unittest scripts.mac_native.test_connector_installer -v
 python -B -m unittest scripts.mac_native.test_connector_bundle -v
 ```
 
+The installer selection also includes `ManagedLinuxDebInstaller`: unit bytes
+for source/deb layouts, temp-root Linux provisioning/install/drift with fake
+service-manager commands, package-prefix and provisioning refusals, and token
+source/staged-copy rotation. It never invokes systemd or the live installer.
+The fixture substitutes the current UID/GID for root/service ownership; its
+foreign-prefix case substitutes metadata for that exact inode. These focused
+checks are outside required PR checks and prove no real package/service start.
+
 This retained native-script venue uses fake runners and temporary paths, outside
 of the retired Python-unit selection. It checks CLI errors, platform selection,
 Linux argv/state/credential parity and macOS plist/lifecycle/status/recovery,

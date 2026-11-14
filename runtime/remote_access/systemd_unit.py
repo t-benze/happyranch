@@ -154,6 +154,7 @@ class SidecarUnitSpec:
 
     restart_sec: int = _DEFAULT_RESTART_SEC
     watchdog_sec: int = _DEFAULT_WATCHDOG_SEC
+    binary_path: str = "/opt/happyranch/bin/happyranch-tsnet-sidecar"
 
 
 def render_sidecar_unit(spec: SidecarUnitSpec) -> str:
@@ -168,7 +169,7 @@ def render_sidecar_unit(spec: SidecarUnitSpec) -> str:
         f"PartOf={_MANAGED_TARGET}",
         "",
         "[Service]",
-        "ExecStart=/opt/happyranch/bin/happyranch-tsnet-sidecar --config /etc/happyranch/sidecar.json "
+        f"ExecStart={_quote_systemd_arg(spec.binary_path)} --config /etc/happyranch/sidecar.json "
         "--credential-file ${CREDENTIALS_DIRECTORY}/enrollment-key",
         # Credential-name lookup tolerates absence on restart (systemd >= 247).
         # The installer links this reserved name to /etc/happyranch/enrollment.key.
