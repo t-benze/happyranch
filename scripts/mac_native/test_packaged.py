@@ -17,6 +17,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+from types import ModuleType
 import unittest
 import warnings
 from unittest.mock import patch
@@ -25,6 +26,332 @@ from scripts.mac_native import suite_packaged as suite
 
 
 class PackagedHarnessTests(unittest.TestCase):
+    def test_libproc_load_does_not_need_discovery_module_or_relative_dyld_search(self) -> None:
+        import builtins
+        import ctypes
+        from runtime.platform.process_census import _LibProc, LibProcUnavailable
+        original_import = builtins.__import__
+        def frozen_import(name, *args, **kwargs):
+            if name == 'ctypes.util':
+                raise ImportError('discovery module absent from synthetic PYZ')
+            return original_import(name, *args, **kwargs)
+        with (patch.object(sys, 'platform', 'darwin'),
+              patch.object(builtins, '__import__', side_effect=frozen_import),
+              patch.object(ctypes, 'CDLL', side_effect=OSError('native dylib unavailable on Linux')) as load):
+            with self.assertRaises(LibProcUnavailable):
+                _LibProc()
+        load.assert_called_once_with('/usr/lib/libproc.dylib', use_errno=True)
+
+    @unittest.skipUnless(sys.platform == 'linux', 'portable real POSIX probe uses Linux census')
+    def test_process_group_probe_works_without_path(self) -> None:
+        from runtime.platform.macos_process_group import MacOSProcessGroupBackend
+        with patch.dict(os.environ, {'PATH': ''}):
+            report = MacOSProcessGroupBackend().probe()
+        self.assertTrue(report.healthy, report.reason)
+        self.assertEqual(report.backend, 'macos-process-group')
+
+    def test_pyz_relative_census_loads_skill_from_spec_data_destination(self) -> None:
+        class StopAnalysis(Exception):
+            pass
+        inventory = []
+        def analysis(*_args, **kwargs):
+            inventory.extend(kwargs['datas'])
+            raise StopAnalysis
+        # Evaluate the real spec's data inputs, stopping before any freezer or
+        # notice writer. This proves layout wiring, not a PyInstaller build.
+        with self.assertRaises(StopAnalysis):
+            runpy.run_path(str(suite.ROOT / 'packaging/daemon.spec'), init_globals={'Analysis': analysis})
+        relative = Path('runtime/skills/bundled/workspace-cleanup/scripts/darwin_process.py')
+        matches = [(Path(src), Path(dst)) for src, dst in inventory
+                   if Path(src).is_dir() and relative.is_relative_to(dst)]
+        self.assertEqual(len(matches), 1, 'spec must deliver the shared Darwin script at its loader-relative path')
+        source, destination = matches[0]
+        with tempfile.TemporaryDirectory() as folder:
+            internal = Path(folder) / '_internal'
+            target = internal / relative
+            target.parent.mkdir(parents=True)
+            shutil.copyfile(source / relative.relative_to(destination), target)
+            module = internal / 'runtime/platform/process_census.pyc'
+            module.parent.mkdir(parents=True)
+            # Execute the actual archived module code with PyInstaller's filename,
+            # not a second implementation of its data-path calculation.
+            code = compile((suite.ROOT / 'runtime/platform/process_census.py').read_bytes(), str(module), 'exec')
+            with patch.dict(sys.modules):
+                sys.modules.pop('darwin_process', None)
+                archived = ModuleType('runtime.platform.process_census')
+                archived.__file__ = str(module)
+                sys.modules[archived.__name__] = archived
+                exec(code, archived.__dict__)
+                self.assertEqual(Path(sys.modules['darwin_process'].__file__), target)
+
+    def test_session_survivors_use_identity_and_only_ancestry_proven_private_groups(self) -> None:
+        def row(pid, ppid, pgid, identity='original', state='S'):
+            return dict(pid=pid, ppid=ppid, pgid=pgid, start_identity=identity, state=state)
+        daemon, wrapper, parent, child = row(10, 1, 10), row(11, 10, 10), row(12, 11, 10), row(13, 12, 10)
+        before = [daemon, wrapper, parent, child]
+        shared = suite.private_session_groups(before, 12, 10)
+        self.assertEqual(shared, set())
+        self.assertEqual(suite.session_survivors([daemon, wrapper], [parent, child], shared), [])
+        self.assertEqual(suite.session_survivors([parent], [parent, child], shared), [parent])
+        reused = row(12, 1, 20, 'later')
+        self.assertEqual(suite.session_survivors([daemon, reused], [parent, child], shared), [])
+        zombie = row(13, 1, 10, state='Z')
+        self.assertEqual(suite.session_survivors([zombie], [parent, child], shared), [zombie])
+        private = [daemon, row(11, 10, 11), row(12, 11, 11), row(13, 12, 11)]
+        groups = suite.private_session_groups(private, 12, 10)
+        self.assertEqual(groups, {11})
+        unrecorded_child = row(14, 1, 11, 'new')
+        self.assertEqual(suite.session_survivors([unrecorded_child], private[2:], groups), [unrecorded_child])
+        escaped = {**child, 'pgid': 90, 'executable': '/bin/sleep'}
+        self.assertEqual(suite.owned_rows([escaped], Path('/scratch'), {10, 11}, set(),
+                                        {(13, 'original')}), [child | {'pgid': 90}])
+        foreign_group = [daemon, row(11, 10, 50), row(12, 11, 50), row(50, 1, 50)]
+        self.assertEqual(suite.private_session_groups(foreign_group, 12, 10), set())
+        with self.assertRaisesRegex(RuntimeError, 'ancestry unknown'):
+            suite.private_session_groups([daemon, row(12, 99, 12)], 12, 10)
+
+    def test_survivor_evidence_is_bounded_and_unknown_never_passes(self) -> None:
+        rows = [dict(pid=i, ppid=1, pgid=2, state='Z', start_identity='original') for i in range(40)]
+        with patch.object(suite, 'census', return_value=rows):
+            kept = suite.survivor_snapshot(lambda current: current)
+        self.assertEqual(kept['count'], 40)
+        self.assertEqual(len(kept['rows']), 32)
+        self.assertTrue(kept['truncated'])
+        self.assertEqual(kept['status'], 'SURVIVORS')
+        self.assertEqual(kept['rows'][0]['state'], 'Z')
+        self.assertEqual(kept['rows'][0]['start_identity'], 'original')
+        section = {}
+        with patch.object(suite, 'census', side_effect=ValueError('sensitive host output')):
+            with self.assertRaisesRegex(RuntimeError, 'evidence unknown'):
+                suite.await_absence(lambda current: current, 1, 'no leftovers', section, 'post_stop')
+        self.assertEqual(section['post_stop'], {'status': 'UNKNOWN', 'error': 'ValueError'})
+
+    def test_early_session_failure_retains_descendants_through_daemon_stop(self) -> None:
+        cases = [('timeout', 'survivor'), ('malformed', 'survivor'),
+                 ('invalid', 'survivor'), ('timeout', 'escaped'),
+                 ('timeout', 'group_member'), ('timeout', 'unknown'),
+                 ('timeout', 'daemon_reused'), ('timeout', 'absent')]
+        for marker_kind, outcome in cases:
+            with self.subTest(marker=marker_kind, outcome=outcome), tempfile.TemporaryDirectory() as folder:
+                scratch = Path(folder).resolve()
+                source = scratch / 'source'
+                source.mkdir()
+                report = {'suite': 'packaged', 'platform': 'darwin'}
+                launched, started, stopped, unavailable = [], [], [], []
+                identity = 'Sat Nov 14 05:00:00 2026'
+                def row(pid, ppid, pgid, executable='/usr/local/bin/provider-cli'):
+                    return dict(pid=pid, ppid=ppid, pgid=pgid, executable=executable,
+                                state='S', start_identity=identity)
+                def census():
+                    if not launched:
+                        return []
+                    if stopped:
+                        if outcome in ('absent', 'unknown', 'daemon_reused'):
+                            return []
+                        return [row(900003 if outcome == 'group_member' else 900002, 1,
+                                    900099 if outcome == 'escaped' else 900002)]
+                    daemon_row = row(999999, 1, 999999, str(scratch / 'packaged/daemon'))
+                    if not started:
+                        return [daemon_row]
+                    if outcome == 'unknown' and not unavailable:
+                        unavailable.append(True)
+                        raise OSError('synthetic unavailable ancestry observation')
+                    if outcome == 'daemon_reused':
+                        daemon_row['start_identity'] = 'Sat Nov 14 05:00:01 2026'
+                    return [daemon_row, row(900002, 999999, 900002)]
+                def fast_await(fn, _seconds, label):
+                    value = fn()
+                    if not value:
+                        raise TimeoutError(label)
+                    return value
+                def build(argv, *_args):
+                    app = Path(argv[argv.index('--output-dir') + 1]) / 'HappyRanch.app'
+                    for name in ('Contents/MacOS/HappyRanch', 'Contents/Resources/daemon/happyranch-daemon',
+                                 'Contents/Resources/daemon/happyranch'):
+                        path = app / name
+                        path.parent.mkdir(parents=True, exist_ok=True)
+                        path.write_bytes(b'synthetic; never executed')
+                    return {'exit_code': 0}
+                def checked(argv, *_args, **_kwargs):
+                    if argv[0] == '/usr/bin/ditto':
+                        shutil.copytree(argv[1], argv[2])
+                    return {'tail': 'a' * 40}
+                def launch(*_args, **kwargs):
+                    home = kwargs['cwd']
+                    (home / 'daemon.port').write_text('1234')
+                    (home / 'daemon.token').write_text('synthetic-not-a-credential')
+                    daemon = unittest.mock.Mock(pid=999999, returncode=0)
+                    daemon.poll.return_value = None
+                    daemon.terminate.side_effect = lambda: stopped.append(True)
+                    launched.append(daemon)
+                    return daemon
+                def api_json(_self, path, body=None, **kwargs):
+                    if path != '/api/v1/orgs/packaged/tasks':
+                        return {}
+                    started.append(True)
+                    if marker_kind != 'timeout':
+                        marker = scratch / 'packaged/runtime/orgs/packaged/workspaces/packaged_agent/packaged-session.json'
+                        marker.parent.mkdir(parents=True)
+                        marker.write_text('{' if marker_kind == 'malformed' else
+                                          json.dumps({'pid': 900002, 'child': 900004}))
+                    return {'task_id': 'TASK-001'}
+                backend = dict(name='macos-process-group', healthy=True,
+                               capabilities={'kills_tree_best_effort': 'best_effort'})
+                expected = {'timeout': (TimeoutError, 'normal daemon session marker'),
+                            'malformed': (json.JSONDecodeError, '.*'),
+                            'invalid': (RuntimeError, 'parent/child not independently observed')}
+                with (patch.object(suite, 'ROOT', source),
+                      patch.dict(os.environ, {'TMPDIR': str(scratch / 'tmp'), 'SOURCE_SHA': 'a' * 40,
+                                              'WORKSPACE': str(scratch)}),
+                      patch.object(suite, 'census', side_effect=census),
+                      patch.object(suite, 'await_value', side_effect=fast_await),
+                      patch.object(suite, 'checked', side_effect=checked),
+                      patch.object(suite, 'command', side_effect=build),
+                      patch.object(suite, 'retain_product', return_value={}),
+                      patch.object(suite.subprocess, 'Popen', side_effect=launch),
+                      patch.object(suite.os, 'killpg') as group_signal,
+                      patch.object(suite, 'health_and_web', return_value={'name': 'health_and_web', 'status': 'PASS', 'backend': backend}),
+                      patch.object(suite.Api, 'json', api_json),
+                      patch('scripts.mac_native.suite_toolchain.executor_feasibility', return_value={
+                          'executors': {'codex': {'auth_status': 'CREDENTIALS_PRESENT_SESSION_UNTESTED'}}}),
+                      patch('scripts.mac_native.toolchain.provision', return_value={'PATH': '/usr/bin:/bin'})):
+                    with self.assertRaisesRegex(*expected[marker_kind]):
+                        suite.run(report)
+                    self.assertTrue(started, 'fixture must reach session creation')
+                    launched[0].terminate.assert_called_once()
+                    launched[0].wait.assert_called_once_with(timeout=5)
+                    group_signal.assert_not_called()
+                # Observe the actual persisted report after losing the daemon's
+                # ancestry; the fixture never supplies tracked identities.
+                section = json.loads(json.dumps(report))['packaged']
+                unknown = outcome in ('unknown', 'daemon_reused')
+                for key in ('failure_survivors', 'before_quit'):
+                    self.assertEqual(section[key]['status'], 'UNKNOWN' if unknown else 'SURVIVORS')
+                    if not unknown:
+                        self.assertIn((900002, identity),
+                                      {(r['pid'], r['start_identity']) for r in section[key]['rows']})
+                final = section['post_stop_survivors']
+                self.assertEqual(final['status'], 'UNKNOWN' if unknown else
+                                 'ABSENT' if outcome == 'absent' else 'SURVIVORS')
+                if final['status'] == 'SURVIVORS':
+                    self.assertEqual(final['count'], 1)
+                    self.assertEqual(final['rows'][0]['start_identity'], identity)
+                    self.assertEqual(final['rows'][0]['pid'], 900003 if outcome == 'group_member' else 900002)
+                self.assertEqual(report['steps']['5']['status'], 'FAIL')
+                self.assertEqual(report['steps']['7']['status'], 'PASS' if outcome == 'absent' else 'FAIL')
+
+    def test_backend_refusal_prevents_session_and_retains_finalization(self) -> None:
+        backends = [dict(name='passthrough', healthy=True, capabilities={}),
+                    dict(name='macos-process-group', healthy=True, capabilities={'reports_cpu_total': 'best_effort'})]
+        for backend, leftover in [(backends[0], False), (backends[1], False), (backends[0], True)]:
+            with self.subTest(backend=backend, leftover=leftover), tempfile.TemporaryDirectory() as folder:
+                scratch = Path(folder).resolve()
+                source = scratch / 'source'
+                source.mkdir()
+                report = {'suite': 'packaged', 'platform': 'darwin'}
+                launched = []
+                stopped = []
+                def census():
+                    if stopped:
+                        return [dict(pid=900002, ppid=1, pgid=999999, state='Z',
+                                     start_identity='Sat Nov 14 05:00:00 2026', executable='/bin/sleep')] if leftover else []
+                    return [dict(pid=999999, ppid=1, pgid=999999, state='S',
+                                 start_identity='Sat Nov 14 05:00:00 2026',
+                                 executable=str(scratch / 'packaged/daemon'))] if launched else []
+                def fast_await(fn, _seconds, label):
+                    value = fn()
+                    if not value:
+                        raise TimeoutError(label)
+                    return value
+                def build(argv, *_args):
+                    app = Path(argv[argv.index('--output-dir') + 1]) / 'HappyRanch.app'
+                    for name in ('Contents/MacOS/HappyRanch', 'Contents/Resources/daemon/happyranch-daemon',
+                                 'Contents/Resources/daemon/happyranch'):
+                        path = app / name
+                        path.parent.mkdir(parents=True, exist_ok=True)
+                        path.write_bytes(b'synthetic executable; never run')
+                    return {'exit_code': 0}
+                def checked(argv, *_args, **_kwargs):
+                    if argv[0] == '/usr/bin/ditto':
+                        shutil.copytree(argv[1], argv[2])
+                    return {'tail': 'a' * 40}
+                def launch(*_args, **kwargs):
+                    home = kwargs['cwd']
+                    (home / 'daemon.port').write_text('1234')
+                    (home / 'daemon.token').write_text('synthetic-secret')
+                    kwargs['stdout'].write(
+                        b"INFO runtime.platform.backend_factory: host backend 'linux' unhealthy (not Linux); trying next\n"
+                        b"INFO runtime.platform.backend_factory: host backend 'macos' probe raised: cannot load libproc synthetic-secret\n"
+                        b"INFO runtime.platform.backend_factory: selected honest fallback backend 'passthrough' (all capabilities unavailable)\n"
+                        b"unrelated private output must not survive\n")
+                    kwargs['stdout'].flush()
+                    child = unittest.mock.Mock(pid=999999, returncode=0)
+                    child.poll.return_value = None
+                    child.terminate.side_effect = lambda: stopped.append(True)
+                    launched.append(child)
+                    return child
+                with (patch.object(suite, 'ROOT', source),
+                      patch.dict(os.environ, {'TMPDIR': str(scratch / 'tmp'), 'SOURCE_SHA': 'a' * 40,
+                                              'WORKSPACE': str(scratch)}),
+                      patch.object(suite, 'census', side_effect=census),
+                      patch.object(suite, 'await_value', side_effect=fast_await),
+                      patch.object(suite, 'checked', side_effect=checked),
+                      patch.object(suite, 'command', side_effect=build),
+                      patch.object(suite, 'retain_product', return_value={}),
+                      patch.object(suite.subprocess, 'Popen', side_effect=launch),
+                      patch.object(suite, 'health_and_web', return_value={'name': 'health_and_web', 'status': 'PASS', 'backend': backend}),
+                      patch.object(suite.Api, 'json', side_effect=AssertionError('session API reached')) as session_api,
+                      patch('scripts.mac_native.suite_toolchain.executor_feasibility', return_value={}),
+                      patch('scripts.mac_native.toolchain.provision', return_value={'PATH': '/usr/bin:/bin'})):
+                    with self.assertRaisesRegex(RuntimeError, 'requires a healthy tree-killing backend'):
+                        suite.run(report)
+                    session_api.assert_not_called()
+                    launched[0].terminate.assert_called_once()
+                    launched[0].wait.assert_called_once_with(timeout=5)
+                section = report['packaged']
+                selection = section['backend_selection']
+                self.assertEqual(selection['selected'], backend)
+                self.assertEqual(selection['candidates']['linux']['status'], 'UNHEALTHY')
+                self.assertEqual(selection['candidates']['macos']['status'], 'RAISED')
+                self.assertIn('cannot load libproc [redacted]', selection['candidates']['macos']['reason'])
+                self.assertNotIn('synthetic-secret', json.dumps(report))
+                self.assertNotIn('unrelated private output', json.dumps(report))
+                self.assertEqual(section['failure_survivors']['status'], 'SURVIVORS')
+                self.assertEqual(section['failure_survivors']['rows'][0]['pid'], 999999)
+                self.assertEqual(section['post_cancel_survivors']['status'], 'NOT_RUN')
+                self.assertEqual(section['post_stop_survivors']['status'], 'SURVIVORS' if leftover else 'ABSENT')
+                if leftover:
+                    self.assertEqual(section['post_stop_survivors']['rows'][0]['state'], 'Z')
+                    self.assertEqual(section['post_stop_survivors']['rows'][0]['start_identity'], 'Sat Nov 14 05:00:00 2026')
+                self.assertEqual(report['steps']['4']['status'], 'FAIL')
+                self.assertEqual(report['steps']['5']['status'], 'NOT_RUN')
+                self.assertEqual(report['steps']['7']['status'], 'FAIL' if leftover else 'PASS')
+                # JSON/collector survive the scratch removal; no log file required.
+                serialized = json.loads(json.dumps(report))
+                shutil.rmtree(scratch / 'packaged')
+                from scripts.mac_native.collect_packaged import join_exit_receipt
+                joined = join_exit_receipt(serialized, 'source_sha=' + 'a' * 40 +
+                    '\nsuite=packaged\nscratch_removed=true\n', 'a' * 40)
+                self.assertEqual(joined['packaged']['backend_selection'], selection)
+                self.assertEqual(joined['steps']['8']['status'], 'PASS')
+        suite.require_tree_backend({'selected': {'name': 'macos-process-group', 'healthy': True,
+            'capabilities': {'kills_tree_best_effort': 'best_effort'}}, 'candidates': {}})
+
+    def test_backend_reason_caps_and_missing_log_remain_explicit(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            log = Path(folder) / 'daemon.log'
+            missing = suite.backend_diagnostics(log, {}, ())
+            self.assertEqual(missing['status'], 'UNKNOWN')
+            self.assertEqual(missing['candidates']['macos']['status'], 'NOT_OBSERVED')
+            log.write_bytes(b"runtime.platform.backend_factory: host backend 'linux' probe raised: token=synthetic-password\n" +
+                            (b"runtime.platform.backend_factory: host backend 'macos' probe raised: "
+                             + b'x' * 2000 + b' token=synthetic-password\n') * 10 + b'x' * suite.STREAM_CAP)
+            kept = suite.backend_diagnostics(log, {}, ())
+            self.assertTrue(kept['truncated'])
+            self.assertLessEqual(len(kept['events']), 8)
+            self.assertTrue(all(len(row.encode()) <= 768 for row in kept['events']))
+            self.assertNotIn('synthetic-password', json.dumps(kept))
+
     def test_http_failures_name_response_without_credentials_or_unbounded_body(self) -> None:
         class Handler(BaseHTTPRequestHandler):
             def log_message(self, *_args) -> None:
@@ -110,6 +437,11 @@ class PackagedHarnessTests(unittest.TestCase):
             source = scratch / 'source'
             source.mkdir()
             report = {'suite': 'packaged', 'platform': 'darwin'}
+            launched, stopped = [], []
+            def census():
+                return [dict(pid=999999, ppid=1, pgid=999999, state='S',
+                             start_identity='Sat Nov 14 05:00:00 2026',
+                             executable=str(scratch / 'packaged/daemon'))] if launched and not stopped else []
             def build(argv: list[str], *_args) -> dict:
                 out = Path(argv[argv.index('--output-dir') + 1])
                 app = out / 'HappyRanch.app'
@@ -130,11 +462,13 @@ class PackagedHarnessTests(unittest.TestCase):
                 child = unittest.mock.Mock(pid=999999, returncode=0)
                 child.poll.return_value = None
                 child.wait.return_value = 0
+                child.terminate.side_effect = lambda: stopped.append(True)
+                launched.append(child)
                 return child
             with (patch.object(suite, 'ROOT', source),
                   patch.dict(os.environ, {'TMPDIR': str(scratch / 'tmp'), 'SOURCE_SHA': 'a' * 40,
                                           'WORKSPACE': str(scratch)}),
-                  patch.object(suite, 'census', return_value=[]), patch.object(suite, 'checked', side_effect=checked),
+                  patch.object(suite, 'census', side_effect=census), patch.object(suite, 'checked', side_effect=checked),
                   patch.object(suite, 'command', side_effect=build),
                   patch.object(suite, 'retain_product', return_value={}),
                   patch.object(suite.subprocess, 'Popen', side_effect=launch),
@@ -707,13 +1041,16 @@ uv() { printf '%s\\n' "$@"; }
         self.assertNotIn('packaged', report)
 
     def test_census_joins_children_groups_and_scratch_without_args(self):
-        rows = suite.parse_census('1 0 1 /sbin/init\n10 1 10 /scratch/daemon\n'
-                                  '11 10 11 /scratch/wrapper\n12 11 11 /bin/sleep\n'
-                                  '13 1 13 /scratch/escaped\n14 1 14 /scratch-other/tool\n')
+        rows = suite.parse_census('\n'.join(f'{pid} {ppid} {pgid} S Sat Nov 14 05:00:00 2026 {path}'
+            for pid, ppid, pgid, path in ((1, 0, 1, '/sbin/init'), (10, 1, 10, '/scratch/daemon'),
+            (11, 10, 11, '/scratch/wrapper'), (12, 11, 11, '/bin/sleep'),
+            (13, 1, 13, '/scratch/escaped'), (14, 1, 14, '/scratch-other/tool'))))
         self.assertEqual([r['pid'] for r in suite.descendants(rows, 10)], [10, 11, 12])
         self.assertEqual([r['pid'] for r in suite.owned_rows(rows, Path('/scratch'), {10, 11}, {10})],
                          [11, 12, 13])
         self.assertNotIn('executable', suite.descendants(rows, 10)[0])
+        self.assertEqual(suite.descendants(rows, 10)[0]['state'], 'S')
+        self.assertEqual(suite.descendants(rows, 10)[0]['start_identity'], 'Sat Nov 14 05:00:00 2026')
         with self.assertRaisesRegex(ValueError, 'incomplete'):
             suite.parse_census('unknown')
 

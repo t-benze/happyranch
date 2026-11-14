@@ -522,6 +522,30 @@ report. Response byte caps remain unchanged. Malformed JSON/encoding fails
 immediately. Transient readiness failures retain the last observation under
 `packaged.health_readiness` and in the failed step, including on the45s deadline.
 
+After health, step4 records `packaged.backend_selection` and refuses passthrough,
+unhealthy selection or missing tree-kill capability before Connect/session launch.
+The mandatory daemon stop/census and outer EXIT finalizers still run. Before
+scratch removal, the report retains only the backend factory's allowlisted
+selection/refusal log events: at most4MiB plus one overflow byte read, eight events of768 UTF8 bytes,
+with bearer/credential redaction and explicit missing/truncated evidence.
+Candidate constructor exceptions and unhealthy probe reasons remain distinct.
+
+Session disappearance compares captured PID/start identities; it asserts group
+absence only when the group leader belongs to that session's verified ancestry
+and the group differs from the daemon's. Census rows include process state and
+`ps lstart` identity (second resolution; same-second reuse conservatively fails).
+`failure_survivors`, `post_cancel_survivors` and `post_stop_survivors` retain at
+most32 rows plus total/truncation/status. Unreadable evidence is UNKNOWN and
+fails; observed survivors, including unreaped zombies, fail. Known identities
+remain in the final census even if they leave their original group. A shared
+daemon PGID is never treated as session-private. No no-leftovers gate is waived.
+The suite pins the live daemon's PID/start identity immediately after launch and
+captures its currently observable descendants and ancestry-proven private groups
+before failure/pre-quit snapshots and termination, independently of session
+marker success. Captured descendants remain owned after reparenting or group
+escape. Incomplete ancestry observation latches UNKNOWN through the final census;
+a later empty table cannot certify cleanup.
+
 Immediately after the successful strict build/archive verification, the suite
 checks `build-receipt.json` against the shipping ZIP's source SHA/tree, name,
 size and SHA256, and copies those exact bytes to

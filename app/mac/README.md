@@ -527,7 +527,7 @@ and uses its original supervisor inspection path; the subcommand is never used
 as a helper filename. Preflight validates source identity and the absent output
 path without constructing an app. This does not establish native acceptance.
 
-Success requires a real release executable, all eleven strong tsnet exports
+Success requires a real release executable, all fifteen strong tsnet exports
 bound to fresh archive members, native component inspection, all 29 exact
 resources, exact frozen catalog JSON, manifest notices and ZIP reconciliation.
 Each export requires one final strong definition and one unambiguous map object
@@ -535,7 +535,7 @@ whose origin exactly matches the full archive path and a unique `ar -t` member.
 Both `archive(member)` and Apple's `archive[3](member)` syntax are accepted;
 the optional numeric index does not prove an archive ordinal. Foreign paths,
 prefixes/suffixes, malformed origins and duplicate object/member/symbol
-associations refuse; all eleven observations and raw origins remain evidence.
+associations refuse; all fifteen observations and raw origins remain evidence.
 App and ZIP inventories share relative-path string ordering and UTF8 JSON
 encoding, including hidden members and symlink targets. Native inspection
 resolves every loader/executable-relative rpath in its component context and
@@ -543,7 +543,7 @@ requires bundle containment through symlinks, even for unused paths. Absolute
 system exceptions use only `/usr/lib` and `/System/Library` roots and children;
 unknown tokens, escaping paths and spelling prefixes refuse with raw diagnostics.
 A named `TSNET_STRONG_LINK_UNPROVEN` still refuses release finalization. Small
-independent error/all-eleven symbol receipts survive separately from bulky nm
+independent error/all-fifteen symbol receipts survive separately from bulky nm
 and link-map evidence. Failed builds retain available Analysis/CLI PYZ/native
 union, toolchain and component provenance through the fixed diagnostic allowlist
 and whole-file raw/gzip bounds described in the packaging instructions. Missing,
@@ -1031,3 +1031,98 @@ relay checks do not establish those outcomes. Native18's aggregate cap and the
 native17/19 unknown stall causes are not resolved by these deadlines.
 
 </details>
+
+## Managed client native engine (PR1a)
+
+The separate Mac `tsnet-bridge` archive now exposes `tsnet_init_managed`,
+`tsnet_up_managed`, `tsnet_cancel`, and `tsnet_conn_dial_managed`. Swift managed
+lane selection is implemented in PR1b; Keychain custody and join UI are the next slice.
+Legacy init remains ephemeral; legacy Start starts the engine without waiting
+for Running/IP. Managed selection makes both legacy dial exports refuse `-17`.
+
+Managed init only validates/configures; pass a trusted explicit HTTPS control
+URL, stable hostname, and absolute
+`~/Library/Application Support/ai.happyranch.HappyRanchApp/ManagedTailnet/<UUID>`
+(expand `~` before calling). The native boundary validates the literal path,
+private owned directories/files and exclusive lock. Fresh profiles take one
+explicit enrollment key. Up persists `submitting` before networking and uses
+one deadline capped at 120 seconds for Running, enrollment-engine close/release,
+same-state empty-key reopen, Running again, and durable consumed-marker commit.
+Saved membership always uses an empty key. Interrupted `submitting` state may
+only be checked by an explicit empty-key init/Up; missing or conflicting state
+refuses. No enrollment key is persisted by the bridge or included in errors.
+Cancellation can leave remote enrollment complete; it never replays the key.
+Cancel closes traffic; Close settles engine ownership before another init.
+An Up published while Close is pending is canceled before network start, and
+Close invalidates the selected engine generation before teardown.
+
+Managed TCP resolves exact current peer IPs/full map DNS names using embedded
+status only, checks the engine's exact peer route/address/key, pins the first
+peer key, and calls the captured netstack TCP callback directly. Post-dial,
+handle admission and each write recheck peer/generation. `-17` means unsafe
+initial target; `-18` means peer lost/changed and requires reconnect/fresh pairing.
+There is no OS-DNS or system-TCP fallback and no atomic control-plane revocation
+guarantee. Connector authorization/revocation remains authoritative.
+
+Native tests use the existing Go module with Go 1.23.12 (also on Linux):
+
+```sh
+cd app/mac/tsnet-bridge
+GOTOOLCHAIN=local go test -mod=readonly -v ./...
+GOTOOLCHAIN=local go vet -mod=readonly ./...
+```
+
+These local cases cover refusal, state admission, cancellation and bounded
+unreachable enrollment. Real enrollment/empty-key reopen and N1–N6/P1 require
+an authorized disposable tailnet; Swift entrypoint/sink tests belong to PR1b.
+Passing local cases do not establish those live-network or macOS results.
+
+
+## Managed ClientBridge lane (PR1b)
+
+`ClientBridge(..., lane: .managed)` explicitly selects the persistent embedded
+engine. The default `.diy` keeps “Connect to Remote Runtime” over system
+Tailscale/NWConnection. GUI developer environment enrollment/transport settings
+are removed: `HAPPYRANCH_TSNET_AUTH_KEY`, `HAPPYRANCH_TSNET_CONTROL_URL`,
+`HAPPYRANCH_TSNET_HOSTNAME`, and `HAPPYRANCH_TSNET_TRANSPORT` do not select or
+configure a GUI connection. Managed failure never switches to DIY.
+
+PR2 calls `joinManagedNetwork(key:controlURL:hostname:stateDirectory:)` only after
+successful login-Keychain deletion. `ManagedEnrollmentKey(taking:byteCount:)`
+takes ownership of a malloc/calloc allocation; the positive byte count covers
+the entire initialized allocation including its final NUL. The caller must
+neither access nor free it afterwards. No enrollment-key String API is supplied.
+The bridge checks bounded NUL termination, wipes with `explicit_bzero` before
+free on all exits, and wipes immediately after configure-only native init,
+before Up. This is custody minimization, not forensic erasure. The bridge never
+reads enrollment configuration from the environment or publishes raw native
+errors. `resumeManagedNetwork` explicitly uses a one-byte empty key.
+
+One serial native owner runs init/Up with a single 120-second Up bound.
+Cancellation latches via `tsnet_cancel`, rejects late callbacks, settles Close
+and outstanding dials before releasing ownership. Busy attempts refuse without
+replay. Cancel/timeout can leave enrollment complete and the key consumed.
+Disconnect closes traffic and retains the saved profile; another attempt is
+explicit. Target host/port are immutable: changing either requires a new bridge,
+empty-key membership reopen and fresh pairing. Native peer-change `-18` closes
+the engine/pin and discards the pairing credential; `-17` (not a current peer)
+and `-18` have distinct fixed errors, separate from pairing 403 and unreachable.
+
+Pairing uses the managed-only dial, partial writes and bounded (64 KiB)
+fragmented HTTP responses under one maximum 30-second deadline. Timeout or task
+cancellation closes the handle; the pairing code is never retried. The first
+managed remote dial is pairing. HTTP, SSE, upgrade traffic and health probes
+then share the same managed dial/read/write/close boundary; only local WebView
+loopback sockets use Network.framework. The app publishes CLIENT online only
+after a successful runtime health request through the paired bridge.
+
+From `app/mac`, the existing Mac venues are `swift build` and `swift test`.
+`ClientBridgeTests.swift` retains the DIY pairing/forwarding keepers and adds
+explicit-lane, refusal, fixed-error, audience-change and owned-buffer cases.
+An unjoined refusal is lane-admission evidence only. Running-engine N1–N6,
+P1 encrypted success, fragmentation/deadline with a real managed peer, and
+zero-byte sinks require an authorized disposable tailnet and native archive.
+They are NOT RUN on Linux. Buffer non-reuse is observable in Swift tests;
+zero-before-free is source reviewed, not observed after free or through a
+production test hook. Keychain/UI/screenshots remain PR2; release pins and
+owner-run signing remain PR3. No manual main-only Mac workflow is dispatched.

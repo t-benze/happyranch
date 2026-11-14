@@ -231,6 +231,19 @@ Its portable harness checks run with
 `python3 -B -m unittest scripts.mac_native.test_packaged -v`; Linux reports all
 eight steps NOT_RUN/SKIPPED, never native PASS.
 
+The same portable `test_packaged` venue covers the relocated PYZ census data
+path, lazy libproc loading without `ctypes.util`, a real Linux process-group
+probe with empty PATH, session PID/start identity and private-group predicates,
+bounded/redacted backend refusal retention, and refusal before session launch
+with mandatory finalization. The synthetic bundle fixture never executes a Mac
+binary. Native libproc/sysctl, frozen Darwin selection and packaged teardown are
+NOT RUN on Linux. Survivor snapshots retain state and second-resolution
+`ps lstart`; missing evidence fails rather than implying no leftovers.
+The real `suite.run` fixture also covers marker timeout, malformed/invalid marker,
+and descendants surviving daemon shutdown in private groups or after group escape.
+It checks that unavailable or changed daemon ancestry remains UNKNOWN, even after
+a later empty census; no Mac binary or provider is executed.
+
 The portable packaged tests also exercise HTTP error metadata, malformed JSON,
 readiness diagnostics and workspace-only ZIP retention through the unchanged
 Jenkins EXIT trap. They use synthetic HTTP/filesystem fixtures. An explicitly
