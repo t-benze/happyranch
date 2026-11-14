@@ -285,6 +285,29 @@ and descendants surviving daemon shutdown in private groups or after group escap
 It checks that unavailable or changed daemon ancestry remains UNKNOWN, even after
 a later empty census; no Mac binary or provider is executed.
 
+The same venue now drives the real census parser, child command runner,
+`run`, verified ZIP retention and EXIT collector with SYNTHETIC source-derived
+macOS rows (including Apple's documented `?` state) and malformed rows. It checks
+sampling/final census failure, actual child exit/output retention, timeout group
+kill/reap, initial refusal and same/later-step failure. No captured raw ps rows
+were found in builds 34–37 or THR104/MEM531 evidence. Rejections retain up to 16
+rows of 512 escaped bytes plus total counts/line indices/reasons and full
+escaped-row byte lengths/SHA256, without argv or environment. Finalization
+empties later row copies with `report_truncated: true` as needed to fit the
+serialized report in 58,000 bytes, protecting the first bounded exact row per
+distinct payload digest independently of report dict order and preserving
+every snapshot's UNKNOWN status/metadata under the unchanged report/collector
+caps. The maximum-row regression drives both repeated and distinct SYNTHETIC
+16×512-byte payloads through initial-daemon, post-cancel and late step-6 helper
+failures and teardown snapshots into the real collector CLI. It checks all
+distinct first-row prefixes, including the earliest helper payload stored after
+a later failing step result, plus the build/command results and verified ZIP
+after scratch removal. No six-field redaction is applied. See the
+[packaged evidence contract](../ci/jenkins/mac-native-probe/README.md#packaged-app-observation)
+for `census_error`, `command_result`, `command_result_key`, `build_output` and
+`retained_product`. A census failure keeps the child result and fails the step;
+a partial census never proves process absence. Empty comm remains unsupported.
+
 The portable packaged tests also exercise HTTP error metadata, malformed JSON,
 readiness diagnostics and workspace-only ZIP retention through the unchanged
 Jenkins EXIT trap. They use synthetic HTTP/filesystem fixtures. An explicitly

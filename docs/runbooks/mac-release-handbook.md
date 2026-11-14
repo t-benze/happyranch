@@ -119,7 +119,25 @@ The packaged observation now requires a healthy backend with tree-kill capabilit
 immediately after health, before starting a session. Its retained
 `packaged.backend_selection` identifies the chosen backend and bounded, redacted
 candidate refusals from the daemon log. A fallback refusal still stops the daemon
-and runs the final census/EXIT cleanup. Inspect the state/start-identity-aware
+and runs the final census/EXIT cleanup. Census rejection now preserves bounded exact
+rows/counts/line indices/reasons under `census_error` (up to 16 rows, 512 escaped
+bytes each; six ps fields, no argv/environment, no redaction). Full escaped-row
+lengths/SHA256 survive prefix truncation. Finalization empties later row copies
+with `report_truncated: true` to fit the serialized report in 58,000 bytes,
+protecting the first bounded exact row per distinct payload digest independently
+of report dict order, plus indices/reasons/totals and every UNKNOWN snapshot.
+This includes late helper failures; report 60,000-byte and collector
+64-KiB caps remain unchanged, with room for the failure envelope/EXIT join.
+Apple-documented
+`?` states retain present-process identity; malformed rows keep UNKNOWN. A
+command's exit/bytes/hash/tail survives sampling and final census failure;
+step1 still fails and preserves its build result. `build_output` contains
+planned scratch paths only; only `retained_product` proves a verified workspace
+ZIP surviving scratch removal. Initial census failure records step1 FAIL.
+See the [packaged evidence contract](../../ci/jenkins/mac-native-probe/README.md#packaged-app-observation).
+Portable fixtures are synthetic; the actual build37 rejected row and native
+format/teardown behavior remain unverified.
+Inspect the state/start-identity-aware
 failure, post-cancel and post-stop survivor snapshots; UNKNOWN or survivors fail.
 Daemon-descendant PID/start identities and proven private groups are captured
 before failure/pre-quit snapshots and daemon termination even when the session

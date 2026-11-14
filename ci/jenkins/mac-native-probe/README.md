@@ -516,7 +516,7 @@ and outer EXIT cleanup. HTTP fetches prove serving, not browser rendering.
 Step4 requests JSON health at `/api/v1/health` and still requires `status ==
 'ok'`; `/health` is a SPA fallback, not the JSON API. HTTP failures retain
 method, path (without query), HTTP status, Content-Type and a JSON-safe body
-prefix of at most512 UTF8 bytes in the failed step's `http` field. Auth and
+prefix of at most 512 UTF8 bytes in the failed step's `http` field. Auth and
 adapter/profile endpoint bodies are redacted; bearer values never enter the
 report. Response byte caps remain unchanged. Malformed JSON/encoding fails
 immediately. Transient readiness failures retain the last observation under
@@ -619,6 +619,61 @@ ps1MiB/8192rows, report60000B before dispatcher formatting. Existing256MiB/file
 limits remain. Task-owned processes are stopped/reaped before return where
 possible; any remaining census or teardown uncertainty fails step7. Outer EXIT
 owns scratch disposal even on failure. No automatic resubmission is permitted.
+
+Census diagnostics now retain the first 16 rejected LF-delimited `ps` rows, each
+at most 512 bytes of ASCII JSON escapes (controls escaped, escape sequences never
+split), with 1-based `line_index`, rejection `reason`, `truncated`, total
+`row_count` and `rejected_count`. Each retained row also carries `row_bytes` and
+`row_sha256` of the **full ASCII-escaped row**, before the 512-byte prefix cap.
+At run finalization, later row copies are emptied (`row: ""`,
+`report_truncated: true`) until the serialized report, including JSON re-escaping,
+fits 58,000 bytes. The first rejected row's bounded exact prefix per distinct
+payload digest is protected before any trimming, independently of report dict
+order (later step results can precede earlier helper commands in the dict);
+every snapshot keeps its indices, reasons, totals, full-row lengths/hashes and
+INCOMPLETE/UNKNOWN status. This aggregate budget covers distinct as well as
+repeated payloads and leaves 2,000 bytes below the unchanged 60,000-byte report
+cap for the failure envelope/EXIT join; the collector still caps at 64 KiB.
+No redaction is applied to these six requested
+fields (`pid/ppid/pgid/stat/lstart/comm`); argv and environment are never requested.
+Other subprocess/census failures retain only the exception class, avoiding raw
+command output. Empty/header/bad-ID/bad-state/bad-date/control rows and row/byte
+cap exhaustion remain INCOMPLETE; survivor observations remain UNKNOWN and
+never certify absence from partial data. Empty `comm` remains a rejected row:
+there is no captured evidence supporting it for this exact invocation.
+
+The parser accepts `?` as a present process with unknown state, including state
+suffixes. Source: [Apple adv_cmds ps/tasks.c `mach_state_table`](https://github.com/apple-oss-distributions/adv_cmds/blob/main/ps/tasks.c#L44-L45).
+[Apple ps/print.c](https://github.com/apple-oss-distributions/adv_cmds/blob/main/ps/print.c)
+explains `<defunct>`, parenthesised command fallback and `lstart`'s C-locale `%c`.
+Those command names, spaces and PID 0 retain their identities. The portable row
+fixtures are SYNTHETIC source-derived/malformed, not captured macOS output:
+retained builds 34–37 and THR104/MEM531 archive evidence supplied no raw census.
+The actual build37 rejected row remains unknown; `?` is a supported format fix,
+not an asserted native root cause.
+
+`commands.*.census_error` latches INCOMPLETE, preserves the first rejection
+under `first`, and lists `sampling`/`finally` phases. A differing final rejection
+is retained under `finally`; identical evidence is not duplicated. Sampling
+failure stops further loop sampling but continues draining the owned child to
+its normal exit or existing deadline/output cap. The final census still runs.
+`exit_code` is the actual reaped child status (including signal status after
+runner timeout/cap), alongside bytes/SHA256/tail of output actually read;
+`error` and `cleanup_error` independently prevent PASS. Only the directly owned
+process group can be killed without census evidence; escaped-group cleanup
+remains unproven on an incomplete census. There is no absence claim.
+
+The build result is stored before later checks. `packaged.build_output` records
+planned scratch `output_dir`, `app_path` and `zip_path` before launch; these paths
+alone do not claim that a file exists or survives EXIT. A zero-exit build's
+verified ZIP is retained through the existing receipt/hash checks before census
+uncertainty fails step1. `retained_product` remains the durable workspace-copy
+identity. Failed steps keep census evidence or reference the recorded command
+via `command_result_key`; a failing checked command not yet assigned keeps its
+result under the step's `command_result`. Initial census refusal now records
+step1 FAIL, and post-cancel/pre-stop UNKNOWN still fails teardown. Later failures
+never discard the prior build result or verified ZIP. The existing collector
+preserves these additive fields; its 64KiB cap and Jenkins config are unchanged.
 
 Portable manual harness checks (outside retired Python units/required CI):
 `python3 -B -m unittest scripts.mac_native.test_packaged -v`. These cover Linux
