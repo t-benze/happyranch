@@ -26,10 +26,12 @@ journal evidence refuses pause_control_unavailable.
 
 An accepted Resume immediately rediscovers that root after the control COMMIT,
 using the same bounded per-root owner publishers and eligibility checks as the
-periodic sweep. Release intent is cleared only after complete inspection under
-the matching generation and unheld-state guard. A failed direct release leaves
-durable intent for the unchanged 30-second sweep. Its 32-root pages skip ended
-roots (completed, failed, cancelled or superseded) without pending release;
+periodic sweep. Release intent is cleared only after complete inspection without
+a task-publication refusal or pending-job admission failure/deferral, under the
+matching generation and unheld-state guard. An accepted Resume still succeeds
+when publication fails; durable intent remains for the unchanged 30-second sweep.
+Its 32-root pages skip ended roots (completed, failed, cancelled or superseded)
+without pending release;
 their pause records remain stored. Ended roots with pending release stay eligible
 for the backstop. Duplicate controls publish no work.
 

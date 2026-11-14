@@ -1,6 +1,7 @@
 """Focused no-launch Pause/Resume checks; see docs/local-ci.md."""
 from __future__ import annotations
 
+import sqlite3
 import tempfile
 from pathlib import Path
 import sys
@@ -97,6 +98,40 @@ class TaskPauseResumeTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(response.status_code, 200, response.text)
                 self.assertTrue(response.json()["changed"])
                 self.assertEqual(release_flag(org, root_id), 2)
+                await discover_pause_work(org, org.orchestrator._queue)
+                self.assertEqual(queued(org), [(org.slug, "TASK-Zchild", None)])
+                self.assertIsNone(release_flag(org, root_id))
+
+    async def test_refused_release_retains_ended_root_backstop(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            async with fixture(Path(temp) / "org") as (org, client):
+                root_id = seed(org, ended=0)
+                denied = []
+
+                def deny_dispatch_read(action: int, table: str | None, column: str | None,
+                                       database: str | None, source: str | None) -> int:
+                    if action == sqlite3.SQLITE_READ and table == "authority_policy_v2_root_dispatch":
+                        denied.append(table)
+                        return sqlite3.SQLITE_DENY
+                    return sqlite3.SQLITE_OK
+
+                org.db._conn.set_authorizer(deny_dispatch_read)
+                try:
+                    response = await client.post(f"{PREFIX}/tasks/{root_id}/resume", json={"expected_generation": 1})
+                    self.assertEqual(response.status_code, 200, response.text)
+                    self.assertTrue(response.json()["changed"])
+                    self.assertTrue(denied, "Fault must reach the real generation-dispatch read")
+                    self.assertEqual(queued(org), [])
+                    self.assertEqual(release_flag(org, root_id), 2)
+                    org.db.update_task(root_id, status=TaskStatus.COMPLETED)
+                    await discover_pause_work(org, org.orchestrator._queue)
+                    self.assertEqual(queued(org), [])
+                    self.assertEqual(release_flag(org, root_id), 2)
+                finally:
+                    org.db._conn.set_authorizer(None)
+                # The refused sweep advanced its traversal cursor. The next
+                # empty page wraps it before normal backstop rediscovery.
+                await discover_pause_work(org, org.orchestrator._queue)
                 await discover_pause_work(org, org.orchestrator._queue)
                 self.assertEqual(queued(org), [(org.slug, "TASK-Zchild", None)])
                 self.assertIsNone(release_flag(org, root_id))

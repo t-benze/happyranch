@@ -1205,7 +1205,9 @@ async def discover_root_pause_work(org: Any, queue: Any, root_id: str, generatio
     if store is None or queue is None:
         return False
     from runtime.workflows.recovery import SEQUENTIAL_HELD_KINDS, classify_task
-    from runtime.orchestrator.authority import enqueue_task_generation_aware
+    from runtime.orchestrator.authority import (
+        ENQUEUE_DISPATCH_NO_QUEUE, ENQUEUE_DISPATCH_REFUSED, enqueue_task_generation_aware,
+    )
     from runtime.daemon.routes.jobs import _run_job_core
     with org.db.coherent_read_view() as conn:
         root = store.root_uncommitted(root_id)
@@ -1259,6 +1261,7 @@ async def discover_root_pause_work(org: Any, queue: Any, root_id: str, generatio
                         continue
                 queue.enqueue_if_absent(org.slug, entry["task_id"], metadata=dict(entry["owner_identity"]))
     else:
+        release_failed = False
         deferred = {e["task_id"]: e for e in entries if e["owner"] != "job"
                     and not e["context"].get("producer_settled")
                     and e["phase"] in {"retry_deferred", "recovery_deferred"}}
@@ -1268,6 +1271,7 @@ async def discover_root_pause_work(org: Any, queue: Any, root_id: str, generatio
             # or replay consumed callbacks through the deferred branch.
             if task is None or task.cancelled_at is not None or task.status.value in {"completed", "failed", "cancelled", "superseded"}:
                 continue
+            publication = None
             if task_id in deferred:
                 entry = deferred[task_id]
                 if "authority_v2_generation" in entry["owner_identity"]:
@@ -1278,34 +1282,39 @@ async def discover_root_pause_work(org: Any, queue: Any, root_id: str, generatio
                         continue
                     # This is delivery for the already admitted SAME
                     # owner, not publication/admission of a pending G.
-                    queue.enqueue_if_absent(org.slug, task_id, metadata=dict(entry["owner_identity"]))
+                    publication = queue.enqueue_if_absent(org.slug, task_id, metadata=dict(entry["owner_identity"]))
                 else:
-                    queue.enqueue_if_absent(org.slug, task_id,
+                    publication = queue.enqueue_if_absent(org.slug, task_id,
                         publisher=lambda task_id=task_id, entry=entry: enqueue_task_generation_aware(
                             org.orchestrator, queue, org.slug, task_id, metadata=dict(entry["owner_identity"])))
             elif task is not None and eligible(org.orchestrator, task):
                 ownership = classify_task(org.db, task_id, org_slug=org.slug)
                 if ownership.kind == "draft":
-                    org.workflow_drafts.notify_queued(task_id, queue)
+                    publication = org.workflow_drafts.notify_queued(task_id, queue)
                 elif ownership.kind == "f5":
-                    org.workflow_reviews.notify_queued(task_id, queue)
+                    publication = org.workflow_reviews.notify_queued(task_id, queue)
                 elif ownership.kind == 'coding_attempt':
-                    org.workflow_coding_dispatch.notify_queued(task_id, queue)
+                    publication = org.workflow_coding_dispatch.notify_queued(task_id, queue)
                 elif ownership.kind == 'seq_visit':
-                    org.workflow_sequential_dispatch.notify_queued(task_id, queue)
+                    publication = org.workflow_sequential_dispatch.notify_queued(task_id, queue)
                 elif ownership.kind in SEQUENTIAL_HELD_KINDS or ownership.kind.startswith('coding_'):
                     continue
                 elif ownership.kind == "legacy":
-                    enqueue_task_generation_aware(org.orchestrator, queue, org.slug, task_id)
-        release_failed = False
+                    publication = enqueue_task_generation_aware(org.orchestrator, queue, org.slug, task_id)
+            # Owner notification methods have a void return contract. Explicit
+            # queue/generation refusals cannot acknowledge durable release.
+            if publication is False or publication in (ENQUEUE_DISPATCH_REFUSED, ENQUEUE_DISPATCH_NO_QUEUE):
+                release_failed = True
         for entry in entries:
             if entry["owner"] == "job" and entry["phase"] == "pending_job":
                 job_id = entry["owner_identity"]["job_id"]
                 job = org.db.get_job(job_id)
                 if job is not None and job.status.value == "pending" and not job.review_required:
                     try:
-                        await _run_job_core(org, job_id=job_id, cwd_override=None, timeout_override=None,
+                        publication = await _run_job_core(org, job_id=job_id, cwd_override=None, timeout_override=None,
                             trigger="agent", trigger_actor=entry["agent"], submit_session_id=entry["session_id"])
+                        if publication.get("deferred") or publication.get("status") != "running":
+                            release_failed = True
                     except Exception:
                         release_failed = True
                         import logging
