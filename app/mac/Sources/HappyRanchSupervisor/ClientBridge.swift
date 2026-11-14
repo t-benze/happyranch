@@ -134,6 +134,7 @@ public final class ClientBridge: @unchecked Sendable {
     private static let engineQueue = DispatchQueue(label: "com.happyranch.managed-engine")
     nonisolated(unsafe) private static var managedOwner: UUID?
     private var managedAttempt: UUID?
+    private var nativeConfigured = false
     private var managedReady = false
     private var managedPaired = false
     private let managedDials = DispatchGroup()
@@ -153,6 +154,7 @@ public final class ClientBridge: @unchecked Sendable {
             guard Self.managedOwner == nil else { throw ManagedNetworkError.busy }
             Self.managedOwner = attempt
             managedAttempt = attempt
+            nativeConfigured = false
             managedReady = false
             managedPaired = false
             deviceCredential = nil
@@ -166,7 +168,7 @@ public final class ClientBridge: @unchecked Sendable {
                         result = try Self.tsnetLock.withLock {
                             guard self.managedAttempt == attempt else { return -12 }
                             guard Self.validManagedConfiguration(controlURL, hostname, stateDirectory) else { return -10 }
-                            return try key.consume { auth in
+                            let configured = try key.consume { auth in
                                 controlURL.withCString { control in
                                     hostname.withCString { name in
                                         stateDirectory.withCString { directory in
@@ -175,6 +177,8 @@ public final class ClientBridge: @unchecked Sendable {
                                     }
                                 }
                             }
+                            self.nativeConfigured = configured == 0
+                            return configured
                         }
                     } catch { result = -10 }
                     // Wipe also when validation failed before consume, before any Up.
@@ -190,8 +194,9 @@ public final class ClientBridge: @unchecked Sendable {
                     if accepted {
                         continuation.resume()
                     } else {
-                        tsnet_close()
+                        if Self.tsnetLock.withLock({ self.nativeConfigured }) { tsnet_close() }
                         Self.tsnetLock.withLock {
+                            self.nativeConfigured = false
                             if Self.managedOwner == attempt { Self.managedOwner = nil }
                             if self.managedAttempt == attempt { self.managedAttempt = nil }
                         }
@@ -223,7 +228,7 @@ public final class ClientBridge: @unchecked Sendable {
             deviceCredential = nil
             managedHandles.removeAll()
             // Owner stays reserved until the serial worker has settled Close.
-            if previous != nil && Self.managedOwner == previous { tsnet_cancel() }
+            if previous != nil && Self.managedOwner == previous && nativeConfigured { tsnet_cancel() }
             return previous
         }
         queue.async {
@@ -238,9 +243,12 @@ public final class ClientBridge: @unchecked Sendable {
         guard let previous else { return }
         Self.engineQueue.async {
             guard Self.tsnetLock.withLock({ Self.managedOwner == previous }) else { return }
-            tsnet_close()
+            if Self.tsnetLock.withLock({ self.nativeConfigured }) { tsnet_close() }
             self.managedDials.wait()
-            Self.tsnetLock.withLock { Self.managedOwner = nil }
+            Self.tsnetLock.withLock {
+                self.nativeConfigured = false
+                Self.managedOwner = nil
+            }
         }
     }
 
@@ -398,7 +406,7 @@ public final class ClientBridge: @unchecked Sendable {
         let session = URLSession(configuration: configuration, delegate: BridgeHealthDelegate(), delegateQueue: nil)
         defer { session.invalidateAndCancel() }
         do {
-            let (_, response) = try await session.data(from: url)
+            let (_, response) = try await session.bytes(from: url)
             guard let response = response as? HTTPURLResponse else { return false }
             return (200...299).contains(response.statusCode)
         } catch { return false }
