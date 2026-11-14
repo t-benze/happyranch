@@ -41,11 +41,11 @@ from runtime.identities import registry as names
 from runtime.orchestrator import producer_move
 from runtime.orchestrator.agent_def import AgentDef, render_agent_text
 
-assert sys.argv[1:] in ([], ['--bounded-acquisition'], ['--trace-custody'], ['--sequential-reuse'], ['--sequential-load'], ['--sequential-faults'], ['--sequential-corruption']), 'unknown schema-load selection'
+assert sys.argv[1:] in ([], ['--bounded-acquisition'], ['--trace-custody'], ['--sequential-reuse'], ['--sequential-load'], ['--sequential-faults'], ['--sequential-corruption'], ['--retained-corruption']), 'unknown schema-load selection'
 
 # A0b-2 custody extends this existing real-SQLite venue. No native connection
 # subclass, fake epoch, successful validator stub or production test seam.
-if sys.argv[1:] not in (['--bounded-acquisition'], ['--sequential-reuse'], ['--sequential-load'], ['--sequential-faults'], ['--sequential-corruption']):
+if sys.argv[1:] not in (['--bounded-acquisition'], ['--sequential-reuse'], ['--sequential-load'], ['--sequential-faults'], ['--sequential-corruption'], ['--retained-corruption']):
     class TraceAbort(BaseException):
         pass
 
@@ -207,10 +207,10 @@ if sys.argv[1:] == ['--trace-custody']:
     raise SystemExit(0)
 
 # Extend the load/source/three-target keeper to actual installed sequential
-# layouts. The only fixture writer is the existing private installer primitive.
+# layouts. Existing private installers and storage owners prepare the fixtures.
 # Native SQLite statements, outcomes and original cumulative counters are the
 # oracles; no validator replacement, success stub or fabricated epoch.
-if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--sequential-faults'], ['--sequential-corruption']):
+if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--sequential-faults'], ['--sequential-corruption'], ['--retained-corruption']):
     from runtime.infrastructure.workflow_schema import (
         initialize_complete_org_schema, install_sequential_schema,
         sequential_storage_inventory, _coding_org_identity, _schema_snapshot,
@@ -219,6 +219,7 @@ if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--seque
     from runtime.workflows.sequential_history import read_sequential_history
     from runtime.workflows import sequential_history as seq_history
     from runtime.workflows._read_exhaustion import ReadExhaustion
+    from runtime.infrastructure.task_pause_controls import PauseControlError
 
     @contextmanager
     def sequential_fixture():
@@ -256,7 +257,7 @@ if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--seque
     def sequential_outcome(operation):
         try:
             return ('returned', operation())
-        except (ValueError, sqlite3.Error) as exc:
+        except (ValueError, sqlite3.Error, PauseControlError) as exc:
             cause = exc
             categories = []
             while cause is not None:
@@ -360,7 +361,55 @@ if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--seque
         for table in seq_history.SEQUENTIAL_TABLES:
             assert conn.execute('SELECT count(*) FROM ' + table).fetchone()[0] > 0, table + ' fixture is empty'
 
-    if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-corruption']):
+    def populate_retained(db, root):
+        import hashlib
+        from runtime.infrastructure.team_move_store import FounderAdmission, MoveRequest, Phase, Diagnostic
+        from runtime.infrastructure.team_move_store import _bytes as move_bytes
+
+        # Real org storage owners, synthetic private rows. No domain move,
+        # filesystem effect, human admission or native settlement is performed.
+        reconcile_namespace(SimpleNamespace(root=root, db=db, slug='scratch'),
+                            Namespace((('synthetic_agent', 'active'),), ()), install=True)
+        store = TaskPauseStore(db, 'scratch')
+        with store.writer('TASK-seq-load'):
+            row = store.ensure_uncommitted('TASK-seq-load')
+            row['journal']['entries'] = [dict(id='synthetic-entry', org='scratch',
+                root_task_id='TASK-seq-load', task_id='TASK-seq-load', agent='synthetic_agent',
+                session_id='synthetic-session', owner='ordinary', owner_identity={},
+                fingerprint=dict(status='pending', block_kind=None, count=0, session_id=None,
+                    agent=None, fanout=None, jobs=None, parent=None, brief_digest='0' * 64),
+                generation=0, phase='prepared', retry={}, context={}, started_at=None,
+                captured_generation=None)]
+            store.save_journal_uncommitted(row)
+        install_team_move_schema(db, org_slug='scratch')
+        digest = hashlib.sha256(b'').hexdigest()
+        identity = dict(device=0, inode=1, mode=0o700)
+        request = MoveRequest.model_validate(dict(version=1, org_slug='scratch',
+            source_team='consultant', target_team='default', target_principal='founder',
+            affected_agents=('consultant_codex', 'consultant_head'), demote='consultant_head',
+            retire_source=True, drain_threads=False,
+            expected=dict(**{key: digest for key in ('canonical_digest', 'roster_digest',
+                'naming_digest', 'profile_digest', 'dependency_digest', 'policy_digest',
+                'skill_selection_digest', 'permission_digest', 'authority_digest')},
+                authority_namespace='org/scratch', authority_generation=1,
+                agent_revisions=(digest, digest)),
+            files=tuple(dict(path=path, identity=identity, before_base64='', before_digest=digest,
+                after_base64='', after_digest=digest) for path in (
+                    'org/agents/consultant_codex.md', 'org/agents/consultant_head.md', 'org/teams.yaml')),
+            workspaces=tuple(dict(agent_id=agent, path='/synthetic/' + agent, identity=identity)
+                for agent in ('consultant_codex', 'consultant_head'))))
+        moves = TeamMoveStore(db, 'scratch')
+        move = moves.reserve(operation_key='synthetic-retained', request_bytes=move_bytes(request),
+            admission=FounderAdmission(principal='founder', boundary='_require_human',
+                org_slug='scratch', admission_id='synthetic-not-live', admitted_at='2026-11-14T00:00:00+00:00'))
+        moves.transition(move['operation_id'], expected_revision=1, phase=Phase.REFUSED,
+                         diagnostic=Diagnostic(code='synthetic_refusal'))
+        for table in ('task_pause_controls', 'identity_name_owners', 'identity_name_claims', 'team_move_operations'):
+            assert db._conn.execute('SELECT count(*) FROM ' + table).fetchone()[0] > 0, table + ' retained fixture is empty'
+        assert db._conn.execute("SELECT count(*) FROM audit_log WHERE action IN ('team_move_reserved','team_move_transition')").fetchone()[0] == 2
+        assert read_sequential_history(db._conn, expected_org_slug='scratch').status == 'storage readable'
+
+    if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-corruption'], ['--retained-corruption']):
         corruptions = (
             ('definition digest', "UPDATE workflow_seq_definitions SET definition_digest='bad'"),
             ('definition bytes', "UPDATE workflow_seq_definitions SET definition_bytes=x'7b7d'"),
@@ -413,10 +462,37 @@ if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--seque
             'complete schema': 'workflow_seq_complete_layout_mismatch',
             'foreign key': 'workflow_seq_foreign_key_invalid',
         })
+        retained_corruptions = (
+            ('Pause parity', "UPDATE task_pause_controls SET held=1", 'pause_control_unavailable'),
+            ('Pause actor', "UPDATE task_pause_controls SET actor=''", 'pause_control_unavailable'),
+            ('Pause timestamp', "UPDATE task_pause_controls SET updated_at='2026-11-14T00:00:00'", 'pause_control_unavailable'),
+            ('Pause journal org', "UPDATE task_pause_controls SET admission_journal_json=json_set(admission_journal_json,'$.entries[0].org','wrong')", 'pause_control_unavailable'),
+            ('Pause ancestry', "UPDATE tasks SET parent_task_id='source' WHERE id='TASK-seq-load'", 'pause_control_unavailable'),
+            ('name org', "UPDATE identity_name_schema SET org_slug='wrong'", 'naming_schema_marker_mismatch'),
+            ('name current claim', "UPDATE identity_name_owners SET current_label='Missing' WHERE canonical_id='synthetic_agent'", 'naming_current_claim_missing'),
+            ('name reserved claim', "UPDATE identity_name_claims SET id_reserved=0,permanent=1 WHERE owner_id='synthetic_agent'", 'naming_live_id_missing'),
+            ('move org', "UPDATE team_move_operations SET org_slug='wrong'", 'team_move_record_mismatch'),
+            ('move request digest', "UPDATE team_move_operations SET request_digest='" + '0' * 64 + "'", 'team_move_record_mismatch'),
+            ('move receipt digest', "UPDATE team_move_operations SET receipt_digest='" + '0' * 64 + "'", 'team_move_receipt_mismatch'),
+            ('move diagnostic digest', "UPDATE team_move_operations SET diagnostic_digest='" + '0' * 64 + "'", 'team_move_diagnostic_digest'),
+            ('move audit payload', "UPDATE audit_log SET payload='{}' WHERE action='team_move_transition'", 'team_move_audit_history'),
+            ('move audit principal', "UPDATE audit_log SET agent='wrong' WHERE action='team_move_reserved'", 'team_move_audit_history'),
+            ('move audit gap', "DELETE FROM audit_log WHERE action='team_move_transition'", 'team_move_audit_history'),
+        )
+        retained_names = {name for name, _, _ in retained_corruptions}
+        refusal_codes.update({name: code for name, _, code in retained_corruptions})
+        if sys.argv[1:] == ['--retained-corruption']:
+            corruptions = ()
+        corruptions += tuple((name, mutation) for name, mutation, _ in retained_corruptions)
         corruption_failures = []
-        for (name, mutation), phase in product(corruptions, ('first', 'between local', 'between external')):
+        corruption_cases = [(row, phase) for row in corruptions
+            for phase in ('first', 'between local', 'between external') +
+                (('between uncommitted',) if row[0] in retained_names else ())]
+        for (name, mutation), phase in corruption_cases:
             with sequential_fixture() as (db, root, sql):
                 populate_sequential(db)
+                if name in retained_names:
+                    populate_retained(db, root)
                 # Warm outside the new owner too: a forbidden cross-load cache
                 # must not certify even the first use in the following scope.
                 seq_read(db)
@@ -429,10 +505,11 @@ if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--seque
                         hits = owner.hits
                         before = db._conn.total_changes
                         with sqlite3.connect(db.db_path) as writer:
-                            connection = db._conn if phase == 'between local' else writer
+                            connection = db._conn if phase in ('between local', 'between uncommitted') else writer
                             # Restore FK ON before reading: the FK mutation
                             # must reach the complete checker, not config fallback.
-                            connection.execute('PRAGMA foreign_keys=OFF')
+                            if name not in retained_names:
+                                connection.execute('PRAGMA foreign_keys=OFF')
                             # Corruption preparation alone suspends immutable
                             # fixture triggers; restore their exact SQL before
                             # either reader sees this private image. Schema
@@ -445,25 +522,38 @@ if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--seque
                             connection.execute(mutation)
                             for trigger, ddl in triggers:
                                 connection.execute(ddl)
-                            connection.commit()
-                            connection.execute('PRAGMA foreign_keys=ON')
-                        if phase != 'between local':
+                            if phase != 'between uncommitted':
+                                connection.commit()
+                            if name not in retained_names:
+                                connection.execute('PRAGMA foreign_keys=ON')
+                        if phase not in ('between local', 'between uncommitted'):
                             assert db._conn.total_changes == before, 'external fixture changed local counter'
                         expected = sequential_outcome(lambda: read_sequential_history(
                             db._conn, expected_org_slug='scratch').retained)
                         assert expected[0] == 'refused', name + ' fixture was accepted by complete reader'
                         assert all(category[0] is not ReadExhaustion for category in expected[1]), name + ' hidden by exhaustion'
-                        assert expected[1][0] == (ValueError, refusal_codes[name]), name + ' missed its semantic boundary: ' + repr(expected)
+                        if name in retained_names:
+                            from runtime.infrastructure.team_move_store import TeamMoveError
+                            error_type = (PauseControlError if name.startswith('Pause ') else
+                                          names.NamingError if name.startswith('name ') else TeamMoveError)
+                        else:
+                            error_type = ValueError
+                        assert expected[1][0] == (error_type, refusal_codes[name]), name + ' missed its semantic boundary: ' + repr(expected)
                         actual = sequential_outcome(lambda: seq_read(db))
                         assert actual == expected, name + ' corruption changed complete refusal'
                         assert owner.hits == hits and owner.sequential_saved is None, name + ' corruption retained a certificate'
-                        assert not db._conn.in_transaction, name + ' corruption leaked owned snapshot'
+                        assert db._conn.in_transaction == (phase == 'between uncommitted'), name + ' corruption changed snapshot ownership'
+                        if phase == 'between uncommitted':
+                            db._conn.rollback()
+                            full = owner.full_runs
+                            seq_read(db)
+                            assert owner.full_runs == full + 1 and owner.hits == hits, name + ' rollback resurrected a certificate'
                     print('PASS A0b sequential corruption matrix:', name, phase, refusal_codes[name], flush=True)
                 except AssertionError as exc:
                     corruption_failures.append((name, phase, str(exc)))
                     print('FAIL A0b sequential corruption matrix:', name, phase, str(exc), flush=True)
         assert not corruption_failures, 'sequential corruption matrix failures: ' + repr(corruption_failures)
-        if sys.argv[1:] == ['--sequential-corruption']:
+        if sys.argv[1:] in (['--sequential-corruption'], ['--retained-corruption']):
             raise SystemExit(0)
 
     if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-faults']):

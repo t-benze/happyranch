@@ -304,6 +304,17 @@ outcomes, forbids uncertified hits and preserves caller transactions. Named
 assertion failures accumulate and fail the selection; no failed case is skipped.
 The full selection and `--sequential-reuse` include these tables. They do not
 replace nonempty family-corruption or the remaining original SQL exhaustion forms.
+`--retained-corruption` selects the corruption table's nonempty Pause journal,
+naming owner/claim and terminal team-move row/audit cases. The real storage
+owners prepare synthetic private history; first-read, between-use local/external
+commits and uncommitted writes must produce the exact public complete-reader
+semantic refusal,
+without exhaustion, a certificate hit or transaction leakage. No human admission,
+domain move or native settlement is claimed. The full venue,
+`--sequential-reuse` and `--sequential-corruption` include these rows. Retained
+uncommitted cases preserve the caller transaction and require a fresh complete
+read after rollback. Document/Coding and physical-corruption cases remain
+separate requirements.
 For A0b-2's capacity disposition, see the [storage contract](runbooks/sequential-workflow-storage.md):
 installed happyranch's default FIRST/attempted NEXT is recorded as expected
 refusal with zero changes/certificate/observer leaks and an original-base
