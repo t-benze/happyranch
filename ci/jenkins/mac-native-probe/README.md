@@ -627,7 +627,9 @@ split), with 1-based `line_index`, rejection `reason`, `truncated`, total
 `row_sha256` of the **full ASCII-escaped row**, before the 512-byte prefix cap.
 At run finalization, later row copies are emptied (`row: ""`,
 `report_truncated: true`) until the serialized report, including JSON re-escaping,
-fits 58,000 bytes. The first rejected row's bounded exact prefix is preserved;
+fits 58,000 bytes. The first rejected row's bounded exact prefix per distinct
+payload digest is protected before any trimming, independently of report dict
+order (later step results can precede earlier helper commands in the dict);
 every snapshot keeps its indices, reasons, totals, full-row lengths/hashes and
 INCOMPLETE/UNKNOWN status. This aggregate budget covers distinct as well as
 repeated payloads and leaves 2,000 bytes below the unchanged 60,000-byte report

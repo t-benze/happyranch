@@ -1195,29 +1195,47 @@ uv() { printf '%s\\n' "$@"; }
         # SYNTHETIC maximum escaped rows, never captured native evidence.
         # Distinct snapshots prevent a repeated-payload-only repair from passing.
         from unittest.mock import Mock
-        real_command, real_popen = suite.command, subprocess.Popen
+        real_command, real_checked, real_popen = suite.command, suite.checked, subprocess.Popen
         collector = suite.ROOT / 'scripts/mac_native/collect_packaged.py'
-        for distinct in (False, True):
-            with self.subTest(distinct=distinct), tempfile.TemporaryDirectory() as folder:
+        for failure_phase, distinct in (('initial', False), ('initial', True),
+                                        ('post_cancel', True), ('helpers', True)):
+            with self.subTest(failure_phase=failure_phase, distinct=distinct), tempfile.TemporaryDirectory() as folder:
                 workspace = Path(folder).resolve()
                 scratch = workspace / 'native-probe.SYNTHETIC'
                 source = scratch / 'source'
                 source.mkdir(parents=True)
                 report = {'suite': 'packaged', 'platform': 'darwin'}
-                launched, inputs = [], []
+                launched, inputs, started, cancelled, bad = [], [], [], [], []
                 def census():
                     if not launched:
                         return []
+                    if failure_phase != 'initial' and not bad:
+                        def row(pid, ppid, pgid):
+                            return dict(pid=pid, ppid=ppid, pgid=pgid, state='S',
+                                start_identity='Sat Nov 14 05:00:00 2026', executable='/SYNTHETIC/provider')
+                        rows = [row(999999, 1, 999999)]
+                        if started and not cancelled:
+                            rows += [row(900002, 999999, 900002), row(900004, 900002, 900002)]
+                        return rows
                     phase = len(inputs) if distinct else 0
-                    lines = [f'1 0 1 ! Sat Nov 14 05:00:00 2026 /SYNTHETIC-{phase}-{i:02d}--'
+                    lines = [f'1 0 1 ! Sat Nov 14 05:00:00 2026 /SYNTHETIC-{phase:02d}-{i:02d}-'
                              + '\\' * 300 for i in range(16)]
                     inputs.append(lines)
                     return suite.parse_census('\n'.join(lines) + '\n')
-                def checked(argv, *_args, **_kwargs):
+                def checked(argv, cwd, env, seconds, **kwargs):
+                    if bad:
+                        return real_checked([sys.executable, '-c', 'print("SYNTHETIC checked output")'],
+                                            cwd, env, seconds, **kwargs)
                     if argv[0] == '/usr/bin/ditto':
                         shutil.copytree(argv[1], argv[2])
+                    if 'worktree' in argv:
+                        Path(argv[-1]).mkdir(parents=True)
                     return {'tail': 'a' * 40}
-                def build(argv, cwd, env, seconds):
+                def build(argv, cwd, env, seconds, **kwargs):
+                    if '--output-dir' not in argv:
+                        bad.append(True)
+                        return real_command([sys.executable, '-c', 'print("SYNTHETIC helper output")'],
+                                            cwd, env, seconds, **kwargs)
                     out = Path(argv[argv.index('--output-dir') + 1])
                     for name in ('Contents/MacOS/HappyRanch',
                                  'Contents/Resources/daemon/happyranch-daemon',
@@ -1239,10 +1257,33 @@ uv() { printf '%s\\n' "$@"; }
                 def launch(argv, *args, **kwargs):
                     if argv[0] == sys.executable:
                         return real_popen(argv, *args, **kwargs)
+                    home = kwargs['cwd']
+                    (home / 'daemon.port').write_text('1234')
+                    (home / 'daemon.token').write_text('SYNTHETIC-placeholder')
                     proc = Mock(pid=999999, returncode=0)
                     proc.poll.return_value = None
                     launched.append(proc)
                     return proc
+                def api_json(_self, path, body=None, **_kwargs):
+                    if path == '/api/v1/orgs/packaged/tasks':
+                        started.append(True)
+                        marker = scratch / 'packaged/runtime/orgs/packaged/workspaces/packaged_agent/packaged-session.json'
+                        marker.parent.mkdir(parents=True)
+                        marker.write_text(json.dumps(dict(pid=900002, child=900004,
+                                                          pgid=900002, session_id='SYNTHETIC')))
+                        return {'task_id': 'TASK-001'}
+                    if path.endswith('/cancel'):
+                        cancelled.append(True)
+                        if failure_phase == 'post_cancel':
+                            bad.append(True)
+                    return {}
+                def await_value(fn, _seconds, label):
+                    value = fn()
+                    if not value:
+                        raise TimeoutError(label)
+                    return value
+                backend = dict(name='macos-process-group', healthy=True,
+                               capabilities={'kills_tree_best_effort': 'best_effort'})
                 with (patch.object(suite, 'ROOT', source),
                       patch.dict(os.environ, {'TMPDIR': str(scratch / 'tmp'), 'SOURCE_SHA': 'a' * 40,
                                               'WORKSPACE': str(workspace)}),
@@ -1250,7 +1291,11 @@ uv() { printf '%s\\n' "$@"; }
                       patch.object(suite, 'checked', side_effect=checked),
                       patch.object(suite, 'command', side_effect=build),
                       patch.object(suite.subprocess, 'Popen', side_effect=launch),
-                      patch('scripts.mac_native.suite_toolchain.executor_feasibility', return_value={}),
+                      patch.object(suite, 'await_value', side_effect=await_value),
+                      patch.object(suite, 'health_and_web', return_value=dict(name='health_and_web', status='PASS', backend=backend)),
+                      patch.object(suite.Api, 'json', api_json),
+                      patch('scripts.mac_native.suite_toolchain.executor_feasibility', return_value={
+                          'executors': {'codex': {'auth_status': 'CREDENTIALS_PRESENT_SESSION_UNTESTED'}}}),
                       patch('scripts.mac_native.toolchain.provision', return_value=dict(os.environ))):
                     with self.assertRaises(RuntimeError) as failure:
                         suite.run(report)
@@ -1268,14 +1313,34 @@ uv() { printf '%s\\n' "$@"; }
                 self.assertNotIn('report exceeds', str(failure.exception))
                 final = json.loads(collected.read_bytes())
                 self.assertLess(len(json.dumps(report).encode()), 60000)
+                self.assertLessEqual(len(json.dumps(report).encode()), 58000)
                 self.assertLessEqual(collected.stat().st_size, 65536)
                 section = final['packaged']
-                phases = ('initial_daemon_survivors', 'failure_survivors', 'before_quit', 'post_stop_survivors')
-                self.assertEqual(len(inputs), len(phases))
-                for phase, lines in zip(phases, inputs, strict=True):
-                    snapshot = section[phase]
-                    self.assertEqual(snapshot['status'], 'UNKNOWN')
-                    evidence = snapshot['census_error']
+                phases = ('failure_survivors', 'before_quit', 'post_stop_survivors')
+                if failure_phase == 'initial':
+                    phases = ('initial_daemon_survivors', *phases)
+                elif failure_phase == 'post_cancel':
+                    phases = ('post_cancel_survivors', *phases)
+                self.assertEqual(len(inputs), 9 if failure_phase == 'helpers' else 4)
+                for phase in phases:
+                    self.assertEqual(section[phase]['status'], 'UNKNOWN')
+                errors = []
+                def visit(value):
+                    if isinstance(value, dict):
+                        if 'rejected_rows' in value:
+                            errors.append(value)
+                        else:
+                            for child in value.values():
+                                visit(child)
+                    elif isinstance(value, list):
+                        for child in value:
+                            visit(child)
+                visit(final)
+                expected = {hashlib.sha256(json.dumps(lines[0])[1:-1].encode('ascii')).hexdigest(): lines
+                            for lines in inputs}
+                self.assertEqual({e['rejected_rows'][0]['row_sha256'] for e in errors}, set(expected))
+                for evidence in errors:
+                    lines = expected[evidence['rejected_rows'][0]['row_sha256']]
                     self.assertEqual((evidence['row_count'], evidence['rejected_count']), (16, 16))
                     self.assertEqual(len(evidence['rejected_rows']), 16)
                     for index, row in enumerate(evidence['rejected_rows']):
@@ -1289,12 +1354,26 @@ uv() { printf '%s\\n' "$@"; }
                         else:
                             self.assertEqual(len(row['row']), 512)
                             self.assertTrue(escaped.startswith(row['row']))
-                first = section[phases[0]]['census_error']['rejected_rows'][0]
-                self.assertEqual(first['row'], json.dumps(inputs[0][0])[1:-1][:512])
-                self.assertTrue(any(row.get('report_truncated') for phase in phases
-                                    for row in section[phase]['census_error']['rejected_rows']))
+                # Each distinct payload's earliest line must survive regardless
+                # of report traversal order (steps.6 precedes packaged.commands).
+                first = (section['commands']['disk_sweep']['census_error']['first']
+                         if failure_phase == 'helpers' else section[phases[0]]['census_error'])
+                self.assertEqual(first['rejected_rows'][0]['row'], json.dumps(inputs[0][0])[1:-1][:512])
+                for lines in expected.values():
+                    prefix = json.dumps(lines[0])[1:-1][:512]
+                    self.assertTrue(any(e['rejected_rows'][0]['row'] == prefix for e in errors), prefix[:57])
+                self.assertTrue(any(row.get('report_truncated') for e in errors for row in e['rejected_rows']))
                 self.assertFalse(final['completed'])
-                self.assertEqual(final['steps']['3']['status'], 'FAIL')
+                failed_step = {'initial': '3', 'post_cancel': '5', 'helpers': '6'}[failure_phase]
+                self.assertEqual(final['steps'][failed_step]['status'], 'FAIL')
+                if failure_phase == 'helpers':
+                    self.assertEqual(section['post_cancel_survivors']['status'], 'ABSENT')
+                    for command_result in (section['commands']['disk_sweep'], section['commands']['worktree_safety'],
+                                           final['steps']['6']['command_result']):
+                        output = b'SYNTHETIC helper output\n'
+                        self.assertEqual((command_result['exit_code'], command_result['bytes'], command_result['tail']),
+                                         (0, len(output), output.decode()))
+                        self.assertEqual(command_result['sha256'], hashlib.sha256(output).hexdigest())
                 self.assertEqual(final['steps']['7']['status'], 'FAIL')
                 self.assertEqual(final['steps']['8']['status'], 'PASS')
                 build_result = section['commands']['build']

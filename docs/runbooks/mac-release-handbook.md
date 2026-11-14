@@ -124,8 +124,9 @@ rows/counts/line indices/reasons under `census_error` (up to 16 rows, 512 escape
 bytes each; six ps fields, no argv/environment, no redaction). Full escaped-row
 lengths/SHA256 survive prefix truncation. Finalization empties later row copies
 with `report_truncated: true` to fit the serialized report in 58,000 bytes,
-preserving the first bounded exact row, indices/reasons/totals and every UNKNOWN
-snapshot. This includes distinct payloads; report 60,000-byte and collector
+protecting the first bounded exact row per distinct payload digest independently
+of report dict order, plus indices/reasons/totals and every UNKNOWN snapshot.
+This includes late helper failures; report 60,000-byte and collector
 64-KiB caps remain unchanged, with room for the failure envelope/EXIT join.
 Apple-documented
 `?` states retain present-process identity; malformed rows keep UNKNOWN. A

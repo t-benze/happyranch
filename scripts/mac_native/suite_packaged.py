@@ -323,15 +323,22 @@ def survivor_snapshot(select: Any) -> dict[str, Any]:
 def bound_census_evidence(report: dict[str, Any]) -> None:
     """Spend only the report's remaining serialized-byte budget on row copies.
 
-    Keep the first rejected row's exact bounded prefix. Later copies may lose
+    Keep the first rejected row's exact bounded prefix per distinct payload.
+    Report traversal order need not match observation order. Later copies may lose
     their text, never their indices, reasons, full escaped-row hashes or counts.
     Measure JSON bytes (including re-escaping), not the parser's prefix lengths.
     The reserve covers probe's failure envelope and the collector's EXIT join.
     """
     rows: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    payloads: set[str] = set()
+    protected: set[int] = set()
     def visit(value: Any) -> None:
         if isinstance(value, dict):
             if 'rejected_rows' in value:
+                key = hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
+                if value['rejected_rows'] and key not in payloads:
+                    protected.add(id(value['rejected_rows'][0]))
+                payloads.add(key)
                 rows.extend((value, row) for row in value['rejected_rows'])
             else:
                 for child in value.values():
@@ -340,12 +347,13 @@ def bound_census_evidence(report: dict[str, Any]) -> None:
             for child in value:
                 visit(child)
     visit(report)
-    # Reverse retention order preserves the earliest exact evidence. This also
-    # handles distinct failures and command first/final payloads; deduplicating
-    # identical snapshots alone cannot bound those paths.
-    for evidence, row in reversed(rows[1:]):
+    # Protect every distinct payload's first row before trimming any copies,
+    # including earlier commands stored after a later failing step result.
+    for evidence, row in reversed(rows):
         if len(json.dumps(report).encode()) <= REPORT_CAP - 2000:
             break
+        if id(row) in protected:
+            continue
         row.update(row='', report_truncated=True)
         evidence['truncated'] = True
 
