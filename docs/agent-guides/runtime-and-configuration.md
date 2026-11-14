@@ -1259,8 +1259,8 @@ current names once for its labels; filesystem namespace capture precedes the
 short DB coherent-read section. It does not hold DB locks across file scans or
 load files/DB per rendered name. Task role and outer wrapper are separate reads.
 
-Full/delta thread prompts, eviction and non-resumable full fallback, resumed
-no-callback nudge, and dream/wake/schedule production builders refresh naming
+Full/delta thread prompts, eviction and non-resumable full fallback, fresh
+full-context no-callback nudge, and dream/wake/schedule production builders refresh naming
 context. No provider resume ID, launch/admission/executor/scheduler algorithm,
 callback identity/order, schema or config identity changes. Unavailable metadata
 renders ID-only context, with no reconciliation/write/launch gate or snapshots.

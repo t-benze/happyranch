@@ -1,5 +1,21 @@
 # Local CI
 
+## Focused missing thread callback coverage (#395 / #219)
+
+```sh
+uv run --frozen pytest scripts/test_thread_no_callback.py -v --tb=short
+```
+
+These standalone checks reuse the prompt-size script's synthetic-org fixture
+and real SQLite, with provider execution stubbed and Popen forbidden. They
+observe unchanged session and watermark state after a pending rc=0 first pass,
+a fresh full-context nudge through the existing prompt bound, oversize nudge
+settlement, session clearing after `no_callback_after_reprompt`, unchanged
+breaker counting, and session/watermark advancement after genuine reply/decline
+callbacks on either pass. Pi cases check terminal usage beyond the first 2000
+stdout characters and tail preservation when terminal usage cannot be parsed.
+This adds no required CI check, E2E trigger or provider-compliance claim.
+
 ## Focused thread prompt-size coverage (#832 slice 1)
 
 ```sh

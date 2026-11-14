@@ -1227,6 +1227,11 @@ Pi: `PiExecutor.run` invokes `pi -p ... --mode json` from the agent workspace. U
 
 ### Built-in usage parsing and Usage v1 normalization
 
+Pi scans all stdout JSONL for terminal usage events; the last terminal usage
+wins even beyond the first 2000 characters. If no terminal usage is parseable,
+its raw-only forensic fallback retains the final `_TAIL_BYTES` (2000) stdout
+characters, so late callback diagnostics survive (#219).
+
 The four built-in parsers store one nullable `TokenUsage` shape, but their
 provider reasoning fields do not share one meaning. `executors.py` declares
 that meaning once as `PARSER_USAGE_SEMANTICS`; consumers must not branch on

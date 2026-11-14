@@ -284,6 +284,19 @@ See the [current naming contract](../../superpowers/specs/2026-10-09-identity-na
   still forbids `resolves`. Self-only authority, team, participant, manager,
   lineage, open-thread, origin-unheld and supersedable-predecessor gates apply.
 
+**Missing callback session handling (#395).** A successful subprocess saves
+its provider session and advances `last_resumed_seq` only after a genuine
+reply/decline callback. A pending rc=0 first pass leaves both unchanged. The
+single corrective nudge rebuilds full canonical context with no resume id and
+uses the existing prompt bound below, including its suffix. A second clean
+exit without a callback (`no_callback_after_reprompt`, including nudge phase
+reentry) clears the stored id via the existing owner/abort-guarded session
+writer and preserves the prior watermark. Breaker counting and delivery
+settlement stay unchanged. `prompt_too_large` retains the prior session and
+watermark; it never adds a provider failure or another automatic attempt.
+Provider-declared eviction still uses the transactional initial-phase seam
+above; no callback failure is reclassified as a provider eviction signature.
+
 **Thread prompt bound (#832 slice 1).** Every fresh/delta, eviction fallback,
 nudge and phase-reentry build preflights the complete prompt (including skills,
 policy, guardrail, delivery and corrective notes, plus the executor-added

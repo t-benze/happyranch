@@ -1644,6 +1644,11 @@ async def _run_invocation_owned(
             result: ExecutorResult | None, *, status: ThreadInvocationStatus,
             reason: str, category: str | None = None,
         ) -> None:
+            if resume_capable and stored_sid and reason.startswith("no_callback_after_reprompt:"):
+                # The fresh nudge also failed its callback contract. Clear the
+                # stored pointer through the same abort/owner-guarded writer;
+                # neither unacknowledged attempt advances the resume frontier.
+                move_owner.save_session(agent_session_id=None, last_resumed_seq=last_seq)
             selected = category or _qualifying_breaker_failure(result)
             if claim is None or selected is None:
                 _settle_or_fail_reply(
@@ -2127,23 +2132,8 @@ async def _run_invocation_owned(
             )
             return
 
-        # Invocation is still pending — subprocess exited without consuming.
-        # Persist the (possibly forked / freshly-minted) session id + delta
-        # watermark. Advanced only on a successful subprocess — a failed turn
-        # leaves the watermark so the next resume re-includes the skipped messages.
-        if resume_capable and result.success and getattr(result, "agent_session_id", None):
-            new_watermark = max(shown_seqs) if shown_seqs else last_seq
-            new_watermark = max(new_watermark, last_seq)
-            move_owner.save_session(
-                agent_session_id=result.agent_session_id,
-                last_resumed_seq=new_watermark,
-            )
-            if resume_sid:
-                audit.log_agent_session_reused(
-                    inv.thread_id, agent_name=inv.agent_name, executor=executor_name,
-                    agent_session_id=result.agent_session_id,
-                    triggering_seq=inv.triggering_seq,
-                )
+        # Still pending: rc=0 alone proves neither callback compliance nor
+        # delivery. Leave the stored session and resume watermark untouched.
 
         # --- THR-071 slice (3): bounded terminal-callback enforcement ---
         # The model finished its run but forgot the terminal callback (clean
@@ -2167,28 +2157,16 @@ async def _run_invocation_owned(
                 "auto-declined if you exit again without calling one of these."
             )
 
-            if resume_capable and getattr(result, "agent_session_id", None):
-                # Resume the same agent session and append the nudge.
-                retry_prompt = prompt_name_context(
-                    read_name_metadata(org_state), inv.agent_name,
-                    [p.agent_name for p in participants],
-                ) + nudge_prompt
-                retry_resume_sid: str | None = result.agent_session_id
-                retry_messages = None
-                retry_rebuild = None
-            else:
-                # Non-resumable executor: rebuild full prompt + corrective note.
-                retry_rebuild = lambda selected: _full_prompt(selected, suffix=nudge_prompt)
-                retry_prompt = retry_rebuild(messages)
-                retry_messages = messages
-                retry_resume_sid = None
-                # Update shown_seqs for non-resumable (full prompt rebuild).
-                shown_seqs = [m.seq for m in messages]
+            # The suspect provider session must not receive another resume.
+            # Rebuild canonical context for every executor; _invoke applies
+            # the existing single bound, including the corrective suffix.
+            retry_rebuild = lambda selected: _full_prompt(selected, suffix=nudge_prompt)
+            retry_prompt = retry_rebuild(messages)
 
             logger.info(
                 "run_invocation: token %s clean exit without callback — "
-                "re-invoking once with nudge (resume=%s)",
-                invocation_token[:8], retry_resume_sid,
+                "re-invoking once with fresh full-context nudge",
+                invocation_token[:8],
             )
 
             move_owner.start_phase("nudge")
@@ -2197,7 +2175,7 @@ async def _run_invocation_owned(
             try:
                 retry_phase = await _await_invocation_worker(
                     org_state, move_owner, lambda: _invoke(
-                        retry_prompt, retry_resume_sid, run_messages=retry_messages,
+                        retry_prompt, None, run_messages=messages,
                         rebuild=retry_rebuild))
             except DeferredTeamMove:
                 raise
@@ -2247,13 +2225,6 @@ async def _run_invocation_owned(
                         agent_session_id=retry_result.agent_session_id,
                         last_resumed_seq=new_watermark,
                     )
-                    if retry_resume_sid:
-                        audit.log_agent_session_reused(
-                            inv.thread_id, agent_name=inv.agent_name,
-                            executor=executor_name,
-                            agent_session_id=retry_result.agent_session_id,
-                            triggering_seq=inv.triggering_seq,
-                        )
                 if after.status is ThreadInvocationStatus.DECLINED:
                     await _publish_invocation_event(
                         org_state, thread_id=inv.thread_id,
@@ -2270,16 +2241,6 @@ async def _run_invocation_owned(
             # (HIGH-2 REVISE): only tag no_callback_after_reprompt for a CLEAN retry
             # exit (rc==0); exception → runner_crash, timeout → invocation_timeout,
             # rc!=0 → no_callback: rc=N.
-            if retry_result is not None and retry_result.success:
-                # Session may still be persistable (clean exit from the nudge).
-                if (resume_capable and getattr(retry_result, "agent_session_id", None)):
-                    new_watermark = max(shown_seqs) if shown_seqs else last_seq
-                    new_watermark = max(new_watermark, last_seq)
-                    move_owner.save_session(
-                        agent_session_id=retry_result.agent_session_id,
-                        last_resumed_seq=new_watermark,
-                    )
-
             if retry_result is None:
                 # Exception during nudge re-invoke.
                 reason = f"runner_crash: {retry_exc}"
