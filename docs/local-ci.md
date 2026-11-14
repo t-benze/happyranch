@@ -1,18 +1,24 @@
 # Local CI
 
-## Focused root Pause/Resume coverage (THR-359 PR1)
+## Focused root Pause/Resume coverage (THR-359)
 
 ```sh
-python -B -m unittest scripts.test_task_pause_resume -v
+python -B -m unittest scripts.test_task_pause_resume scripts.test_task_pause_jobs -v
 ```
 
-These standalone checks reuse the existing synthetic-org ASGI route fixture
+The Resume checks reuse the existing synthetic-org ASGI route fixture
 from `scripts/test_agent_retirement.py`, without lifespan, listeners, workers or
 executors. They exercise the real Resume route, queue and SQLite controls with
 40 ended roots preceding held work, duplicate Resume, failed direct publication
 and backstop recovery, and ended-root filtering with pending-release retention.
 They are outside the retired Python suite and add no required CI check or E2E
-trigger. General integration remains SKIPPED under THR-243 seq42.
+trigger. The sibling job checks run the real job runner and terminal writer
+with synthetic orgs and real Linux subprocesses: empty, live original-group, setpgid-only,
+unconfirmable probe, retained historical unknown, and a named setsid accepted
+blind spot. Test-only subreaper adoption kills/reaps every descendant in finally;
+it adds no production containment. The job checks run without daemon lifespan
+or providers; macOS native enumeration needs a separate macOS venue.
+General integration remains SKIPPED under THR-243 seq42.
 
 ## Connector platform lifecycle focused coverage (THR-360 C1+C2)
 

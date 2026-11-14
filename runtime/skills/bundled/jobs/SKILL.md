@@ -404,9 +404,19 @@ Do not automatically retry job submission or flip policy fields. Reconcile the a
 
 THR-350's ordinary unknown-session crash recovery excludes job-owned journal
 entries. An ordinary session resumed with authenticated job_terminal or
-block_submit provenance remains ordinary. Normal job terminal persistence can
-retain phase unknown because direct exit does not prove descendant cleanup; a successful job exit is no reason to
-clear it. Only the matching ordinary session producer may be marked settled
+block_submit provenance remains ordinary.
+
+At job end, only a post-reap single observation confirming both the
+launch-captured original process group (killpg ESRCH) and original session empty
+closes the job Pause entry under the existing terminal CAS/audit/root writer.
+All unconfirmable cases, live group/session descendants, failed tails and missing
+handles stay unknown; periodic/startup do not re-probe jobs. Restart/legacy
+entries and historical unknowns stay as-is. Founder THR-359 seq13 OPTION A
+accepts the blind spot: setsid/daemonize descendants escape into a new session.
+This is not full descendant containment, and terminal status/PID absence alone
+never proves closure.
+
+Only the matching ordinary session producer may be marked settled
 after its existing startup failure or periodic terminal path commits, under
 current ownership and an unheld root. Deliberate Pause and all job admission,
 host/tree settlement and retention rules remain unchanged.

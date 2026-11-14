@@ -15,6 +15,7 @@ import logging
 import os
 import shutil
 import signal
+import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -114,6 +115,7 @@ class _JobRegistration:
     owner_identity: tuple | None
     attempt: tuple | None = None
     process: asyncio.subprocess.Process | None = None
+    original_group_session: tuple[int, int] | None = None
     cause: object | None = None
     observed: bool = False
     tail_failed: bool = False
@@ -126,6 +128,94 @@ class _JobRegistration:
     @property
     def key(self):
         return self.db, self.job_id
+
+
+def _linux_session_empty(sid: int) -> bool:
+    # Exhaust enumeration: an unrelated unreadable/malformed stat also refuses.
+    for pid in Path("/proc").iterdir():
+        if not pid.name.isdecimal():
+            continue
+        try:
+            stat = (pid / "stat").read_text()
+        except (FileNotFoundError, ProcessLookupError):
+            continue  # This enumerated process vanished during the observation.
+        identity, separator, tail = stat.rpartition(")")
+        fields = tail.split()
+        if (not separator or identity.split(" (", 1)[0] != pid.name
+                or len(fields) < 50 or len(fields[0]) != 1):
+            return False
+        # /proc/pid/stat fields 3..6: state, ppid, pgrp, session.
+        numbers = [int(value) for value in fields[1:]]
+        parent, group, session = numbers[:3]
+        if parent < 0 or group < 0 or session < 0:
+            return False
+        if session == sid:
+            return False
+    return True
+
+
+def _darwin_session_empty(sid: int) -> bool:
+    import ctypes
+
+    libproc = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
+    listpids = libproc.proc_listpids
+    listpids.argtypes = [ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p, ctypes.c_int]
+    listpids.restype = ctypes.c_int
+    # libproc has no PROC_SESSION_ONLY selector. Enumerate ALL PIDs (1),
+    # then use the native getsid query. Full buffer or any failure refuses;
+    # no size/retry loop and no truncated enumeration can prove emptiness.
+    pids = (ctypes.c_int * 65536)()
+    ctypes.set_errno(0)
+    size = listpids(1, 0, pids, ctypes.sizeof(pids))
+    if (ctypes.get_errno() or size <= 0 or size >= ctypes.sizeof(pids)
+            or size % ctypes.sizeof(ctypes.c_int)):
+        return False
+    observed = pids[:size // ctypes.sizeof(ctypes.c_int)]
+    if (os.getpid() not in observed or any(pid < 0 for pid in observed)
+            or observed.count(0) > 1):
+        return False
+    for pid in observed:
+        # PROC_ALL_PIDS includes kernel_task (0); getsid(0) queries the caller.
+        # Accept one kernel entry; duplicate zeros above are malformed.
+        if pid == 0:
+            continue
+        try:
+            if os.getsid(pid) == sid:
+                return False
+        except ProcessLookupError:
+            continue
+    return True
+
+
+def confirm_job_processes_empty(registration: _JobRegistration) -> bool:
+    """Single post-reap observation, outside root/DB ownership; errors refuse.
+
+    start_new_session makes the launch PID the original PGID and SID. Never
+    re-derive them from a possibly reused PID. Reuse can only add a matching
+    group/session member and refuse closure. This is deliberately NOT full
+    descendant containment: setsid/daemonize descendants escape (THR-359 A).
+    """
+    try:
+        if (not registration.observed or registration.process is None
+                or registration.process.returncode is None
+                or registration.original_group_session is None):
+            return False
+        pgid, sid = registration.original_group_session
+        if pgid <= 0 or sid != pgid:
+            return False
+        try:
+            os.killpg(pgid, 0)
+        except ProcessLookupError:
+            pass  # ESRCH is the ONLY affirmative group-empty outcome.
+        else:
+            return False
+        if sys.platform == "linux":
+            return _linux_session_empty(sid)
+        if sys.platform == "darwin":
+            return _darwin_session_empty(sid)
+    except Exception:
+        return False
+    return False
 
 
 @dataclass(eq=False)
@@ -588,6 +678,7 @@ async def run_job(
     if registration is not None:
         # Capture the exact Process before any further fallible native accounting.
         registration.process = proc
+        registration.original_group_session = (proc.pid, proc.pid)
         _validate_registration(registration, running_task=True)
         _INFLIGHT[registration.key] = registration
     if move_owner is not None:
