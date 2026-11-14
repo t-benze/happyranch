@@ -1325,6 +1325,15 @@ struct ManagedClientBridgeTests {
         server.responseHeaders["Location"] = "http://127.0.0.1:\(ports.homeConnector)/redirect-must-not-be-followed"
         #expect(await bridge.checkRuntimeHealth() == false)
         #expect(server.receivedRequests.count == 2)
+        server.responseHeaders.removeValue(forKey: "Location")
+        server.responseStatus = 403
+        #expect(await bridge.runtimeHealth() == .denied)
+        server.responseStatus = 401
+        #expect(await bridge.runtimeHealth() == .denied)
+        server.responseStatus = 503
+        #expect(await bridge.runtimeHealth() == .unreachable)
+        server.responseStatus = 200
+        #expect(await bridge.runtimeHealth() == .healthy)
     }
 
     @Test("Owned enrollment allocation cannot be replayed after consume or failure")
