@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Optional
 
 from runtime.skills.package_content import compute_skill_tree_hash, is_bytecode_artifact
+from runtime.runtime import daemon_home
 
 from runtime.platform.isolation import (
     PlatformIsolation,
@@ -140,6 +141,7 @@ def _get_canonical_store_root(settings=None) -> Path:
     Priority:
     1. HAPPYRANCH_CANONICAL_STORE_ROOT env var (test override)
     2. Settings-derived daemon home /canonical-skills/
+    3. daemon_home() /canonical-skills/ (environment override or account default)
     """
     env = os.environ.get(_CANONICAL_STORE_ROOT_ENV)
     if env:
@@ -148,8 +150,7 @@ def _get_canonical_store_root(settings=None) -> Path:
     if settings is not None:
         return settings.daemon_home / "canonical-skills"
 
-    # Fallback: ~/.happyranch/canonical-skills/
-    return Path.home() / ".happyranch" / "canonical-skills"
+    return daemon_home() / "canonical-skills"
 
 
 # ── Canonical strict SHA-256 hash parser ────────────────────────────

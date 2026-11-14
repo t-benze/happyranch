@@ -153,6 +153,10 @@ export CGO_ENABLED=0 GOOS=linux GOARCH="$GO_ARCH" GOFLAGS=-modcacherw
 cat > "$PAYLOAD/bin/happyranch" <<'CLI'
 #!/bin/sh
 set -eu
+if [ -n "${HAPPYRANCH_RUNTIME_SESSION_ID:-}" ] && [ -z "${HAPPYRANCH_DAEMON_HOME:-}" ]; then
+    echo 'happyranch: HAPPYRANCH_DAEMON_HOME must be set inside a runtime session' >&2
+    exit 1
+fi
 PREFIX=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
 : "${HAPPYRANCH_WEB_DIST=$PREFIX/web/dist}"
 export HAPPYRANCH_WEB_DIST

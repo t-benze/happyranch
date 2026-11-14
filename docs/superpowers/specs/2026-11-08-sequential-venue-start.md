@@ -1,5 +1,14 @@
 # U3s venue-only sequential start enablement — SB-1 (a)
 
+> A0 home-isolation amendment (TASK-16235, THR-327 seq383): the persistent
+> live-home list in the fence below now contains the realpaths of both
+> `<passwd-home>/.happyranch` and `<passwd-home>/.happyranch-release`.
+> Candidate daemon-home and org-root containment in either, including aliases,
+> receives the same `sequential_venue_live_home` before any open. The list is
+> independent of `HOME` and `HAPPYRANCH_DAEMON_HOME`; a disposable selected home
+> is not added to it. Original evidence and other admission/marker ordering
+> remain unchanged. See the current [contract](../../agent-guides/contracts/reusable-workflows.md).
+
 > Historical U3s checkpoint. U9 supersedes public Coding venue-only admission
 > and the later noted U3c newest-generation continuation veto: fresh Coding uses
 > reviewed v2/latest Allowed NEW settings; admitted original-pin continuation
