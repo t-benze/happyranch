@@ -284,7 +284,28 @@ See the [current naming contract](../../superpowers/specs/2026-10-09-identity-na
   still forbids `resolves`. Self-only authority, team, participant, manager,
   lineage, open-thread, origin-unheld and supersedable-predecessor gates apply.
 
-**Thread reply provider breaker (THR-200 PR B).** One durable continuity per `(thread, agent, executor/model/policy)` opens after exactly three consecutive structured final provider-execution failures. Threshold 3 and cooldown 900 seconds are fixed policy constants, not environment/config settings, so restart cannot fork continuity or bypass an OPEN episode. Only a process proven launched and ending as provider nonzero, provider timeout, or post-launch contract failure qualifies; pre-launch/admission/host refusal, interruption/cancellation, canonical transcript gap fallback, exact eviction itself, successful eviction fallback, and a successful no-callback nudge do not. A failed eviction fallback counts exactly once. OPEN retains/coalesces the delivery range and launches nothing. After exactly 900 seconds the daemon scheduler atomically mints one HALF_OPEN probe; every tick also republishes a committed pending probe token through a process queue whose deduplication ownership spans queued and in-flight delivery. Worker success acknowledges that ownership, while a pre-claim exception or cancellation releases it for a later tick; the durable claim CAS preserves exactly-once provider launch. A recovered ownerless gap with no episode follows the same cooldown-probe path, never ordinary CLOSED admission. Held deferrals in an OPEN exchange remain held and excluded even when the breaker is otherwise recoverable. Probe success settles and closes; probe failure rearms 900 seconds. Episode/receipt/audit writes are idempotent and redacted; stale callbacks cannot close newer continuity. No API/OpenAPI/web projection or manual action is added by PR B.
+**Thread prompt bound (#832 slice 1).** Every fresh/delta, eviction fallback,
+nudge and phase-reentry build preflights the complete prompt (including skills,
+policy, guardrail, delivery and corrective notes, plus the executor-added
+session-lifetime preamble) before executor/supervisor
+launch. `THREAD_PROMPT_MAX_BYTES` is a fixed 512 KiB UTF-8 limit, matching the
+documented stdin canary floor rather than promising a provider context limit.
+Sizing reserves the UTF-8 length of the actual shared executor preamble for
+both acceptance and optional-history candidates.
+Under-bound prompts remain unchanged. Only older optional history before the
+claimed range can be omitted, retaining whole messages most-recent-first with
+an explicit omission marker. All messages from the claimed start onward remain;
+bootstrap/task-followup use the triggering sequence as the mandatory start.
+An oversized mandatory context fails `prompt_too_large` before that phase's
+Popen, with its distinct reason in the existing failure audit, no session save,
+no delivery/resume-watermark advance and no provider-breaker count. A preceding
+real eviction still invalidates its stale session. This adds no automatic retry
+loop: normal failed settlement retains the obligation for a future arrival;
+the existing one-shot owed exchange catch-up is preserved. Canonical loading
+and delta-completeness proof remain uncapped; full-context builds mentioned
+above are subject to this presentation bound. On-demand history is a later slice.
+
+**Thread reply provider breaker (THR-200 PR B).** One durable continuity per `(thread, agent, executor/model/policy)` opens after exactly three consecutive structured final provider-execution failures. Threshold 3 and cooldown 900 seconds are fixed policy constants, not environment/config settings, so restart cannot fork continuity or bypass an OPEN episode. Only a process proven launched and ending as provider nonzero, provider timeout, or post-launch contract failure qualifies; pre-launch/admission/host refusal (including `prompt_too_large`), interruption/cancellation, canonical transcript gap fallback, exact eviction itself, successful eviction fallback, and a successful no-callback nudge do not. A launched-provider failed eviction fallback counts exactly once. OPEN retains/coalesces the delivery range and launches nothing. After exactly 900 seconds the daemon scheduler atomically mints one HALF_OPEN probe; every tick also republishes a committed pending probe token through a process queue whose deduplication ownership spans queued and in-flight delivery. Worker success acknowledges that ownership, while a pre-claim exception or cancellation releases it for a later tick; the durable claim CAS preserves exactly-once provider launch. A recovered ownerless gap with no episode follows the same cooldown-probe path, never ordinary CLOSED admission. Held deferrals in an OPEN exchange remain held and excluded even when the breaker is otherwise recoverable. Probe success settles and closes; probe failure rearms 900 seconds. Episode/receipt/audit writes are idempotent and redacted; stale callbacks cannot close newer continuity. No API/OpenAPI/web projection or manual action is added by PR B.
 
 ## Explicit resolution and automatic archive (THR-339)
 
