@@ -414,8 +414,33 @@ chain, no stale hit/certificate, preserved caller transactions and a fresh read
 after rollback. Full, reuse, sequential-corruption and document-coding selections
 include these rows. Compiled templates and native rows are synthetic archival
 inputs only: no retired admission, dispatcher, callback, host or settlement
-producer runs. These cases do not cover revision2 predecessor/feedback/return,
-the artifact H family, human-review receipts or wider Coding run histories.
+producer runs. These 74 rows retain the original document/agent family.
+`--document-revision-corruption` selects 259 additional rows in the same keeper:
+42 staged artifact H@2 rows, 35 completed artifact agent-graph rows, 21 human
+receipt rows for each document/artifact family, and 37 return-to-author
+admission rows for each family; each family also has ten staged revision2 rows,
+15 completed agent-review revision2 rows and eight human-review revision2 rows.
+Artifact inputs retain the @4 compiled contract,
+grant, binding, context and null repository relationship. Human receipts retain
+the separate Founder bearer actor, command, findings, captured authority and
+signature proof, with no reviewer task, callback or agent evidence bridge.
+The revision fixture retains the closed changes-requested predecessor, original
+receipt/findings, retired original author, second queued author intent, revision
+context and operation with predecessor, feedback, scope and authority pins.
+Mutations rehash structured payloads to reach semantic closure. The original
+complete reader supplies the exact error/cause; earlier FK, draft and archival
+event-mapping refusals keep their own categories. All 1036 first/local/external/
+uncommitted phases use the same no-stale-certificate, transaction and rollback
+assertions. Full, reuse, sequential-corruption and document-coding selections
+include them. Staged revision2 retains its running original author and exact
+G operation/provenance without a result link or review round. Completed revision2
+retains the second author callback/terminal/result link, both authors' contribution
+history, @3 request/receipt and collection/replay; agent and human variants keep
+their separate native evidence. The original current-assignment row is replaced
+only when the second agent receipt becomes current, while old receipts and
+events survive. Wider Coding run histories remain a separate requirement.
+No retired admission, return, human-signature, host or settlement
+producer is invoked by these synthetic archival fixtures.
 `--sequential-uncommitted` selects the preceding sequential definition/settings/
 pin/native/mark/output/schema/index/FK rows inside explicit caller transactions,
 including restored triggers and rollback followed by a fresh complete read.
@@ -429,8 +454,7 @@ and public complete reader must agree without exhaustion or stale reuse.
 Uncommitted rollback restores the index/table relationship and requires a fresh
 complete check. Full, `--sequential-reuse` and `--sequential-corruption` include
 these cases. No live database, raw page write or production hook is involved.
-Retained handoff/revision-operation/native closure and Coding mapping/settings/run
-coverage remain separate requirements.
+Coding mapping/settings/run coverage remains a separate requirement.
 For A0b-2's capacity disposition, see the [storage contract](runbooks/sequential-workflow-storage.md):
 installed happyranch's default FIRST/attempted NEXT is recorded as expected
 refusal with zero changes/certificate/observer leaks and an original-base
