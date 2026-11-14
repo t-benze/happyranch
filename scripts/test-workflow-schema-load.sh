@@ -709,6 +709,12 @@ if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--seque
                        'recursive_triggers', 'trusted_schema', 'query_only',
                        'synchronous', 'temp_store'):
             with sequential_fault_case('restored config ' + pragma), sequential_fixture() as (db, root, sql):
+                if pragma == 'temp_store':
+                    # The installer used then dropped a TEMP staging table.
+                    # Start with its empty native TEMP schema reset, so changing
+                    # and restoring temp_store really restores the cookie too.
+                    db._conn.execute('PRAGMA temp_store=2')
+                    db._conn.execute('PRAGMA temp_store=0')
                 with org_load_validation(db, org_slug='scratch'):
                     seq_read(db)
                     owner = load_guard._current.get()
