@@ -171,9 +171,14 @@ def _darwin_session_empty(sid: int) -> bool:
             or size % ctypes.sizeof(ctypes.c_int)):
         return False
     observed = pids[:size // ctypes.sizeof(ctypes.c_int)]
-    if os.getpid() not in observed or any(pid <= 0 for pid in observed):
+    if (os.getpid() not in observed or any(pid < 0 for pid in observed)
+            or observed.count(0) > 1):
         return False
     for pid in observed:
+        # PROC_ALL_PIDS includes kernel_task (0); getsid(0) queries the caller.
+        # Accept one kernel entry; duplicate zeros above are malformed.
+        if pid == 0:
+            continue
         try:
             if os.getsid(pid) == sid:
                 return False

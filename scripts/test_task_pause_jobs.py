@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import nullcontext
+from contextlib import ExitStack, nullcontext
 import ctypes
 import json
 import os
@@ -10,8 +10,9 @@ from pathlib import Path
 import signal
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -32,7 +33,8 @@ class JobPauseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.libc.prctl(36, 1, 0, 0, 0), 0)
         self.addCleanup(self.libc.prctl, 36, self.old_subreaper, 0, 0, 0)
 
-    async def check_job(self, mode: str, *, failure: str | None = None, historical: bool = False) -> None:
+    async def check_job(self, mode: str, *, failure: str | None = None, historical: bool = False,
+                        darwin: str | None = None) -> None:
         child_pid = None
         runner_task = None
         release = asyncio.Event()
@@ -109,7 +111,29 @@ class JobPauseTests(unittest.IsolatedAsyncioTestCase):
                             fault = patch.object(jobs_runner.os, "killpg", side_effect=PermissionError("synthetic EPERM"))
                         elif failure == "probe_exception":
                             fault = patch.object(jobs, "confirm_job_processes_empty", side_effect=RuntimeError("synthetic probe error"))
-                        with fault:
+                        with fault, ExitStack() as native:
+                            if darwin is not None:
+                                def listpids(kind: int, typeinfo: int, pids: ctypes.Array, capacity: int) -> int:
+                                    values = [os.getpid(), 1, 0]
+                                    if darwin == "negative_pid":
+                                        values.append(-1)
+                                    elif darwin == "duplicate_zero":
+                                        values.append(0)
+                                    elif darwin == "missing_own_pid":
+                                        values = [1, 0]
+                                    for index, pid in enumerate(values):
+                                        pids[index] = pid
+                                    ctypes.set_errno(5 if darwin == "errno" else 0)
+                                    return {
+                                        "empty": 0, "negative_size": -1,
+                                        "full_buffer": capacity, "truncated_buffer": capacity + 4,
+                                        "unaligned_size": 11,
+                                    }.get(darwin, len(values) * ctypes.sizeof(ctypes.c_int))
+
+                                native.enter_context(patch.object(jobs_runner, "sys", SimpleNamespace(platform="darwin")))
+                                native.enter_context(patch.object(ctypes, "CDLL",
+                                    return_value=SimpleNamespace(proc_listpids=listpids)))
+                                getsid = native.enter_context(patch.object(jobs_runner.os, "getsid", wraps=os.getsid))
                             release.set()
                             await asyncio.wait_for(asyncio.shield(runner_task), timeout=10)
                         terminal = org.db.get_job(job_id)
@@ -124,6 +148,10 @@ class JobPauseTests(unittest.IsolatedAsyncioTestCase):
                         self.assertEqual(projection["control_state"], "paused" if closes else "pausing", projection)
                         self.assertEqual(projection["evidence_complete"], closes)
                         self.assertEqual([e["phase"] for e in entries], [] if closes else ["unknown"])
+                        if darwin is not None:
+                            self.assertNotIn(call(0), getsid.call_args_list)
+                            if failure is None:
+                                self.assertEqual(getsid.call_args_list, [call(os.getpid()), call(1)])
                         audits = org.db.execute("SELECT action,payload FROM audit_log WHERE task_id=? AND action IN "
                             "('job_run_completed','job_run_failed')", (root_id,)).fetchall()
                         self.assertEqual(len(audits), 1)
@@ -157,6 +185,15 @@ class JobPauseTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_all_exited_closes_entry_and_root_is_paused(self) -> None:
         await self.check_job("empty")
+
+    async def test_darwin_kernel_pid_zero_closes_entry_and_root_is_paused(self) -> None:
+        await self.check_job("empty", darwin="kernel_pid_zero")
+
+    async def test_darwin_malformed_enumeration_stays_unknown(self) -> None:
+        for response in ("negative_pid", "duplicate_zero", "full_buffer", "truncated_buffer",
+                         "unaligned_size", "empty", "negative_size", "errno", "missing_own_pid"):
+            with self.subTest(response=response):
+                await self.check_job("empty", darwin=response, failure="darwin_response")
 
     async def test_live_descendant_in_original_group_stays_unknown(self) -> None:
         await self.check_job("group")

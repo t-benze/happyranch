@@ -113,9 +113,12 @@ its launch-captured process group and session once, outside the root/DB writer.
 Only `killpg(pgid, 0)` returning ESRCH AND a complete native session enumeration
 finding no member permit removal of that job's Pause entry in the existing
 serialized terminal CAS/audit/journal transaction. Linux enumerates `/proc`;
-macOS enumerates PIDs with libproc and queries their session IDs. Success from
-killpg, permission denial, malformed/unavailable enumeration, probe exceptions,
-missing launch handles and failed tails all retain phase `unknown`. PID/group
+macOS enumerates PIDs with libproc and queries their session IDs. A single
+kernel_task PID 0 is accepted and skipped: `getsid(0)` would query the caller's
+session. Duplicate zeros, negative PIDs, errno/call errors, nonpositive or
+unaligned response sizes, full/truncated buffers and missing own PID all refuse
+closure. Success from killpg, permission denial, malformed/unavailable enumeration,
+probe exceptions, missing launch handles and failed tails all retain phase `unknown`. PID/group
 reuse can only report nonempty and refuse closure. This is original-group/session
 emptiness, not descendant containment: founder OPTION A (THR-359 seq13) explicitly
 accepts that setsid/daemonize descendants can escape into their own session.
