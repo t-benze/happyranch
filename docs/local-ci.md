@@ -343,6 +343,11 @@ read after rollback.
 `--document-coding-corruption` selects nonempty retained document template
 draft/version, authority/binding/context, activation/pointer, historical
 submission/round and exact built-in Coding registration corruption cases.
+The same table includes a retained draft intent with admitted, cancellation-requested
+and prelaunch-cancelled events. Request/scope/authority/principal/effect/host-key
+corruption, final-projection mismatch, event digest/gap and native task cancellation
+mismatch must reach the exact draft-history refusal in all four phases. The
+stored prelaunch history contains no host/session/result or native-settlement claim.
 Inert template publication and canonical registration rows prepare private
 storage; historical activation/submission rows do not invoke retired services
 or confer admission. All four first/local/external/uncommitted phases compare

@@ -467,13 +467,59 @@ if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--seque
              'document-root', 'doc-session', str(result), 'synthetic-author'))
         conn.execute('INSERT INTO workflow_rounds VALUES (?,?,?,?,?)',
             ('doc-round', 'doc-instance', 'doc-submission', 1, 'reviewing'))
+        # Stored prelaunch cancellation only. No retired dispatcher, session,
+        # callback, host witness or native settlement is invoked or invented.
+        projection_keys = ('state', 'is_current', 'cancellation_requested', 'claim_token',
+            'claim_owner', 'host_launch_started', 'host_execution_id', 'session_id', 'final_result_id')
+        request = encode(dict(instance_id='doc-instance', operation_key='synthetic-draft-history'))
+        scope = encode(dict(assigned_agent='synthetic-author', team='engineering',
+                           brief='Synthetic historical document root'))
+        admission = dict(instance_id='doc-instance', activation_id='doc-activation',
+            activation_revision=1, attempt_sequence=1, predecessor_intent_id=None,
+            admission_principal='synthetic-manager', operation_key='synthetic-draft-history',
+            request_digest=digest(request), org_slug='scratch')
+        intent_id = digest(encode(admission))
+        queued = dict(state='queued', is_current=1, cancellation_requested=0, claim_token=None,
+            claim_owner=None, host_launch_started=0, host_execution_id=None, session_id=None,
+            final_result_id=None)
+        cancelled = dict(queued, state='cancelled', cancellation_requested=1)
+        intent = dict(id=intent_id, **{key: value for key, value in admission.items() if key != 'org_slug'},
+            admission_kind='initial', request_bytes=request, task_id='document-root',
+            context_id='doc-context', binding_snapshot_id='doc-binding',
+            assigned_principal='synthetic-author', assignment_generation=1,
+            authority_namespace=template.namespace, authority_generation=1,
+            authority_digest=digest(raw), task_scope_bytes=scope, task_scope_digest=digest(scope),
+            effect_key='workflow-initial-draft:doc-instance:1',
+            host_execution_key='workflow-draft-host:' + intent_id, **cancelled,
+            recovery_owner='workflow_recovery', last_error=None, created_at=stamp, updated_at=stamp)
+        conn.execute('INSERT INTO workflow_draft_dispatch_intents (' + ','.join(intent) +
+            ') VALUES (' + ','.join('?' for _ in intent) + ')', tuple(intent.values()))
+        immutable = {key: value.hex() if type(value) is bytes else value for key, value in intent.items()
+                     if key not in (*projection_keys, 'last_error', 'updated_at')}
+        previous, previous_digest = None, None
+        for sequence, (kind, after) in enumerate((('admitted', queued),
+                ('cancel_requested', dict(queued, cancellation_requested=1)),
+                ('cancelled', cancelled)), 1):
+            event_id = intent_id + ':' + str(sequence)
+            payload = encode(dict(format='workflow-draft-event@1', org_slug='scratch',
+                event=dict(id=event_id, event_seq=sequence, event_kind=kind, created_at=stamp),
+                previous_digest=previous_digest, intent=immutable, before=previous,
+                after=after, terminal_evidence=None, result=None))
+            conn.execute('INSERT INTO workflow_draft_dispatch_events VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                (event_id, intent_id, sequence, kind, None if previous is None else previous['state'],
+                 after['state'], payload, digest(payload), None, None, None, None, None, stamp))
+            previous, previous_digest = after, digest(payload)
+        conn.execute("UPDATE tasks SET status='cancelled' WHERE id='document-root'")
+        conn.execute("UPDATE workflow_task_ownership SET kind='draft',owner_id=? WHERE task_id='document-root'",
+                     (intent_id,))
         conn.commit()
         history = read_sequential_history(conn, expected_org_slug='scratch')
         assert history.status == 'storage readable' and history.retained[1].release is not None
         for table in ('workflow_template_drafts', 'workflow_template_versions',
                       'workflow_authorization_revisions', 'workflow_binding_snapshots', 'workflow_contexts',
                       'workflow_instances', 'workflow_activations', 'workflow_active_activations',
-                      'workflow_submissions', 'workflow_rounds'):
+                      'workflow_submissions', 'workflow_rounds',
+                      'workflow_draft_dispatch_intents', 'workflow_draft_dispatch_events'):
             assert conn.execute('SELECT count(*) FROM ' + table).fetchone()[0] > 0, table + ' document fixture is empty'
 
     if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--sequential-uncommitted']):
@@ -562,6 +608,16 @@ if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--seque
             ('document active pointer', 'UPDATE workflow_active_activations SET activation_revision=2', 'workflow_source_data_corrupt'),
             ('document submission digest', "UPDATE workflow_submissions SET submission_digest='bad'", 'workflow_submission_data_corrupt'),
             ('document round revision', 'UPDATE workflow_rounds SET current_revision=2', 'workflow_submission_data_corrupt'),
+            ('document intent request', "UPDATE workflow_draft_dispatch_intents SET request_digest='bad'", 'workflow_draft_data_corrupt'),
+            ('document intent scope', "UPDATE workflow_draft_dispatch_intents SET task_scope_digest='bad'", 'workflow_draft_data_corrupt'),
+            ('document intent authority', "UPDATE workflow_draft_dispatch_intents SET authority_digest='bad'", 'workflow_draft_data_corrupt'),
+            ('document intent principal', "UPDATE workflow_draft_dispatch_intents SET assigned_principal='wrong'", 'workflow_draft_data_corrupt'),
+            ('document intent effect', "UPDATE workflow_draft_dispatch_intents SET effect_key='wrong'", 'workflow_draft_data_corrupt'),
+            ('document intent host key', "UPDATE workflow_draft_dispatch_intents SET host_execution_key='wrong'", 'workflow_draft_data_corrupt'),
+            ('document intent projection', 'UPDATE workflow_draft_dispatch_intents SET cancellation_requested=0', 'workflow_draft_data_corrupt'),
+            ('document event digest', "UPDATE workflow_draft_dispatch_events SET event_digest='bad' WHERE event_seq=3", 'workflow_draft_data_corrupt'),
+            ('document event gap', 'DELETE FROM workflow_draft_dispatch_events WHERE event_seq=2', 'workflow_draft_data_corrupt'),
+            ('document native cancellation', "UPDATE tasks SET status='completed' WHERE id='document-root'", 'workflow_draft_data_corrupt'),
             ('Coding built-in provenance', "UPDATE workflow_template_versions SET published_by='{}' WHERE namespace='release/happyranch'", 'coding_registered_release_history_invalid'),
             ('Coding built-in org', "UPDATE workflow_template_versions SET published_by=json_set(published_by,'$.org_slug','wrong') WHERE namespace='release/happyranch'", 'coding_registered_release_history_invalid'),
             ('Coding built-in draft', "UPDATE workflow_template_drafts SET author_principal='{}' WHERE namespace='release/happyranch'", 'coding_registered_release_history_invalid'),
