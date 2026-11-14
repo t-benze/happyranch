@@ -1,6 +1,6 @@
 // tsnet_shim.h — Clean C header for the tsnet C-ABI archive (libtsnet.a).
 //
-// All tsnet_* functions return 0 on success, non-zero on failure.
+// Lifecycle functions return 0 on success; dial handles and I/O return counts.
 // Error details are available via tsnet_last_error().
 //
 // WireGuard runs entirely in-process via the go:tailscale.com/tsnet engine.
@@ -24,10 +24,22 @@ extern "C" {
 // Returns 0 on success, -1 if already initialised.
 int tsnet_init(const char *authKey, const char *controlURL, const char *hostname);
 
-// tsnet_start brings the tsnet engine online.
-// Blocks until connected to the control plane and WireGuard tunnel established.
+// tsnet_start starts the legacy engine; it does not wait for Running/IP.
 // Returns 0 on success, -2 on connection failure.
 int tsnet_start(void);
+
+// Managed init configures only; nonempty key requires a fresh profile UUID.
+// stateDir: absolute .../ManagedTailnet/<UUID>; saved membership uses empty key.
+// Up uses one deadline (default/cap 120s), including enrollment close and empty-key
+// reopen. No automatic replay. Explicit empty-key check may recover submitting
+// state; ordinary joined resume requires matching persisted state and marker.
+// Results: 0 ready; -10 invalid/ambient override; -11 busy; -12 canceled;
+// -13 deadline; -14 backend; -15 unavailable; -16 state/persistence/close failure.
+int tsnet_init_managed(const char *authKey, const char *controlURL,
+                       const char *hostname, const char *stateDir);
+int tsnet_up_managed(int timeoutMs);
+// Latches cancellation and closes traffic; tsnet_close settles the engine.
+void tsnet_cancel(void);
 
 // tsnet_close shuts down the tsnet engine and all active connections.
 void tsnet_close(void);
@@ -49,6 +61,12 @@ int tsnet_dial(const char *network, const char *addr, int timeoutMs);
 // and returns a non-negative connection handle, or -1 on failure.
 // The caller must close the connection with tsnet_conn_close.
 int tsnet_conn_dial(const char *network, const char *addr, int timeoutMs);
+
+// Managed TCP only: exact current peer IP/full map DNS name, no OS DNS/fallback.
+// First connection pins the peer key until engine close. Returns a handle or
+// -17 unsafe target / -18 peer lost or changed, or managed lifecycle categories.
+// Both legacy dial exports refuse with -17 whenever a managed engine is selected.
+int tsnet_conn_dial_managed(const char *host, int port, int timeoutMs);
 
 // tsnet_conn_read reads up to bufSize bytes from the connection into buf.
 // Returns the number of bytes read (0 = clean close by peer), or -1 on error.

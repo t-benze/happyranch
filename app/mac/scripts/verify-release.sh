@@ -97,7 +97,7 @@ CATALOG = {'status': 'SOURCE_DERIVED_EXPECTATIONS_NOT_OBSERVED',
  'comparison': 'Substitute only run-owned absolute app prefix; compare all keys/values and list '
                'order. No normalization that accepts a checkout root. Capture actual raw '
                'stdout/stderr and exit. Exit0 alone is insufficient.'}
-EXPORTS = 'tsnet_init tsnet_start tsnet_close tsnet_dial tsnet_conn_dial tsnet_conn_read tsnet_conn_write tsnet_conn_close tsnet_local_addr tsnet_last_error tsnet_free_string'.split()
+EXPORTS = 'tsnet_init_managed tsnet_up_managed tsnet_cancel tsnet_conn_dial_managed tsnet_init tsnet_start tsnet_close tsnet_dial tsnet_conn_dial tsnet_conn_read tsnet_conn_write tsnet_conn_close tsnet_local_addr tsnet_last_error tsnet_free_string'.split()
 
 
 NATIVE_EVIDENCE_DIR = None

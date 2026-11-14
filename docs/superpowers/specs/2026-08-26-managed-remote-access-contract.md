@@ -1052,3 +1052,28 @@ login/reboot persistence and packaged execution. Packaged-app connector acceptan
 depends on the separate THR-346 packaged-app check, pending founder approval.
 No Jenkins config, dependency, Swift, Linux, Go-source/inventory, signing identity,
 CI trigger or required lint/static check changes are included.
+
+### Mac client native enrollment and peer dial addendum (THR-327, PR1a)
+
+The Mac-only archive implements the approved TASK-16100/TASK-16088 native slice;
+Swift transport selection and Keychain/UI are later slices. Managed init rejects
+presence (including empty) of TS_AUTHKEY, TS_AUTH_KEY, TSNET_FORCE_LOGIN and
+TS_DEBUGSYSPOLICY_AUTH_KEY, sets explicit persistent Dir/ControlURL/Hostname,
+uses non-ephemeral membership and discards logs with logtail disabled. Up waits
+for Running/IP, closes/releases the enrollment engine, reopens the same state
+with an empty key and waits again, then durably commits the consumed marker.
+One context caps the attempt at 120 seconds. Cancel/close serialize with startup;
+no key replay or automatic interrupted recovery is supplied. The isolated
+ManagedTailnet/profile-UUID directory uses private owned files, no-symlink path
+traversal, an exclusive lock and atomic nonsecret phase/marker persistence.
+Explicit empty-key checks can inspect interrupted submitting membership; joined
+resume requires matching profile/state/marker. A confirmed-revoked profile is
+not admitted. Cancellation/timeout never proves enrollment was undone.
+
+Managed dials use only exact current embedded-map peers and the captured
+v1.78.0 NetstackDialTCP callback, with address/route/key checks, a per-engine peer
+key pin, post-dial/admission checks and per-write revalidation. Legacy dial
+exports refuse in managed mode; legacy-initialized engines preserve their
+existing ephemeral/transport behavior. This changes no connector, sidecar,
+server, DIY, signing or revocation contract. See the Mac README for ABI/test
+commands; real-tailnet and macOS acceptance remains separate and unclaimed.

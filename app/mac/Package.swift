@@ -40,7 +40,8 @@ let package = Package(
                     "_tsnet_init", "_tsnet_start", "_tsnet_close", "_tsnet_dial",
                     "_tsnet_conn_dial", "_tsnet_conn_read", "_tsnet_conn_write",
                     "_tsnet_conn_close", "_tsnet_local_addr", "_tsnet_last_error",
-                    "_tsnet_free_string"
+                    "_tsnet_free_string", "_tsnet_init_managed", "_tsnet_up_managed",
+                    "_tsnet_cancel", "_tsnet_conn_dial_managed"
                 ].flatMap { ["-Xlinker", "-u", "-Xlinker", $0] })
             ] : []
         ),

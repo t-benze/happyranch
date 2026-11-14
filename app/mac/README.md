@@ -1031,3 +1031,46 @@ relay checks do not establish those outcomes. Native18's aggregate cap and the
 native17/19 unknown stall causes are not resolved by these deadlines.
 
 </details>
+
+## Managed client native engine (PR1a)
+
+The separate Mac `tsnet-bridge` archive now exposes `tsnet_init_managed`,
+`tsnet_up_managed`, `tsnet_cancel`, and `tsnet_conn_dial_managed`. Swift managed
+lane selection, enrollment-key custody and join UI are subsequent slices.
+Legacy init remains ephemeral; legacy Start starts the engine without waiting
+for Running/IP. Managed selection makes both legacy dial exports refuse `-17`.
+
+Managed init only validates/configures; pass a trusted explicit HTTPS control
+URL, stable hostname, and absolute
+`~/Library/Application Support/ai.happyranch.HappyRanchApp/ManagedTailnet/<UUID>`
+(expand `~` before calling). The native boundary validates the literal path,
+private owned directories/files and exclusive lock. Fresh profiles take one
+explicit enrollment key. Up persists `submitting` before networking and uses
+one deadline capped at 120 seconds for Running, enrollment-engine close/release,
+same-state empty-key reopen, Running again, and durable consumed-marker commit.
+Saved membership always uses an empty key. Interrupted `submitting` state may
+only be checked by an explicit empty-key init/Up; missing or conflicting state
+refuses. No enrollment key is persisted by the bridge or included in errors.
+Cancellation can leave remote enrollment complete; it never replays the key.
+Cancel closes traffic; Close settles engine ownership before another init.
+
+Managed TCP resolves exact current peer IPs/full map DNS names using embedded
+status only, checks the engine's exact peer route/address/key, pins the first
+peer key, and calls the captured netstack TCP callback directly. Post-dial,
+handle admission and each write recheck peer/generation. `-17` means unsafe
+initial target; `-18` means peer lost/changed and requires reconnect/fresh pairing.
+There is no OS-DNS or system-TCP fallback and no atomic control-plane revocation
+guarantee. Connector authorization/revocation remains authoritative.
+
+Native tests use the existing Go module with Go 1.23.12 (also on Linux):
+
+```sh
+cd app/mac/tsnet-bridge
+GOTOOLCHAIN=local go test -mod=readonly -v ./...
+GOTOOLCHAIN=local go vet -mod=readonly ./...
+```
+
+These local cases cover refusal, state admission, cancellation and bounded
+unreachable enrollment. Real enrollment/empty-key reopen and N1–N6/P1 require
+an authorized disposable tailnet; Swift entrypoint/sink tests belong to PR1b.
+Passing local cases do not establish those live-network or macOS results.

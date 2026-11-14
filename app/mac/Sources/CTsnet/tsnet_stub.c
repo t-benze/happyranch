@@ -49,3 +49,13 @@ char *tsnet_last_error(void) { return 0; }
 
 __attribute__((weak))
 void tsnet_free_string(char *s) {}
+
+// Managed operations fail unavailable; weak stubs never perform networking.
+__attribute__((weak))
+int tsnet_init_managed(const char *authKey, const char *controlURL, const char *hostname, const char *stateDir) { return -15; }
+__attribute__((weak))
+int tsnet_up_managed(int timeoutMs) { return -15; }
+__attribute__((weak))
+void tsnet_cancel(void) {}
+__attribute__((weak))
+int tsnet_conn_dial_managed(const char *host, int port, int timeoutMs) { return -15; }
