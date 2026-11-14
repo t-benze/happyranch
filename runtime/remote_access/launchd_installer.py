@@ -24,6 +24,7 @@ from typing import Iterator
 from urllib.parse import urlsplit
 
 from runtime.remote_access.credentials import read_darwin_enrollment
+from runtime.remote_access.launchd_coexistence import observe
 from runtime.remote_access.launchd_agent import LABEL, LaunchdServiceManager, render_launch_agent
 from runtime.remote_access.launchd_files import DARWIN_CONNECTOR_STATE_ROOT, literal_directory, read_private_file
 from runtime.remote_access.managed_provider import ManagedProviderConfig
@@ -214,15 +215,32 @@ class DarwinManagedInstaller:
                 os.fsync(stream.fileno())
             os.fsync(parent)
 
+    @staticmethod
+    def _admit() -> None:
+        observation = observe()
+        if observation["state"] != "clear":
+            raise DarwinInstallerError(observation["message"])
+
+    def _environment(self, text: str) -> bytes:
+        value = plistlib.loads(text.encode())
+        environment = {"HOME": str(self.home)}
+        if "TMPDIR" in os.environ:
+            temporary = os.environ["TMPDIR"]
+            if not Path(temporary).is_absolute() or ".." in Path(temporary).parts:
+                raise DarwinInstallerError("macOS TMPDIR must be an absolute literal path")
+            environment["TMPDIR"] = temporary
+        value["EnvironmentVariables"] = environment
+        return plistlib.dumps(value, sort_keys=True)
+
     def _plist(self) -> bytes:
         if getattr(sys, "frozen", False):
             self._bundled_sidecar()  # Only the shipped daemon owns this dispatch.
         entry = ((sys.executable, "--remote-access") if getattr(sys, "frozen", False)
                  else (sys.executable, "-m", "runtime.remote_access.cli"))
-        return render_launch_agent(LABEL, (
+        return self._environment(render_launch_agent(LABEL, (
             *entry, "run", "--managed",
             "--config", str(self.state / "config.json"),
-        ), logs_dir=self.logs).encode()
+        ), logs_dir=self.logs))
 
     @staticmethod
     def _bundled_sidecar() -> Path | None:
@@ -287,12 +305,12 @@ class DarwinManagedInstaller:
         return value
 
     def _sidecar_agent(self, binary: Path, cfg: ConnectorConfig) -> bytes:
-        return render_launch_agent(SIDECAR_LABEL, (
+        return self._environment(render_launch_agent(SIDECAR_LABEL, (
             str(binary), "--config", str(self.state / "sidecar.json"),
             "--readiness-file", str(self.sidecar_state / f"{SIDECAR_LABEL}.readiness.json"),
             "--watchdog-interval", f"{cfg.watchdog_sec:.9f}s",
             "--credential-file", str(self.state / "enrollment.key"),
-        ), logs_dir=self.logs).encode()
+        ), logs_dir=self.logs))
 
     def _enrollment(self, sidecar: dict) -> str:
         key = bytearray()
@@ -316,6 +334,7 @@ class DarwinManagedInstaller:
 
     def install(self, *, source_config: Path, enrollment_key_file: Path | None,
                 sidecar_binary: Path | None, sidecar_config: Path | None) -> dict:
+        self._admit()
         if sidecar_binary is None:
             sidecar_binary = self._bundled_sidecar()
         if sidecar_binary is None or sidecar_config is None:
@@ -399,7 +418,7 @@ class DarwinManagedInstaller:
                            ("policy.json", self.state / "policy.json"), ("plist", self.plist),
                            ("sidecar.json", self.state / "sidecar.json"), ("sidecar-plist", self.sidecar_plist)):
             if _digest(self._read(path)) != files[name]:
-                raise DarwinInstallerError(f"macOS managed {name} digest drift")
+                raise DarwinInstallerError(f"macOS managed {name} digest drift; uninstall then reinstall")
         # Absolute launchd paths deliberately stay operator-managed. A moved
         # app can leave the old executable present, so compare current argv too.
         for plist in self.plists:
@@ -411,7 +430,7 @@ class DarwinManagedInstaller:
             except (OSError, ValueError, TypeError, KeyError, IndexError, plistlib.InvalidFileException):
                 raise DarwinInstallerError("macOS LaunchAgent executable missing or invalid; uninstall then reinstall from the current app/source") from None
         if _digest(self._plist()) != files["plist"]:
-            raise DarwinInstallerError("macOS LaunchAgent entry differs from the current app/source; uninstall then reinstall")
+            raise DarwinInstallerError("macOS LaunchAgent entry or HOME/TMPDIR differs from the installing environment; uninstall then reinstall")
         cfg = self._config(self._read(self.state / "config.json"))
         raw_sidecar = _json(self._read(self.state / "sidecar.json"))
         sidecar = self._sidecar_config(json.dumps(raw_sidecar).encode(), cfg)
@@ -419,7 +438,7 @@ class DarwinManagedInstaller:
                 or cfg.policy_path != str(self.state / "policy.json")
                 or raw_sidecar != sidecar
                 or _digest(self._sidecar_agent(self._binary(Path(receipt["sidecar_binary"])), cfg)) != files["sidecar-plist"]):
-            raise DarwinInstallerError("macOS managed paths or entry drift; uninstall then reinstall")
+            raise DarwinInstallerError("macOS managed paths, entry or HOME/TMPDIR drift; uninstall then reinstall")
         for path in self.log_files:
             with self._directory(path.parent) as parent:
                 self._file_info(os.stat(path.name, dir_fd=parent, follow_symlinks=False))
@@ -437,7 +456,9 @@ class DarwinManagedInstaller:
             if process.load_state == "not-found":
                 observation = replace(observation, readiness_state="not-installed")
             result[name] = asdict(observation)
-        result["ready"] = all(result[name]["ready"] for name in ("connector", "sidecar"))
+        result["coexistence"] = observe()
+        result["ready"] = (result["coexistence"]["state"] == "clear"
+                           and all(result[name]["ready"] for name in ("connector", "sidecar")))
         return result
 
     def status(self) -> dict:
@@ -453,6 +474,7 @@ class DarwinManagedInstaller:
         return {"files": files, "layout": "ok", "enrollment": enrollment, **self._status(cfg)}
 
     def start(self) -> None:
+        self._admit()
         self._installed()  # Refuse drift/ambiguous enrollment before starting either writer.
         for label in (LABEL, SIDECAR_LABEL):
             self.manager.start(label)
@@ -462,11 +484,13 @@ class DarwinManagedInstaller:
             self.manager.stop(label)
 
     def restart(self) -> None:
+        self._admit()
         self._installed()
         self.stop()
         self.start()
 
     def enable(self) -> None:
+        self._admit()
         self._installed()
         for label in (LABEL, SIDECAR_LABEL):
             self.manager.enable(label)

@@ -642,6 +642,19 @@ disables and removes the plist idempotently. Enable/disable alone do not stop
 an existing process. `KeepAlive=true` recovers on every exit; the ten-second
 throttle limits rapid retries. Upgrade/rollback reread replaced plists through
 bootout/bootstrap, back up owner-only files and verify process recovery.
+Successful bootout can precede process exit (`SIGTERMed`). Stop polls print
+for at most 30s after bootout, at intervals <=0.5s; all print/domain probes
+consume that same deadline. Only not-found with an accessible domain proves
+absence. Deadline, denied/lost domain or malformed output fails closed with
+files retained. Already absent skips bootout. Sidecar stop settles before
+connector stop; replacement and uninstall cannot write/remove before absence.
+No ExitTimeOut or other plist key changes. The connector-managed finally path
+uses the same per-target settle, preserving its 100s total cleanup cap and
+recording each attempted target's last <=2048-character raw print and elapsed
+settle seconds. Scratch removal shares that deadline; later targets/removal
+receive only the remaining time.
+Its stop/restart/uninstall CLI calls allow <=120s for the two agents within
+the unchanged 240s lifecycle, 3300s suite and 5400s job budgets.
 Backups are completely written, flushed and fsynced in a nonselectable temporary
 file before atomic publication. Rollback fully reads and validates its chosen
 backup before bootout; invalid candidates leave the running service untouched.
@@ -959,3 +972,83 @@ execution, signing and combined native acceptance remain unproven and depend
 on the separate THR-346 packaged-app check pending founder approval. Linux
 implementation/inventories, Swift sources, dependencies, required lint/static
 checks and CI triggers remain unchanged.
+
+### C8 — Swift coexistence and combined source acceptance (PR 9)
+
+Before Darwin managed `install`, `start`, `restart` or `enable` performs any
+managed file write or launchctl operation, it reads the current user's TCP
+listeners through OS-shipped `/usr/sbin/lsof` (`-nP -a -u <uid> -iTCP:8443
+-sTCP:LISTEN -Fpun`). Apple's lsof 4.91 also emits the default `f` descriptor
+field with this selection. The parser validates ASCII descriptor numbers or
+documented non-error FD tokens before each file's address; malformed, unknown,
+foreign-UID or incomplete file records remain unavailable. The `err` FD token
+also refuses. See Apple's pinned [field emission](https://github.com/apple-oss-distributions/lsof/blob/7a8a1b2a3c0f35c30a5fcd0927f31d441c3e5255/lsof/proc.c)
+and [FD grammar](https://github.com/apple-oss-distributions/lsof/blob/7a8a1b2a3c0f35c30a5fcd0927f31d441c3e5255/lsof/lsof.8).
+A non-loopback listener on 8443 refuses with a fixed,
+secret-free Swift HomeConnector message. A failed, malformed, diagnostic-bearing,
+oversized (64 KiB) or timed-out (5s) inventory also refuses. Loopback listeners,
+including the managed connector, do not conflict. `status` and `check-drift`
+include `coexistence.state` (`clear`, `conflict`, `unavailable`) and a fixed
+message; composite ready also requires clear inventory. Stop, disable and
+uninstall remain available. No Swift preference is invented, and the app's
+connector is never stopped or modified by the managed installer.
+
+The signal follows the shipped Swift HomeConnector's port 8443 and tailnet-IP
+binding. An unrelated current-user non-loopback listener on that port is a
+false positive. The read-only observation cannot serialize a later Swift start,
+and a future Swift port change would escape detection until parity is updated.
+Operators must still avoid enabling both listeners. This is same-user
+cooperative admission, not an atomic exclusion mechanism.
+
+Both managed plists now pin `EnvironmentVariables.HOME` to the installing
+process's home and `TMPDIR` when set. No credentials are placed in environment
+or argv, and launchctl's shared environment is never changed. Both keys are
+part of plist drift comparison: a changed installing HOME/TMPDIR requires
+uninstall/reinstall. The generic LaunchAgent renderer's default remains unchanged.
+Source mode still requires an absolute interpreter that can import the checkout
+outside its working directory; no product PYTHONPATH or WorkingDirectory is added.
+
+The new allowlisted `connector-managed` native suite uses the existing job's
+private HOME/TMPDIR and fixed UID-scoped labels `ai.happyranch.connector` and
+`ai.happyranch.tsnet-sidecar`. Before managed effects it proves both services
+absent in `user/<uid>` and selectable `gui/<uid>`, and both private plists absent.
+Any collision or unavailable observation fails closed without installing or
+cleaning preexisting targets. Cleanup ownership begins only after this proof.
+The source suite stages an offline scratch venv/.pth using already-bootstrapped
+packages, provisions the existing pinned Go1.23.12 toolchain, builds the checked-out
+sidecar with `GOFLAGS="-mod=readonly -modcacherw"` in this suite only, then drives
+the real source installer CLI. Modules remain readonly; downloaded cache
+directories remain writable.
+It exercises both-agent install/start/status, exact connector PID SIGKILL and
+KeepAlive replacement, stop/drift, coexistence refusal using its own temporary
+non-loopback 8443 listener (occupied port refuses), normal uninstall and purge.
+Status is recorded verbatim as bounded JSON; the sidecar must remain not ready
+with a valid negative readiness record (running-not-ready, starting or PID-mismatch
+while launchd retries). Missing/corrupt records and fabricated ready are rejected.
+Synthetic config/policy/enrollment/token files and a loopback unavailable control
+endpoint provide no real enrollment or daemon. No real credentials are used.
+Bounded raw launchctl print/print-disabled excerpts and finally-path service,
+plist and scratch receipts survive failures. Scratch removal validates the
+created root identity and traverses literal directories through no-follow fds;
+symlinks are unlinked without following targets. Permission errors add owner
+write/execute only to the contained parent directory fd and retry once. Regular
+files, outside targets and the root's parent are never chmodded. Each entry
+checks the shared cleanup deadline; depth >=128 refuses. `scratch_removed` is
+always a Boolean and `scratch_error` is empty on success or <=512 characters
+on failure/retention. Removal failure and cleanup uncertainty still fail the suite;
+any suite-local retained scratch remains subject to the existing job EXIT trap.
+The existing connector-launchd stand-in suite is unchanged.
+
+C8 maker delivery and this fix-forward use ZERO Mac-mini runs (PRs 9/10;
+Mac mini 8/8 spent). Build31 at `bc42318f` passed build/install/start/status and
+KeepAlive recovery, then failed at stop and immediate cleanup absence. The
+subsequent build32 at `52fa59a9` passed lifecycle and final service/plist absence
+but failed removing its Go module cache before the suite scratch receipt.
+Build31/build32 scratch residue remains unobserved and untouched; further native
+runs are Founder-reserved. The repaired head's combined native suite is NOT RUN
+in this leg. A future run proves source
+CLI/native lifecycle only: real tailnet enrollment/readiness is unproven, as are
+login/reboot persistence and packaged execution. Packaged-app connector acceptance
+depends on the separate THR-346 packaged-app check, pending founder approval.
+No Jenkins config, dependency, Swift, Linux, Go-source/inventory, signing identity,
+CI trigger or required lint/static check changes are included.
