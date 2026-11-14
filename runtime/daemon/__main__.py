@@ -36,6 +36,11 @@ if __name__ == '__main__' and sys.argv[1:2] == ['--cleanup-helper']:
     from runtime.daemon.cleanup_helpers import main as helper_main
     raise SystemExit(helper_main(sys.argv[2:]))
 
+# The bundled connector is a separate foreground process, not daemon startup.
+if __name__ == '__main__' and sys.argv[1:2] == ['--remote-access']:
+    from runtime.remote_access.frozen_entry import main as connector_main
+    raise SystemExit(connector_main(sys.argv[2:]))
+
 import uvicorn
 
 from runtime.config import Settings

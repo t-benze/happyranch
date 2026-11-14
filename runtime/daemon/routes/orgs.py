@@ -206,6 +206,8 @@ async def init_org(body: InitOrgBody, request: Request) -> dict:
             initialize_complete_org_schema(database, expected_org_slug=body.slug, layout="I")
             from runtime.infrastructure.task_pause_controls import install_pause_schema
             install_pause_schema(database, org_slug=body.slug)
+            from runtime.orchestrator.org_config import initialize_fresh_reviewer_agents
+            initialize_fresh_reviewer_agents(OrgPaths(org_root), database)
         finally:
             database.close()
         org = await state.add_org(body.slug)

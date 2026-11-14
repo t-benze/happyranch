@@ -1900,16 +1900,13 @@ mutation; retry selects afresh after ownership releases. Known-target live
 contention remains 409 `profile_coordinator_busy`. No-target approval still
 succeeds without a profile, and no new lease is taken under the writer lock.
 
-A genuinely empty default org remains attached with no agents and `teams=[]`
-when its initial authority publication is fenced by the missing default reviewer.
-Attachment proves absence of active and pending definitions and canonical/in-memory
-teams outside leases and transactions, brackets that discovery with the durable
-revision, and validates it under profile-then-org ownership. It preserves the
-initial fenced generation and publication journal; `verify_admission_ready()`
-still refuses `authority_pointer_not_ready`. Outstanding dependency or profile
-operation evidence, unfinished canonical writers, and stale captures refuse this
-exception before synchronization. Reviewer policy and snapshot validation do not
-change; subsequent coherent canonical setup uses ordinary publication/recovery.
+A genuinely fresh org with no agents and a classified empty reviewer setting
+publishes an ordinary coherent authority snapshot and attaches through normal
+profile synchronization. No implicit reviewer identity or reviewer-error-based
+empty-skeleton exemption is required. Default-team normalization and existing
+operation, dependency, native-writer, lease and revision checks still apply;
+empty files cannot discharge retained publication ownership. See the maintained
+[empty-org contract](contracts/document-workflows.md).
 
 ## Org Config: Timezone and `current_time` Prompt Injection
 
@@ -2493,7 +2490,7 @@ keys, preserving the #408 single-source-of-truth invariant.
 
 ```sql
 CREATE TABLE IF NOT EXISTS org_settings (
-    section     TEXT NOT NULL PRIMARY KEY,  -- dreaming | threads | session_timeout_seconds | working_hours | reviewer_agents
+    section     TEXT NOT NULL PRIMARY KEY,  -- operational sections; internal reviewer_agents_policy
     value_json  TEXT NOT NULL,             -- JSON blob for that section's subtree
     updated_at  TEXT NOT NULL,             -- ISO-8601 Z
     updated_by  TEXT DEFAULT 'founder'
@@ -2508,15 +2505,16 @@ Every consumer site resolves through a **single documented precedence ladder**:
 | --- | --- |
 | `session_timeout_seconds` | `tasks.session_timeout_seconds` (per-task override) → `org_settings` DB row → `Settings.session_timeout_seconds` |
 | `dreaming` / `threads` / `working_hours` | `org_settings` DB row → **dataclass code default** (OrgConfig field defaults, NOT config.yaml) |
-| `reviewer_agents` | `org_settings` DB row → **code default `["code_reviewer"]`** (THR-175). A JSON list of agent names; configures which chain legs are reviewer legs that gate auto-advance. Names are validated against the org's live active-agent roster; an unknown name resolves fail-closed to the code default (see below). |
+| `reviewer_agents` | One snapshot of the value and internal `reviewer_agents_policy={"version":2}`. Structured state is `none`, `configured`, `missing` or `invalid`; only valid v2 plus `[]` means none. Missing/stale/invalid configuration refuses allocation and authority publication. |
 
 **Code-default tier**: the fallback is always the Python dataclass default
 (e.g. `DreamingConfig(enabled=False)`, `OrgConfig().threads_enabled=True`),
 never a value parsed from `config.yaml`.  This is critical: after the one-shot
 seed, `config.yaml` is **not** the read source for these 4 knobs — stale
 seed-file values must never become observable.  The `resolve_org_setting_*`
-helpers accept a `code_default` parameter that every call site MUST pass as
-the true dataclass default.
+helpers for those four knobs accept a `code_default` parameter that every call
+site MUST pass as the true dataclass default. The reviewer resolver has no
+`code_default` escape hatch: it requires a classified durable pair.
 
 No site special-cases storage; every reader uses the appropriate
 `resolve_org_setting_*` helper from `runtime/orchestrator/org_config.py`.
@@ -2544,24 +2542,57 @@ both back (no split-brain).
 
 A **one-shot, idempotent** seed runs on the first daemon startup after upgrade
 (`org/.org_settings_seeded` sentinel). It copies the current `config.yaml`
-values for the 5 writable keys into `org_settings`, then writes the sentinel.
+values for the four non-reviewer writable keys into `org_settings`, then writes
+the sentinel. Reviewer establishment runs independently before this seed.
 On subsequent startups the sentinel makes the seed a no-op. After seeding,
 `config.yaml` values are ignored — the DB is the single authoritative store.
 
-`reviewer_agents` (THR-175) additionally has an idempotent **backfill** that
-runs on every startup for orgs whose seed sentinel already fired before the
-feature shipped: if the `reviewer_agents` row is absent it persists the
-config.yaml value (or the `["code_reviewer"]` code default), and it never
-overwrites an existing explicit row.
+`reviewer_agents` has a separate, sentinel-independent transition before the
+nonfatal general seed catch and before authority/profile publication. Under
+`BEGIN IMMEDIATE`, the owner rereads both rows and commits necessary value,
+marker and audit writes together; any error rolls back and refuses startup.
+Unmarked legacy `[]` becomes `["code_reviewer"]`. An unmarked nonempty valid
+array retains every reviewer-row column byte-for-byte, even when IDs are stale;
+only the marker row and its audit are added. A missing row pins the old effective
+YAML/active-roster value or isolated legacy `["code_reviewer"]` fallback. Corrupt
+values or unsupported markers refuse; no history, timestamp or sentinel guesses
+intent. Valid classified pairs reopen with zero reviewer writes or audits.
+Seed/backfill cannot overwrite classified reviewer rows.
 
-`reviewer_agents` names are **validated against the org's live active-agent
-roster** (the file-based `org/agents/*.md` registry) at every surface that can
-seed, backfill, or persist them — not just `PUT /settings`. A configured name
-that is not a real active agent is never persisted as a reviewer setting (the
-code default is persisted instead), and an already-persisted malformed or
-unknown value resolves fail-closed to `["code_reviewer"]` at every read path.
-This guarantees an unknown reviewer string can never silently demote
-`code_reviewer` from the reviewer set and re-open the QA auto-advance hole.
+The internal marker is a strict closed object with a real integer version 2;
+it is absent from OrgConfig, YAML, writable keys and PATCH models. It uses the
+existing `config:reviewer_agents_policy` scope and `org_config_write` action with
+exactly `{section, tiers, before, after}`. Its initial audit is `{}` to
+`{"version":2}`, tiers `["version"]`. Legacy-empty conversion uses actor
+`orchestrator` and a reviewer audit `{value:[]}` to
+`{value:["code_reviewer"]}`, tiers `["value"]`, before the marker audit.
+Deliberate repair of a malformed reviewer value records
+`before={"value":{"invalid":true}}`, without copying stored bytes; an absent
+reviewer row still records `before={}`. Both use `tiers=["value"]` and the
+existing `config:reviewer_agents` scope, actor and four-key payload.
+No schema, audit prefix meaning or historical snapshot changes.
+
+The proven fresh org constructor initializes omitted reviewer config or explicit
+`[]` as v2 plus `[]` before `add_org`; valid explicit active IDs win and config
+read/parse failures refuse. An explicit Founder PUT may select active IDs or
+clear with `[]` through the same atomic pair owner. Omitted fields preserve
+policy; null/duplicates/blanks/unknown IDs are rejected; validate-only does not
+stamp intent. A valid explicit replacement can repair an unmarked or valid-v2
+reviewer value in a loaded org; it cannot downgrade a corrupt/unknown marker.
+Cold-held-org repair remains separately scoped.
+
+The dataclass and omitted YAML parser default is `()` (no reviewers). The fresh
+constructor establishes v2 plus `[]` for omitted reviewer config, with or without
+agents; a valid explicit reviewer selection wins. Restored roots without that
+construction proof retain legacy treatment: missing rows and unmarked `[]` pin
+the old effective reviewer using the isolated `["code_reviewer"]` compatibility
+constant, independent of the empty new-org default. Readers never use defaults
+to mask stale or invalid rows.
+Settings returns configured syntactically valid IDs (including missing IDs) and
+`reviewer_configuration={state, missing_agents}`; the list alone does not prove
+validity. None invents no reviewer leg; explicit saved verdict expectations and
+team/task review obligations still apply. Configured reviewer omission remains
+a HARD REJECT and only explicit APPROVE advances downstream.
 
 ## Bounded Failure-Recovery (TASK-573)
 
@@ -2920,8 +2951,9 @@ Direct integration collection without that parent refuses. Never run integration
 on the live Linux daemon host, including through jobs. See `docs/local-ci.md`.
 The disposable default roster exists before startup/registration so the real
 lifecycle initializes eligible manager selectors. Example-based two-org creation
-likewise supplies the declared roster, including the default `code_reviewer`,
-before POST so canonical reviewer discovery is coherent; the Codex bootstrap case uses
+likewise supplies its declared roster, including `code_reviewer`, before POST.
+Reviewer-behavior fixtures explicitly configure their active reviewer; roster
+membership alone does not select one. The Codex bootstrap case uses
 the supported pending-manager approval path. Explicit task plans write bound JSON
 payloads and invoke the tested-source CLI on one line with an absolute `--from-file`.
 Registered shell stubs restore their own temporary bin directory before identity

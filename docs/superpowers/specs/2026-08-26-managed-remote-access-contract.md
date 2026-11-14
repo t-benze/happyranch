@@ -600,3 +600,362 @@ JOB-6610/6615/6618; premerge JOB-6641/6643/6644/6647; JOB-6699 and JOB-6722.
 No allowance is replenished.
 
 Custody boundary (engineering_manager TASK-15621): the no-raw-address/PID/tuple/payload rule applies to the packet-proof and capture-diagnostic public fields. The pre-existing reviewed pairs handoff payload synthetic tailnet address and VM service journal metadata are existing public surfaces and are outside that assertion; credentials, enrollment/pairing material and raw capture lines remain forbidden everywhere.
+
+
+## 20. macOS home lifecycle foundation (THR-360 C1+C2)
+
+The per-user LaunchAgent lifecycle foundation is implemented in
+`runtime/remote_access/launchd_agent.py` behind the service-manager protocol.
+The maintained [macOS lifecycle contract](../../agent-guides/contracts/remote-access-and-remote-jobs.md#macos-connector-lifecycle-slice-thr-360-c1c2)
+defines paths, domain selection, CLI behavior and residual work. This additive
+section narrows the historical macOS-home future-work entry: source service
+management exists; macOS-home conformance and production readiness do not.
+
+The founder's own macOS user owns the LaunchAgent, without admin or a
+LaunchDaemon. The fixed default label is `ai.happyranch.connector`, under
+`~/Library/LaunchAgents`, with owner-only plist/backup files and user Library
+logs. `plistlib` round-trip validates syntax before replacement. Arguments
+reference the source config without copying credentials into the plist. Linux
+continues using its existing systemd backend, argv, units and dedicated account.
+All CLI lifecycle service-manager failures now print `error:` and exit nonzero.
+Rendered `LimitLoadToSessionType=["Aqua", "Background"]` permits GUI-login and
+headless user sessions. Install/upgrade rewrite old definitions with this key;
+validation and rollback continue accepting old backups without it. The plist's
+`Disabled=true` default and all other keys remain unchanged.
+
+The manager prefers `gui/<uid>` and probes `user/<uid>` only after an explicit
+`Could not find domain for` response or exit 125 with `Domain does not support
+specified action` (GUI domain unavailable to an SSH/Jenkins caller without an
+Aqua session). Only a successful user-domain print permits fallback; a failed
+probe reports both diagnostics. Other GUI diagnostics and later failures of the
+pinned domain refuse without switching domains or escalating privileges.
+Without GUI login, the explicitly started user-domain service runs for the
+current boot/background session while that domain exists; reboot/logged-out
+persistence is unproven. Autoload of `~/Library/LaunchAgents` after boot requires
+a GUI login. The packaged Mac app runs in the GUI domain. Install enables login
+startup unless `--no-enable` preserves the existing setting (fresh plist disabled); it does not start.
+Disabled overrides match exact labels; sibling/custom/probe labels leave the
+plist `Disabled` fallback intact. Malformed exact-label rows refuse.
+Start bootstraps or kickstarts while preserving prior disablement, restart
+uses `kickstart -k` on a loaded service, stop bootouts, and uninstall bootouts,
+disables and removes the plist idempotently. Enable/disable alone do not stop
+an existing process. `KeepAlive=true` recovers on every exit; the ten-second
+throttle limits rapid retries. Upgrade/rollback reread replaced plists through
+bootout/bootstrap, back up owner-only files and verify process recovery.
+Backups are completely written, flushed and fsynced in a nonselectable temporary
+file before atomic publication. Rollback fully reads and validates its chosen
+backup before bootout; invalid candidates leave the running service untouched.
+
+Status reports the selected `domain` (`gui/<uid>` or `user/<uid>`),
+loaded/running/PID and nullable last-exit code/signal from launchctl; absent,
+unloaded and inaccessible are distinct. Only exact top-level `state = running`
+with a positive PID claims active/running. `waiting`, `not running`, `spawn scheduled`,
+`xpcproxy`, `exited`, `exiting`, `penalty box` and all other nonempty states remain
+inactive, with PID zero and raw `sub_state` capped at 2048 characters. Missing/empty
+state, duplicate observed fields, malformed numeric fields, unbalanced braces or
+quotes, and running without a valid PID refuse. Nested job/process fields do not
+replace top-level state; braces inside double-quoted values, including escaped
+quotes/backslashes, do not change depth. Running alone is not readiness.
+
+C3 (PR 2) injects a macOS readiness sink into the unchanged shared notify loop.
+The connector owns an atomic 0600 JSON readiness record at
+`<managed-state-root>/<label>.readiness.json`, with PID, foreground-run start
+wall time, ready Boolean, last healthy wall time, increasing sequence and fixed
+non-secret reason. It writes starting/not-ready before checks, ready on first
+and subsequent healthy passes, and not-ready on readiness/listener loss and
+shutdown. Exclusive same-directory temporary files are flushed/fsynced before
+rename; failed publication retains the prior complete record and cleans up the
+temporary file. No STATUS input, bearer, key or credential content is recorded.
+
+C4 (PR 3) finalizes the Darwin default state root as
+`~/Library/Application Support/HappyRanch/connector/<state_dir>` (default
+`state_dir=happyranch-connector`). The readiness file is
+`<managed-state-root>/<label>.readiness.json`; custom labels get separate files.
+`managed_dir_root` retains its override semantics: `<override>/<state_dir>`.
+Directories are traversed without following any symlink; new directories are
+0700 and an existing writable state leaf must be current-euid owned 0700.
+Existing ancestor modes remain unchanged. Readiness publication/cleanup uses
+the pinned parent descriptor and status refuses aliased parents. The C3
+provisional `~/.local/state` path was never released/deployed; no migration or
+compatibility code is needed. Linux StateDirectory/state-root resolution stays
+unchanged.
+
+The founder-approved macOS same-user posture reads the daemon token directly
+through `DarwinFileDaemonCredentialProvider` (the file-provider interface).
+`daemon_token_path` must be explicit, normally
+`~/Library/Application Support/HappyRanch/daemon.token` for the bundled app.
+The app's `AppDelegate` selects that daemon home and `EnvironmentSanitizer`
+passes `HAPPYRANCH_DAEMON_HOME`. `runtime.runtime.token_file()` alone defaults to
+`~/.happyranch/daemon.token` and is therefore not a safe connector default.
+Darwin rejects configured `credentials_directory` or any presence of
+`CREDENTIALS_DIRECTORY`, including empty, with fixed clean configuration errors.
+The token reader follows no leaf or parent symlink and requires a regular
+single-link file owned by the current euid, no group/other mode bits, valid UTF8,
+nonempty after stripping, and at most 64 KiB. Named/open inode identity and
+before/after metadata checks bound replacement/read drift; failures expose only
+a fixed non-secret reason. Linux credential classes and selection stay unchanged.
+
+`launchd_files.DARWIN_ENROLLMENT_KEY_PATH` is
+`~/Library/Application Support/HappyRanch/connector/happyranch-connector/enrollment.key`;
+overridden layouts use `<managed-state-root>/enrollment.key`.
+`credentials.read_darwin_enrollment()` is the C5/C6 handoff reader: an absolute
+literal, no-symlink-parent/leaf, current-euid, single-link regular 0600 file,
+nonempty and at most 64 KiB, returning a bytearray. This matches the Linux
+installer contract except root ownership is replaced by current-euid ownership
+without a group-owner requirement. It performs no staging/enrollment. Plists,
+config argv and CLI/status observations carry paths only, never token/key values.
+Standalone coverage uses real filesystem objects on Linux with Darwin selection;
+alternate-euid cases substitute process identity against real ownership metadata.
+Native Darwin path/credential execution is NOT RUN; no C4 Mac mini run is authorized.
+
+A watchdog thread begins before publication/checks and force-exits 75 after
+`watchdog_sec` without a completed healthy pass (including publication), using
+monotonic time and no main-loop/filesystem lock at expiry. Startup and shutdown
+are bounded by that same deadline. launchd KeepAlive owns restart; observed
+readiness/listener loss still closes admission and exits 1. The thread requires
+Python scheduling and cannot guarantee recovery from host sleep or a runtime-wide
+freeze. It makes no claim of OS process-birth authentication.
+
+CLI status adds readiness fields while preserving all native process fields.
+Ready requires launchd running with positive PID P, record PID P, ready=true,
+and healthy wall-time age in [0, watchdog_sec + poll_seconds]; the stated margin
+is one configured poll interval. Future wall times fail freshness. Otherwise it
+reports not-loaded, starting, running-not-ready, stale-readiness, pid-mismatch,
+record-missing/corrupt/foreign/unavailable. Process absence/startup takes
+precedence, with the file observation separately retained. Invalid/missing,
+oversized (>4096 bytes), symlink/special/foreign-owner/multiply-linked/non-0600
+or unreadable records never produce ready or crash status; raw invalid content
+is not exposed. The maintained contract lists every added JSON field.
+Linux sd_notify, systemd manager bytes, units, installer and status stay unchanged.
+
+No native proof is claimed in this PR; the existing sleep-agent suite is unchanged.
+Darwin sidecar integration, signing, frozen entry/bundling, Swift coexistence and packaged-app
+acceptance remain future work (C6a Go build/readiness and C6-loss recovery are
+recorded below). No change to Swift HomeConnector is included.
+
+C5 (PR 4) adds the per-user managed installer through Darwin-only dispatch in
+`runtime.remote_access.installer.main`; Linux's installer class/parser and systemd
+manager remain unchanged. Its commands are `install --enrollment-key-file`,
+`check-drift`, and `uninstall [--purge]`. Install's optional `--config` defaults
+to the existing source CLI config. The operator provisions a managed-only config
+and policy; 0600 no-follow reads validate both before staging under C4's final
+state directory. The config uses `system=false`, default unit/state names and no
+custom argv/root override. The token path stays explicit; the token is not copied.
+The source-entry assumption is an installed/importable `runtime.remote_access.cli`
+in the installing absolute Python interpreter, invoked with `run --managed --config`
+pointing at staged `config.json`. No bundle path is invented; frozen entry refuses.
+
+The C4 key reader validates the explicit absolute literal, nonempty <=64KiB
+single-link same-user 0600 input before writes/launchctl. C5 stores `enrollment.key`,
+wipes its memory copy, preserves the operator input and refuses an existing
+stored key. C6b below supersedes that reinstall rule after C6a consumption; failure may retain partial files
+requiring inspection/revocation and explicit purge. Existing trust/anchors are
+never seeded or replaced. Config, copied policy, digest receipt and fixed logs
+are 0600. New directories are 0700; managed connector/state roots require 0700.
+Literal home traversal refuses unsafe, foreign or symlinked directories/files;
+safe shared ancestor modes are retained. Preflight refuses conflicting files;
+install and check-drift refuse every plist pending entry. State traversal refuses
+cross-device subtrees, >4096 entries or depth >32, without claiming a concurrent-writer fence or transaction.
+
+The existing `LaunchdServiceManager` writes/enables the plist; installation does
+not bootstrap/start or claim readiness. Identical plists are enabled without new
+backups. `check-drift` observes plist/config/policy digests from `install.json`,
+layout and log metadata, initially reporting `readiness=not-verified`, `sidecar=not-installed`
+(C6b below replaces these placeholders with both process/readiness observations).
+It detects missing/differing/unsafe files and a changed source interpreter, with
+non-secret `error:`/exit 1 on refusal. Digests are observations, not authentication.
+Uninstall preflights, delegates stop/bootout/disable/plist removal, rechecks and
+removes config/policy/receipt and fixed logs. Normal uninstall retains state/key;
+purge additionally removes the validated state subtree. Partial/missing installs
+are idempotent. Both removal modes accept an interrupted-publication pending
+plist only when it is a current-user single-link regular 0600 file, checked on an
+opened no-follow, nonblocking descriptor. Only after verified stop/bootout does
+uninstall revalidate the opened and no-follow named inode, unlink the pending
+file and sync its parent. Unsafe pending entries refuse before lifecycle effects;
+failed stop/bootout retains pending/config/key. Unsafe state also refuses removal.
+The same-user concurrent-rename limitation remains. No source
+input, token, unrelated log, shared parent or lifecycle backup is removed.
+The maintained contract defines exact paths and remaining limitations.
+Standalone filesystem/fake-launchctl tests add no native acceptance. C5 uses
+ZERO Mac-mini runs; C6a/C6b deliver sidecar integration below; C7/C8 and
+combined end-of-goal native acceptance remain open.
+
+Start-failure probe context records bounded plist lint, mode/owner versus current
+UID, session types and a label-filtered launchd log excerpt before cleanup.
+Observation failures/timeouts are recorded without replacing the start failure;
+the original deadline and command cap apply. A finally-path receipt records
+scratch removal after disposal on success and failure.
+
+The source-only `connector-launchd` native suite uses a unique harmless sleep
+program, not the real connector: install, start and PID, SIGKILL and replacement
+PID, stop/unloaded, uninstall/absent, plus guaranteed cleanup attempts and
+explicit incomplete-cleanup errors. Before domain selection it records UID,
+`launchctl managername`, both domain print exit codes and capped diagnostics;
+it retains these facts on selection failure and records a selected domain only
+on success. Per-step `status_observations` retains the last raw service `print`
+and `print-disabled` excerpts (each <=2048 characters) and actual exit codes
+for absence, install/start, running/recovery polls, stop/stopped, uninstall/absent
+and cleanup. Parser failures retain the already captured raw text; command
+exceptions retain available output or null when unavailable, plus a bounded
+error diagnostic. Inactive/unknown states keep polling until the original deadline;
+malformed output and exhaustion still fail. Capture adds no commands and preserves
+the 90-second observation and 1MiB command-output caps.
+QA owns execution on the existing Mac-mini job; no new job or trigger is introduced.
+Neither fake-runner tests nor this stand-in prove network, credentials,
+readiness, sidecar, installer or packaged-app acceptance.
+
+
+C6a (PR 5) adds the Go-side Darwin/arm64 CGO-disabled target under the existing
+`app/linux/tsnet-sidecar` module, using Go 1.23.12 and unchanged go.mod/go.sum.
+The required `--readiness-file` flag is an absolute clean literal path; optional
+`--watchdog-interval` defaults to 30s and must be positive. Linux refuses both
+flags and keeps its existing sd_notify/WATCHDOG_USEC behavior. Runtime Darwin
+selection uses C3's exact six-field JSON record and fixed reasons: starting,
+healthy, waiting-for-readiness, readiness-or-listener-lost, stopping. Starting
+is published before Server.Up; healthy requires all existing enrollment,
+durability, expected-peer, loopback-probe and listener gates. Healthy publication
+refreshes at half the watchdog interval, capped at 100ms. Listener loss publishes
+false and exits nonzero; SIGTERM/SIGINT publish false/stopping before teardown.
+
+C6-loss (PR 6) checks connector TCP reachability only in the Darwin launchd
+healthy loop. It dials the configured literal-loopback `ConnectorAddr` every
+`min(1s, watchdog_interval/4)`, with timeout
+`min(250ms, watchdog_interval/8)` (each floored at 1ns). One failed dial publishes
+`ready=false` with the existing C3 reason `readiness-or-listener-lost`, then
+exits 1 after service teardown. The normal detection budget is cadence plus
+timeout: at most 1.25s with the default 30s watchdog, plus Go scheduling and
+readiness-publication/teardown time. For watchdog interval w, the cap-aware
+combined probe budget is min(1s,w/4)+min(250ms,w/8), with each term floored at
+1ns; for example, w=3s gives 750ms+250ms=1s. The independent monotonic watchdog
+still exits 75 if publication or teardown stalls. A successful probe immediately closes the
+connection without sending protocol data or credentials. TCP reachability does
+not prove application-level health. Connector-loss recovery is sidecar exit +
+launchd KeepAlive, without a second supervisor. Linux still relies on systemd
+BindsTo; its serving/readiness path is unchanged.
+
+The Go writer mirrors C3's descriptor-relative no-follow parent traversal,
+current-euid 0700 writable directory, exclusive 0600 temp, file fsync and atomic
+rename. The unchanged Python status reader accepts the record. A separate
+monotonic watchdog starts before publication/startup and exits 75 without waiting
+for service/filesystem locks after an interval without completed healthy
+publication; shutdown remains bounded. launchd owns restart. Go scheduling is
+required; host sleep/runtime freeze recovery is unproven. Darwin ignores
+CREDENTIALS_DIRECTORY and always uses the existing same-user 0600 one-use
+credential-file/consumed-marker/deletion/empty-key restart contract.
+
+`tools/generate_inventory.py --target darwin-arm64 [--check]` maintains separate
+`third_party/darwin-arm64/{dependency-inventory.json,THIRD_PARTY_NOTICES.md}`;
+Linux's historical library inventory and notices remain byte-identical.
+`--check` verifies without writes. C6-loss reconciles Darwin against the command
+package graph, adding the already-pinned `github.com/mdlayher/sdnotify@v1.0.0`
+module/license omitted by the earlier library-only inventory. Darwin-only build
+modules relative to Linux remain `github.com/google/uuid@v1.6.0` and
+`github.com/prometheus-community/pro-bing@v0.4.0`, already pinned in go.mod/go.sum.
+Build instructions and exact record fields are in the sidecar README. Darwin
+checks here are cross-build/test compilation/vet only; native execution is NOT
+RUN (zero authorized). C6b below delivers Python handoff/installer integration
+and replaces C5's sidecar placeholder with real observations. App bundling/frozen entry, signing and
+packaged-app acceptance remain open; Swift HomeConnector is unchanged.
+
+
+C6b (PR 7) integrates the Darwin sidecar with the existing managed installer.
+It owns `ai.happyranch.connector` and `ai.happyranch.tsnet-sidecar` through the
+same LaunchdServiceManager (the sole launchctl caller), both KeepAlive with the
+existing 10-second throttle. Required install inputs are an explicit absolute
+`--sidecar-binary` and private `--sidecar-config` JSON; no bundled path is guessed.
+The binary is a literal executable, regular/single-link, root/current-euid owned,
+without group/other write bits. Config uses Go's string fields, refuses unknown/
+duplicate fields, validates private HTTPS control/role/peer/private-only policy,
+a valid listen port and a connector address matching the managed loopback port.
+Installer-owned StateDir/CredentialFile replace source path fields. It stages
+0600 `sidecar.json` in connector state, uses a separate current-user 0700
+`happyranch-tsnet-sidecar` state leaf under the C4 Library root, and passes only
+config/readiness/credential paths plus `--watchdog-interval` from watchdog_sec.
+The readiness leaf is `ai.happyranch.tsnet-sidecar.readiness.json` in sidecar state.
+No credential content or environment is rendered. Source Python must be installed/
+importable; frozen entry and executable signing/content attestation are not supplied.
+
+Install enables but never starts either agent, retaining C5. Linux's managed
+installer starts its target and blocks on Type=notify; launchd has neither a READY
+boundary nor dependency target. Darwin installer start/stop/restart/status/enable/
+disable operate the composite; the existing managed-config CLI delegates lifecycle
+and uninstall to it (managed install requires installer inputs). Start/enable is
+connector then sidecar; stop/disable is sidecar then connector. Restart stops both
+with bootout/absence verification before starting both in forward order. Uninstall
+stops both before any file removal, rechecks the private layout, disables both,
+then removes both plists, safe pending files, staged configuration/receipt and four
+fixed logs. Sidecar stop failure leaves connector and all files untouched; connector
+stop failure also retains all files. Failed sidecar start may leave connector active.
+Source DIY/lab CLI and all Linux behavior stay unchanged.
+
+Startup gates wait for the connector probe/listener and exit nonzero on failure.
+After startup, PR1494's Darwin TCP probe publishes ready=false with reason
+readiness-or-listener-lost on connector loss, closes admission and exits 1.
+launchd KeepAlive restarts it; it may cycle under the existing 10-second throttle
+until the connector is ready. TCP reachability does not prove protocol health.
+There is no BindsTo/Upholds relationship, login ordering guarantee or in-process
+supervisor. Status has connector/sidecar
+objects with all C3 process/readiness fields and ready only when both are ready.
+Absent plist and service adds not-installed; other C3 substates (including not-loaded,
+starting, running-not-ready, stale/corrupt/PID mismatch) remain. Drift validates the
+version-2 receipt's staged config/policy/sidecar/plist digests, executable paths,
+layout/logs and enrollment state, and reports both observations. Process state
+alone cannot imply readiness. A C5-only receipt requires explicit uninstall/reinstall;
+an unconsumed stored key requires explicit purge before fresh enrollment. No
+automatic migration or trust-state replacement is performed.
+
+Key only means staged: reinstall refuses replacement. Marker only means consumed:
+reinstall without enrollment input verifies the exact SHA256(RoleIdentity+NUL+
+ControlURL) newline marker and preserves node identity/state. Both key and marker
+refuse install/start/drift, as does an invalid marker. Neither present refuses
+start/drift and requires a fresh explicit key for install. Go alone consumes/deletes
+the key and writes the marker. Normal uninstall preserves both state trees (including
+marker, node state and ambiguous enrollment for inspection); purge additionally
+removes both validated no-follow 0700 trees. Unsafe entries refuse before effects.
+Both modes support partial/repeated removal. Shared parents, operator inputs,
+daemon token, unrelated logs and backups remain. Same-user rename and C3 wall-clock/
+process-identity/scheduling limitations remain; receipts are observations, not auth.
+
+Retained standalone mac_native launchd/installer tests use temporary real files and
+scripted launchctl; no native run is authorized or claimed for C6b. Goal budget is
+PR 7/10; Mac mini 6/8 used, slice 0 runs. C7 below supplies app bundling/frozen
+entry and signing enumeration; C8 retains Swift coexistence and combined
+packaged/native acceptance. No app screen, dependency or CI trigger changes.
+
+### C7 — frozen daemon entry and bundled sidecar (PR 8)
+
+The daemon's fixed hidden `--remote-access` entry dispatches before startup to
+the existing connector CLI. `--remote-access installer ...` selects the Darwin
+installer. Frozen connector ProgramArguments are the absolute bundled daemon,
+`--remote-access run --managed --config <staged-config>`; source `-m` argv is
+unchanged. The existing runtime PyInstaller hook collects the needed modules.
+
+Build the existing sidecar command separately with the same pinned Go1.23.12,
+`GOTOOLCHAIN=local`, `-mod=readonly`, `GOWORK=off`, Darwin/arm64 and cgo disabled.
+Ship it at `Contents/Helpers/happyranch-tsnet-sidecar`; existing build/basic
+checks require executable arm64 bytes. Frozen installer default derives that
+path from `Contents/Resources/daemon/happyranch-daemon`; explicit operator binary
+paths take precedence. Source installs retain their explicit binary requirement;
+the private sidecar config is required in both modes. Sidecar validation,
+enrollment, lifecycle and same-user token custody do not change.
+
+Retain both existing Darwin THIRD_PARTY_NOTICES and dependency inventory as
+originals under the app licenses manifest's `runtime:Go-sidecar-Darwin-arm64`
+owner, validated and archived through the existing notice path. Both existing
+signers enumerate a helper from the retained baseline before the outer app and
+use the existing executable-signing branch/identity, with no entitlement or
+notarization change. Older artifact pins remain untouched; this supplies no
+new-artifact signing or publication approval.
+
+Assumption: absolute plist bundle paths are operator-managed. A missing or
+nonexecutable plist executable, or connector argv differing from the current
+bundle/source, makes check-drift refuse with uninstall/reinstall guidance. A
+move is detected even if the old executable still exists. No watcher or
+automatic rewrite is added; existing normal/purge state-retention rules apply.
+
+C7 authorizes no native run/app build (PR8/10, Mac mini6/8, slice0). Portable
+tests and Darwin cross-compilation are source evidence only. Packaged-app
+execution, signing and combined native acceptance remain unproven and depend
+on the separate THR-346 packaged-app check pending founder approval. Linux
+implementation/inventories, Swift sources, dependencies, required lint/static
+checks and CI triggers remain unchanged.

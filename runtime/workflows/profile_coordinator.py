@@ -90,7 +90,6 @@ class _OrgDependencyCapture:
     profile_names: tuple[str, ...]
     revision: tuple
     snapshot: bytes | None
-    empty_skeleton: bool = False
     empty_canonical_inputs: bool = False
     refusal: str | None = None
     effective_profiles: dict[str, _EffectiveProfile] = field(default_factory=dict)
@@ -1099,14 +1098,11 @@ class ProfileCoordinator:
                 and active[8] == "prepared"
                 and active[1:3] == (1, 0) and active[10] is None
             )
-            empty_skeleton = bool(
-                empty_inputs and capture_error == "authority_reviewer_incoherent"
-                and after[0][:3] == (0, None, None) and after[0][3] == "fenced"
-                and initial_publication
-            )
+            if empty_inputs and not initial_publication:
+                refusal = refusal or "profile_consumer_changed"
             return _OrgDependencyCapture(
                 desired, tuple(sorted(set(desired.values()) | outstanding)),
-                after, snapshot, empty_skeleton, bool(empty_inputs), refusal, effective_profiles, capture_error,
+                after, snapshot, bool(empty_inputs), refusal, effective_profiles, capture_error,
                 effective_identity,
             )
         raise ProfileCoordinatorError("profile_consumer_changed")
@@ -1341,9 +1337,9 @@ class ProfileCoordinator:
                 org.workflow_authority._acquire_lease(owner)
                 try:
                     self._validate_owned_capture(org, revision, owner)
-                    if capture.empty_canonical_inputs and not capture.empty_skeleton:
+                    if capture.canonical_error is not None or snapshot is None:
                         raise ProfileCoordinatorError("profile_dependency_incoherent")
-                    if capture.empty_skeleton:
+                    if capture.empty_canonical_inputs:
                         # Never discharge a surviving consumer/operation merely
                         # because the canonical files are empty. Cold recovery
                         # owns that evidence, including operations with no rows.
@@ -1361,14 +1357,14 @@ class ProfileCoordinator:
                     changed = self._sync_org_dependencies(org, desired, effective_profiles=capture.effective_profiles)
                 finally:
                     org.workflow_authority._release_lease(owner)
-                if snapshot is None and not capture.empty_skeleton:
+                if snapshot is None:
                     org.workflow_authority.fence(reason="profile:canonical-incoherent")
                     raise ProfileCoordinatorError("profile_dependency_incoherent")
-                if not capture.empty_skeleton and (changed or not self._authority_profile_projection_coherent(org)):
+                if changed or not self._authority_profile_projection_coherent(org):
                     if not self._publish_dependency_change(org, canonical_snapshot=snapshot, expected_revision=revision[:2],
                                                                 effective_profiles=capture.effective_profiles):
                         raise ProfileCoordinatorError("profile_dependency_incoherent")
-                if not capture.empty_skeleton and (
+                if (
                     not self._closure_coherent(org, effective_profiles=capture.effective_profiles)
                     or not self._authority_profile_projection_coherent(org)
                 ):
@@ -1696,7 +1692,7 @@ class ProfileCoordinator:
                 if slug in captures:
                     capture = captures[slug]
                     edges[slug].update(capture.profile_names)
-                    if capture.canonical_error is not None and not capture.empty_skeleton:
+                    if capture.canonical_error is not None:
                         reasons.setdefault(slug, capture.canonical_error)
                         first = first or capture.canonical_error
                     # Strict authenticated native ownership, independently of a

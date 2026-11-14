@@ -27,6 +27,7 @@ import json
 import logging
 import os
 import stat
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -40,7 +41,7 @@ from runtime.infrastructure.database import (
     AttachmentCorrectionStopped, Committed, InvalidLineage, LostClaim, PendingRetry, RetryClaim, SpawnOutcome,
 )
 from runtime.models import BlockKind, TaskStatus
-from runtime.orchestrator.org_config import load_org_config
+from runtime.orchestrator.org_config import load_org_config, OrgConfigError
 from runtime.orchestrator.executors import _meaningful_stderr
 from runtime.orchestrator.task_prompt_headers import (
     _list_candidate_agents,
@@ -3482,7 +3483,14 @@ def _consume_completion_report_body(
             return
 
         # Validate each child's workspace exists (reuse _validate_one_leg).
-        reviewer_agents = _reviewer_agents_for(orch)
+        try:
+            reviewer_agents = _reviewer_agents_for(orch)
+        except (OrgConfigError, sqlite3.Error, OSError) as exc:
+            _fail(orch, task_id, note=f"invalid fanout: reviewer configuration unavailable: {exc}",
+                  **reclaim_kwargs)
+            _enqueue_parent_if_waiting(orch, task_id)
+            _maybe_post_thread_followup(orch, task_id, status=TaskStatus.FAILED, auto_revisit_spawned=False)
+            return
         for i, child in enumerate(decision.children):
             child_err = _validate_one_leg(
                 orch, agent=child.agent, where=f"fanout child {i + 1}",
@@ -3888,13 +3896,7 @@ def _consume_completion_report_body(
 
 
 def _reviewer_agents_for(orch: "Orchestrator") -> frozenset[str]:
-    """The org's configured reviewer identities as a frozenset (THR-175).
-
-    Resolved from the DB-backed ``reviewer_agents`` org setting (code default
-    ``code_reviewer``) at the real Database seam, validated against the live
-    active-agent roster — an unknown persisted name resolves fail-closed to
-    the code default so ``code_reviewer`` is never silently demoted.
-    """
+    """Valid-state adapter; unavailable policy is an explicit caller refusal."""
     from runtime.orchestrator.org_config import (
         resolve_known_agent_names,
         resolve_org_setting_reviewer_agents,
@@ -4208,7 +4210,10 @@ def _validate_delegate(orch: "Orchestrator", decision) -> str | None:
 
     THR-175: any configured reviewer leg (first leg or a ``then`` leg) that
     omits ``expect_verdict`` is a HARD REJECT before any child is spawned."""
-    reviewer_agents = _reviewer_agents_for(orch)
+    try:
+        reviewer_agents = _reviewer_agents_for(orch)
+    except (OrgConfigError, sqlite3.Error, OSError) as exc:
+        return f"reviewer configuration unavailable: {exc}"
     err = _validate_one_leg(orch, agent=decision.agent, where="first leg")
     if err is not None:
         return err
@@ -4575,13 +4580,19 @@ def _build_agent_prompt(orch: "Orchestrator", task, agent: str) -> str:
                            "decompose your own work into a fresh bounded session",
         })
     prior_steps = _build_prior_steps_from_db(orch, task.id)
+    from runtime.orchestrator.org_config import resolve_reviewer_configuration, resolve_known_agent_names
+    reviewers = resolve_reviewer_configuration(
+        orch._db, known_agents=resolve_known_agent_names(orch._paths),
+    )
     base = build_capabilities_prompt(
         agents=agents_for_prompt,
         step_number=task.orchestration_step_count + 1,  # 1-indexed for manager display
         prior_steps=prior_steps,
         manager_name=agent,
         self_only=not is_mgr,
-        reviewer_agents=sorted(_reviewer_agents_for(orch)),
+        reviewer_agents=list(reviewers.agents),
+        reviewer_configuration_state=reviewers.state,
+        missing_reviewer_agents=list(reviewers.missing_agents),
         name_metadata=orch.read_name_metadata(),
     )
     headers: list[str] = []
@@ -5278,13 +5289,18 @@ def _advance_chain_for_completed_child(
     if report is None:
         return clear_chain("wake")
 
+    try:
+        reviewer_agents = _reviewer_agents_for(orch)
+    except (OrgConfigError, sqlite3.Error, OSError) as exc:
+        logger.warning("chain %s reviewer configuration unavailable: %s", parent_task_id, exc)
+        return clear_chain("admission_failed")
     completed_child = orch._db.get_task(child_task_id)
     completed_agent = completed_child.assigned_agent if completed_child is not None else None
     action = compute_advance_action(
         chain=chain,
         report=report,
         completed_agent=completed_agent,
-        reviewer_agents=_reviewer_agents_for(orch),
+        reviewer_agents=reviewer_agents,
     )
     if action.kind == "wake":
         return clear_chain("wake")
@@ -5392,6 +5408,12 @@ def _carrier_fail_on_verdict_mismatch(
         return False
     from runtime.orchestrator.chain import ChainState, compute_advance_action
     chain = ChainState.deserialize(chain_snapshot)
+    try:
+        reviewer_agents = _reviewer_agents_for(orch)
+    except (OrgConfigError, sqlite3.Error, OSError) as exc:
+        _fail(orch, parent.id, note=f"carrier reviewer configuration unavailable: {exc}")
+        _enqueue_parent_if_waiting(orch, parent.id)
+        return True
     if report is _NO_AUTHENTICATED_REPORT:
         # TASK-5818: the child has a modern fingerprint but no acceptable
         # exact authenticated report — the leg's outcome cannot be verified.
@@ -5430,7 +5452,7 @@ def _carrier_fail_on_verdict_mismatch(
         chain=chain,
         report=report,
         completed_agent=completed_agent,
-        reviewer_agents=_reviewer_agents_for(orch),
+        reviewer_agents=reviewer_agents,
     )
     # A verdict mismatch OR a THR-175 reviewer non-approve (omitted-expectation
     # reviewer leg) must fail the whole carrier — never chain-complete it as a

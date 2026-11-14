@@ -29,7 +29,7 @@ from typing import TYPE_CHECKING
 from runtime.orchestrator import prompt_loader
 from runtime.orchestrator._paths import OrgPaths
 from runtime.orchestrator.authority_policy_store import AuthorityPolicyStore
-from runtime.orchestrator.org_config import resolve_org_setting_reviewer_agents
+from runtime.orchestrator.org_config import resolve_reviewer_configuration
 from runtime.orchestrator.org_validation import validate_team_membership
 from runtime.orchestrator.teams import TeamsRegistry
 
@@ -331,11 +331,10 @@ class WorkflowAuthorityCoordinator:
                 raise WorkflowAuthorityError("authority_worker_incoherent")
 
         known_active = {definition.name for definition in active}
-        reviewer_agents = resolve_org_setting_reviewer_agents(
-            self._db, known_agents=known_active,
-        )
-        if any(name not in known_active for name in reviewer_agents):
+        reviewer_configuration = resolve_reviewer_configuration(self._db, known_agents=known_active)
+        if reviewer_configuration.state not in {"none", "configured"}:
             raise WorkflowAuthorityError("authority_reviewer_incoherent")
+        reviewer_agents = reviewer_configuration.agents
 
         policy_store = AuthorityPolicyStore(self._db)
         selectors = []

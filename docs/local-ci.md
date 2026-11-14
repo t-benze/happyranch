@@ -1,5 +1,42 @@
 # Local CI
 
+## Connector platform lifecycle focused coverage (THR-360 C1+C2)
+
+```sh
+python -B -m unittest scripts.mac_native.test_connector_launchd -v
+python -B -m unittest scripts.mac_native.test_connector_installer -v
+python -B -m unittest scripts.mac_native.test_connector_bundle -v
+```
+
+This retained native-script venue uses fake runners and temporary paths, outside
+of the retired Python-unit selection. It checks CLI errors, platform selection,
+Linux argv/state/credential parity and macOS plist/lifecycle/status/recovery,
+literal private state paths and same-user credential/enrollment file contracts.
+All original 33 cases are retained; C4 adds seven cases. The C4 permission
+cases use real files/modes/links/FIFOs; alternate-euid cases substitute process
+identity against real ownership metadata. They do not prove native Darwin file
+execution or sidecar consumption. The sibling C5 installer selection drives the
+shipping platform-dispatch CLI with real private files/links/FIFOs, installed
+config/plist/digest observations, drift, stop/bootout delegation, partial/idempotent
+uninstall/purge and secret-free refusals. Existing lifecycle tests are unchanged.
+It uses scripted launchctl responses, not native launchd or a real sidecar;
+ZERO Mac-mini runs are authorized for C5. QA owns
+real Darwin execution with `SUITE=connector-launchd`; see the
+[Mac-native job guide](../ci/jenkins/mac-native-probe/README.md#connector-launchagent-lifecycle-suiteconnector-launchd-thr-360-c1c2).
+It adds no required check or automation trigger. Existing real-systemd
+integration remains SKIPPED under THR-243 seq42, not PASS.
+
+C7 adds frozen argv/default-or-explicit helper, missing/moved executable drift,
+and real hidden-dispatch parser coverage to the installer selection. The bundle
+selection reuses `packaging/verify_manifest_notices.py` with the existing
+verifier's SHA-checked historical resource blobs; its default current-source
+baseline checks remain intact. It checks the actual notice collector/validator,
+the portable basic bundle reader with synthetic Mach-O headers, and both
+signing scripts' actual inventory function. No codesign, app build, packaged
+execution or native launchd acceptance is implied. Current-source resource
+baseline drift is outside this focused selection and must be reconciled by the
+packaged-app owner before that acceptance.
+
 ## Frozen repository child launch regressions (THR-346 P2)
 
 Run the focused standalone unit selection outside the retired Python suite:
@@ -1656,13 +1693,18 @@ same-root callback failures stay failures, with no shared auth/session repair.
 
 The artifact callback skeleton defines `engineering_head`, `dev_agent` and
 `code_reviewer` with coherent engineering membership before supported CLI
-`orgs init`. The default reviewer remains `code_reviewer`; these callback
-plans launch only the manager and delegated `dev_agent`. Actual run37857635882
+`orgs init`. New orgs now default to no reviewer (`[]`); this callback fixture
+retains its real `code_reviewer` roster member. Fixtures that test reviewer
+behavior must explicitly configure an active reviewer; roster membership alone
+no longer selects one. Keep those reviewer fixtures rather than replacing them
+with no-reviewer fixtures. These callback plans
+launch only the manager and delegated `dev_agent`. Historical run37857635882
 retained org-init HTTP500 on both wheel/frozen origins and both source roles:
-its two-agent skeleton omitted the required reviewer, producing
+its two-agent skeleton omitted the then-required default reviewer, producing
 `authority_reviewer_incoherent` followed by `profile_dependency_incoherent`.
-Adding the missing static definition requires new native-admitted artifact
-execution before any callback, nonrunning ownership or durable-tail PASS.
+The new default does not establish artifact execution evidence: new
+native-admitted execution is still required before any callback, nonrunning
+ownership or durable-tail PASS.
 The frozen logs also retain a caught memory-observer source-inspection warning;
 fixture repair does not establish that observation subsystem's health.
 

@@ -13,10 +13,11 @@ from __future__ import annotations
 import os
 import stat
 import subprocess
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Protocol
 
 _SYSTEM_UNIT_DIR = Path("/etc/systemd/system")
 _USER_UNIT_DIR = Path("~/.config/systemd/user").expanduser()
@@ -25,12 +26,12 @@ _DEFAULT_POLL_SECONDS = 0.1
 
 
 class ServiceManagerError(Exception):
-    """A systemctl operation failed (non-zero exit, unreadable unit, etc.)."""
+    """A native service operation failed (non-zero exit, unreadable unit, etc.)."""
 
 
 @dataclass(frozen=True)
 class ServiceStatus:
-    """Parsed ``systemctl show`` state for one unit."""
+    """Native service state; platform-specific observations may extend this shape."""
 
     unit_name: str
     active_state: str
@@ -51,6 +52,34 @@ class UpgradeOutcome:
     ok: bool
     rolled_back: bool = False
     backup_path: Path | None = None
+
+
+class ServiceManager(Protocol):
+    """Platform service lifecycle used by the connector CLI."""
+
+    def install(self, unit_text: str, unit_name: str, *, enable: bool = True) -> Path: ...
+    def uninstall(self, unit_name: str) -> None: ...
+    def start(self, unit_name: str, *, timeout: float = 10.0) -> None: ...
+    def stop(self, unit_name: str, *, timeout: float = 10.0) -> None: ...
+    def restart(self, unit_name: str) -> None: ...
+    def enable(self, unit_name: str) -> None: ...
+    def disable(self, unit_name: str) -> None: ...
+    def status(self, unit_name: str) -> ServiceStatus: ...
+    def upgrade(self, unit_text: str, unit_name: str, *, verify_start: bool = True) -> UpgradeOutcome: ...
+    def rollback(self, unit_name: str) -> UpgradeOutcome: ...
+
+
+def service_manager(*, system: bool = False) -> ServiceManager:
+    """Select only supported native managers; never silently use systemd elsewhere."""
+    if sys.platform == "linux":
+        return SystemdServiceManager(system=system)
+    if sys.platform == "darwin":
+        if system:
+            raise ServiceManagerError("macOS connector requires a per-user LaunchAgent (system=false)")
+        from runtime.remote_access.launchd_agent import LaunchdServiceManager
+
+        return LaunchdServiceManager()
+    raise ServiceManagerError(f"connector service management is unsupported on {sys.platform}")
 
 
 def _default_run(argv: list[str], timeout: float = 10.0) -> tuple[int, str]:

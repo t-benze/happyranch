@@ -1784,6 +1784,19 @@ Every browser-callable daemon route maps to one TypeScript function in `web/src/
 - Snapshot: `tests/contract/openapi.json`; its Python unit test is retired. Regenerate intentional changes with `uv run python scripts/generate_openapi_snapshot.py --write`.
 - TypeScript mirrors: `web/src/lib/api/`; browser inclusions and justified exclusions: `tests/contract/route-classification.json`. Review their parity with the snapshot; the retired web coverage test no longer checks it automatically.
 
+Settings GET `/api/v1/orgs/{slug}/settings` and PUT
+`/api/v1/orgs/{slug}/settings/org` responses include
+`org.reviewer_configuration` with `state: none|configured|missing|invalid` and
+`missing_agents`, alongside the persisted syntactically valid reviewer IDs.
+Founder PUT accepts `reviewer_agents: []` as deliberate none; null, duplicate,
+blank and unknown IDs refuse. Omitted fields preserve policy. The internal v2
+marker is never client-writable. Existing Founder/org/publication boundaries
+remain. B1 provides the backend/TS contract; B3 (2026-11-14) adds the
+Settings ▸ Organization reviewer choice described in the Settings section.
+Snapshot path/status checks do not prove response-property parity: review
+`getSettings`/`putOrgSettings`, TS models, route classification and fixtures.
+The retired web openapi-coverage suite remains NOT RUN.
+
 ### Tasks list
 
 The Tasks heading, grouping controls, inline filters and root rows share one
@@ -2069,7 +2082,26 @@ The Settings surface ships as a full page (`web/src/features/settings/SettingsPa
 - **Org** (editable, Phase 2) — org-level settings: session timeout override, dreaming schedule (enabled, schedule time/timezone, catch-up-on-startup, agent mode, include/exclude agent names), browser-managed threads config (enabled and invocation timeout), and **working_hours** (THR-035: the Work-Hours Config UI — feature on/off switch, org-level eligibility selector, and the raw per-tier schedule blocks `default` / `teams` / `overrides`).
 - **Executors** — effective machine executor registry, custom CLI lifecycle, and recovery.
 
-The response includes operator-only `reviewer_agents` and `threads.default_turn_cap`; neither has a browser control. Removing the former System rail does not move queue-worker facts into Health. The retired maximum orchestration step setting is absent from the settings API and browser surfaces; the historical step counter remains monotonic telemetry, not an execution limit.
+**Reviewer agents (B3, 2026-11-14).** Settings ▸ Organization edits the generic
+inline-chain `reviewer_agents` setting; it does not select Coding workflow roles,
+install workflows or allow runs. The picker lists the active roster from the
+existing agents read, plus an explicit None; requests carry permanent IDs while
+chips and options show current names (`name · id`). The field renders the
+server's `org.reviewer_configuration`: none → "No reviewer configured";
+missing → the configured IDs stay as chips marked unavailable with a repair
+notice; invalid → a notice (never shown as none). Configured IDs are never
+pruned against the roster. Roster loading or read failure disables the picker
+and is never presented as none. The field joins the existing dirty/Discard/Save
+flow, but `reviewer_agents` is sent only when the Founder deliberately changed
+it (an unrelated Save omits the key); a successful Save re-syncs from the PUT
+response. A save response always updates the Settings cache of the org it was
+written to, even after an org switch. Locale switches issue no request and keep
+the draft and focus. Browser evidence:
+`web/scripts/w4a-browser-evidence.mjs --slice reviewer-settings [--reviewer-case <ids>]`
+against an ordinary dist with a stateful synthetic Settings daemon.
+
+The response includes operator-only `threads.default_turn_cap`, which has no
+browser control (`reviewer_agents` was operator-only until B3, above). Removing the former System rail does not move queue-worker facts into Health. The retired maximum orchestration step setting is absent from the settings API and browser surfaces; the historical step counter remains monotonic telemetry, not an execution limit.
 
 **Backend routes:**
 

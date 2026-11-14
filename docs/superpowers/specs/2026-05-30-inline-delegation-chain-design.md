@@ -299,3 +299,17 @@ Earlier unset examples and legacy state remain valid without new keys. Whole
 decision validation uses target executors before child allocation and the
 existing authoring-error feedback path. Saved selections persist to later legs
 and PR1 rechecks them at start. The manager's task override is never inherited.
+
+
+## Scoped supersession — reviewer policy B1 (2026-11-14)
+
+The generic reviewer setting now resolves the durable v2 value/policy pair as
+none/configured/missing/invalid. Legacy unmarked empty values are atomically
+pinned to `["code_reviewer"]` before readers admit intentional none. Fresh org
+creation and explicit Founder clears establish v2 plus `[]`. Missing/stale or
+invalid policy refuses allocation/advancement; none preserves explicit verdict
+expectations and team/task review requirements. Configured reviewer omission
+remains a HARD REJECT; only explicit APPROVE releases downstream, including
+historical omitted-expectation chains and fanout carriers. B1 retains the old
+global omitted YAML/dataclass default pending B2. No chain/snapshot history is
+rewritten. See maintained runtime/configuration and orchestrator contracts.

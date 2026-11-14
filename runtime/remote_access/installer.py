@@ -471,6 +471,10 @@ class ManagedInstaller:
 
 
 def main(argv: list[str] | None = None) -> int:
+    if sys.platform == "darwin":
+        from runtime.remote_access.launchd_installer import main as darwin_main
+
+        return darwin_main(argv)
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=("install", "uninstall", "check-drift"))
     parser.add_argument("--purge", action="store_true", help="also remove service state on uninstall")

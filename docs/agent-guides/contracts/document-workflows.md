@@ -462,16 +462,18 @@ profile digest with the current global profile digest before readiness reopens.
 Direct-connect route/sweep retries take the same stable profile lease, re-read
 the durable projection terminal state before creating a U1A operation/fence,
 and only the winner records that existing durable claim and mutates/publishes.
-A genuinely empty default org remains attached with no agents and `teams=[]`
-when its initial authority publication is fenced by the missing default reviewer.
-Attachment proves absence of active and pending definitions and canonical/in-memory
-teams outside leases and transactions, brackets that discovery with the durable
-revision, and validates it under profile-then-org ownership. It preserves the
-initial fenced generation and publication journal; `verify_admission_ready()`
-still refuses `authority_pointer_not_ready`. Outstanding dependency or profile
-operation evidence, unfinished canonical writers, and stale captures refuse this
-exception before synchronization. Reviewer policy and snapshot validation do not
-change; subsequent coherent canonical setup uses ordinary publication/recovery.
+A genuinely empty org with a classified v2 empty reviewer setting publishes a
+coherent ordinary authority snapshot with `agents=[]` and `reviewer_agents=[]`.
+Canonical teams may be empty or include the constructor's existing Founder-managed
+Default team. Attachment and reopen use normal publication and closure
+checks. There is no reviewer-error-based empty-skeleton exemption or requirement
+to retain generation zero/fenced. Attachment still proves absence of active and
+pending definitions and canonical/in-memory teams outside leases/transactions,
+brackets discovery with the durable revision, and revalidates under
+profile-then-org ownership. Outstanding active/unbound dependencies, unfinished
+profile operations, canonical/native writers or UNKNOWN ownership, moved
+revisions and unsafe initial publication still refuse. Any missing snapshot or
+canonical error refuses; empty files never discharge surviving ownership.
 
 Startup first classifies the complete retained inventory. Membership is the union
 of active canonical consumers, active/unbound dependency rows and every captured

@@ -480,6 +480,8 @@ class OrgState:
                 # Idempotent (sentinel); runs on every daemon startup but is a no-op
                 # after the first run.
                 with _startup_span("org_settings", org=slug):
+                    from runtime.orchestrator.org_config import establish_reviewer_agents_policy
+                    establish_reviewer_agents_policy(paths, db)
                     try:
                         from runtime.orchestrator.org_config import (
                             backfill_reviewer_agents_setting,

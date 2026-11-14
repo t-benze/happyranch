@@ -2449,16 +2449,13 @@ remain unchanged. See the current THR296 spec's separate online contract.
   the shared map before releasing them; closure also binds each local profile
   digest to the current global digest. No workflow admission consumer ships
   before its later unit.
-  A genuinely empty default org remains attached with no agents and `teams=[]`
-  when its initial authority publication is fenced by the missing default reviewer.
-  Attachment proves absence of active and pending definitions and canonical/in-memory
-  teams outside leases and transactions, brackets that discovery with the durable
-  revision, and validates it under profile-then-org ownership. It preserves the
-  initial fenced generation and publication journal; `verify_admission_ready()`
-  still refuses `authority_pointer_not_ready`. Outstanding dependency or profile
-  operation evidence, unfinished canonical writers, and stale captures refuse this
-  exception before synchronization. Reviewer policy and snapshot validation do not
-  change; subsequent coherent canonical setup uses ordinary publication/recovery.
+  A genuinely fresh org with no agents and a classified empty reviewer setting
+  publishes an ordinary coherent authority snapshot and attaches through normal
+  profile synchronization. No implicit reviewer identity or reviewer-error-based
+  empty-skeleton exemption is required. Default-team normalization and existing
+  operation, dependency, native-writer, lease and revision checks still apply;
+  empty files cannot discharge retained publication ownership. See the maintained
+  [empty-org contract](contracts/document-workflows.md).
 
 - **Approval.** `POST /agents/{name}/approve` atomically moves the pending file to `org/agents/<name>.md`; when that promotion makes the registered manager eligible, it initializes the team's selector in the same workflow-authority canonical change. It then bootstraps the workspace under `workspaces/<name>/`. Approved agents appear in `GET /agents` and `GET /agents/enrollments?status=approved`.
 - **Termination.** `manage-agent terminate` archives an approved **non-manager worker** on the caller's team. It is refused if the agent is a manager, belongs to another team, or has live work. Live work includes non-terminal tasks assigned to the agent, already-started thread invocations, firing schedules, running work-hours wakes, running dreams, or pending/running jobs attributable to the agent. If the agent is quiescent, the route:
@@ -4279,7 +4276,16 @@ through its existing failure path and feeds that failure to the fan-out barrier.
 Admission failure never counts as successful carrier completion; actual final-leg
 completion retains the existing success path.
 
-A configured reviewer leg (org setting `reviewer_agents`, default `code_reviewer`) MUST declare `expect_verdict: "APPROVE"`; omission is a HARD REJECT — the whole delegation is denied before any child spawns, the owner receives a feedback task result and feedback orchestration step naming the required `expect_verdict: "APPROVE"`, and the root stays PENDING and is re-enqueued for a corrected decision (never a root failure). Missing agent / missing workspace delegates keep hard terminal failure. Same semantics apply to pipeline-carrier legs in fan-out decisions.
+A configured reviewer leg (the classified v2 org setting `reviewer_agents`) MUST declare `expect_verdict: "APPROVE"`; omission is a HARD REJECT — the whole delegation is denied before any child spawns, the owner receives a feedback task result and feedback orchestration step naming the required `expect_verdict: "APPROVE"`, and the root stays PENDING and is re-enqueued for a corrected decision (never a root failure). Missing agent / missing workspace delegates keep hard terminal failure. Same semantics apply to pipeline-carrier legs in fan-out decisions.
+
+Reviewer resolution distinguishes `none`, `configured`, `missing` and `invalid`.
+Only v2-marked `[]` is none; startup first pins unmarked legacy `[]` to
+`["code_reviewer"]`. Stale/invalid policy refuses delegate/fanout allocation
+and both saved-chain advancement seams, preserving parent wake/carrier fan-in.
+None retains explicit expectation matching and task/team review rules. The
+global dataclass and omitted YAML default is empty; it is never a reader
+fallback or a substitute for the isolated legacy compatibility pin.
+Historical chain payloads and the explicit APPROVE guard remain unchanged.
 
 Implementation: `runtime/orchestrator/chain.py` and `runtime/orchestrator/run_step.py`. Spec: `docs/superpowers/specs/2026-05-30-inline-delegation-chain-design.md`.
 

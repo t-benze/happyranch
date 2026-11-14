@@ -2,16 +2,18 @@
 
 Composes readiness, the service manager, the lab provider, the trust-state
 store, the policy consumer, and the credential provider into the supervised
-Linux connector lifecycle:
+Linux/macOS connector lifecycle:
 
-- ``run`` — the systemd ``Type=notify`` foreground loop: readiness gates
+- ``run`` — the shared foreground loop (systemd ``Type=notify`` on Linux,
+  connector-owned readiness record/self-watchdog on macOS): readiness gates
   before ANY listener; on readiness loss the listener is stopped
   immediately and the process exits nonzero for systemd recovery; READY is
-  emitted once and WATCHDOG only after healthy passes. A runnable
+  emitted once and WATCHDOG only after healthy passes. The macOS sink translates
+  these same events without sd_notify; launchd KeepAlive owns recovery. A runnable
   configuration REQUIRES a concrete lab provider/listener — provider-less
   run configurations are rejected at startup and NEVER emit READY=1.
 - ``install``/``uninstall``/``start``/``stop``/``restart``/``enable``/
-  ``disable``/``status`` — systemd service lifecycle. ``install`` treats the
+  ``disable``/``status`` — native service lifecycle. ``install`` treats the
   source trust state only as an initial seed when NO managed pair exists;
   once a managed snapshot+anchor pair exists it is authoritative and is
   never overwritten or rolled back by a stale operator source pair.
@@ -39,6 +41,7 @@ from runtime.remote_access.authorization import AuthorizationVerifier, DeviceAut
 from runtime.remote_access.credentials import (
     CredentialUnavailable,
     DaemonCredentialProvider,
+    DarwinFileDaemonCredentialProvider,
     FileDaemonCredentialProvider,
     SystemdCredentialProvider,
 )
@@ -75,7 +78,8 @@ from runtime.remote_access.readiness import ConnectorReadiness, ReadinessReport
 from runtime.remote_access.service_manager import (
     ServiceManagerError,
     ServiceStatus,
-    SystemdServiceManager,
+    ServiceManager,
+    service_manager,
     UpgradeOutcome,
 )
 from runtime.remote_access.state import TrustStateStore
@@ -126,7 +130,8 @@ class ConnectorConfig:
     state_path: str = "~/.happyranch/remote_access/trust-state.json"
     # managed-dir root override: where install() stages the service config/
     # state/policy. None = /var/lib (system mode) or the user XDG state home
-    # (user mode). An override keeps hermetic tests/conformance fully under a
+    # (Linux user mode), or ~/Library/Application Support/HappyRanch/connector
+    # (Darwin). An override keeps hermetic tests/conformance fully under a
     # temp root; production leaves it None.
     managed_dir_root: str | None = None
     # service-manager settings
@@ -152,7 +157,9 @@ class ConnectorConfig:
             raise ConnectorConfigError("tenant_id/home_id/connector_id are required")
         if self.daemon_port is None:
             raise ConnectorConfigError("daemon_port is required")
-        if not self.daemon_token_path and not self.credentials_directory:
+        if sys.platform == "darwin":
+            self.validate_darwin_credentials()
+        elif not self.daemon_token_path and not self.credentials_directory:
             raise ConnectorConfigError("daemon_token_path or credentials_directory is required")
         if not self.policy_path:
             raise ConnectorConfigError("policy_path is required")
@@ -173,6 +180,12 @@ class ConnectorConfig:
                 self.managed.validate()
             except ManagedProviderError as exc:
                 raise ConnectorConfigError("invalid managed provider config") from exc
+
+    def validate_darwin_credentials(self) -> None:
+        if self.credentials_directory is not None or "CREDENTIALS_DIRECTORY" in os.environ:
+            raise ConnectorConfigError("macOS connector does not support systemd credentials_directory or CREDENTIALS_DIRECTORY")
+        if not self.daemon_token_path:
+            raise ConnectorConfigError("macOS connector requires explicit daemon_token_path for the Mac-app daemon")
 
     @classmethod
     def from_file(cls, path: Path) -> "ConnectorConfig":
@@ -234,13 +247,14 @@ def sd_notify(state: str, notify_socket: str | None = None) -> bool:
 
 
 class ConnectorSupervisor:
-    """Composes the Linux connector lifecycle."""
+    """Composes the native connector lifecycle."""
 
     def __init__(
         self,
         *,
         config: ConnectorConfig,
-        manager: SystemdServiceManager | None = None,
+        manager: ServiceManager | None = None,
+        config_path: Path | None = None,
         state_store: TrustStateStore | None = None,
         policy: RoutePolicyConsumer | None = None,
         readiness: ConnectorReadiness | None = None,
@@ -250,12 +264,18 @@ class ConnectorSupervisor:
     ) -> None:
         self.config = config
         self._manager = manager
+        self._config_path = config_path
         self._state_store = state_store
         self._policy = policy
         self._readiness = readiness
         self._injected_provider = provider
         self._now_fn = now_fn or (lambda: datetime.now(timezone.utc))
-        self._notify_fn = notify_fn or (lambda state: sd_notify(state))
+        self._launchd_readiness = None
+        if sys.platform == "darwin":
+            from runtime.remote_access.launchd_readiness import LaunchdReadiness
+
+            self._launchd_readiness = LaunchdReadiness(self._readiness_path(), config.watchdog_sec)
+        self._notify_fn = self._launchd_readiness or notify_fn or (lambda state: sd_notify(state))
         self._provider: LabProviderAdapter | None = None
         self._provider_running = False
         self._lifecycle_lock = threading.RLock()
@@ -275,9 +295,9 @@ class ConnectorSupervisor:
     # ── construction helpers (CLI path) ───────────────────────────────────
 
     @property
-    def manager(self) -> SystemdServiceManager:
+    def manager(self) -> ServiceManager:
         if self._manager is None:
-            self._manager = SystemdServiceManager(system=self.config.system)
+            self._manager = service_manager(system=self.config.system)
         return self._manager
 
     @property
@@ -334,6 +354,9 @@ class ConnectorSupervisor:
         )
 
     def credential_provider(self) -> DaemonCredentialProvider:
+        if sys.platform == "darwin":
+            self.config.validate_darwin_credentials()
+            return DarwinFileDaemonCredentialProvider(Path(self.config.daemon_token_path))
         # Under the service path systemd sets $CREDENTIALS_DIRECTORY (the
         # LoadCredential= injection the unit renders): consume it AUTOMATICALLY
         # — no redundant config, and never fall back to reading the daemon
@@ -596,10 +619,15 @@ class ConnectorSupervisor:
         service config/state/policy and where the rendered unit points
         ``--config``. ``StateDirectory=<state_dir>`` resolves to the same
         location systemd creates for the service user (system: ``/var/lib``;
-        user: the XDG state home)."""
+        user: the XDG state home). Darwin uses the per-user Library connector
+        root; the explicit root override retains its existing semantics."""
         cfg = config or self.config
         if cfg.managed_dir_root:
             return Path(cfg.managed_dir_root).expanduser() / cfg.state_dir
+        if sys.platform == "darwin":
+            from runtime.remote_access.launchd_files import DARWIN_CONNECTOR_STATE_ROOT
+
+            return DARWIN_CONNECTOR_STATE_ROOT.expanduser() / cfg.state_dir
         if cfg.system:
             return Path("/var/lib") / cfg.state_dir
         return Path.home() / ".local" / "state" / cfg.state_dir
@@ -674,6 +702,28 @@ class ConnectorSupervisor:
             managed_dir_root=cfg.managed_dir_root,
         )
 
+    def _launch_agent_text(self) -> str:
+        """Source CLI lifecycle only; credential/state installer and bundle entry are later slices."""
+        from runtime.remote_access.launchd_agent import render_launch_agent
+
+        if self.config.system:
+            raise ServiceManagerError("macOS connector requires a per-user LaunchAgent (system=false)")
+        args = self.config.exec_start
+        if args is None:
+            if getattr(sys, "frozen", False):
+                raise ServiceManagerError("bundled macOS connector entry point is not available yet")
+            if self._config_path is None:
+                raise ServiceManagerError("macOS install requires the source config path or explicit exec_start")
+            args = (sys.executable, "-m", "runtime.remote_access.cli", "run",
+                    "--config", str(self._config_path.resolve()))
+            if self.config.lab is not None:
+                args += ("--lab-only",)
+            if self.config.diy is not None:
+                args += ("--diy",)
+            if self.config.managed is not None:
+                args += ("--managed",)
+        return render_launch_agent(self.config.unit_name, tuple(args))
+
     def install(self, *, enable: bool = True) -> Path:
         """Stage config/state/policy into the declared managed directories and
         install the rendered unit. The source trust state is only an initial
@@ -683,6 +733,11 @@ class ConnectorSupervisor:
         reinstall/upgrade-recovery), refuses same-generation conflicts, and
         stages any monotonic advance transactionally. A corrupt or partial
         source state refuses installation (fail closed)."""
+        if sys.platform == "darwin":
+            return self.manager.install(self._launch_agent_text(), self.config.unit_name, enable=enable)
+        # Select before staging so unsupported hosts refuse without writing files.
+        if sys.platform != "linux":
+            self.manager
         managed = self._managed_config()
         return self._install_managed(managed, enable=enable)
 
@@ -876,10 +931,26 @@ class ConnectorSupervisor:
     def disable(self) -> None:
         self.manager.disable(self.config.unit_name)
 
+    def _readiness_path(self) -> Path:
+        from runtime.remote_access.launchd_agent import launchd_label
+
+        return self._managed_state_root() / f"{launchd_label(self.config.unit_name)}.readiness.json"
+
     def status(self) -> ServiceStatus:
-        return self.manager.status(self.config.unit_name)
+        process = self.manager.status(self.config.unit_name)
+        if sys.platform == "darwin":
+            from runtime.remote_access.launchd_readiness import readiness_status
+
+            return readiness_status(process, self._readiness_path(),
+                                    watchdog_sec=self.config.watchdog_sec,
+                                    poll_seconds=self.config.poll_seconds)
+        return process
 
     def upgrade(self, *, verify_start: bool = True) -> UpgradeOutcome:
+        if sys.platform == "darwin":
+            return self.manager.upgrade(
+                self._launch_agent_text(), self.config.unit_name, verify_start=verify_start
+            )
         return self.manager.upgrade(
             render_connector_unit(self.unit_spec()), self.config.unit_name, verify_start=verify_start
         )
@@ -890,6 +961,28 @@ class ConnectorSupervisor:
     # ── the foreground readiness loop (systemd Type=notify) ───────────────
 
     def run(
+        self,
+        *,
+        max_iterations: int | None = None,
+        poll_seconds: float | None = None,
+        wait_fn: Callable[[float], None] = time.sleep,
+    ) -> int:
+        """Select platform supervision outside the shared, unchanged notify loop."""
+        sink = self._launchd_readiness
+        if sink is None:
+            return self._run_loop(max_iterations=max_iterations, poll_seconds=poll_seconds, wait_fn=wait_fn)
+        try:
+            sink.start()
+            return self._run_loop(max_iterations=max_iterations, poll_seconds=poll_seconds, wait_fn=wait_fn)
+        finally:
+            # Keep the watchdog armed through listener/stream cleanup and the
+            # final not-ready publication, including exception and signal exits.
+            try:
+                self.shutdown()
+            finally:
+                sink.stop()
+
+    def _run_loop(
         self,
         *,
         max_iterations: int | None = None,

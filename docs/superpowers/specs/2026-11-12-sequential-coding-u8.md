@@ -74,6 +74,11 @@ The three locked design corrections:
    only as a separate authority-dependency note. No U7 GET returns that list and
    the setting has no browser control, so no value or link is shown and it is
    never the source of the assignment.
+   *Addendum 2026-11-14 (Workstream B3, TASK-16030), scoped to this item:* the
+   generic `reviewer_agents` setting is now editable in Settings ▸ Organization.
+   That does not change this view: the workflow reviewer is still independently
+   selected per run, the generic list is still never its source, and this run
+   view still shows no value or link for it.
 
 The task-detail banner (`shared/workflows/SequentialTaskBanner`) uses the task
 link only to select the run id; its state badge, relationship, version link and

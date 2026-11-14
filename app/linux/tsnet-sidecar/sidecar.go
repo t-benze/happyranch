@@ -1,4 +1,4 @@
-// Package sidecar implements the HappyRanch-managed Linux embedded-tailnet
+// Package sidecar implements the HappyRanch-managed embedded-tailnet
 // transport boundary. It transports opaque TCP bytes and has no HTTP or daemon
 // credential knowledge.
 package sidecar
@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -217,6 +218,10 @@ func consumeInput(c Config) ([]byte, error) {
 // Only the exact managed credential name in systemd's absolute directory gets
 // read-only credential semantics. The environment contains a path, never a key.
 func systemdInput(c Config) bool {
+	// launchd has no credential directory; Darwin always uses one-use files.
+	if runtime.GOOS == "darwin" {
+		return false
+	}
 	dir := os.Getenv("CREDENTIALS_DIRECTORY")
 	return filepath.IsAbs(dir) && filepath.Clean(dir) == dir && dir != "/" && c.CredentialFile == filepath.Join(dir, "enrollment-key")
 }

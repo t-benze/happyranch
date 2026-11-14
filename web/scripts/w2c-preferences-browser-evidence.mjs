@@ -113,6 +113,7 @@ const SETTINGS_OK = {
   org: {
     session_timeout_seconds: null,
     reviewer_agents: [],
+    reviewer_configuration: { state: 'none', missing_agents: [] },
     dreaming: { enabled: false, schedule: { time: '03:00', timezone: 'UTC' }, agents: { mode: 'all', include: [], exclude: [] } },
     threads: { enabled: true, default_turn_cap: 5, invocation_timeout_seconds: null },
     working_hours: {

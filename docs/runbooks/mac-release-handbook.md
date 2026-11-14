@@ -6,6 +6,16 @@ a copy, submits it once to Apple, then staples and verifies another copy. That
 produces a **different signed/notarized/stapled ZIP with a new SHA256**.
 Signing is not publication. Never create a public release or upload here.
 
+THR-360 C7 bundles the separate managed connector helper at
+`Contents/Helpers/happyranch-tsnet-sidecar` (Darwin/arm64, Go1.23.12, cgo off).
+Its Darwin THIRD_PARTY_NOTICES and dependency inventory are separate originals
+in the app licenses manifest. Both existing signing scripts include a helper
+present in the retained baseline before outer-app signing, with the existing
+identity, runtime option and no new entitlements. Their accepted older ZIP/
+source/layout pins remain unchanged: a new app still needs the separate
+authorized artifact-binding/release procedure. No C7 native build, signing,
+notarization, release or packaged-app acceptance is claimed.
+
 ## Prerequisites
 
 Use your ordinary owner login and its `$HOME` in a native arm64 shell,
@@ -437,3 +447,13 @@ repository); the build and archive transitions constrain the expected identity.
 A verification failure retains the complete bounded resource error list in the
 packaged probe artifact before scratch removal. See the
 [packaged observation contract](../../ci/jenkins/mac-native-probe/README.md#packaged-app-observation).
+
+## Managed connector sidecar source target (C6a)
+
+The managed Go transport now supports a CGO-disabled Darwin/arm64 cross-build
+with Go 1.23.12. See [the sidecar README](../../app/linux/tsnet-sidecar/README.md)
+for its explicit readiness-file/watchdog flags, compile-only commands and separate
+Darwin dependency inventory/notices. This target is not bundled by the app yet.
+Python launchd handoff/installation is C6b; frozen entry/bundling and native
+packaged-app acceptance remain pending. No Swift HomeConnector change, signing,
+Jenkins change or native execution is part of C6a.
