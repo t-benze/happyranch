@@ -1140,7 +1140,11 @@ health checks distinguish access denied/expired (401/403), unreachable and nativ
 unsafe-target/peer-change errors. A session loss shows reconnecting, then
 unreachable. These do not assert revocation. The user must explicitly confirm
 “Device was revoked / Rejoin”; that closes traffic, discards pairing authority
-and writes a private nonsecret resume block. Fresh recovery uses a new profile,
+and writes a private nonsecret resume block. The confirmation identifies the
+active membership while connected, or the explicitly selected saved membership
+after disconnect. Its displayed hostname, UUID and control server stay bound to
+the membership marked; failed persistence keeps that same membership blocked
+through refresh in this process. Fresh recovery uses a new profile,
 fresh enrollment key and fresh pairing approval.
 
 Enrollment custody uses only the existing file-based login Keychain, generic

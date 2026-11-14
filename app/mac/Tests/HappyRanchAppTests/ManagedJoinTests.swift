@@ -106,3 +106,122 @@ struct ManagedJoinTests {
         #expect(delegate.managedJoin.phase == .draft)
     }
 }
+
+@Suite("Managed membership revocation", .serialized)
+@MainActor
+struct ManagedMembershipRevocationTests {
+    private struct Profiles {
+        let first = ManagedJoinProfile.fresh(controlURL: "https://control-a.example")
+        let second = ManagedJoinProfile.fresh(controlURL: "https://control-b.example")
+
+        init() throws {
+            let files = FileManager.default
+            if !files.fileExists(atPath: ManagedJoinProfile.root) {
+                try files.createDirectory(atPath: ManagedJoinProfile.root, withIntermediateDirectories: true,
+                                          attributes: [.posixPermissions: 0o700])
+            }
+            var created: [String] = []
+            do {
+                for profile in [first, second] {
+                    try files.createDirectory(atPath: profile.directory, withIntermediateDirectories: false,
+                                              attributes: [.posixPermissions: 0o700])
+                    created.append(profile.directory)
+                    let path = profile.directory + "/profile.json"
+                    try JSONEncoder().encode(profile).write(to: URL(fileURLWithPath: path))
+                    try files.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path)
+                }
+            } catch {
+                for path in created { try? files.removeItem(atPath: path) }
+                throw error
+            }
+        }
+
+        func remove() throws {
+            try FileManager.default.removeItem(atPath: first.directory)
+            try FileManager.default.removeItem(atPath: second.directory)
+        }
+    }
+
+    @Test("A disconnect then explicit B selection blocks only B, including a fresh state load")
+    func disconnectedSelectionOwnsRevocation() throws {
+        let profiles = try Profiles()
+        defer { try? profiles.remove() }
+        var state = ManagedJoinModel.Memberships()
+        state.profiles = [profiles.first, profiles.second]
+        state.selectedProfileID = profiles.first.uuid
+        state.connected(profiles.first)
+        #expect(state.revocationProfile == profiles.first)
+        state.disconnected()
+        state.selectedProfileID = ""
+        #expect(state.revocationProfile == nil)
+        state.requestRevocation()
+        try state.confirmRevoked()
+        #expect(state.blockedResumeIDs.isEmpty)
+
+        state.selectedProfileID = profiles.second.uuid
+        state.requestRevocation()
+        #expect(state.confirmationProfile == profiles.second)
+        // The identity displayed when opening the dialog stays the target.
+        state.selectedProfileID = profiles.first.uuid
+        try state.confirmRevoked()
+        #expect(state.confirmationProfile == nil)
+        #expect(state.blockedResumeIDs == Set([profiles.second.uuid]))
+        #expect(try !profiles.first.isRevoked())
+        #expect(try profiles.second.isRevoked())
+
+        var relaunched = ManagedJoinModel.Memberships()
+        relaunched.profiles = try ManagedJoinProfile.saved()
+        let savedA = try #require(relaunched.profiles.first(where: { $0.uuid == profiles.first.uuid }))
+        let savedB = try #require(relaunched.profiles.first(where: { $0.uuid == profiles.second.uuid }))
+        #expect(relaunched.blockedResumeIDs.isEmpty)
+        #expect(try relaunched.canResume(savedA))
+        #expect(try !relaunched.canResume(savedB))
+    }
+
+    @Test("Connected A owns confirmation even when saved B is selected")
+    func connectedMembershipOwnsRevocation() throws {
+        let profiles = try Profiles()
+        defer { try? profiles.remove() }
+        var state = ManagedJoinModel.Memberships()
+        state.profiles = [profiles.first, profiles.second]
+        state.selectedProfileID = profiles.second.uuid
+        state.connected(profiles.first)
+        state.requestRevocation()
+        #expect(state.confirmationProfile == profiles.first)
+        try state.confirmRevoked()
+        #expect(state.blockedResumeIDs == Set([profiles.first.uuid]))
+        #expect(try profiles.first.isRevoked())
+        #expect(try !profiles.second.isRevoked())
+        #expect(try !state.canResume(profiles.first))
+        #expect(try state.canResume(profiles.second))
+    }
+
+    @Test("Marker failure keeps only the displayed membership blocked through refresh", arguments: [false, true])
+    func failedMarkerKeepsTargetBlocked(connected: Bool) throws {
+        let profiles = try Profiles()
+        defer { try? profiles.remove() }
+        var state = ManagedJoinModel.Memberships()
+        state.profiles = [profiles.first, profiles.second]
+        state.connected(profiles.first)
+        if !connected { state.disconnected() }
+        state.selectedProfileID = profiles.second.uuid
+        let target = connected ? profiles.first : profiles.second
+        let unaffected = connected ? profiles.second : profiles.first
+        let marker = target.directory + "/revoked"
+        try FileManager.default.createDirectory(atPath: marker, withIntermediateDirectories: false,
+                                                attributes: [.posixPermissions: 0o700])
+        state.requestRevocation()
+        #expect(state.confirmationProfile == target)
+        #expect(throws: ManagedNetworkError.stateFailure) { try state.confirmRevoked() }
+        #expect(state.confirmationProfile == nil)
+        #expect(state.blockedResumeIDs == Set([target.uuid]))
+        #expect(try !unaffected.isRevoked())
+        // Remove the write obstruction: only the real in-process block remains.
+        try FileManager.default.removeItem(atPath: marker)
+        state.disconnected()
+        state.profiles = try ManagedJoinProfile.saved()
+        #expect(try !target.isRevoked())
+        #expect(try !state.canResume(target))
+        #expect(try state.canResume(unaffected))
+    }
+}

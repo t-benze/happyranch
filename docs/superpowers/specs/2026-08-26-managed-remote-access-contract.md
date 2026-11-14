@@ -1126,7 +1126,11 @@ awaits Security results and existing native teardown; no replay or automatic
 resume. Saved-profile selection and empty-key membership checks are explicit;
 native marker/state validation remains authoritative. A private nonsecret
 `revoked` file blocks saved membership when the operator-confirmed action is
-chosen. Failed/uncertain persistence blocks actions. Fresh recovery creates a
+chosen. Confirmation shows and binds the active membership while connected,
+or the explicitly selected saved membership after disconnect. The displayed
+hostname, UUID and control server identify the exact membership marked; a
+failed write keeps that same membership blocked through in-process refresh.
+Failed/uncertain persistence blocks actions. Fresh recovery creates a
 new UUID profile and requires a fresh enrollment key and fresh pairing.
 
 Joined/unpaired/pairing is offline. Only authenticated paired runtime health is

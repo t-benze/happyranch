@@ -218,15 +218,20 @@ private struct RemoteClientForm: View {
                     }.disabled(model.phase == .canceling)
                 }
                 if managed, model.canConfirmRevoked {
-                    Button("Device was revoked / Rejoin") { confirmingRevocation = true }
+                    Button("Device was revoked / Rejoin") {
+                        model.requestRevocation()
+                        confirmingRevocation = model.revocationConfirmation != nil
+                    }
                         .foregroundColor(.red)
                         .confirmationDialog("Only confirm if your operator revoked this device. Denial or timeout alone does not prove revocation.",
-                                            isPresented: $confirmingRevocation) {
-                            Button("Confirm device was revoked", role: .destructive) {
+                                            isPresented: $confirmingRevocation, presenting: model.revocationConfirmation) { profile in
+                            Button("Confirm \(profile.hostname) (\(profile.uuid)) was revoked", role: .destructive) {
                                 enrollmentKey = ""
                                 appDelegate.confirmManagedRevocation()
                             }
-                            Button("Cancel", role: .cancel) {}
+                            Button("Cancel", role: .cancel) { model.cancelRevocation() }
+                        } message: { profile in
+                            Text("Membership: \(profile.hostname) · \(profile.uuid)\nControl server: \(profile.controlURL)")
                         }
                 }
             }

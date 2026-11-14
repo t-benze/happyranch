@@ -55,23 +55,57 @@ final class ManagedJoinModel: ObservableObject {
         }
     }
 
+    /// Owns the membership identity shown by confirmation and its resume block.
+    struct Memberships {
+        var profiles: [ManagedJoinProfile] = []
+        var selectedProfileID = ""
+        private(set) var activeProfile: ManagedJoinProfile?
+        private(set) var confirmationProfile: ManagedJoinProfile?
+        private(set) var blockedResumeIDs: Set<String> = []
+
+        var revocationProfile: ManagedJoinProfile? {
+            activeProfile ?? profiles.first(where: { $0.uuid == selectedProfileID })
+        }
+
+        mutating func connected(_ profile: ManagedJoinProfile) { activeProfile = profile }
+        mutating func disconnected() { activeProfile = nil }
+        mutating func requestRevocation() { confirmationProfile = revocationProfile }
+        mutating func cancelRevocation() { confirmationProfile = nil }
+
+        mutating func confirmRevoked() throws {
+            guard let profile = confirmationProfile else { return }
+            defer { confirmationProfile = nil }
+            // Keep uncertainty sticky across explicit refreshes in this process.
+            blockedResumeIDs.insert(profile.uuid)
+            try profile.markRevoked()
+        }
+
+        func canResume(_ profile: ManagedJoinProfile) throws -> Bool {
+            guard !blockedResumeIDs.contains(profile.uuid) else { return false }
+            return try !profile.isRevoked()
+        }
+    }
+
     @Published private(set) var phase: Phase = .draft
     @Published private(set) var custodyReady = false
-    @Published private(set) var profiles: [ManagedJoinProfile] = []
-    @Published var selectedProfileID = ""
+    @Published private(set) var memberships = Memberships()
+    var profiles: [ManagedJoinProfile] { memberships.profiles }
+    var selectedProfileID: String {
+        get { memberships.selectedProfileID }
+        set { memberships.selectedProfileID = newValue }
+    }
+    var revocationConfirmation: ManagedJoinProfile? { memberships.confirmationProfile }
     @Published var controlURL = ""
     @Published private(set) var confirmedControlHost: String?
     private let keyStore = EnrollmentKeyStore()
     private var operation: Task<Void, Never>?
     private var generation = UUID()
     private(set) var bridge: ClientBridge?
-    private var profile: ManagedJoinProfile?
     private var prepared = false
     private var networkSubmitted = false
-    private var blockedResumeIDs: Set<String> = []
 
     var busy: Bool { phase.busy }
-    var canConfirmRevoked: Bool { !busy && (profile != nil || profiles.contains(where: { $0.uuid == selectedProfileID })) }
+    var canConfirmRevoked: Bool { !busy && memberships.revocationProfile != nil }
     var canPair: Bool { bridge != nil && [.joined, .accessDenied, .unreachable].contains(phase) }
     var connectionState: ConnectionState { phase.connectionState }
 
@@ -95,12 +129,12 @@ final class ManagedJoinModel: ObservableObject {
                 guard generation == token else { return }
                 custodyReady = true
                 do {
-                    profiles = try ManagedJoinProfile.saved()
+                    memberships.profiles = try ManagedJoinProfile.saved()
                     phase = profiles.isEmpty ? .draft : .interrupted
                 } catch {
                     // Historical incomplete state refuses resume, but must not
                     // prevent fresh-key recovery into a different UUID profile.
-                    profiles = []
+                    memberships.profiles = []
                     phase = .error(Self.safeMessage(error))
                 }
             } catch {
@@ -157,7 +191,7 @@ final class ManagedJoinModel: ObservableObject {
             return
         }
         do {
-            guard !blockedResumeIDs.contains(saved.uuid), try !saved.isRevoked() else { phase = .revoked; return }
+            guard try memberships.canResume(saved) else { phase = .revoked; return }
             _ = try Self.validatedControlURL(saved.controlURL)
         } catch { phase = .error(Self.safeMessage(error)); return }
         begin(profile: saved, homeHost: homeHost, homePort: homePort, key: nil)
@@ -166,7 +200,7 @@ final class ManagedJoinModel: ObservableObject {
     private func begin(profile: ManagedJoinProfile, homeHost: String, homePort: UInt16, key: Data?) {
         let token = UUID()
         generation = token
-        self.profile = profile
+        memberships.connected(profile)
         confirmedControlHost = URL(string: profile.controlURL)?.host
         networkSubmitted = false
         let candidate = ClientBridge(homeConnectorHost: homeHost, homeConnectorPort: homePort, lane: .managed)
@@ -206,6 +240,7 @@ final class ManagedJoinModel: ObservableObject {
                 await candidate.stopManagedNetwork()
                 guard generation == token else { return }
                 bridge = nil
+                memberships.disconnected()
                 phase = error is CancellationError ? .interrupted : .error(Self.safeMessage(error))
             }
         }
@@ -247,19 +282,25 @@ final class ManagedJoinModel: ObservableObject {
             await candidate?.stopManagedNetwork()
             guard generation == token else { return }
             bridge = nil
-            do { profiles = try ManagedJoinProfile.saved(); phase = settledPhase }
-            catch { profiles = []; phase = .error(Self.safeMessage(error)) }
+            memberships.disconnected()
+            do { memberships.profiles = try ManagedJoinProfile.saved(); phase = settledPhase }
+            catch { memberships.profiles = []; phase = .error(Self.safeMessage(error)) }
             operation = nil
         }
     }
 
+    func requestRevocation() {
+        guard canConfirmRevoked else { return }
+        memberships.requestRevocation()
+    }
+
+    func cancelRevocation() { memberships.cancelRevocation() }
+
     func confirmRevoked() {
-        guard !busy, let profile = profile ?? profiles.first(where: { $0.uuid == selectedProfileID }) else { return }
-        // Keep uncertainty sticky across explicit refreshes in this process.
-        blockedResumeIDs.insert(profile.uuid)
+        guard !busy, revocationConfirmation != nil else { return }
         // Stop traffic immediately, even if persisting the resume block fails.
         bridge?.stop()
-        do { try profile.markRevoked(); disconnect(endingAt: .revoked) }
+        do { try memberships.confirmRevoked(); disconnect(endingAt: .revoked) }
         catch {
             custodyReady = false
             disconnect(endingAt: .error("Revocation could not be saved safely. Saved membership is blocked until resolved."))
