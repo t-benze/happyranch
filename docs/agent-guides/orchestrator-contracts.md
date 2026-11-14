@@ -1526,7 +1526,7 @@ metadata produces honest ID-only context with no writes, reconciliation or
 launch gate. Prompt wording states current-name human addressing and ID-only
 automation; remembered names do not override fresh resumed-turn context.
 
-Full/resumed thread, full fallback and resumed nudge plus dream/wake/schedule
+Full/resumed thread, full fallback and fresh full-context nudge plus dream/wake/schedule
 production callers supply fresh context under the same rule. IDs retain authority,
 role checks, durable queue membership and callback/failure ordering. Scenario8
 renders shipping builders and scenario9 checks bindings. Source-pinned maker

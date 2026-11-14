@@ -2978,7 +2978,15 @@ Implementation: `runtime/daemon/thread_runner.py`, `runtime/orchestrator/executo
 Traps:
 
 - Optimization, never a correctness dependency — for claude/codex/pi only.
-- `last_resumed_seq` advances only after a successful subprocess.
+- A session save and `last_resumed_seq` advance require both a successful
+  subprocess and a genuine reply/decline callback. A pending rc=0 first pass
+  changes neither. Its single corrective nudge starts fresh with canonical
+  context through the existing prompt bound, never resuming the suspect id.
+  `no_callback_after_reprompt` clears the stored id through the existing
+  owner/abort-guarded session writer, preserving the prior watermark and
+  breaker accounting. An oversized nudge retains the prior session/watermark
+  and settles as `prompt_too_large` without launching or counting a breaker
+  failure. Provider-declared eviction keeps its separate transactional path.
 - Per-`(thread, agent)` `asyncio.Lock` protects read-run-update.
 - **Eviction invalidation is transactional (THR-200).** On a provider-declared
   session-not-found, the `agent_session_evicted_fallback` audit and the durable
@@ -4824,8 +4832,8 @@ REPLY/BOOTSTRAP/TASK_FOLLOWUP rows and retains their exact count/triggering seqs
 Delivery discard keeps acknowledged=required, clears slots and suppresses exchange
 catchup; state-only obligations invent no invocation/control. The exact original
 native generation is signalled before DB lock release; a delayed dispatch cannot
-signal a successor. All four resume writers hold that same lock across a fresh
-matching-owner/token/status check and save. Aborted nudge completion returns
+signal a successor. Session saves and no-callback clears hold that same lock
+across a fresh matching-owner/token/status check and write. Aborted nudge completion returns
 before save/breaker/failure classification. Callback winners remain excluded from
 abort and keep ordinary completion behavior; abort winners retain existing409,
 with no reply/ACK/follow-on. The pair guard spans actual preparation/provider/

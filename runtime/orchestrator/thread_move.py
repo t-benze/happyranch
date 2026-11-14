@@ -425,8 +425,8 @@ class ThreadPreparation:
             except Exception:
                 logger.exception("Thread cleanup attribution persistence failed; retaining unknown owner")
 
-    def save_session(self, *, agent_session_id: str, last_resumed_seq: int) -> bool:
-        # Abort A/S and all four resume writers arbitrate on the SAME DB RLock.
+    def save_session(self, *, agent_session_id: str | None, last_resumed_seq: int) -> bool:
+        # Abort A/S and session saves/clears arbitrate on the SAME DB RLock.
         with self.admission.db._lock:
             inv = self.admission.db.get_invocation_any_status(self.inv.invocation_token)
             if (self.admission.live.get(self.inv.id) is not self or not self.owner_live

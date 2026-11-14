@@ -1001,8 +1001,8 @@ def _parse_pi_usage(stdout: str) -> TokenUsage | None:
             model=last_model,
             usage_raw_json=json.dumps(last_usage),
         )
-    # Fall back to raw-only preservation (original behavior).
-    return TokenUsage(usage_raw_json=stdout[:_TAIL_BYTES])
+    # Preserve final diagnostics when no terminal usage event is parseable.
+    return TokenUsage(usage_raw_json=stdout[-_TAIL_BYTES:])
 
 def is_rate_limit_signature(text: str) -> bool:
     """True when ``text`` matches a known provider rate-limit signature.

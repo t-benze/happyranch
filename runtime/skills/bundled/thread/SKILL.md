@@ -360,8 +360,13 @@ notification for a still-pending successor and the committed parent/followup
 tail without duplicating rows or queued work. Reply or decline afterwards.
 
 Dispatching does NOT end the turn — you MUST still issue a reply or decline
-afterwards to release the invocation token. If you exit without either, the
-daemon will auto-decline on your behalf with reason="no_callback".
+afterwards to release the invocation token. A clean exit without either leaves
+the stored provider session and watermark unchanged. The daemon gives one
+fresh full-context nudge through its existing prompt-size bound, without
+resuming the suspect session. A second clean exit without a callback settles
+as `no_callback_after_reprompt` and clears the stored provider session id while
+preserving the watermark. A nudge too large for the bound fails before launch
+as `prompt_too_large` and retains the prior session and watermark.
 
 ## Dispatch from a thread is self-only
 
