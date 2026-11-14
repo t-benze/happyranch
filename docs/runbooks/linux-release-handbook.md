@@ -46,8 +46,19 @@ from the extracted directory; the .deb installs absolute forwarding wrappers.
 The daemon launcher exports `HAPPYRANCH_BUNDLED_BIN=<prefix>/bin`, which startup
 places first on agents' PATH, removing duplicate copies. This is source mode
 (`sys.frozen` is false). Installed runtime data and bundled skills are retained.
-The remote-access connector's `/opt/happyranch/venv/bin/python` layout stays
-separate from desktop packaging (see the installation layout below).
+The remote-access installer defaults to the separate source layout at
+`/opt/happyranch/venv/bin/python`. Its `--layout deb` option uses the packaged
+`/opt/happyranch-desktop/python/bin/python3 -I` and packaged sidecar. See
+[Desktop package host](../../deploy/remote-access/RUNBOOK.md#desktop-package-host)
+for provisioning before installation. The installer validates the dpkg-owned
+prefix and executables without creating or changing their permissions. The
+`happyranch` service account must have execute permission on both executables
+(including the resolved bundled Python target) and search permission on every
+payload parent through `/opt/happyranch-desktop` and `/opt`. Unix DAC owner,
+primary/supplementary group, then other bits determine access. Missing access
+refuses provisioning/install before configuration or unit publication, naming
+the path and missing permission. Fresh-host provisioning rechecks after account
+creation.
 
 Inside a runtime session (nonempty `HAPPYRANCH_RUNTIME_SESSION_ID`), the packaged
 `bin/happyranch` CLI refuses an unset or empty `HAPPYRANCH_DAEMON_HOME`, exits
@@ -269,8 +280,10 @@ connector scripts (`scripts/ci/m1_install_ready_uninstall.sh`,
 and `/run`, and `happyranch-connector.service` /
 `happyranch-tsnet-sidecar.service`. Their provisioning also requires
 `/opt/happyranch` to be absent. A separate prefix avoids owning even that parent.
-The desktop package installs no connector files, configuration, accounts,
-systemd units or enablement, and never invokes the connector installer. See
+The desktop package ships the connector Python modules and sidecar, but installs
+no connector configuration, accounts, systemd units or enablement, and never
+invokes the connector installer. Explicit `provision/install --layout deb`
+uses those packaged executables and retains separate config/state ownership. See
 [the connector contract](../agent-guides/contracts/remote-access-and-remote-jobs.md).
 
 | Package path | Purpose |

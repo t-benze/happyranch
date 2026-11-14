@@ -94,6 +94,19 @@ python -B -m unittest scripts.mac_native.test_connector_installer -v
 python -B -m unittest scripts.mac_native.test_connector_bundle -v
 ```
 
+The installer selection also includes `ManagedLinuxDebInstaller`: unit bytes
+for source/deb layouts, temp-root Linux provisioning/install/drift with fake
+service-manager commands, package-prefix and provisioning refusals, and token
+source/staged-copy rotation. It never invokes systemd or the live installer.
+The base fixture substitutes the current UID/GID for root/service ownership.
+Payload-access cases use distinct synthetic service IDs, account/group lookups
+and descriptor-ownership metadata to check Unix DAC precedence, 0744 executable
+and 0700 ancestor refusals, post-account-creation admission, and 0755/0750
+positives. File modes, directory contents, unit publication and start delegation
+are observed through the real installer. No real chown, useradd or service
+command runs in these cases. These focused checks are outside required PR
+checks and prove no native privilege separation or package/service start.
+
 This retained native-script venue uses fake runners and temporary paths, outside
 of the retired Python-unit selection. It checks CLI errors, platform selection,
 Linux argv/state/credential parity and macOS plist/lifecycle/status/recovery,

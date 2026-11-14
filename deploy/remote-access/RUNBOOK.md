@@ -17,6 +17,120 @@ those outcomes or authorization to provision/deploy.
 
 ---
 
+## Desktop package host
+
+The Linux root installer supports `--layout source` (default, unchanged source
+units at `/opt/happyranch`) and `--layout deb` (the installed desktop package at
+`/opt/happyranch-desktop`). The latter uses:
+
+* connector: `/opt/happyranch-desktop/python/bin/python3 -I -m runtime.remote_access.cli run --managed --config /etc/happyranch/connector.json`;
+* sidecar: `/opt/happyranch-desktop/bin/happyranch-tsnet-sidecar --config /etc/happyranch/sidecar.json --credential-file ${CREDENTIALS_DIRECTORY}/enrollment-key`.
+
+`packaging/linux/build-payload.sh` installs the runtime wheel into the private
+Python and ships `python3 -> python3.12` plus this sidecar. The installer checks
+literal root-owned, non-group/world-writable prefix directories and executable
+files, including that exact Python link. Both executables and every payload
+parent through `/opt/happyranch-desktop` and `/opt` must grant the configured
+`happyranch` service account execute/search access, evaluated using Unix DAC
+owner bits first, otherwise matching primary/supplementary group bits, otherwise
+other bits. Missing access refuses before config/unit publication or start and
+names the path and permission; fresh-host provisioning rechecks after account
+creation. The installer never creates or chmods the dpkg prefix. Install/upgrade
+the package separately with the required deployment approval; neither provisioning nor installation below builds a package.
+
+Prepare operator-owned, single-link regular JSON input files with no symlinked
+parents and no group/world write bits. Inputs are bounded to 64 KiB each. Supply
+stable tenant/home/connector IDs; keep the same files for that installation.
+For the planned release daemon, `connector.json` is:
+
+```json
+{
+  "tenant_id": "YOUR-STABLE-TENANT",
+  "home_id": "YOUR-STABLE-HOME",
+  "connector_id": "YOUR-STABLE-CONNECTOR",
+  "daemon_port": 8766,
+  "daemon_token_path": "/etc/happyranch/daemon.token",
+  "policy_path": "/etc/happyranch/policy.json",
+  "state_path": "/var/lib/happyranch-connector/trust-state.json",
+  "system": true,
+  "service_user": "happyranch",
+  "service_group": "happyranch",
+  "managed": {"bind_host": "127.0.0.1", "bind_port": 18443}
+}
+```
+
+The service account has `/nonexistent` as its home. Do not use the supervisor's
+home-based trust-state default. Provisioning creates the service-writable state
+paths, including private `/var/lib/happyranch-tsnet-sidecar`. `sidecar.json` is:
+
+```json
+{
+  "StateDir": "/var/lib/happyranch-tsnet-sidecar",
+  "ControlURL": "https://47-242-34-153.sslip.io:8443",
+  "RoleIdentity": "home-sidecar-YOUR-STABLE-ID",
+  "ExpectedPeer": "YOUR-EXPECTED-PEER",
+  "DERPPolicy": "private-only",
+  "ListenAddr": ":443",
+  "ConnectorAddr": "127.0.0.1:18443"
+}
+```
+
+Do not put an enrollment key or `CredentialFile` in this JSON. The existing
+systemd credential-file override supplies it. The operator supplies a fresh
+single-use Headscale key at installation, and later performs local pairing;
+provisioning generates neither keys nor device credentials.
+
+Supply `policy.json` as the current operational `PolicyEnvelope`: schema 1,
+`artifact_version` equal to the shipped `runtime/remote_access/route_policy.json`
+version, that complete artifact under `artifact`, current aware UTC `issued_at`,
+`max_age_seconds` (for example 3600), revision 1 or the current revision, and
+`state: "active"`. This is the same envelope used by
+`scripts/ci/m1_install_ready_uninstall.sh`. Both structural policy validation and
+freshness run before any service start; preserve the policy's existing renewal
+process. Provisioning does not mint a new policy or relax its lifetime.
+
+After host-install authorization, stage inputs with the packaged interpreter:
+
+```sh
+sudo /opt/happyranch-desktop/python/bin/python3 -I -m runtime.remote_access.installer provision --layout deb --connector-config /root/remote-access-inputs/connector.json --sidecar-config /root/remote-access-inputs/sidecar.json --policy-file /root/remote-access-inputs/policy.json --daemon-token-source /home/benze/.happyranch-release/daemon.token
+```
+
+Use the actual absolute token-source path as an input. It must be a literal,
+single-link regular 0600 file containing a nonempty UTF8 token. The installer
+copies it to `/etc/happyranch/daemon.token`, mode 0600, owned by
+`happyranch:happyranch`. Configs are root-owned, group `happyranch`, mode 0640.
+The root-owned 0600 `/etc/happyranch/provision.json` records the layout, exact
+source path, token SHA-256 and config digests. No token value enters that record,
+units, argv or diagnostics. Provision never starts services; it refuses existing
+config/token/record destinations. Partial files remain for operator inspection;
+there is no upgrade journal, rollback or automatic recovery.
+
+Install only after the separate remote-access activation approval, supplying
+the existing root-owned 0600 enrollment-key file:
+
+```sh
+sudo /opt/happyranch-desktop/python/bin/python3 -I -m runtime.remote_access.installer install --layout deb --enrollment-key-file /root/remote-access-inputs/enrollment.key
+sudo /opt/happyranch-desktop/python/bin/python3 -I -m runtime.remote_access.installer check-drift
+```
+
+Deb installation requires complete, unchanged, valid provisioning before unit
+writes or service-manager calls. Existing enrollment refusal, cleanup and
+post-start target-stop behavior remain. Check-drift reads the installed layout,
+compares exact units plus fragment/drop-ins/reload/active state, revalidates the
+configs/current policy, and rereads BOTH the current token source and staged
+copy against the recorded hash. A later daemon-token rotation therefore fails
+drift even when the staged copy is unchanged. Reprovisioning/renewal requires
+explicit operator recovery; it does not overwrite existing files automatically.
+Use `uninstall --layout deb` (and optionally the existing `--purge`) to remove
+units/state. Configs, record, staged token, package, logs and account are retained.
+A missing package is not required for uninstall; unit safety checks still apply.
+
+This is slice B1a of THR-327. B1b's Python/Go cross-config port exclusions remain
+pending. Keep ingress 18443 separate from DEV 8765 and RELEASE 8766; both
+existing literal-8765 guards remain. These source changes do not authorize
+installation on the live host. Activation and Mac testing wait for B1b and their
+separate approvals; the proxy/Headscale environment is unchanged.
+
 ## Overview
 
 This runbook walks through provisioning a **self-hosted headscale control plane**

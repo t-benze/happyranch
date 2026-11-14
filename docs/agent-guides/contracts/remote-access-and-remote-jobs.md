@@ -777,3 +777,46 @@ login/reboot persistence and packaged execution. Packaged-app connector acceptan
 depends on the separate THR-346 packaged-app check, pending founder approval.
 No Jenkins config, dependency, Swift, Linux, Go-source/inventory, signing identity,
 CI trigger or required lint/static check changes are included.
+
+
+### Linux desktop-package provisioning (THR-327 B1a)
+
+`ManagedInstaller` and its CLI retain the source layout by default, with
+byte-identical source systemd units. `--layout deb` selects the packaged private
+Python (`/opt/happyranch-desktop/python/bin/python3 -I -m`) and packaged sidecar;
+`SidecarUnitSpec.binary_path` supplies its ExecStart. Dpkg-owned directories are
+only validated: root ownership, no group/world write, literal safe parents and
+both executable files, permitting only the shipped `python3 -> python3.12` link.
+The configured service UID, primary GID and supplementary groups must have
+execute access to both files (including the resolved Python target) and search
+access to every payload ancestor through `/opt/happyranch-desktop` and `/opt`.
+Unix DAC selects owner bits when the UID matches, otherwise group bits when a
+GID matches, otherwise other bits. Missing access raises a path/permission
+diagnostic before config/unit publication or start. Fresh-host provisioning
+rechecks after creating the account; dpkg paths remain read-only.
+
+The new `provision` command accepts connector/sidecar/current-policy JSON and an
+absolute daemon-token source. It validates before effects, creates only the
+existing installer-owned account/config/state layout, and stages root-owned
+0640 root:happyranch configs, a 0600 happyranch:happyranch token, and root-owned
+0600 layout/config/token provenance. Stable IDs come from the operator;
+trust state is fixed under `/var/lib/happyranch-connector`, sidecar state under
+`/var/lib/happyranch-tsnet-sidecar`. Credentials remain file-only systemd input;
+no key generation, pairing or secret diagnostics are added. Existing files
+refuse; partial failure has no automatic rollback or overwrite recovery.
+
+Deb install refuses incomplete/unsafe/changed provisioning before unit writes
+or service start. Source installs without a provisioning record retain their
+existing independently provisioned behavior. Check-drift derives the layout
+from the protected record when present, retains exact-unit/loaded-file checks,
+revalidates configs/current policy, and compares both the freshly reread token
+source and staged copy with the recorded hash. Rotation/missing sources fail
+closed. Uninstall keeps existing unit checks and can run despite invalid or
+expired provisioning; config/provenance/token files remain retained.
+
+[Desktop package host](../../../deploy/remote-access/RUNBOOK.md#desktop-package-host)
+has input fields, commands and deployment holds. B1b's cross-config Python/Go
+port exclusions are separate; the literal-8765 guards are unchanged. No
+installation, daemon/service restart, package build or Mac acceptance was
+performed by this source slice. The retained standalone installer-script tests
+cover temp-root/fake-manager behavior; required PR checks remain lint/static.
