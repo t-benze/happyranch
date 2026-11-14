@@ -37,6 +37,7 @@ from runtime.models import (
 from runtime.orchestrator.executors import (
     ExecutorResult,
     _meaningful_stderr,
+    _SESSION_LIFETIME_PREAMBLE,
 )
 from runtime.orchestrator.executor_registry import build_executor, get_registry
 from runtime.orchestrator.host_supervisor import (
@@ -72,8 +73,9 @@ logger = logging.getLogger(__name__)
 _REASON_DETAIL_CAP = 2000
 _REASON_DIAGNOSTIC_LINE_CAP = 900
 
-# 512 KiB of UTF-8, including instructions and per-phase suffixes. This is
-# the documented large-stdin canary floor, not a provider token/context limit.
+# 512 KiB of UTF-8, including the executor-added session-lifetime preamble,
+# instructions and per-phase suffixes. This is the documented large-stdin
+# canary floor, not a provider token/context limit.
 # Keep local admission conservative and provider-independent; no config knob.
 THREAD_PROMPT_MAX_BYTES = 512 * 1024
 
@@ -88,7 +90,11 @@ def _bound_thread_prompt(
     bootstrap/followup turns the triggering sequence is the mandatory start.
     The canonical load stays uncapped; only its presentation is reduced.
     """
-    if len(prompt.encode("utf-8")) <= THREAD_PROMPT_MAX_BYTES:
+    # Every built-in executor adds this same preamble on direct and supervised
+    # launches (including phase reentry). Bound the final payload, not just the
+    # runner-built portion; retain one provider-independent admission limit.
+    available = THREAD_PROMPT_MAX_BYTES - len(_SESSION_LIFETIME_PREAMBLE.encode("utf-8"))
+    if len(prompt.encode("utf-8")) <= available:
         return prompt, [m.seq for m in messages]
     if rebuild is None:
         return None
@@ -100,7 +106,7 @@ def _bound_thread_prompt(
         return "Earlier optional thread history omitted to fit the prompt limit.\n\n" + rebuild(messages[start:])
 
     bounded = candidate(optional)
-    if len(bounded.encode("utf-8")) > THREAD_PROMPT_MAX_BYTES:
+    if len(bounded.encode("utf-8")) > available:
         return None
     # Binary search avoids one whole-prompt rebuild per historical message.
     # Each candidate retains a contiguous suffix: most-recent-first selection.
@@ -108,7 +114,7 @@ def _bound_thread_prompt(
     while low < high:
         mid = (low + high) // 2
         trial = candidate(mid)
-        if len(trial.encode("utf-8")) <= THREAD_PROMPT_MAX_BYTES:
+        if len(trial.encode("utf-8")) <= available:
             high, bounded = mid, trial
         else:
             low = mid + 1

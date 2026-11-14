@@ -13,6 +13,9 @@ unchanged under-bound prompts, optional-history trimming that preserves every
 claimed message, and `prompt_too_large` settlement before phase launch across
 fresh/delta, eviction fallback and nudge rebuilds. Session saves, delivery
 acknowledgement, breaker counts and immediate retry creation are observed. This
+also drives every built-in executor's real direct and supervised prompt
+composition, intercepting transport before launch, to check the final UTF-8
+payload including the session-lifetime preamble at the size boundary. This
 adds no required CI check or E2E trigger; retired units and general integration
 remain excluded.
 

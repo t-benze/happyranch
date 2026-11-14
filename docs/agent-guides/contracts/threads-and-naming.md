@@ -286,9 +286,12 @@ See the [current naming contract](../../superpowers/specs/2026-10-09-identity-na
 
 **Thread prompt bound (#832 slice 1).** Every fresh/delta, eviction fallback,
 nudge and phase-reentry build preflights the complete prompt (including skills,
-policy, guardrail, delivery and corrective notes) before executor/supervisor
+policy, guardrail, delivery and corrective notes, plus the executor-added
+session-lifetime preamble) before executor/supervisor
 launch. `THREAD_PROMPT_MAX_BYTES` is a fixed 512 KiB UTF-8 limit, matching the
 documented stdin canary floor rather than promising a provider context limit.
+Sizing reserves the UTF-8 length of the actual shared executor preamble for
+both acceptance and optional-history candidates.
 Under-bound prompts remain unchanged. Only older optional history before the
 claimed range can be omitted, retaining whole messages most-recent-first with
 an explicit omission marker. All messages from the claimed start onward remain;

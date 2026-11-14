@@ -12,11 +12,61 @@ from scripts.test_agent_retirement import fixture
 from runtime.config import Settings
 from runtime.daemon import thread_runner as runner
 from runtime.daemon.org_state import OrgState
-from runtime.models import ThreadInvocationStatus, ThreadMessageKind, ThreadRecord
+from runtime.models import ThreadInvocationStatus, ThreadMessage, ThreadMessageKind, ThreadRecord
+from runtime.orchestrator import executors
 from runtime.orchestrator.executors import ExecutorResult
 from runtime.orchestrator.thread_move import current_thread_preparation
 
 BOUND = 16_000
+
+
+@pytest.mark.parametrize("provider", ["claude", "codex", "opencode", "pi"])
+@pytest.mark.parametrize("transport", ["run", "build_launch_spec"])
+@pytest.mark.parametrize("case", ["exact", "trimmed"])
+def test_final_executor_payload_bound(provider: str, transport: str, case: str, tmp_path: Path) -> None:
+    cap = runner.THREAD_PROMPT_MAX_BYTES
+    preamble = executors._SESSION_LIFETIME_PREAMBLE
+    available = cap - len(preamble.encode("utf-8"))
+    # Multibyte mandatory content ends exactly at the final-payload boundary.
+    body = "界" * (available // 3) + "x" * (available % 3)
+    messages: list[ThreadMessage] = []
+    rebuild = None
+    if case == "trimmed":
+        marker = "Earlier optional thread history omitted to fit the prompt limit.\n\n"
+        required_bytes = available - len(marker.encode("utf-8"))
+        required = "界" * (required_bytes // 3) + "x" * (required_bytes % 3)
+        messages = [ThreadMessage(thread_id="THR-size", seq=seq, speaker="founder",
+                                 kind=ThreadMessageKind.MESSAGE, body_markdown=value)
+                    for seq, value in enumerate(["x" * cap, "RECENT", required], 1)]
+
+        def rebuild(kept: list[ThreadMessage]) -> str:
+            return "".join(message.body_markdown or "" for message in kept)
+
+        body = rebuild(messages)
+    bounded = runner._bound_thread_prompt(body, messages=messages, mandatory_from_seq=3, rebuild=rebuild)
+    assert bounded is not None
+    prompt, shown = bounded
+    executor = {
+        "claude": lambda: executors.ClaudeExecutor("synthetic", "default", Settings()),
+        "codex": lambda: executors.CodexExecutor("synthetic", "workspace-write"),
+        "opencode": lambda: executors.OpencodeExecutor("synthetic"),
+        "pi": lambda: executors.PiExecutor("synthetic"),
+    }[provider]()
+    seam = "_run_command" if transport == "run" else "build_command_launch_spec"
+    with patch.object(executors, "_resolve_binary", return_value="synthetic"), \
+         patch("runtime.orchestrator.workspace_adapters.allow_rules_for_agent", return_value=[]), \
+         patch.object(executors, seam) as capture, \
+         patch("subprocess.Popen", side_effect=AssertionError("provider must never run")):
+        getattr(executor, transport)(workspace=tmp_path, prompt=prompt, session_id="synthetic")
+    capture.assert_called_once()
+    payload = capture.call_args.kwargs["input_text"]
+    assert payload == preamble + prompt
+    assert len(payload.encode("utf-8")) <= cap
+    assert len(payload.encode("utf-8")) == cap
+    if case == "trimmed":
+        assert shown == [3] and required in prompt and "RECENT" not in prompt
+    else:
+        assert payload == preamble + body
 
 
 def delivery_note(start: int, end: int) -> str:
@@ -101,7 +151,8 @@ async def test_under_bound_prompt_unchanged(
     def observe(**kwargs: Any) -> str:
         value = builder(**kwargs)
         rendered.append(value)
-        monkeypatch.setattr(runner, "THREAD_PROMPT_MAX_BYTES", len((value + delivery_note(2, 3)).encode()) + headroom)
+        monkeypatch.setattr(runner, "THREAD_PROMPT_MAX_BYTES",
+                            len((executors._SESSION_LIFETIME_PREAMBLE + value + delivery_note(2, 3)).encode()) + headroom)
         return value
 
     with patch.object(runner, builder.__name__, side_effect=observe):
@@ -139,16 +190,31 @@ async def test_optional_trimming_preserves_claimed_range(org: OrgState, path: st
     assert org.db.get_reply_delivery_state("THR-size", "worker").acknowledged_through_seq == 4
 
 
-@pytest.mark.parametrize("path", ["fresh", "delta", "fallback", "nudge"])
+@pytest.mark.parametrize("path", ["fresh", "delta", "fallback", "nudge", "preamble-fresh", "preamble-delta"])
 async def test_oversize_fails_before_phase_launch(org: OrgState, path: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    preamble_only = path.startswith("preamble-")
+    path = path.removeprefix("preamble-")
     required = ["MANDATORY" + "界" * (BOUND // 2)]
-    if path in {"fallback", "nudge"}:
+    if preamble_only or path in {"fallback", "nudge"}:
         required = ["MANDATORY"]
-    token = seed(org, history=["delivered"], required=required, resume=path in {"delta", "fallback"})
+    history = [] if preamble_only and path == "fresh" else ["delivered"]
+    required_seq = len(history) + 1
+    token = seed(org, history=history, required=required, resume=path in {"delta", "fallback"})
     before_session = org.db.get_thread_session("THR-size", "worker")
     before_delivery = org.db.get_reply_delivery_state("THR-size", "worker")
     executor = ExecutorStub(org, token, first={"fallback": "evicted", "nudge": "no_callback"}.get(path, "callback"))
     original_full = runner.build_thread_prompt
+
+    if preamble_only:
+        builder = runner.build_thread_delta_prompt if path == "delta" else original_full
+
+        def just_over_final_bound(**kwargs: Any) -> str:
+            value = builder(**kwargs)
+            final_bytes = len((executors._SESSION_LIFETIME_PREAMBLE + value + delivery_note(required_seq, required_seq)).encode("utf-8"))
+            monkeypatch.setattr(runner, "THREAD_PROMPT_MAX_BYTES", final_bytes - 1)
+            return value
+
+        monkeypatch.setattr(runner, builder.__name__, just_over_final_bound)
 
     def grow_full(**kwargs: Any) -> str:
         # A real full-only header/skills overhead can exceed a delta's bound.
@@ -164,7 +230,7 @@ async def test_oversize_fails_before_phase_launch(org: OrgState, path: str, monk
             nonlocal padding
             value = original_full(**kwargs)
             if padding is None:
-                padding = "S" * (BOUND - len((value + delivery_note(2, 2)).encode("utf-8")))
+                padding = "S" * (BOUND - len((executors._SESSION_LIFETIME_PREAMBLE + value + delivery_note(2, 2)).encode("utf-8")))
             return value + padding
 
         monkeypatch.setattr(runner, "build_thread_prompt", fill_header)

@@ -2937,11 +2937,13 @@ Traps:
 ## Thread Agent-Session Resume
 
 **Prompt size (#832 slice 1).** Before every fresh/delta, eviction-fallback or
-nudge launch (including phase reentry), the complete prompt is measured against
+nudge launch (including phase reentry), the complete prompt, including the
+executor-added session-lifetime preamble, is measured against
 `THREAD_PROMPT_MAX_BYTES = 512 * 1024` UTF-8 bytes. The limit matches the
 documented 512 KiB stdin canary floor; it is conservative local admission, not a
-provider token/context guarantee or a new setting. Under-bound prompts pass
-unchanged. Over-bound prompts retain a contiguous suffix of older optional
+provider token/context guarantee or a new setting. Acceptance and trimming
+reserve the UTF-8 length of the actual shared executor preamble. Under-bound
+prompts pass unchanged. Over-bound prompts retain a contiguous suffix of older optional
 history, selected most-recent-first, with an explicit omission marker. Every
 message from the claimed start onward remains mandatory; isolated bootstrap and
 task-followup turns retain the triggering message and everything after it.
