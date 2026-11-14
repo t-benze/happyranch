@@ -527,7 +527,7 @@ and uses its original supervisor inspection path; the subcommand is never used
 as a helper filename. Preflight validates source identity and the absent output
 path without constructing an app. This does not establish native acceptance.
 
-Success requires a real release executable, all eleven strong tsnet exports
+Success requires a real release executable, all fifteen strong tsnet exports
 bound to fresh archive members, native component inspection, all 29 exact
 resources, exact frozen catalog JSON, manifest notices and ZIP reconciliation.
 Each export requires one final strong definition and one unambiguous map object
@@ -535,7 +535,7 @@ whose origin exactly matches the full archive path and a unique `ar -t` member.
 Both `archive(member)` and Apple's `archive[3](member)` syntax are accepted;
 the optional numeric index does not prove an archive ordinal. Foreign paths,
 prefixes/suffixes, malformed origins and duplicate object/member/symbol
-associations refuse; all eleven observations and raw origins remain evidence.
+associations refuse; all fifteen observations and raw origins remain evidence.
 App and ZIP inventories share relative-path string ordering and UTF8 JSON
 encoding, including hidden members and symlink targets. Native inspection
 resolves every loader/executable-relative rpath in its component context and
@@ -543,7 +543,7 @@ requires bundle containment through symlinks, even for unused paths. Absolute
 system exceptions use only `/usr/lib` and `/System/Library` roots and children;
 unknown tokens, escaping paths and spelling prefixes refuse with raw diagnostics.
 A named `TSNET_STRONG_LINK_UNPROVEN` still refuses release finalization. Small
-independent error/all-eleven symbol receipts survive separately from bulky nm
+independent error/all-fifteen symbol receipts survive separately from bulky nm
 and link-map evidence. Failed builds retain available Analysis/CLI PYZ/native
 union, toolchain and component provenance through the fixed diagnostic allowlist
 and whole-file raw/gzip bounds described in the packaging instructions. Missing,
@@ -1053,6 +1053,8 @@ only be checked by an explicit empty-key init/Up; missing or conflicting state
 refuses. No enrollment key is persisted by the bridge or included in errors.
 Cancellation can leave remote enrollment complete; it never replays the key.
 Cancel closes traffic; Close settles engine ownership before another init.
+An Up published while Close is pending is canceled before network start, and
+Close invalidates the selected engine generation before teardown.
 
 Managed TCP resolves exact current peer IPs/full map DNS names using embedded
 status only, checks the engine's exact peer route/address/key, pins the first

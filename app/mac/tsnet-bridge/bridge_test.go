@@ -4,6 +4,7 @@ import (
 	"golang.org/x/sys/unix"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -272,6 +273,74 @@ func TestManagedConcurrentCloseCancelsUp(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("Up owner did not settle")
+	}
+	if got := managedInit("synthetic-enrollment", testControl, testHostname, profilePath(t)); got != 0 {
+		t.Fatalf("reuse=%d", got)
+	}
+}
+
+func TestManagedCloseBeforeInitPublicationCancelsUp(t *testing.T) {
+	cleanEngine(t)
+	// Hold the traffic-close boundary after Close's initial no-owner check.
+	connMu.Lock()
+	held := true
+	closed := make(chan struct{})
+	go func() { tsnet_close(); close(closed) }()
+	defer func() {
+		if held {
+			connMu.Unlock()
+		}
+		select {
+		case <-closed:
+		case <-time.After(2 * time.Second):
+			t.Error("Close did not settle")
+		}
+	}()
+	deadline := time.Now().Add(time.Second)
+	for {
+		stack := make([]byte, 65536)
+		n := runtime.Stack(stack, true)
+		if strings.Contains(string(stack[:n]), "happyranch/tsnet-bridge.closeAllConnections") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("Close did not reach the traffic-close boundary")
+		}
+		runtime.Gosched()
+	}
+	path := profilePath(t)
+	if got := managedInit("synthetic-enrollment", testControl, testHostname, path); got != 0 {
+		t.Fatalf("init=%d", got)
+	}
+	upDone := make(chan int, 1)
+	started := time.Now()
+	go func() { upDone <- int(tsnet_up_managed(250)) }()
+	deadline = time.Now().Add(time.Second)
+	for {
+		b, _ := os.ReadFile(filepath.Join(path, "profile.json"))
+		if strings.Contains(string(b), `"phase":"submitting"`) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("Up did not enter submitting")
+		}
+		runtime.Gosched()
+	}
+	connMu.Unlock()
+	held = false
+	select {
+	case got := <-upDone:
+		t.Logf("Close preceded init publication; Up=%d; elapsed=%s", got, time.Since(started))
+		if got != -12 {
+			t.Fatalf("Close missed the selected engine cancellation: Up=%d, want -12", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Up owner did not settle")
+	}
+	select {
+	case <-closed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close did not release the owner")
 	}
 	if got := managedInit("synthetic-enrollment", testControl, testHostname, profilePath(t)); got != 0 {
 		t.Fatalf("reuse=%d", got)

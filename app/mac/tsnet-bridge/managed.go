@@ -38,6 +38,9 @@ const (
 var opMu sync.Mutex
 var managed *managedEngine
 var engineGeneration uint64
+
+// srvMu protects pendingCloses so Up cannot miss a Close that predates init.
+var pendingCloses int
 var ambientKeys = []string{"TS_AUTHKEY", "TS_AUTH_KEY", "TSNET_FORCE_LOGIN", "TS_DEBUGSYSPOLICY_AUTH_KEY"}
 
 type managedEngine struct {
@@ -183,6 +186,12 @@ func managedUp(timeoutMs int) int {
 	}
 	if err := m.profile.phase("submitting"); err != nil {
 		return fail(managedStateError)
+	}
+	srvMu.Lock()
+	closing := pendingCloses != 0
+	srvMu.Unlock()
+	if closing {
+		return fail(managedCanceled)
 	}
 	enroll := m.server.AuthKey != ""
 	run := func() int {

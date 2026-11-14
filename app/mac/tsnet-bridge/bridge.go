@@ -333,14 +333,28 @@ func tsnet_local_addr() *C.char {
 
 //export tsnet_close
 func tsnet_close() {
+	srvMu.Lock()
+	pendingCloses++
+	srvMu.Unlock()
+	defer func() {
+		srvMu.Lock()
+		pendingCloses--
+		srvMu.Unlock()
+	}()
 	cancelManaged()
 	closeAllConnections()
 	opMu.Lock()
 	defer opMu.Unlock()
 	srvMu.Lock()
 	m := managed
+	if m != nil {
+		m.cancel()
+		m.ready = false
+		engineGeneration++
+	}
 	srvMu.Unlock()
 	if m != nil {
+		closeAllConnections()
 		if !m.closeServer() {
 			managedResult(managedStateError)
 			return

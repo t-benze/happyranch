@@ -452,7 +452,7 @@ def native(app, archive, link_map):
     NATIVE_SYMBOL_STATE = None
     archive_rows = []
     if ambiguous_members:
-        # ar -p cannot uniquely attribute duplicate names. Keep all eleven
+        # ar -p cannot uniquely attribute duplicate names. Keep all fifteen
         # observations and the raw listing, without claiming member hashes.
         native_evidence('native-members.json', {'archive_path': str(archive),
                         'archive_sha256': digest(archive), 'members': [],
@@ -468,7 +468,7 @@ def native(app, archive, link_map):
     if errors:
         fail('TSNET_STRONG_LINK_UNPROVEN', {'symbols': errors,
                                           'raw_nm_evidence': 'native-nm.txt',
-                                          'proposed_delta': 'All eleven strong archive-member definitions remain required; return linkage failure to manager.'})
+                                          'proposed_delta': 'All fifteen strong archive-member definitions remain required; return linkage failure to manager.'})
     components = []
     for path in sorted(app.rglob('*')):
         if not path.is_file() or path.is_symlink():
