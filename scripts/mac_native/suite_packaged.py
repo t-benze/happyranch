@@ -29,6 +29,8 @@ STEP_NAMES = (
 )
 STREAM_CAP = 4 * 1024 * 1024
 REPORT_CAP = 60000
+PROCESS_FIELDS = ('pid', 'ppid', 'pgid', 'state', 'start_identity')
+SURVIVOR_CAP = 32
 
 
 def initial_steps(reason: str = 'not reached') -> dict[str, dict[str, Any]]:
@@ -149,11 +151,14 @@ def checked(argv: list[str], cwd: Path, env: dict[str, str], seconds: float,
 def parse_census(raw: str) -> list[dict[str, Any]]:
     rows = []
     for line in raw.splitlines():
-        values = line.split(None, 3)
-        if len(values) != 4 or not all(v.isdecimal() for v in values[:3]):
+        values = line.split(None, 9)
+        if (len(values) != 10 or not all(v.isdecimal() for v in values[:3])
+                or not re.fullmatch(r'[A-Za-z][A-Za-z0-9+<\-]*', values[3])):
             raise ValueError('incomplete process census')
-        rows.append(dict(zip(('pid', 'ppid', 'pgid', 'executable'),
-                             [*map(int, values[:3]), values[3]], strict=True)))
+        identity = ' '.join(values[4:9])
+        time.strptime(identity, '%a %b %d %H:%M:%S %Y')
+        rows.append(dict(zip((*PROCESS_FIELDS, 'executable'),
+                             [*map(int, values[:3]), values[3], identity, values[9]], strict=True)))
     if not rows or len(rows) > 8192:
         raise ValueError('process census empty/row cap')
     return rows
@@ -161,29 +166,114 @@ def parse_census(raw: str) -> list[dict[str, Any]]:
 
 def census() -> list[dict[str, Any]]:
     # comm omits argv: no arbitrary host command arguments/credentials collected.
-    result = subprocess.run(['/bin/ps', '-axo', 'pid=,ppid=,pgid=,comm='],
-                            capture_output=True, timeout=5, check=True)
+    result = subprocess.run(['/bin/ps', '-axo', 'pid=,ppid=,pgid=,stat=,lstart=,comm='],
+                            env=dict(os.environ, LC_ALL='C'), capture_output=True, timeout=5, check=True)
     if len(result.stdout) > 1024 * 1024:
         raise RuntimeError('process census byte cap')
     return parse_census(result.stdout.decode('utf-8'))
 
 
-def descendants(rows: list[dict[str, Any]], root: int) -> list[dict[str, int]]:
+def descendants(rows: list[dict[str, Any]], root: int) -> list[dict[str, Any]]:
     selected = {root}
     for _ in range(len(rows)):
         added = {row['pid'] for row in rows if row['ppid'] in selected} - selected
         if not added:
             break
         selected.update(added)
-    return [{key: row[key] for key in ('pid', 'ppid', 'pgid')}
+    return [{key: row[key] for key in PROCESS_FIELDS}
             for row in rows if row['pid'] in selected]
 
 
 def owned_rows(rows: list[dict[str, Any]], scratch: Path,
-               groups: set[int], excluded: set[int]) -> list[dict[str, int]]:
-    return [{key: row[key] for key in ('pid', 'ppid', 'pgid')}
+               groups: set[int], excluded: set[int],
+               identities: set[tuple[int, str]] | None = None) -> list[dict[str, Any]]:
+    return [{key: row[key] for key in PROCESS_FIELDS}
             for row in rows if row['pid'] not in excluded and
-            (row['pgid'] in groups or row['executable'].startswith(str(scratch) + '/'))]
+            (row['pgid'] in groups or row['executable'].startswith(str(scratch) + '/')
+             or (row['pid'], row['start_identity']) in (identities or set()))]
+
+
+def private_session_groups(rows: list[dict[str, Any]], root: int, daemon: int) -> set[int]:
+    """A group is private only if its leader is on this session's ancestry."""
+    by_pid = {row['pid']: row for row in rows}
+    daemon_group = by_pid[daemon]['pgid']
+    lineage: set[int] = set()
+    pid = root
+    while pid != daemon:
+        if pid in lineage or pid not in by_pid:
+            raise RuntimeError('session ancestry unknown')
+        lineage.add(pid)
+        pid = by_pid[pid]['ppid']
+    return {by_pid[pid]['pgid'] for pid in lineage
+            if by_pid[pid]['pgid'] != daemon_group and by_pid[pid]['pgid'] in lineage
+            and by_pid[by_pid[pid]['pgid']]['pgid'] == by_pid[pid]['pgid']}
+
+
+def session_survivors(rows: list[dict[str, Any]], verified: list[dict[str, Any]],
+                      private_groups: set[int]) -> list[dict[str, Any]]:
+    identities = {(row['pid'], row['start_identity']) for row in verified}
+    return [{key: row[key] for key in PROCESS_FIELDS} for row in rows
+            if (row['pid'], row['start_identity']) in identities or row['pgid'] in private_groups]
+
+
+def survivor_snapshot(select: Any) -> dict[str, Any]:
+    """Unknown observations never masquerade as an empty process table."""
+    try:
+        rows = select(census())
+        return {'status': 'SURVIVORS' if rows else 'ABSENT', 'count': len(rows),
+                'truncated': len(rows) > SURVIVOR_CAP, 'rows': rows[:SURVIVOR_CAP],
+                'identity_source': 'ps lstart (seconds); same-second PID reuse conservatively survives'}
+    except Exception as exc:
+        # Census errors can include host command output: retain only the class.
+        return {'status': 'UNKNOWN', 'error': type(exc).__name__}
+
+
+def backend_diagnostics(path: Path, selected: dict[str, Any], secrets: tuple[str, ...]) -> dict[str, Any]:
+    """Retain only the factory's fixed event templates, never raw daemon logs."""
+    result: dict[str, Any] = {'selected': selected, 'outcome': 'SELECTED' if selected.get('name') else 'UNKNOWN', 'candidates': {
+        name: {'status': 'NOT_OBSERVED'} for name in ('linux', 'macos')}, 'events': []}
+    try:
+        with path.open('rb') as stream:
+            raw = stream.read(STREAM_CAP + 1)
+        result.update(status='COMPLETE', bytes_read=len(raw), truncated=len(raw) > STREAM_CAP)
+        for line in raw[:STREAM_CAP].decode('utf-8', errors='replace').splitlines():
+            match = re.search(r"runtime\.platform\.backend_factory: (host backend '(linux|macos)' "
+                              r"(?:probe raised: .*|unhealthy \(.*\); trying next)|"
+                              r"selected host backend '[^']+' \(healthy, \d+ capability level\(s\)\)|"
+                              r"selected honest fallback backend 'passthrough' \(all capabilities unavailable\))$", line)
+            if not match:
+                continue
+            event = match[1]
+            for secret in secrets:
+                if secret:
+                    event = event.replace(secret, '[redacted]')
+            event = re.sub(r'(?i)\bBearer\s+[^\s,;)]+', 'Bearer [redacted]', event)
+            event = re.sub(r'(?i)\b(token|password|secret|api[_-]?key|authorization)\s*[=:]\s*[^\s,;)]+',
+                           r'\1=[redacted]', event)
+            event = re.sub(r'://[^/\s@]+@', '://[redacted]@', event)
+            if len(event.encode()) > 768:
+                result['truncated'] = True
+                event = event.encode()[:768].decode('utf-8', errors='ignore')
+            if len(result['events']) < 8:
+                result['events'].append(event)
+            else:
+                result['truncated'] = True
+            if match[2]:
+                result['candidates'][match[2]] = {'status': 'RAISED' if 'probe raised:' in match[1]
+                                                else 'UNHEALTHY', 'reason': event}
+    except OSError as exc:
+        result.update(status='UNKNOWN', error=type(exc).__name__)
+    return result
+
+
+def require_tree_backend(selection: dict[str, Any]) -> None:
+    backend = selection['selected']
+    capabilities = backend.get('capabilities', {})
+    if (not backend.get('name') or backend.get('name') == 'passthrough' or backend.get('healthy') is not True
+            or not any(capabilities.get(name) in ('best_effort', 'guaranteed')
+                       for name in ('kills_tree_best_effort', 'kills_tree_guaranteed'))):
+        raise RuntimeError('packaged session requires a healthy tree-killing backend; '
+                           + json.dumps(selection['candidates'], ensure_ascii=True))
 
 
 def await_value(fn: Any, seconds: float, label: str) -> Any:
@@ -194,6 +284,15 @@ def await_value(fn: Any, seconds: float, label: str) -> Any:
             return value
         time.sleep(.25)
     raise TimeoutError(label)
+
+
+def await_absence(select: Any, seconds: float, label: str, section: dict[str, Any], key: str) -> None:
+    def absent() -> bool:
+        section[key] = survivor_snapshot(select)
+        if section[key]['status'] == 'UNKNOWN':
+            raise RuntimeError(label + ': process evidence unknown')
+        return section[key]['status'] == 'ABSENT'
+    await_value(absent, seconds, label)
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -287,6 +386,8 @@ def health_and_web(api: Api, readiness: dict[str, Any]) -> dict[str, Any]:
         health = await_value(healthy, 45, 'daemon health endpoint')
     except TimeoutError:
         raise ApiFailure('readiness deadline', readiness) from None
+    backend = health.get('host_sessions', {}).get('backend', {})
+    readiness['backend'] = {key: backend[key] for key in ('name', 'version', 'healthy', 'capabilities') if key in backend}
     html = api.get_bytes('/')
     match = re.search(rb'(?:src|href)=["\'](/assets/[^"\']+\.(?:js|css))["\']', html)
     if not match or b'<html' not in html.lower():
@@ -296,6 +397,7 @@ def health_and_web(api: Api, readiness: dict[str, Any]) -> dict[str, Any]:
     if not asset:
         raise RuntimeError('empty packaged web asset')
     return dict(name=STEP_NAMES[3], status='PASS', health_status=health.get('status'),
+        backend=readiness['backend'],
         root_bytes=len(html), root_sha256=hashlib.sha256(html).hexdigest(), asset=asset_path,
         asset_bytes=len(asset), asset_sha256=hashlib.sha256(asset).hexdigest(), browser='NOT_RUN: HTTP only')
 
@@ -470,6 +572,8 @@ def run(report: dict[str, Any]) -> None:
     report['packaged'] = section
     daemon = None
     log = None
+    api = None
+    selected_backend: dict[str, Any] = {}
     daemon_env: dict[str, str] = {}
     before = census()
     ancestors = {os.getpid()}
@@ -479,6 +583,10 @@ def run(report: dict[str, Any]) -> None:
             break
         ancestors.update(parents)
     groups: set[int] = set()
+    tracked_identities: set[tuple[int, str]] = set()
+    def select_owned(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return owned_rows(rows, scratch, groups, ancestors, tracked_identities)
+    section['post_cancel_survivors'] = {'status': 'NOT_RUN', 'reason': 'cancel not reached'}
     active = '1'
     try:
         source = checked(['git', '--no-replace-objects', 'rev-parse', 'HEAD'], ROOT, dict(os.environ), 5)['tail'].strip()
@@ -561,6 +669,11 @@ def run(report: dict[str, Any]) -> None:
         readiness: dict[str, Any] = {}
         section['health_readiness'] = readiness
         steps['4'] = health_and_web(api, readiness)
+        selected_backend = steps['4']['backend']
+        section['backend_selection'] = backend_diagnostics(area / 'daemon.log', selected_backend, (api.token,))
+        # Refuse before Connect/task launch while the daemon can still be
+        # disposed by the mandatory finalizer. Health200 alone promises no tree kill.
+        require_tree_backend(section['backend_selection'])
         active = '5'
         runtime = area / 'runtime'
         api.json('/api/v1/runtime', {'path': str(runtime)})
@@ -597,6 +710,9 @@ def run(report: dict[str, Any]) -> None:
         if pin['pid'] not in daemon_descendants:
             raise RuntimeError('session was not spawned by bundled daemon')
         groups.update(r['pgid'] for r in tree_rows)
+        tracked_identities.update((r['pid'], r['start_identity']) for r in descendants(current, daemon.pid))
+        private_groups = private_session_groups(current, pin['pid'], daemon.pid)
+        section['session_private_groups'] = sorted(private_groups)
         # Register a real task worktree before the terminal hook runs. No host
         # repo, prior task or remote credentials are used.
         repo = workspace / 'repos/happyranch'
@@ -609,11 +725,15 @@ def run(report: dict[str, Any]) -> None:
         checked(['git', '-C', str(repo), 'worktree', 'add', '-b', 'task/' + task, str(candidate)], area, env, 10)
         section['registered_worktree'] = str(candidate)
         section['session_before_stop'] = {'marker': pin, 'processes': tree_rows}
-        section['cancel'] = api.json('/api/v1/orgs/packaged/tasks/' + task + '/cancel',
-                                    {'rationale': 'Packaged probe owned session stop'})
-        ids = {r['pid'] for r in tree_rows}
-        await_value(lambda: not any(r['pid'] in ids or r['pgid'] in {x['pgid'] for x in tree_rows}
-                                    for r in census()), 20, 'session tree/group survived cancellation')
+        try:
+            section['cancel'] = api.json('/api/v1/orgs/packaged/tasks/' + task + '/cancel',
+                                        {'rationale': 'Packaged probe owned session stop'})
+            await_absence(lambda rows: session_survivors(rows, tree_rows, private_groups),
+                          20, 'session tree/group survived cancellation', section, 'post_cancel_survivors')
+        finally:
+            if section['post_cancel_survivors']['status'] == 'NOT_RUN':
+                section['post_cancel_survivors'] = survivor_snapshot(
+                    lambda rows: session_survivors(rows, tree_rows, private_groups))
         section['session_after_stop'] = []
         if authenticated:
             real.update(status='PASS', reason='Real authenticated executor session and child observed; cancelled and absent')
@@ -662,11 +782,13 @@ def run(report: dict[str, Any]) -> None:
             steps[active]['http'] = exc.observation
         if active == '4' and section.get('health_readiness'):
             steps[active]['last_readiness_observation'] = section['health_readiness']
+        if daemon is not None:
+            section['failure_survivors'] = survivor_snapshot(select_owned)
         raise
     finally:
         if daemon is not None:
             try:
-                section['before_quit'] = owned_rows(census(), scratch, groups, ancestors)
+                section['before_quit'] = survivor_snapshot(select_owned)
                 daemon.terminate()
                 try:
                     daemon.wait(timeout=5)
@@ -675,8 +797,10 @@ def run(report: dict[str, Any]) -> None:
                     daemon.wait(timeout=2)
                 # Match the app's bounded TERM/KILL policy for its owned child.
                 # Session groups are observed, never blindly signalled by ps.
-                await_value(lambda: not owned_rows(census(), scratch, groups, ancestors),
-                            10, 'run-owned process census remains after daemon stop')
+                await_absence(select_owned, 10, 'run-owned process census remains after daemon stop',
+                              section, 'post_stop_survivors')
+                if section['before_quit']['status'] == 'UNKNOWN':
+                    raise RuntimeError('pre-stop process evidence unknown')
                 if (area / 'daemon.log').stat().st_size > STREAM_CAP:
                     raise RuntimeError('daemon output cap')
                 section['daemon_log'] = {'bytes': (area / 'daemon.log').stat().st_size,
@@ -687,8 +811,13 @@ def run(report: dict[str, Any]) -> None:
             except Exception as exc:
                 steps['7'] = dict(name=STEP_NAMES[6], status='FAIL', reason=str(exc)[:512])
             finally:
+                if 'post_stop_survivors' not in section:
+                    section['post_stop_survivors'] = survivor_snapshot(select_owned)
                 if log is not None:
                     log.close()
+                section['backend_selection'] = backend_diagnostics(
+                    area / 'daemon.log', selected_backend or section.get('health_readiness', {}).get('backend', {}),
+                    (api.token,) if api is not None else ())
         steps['8'] = dict(name=STEP_NAMES[7], status='NOT_RUN',
             reason='Outer Jenkins EXIT trap runs after probe.json emission; join identity.txt scratch_removed receipt. Never predict PASS.')
         if len(json.dumps(report).encode()) > REPORT_CAP:

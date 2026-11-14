@@ -58,10 +58,12 @@ class _LibProc:
             raise LibProcUnavailable("libproc is macOS-only")
         try:
             import ctypes
-            import ctypes.util
 
-            lib_path = ctypes.util.find_library("proc") or "libproc.dylib"
-            self._lib = ctypes.CDLL(lib_path, use_errno=True)
+            # This file also travels as data, outside PyInstaller's import
+            # graph. Avoid a hidden ctypes.util dependency and relative dyld
+            # discovery. The OS install name works with the dyld shared cache;
+            # it need not exist as a regular file on recent macOS releases.
+            self._lib = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
             self._ctypes = ctypes
         except (OSError, ImportError) as exc:
             raise LibProcUnavailable(f"cannot load libproc: {exc}") from exc

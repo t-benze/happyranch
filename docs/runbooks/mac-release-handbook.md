@@ -115,6 +115,16 @@ conservative gVisor runtime/ABI line; newer maintained compatibility remains
 unestablished.
 No packaged app is built or run by that preflight.
 
+The packaged observation now requires a healthy backend with tree-kill capability
+immediately after health, before starting a session. Its retained
+`packaged.backend_selection` identifies the chosen backend and bounded, redacted
+candidate refusals from the daemon log. A fallback refusal still stops the daemon
+and runs the final census/EXIT cleanup. Inspect the state/start-identity-aware
+failure, post-cancel and post-stop survivor snapshots; UNKNOWN or survivors fail.
+Only an ancestry-proven session-private PGID is subject to the session-group
+absence assertion. The final native run remains separately authorized; source
+tests do not prove macOS backend selection or packaged cleanup.
+
 ## Step 1 — Build in CI, only when a new build is needed
 
 The shipped build path is `.github/workflows/build-mac-app.yml` (Build macOS App).
