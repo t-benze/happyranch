@@ -41,11 +41,11 @@ from runtime.identities import registry as names
 from runtime.orchestrator import producer_move
 from runtime.orchestrator.agent_def import AgentDef, render_agent_text
 
-assert sys.argv[1:] in ([], ['--bounded-acquisition'], ['--trace-custody'], ['--sequential-reuse'], ['--sequential-load'], ['--sequential-faults']), 'unknown schema-load selection'
+assert sys.argv[1:] in ([], ['--bounded-acquisition'], ['--trace-custody'], ['--sequential-reuse'], ['--sequential-load'], ['--sequential-faults'], ['--sequential-corruption']), 'unknown schema-load selection'
 
 # A0b-2 custody extends this existing real-SQLite venue. No native connection
 # subclass, fake epoch, successful validator stub or production test seam.
-if sys.argv[1:] not in (['--bounded-acquisition'], ['--sequential-reuse'], ['--sequential-load'], ['--sequential-faults']):
+if sys.argv[1:] not in (['--bounded-acquisition'], ['--sequential-reuse'], ['--sequential-load'], ['--sequential-faults'], ['--sequential-corruption']):
     class TraceAbort(BaseException):
         pass
 
@@ -210,7 +210,7 @@ if sys.argv[1:] == ['--trace-custody']:
 # layouts. The only fixture writer is the existing private installer primitive.
 # Native SQLite statements, outcomes and original cumulative counters are the
 # oracles; no validator replacement, success stub or fabricated epoch.
-if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--sequential-faults']):
+if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--sequential-faults'], ['--sequential-corruption']):
     from runtime.infrastructure.workflow_schema import (
         initialize_complete_org_schema, install_sequential_schema,
         sequential_storage_inventory, _coding_org_identity, _schema_snapshot,
@@ -263,6 +263,208 @@ if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--seque
                 categories.append((type(cause), str(cause)))
                 cause = cause.__cause__
             return ('refused', tuple(categories))
+
+    # Synthetic storage only: compiler/parser and the unmodified public reader
+    # validate the nonempty graph. These rows confer no execution authority.
+    def populate_sequential(db):
+        import hashlib
+        from runtime.workflows.sequential_definition import compile_definition, parse_start, parse_result
+        encode = seq_history._bytes
+        digest = lambda raw: hashlib.sha256(raw).hexdigest()
+        limits = dict(content_returns=0, max_content_epochs=1, max_visits=1, max_events=4)
+        raw = encode(dict(format='workflow-sequential-definition@1', identity='release/synthetic/load',
+            version=1, description='Synthetic nonempty load-reader fixture',
+            required_inputs=[dict(name='request', contract='bounded-text@1', required=True)],
+            roles=dict(author=dict(kind='agent', executable=True, eligibility='worker', independent_of=[])),
+            entry_node='author', nodes=[dict(id='author', role='author', responsibilities=['Write a fixture'],
+                inputs=[dict(name='request', source='run.request', required=True)],
+                output_contract=dict(slot='document', type='immutable-document@1'),
+                completion_checks=['immutable-document@1'],
+                outcomes=dict(produced=dict(action='terminal', condition='done'),
+                              BLOCK=dict(action='fail', code='blocked')))],
+            limits=limits, terminal_conditions=dict(done=dict(output='document',
+                requires=['immutable-document@1', 'native-success-and-positive-outer-settlement@1']))))
+        compiled = compile_definition(raw, source_digest=digest(raw))
+        pin = compiled.pin
+        bindings = [dict(role='author', principal='synthetic-author')]
+        snapshot = encode(dict(format='workflow-sequential-settings-storage@1',
+            definition=pin.model_dump(), bindings=bindings, limits=limits, admission='Allowed'))
+        request = encode(dict(format='workflow-sequential-settings-operation-storage@1',
+            operation_key='synthetic-settings', principal='synthetic-manager', settings_id='settings',
+            expected_generation=0, snapshot_digest=digest(snapshot)))
+        receipt = encode(dict(format='workflow-sequential-settings-receipt-storage@1',
+            operation_id='settings-op', settings_id='settings', generation=1, snapshot_digest=digest(snapshot)))
+        start = encode(dict(format='workflow-sequential-start@1', operation_key='synthetic-start',
+            definition=pin.model_dump(), settings=dict(generation=1, snapshot_digest=digest(snapshot)),
+            request='Synthetic stored request', inputs=[], bindings=bindings, lower_limits=limits))
+        parse_start(start)
+        for task, parent, agent in (('source', None, 'synthetic-manager'),
+                                    ('carrier', 'source', 'synthetic-manager'),
+                                    ('visit-task', 'carrier', 'synthetic-author')):
+            db.insert_task(TaskRecord(id=task, parent_task_id=parent, assigned_agent=agent,
+                                      brief='synthetic storage fixture'))
+        conn = db._conn
+        source_result, visit_result = [conn.execute(
+            'INSERT INTO task_results(task_id,agent,session_id,created_at) VALUES (?,?,?,?)',
+            (task, agent, session, '2026-11-14T00:00:00+00:00')).lastrowid
+            for task, agent, session in (('source', 'synthetic-manager', 'source-session'),
+                                         ('visit-task', 'synthetic-author', 'visit-session'))]
+        selection = encode(dict(outputs=[]))
+        content = b'Synthetic immutable document'
+        output = dict(slot='document', contract='immutable-document@1', epoch=1,
+            producer_visit='visit', task_id='visit-task', session_id='visit-session',
+            result_id=visit_result, digest=digest(content))
+        envelope = encode(dict(format='workflow-sequential-result@1', run_id='run', visit_id='visit',
+            definition_digest=pin.definition_digest, input_selection_digest=digest(selection),
+            outcome='produced', outputs=[output], findings=[], capability_receipts=[]))
+        parse_result(envelope)
+        event = encode(dict(format='workflow-sequential-storage-event@1', kind='admitted',
+            run_id='run', sequence=1, operation_key='synthetic-start', prior_digest='0' * 64))
+        notification = encode(dict(format='workflow-sequential-notification-storage@1',
+            notification_id='outbox', event_id='event', run_id='run', visit_id='visit',
+            task_id='visit-task', kind='visit_queued'))
+        conn.execute('PRAGMA defer_foreign_keys=ON')
+        conn.execute('INSERT INTO workflow_seq_definitions VALUES (?,?,?,?,?,?,?,?,?,?)',
+            ('definition', pin.identity, pin.version, raw, pin.definition_digest, pin.source_digest,
+             pin.compiler, pin.validator, pin.interpreter, pin.capabilities))
+        conn.execute('INSERT INTO workflow_seq_settings VALUES (?,?,?,?,?,?,?)',
+            ('settings', 'scratch', 'definition', pin.identity, 1, snapshot, digest(snapshot)))
+        conn.execute('INSERT INTO workflow_seq_settings_operations VALUES (?,?,?,?,?,?,?,?,?)',
+            ('settings-op', 'scratch', 'synthetic-manager', 'synthetic-settings', request,
+             digest(request), 'settings', receipt, digest(receipt)))
+        conn.execute('INSERT INTO workflow_seq_runs VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+            ('run', 'scratch', 'definition', 'settings', 'source', 'synthetic-manager', 'source-session',
+             source_result, 'carrier', 'synthetic-start', start, digest(start), encode(limits),
+             'visit', 'active', 1, 0, 1, 1, 0, 'event'))
+        conn.execute('INSERT INTO workflow_seq_visits VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+            ('visit', 'run', 'author', 1, 1, None, 'visit-task', 'synthetic-author', 'visit-session',
+             visit_result, envelope, digest(envelope), encode(dict(checks=['immutable-document@1'])),
+             selection, digest(selection), 'waiting', 1))
+        conn.execute('INSERT INTO workflow_seq_events VALUES (?,?,?,?,?,?,?,?,?,?)',
+            ('event', 'run', 1, 'synthetic-start', 'admitted', '0' * 64, event, digest(event), None, None))
+        conn.execute('INSERT INTO workflow_seq_outputs VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
+            ('output', 'run', 'visit', 'document', 1, 'immutable-document@1', 'visit-task',
+             'visit-session', visit_result, content, digest(content), encode(dict(roles=['author']))))
+        conn.execute('INSERT INTO workflow_seq_evidence VALUES (?,?,?,?,?,?,?,?,?,?)',
+            ('evidence', 'run', 'visit', 'review', b'{}', digest(b'{}'),
+             'visit-task', 'synthetic-author', 'visit-session', visit_result))
+        conn.execute('INSERT INTO workflow_seq_outbox VALUES (?,?,?,?,?,?,?,?)',
+            ('outbox', 'run', 'event', 'visit_queued', 'visit', 'visit-task', notification, digest(notification)))
+        for task, kind, owner in (('source', 'seq_source_waiting', 'run'),
+                                  ('carrier', 'seq_carrier', 'run'), ('visit-task', 'seq_visit', 'visit')):
+            conn.execute('UPDATE workflow_task_ownership SET version=2,kind=?,owner_id=? WHERE task_id=?',
+                         (kind, owner, task))
+        conn.commit()
+        history = read_sequential_history(conn, expected_org_slug='scratch')
+        assert history.status == 'storage readable' and history.run_ids == ('run',)
+        for table in seq_history.SEQUENTIAL_TABLES:
+            assert conn.execute('SELECT count(*) FROM ' + table).fetchone()[0] > 0, table + ' fixture is empty'
+
+    if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-corruption']):
+        corruptions = (
+            ('definition digest', "UPDATE workflow_seq_definitions SET definition_digest='bad'"),
+            ('definition bytes', "UPDATE workflow_seq_definitions SET definition_bytes=x'7b7d'"),
+            ('compiler pin', "UPDATE workflow_seq_definitions SET compiler_pin='wrong'"),
+            ('validator pin', "UPDATE workflow_seq_definitions SET validator_pin='wrong'"),
+            ('interpreter pin', "UPDATE workflow_seq_definitions SET interpreter_pin='wrong'"),
+            ('capability pin', "UPDATE workflow_seq_definitions SET capability_pin='wrong'"),
+            ('settings digest', "UPDATE workflow_seq_settings SET snapshot_digest='bad'"),
+            ('settings owner', "UPDATE workflow_seq_settings SET org_slug='wrong'"),
+            ('settings generation', 'UPDATE workflow_seq_settings SET generation=2'),
+            ('settings request', "UPDATE workflow_seq_settings_operations SET request_digest='bad'"),
+            ('settings receipt', "UPDATE workflow_seq_settings_operations SET receipt_digest='bad'"),
+            ('start digest', "UPDATE workflow_seq_runs SET start_digest='bad'"),
+            ('run counters', 'UPDATE workflow_seq_runs SET event_count=2'),
+            ('native task parent', "UPDATE tasks SET parent_task_id='source' WHERE id='visit-task'"),
+            ('native task principal', "UPDATE tasks SET assigned_agent='wrong' WHERE id='source'"),
+            ('native INTEGER result', "UPDATE task_results SET session_id='wrong' WHERE task_id='source'"),
+            ('visit result identity', "UPDATE task_results SET agent='wrong' WHERE task_id='visit-task'"),
+            ('visit selection', "UPDATE workflow_seq_visits SET input_selection_digest='bad'"),
+            ('visit envelope', "UPDATE workflow_seq_visits SET result_digest='bad'"),
+            ('output digest', "UPDATE workflow_seq_outputs SET content_digest='bad'"),
+            ('output recipients', "UPDATE workflow_seq_outputs SET recipients_bytes=x'7b7d'"),
+            ('evidence digest', "UPDATE workflow_seq_evidence SET evidence_digest='bad'"),
+            ('event chain', "UPDATE workflow_seq_events SET prior_digest='bad'"),
+            ('outbox payload', "UPDATE workflow_seq_outbox SET notification_digest='bad'"),
+            ('source mark', "UPDATE workflow_task_ownership SET owner_id='wrong' WHERE task_id='source'"),
+            ('carrier mark', "UPDATE workflow_task_ownership SET org_slug='wrong' WHERE task_id='carrier'"),
+            ('visit mark', "UPDATE workflow_task_ownership SET owner_id='wrong' WHERE task_id='visit-task'"),
+            ('complete index', 'DROP INDEX workflow_seq_one_selected_visit'),
+            ('complete schema', 'ALTER TABLE workflow_seq_evidence ADD COLUMN unexpected TEXT'),
+            ('foreign key', "UPDATE workflow_seq_settings SET definition_id='missing'"),
+        )
+        refusal_codes = dict.fromkeys((name for name, _ in corruptions), 'workflow_seq_digest_invalid')
+        refusal_codes.update(dict.fromkeys(('compiler pin', 'validator pin', 'interpreter pin', 'capability pin'),
+                                           'workflow_seq_definition_pin_conflict'))
+        refusal_codes.update({
+            'settings owner': 'workflow_seq_settings_owner_invalid',
+            'settings generation': 'workflow_seq_settings_generation_gap',
+            'run counters': 'workflow_seq_run_history_conflict',
+            'native task parent': 'workflow_seq_visit_task_conflict',
+            'native task principal': 'workflow_seq_source_carrier_conflict',
+            'native INTEGER result': 'workflow_seq_native_result_conflict',
+            'visit result identity': 'workflow_seq_native_result_conflict',
+            'output recipients': 'workflow_seq_output_recipients_invalid',
+            'event chain': 'workflow_seq_event_chain_invalid',
+            'source mark': 'workflow_seq_ownership_invalid',
+            'carrier mark': 'workflow_seq_ownership_invalid',
+            'visit mark': 'workflow_seq_ownership_invalid',
+            'complete index': 'workflow_seq_complete_layout_mismatch',
+            'complete schema': 'workflow_seq_complete_layout_mismatch',
+            'foreign key': 'workflow_seq_foreign_key_invalid',
+        })
+        corruption_failures = []
+        for (name, mutation), phase in product(corruptions, ('first', 'between local', 'between external')):
+            with sequential_fixture() as (db, root, sql):
+                populate_sequential(db)
+                # Warm outside the new owner too: a forbidden cross-load cache
+                # must not certify even the first use in the following scope.
+                seq_read(db)
+                try:
+                    with org_load_validation(db, org_slug='scratch'):
+                        owner = load_guard._current.get()
+                        if phase != 'first':
+                            seq_read(db)
+                            assert owner.sequential_saved is not None, 'nonempty baseline failed to certify'
+                        hits = owner.hits
+                        before = db._conn.total_changes
+                        with sqlite3.connect(db.db_path) as writer:
+                            connection = db._conn if phase == 'between local' else writer
+                            # Restore FK ON before reading: the FK mutation
+                            # must reach the complete checker, not config fallback.
+                            connection.execute('PRAGMA foreign_keys=OFF')
+                            # Corruption preparation alone suspends immutable
+                            # fixture triggers; restore their exact SQL before
+                            # either reader sees this private image. Schema
+                            # parity then prevents a missing-trigger false negative.
+                            triggers = list(connection.execute(
+                                "SELECT name,sql FROM sqlite_schema WHERE type='trigger' AND tbl_name=?",
+                                (mutation.split()[1] if mutation.startswith('UPDATE ') else '',)))
+                            for trigger, ddl in triggers:
+                                connection.execute('DROP TRIGGER "' + trigger.replace('"', '""') + '"')
+                            connection.execute(mutation)
+                            for trigger, ddl in triggers:
+                                connection.execute(ddl)
+                            connection.commit()
+                            connection.execute('PRAGMA foreign_keys=ON')
+                        if phase != 'between local':
+                            assert db._conn.total_changes == before, 'external fixture changed local counter'
+                        expected = sequential_outcome(lambda: read_sequential_history(
+                            db._conn, expected_org_slug='scratch').retained)
+                        assert expected[0] == 'refused', name + ' fixture was accepted by complete reader'
+                        assert all(category[0] is not ReadExhaustion for category in expected[1]), name + ' hidden by exhaustion'
+                        assert expected[1][0] == (ValueError, refusal_codes[name]), name + ' missed its semantic boundary: ' + repr(expected)
+                        actual = sequential_outcome(lambda: seq_read(db))
+                        assert actual == expected, name + ' corruption changed complete refusal'
+                        assert owner.hits == hits and owner.sequential_saved is None, name + ' corruption retained a certificate'
+                        assert not db._conn.in_transaction, name + ' corruption leaked owned snapshot'
+                    print('PASS A0b sequential corruption matrix:', name, phase, refusal_codes[name], flush=True)
+                except AssertionError as exc:
+                    corruption_failures.append((name, phase, str(exc)))
+                    print('FAIL A0b sequential corruption matrix:', name, phase, str(exc), flush=True)
+        assert not corruption_failures, 'sequential corruption matrix failures: ' + repr(corruption_failures)
+        if sys.argv[1:] == ['--sequential-corruption']:
+            raise SystemExit(0)
 
     if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-faults']):
         fault_failures = []
