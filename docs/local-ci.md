@@ -400,6 +400,22 @@ a fresh complete read after rollback. Full, `--sequential-reuse`,
 `--sequential-corruption` and `--document-coding-corruption` include these cases.
 These are synthetic archival rows; no callback, host or settlement producer is
 invoked. They do not cover the separate H author-handoff/revision/review graph.
+`--author-handoff-corruption` selects 74 rows from that same keeper: 39
+staged H admission/candidate/request, source-generation/event, exact saved pins
+and captured authority/profile-mirror cases, plus 35 completed H graph cases.
+The completed fixture retains its original G operation/INTEGER result link,
+round/request/contributors, reviewer dispatch/stage/callback/effect history,
+native result, receipt/evidence/assignment and joined collection/replay closure.
+It has one agent reviewer; the staged fixture has no G operation or round.
+Collection and terminal-event mutations rehash their payloads (and collection
+replay) so the assertions reach semantic closure. All 296 first/local/external/
+uncommitted phases require the exact public complete-reader refusal and causal
+chain, no stale hit/certificate, preserved caller transactions and a fresh read
+after rollback. Full, reuse, sequential-corruption and document-coding selections
+include these rows. Compiled templates and native rows are synthetic archival
+inputs only: no retired admission, dispatcher, callback, host or settlement
+producer runs. These cases do not cover revision2 predecessor/feedback/return,
+the artifact H family, human-review receipts or wider Coding run histories.
 `--sequential-uncommitted` selects the preceding sequential definition/settings/
 pin/native/mark/output/schema/index/FK rows inside explicit caller transactions,
 including restored triggers and rollback followed by a fresh complete read.

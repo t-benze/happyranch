@@ -41,11 +41,11 @@ from runtime.identities import registry as names
 from runtime.orchestrator import producer_move
 from runtime.orchestrator.agent_def import AgentDef, render_agent_text
 
-assert sys.argv[1:] in ([], ['--bounded-acquisition'], ['--trace-custody'], ['--sequential-reuse'], ['--sequential-load'], ['--sequential-faults'], ['--sequential-sql-exhaustion'], ['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--coding-authority-corruption'], ['--document-native-corruption'], ['--physical-corruption'], ['--sequential-uncommitted']), 'unknown schema-load selection'
+assert sys.argv[1:] in ([], ['--bounded-acquisition'], ['--trace-custody'], ['--sequential-reuse'], ['--sequential-load'], ['--sequential-faults'], ['--sequential-sql-exhaustion'], ['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--coding-authority-corruption'], ['--document-native-corruption'], ['--author-handoff-corruption'], ['--physical-corruption'], ['--sequential-uncommitted']), 'unknown schema-load selection'
 
 # A0b-2 custody extends this existing real-SQLite venue. No native connection
 # subclass, fake epoch, successful validator stub or production test seam.
-if sys.argv[1:] not in (['--bounded-acquisition'], ['--sequential-reuse'], ['--sequential-load'], ['--sequential-faults'], ['--sequential-sql-exhaustion'], ['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--coding-authority-corruption'], ['--document-native-corruption'], ['--physical-corruption'], ['--sequential-uncommitted']):
+if sys.argv[1:] not in (['--bounded-acquisition'], ['--sequential-reuse'], ['--sequential-load'], ['--sequential-faults'], ['--sequential-sql-exhaustion'], ['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--coding-authority-corruption'], ['--document-native-corruption'], ['--author-handoff-corruption'], ['--physical-corruption'], ['--sequential-uncommitted']):
     class TraceAbort(BaseException):
         pass
 
@@ -210,7 +210,7 @@ if sys.argv[1:] == ['--trace-custody']:
 # layouts. Existing private installers and storage owners prepare the fixtures.
 # Native SQLite statements, outcomes and original cumulative counters are the
 # oracles; no validator replacement, success stub or fabricated epoch.
-if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--sequential-faults'], ['--sequential-sql-exhaustion'], ['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--coding-authority-corruption'], ['--document-native-corruption'], ['--physical-corruption'], ['--sequential-uncommitted']):
+if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--sequential-faults'], ['--sequential-sql-exhaustion'], ['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--coding-authority-corruption'], ['--document-native-corruption'], ['--author-handoff-corruption'], ['--physical-corruption'], ['--sequential-uncommitted']):
     from runtime.infrastructure.workflow_schema import (
         initialize_complete_org_schema, install_sequential_schema,
         sequential_storage_inventory, _coding_org_identity, _schema_snapshot,
@@ -409,7 +409,7 @@ if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--seque
         assert db._conn.execute("SELECT count(*) FROM audit_log WHERE action IN ('team_move_reserved','team_move_transition')").fetchone()[0] == 2
         assert read_sequential_history(db._conn, expected_org_slug='scratch').status == 'storage readable'
 
-    def populate_document_coding(db):
+    def populate_document_coding(db, *, handoff=False):
         import hashlib
         from runtime.workflows.templates import WorkflowTemplateStore, WorkflowTemplatePrincipal
         from runtime.workflows._coding_registered_release import registration_rows
@@ -417,18 +417,48 @@ if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--seque
 
         # Inert template publication and exact saved built-in rows, as in the
         # retained coding-audit keeper. No current setup, Allow or run exists.
-        template = WorkflowTemplateStore(db).publish_version(org_slug='scratch',
-            principal=WorkflowTemplatePrincipal.agent(org_slug='scratch',
-                agent_name='synthetic-manager', team_slug='engineering',
-                task_id='source', session_id='source-session', revalidate=lambda: None),
-            operation_key='synthetic-document-template', namespace='org/scratch/team/engineering',
-            template_name='synthetic-document', expected_current_version=0,
-            definition=dict(kind='document-review', schema_version=2,
-                description='Synthetic retained document', author=dict(role='author', kind='agent'),
-                output=dict(primitive='immutable-document-revision', description='Synthetic output'),
-                reviewers=[dict(role='reviewer', kind='agent')], outcomes=['approved'],
-                approval=dict(mode='all', revision='current', required_roles=['reviewer']),
-                request_changes=None, submission=dict(timing='on-completion')))
+        definition = dict(kind='document-review', schema_version=3 if handoff else 2,
+        description='Synthetic retained document', author=dict(role='author', kind='agent'),
+        output=dict(primitive='immutable-document-revision', description='Synthetic output'),
+        reviewers=[dict(role='reviewer', kind='agent')], outcomes=['approved'],
+        approval=dict(mode='all', revision='current', required_roles=['reviewer']),
+        request_changes=None, submission=dict(timing='on-completion',
+            **(dict(delivery='current-author-handoff@1') if handoff else {})))
+        if handoff:
+            from runtime.workflows.templates import _validate_definition, _definition_pins, _stable_id
+            conn = db._conn
+            namespace, name = 'org/scratch/team/engineering', 'synthetic-document'
+            raw = _validate_definition(definition)
+            dg = hashlib.sha256(raw).hexdigest()
+            compiler, validator, source = _definition_pins(definition)
+            identity = _stable_id('workflow-template', namespace, name)
+            request_digest = hashlib.sha256(seq_history._bytes(dict(namespace=namespace,
+                template_name=name, expected_current_version=0, definition_digest=dg,
+                compiler_pin=compiler, validator_pin=validator, source_pin=source))).hexdigest()
+            draft = _stable_id('workflow-template-draft', identity, 1, request_digest)
+            version = _stable_id('workflow-template-version', identity, 1, dg)
+            stamp = '2026-11-14T00:00:00.000000Z'
+            publisher = seq_history._bytes(dict(synthetic='archival-template')).decode()
+            conn.execute('INSERT INTO workflow_template_identities VALUES (?,?,?,?,?,?)',
+                         (identity, namespace, name, 1, 'active', stamp))
+            conn.execute('INSERT INTO workflow_template_drafts VALUES (?,?,?,?,?,?,?,?,?,?)',
+                         (draft, namespace, name, raw, dg, compiler, validator, source, publisher, stamp))
+            conn.execute('INSERT INTO workflow_template_versions VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
+                         (version, draft, namespace, name, 1, raw, dg, compiler, validator, source, publisher, stamp))
+            conn.execute('INSERT INTO workflow_template_identity_versions VALUES (?,?,?,?)',
+                         (identity, 1, version, dg))
+            conn.execute('INSERT INTO workflow_template_publish_operations VALUES (?,?,?,?,?,?,?,?)',
+                         ('scratch', 'synthetic-manager', 'synthetic-document-template', request_digest, identity, 0, 1, version))
+            conn.commit()
+            template = WorkflowTemplateStore._read_version(conn, identity_id=identity, version=1,
+                                                           expected_version_id=version)
+        else:
+            template = WorkflowTemplateStore(db).publish_version(org_slug='scratch',
+                principal=WorkflowTemplatePrincipal.agent(org_slug='scratch',
+                    agent_name='synthetic-manager', team_slug='engineering',
+                    task_id='source', session_id='source-session', revalidate=lambda: None),
+                operation_key='synthetic-document-template', namespace='org/scratch/team/engineering',
+                template_name='synthetic-document', expected_current_version=0, definition=definition)
         conn = db._conn
         encode = seq_history._bytes
         digest = lambda raw: hashlib.sha256(raw).hexdigest()
@@ -557,11 +587,11 @@ if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--seque
                       'workflow_draft_dispatch_intents', 'workflow_draft_dispatch_events'):
             assert conn.execute('SELECT count(*) FROM ' + table).fetchone()[0] > 0, table + ' document fixture is empty'
 
-    def populate_document_native(db):
+    def populate_document_native(db, *, handoff=False):
         import hashlib
         from runtime.infrastructure.workflow_schema import _DRAFT_MUTABLE, _DRAFT_PROJECTION
 
-        populate_document_coding(db)
+        populate_document_coding(db, handoff=handoff)
         conn = db._conn
         encode = seq_history._bytes
         digest = lambda raw: hashlib.sha256(raw).hexdigest()
@@ -632,6 +662,302 @@ if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--seque
         assert conn.execute('SELECT count(*) FROM workflow_submission_result_links').fetchone()[0] == 1
         assert [row[0] for row in conn.execute('SELECT event_kind FROM workflow_draft_dispatch_events ORDER BY event_seq')] == [
             'admitted', 'claimed', 'launch_reserved', 'running', 'callback_recorded', 'completed']
+
+    def populate_author_handoff(db):
+        import base64
+        import hashlib
+        from runtime.infrastructure.workflow_schema import _DRAFT_MUTABLE
+        from runtime.workflows.activation import parse_request, _authorization, _binding, _context
+        from runtime.workflows.templates import WorkflowTemplateStore, _review_contract
+
+        populate_document_native(db, handoff=True)
+        conn = db._conn
+        encode = seq_history._bytes
+        digest = lambda raw: hashlib.sha256(raw).hexdigest()
+        stamp = '2026-11-14T00:00:00.000000Z'
+        def one(table):
+            return dict(conn.execute('SELECT * FROM ' + table).fetchone())
+        def insert(table, row):
+            conn.execute('INSERT INTO ' + table + ' (' + ','.join(row) + ') VALUES (' +
+                ','.join('?' for _ in row) + ')', tuple(row.values()))
+        def update(table, identity, **values):
+            conn.execute('UPDATE ' + table + ' SET ' + ','.join(key + '=?' for key in values) + ' WHERE id=?',
+                         tuple(values.values()) + (identity,))
+        intent = one('workflow_draft_dispatch_intents')
+        activation = one('workflow_activations')
+        template = WorkflowTemplateStore._read_version(conn,
+            identity_id=activation['template_identity_id'], version=1,
+            expected_version_id=activation['template_version_id'])
+        # Staged H is a retained historical prefix: the source finished, while
+        # no G submission or review graph was committed. It grants no action.
+        for table in ('workflow_submission_result_links', 'workflow_submission_operations',
+                      'workflow_review_receipts', 'workflow_review_requests', 'workflow_rounds',
+                      'workflow_operation_replays', 'workflow_events', 'workflow_submissions'):
+            conn.execute('DELETE FROM ' + table)
+        profile_digest = digest(b'synthetic-profile')
+        snapshot = dict(schema_version=1, org_slug='scratch', agents=[], teams=[], reviewer_agents=[],
+            active_policy_selectors=[], machine_global_profiles=[dict(consumers=['synthetic-author'],
+                generation=1, profile_digest=profile_digest, profile_name='synthetic-profile')])
+        raw = encode(snapshot)
+        authority = dict(namespace='org/scratch', generation=1, snapshot_digest=digest(raw))
+        insert('workflow_publication_journals', dict(id='handoff-journal', **authority,
+            expected_generation=0, snapshot_bytes=raw, publisher='human:founder',
+            publisher_invocation='synthetic-not-live', profile_fence=0, state='cache_installed',
+            recovery_owner='synthetic-history', file_phase_owner=None))
+        pointer = dict(current_generation=1, journal_id='handoff-journal', snapshot_digest=digest(raw),
+                       state='ready', profile_fence=0)
+        insert('workflow_authority_pointers', dict(namespace='org/scratch', **pointer))
+        bindings = dict(author=dict(kind='agent', principal='synthetic-author', team='engineering'),
+                        reviewer=dict(kind='agent', principal='synthetic-reviewer', team='engineering'))
+        request = parse_request(dict(format='workflow-activation-request@3', operation_key='synthetic-activation',
+            instance_id='doc-instance', expected_activation_revision=0,
+            template=dict(identity_id=template.identity_id, version=1, definition_digest=template.definition_digest),
+            authority=authority, scope=dict(brief='Synthetic retained H prefix'), bindings=bindings,
+            eligible_replacements=dict(author=[], reviewer=[]),
+            allowed_actions=['draft-document', 'stage-immutable-document', 'submit-immutable-document',
+                             'collect-review', 'approve-planning-input', 'return-to-author'], inputs=[])).model_dump(by_alias=True)
+        authorization = _authorization(org_slug='scratch', instance_id='doc-instance',
+            activation_id=activation['id'], task_id=intent['task_id'], request=request,
+            request_digest=intent['request_digest'], template=template, timestamp=stamp)
+        binding = _binding(instance_id='doc-instance', activation_id=activation['id'],
+            authorization_id='doc-authority', template=template, request=request)
+        context = _context(org_slug='scratch', request=request, snapshot=snapshot, template=template,
+            inputs=[], authorization=authorization, authorization_id='doc-authority', binding=binding,
+            binding_id='doc-binding', intent_id=intent['id'])
+        for table, identity, column, value in (
+                ('workflow_authorization_revisions', 'doc-authority', 'authority', authorization),
+                ('workflow_binding_snapshots', 'doc-binding', 'binding', binding),
+                ('workflow_contexts', 'doc-context', 'context', context)):
+            value_bytes = encode(value)
+            update(table, identity, **{column + '_bytes': value_bytes, column + '_digest': digest(value_bytes)})
+        intent['authority_digest'] = authority['snapshot_digest']
+        update('workflow_instances', 'doc-instance', owner_principal=intent['admission_principal'])
+        update('workflow_draft_dispatch_intents', intent['id'], authority_digest=intent['authority_digest'])
+        update('workflow_activations', activation['id'], authority_digest=intent['authority_digest'])
+        immutable = {key: value.hex() if type(value) is bytes else value for key, value in intent.items()
+                     if key not in _DRAFT_MUTABLE}
+        # Preserve the original complete native lifecycle while changing its
+        # immutable authority pin. Rehash every successor, not just the last.
+        previous_digest = None
+        generation = None
+        for event in list(conn.execute('SELECT * FROM workflow_draft_dispatch_events ORDER BY event_seq')):
+            payload = json.loads(event['event_bytes'])
+            payload.update(intent=immutable, previous_digest=previous_digest)
+            event_bytes = encode(payload)
+            update('workflow_draft_dispatch_events', event['id'],
+                   event_bytes=event_bytes, event_digest=digest(event_bytes))
+            previous_digest = digest(event_bytes)
+            if event['event_kind'] == 'running':
+                generation = dict(org_slug='scratch', task_id=intent['task_id'],
+                    principal=intent['assigned_principal'], activation_revision=1,
+                    assignment_generation=1, attempt_sequence=1, host_execution_key=intent['host_execution_key'],
+                    **payload['after'])
+        assert generation is not None and generation['final_result_id'] is None
+        candidate = b'Synthetic staged H immutable document'
+        command = dict(format='workflow-author-handoff-command@1', operation_key='synthetic-handoff',
+            activation_id=activation['id'], expected_revision=1,
+            submission_bytes_base64=base64.b64encode(candidate).decode('ascii'), submission_digest=digest(candidate))
+        identity = 'workflow-author-handoff:' + digest(encode(['scratch', 'synthetic-author', command['operation_key']]))
+        submission = 'workflow-submission:' + digest(encode(['doc-instance', 1, 'scratch',
+            'synthetic-author', command['operation_key'], 'workflow-author-handoff@1']))
+        request_bytes = encode(dict(command, format='workflow-author-handoff-request@1',
+            handoff_id=identity, submission_id=submission, instance_id='doc-instance', revision=1))
+        row = dict(id=identity, intent_id=intent['id'], instance_id='doc-instance', org_slug='scratch',
+            principal='synthetic-author', source_task_id=intent['task_id'], source_session_id='doc-session',
+            operation_key=command['operation_key'], revision=1, submission_id=submission,
+            candidate_bytes=candidate, candidate_digest=digest(candidate), request_bytes=request_bytes,
+            request_digest=digest(request_bytes), created_at=stamp)
+        pins = dict(template=dict(identity_id=template.identity_id, version_id=template.version_id, version=1,
+            definition_digest=template.definition_digest, compiler_pin=template.compiler_pin,
+            validator_pin=template.validator_pin, source_pin=template.source_pin),
+            activation=dict(id=activation['id'], revision=1, request_digest=activation['request_digest']))
+        contract = _review_contract(template)
+        for name, identity, value_bytes in (
+                ('authorization', 'doc-authority', encode(authorization)),
+                ('binding', 'doc-binding', encode(binding)), ('context', 'doc-context', encode(context)),
+                ('scope', intent['task_id'], intent['task_scope_bytes']),
+                ('contract', template.version_id, encode(contract))):
+            pins[name] = dict(id=identity, bytes_hex=value_bytes.hex(), digest=digest(value_bytes))
+        mirror = [dict(kind='dependency', org_namespace='org/scratch', profile_name='synthetic-profile',
+                       consumer_identity='synthetic-author', bound_generation=1, state='active'),
+                  dict(kind='store', profile_name='synthetic-profile', generation=1,
+                       profile_digest=profile_digest, state='active'),
+                  dict(kind='registry', profile_name='synthetic-profile', published_generation=1)]
+        proof = dict(format='workflow-author-handoff@1',
+            handoff={key: value.hex() if type(value) is bytes else value for key, value in row.items()},
+            client_request=command, source_intent=immutable, source_generation=generation, pins=pins,
+            admission_authority=dict(ready=dict(**authority, snapshot_bytes_hex=raw.hex()), pointer=pointer,
+                profiles=[dict(name='synthetic-profile', digest=profile_digest)], mirror=mirror,
+                cutover='enabled', actions=['stage-immutable-document', 'submit-immutable-document']))
+        row.update(admission_bytes=encode(proof), admission_digest=digest(encode(proof)))
+        insert('workflow_author_handoffs', row)
+        conn.commit()
+        assert read_sequential_history(conn, expected_org_slug='scratch').status == 'storage readable'
+        assert conn.execute('SELECT count(*) FROM workflow_author_handoffs').fetchone()[0] == 1
+        assert conn.execute('SELECT count(*) FROM workflow_submission_operations').fetchone()[0] == 0
+        assert conn.execute('SELECT count(*) FROM workflow_rounds').fetchone()[0] == 0
+
+    def populate_handoff_graph(db):
+        import base64
+        import hashlib
+        from runtime.infrastructure.workflow_schema import _DRAFT_MUTABLE
+        from runtime.workflows.activation import _id
+        from runtime.workflows.submissions import review_scope, review_brief, validate_handoff_graph
+        from runtime.workflows.review_receipts import _receipt_rows
+
+        populate_author_handoff(db)
+        conn = db._conn
+        encode = seq_history._bytes
+        digest = lambda raw: hashlib.sha256(raw).hexdigest()
+        stamp = '2026-11-14T00:00:00.000000Z'
+        def insert(table, row):
+            conn.execute('INSERT INTO ' + table + ' (' + ','.join(row) + ') VALUES (' +
+                ','.join('?' for _ in row) + ')', tuple(row.values()))
+        handoff = dict(conn.execute('SELECT * FROM workflow_author_handoffs').fetchone())
+        proof = json.loads(handoff['admission_bytes'])
+        intent = dict(conn.execute('SELECT * FROM workflow_draft_dispatch_intents').fetchone())
+        source = dict(conn.execute('SELECT * FROM task_results WHERE id=?', (intent['final_result_id'],)).fetchone())
+        submission = dict(id=handoff['submission_id'], instance_id=handoff['instance_id'], revision=1,
+            submission_bytes=handoff['candidate_bytes'], submission_digest=handoff['candidate_digest'],
+            storage_ref=None, source_task_id=source['task_id'], source_session_id=source['session_id'],
+            source_result_id=None, author_principal=source['agent'])
+        insert('workflow_submissions', submission)
+        operation = dict(submission_id=submission['id'], instance_id=handoff['instance_id'], org_slug='scratch',
+            principal=source['agent'], source_task_id=source['task_id'], source_session_id=source['session_id'],
+            operation_key=handoff['operation_key'], request_digest=handoff['request_digest'], created_at=stamp)
+        provenance = encode(dict(format='workflow-submission-operation@1', operation=operation,
+            submission={key: value.hex() if type(value) is bytes else value for key, value in submission.items()},
+            source_intent={key: value.hex() if type(value) is bytes else value for key, value in intent.items()
+                           if key not in _DRAFT_MUTABLE}, request_bytes=handoff['request_bytes'].hex()))
+        insert('workflow_submission_operations', dict(operation,
+            provenance_bytes=provenance, provenance_digest=digest(provenance)))
+        conn.execute('INSERT INTO workflow_submission_result_links VALUES (?,?,?,?,?,?,?)',
+            (submission['id'], source['task_id'], source['session_id'], source['id'], encode(source), digest(encode(source)), stamp))
+        contribution = dict(principal=source['agent'], source_task_id=source['task_id'],
+            source_session_id=source['session_id'], source_result_id=str(source['id']), contribution_kind='author')
+        insert('workflow_submission_contributors', dict(submission_id=submission['id'], **contribution))
+        insert('workflow_instance_contributors', dict(instance_id=handoff['instance_id'], **contribution))
+        round_id = _id('workflow-round', handoff['instance_id'], 1, submission['id'])
+        conn.execute('INSERT INTO workflow_rounds VALUES (?,?,?,?,?)',
+            (round_id, handoff['instance_id'], submission['id'], 1, 'reviewing'))
+        context = json.loads(conn.execute('SELECT context_bytes FROM workflow_contexts').fetchone()[0])
+        contract = context['document_contract']
+        principal = context['binding']['bindings']['reviewer']['principal']
+        request_id = _id('workflow-request', round_id, 'reviewer', principal, 1)
+        scope = review_scope(row=handoff, proof=proof, context=context, contract=contract, role='reviewer',
+            request_id=request_id, round_id=round_id, binding=context['binding']['bindings']['reviewer'])
+        request = dict(id=request_id, round_id=round_id, principal=principal, assignment_generation=1,
+            request_scope_bytes=encode(scope), request_scope_digest=digest(encode(scope)),
+            status='approved', supersedes_request_id=None)
+        insert('workflow_review_requests', request)
+        operation_id = _id('workflow-dispatch', request_id, 1)
+        outbox_id = _id('workflow-outbox', operation_id)
+        task_id, session = 'synthetic-review-task', 'synthetic-review-session'
+        db.insert_task(TaskRecord(id=task_id, assigned_agent=principal, team='engineering',
+            task_type='subtask', brief=review_brief(scope, handoff['candidate_bytes'])))
+        conn.execute("UPDATE tasks SET status='completed',current_session_id=? WHERE id=?", (session, task_id))
+        result_id = conn.execute('INSERT INTO task_results(task_id,agent,session_id,created_at) VALUES (?,?,?,?)',
+                                (task_id, principal, session, stamp)).lastrowid
+        result = dict(conn.execute('SELECT * FROM task_results WHERE id=?', (result_id,)).fetchone())
+        accepted = dict(id=result_id, record=result, digest=digest(encode(result)), accepted=1, disposition='accepted')
+        insert('workflow_dispatch_operations', dict(id=operation_id, org_slug='scratch', principal=principal,
+            operation_key=request_id, request_digest=request['request_scope_digest'], instance_id=handoff['instance_id'],
+            round_id=round_id, request_id=request_id, state='completed', created_at=stamp))
+        outbox = dict(id=outbox_id, operation_id=operation_id, request_id=request_id,
+            effect_key='workflow-review:' + request_id, authority_namespace=intent['authority_namespace'],
+            authority_generation=intent['authority_generation'], authority_digest=intent['authority_digest'],
+            artifact_revision=1, state='queued', claim_token=None, claim_owner=None, host_launch_started=0,
+            host_execution_key='workflow-review-host:' + operation_id, host_execution_id=None,
+            recovery_owner='workflow_recovery', last_error=None, created_at=stamp, updated_at=stamp)
+        bridge = dict(request_id=request_id, operation_id=operation_id, instance_id=handoff['instance_id'],
+            task_id=task_id, assigned_principal=principal, assignment_generation=1, session_id=None,
+            result_id=None, state='queued', created_at=stamp)
+        projections = [dict(outbox=outbox, bridge=bridge)]
+        steps = [('claimed', dict(state='claimed', claim_token='synthetic-review-claim',
+                                 claim_owner='workflow_dispatcher'), dict(state='claimed')),
+                 ('launch_reserved', dict(host_launch_started=1), dict(session_id=session)),
+                 ('running', dict(state='running', host_execution_id='a' * 64), dict(state='running')),
+                 ('review_staged', {}, {}),
+                 ('callback_recorded', {}, dict(result_id=str(result_id))),
+                 ('completed', dict(state='completed'), dict(state='completed'))]
+        command = dict(format='workflow-review-stage-command@1', action='stage-review',
+            operation_key='synthetic-review-stage', request_id=request_id, expected_revision=1,
+            request_scope_digest=request['request_scope_digest'], outcome='approved',
+            findings_bytes_base64=base64.b64encode(b'Synthetic review findings').decode(),
+            findings_digest=digest(b'Synthetic review findings'))
+        previous_digest = None
+        events = []
+        for sequence, (kind, change_outbox, change_bridge) in enumerate(steps, 1):
+            before = projections[-1]
+            after = dict(outbox=dict(before['outbox'], **change_outbox), bridge=dict(before['bridge'], **change_bridge))
+            projections.append(after)
+            body = dict(format='workflow-review-stage@1' if kind == 'review_staged' else 'workflow-review-dispatch-event@1',
+                org_slug='scratch', operation_id=operation_id, request_id=request_id, task_id=task_id,
+                event_seq=sequence, event_kind=kind, previous_digest=previous_digest, before=before, after=after,
+                terminal_evidence=dict(host_quiescent=True) if kind == 'completed' else None,
+                result=accepted if kind in ('callback_recorded', 'completed') else None)
+            if kind == 'review_staged':
+                body['stage'] = dict(command=command, request_digest=digest(encode(command)), scope=scope,
+                                     outbox_id=outbox_id, session_id=session)
+            raw = encode(body)
+            event = dict(id=operation_id + ':' + str(sequence), operation_id=operation_id, event_seq=sequence,
+                event_kind=kind, state_before=before['outbox']['state'], state_after=after['outbox']['state'],
+                event_bytes=raw, event_digest=digest(raw), created_at=stamp)
+            events.append((event, body))
+            previous_digest = digest(raw)
+        insert('workflow_dispatch_outbox', projections[-1]['outbox'])
+        insert('workflow_request_task_bridges', projections[-1]['bridge'])
+        conn.execute("UPDATE workflow_task_ownership SET kind='f5',owner_id=? WHERE task_id=?",
+                     (request_id, task_id))
+        for event, body in events:
+            insert('workflow_dispatch_events', event)
+        insert('workflow_dispatch_callbacks', dict(id=operation_id + ':callback:' + str(result_id),
+            outbox_id=outbox_id, task_id=task_id, session_id=session, result_id=str(result_id),
+            result_digest=accepted['digest'], observed_revision=1, accepted=1, disposition='accepted', created_at=stamp))
+        insert('workflow_dispatch_effects', dict(id=operation_id + ':host', outbox_id=outbox_id,
+            effect_key=outbox['effect_key'], effect_kind='host_launch_observed', task_id=task_id,
+            session_id=session, host_execution_id='a' * 64, created_at=stamp))
+        stage, terminal = events[3], events[-1]
+        receipt_proof = dict(format='workflow-agent-review-proof@1', scope=scope,
+            request_scope_digest=request['request_scope_digest'],
+            stage_event=dict(id=stage[0]['id'], digest=stage[0]['event_digest'], body=stage[1]),
+            terminal_event=dict(id=terminal[0]['id'], digest=terminal[0]['event_digest']),
+            callback=accepted, result_id=result_id, task_id=task_id, session_id=session,
+            principal=principal, outcome='approved')
+        for table, record in _receipt_rows(request, scope, receipt_proof, result, terminal[0]).items():
+            insert(table, record)
+        graph = dict(submission_id=submission['id'], round_id=round_id,
+                     request_ids=[request_id], reviewer_task_ids=[task_id])
+        submitted = encode(dict(event_kind='submitted', instance_id=handoff['instance_id'], revision=1,
+                                submission_digest=handoff['candidate_digest'], **graph))
+        conn.execute('INSERT INTO workflow_events VALUES (?,?,?,?,?,?,?)',
+            (_id('workflow-event', handoff['instance_id'], 1, 'submitted'), handoff['instance_id'],
+             1, 'submitted', submitted, digest(submitted), stamp))
+        conn.execute("UPDATE workflow_instances SET status='reviewing' WHERE id=?", (handoff['instance_id'],))
+        conn.commit()
+        assert validate_handoff_graph(conn, handoff, proof) == graph
+        receipt = dict(conn.execute('SELECT * FROM workflow_review_receipts').fetchone())
+        assignment = dict(conn.execute('SELECT * FROM workflow_current_assignments').fetchone())
+        joined = encode(dict(format='workflow-review-join@1', event_kind='joined', org_slug='scratch',
+            instance_id=handoff['instance_id'], round_id=round_id, submission_id=submission['id'], revision=1,
+            submission_digest=handoff['candidate_digest'],
+            operation=dict(principal='service:workflow_review_join', operation_key=round_id, action='approve-planning-input'),
+            pins=proof['pins'], admission_authority=dict(proof['admission_authority'],
+                actions=['collect-review', 'approve-planning-input']),
+            receipts=[{key: value.hex() if type(value) is bytes else value for key, value in receipt.items()}],
+            assignments=[assignment], created_at=stamp))
+        joined_id = _id('workflow-event', handoff['instance_id'], 1, 'joined')
+        conn.execute('INSERT INTO workflow_events VALUES (?,?,?,?,?,?,?)',
+            (joined_id, handoff['instance_id'], 1, 'joined', joined, digest(joined), stamp))
+        conn.execute('INSERT INTO workflow_operation_replays VALUES (?,?,?,?,?,?)',
+            ('scratch', 'service:workflow_review_join', round_id, digest(joined), handoff['instance_id'], joined_id))
+        conn.execute("UPDATE workflow_rounds SET state='closed'")
+        conn.execute("UPDATE workflow_instances SET status='complete' WHERE id=?", (handoff['instance_id'],))
+        conn.commit()
+        assert validate_handoff_graph(conn, handoff, proof) == graph
+        assert read_sequential_history(conn, expected_org_slug='scratch').status == 'storage readable'
+        assert conn.execute('SELECT count(*) FROM workflow_review_receipts').fetchone()[0] == 1
+        assert [r[0] for r in conn.execute('SELECT event_kind FROM workflow_dispatch_events ORDER BY event_seq')] == [kind for kind, _, _ in steps]
 
     def populate_coding_authority(db, *, setup):
         import base64
@@ -729,7 +1055,7 @@ if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--seque
         else:
             assert history.retained[1].imported is not None
 
-    if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--coding-authority-corruption'], ['--document-native-corruption'], ['--physical-corruption'], ['--sequential-uncommitted']):
+    if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--coding-authority-corruption'], ['--document-native-corruption'], ['--author-handoff-corruption'], ['--physical-corruption'], ['--sequential-uncommitted']):
         corruptions = (
             ('definition digest', "UPDATE workflow_seq_definitions SET definition_digest='bad'"),
             ('definition bytes', "UPDATE workflow_seq_definitions SET definition_bytes=x'7b7d'"),
@@ -932,6 +1258,126 @@ if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--seque
             ('document completed terminal witness', lambda conn: corrupt_document_terminal(conn, witness=True)),
             ('document completed terminal result', lambda conn: corrupt_document_terminal(conn, witness=False)),
         )
+        def corrupt_handoff_proof(connection, path, value):
+            import hashlib
+            row = connection.execute('SELECT id,admission_bytes FROM workflow_author_handoffs').fetchone()
+            proof = json.loads(row[1])
+            target = proof
+            for key in path[:-1]:
+                target = target[key]
+            target[path[-1]] = value
+            raw = seq_history._bytes(proof)
+            connection.execute('UPDATE workflow_author_handoffs SET admission_bytes=?,admission_digest=? WHERE id=?',
+                               (raw, hashlib.sha256(raw).hexdigest(), row[0]))
+
+        author_handoff_corruptions = (
+            ('H org', "UPDATE workflow_author_handoffs SET org_slug='wrong'"),
+            ('H principal', "UPDATE workflow_author_handoffs SET principal='wrong'"),
+            ('H source session', "UPDATE workflow_author_handoffs SET source_session_id='wrong'"),
+            ('H candidate digest', "UPDATE workflow_author_handoffs SET candidate_digest='0000000000000000000000000000000000000000000000000000000000000000'"),
+            ('H request digest', "UPDATE workflow_author_handoffs SET request_digest='0000000000000000000000000000000000000000000000000000000000000000'"),
+            ('H admission digest', "UPDATE workflow_author_handoffs SET admission_digest='0000000000000000000000000000000000000000000000000000000000000000'"),
+            ('H closed admission', lambda conn: corrupt_handoff_proof(conn, ('extra',), True)),
+            ('H command operation', lambda conn: corrupt_handoff_proof(conn, ('client_request', 'operation_key'), 'wrong')),
+            ('H command candidate', lambda conn: corrupt_handoff_proof(conn, ('client_request', 'submission_bytes_base64'), 'eA==')),
+            ('H source immutable', lambda conn: corrupt_handoff_proof(conn, ('source_intent', 'recovery_owner'), 'wrong')),
+            ('H source generation org', lambda conn: corrupt_handoff_proof(conn, ('source_generation', 'org_slug'), 'wrong')),
+            ('H source generation principal', lambda conn: corrupt_handoff_proof(conn, ('source_generation', 'principal'), 'wrong')),
+            ('H source generation session', lambda conn: corrupt_handoff_proof(conn, ('source_generation', 'session_id'), 'wrong')),
+            ('H source generation numeric type', lambda conn: corrupt_handoff_proof(conn, ('source_generation', 'activation_revision'), True)),
+            ('H source generation assignment', lambda conn: corrupt_handoff_proof(conn, ('source_generation', 'assignment_generation'), 2)),
+            ('H source generation attempt', lambda conn: corrupt_handoff_proof(conn, ('source_generation', 'attempt_sequence'), 2)),
+            ('H source generation claim', lambda conn: corrupt_handoff_proof(conn, ('source_generation', 'claim_token'), 'wrong')),
+            ('H source generation owner', lambda conn: corrupt_handoff_proof(conn, ('source_generation', 'claim_owner'), 'wrong')),
+            ('H source generation host', lambda conn: corrupt_handoff_proof(conn, ('source_generation', 'host_execution_id'), 'wrong')),
+            ('H source generation result', lambda conn: corrupt_handoff_proof(conn, ('source_generation', 'final_result_id'), 1)),
+            ('H source generation state', lambda conn: corrupt_handoff_proof(conn, ('source_generation', 'state'), 'completed')),
+            ('H source generation cancellation', lambda conn: corrupt_handoff_proof(conn, ('source_generation', 'cancellation_requested'), 1)),
+            ('H template pin', lambda conn: corrupt_handoff_proof(conn, ('pins', 'template', 'validator_pin'), 'wrong')),
+            ('H activation pin', lambda conn: corrupt_handoff_proof(conn, ('pins', 'activation', 'revision'), 2)),
+            ('H authorization pin', lambda conn: corrupt_handoff_proof(conn, ('pins', 'authorization', 'bytes_hex'), '7b7d')),
+            ('H binding pin', lambda conn: corrupt_handoff_proof(conn, ('pins', 'binding', 'digest'), '0000000000000000000000000000000000000000000000000000000000000000')),
+            ('H context pin', lambda conn: corrupt_handoff_proof(conn, ('pins', 'context', 'id'), 'wrong')),
+            ('H scope pin', lambda conn: corrupt_handoff_proof(conn, ('pins', 'scope', 'bytes_hex'), '7b7d')),
+            ('H contract pin', lambda conn: corrupt_handoff_proof(conn, ('pins', 'contract', 'digest'), '0000000000000000000000000000000000000000000000000000000000000000')),
+            ('H captured ready', lambda conn: corrupt_handoff_proof(conn, ('admission_authority', 'ready', 'generation'), 2)),
+            ('H captured pointer', lambda conn: corrupt_handoff_proof(conn, ('admission_authority', 'pointer', 'journal_id'), 'wrong')),
+            ('H captured profiles', lambda conn: corrupt_handoff_proof(conn, ('admission_authority', 'profiles', 0, 'digest'), '0000000000000000000000000000000000000000000000000000000000000000')),
+            ('H captured dependency', lambda conn: corrupt_handoff_proof(conn, ('admission_authority', 'mirror', 0, 'state'), 'unbound')),
+            ('H captured dependency generation', lambda conn: corrupt_handoff_proof(conn, ('admission_authority', 'mirror', 0, 'bound_generation'), 2)),
+            ('H captured store', lambda conn: corrupt_handoff_proof(conn, ('admission_authority', 'mirror', 1, 'state'), 'removed')),
+            ('H captured registry', lambda conn: corrupt_handoff_proof(conn, ('admission_authority', 'mirror', 2, 'published_generation'), 2)),
+            ('H captured missing mirror', lambda conn: corrupt_handoff_proof(conn, ('admission_authority', 'mirror'), [])),
+            ('H captured cutover', lambda conn: corrupt_handoff_proof(conn, ('admission_authority', 'cutover'), 'disabled')),
+            ('H captured actions', lambda conn: corrupt_handoff_proof(conn, ('admission_authority', 'actions'), ['stage-immutable-document'])),
+        )
+        def corrupt_review_event(connection, kind, path, value):
+            import hashlib
+            row = connection.execute('SELECT id,event_bytes FROM workflow_dispatch_events WHERE event_kind=?', (kind,)).fetchone()
+            body = json.loads(row[1])
+            target = body
+            for key in path[:-1]:
+                target = target[key]
+            target[path[-1]] = value
+            raw = seq_history._bytes(body)
+            connection.execute('UPDATE workflow_dispatch_events SET event_bytes=?,event_digest=? WHERE id=?',
+                               (raw, hashlib.sha256(raw).hexdigest(), row[0]))
+
+        def corrupt_joined(connection, path, value):
+            import hashlib
+            row = connection.execute("SELECT id,event_bytes FROM workflow_events WHERE event_kind='joined'").fetchone()
+            body = json.loads(row[1])
+            target = body
+            for key in path[:-1]:
+                target = target[key]
+            target[path[-1]] = value
+            raw = seq_history._bytes(body)
+            dg = hashlib.sha256(raw).hexdigest()
+            connection.execute('UPDATE workflow_events SET event_bytes=?,event_digest=? WHERE id=?', (raw, dg, row[0]))
+            # Preserve replay/digest closure to reach the collection semantics.
+            connection.execute('UPDATE workflow_operation_replays SET request_digest=? WHERE effect_id=?', (dg, row[0]))
+
+        author_graph_corruptions = (
+            ('H graph joined authorization', lambda conn: corrupt_joined(conn, ('pins', 'authorization', 'digest'), '0000000000000000000000000000000000000000000000000000000000000000')),
+            ('H graph joined receipt', lambda conn: corrupt_joined(conn, ('receipts', 0, 'proof_digest'), '0000000000000000000000000000000000000000000000000000000000000000')),
+            ('H graph joined assignment', lambda conn: corrupt_joined(conn, ('assignments', 0, 'principal'), 'wrong')),
+            ('H graph joined actions', lambda conn: corrupt_joined(conn, ('admission_authority', 'actions'), ['collect-review'])),
+            ('H graph joined operation', lambda conn: corrupt_joined(conn, ('operation', 'action'), 'wrong')),
+            ('H graph round state', "UPDATE workflow_rounds SET state='superseded'"),
+            ('H graph request principal', "UPDATE workflow_review_requests SET principal='wrong'"),
+            ('H graph operation principal', "UPDATE workflow_dispatch_operations SET principal='wrong'"),
+            ('H graph operation key', "UPDATE workflow_dispatch_operations SET operation_key='wrong'"),
+            ('H graph operation request', "UPDATE workflow_dispatch_operations SET request_digest='bad'"),
+            ('H graph outbox effect', "UPDATE workflow_dispatch_outbox SET effect_key='wrong'"),
+            ('H graph outbox host key', "UPDATE workflow_dispatch_outbox SET host_execution_key='wrong'"),
+            ('H graph outbox authority', "UPDATE workflow_dispatch_outbox SET authority_digest='bad'"),
+            ('H graph outbox recovery owner', "UPDATE workflow_dispatch_outbox SET recovery_owner='wrong'"),
+            ('H graph bridge principal', "UPDATE workflow_request_task_bridges SET assigned_principal='wrong'"),
+            ('H graph bridge generation', 'UPDATE workflow_request_task_bridges SET assignment_generation=2'),
+            ('H graph native task parent', "UPDATE tasks SET parent_task_id='document-root' WHERE id='synthetic-review-task'"),
+            ('H graph native task team', "UPDATE tasks SET team='wrong' WHERE id='synthetic-review-task'"),
+            ('H graph native task brief', "UPDATE tasks SET brief='wrong' WHERE id='synthetic-review-task'"),
+            ('H graph native result principal', "UPDATE task_results SET agent='wrong' WHERE task_id='synthetic-review-task'"),
+            ('H graph native result session', "UPDATE task_results SET session_id='wrong' WHERE task_id='synthetic-review-task'"),
+            ('H graph native result status', "UPDATE task_results SET status='failed' WHERE task_id='synthetic-review-task'"),
+            ('H graph callback digest', "UPDATE workflow_dispatch_callbacks SET result_digest='bad'"),
+            ('H graph callback accepted', 'UPDATE workflow_dispatch_callbacks SET accepted=0'),
+            ('H graph callback revision', 'UPDATE workflow_dispatch_callbacks SET observed_revision=2'),
+            ('H graph effect host', "UPDATE workflow_dispatch_effects SET host_execution_id='wrong'"),
+            ('H graph receipt evidence signer', "UPDATE workflow_receipt_evidence SET signer_principal='wrong'"),
+            ('H graph receipt evidence result', 'UPDATE workflow_receipt_evidence SET round_revision=2'),
+            ('H graph assignment principal', "UPDATE workflow_current_assignments SET principal='wrong'"),
+            ('H graph missing contributor', 'DELETE FROM workflow_submission_contributors'),
+            ('H graph review terminal witness', lambda conn: corrupt_review_event(conn, 'completed', ('terminal_evidence', 'host_quiescent'), False)),
+            ('H graph review terminal accepted', lambda conn: corrupt_review_event(conn, 'completed', ('result', 'accepted'), 0)),
+            ('H graph review stage subject', lambda conn: corrupt_review_event(conn, 'review_staged', ('stage', 'scope', 'principal'), 'wrong')),
+            ('H graph review stage command', lambda conn: corrupt_review_event(conn, 'review_staged', ('stage', 'command', 'expected_revision'), 2)),
+            ('H graph review callback native type', lambda conn: corrupt_review_event(conn, 'callback_recorded', ('result', 'id'), True)),
+        )
+        author_graph_names = {name for name, _ in author_graph_corruptions}
+        refusal_codes.update({name: 'workflow_author_handoff_storage_corrupt' for name in author_graph_names})
+        author_handoff_names = {name for name, _ in author_handoff_corruptions}
+        refusal_codes.update({name: 'workflow_author_handoff_storage_corrupt' for name in author_handoff_names})
         document_native_names = {name for name, _ in document_native_corruptions}
         refusal_codes.update({name: ('workflow_submission_data_corrupt' if name.startswith(('document operation ', 'document link '))
                                     else 'workflow_draft_data_corrupt') for name in document_native_names})
@@ -955,6 +1401,10 @@ if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--seque
             corruptions = document_native_corruptions
         elif sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-corruption'], ['--document-coding-corruption']):
             corruptions += document_native_corruptions
+        if sys.argv[1:] == ['--author-handoff-corruption']:
+            corruptions = author_handoff_corruptions + author_graph_corruptions
+        elif sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-corruption'], ['--document-coding-corruption']):
+            corruptions += author_handoff_corruptions + author_graph_corruptions
         def corrupt_physical_index(connection, *, surplus):
             # Synthetic private corruption: preserve the exact index definition
             # while making SQLite change its table without index maintenance.
@@ -1009,6 +1459,10 @@ if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--seque
                     populate_document_coding(db)
                 if name in document_native_names:
                     populate_document_native(db)
+                if name in author_handoff_names:
+                    populate_author_handoff(db)
+                if name in author_graph_names:
+                    populate_handoff_graph(db)
                 if name in coding_import_names or name in coding_setup_names:
                     populate_coding_authority(db, setup=name in coding_setup_names)
                 # Warm outside the new owner too: a forbidden cross-load cache
@@ -1083,7 +1537,7 @@ if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--seque
                     corruption_failures.append((name, phase, str(exc)))
                     print('FAIL A0b sequential corruption matrix:', name, phase, str(exc), flush=True)
         assert not corruption_failures, 'sequential corruption matrix failures: ' + repr(corruption_failures)
-        if sys.argv[1:] in (['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--coding-authority-corruption'], ['--document-native-corruption'], ['--physical-corruption'], ['--sequential-uncommitted']):
+        if sys.argv[1:] in (['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--coding-authority-corruption'], ['--document-native-corruption'], ['--author-handoff-corruption'], ['--physical-corruption'], ['--sequential-uncommitted']):
             raise SystemExit(0)
 
     if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-faults'], ['--sequential-sql-exhaustion']):
