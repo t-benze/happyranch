@@ -8,8 +8,16 @@ identity and a pinned zero-write snapshot. Writes/write rollback, schema/config
 execution or failed observation invalidate it; replaced files refuse. Retained
 charges import once per compatible caller and changed targets debit original
 cumulative counters. Public/unknown snapshots and later loads validate fresh.
-Every miss retains full physical/FK checks and original finite limits. Complete
-current-data sizing/acceptance remains separate; no setup or operating authority.
+Every miss retains full physical/FK checks and original finite limits. A0b-2
+capacity acceptance requires actual default writable installed danze, family and
+genuine fresh-org FIRST/NEXT returns on Python3.12/3.14. Installed happyranch's
+FIRST and attempted NEXT must refuse with zero DB changes, no partial certificate
+and no leaked trace registration: **EXPECTED REFUSAL - part 1 retained until I2**,
+never PASS. Compare the same private image once at the original pre-A0b-2 base.
+Installed happyranch FIRST/NEXT/Pause/all-org-tail capacity acceptance belongs to
+I2, on its fresh base and capture; all other A0b-2 cases remain required. No cap,
+check, deadline or caller changes here. Automatic install stays size-guarded/held
+for over-budget orgs; no setup or operating authority follows.
 
 A0b finite SQL prerequisite: complete readers materialize shared singleton row
 shape/size once and specialize equivalent ownership type predicates. The private

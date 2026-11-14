@@ -41,11 +41,11 @@ from runtime.identities import registry as names
 from runtime.orchestrator import producer_move
 from runtime.orchestrator.agent_def import AgentDef, render_agent_text
 
-assert sys.argv[1:] in ([], ['--bounded-acquisition'], ['--trace-custody'], ['--sequential-reuse'], ['--sequential-load']), 'unknown schema-load selection'
+assert sys.argv[1:] in ([], ['--bounded-acquisition'], ['--trace-custody'], ['--sequential-reuse'], ['--sequential-load'], ['--sequential-faults']), 'unknown schema-load selection'
 
 # A0b-2 custody extends this existing real-SQLite venue. No native connection
 # subclass, fake epoch, successful validator stub or production test seam.
-if sys.argv[1:] not in (['--bounded-acquisition'], ['--sequential-reuse'], ['--sequential-load']):
+if sys.argv[1:] not in (['--bounded-acquisition'], ['--sequential-reuse'], ['--sequential-load'], ['--sequential-faults']):
     class TraceAbort(BaseException):
         pass
 
@@ -210,7 +210,7 @@ if sys.argv[1:] == ['--trace-custody']:
 # layouts. The only fixture writer is the existing private installer primitive.
 # Native SQLite statements, outcomes and original cumulative counters are the
 # oracles; no validator replacement, success stub or fabricated epoch.
-if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load']):
+if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--sequential-faults']):
     from runtime.infrastructure.workflow_schema import (
         initialize_complete_org_schema, install_sequential_schema,
         sequential_storage_inventory, _coding_org_identity, _schema_snapshot,
@@ -252,6 +252,179 @@ if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load']):
 
     def seq_read(db, **kwargs):
         return read_workflow_schema_for_org_load(db._conn, expected_org_slug='scratch', **kwargs)
+
+    def sequential_outcome(operation):
+        try:
+            return ('returned', operation())
+        except (ValueError, sqlite3.Error) as exc:
+            cause = exc
+            categories = []
+            while cause is not None:
+                categories.append((type(cause), str(cause)))
+                cause = cause.__cause__
+            return ('refused', tuple(categories))
+
+    if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-faults']):
+        fault_failures = []
+        @contextmanager
+        def sequential_fault_case(name):
+            try:
+                yield
+            except AssertionError as exc:
+                fault_failures.append((name, str(exc)))
+                print('FAIL A0b sequential fault:', name, str(exc), flush=True)
+
+        # Extend the legacy metadata keeper to the complete sequential branch.
+        # A native denial must fall back/refuse exactly like the public reader;
+        # checking only the final tuple would miss an illicit successful hit.
+        for pragma in ('data_version', 'schema_version', 'database_list',
+                       'foreign_keys', 'defer_foreign_keys', 'read_uncommitted',
+                       'writable_schema', 'ignore_check_constraints',
+                       'recursive_triggers', 'trusted_schema', 'query_only',
+                       'journal_mode', 'locking_mode', 'synchronous', 'temp_store'):
+            with sequential_fault_case('metadata ' + pragma), sequential_fixture() as (db, root, sql):
+                with org_load_validation(db, org_slug='scratch'):
+                    seq_read(db)
+                    owner = load_guard._current.get()
+                    assert owner.sequential_saved is not None
+                    denied = []
+                    def deny(action, arg1, *_):
+                        if action == sqlite3.SQLITE_PRAGMA and arg1 == pragma:
+                            denied.append(arg1)
+                            return sqlite3.SQLITE_DENY
+                        return sqlite3.SQLITE_OK
+                    db._conn.set_authorizer(deny)
+                    try:
+                        hits = owner.hits
+                        actual = sequential_outcome(lambda: seq_read(db))
+                        expected = sequential_outcome(lambda: read_sequential_history(
+                            db._conn, expected_org_slug='scratch').retained)
+                        assert denied and actual == expected, pragma + ' denial changed complete outcome'
+                        assert owner.hits == hits and owner.sequential_saved is None, pragma + ' denial returned a sequential hit'
+                        assert not db._conn.in_transaction, pragma + ' denial leaked owned snapshot'
+                    finally:
+                        db._conn.set_authorizer(None)
+                print('PASS A0b sequential metadata denial:', pragma)
+
+        for config in ('native config', 'SQL limit', 'row factory', 'text factory', 'isolation level',
+                       'query_only', 'foreign_keys', 'defer_foreign_keys',
+                       'read_uncommitted', 'writable_schema', 'ignore_check_constraints',
+                       'recursive_triggers', 'trusted_schema'):
+            with sequential_fault_case('config ' + config), sequential_fixture() as (db, root, sql):
+                conn = db._conn
+                with org_load_validation(db, org_slug='scratch'):
+                    seq_read(db)
+                    owner = load_guard._current.get()
+                    if config == 'native config':
+                        option = sqlite3.SQLITE_DBCONFIG_DEFENSIVE
+                        previous = conn.getconfig(option)
+                        conn.setconfig(option, not previous)
+                        restore = lambda: conn.setconfig(option, previous)
+                    elif config == 'SQL limit':
+                        option = sqlite3.SQLITE_LIMIT_SQL_LENGTH
+                        previous = conn.getlimit(option)
+                        conn.setlimit(option, previous - 1)
+                        restore = lambda: conn.setlimit(option, previous)
+                    elif config == 'row factory':
+                        previous = conn.row_factory
+                        conn.row_factory = lambda cursor, row: tuple(row)
+                        restore = lambda: setattr(conn, 'row_factory', previous)
+                    elif config == 'text factory':
+                        previous = conn.text_factory
+                        conn.text_factory = bytes
+                        restore = lambda: setattr(conn, 'text_factory', previous)
+                    elif config == 'isolation level':
+                        previous = conn.isolation_level
+                        conn.isolation_level = None
+                        restore = lambda: setattr(conn, 'isolation_level', previous)
+                    else:
+                        previous = conn.execute('PRAGMA ' + config).fetchone()[0]
+                        conn.execute(f'PRAGMA {config}={1 - previous}')
+                        restore = lambda: conn.execute(f'PRAGMA {config}={previous}')
+                    try:
+                        hits = owner.hits
+                        actual = sequential_outcome(lambda: seq_read(db))
+                        expected = sequential_outcome(lambda: read_sequential_history(
+                            conn, expected_org_slug='scratch').retained)
+                        assert actual == expected, config + ' changed complete outcome'
+                        assert owner.hits == hits, config + ' change returned a sequential hit'
+                    finally:
+                        restore()
+                    # The restored configuration cannot resurrect its old fact.
+                    before = sql.count('PRAGMA integrity_check')
+                    seq_read(db)
+                    assert sql.count('PRAGMA integrity_check') == before + 1, config + ' restoration resurrected a sequential fact'
+                print('PASS A0b sequential config identity:', config)
+
+        with sequential_fixture() as (db, root, sql):
+            for schema, method in product(('main', 'temp'), ('connection', 'cursor', 'script')):
+                with sequential_fault_case('CREATE/DROP ' + schema + ' ' + method), org_load_validation(db, org_slug='scratch'):
+                    seq_read(db)
+                    owner = load_guard._current.get()
+                    for repeat in range(2):
+                        before = load_guard._bookend(db._conn)
+                        full = owner.full_runs
+                        create = f'/* cached CREATE/DROP */ -- native execution\n CREATE TABLE {schema}.seq_pair (v)'
+                        drop = f'/* cached CREATE/DROP */ DROP TABLE {schema}.seq_pair'
+                        if method == 'script':
+                            db._conn.executescript('BEGIN; ' + create + '; ' + drop + '; ROLLBACK;')
+                        else:
+                            db._conn.execute('BEGIN')
+                            cursor = db._conn if method == 'connection' else db._conn.cursor()
+                            try:
+                                cursor.execute(create)
+                                cursor.execute(drop)
+                            finally:
+                                if cursor is not db._conn:
+                                    cursor.close()
+                            db._conn.rollback()
+                        assert load_guard._bookend(db._conn) == before, 'CREATE/DROP fixture did not restore metadata'
+                        seq_read(db)
+                        assert owner.full_runs == full + 1, 'restored CREATE/DROP returned a sequential hit'
+                    print('PASS A0b sequential restored CREATE/DROP:', schema, method)
+
+            for ownership in ('wrong org', 'arbitrary source', 'arbitrary target', 'savepoint source'):
+                with sequential_fault_case('ownership ' + ownership), org_load_validation(db, org_slug='scratch'):
+                    seq_read(db)
+                    owner = load_guard._current.get()
+                    hits = owner.hits
+                    slug = 'another-org' if ownership == 'wrong org' else 'scratch'
+                    if ownership != 'wrong org':
+                        db._conn.execute('SAVEPOINT arbitrary' if ownership == 'savepoint source' else 'BEGIN')
+                        db._conn.execute('SELECT rootpage FROM main.sqlite_schema LIMIT 1').fetchone()
+                    try:
+                        if ownership == 'arbitrary target':
+                            operation = lambda: load_guard.read_workflow_schema_target_for_org_load(
+                                db._conn, expected_org_slug=slug, legacy=lambda: validate_workflow_schema(
+                                    db._conn, expected_org_slug=slug))
+                        else:
+                            operation = lambda: read_workflow_schema_for_org_load(db._conn,
+                                expected_org_slug=slug, writer_source=ownership != 'wrong org')
+                        actual = sequential_outcome(operation)
+                        expected = sequential_outcome(lambda: read_sequential_history(
+                            db._conn, expected_org_slug=slug).retained)
+                        assert actual == expected and owner.hits == hits, ownership + ' escaped sequential owner identity'
+                        assert db._conn.in_transaction == (ownership != 'wrong org'), ownership + ' stole caller transaction'
+                        assert owner.sequential_saved is None, ownership + ' retained an ineligible certificate'
+                    finally:
+                        db._conn.rollback()
+                    print('PASS A0b sequential ownership exclusion:', ownership)
+
+            with sequential_fault_case('ownership wrong connection'), sequential_fixture() as (other, other_root, other_sql):
+                with org_load_validation(db, org_slug='scratch'):
+                    seq_read(db)
+                    owner = load_guard._current.get()
+                    hits = owner.hits
+                    before = other_sql.count('PRAGMA integrity_check')
+                    actual = seq_read(other)
+                    assert actual == read_sequential_history(other._conn, expected_org_slug='scratch').retained
+                    assert owner.hits == hits and owner.sequential_saved is None, 'wrong connection borrowed a sequential certificate'
+                    assert other_sql.count('PRAGMA integrity_check') == before + 2
+                print('PASS A0b sequential ownership exclusion: wrong connection')
+
+        assert not fault_failures, 'sequential fault matrix failures: ' + repr(fault_failures)
+        if sys.argv[1:] == ['--sequential-faults']:
+            raise SystemExit(0)
 
     if sys.argv[1:] != ['--sequential-load']:
         with sequential_fixture() as (db, root, sql):

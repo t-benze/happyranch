@@ -20,6 +20,13 @@ snapshots and later loads remain fresh. Each compatible caller imports retained
 charges once; changed targets debit its original cumulative ledger. All original
 physical/FK checks, caps and deadlines remain. Whole current-data sizing and the
 complete acceptance matrix remain gates before automatic setup.
+For A0b-2 specifically, installed danze/family/genuine fresh FIRST/NEXT must
+return on both runtimes; installed happyranch FIRST/attempted NEXT must refuse
+without DB changes, partial certificates or observer leaks, with the same-image
+original-base comparison. Record **EXPECTED REFUSAL - part 1 retained until I2**.
+Installed happyranch successful FIRST/NEXT/Pause/all-org-tail capacity acceptance
+is I2's fresh-base/fresh-capture gate. All other A0b-2 cases remain required; see
+the [capacity contract](../runbooks/sequential-workflow-storage.md).
 
 A0b finite SQL prerequisite for automatic workflow setup: shared bounded readers
 evaluate each singleton's whole-row shape/size once; sequential ownership uses

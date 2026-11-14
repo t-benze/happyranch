@@ -16,7 +16,14 @@ shape/size is measured once, and ownership's exceptional-text scan follows its
 complete type/size prerequisite in the same snapshot. Payload withholding,
 logical charges, physical/FK checks and runtime/operator budgets remain exact.
 The SQL reductions add no setup/cutover caller. Automatic setup still requires
-complete owner acceptance/sizing and subsequent reviewed stages.
+complete owner acceptance/sizing and subsequent reviewed stages. A0b-2 retains
+part1 and records installed happyranch's fail-closed default FIRST/attempted NEXT
+as **EXPECTED REFUSAL - part 1 retained until I2**, with zero changes/certificate/
+observer leaks and an original-base comparison of the same private image.
+Successful installed happyranch FIRST/NEXT/Pause/all-org-tail capacity acceptance
+moves to I2's fresh base/capture. Installed danze/family/genuine fresh FIRST/NEXT
+returns on both runtimes and every other A0b-2 case remain required; see the
+[storage capacity contract](sequential-workflow-storage.md).
 
 **SOURCE ONLY: atomic public Coding cutover and old-fresh fence delivered.**
 TASK-15624 attaches reviewed Coding v2 selection and unconditional old fresh

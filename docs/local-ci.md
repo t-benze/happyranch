@@ -282,6 +282,18 @@ These focused cases do not replace the entire v3 corruption/fault matrix or
 current-data writable sizing. Run full schema-load3.12/3.14 plus local_ci all as
 an exact-clean-head durable job; required hosted checks remain lint/static only.
 
+`--sequential-faults` selects the same venue's added sequential metadata-denial,
+native configuration/limit/factory, restored main/TEMP CREATE/DROP and wrong
+connection/org/transaction ownership tables. It compares actual complete-reader
+outcomes, forbids uncertified hits and preserves caller transactions. Named
+assertion failures accumulate and fail the selection; no failed case is skipped.
+The full selection and `--sequential-reuse` include these tables. They do not
+replace nonempty family-corruption or borrowed-interval race/exhaustion coverage.
+For A0b-2's capacity disposition, see the [storage contract](runbooks/sequential-workflow-storage.md):
+installed happyranch's default FIRST/attempted NEXT is recorded as expected
+refusal with zero changes/certificate/observer leaks and an original-base
+comparison; its successful capacity gate moves to I2. All caps/checks remain.
+
 Focused schema-load observation (THR308seq348/353/354): run
 `bash scripts/test-workflow-schema-load.sh` locally with frozen Python3.14.
 A0 (THR-336 msg194) extends its acquisition case table with native storage
