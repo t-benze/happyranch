@@ -1,5 +1,22 @@
 # Local CI
 
+## Focused candidate agent parse-failure coverage (#602)
+
+```sh
+uv run --frozen pytest scripts/test_agent_parse_failure.py -v --tb=short
+```
+
+This no-launch regression reuses the synthetic-org fixture from
+`scripts/test_agent_retirement.py`, with real SQLite and queue publication,
+without daemon lifespan, listeners, workers or executor launch. It corrupts a
+candidate worker definition after org loading and drives the real manager
+`run_step` through both the serving Pause-store path and the no-store fallback.
+Both must persist FAILED and enqueue the parked parent. The serving path keeps
+its existing native `launch_refused` settlement and sanitized `AgentParseError`
+cause; the fallback uses the normal inner invocation-failure note. This script
+stays outside retired Python units and adds no required CI check or E2E trigger.
+General integration remains SKIPPED under THR-243 seq42.
+
 ## Focused founder cancellation coverage (#596 minimal wake)
 
 ```sh

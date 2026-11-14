@@ -1622,13 +1622,13 @@ def _run_step_body(orch: "Orchestrator", task_id: str, metadata: dict | None = N
     if task.assigned_agent is None and pause_invocation is None:
         db.update_task(task_id, assigned_agent=agent)
 
-    prompt = _build_agent_prompt(orch, task, agent)
-    if pause_invocation is None:
-        prompt += _prepare_workspace_cleanup_reclamation_context(
-            orch, task, agent, stale_orchestration_step_count=task.orchestration_step_count,
-            claimed_next_step_count=next_count,
-        )
     try:
+        prompt = _build_agent_prompt(orch, task, agent)
+        if pause_invocation is None:
+            prompt += _prepare_workspace_cleanup_reclamation_context(
+                orch, task, agent, stale_orchestration_step_count=task.orchestration_step_count,
+                claimed_next_step_count=next_count,
+            )
         if reserved_session_id is None:
             result, report = orch._run_agent(task_id, agent, prompt)
         else:
