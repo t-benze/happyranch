@@ -1199,129 +1199,145 @@ def restore_pause_preparations(orch: Any) -> None:
             store.save_journal_uncommitted(row)
 
 
+async def discover_root_pause_work(org: Any, queue: Any, root_id: str, generation: int) -> bool:
+    """Rediscover one root; acknowledge release only after a complete inspection."""
+    store = getattr(org.db, "_task_pause_store", None)
+    if store is None or queue is None:
+        return False
+    from runtime.workflows.recovery import SEQUENTIAL_HELD_KINDS, classify_task
+    from runtime.orchestrator.authority import enqueue_task_generation_aware
+    from runtime.daemon.routes.jobs import _run_job_core
+    with org.db.coherent_read_view() as conn:
+        root = store.root_uncommitted(root_id)
+        row = store.row_uncommitted(root_id)
+        held = row["held"] and root["status"] not in {"completed", "failed", "cancelled", "superseded"}
+        task_rows = conn.execute("WITH RECURSIVE tree(id) AS (SELECT ? UNION ALL "
+            "SELECT t.id FROM tasks t JOIN tree ON t.parent_task_id=tree.id) "
+            "SELECT id FROM tree LIMIT 10001", (root_id,)).fetchall()
+        complete = len(task_rows) <= 10000
+        entries = list(row["journal"]["entries"])
+    # A pending job rejected without ever committing launch is closed by
+    # that actual row. A terminal record for possible/unknown launch is
+    # not a quiescence receipt and is deliberately retained.
+    with store.writer(root_id) as (_, current):
+        _observe_settled_producers(store, current)
+        retained = []
+        for entry in current["journal"]["entries"]:
+            job = org.db.get_job(entry["owner_identity"]["job_id"]) if entry["owner"] == "job" else None
+            task = org.db.get_task(entry["task_id"])
+            closed_pending = (entry["phase"] == "pending_job" and job is not None
+                              and job.status.value in {"completed", "failed", "rejected"})
+            closed_deferred = (entry["owner"] != "job" and entry["phase"] in {"retry_deferred", "recovery_deferred"}
+                               and task is not None and (task.cancelled_at is not None or task.status.value in {"completed", "failed", "cancelled", "superseded"})
+                               and not entry["context"].get("execution_unknown"))
+            if not closed_pending and not closed_deferred:
+                retained.append(entry)
+        current["journal"]["entries"] = retained
+        store.save_journal_uncommitted(current)
+        entries = list(retained)
+    if not complete:
+        return False
+    # Exact landed callbacks settle through the existing consumer even
+    # while held. Delivery itself grants no provider-launch permission.
+    deferred_callbacks = {e["task_id"]: e for e in entries if e["owner"] != "job"
+        and not e["context"].get("producer_settled")
+        and e["phase"] in {"retry_deferred", "recovery_deferred"}}
+    if held:
+        for entry in deferred_callbacks.values():
+            task = org.db.get_task(entry["task_id"])
+            if task is None or task.cancelled_at is not None or task.status.value in {"completed", "failed", "cancelled", "superseded"}:
+                continue
+            sid = (entry["context"]["recovery_return"]["origin_session_id"]
+                   if entry["phase"] == "recovery_deferred" else entry["session_id"])
+            result = org.db.get_latest_task_result(entry["task_id"], entry["agent"], sid)
+            if result is not None and type(result["id"]) is int:
+                if "authority_v2_generation" in entry["owner_identity"]:
+                    try:
+                        with org.db.coherent_read_view():
+                            _authenticate_deferred_v2(store, entry)
+                    except DeferredRootPause:
+                        continue
+                queue.enqueue_if_absent(org.slug, entry["task_id"], metadata=dict(entry["owner_identity"]))
+    else:
+        deferred = {e["task_id"]: e for e in entries if e["owner"] != "job"
+                    and not e["context"].get("producer_settled")
+                    and e["phase"] in {"retry_deferred", "recovery_deferred"}}
+        for (task_id,) in task_rows:
+            task = org.db.get_task(task_id)
+            # Retain unknown evidence, but terminal owners cannot launch
+            # or replay consumed callbacks through the deferred branch.
+            if task is None or task.cancelled_at is not None or task.status.value in {"completed", "failed", "cancelled", "superseded"}:
+                continue
+            if task_id in deferred:
+                entry = deferred[task_id]
+                if "authority_v2_generation" in entry["owner_identity"]:
+                    try:
+                        with org.db.coherent_read_view():
+                            _authenticate_deferred_v2(store, entry)
+                    except DeferredRootPause:
+                        continue
+                    # This is delivery for the already admitted SAME
+                    # owner, not publication/admission of a pending G.
+                    queue.enqueue_if_absent(org.slug, task_id, metadata=dict(entry["owner_identity"]))
+                else:
+                    queue.enqueue_if_absent(org.slug, task_id,
+                        publisher=lambda task_id=task_id, entry=entry: enqueue_task_generation_aware(
+                            org.orchestrator, queue, org.slug, task_id, metadata=dict(entry["owner_identity"])))
+            elif task is not None and eligible(org.orchestrator, task):
+                ownership = classify_task(org.db, task_id, org_slug=org.slug)
+                if ownership.kind == "draft":
+                    org.workflow_drafts.notify_queued(task_id, queue)
+                elif ownership.kind == "f5":
+                    org.workflow_reviews.notify_queued(task_id, queue)
+                elif ownership.kind == 'coding_attempt':
+                    org.workflow_coding_dispatch.notify_queued(task_id, queue)
+                elif ownership.kind == 'seq_visit':
+                    org.workflow_sequential_dispatch.notify_queued(task_id, queue)
+                elif ownership.kind in SEQUENTIAL_HELD_KINDS or ownership.kind.startswith('coding_'):
+                    continue
+                elif ownership.kind == "legacy":
+                    enqueue_task_generation_aware(org.orchestrator, queue, org.slug, task_id)
+        release_failed = False
+        for entry in entries:
+            if entry["owner"] == "job" and entry["phase"] == "pending_job":
+                job_id = entry["owner_identity"]["job_id"]
+                job = org.db.get_job(job_id)
+                if job is not None and job.status.value == "pending" and not job.review_required:
+                    try:
+                        await _run_job_core(org, job_id=job_id, cwd_override=None, timeout_override=None,
+                            trigger="agent", trigger_actor=entry["agent"], submit_session_id=entry["session_id"])
+                    except Exception:
+                        release_failed = True
+                        import logging
+                        logging.getLogger(__name__).exception("pause rediscovery job remains pending: %s", job_id)
+        with store.writer(root_id) as (_, current):
+            if not release_failed and current["generation"] == generation and not current["held"]:
+                org.db._conn.execute("UPDATE task_pause_controls SET release_pending_generation=NULL WHERE root_task_id=?", (root_id,))
+    return True
+
+
 async def discover_pause_work(org: Any, queue: Any) -> None:
     """Bounded durable rediscovery through the existing owner publishers."""
     store = getattr(org.db, "_task_pause_store", None)
     if store is None or queue is None:
         return
-    from runtime.workflows.recovery import SEQUENTIAL_HELD_KINDS, classify_task
-    from runtime.orchestrator.authority import enqueue_task_generation_aware
-    from runtime.daemon.routes.jobs import _run_job_core
     # One bounded page per sweep, retaining cursor only as a traversal aid.
-    # Release intent is acknowledged only for a fully inspected actual root.
+    # Historical ended roots need traversal only while release is pending.
     cursor = getattr(store, "_discovery_cursor", "")
     with org.db._lock:
-        roots = org.db._conn.execute("SELECT root_task_id,generation FROM task_pause_controls "
-                                    "WHERE root_task_id>? ORDER BY root_task_id LIMIT 32", (cursor,)).fetchall()
+        roots = org.db._conn.execute(
+            "SELECT p.root_task_id,p.generation FROM task_pause_controls p "
+            "JOIN tasks t ON t.id=p.root_task_id WHERE p.root_task_id>? "
+            "AND (t.status NOT IN ('completed','failed','cancelled','superseded') "
+            "OR p.release_pending_generation IS NOT NULL) ORDER BY p.root_task_id LIMIT 32",
+            (cursor,),
+        ).fetchall()
     if not roots:
         store._discovery_cursor = ""
         return
     for root_id, generation in roots:
-        with org.db.coherent_read_view() as conn:
-            root = store.root_uncommitted(root_id)
-            row = store.row_uncommitted(root_id)
-            held = row["held"] and root["status"] not in {"completed", "failed", "cancelled", "superseded"}
-            task_rows = conn.execute("WITH RECURSIVE tree(id) AS (SELECT ? UNION ALL "
-                "SELECT t.id FROM tasks t JOIN tree ON t.parent_task_id=tree.id) "
-                "SELECT id FROM tree LIMIT 10001", (root_id,)).fetchall()
-            complete = len(task_rows) <= 10000
-            entries = list(row["journal"]["entries"])
-        # A pending job rejected without ever committing launch is closed by
-        # that actual row. A terminal record for possible/unknown launch is
-        # not a quiescence receipt and is deliberately retained.
-        with store.writer(root_id) as (_, current):
-            _observe_settled_producers(store, current)
-            retained = []
-            for entry in current["journal"]["entries"]:
-                job = org.db.get_job(entry["owner_identity"]["job_id"]) if entry["owner"] == "job" else None
-                task = org.db.get_task(entry["task_id"])
-                closed_pending = (entry["phase"] == "pending_job" and job is not None
-                                  and job.status.value in {"completed", "failed", "rejected"})
-                closed_deferred = (entry["owner"] != "job" and entry["phase"] in {"retry_deferred", "recovery_deferred"}
-                                   and task is not None and (task.cancelled_at is not None or task.status.value in {"completed", "failed", "cancelled", "superseded"})
-                                   and not entry["context"].get("execution_unknown"))
-                if not closed_pending and not closed_deferred:
-                    retained.append(entry)
-            current["journal"]["entries"] = retained
-            store.save_journal_uncommitted(current)
-            entries = list(retained)
-        if not complete:
-            continue
-        # Exact landed callbacks settle through the existing consumer even
-        # while held. Delivery itself grants no provider-launch permission.
-        deferred_callbacks = {e["task_id"]: e for e in entries if e["owner"] != "job"
-            and not e["context"].get("producer_settled")
-            and e["phase"] in {"retry_deferred", "recovery_deferred"}}
-        if held:
-            for entry in deferred_callbacks.values():
-                task = org.db.get_task(entry["task_id"])
-                if task is None or task.cancelled_at is not None or task.status.value in {"completed", "failed", "cancelled", "superseded"}:
-                    continue
-                sid = (entry["context"]["recovery_return"]["origin_session_id"]
-                       if entry["phase"] == "recovery_deferred" else entry["session_id"])
-                result = org.db.get_latest_task_result(entry["task_id"], entry["agent"], sid)
-                if result is not None and type(result["id"]) is int:
-                    if "authority_v2_generation" in entry["owner_identity"]:
-                        try:
-                            with org.db.coherent_read_view():
-                                _authenticate_deferred_v2(store, entry)
-                        except DeferredRootPause:
-                            continue
-                    queue.enqueue_if_absent(org.slug, entry["task_id"], metadata=dict(entry["owner_identity"]))
-        else:
-            deferred = {e["task_id"]: e for e in entries if e["owner"] != "job"
-                        and not e["context"].get("producer_settled")
-                        and e["phase"] in {"retry_deferred", "recovery_deferred"}}
-            for (task_id,) in task_rows:
-                task = org.db.get_task(task_id)
-                # Retain unknown evidence, but terminal owners cannot launch
-                # or replay consumed callbacks through the deferred branch.
-                if task is None or task.cancelled_at is not None or task.status.value in {"completed", "failed", "cancelled", "superseded"}:
-                    continue
-                if task_id in deferred:
-                    entry = deferred[task_id]
-                    if "authority_v2_generation" in entry["owner_identity"]:
-                        try:
-                            with org.db.coherent_read_view():
-                                _authenticate_deferred_v2(store, entry)
-                        except DeferredRootPause:
-                            continue
-                        # This is delivery for the already admitted SAME
-                        # owner, not publication/admission of a pending G.
-                        queue.enqueue_if_absent(org.slug, task_id, metadata=dict(entry["owner_identity"]))
-                    else:
-                        queue.enqueue_if_absent(org.slug, task_id,
-                            publisher=lambda task_id=task_id, entry=entry: enqueue_task_generation_aware(
-                                org.orchestrator, queue, org.slug, task_id, metadata=dict(entry["owner_identity"])))
-                elif task is not None and eligible(org.orchestrator, task):
-                    ownership = classify_task(org.db, task_id, org_slug=org.slug)
-                    if ownership.kind == "draft":
-                        org.workflow_drafts.notify_queued(task_id, queue)
-                    elif ownership.kind == "f5":
-                        org.workflow_reviews.notify_queued(task_id, queue)
-                    elif ownership.kind == 'coding_attempt':
-                        org.workflow_coding_dispatch.notify_queued(task_id, queue)
-                    elif ownership.kind == 'seq_visit':
-                        org.workflow_sequential_dispatch.notify_queued(task_id, queue)
-                    elif ownership.kind in SEQUENTIAL_HELD_KINDS or ownership.kind.startswith('coding_'):
-                        continue
-                    elif ownership.kind == "legacy":
-                        enqueue_task_generation_aware(org.orchestrator, queue, org.slug, task_id)
-            for entry in entries:
-                if entry["owner"] == "job" and entry["phase"] == "pending_job":
-                    job_id = entry["owner_identity"]["job_id"]
-                    job = org.db.get_job(job_id)
-                    if job is not None and job.status.value == "pending" and not job.review_required:
-                        try:
-                            await _run_job_core(org, job_id=job_id, cwd_override=None, timeout_override=None,
-                                trigger="agent", trigger_actor=entry["agent"], submit_session_id=entry["session_id"])
-                        except Exception:
-                            import logging
-                            logging.getLogger(__name__).exception("pause rediscovery job remains pending: %s", job_id)
-            with store.writer(root_id) as (_, current):
-                if current["generation"] == generation and not current["held"]:
-                    org.db._conn.execute("UPDATE task_pause_controls SET release_pending_generation=NULL WHERE root_task_id=?", (root_id,))
-        store._discovery_cursor = root_id
+        if await discover_root_pause_work(org, queue, root_id, generation):
+            store._discovery_cursor = root_id
 
 
 def prepared_cancel_controls(db: Any, task_id: str) -> list[tuple[str, Callable[[], None]]]:

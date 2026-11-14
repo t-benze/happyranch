@@ -24,6 +24,15 @@ refuse root_task_required and identify their actual root. Unknown tasks are404;
 terminal roots refuse task_terminal. Generation overflow, invalid control or
 journal evidence refuses pause_control_unavailable.
 
+An accepted Resume immediately rediscovers that root after the control COMMIT,
+using the same bounded per-root owner publishers and eligibility checks as the
+periodic sweep. Release intent is cleared only after complete inspection under
+the matching generation and unheld-state guard. A failed direct release leaves
+durable intent for the unchanged 30-second sweep. Its 32-root pages skip ended
+roots (completed, failed, cancelled or superseded) without pending release;
+their pause records remain stored. Ended roots with pending release stay eligible
+for the backstop. Duplicate controls publish no work.
+
 `happyranch pause TASK --org ORG`, `resume TASK --org ORG` first read the current
 generation unless --expected-generation is supplied, then post once. --json
 returns the control response. The TypeScript client refuses negative, fractional or unsafe-number generations before transport; the CLI can carry the full server integer range. Details and task lists expose the separate pause
