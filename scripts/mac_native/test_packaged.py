@@ -1191,6 +1191,123 @@ uv() { printf '%s\\n' "$@"; }
                 self.assertEqual(joined['steps']['8']['status'], 'PASS')
                 self.assertLess(len(json.dumps(joined).encode()), 60000)
 
+    def test_maximum_rejected_rows_survive_run_finalization_and_collector(self) -> None:
+        # SYNTHETIC maximum escaped rows, never captured native evidence.
+        # Distinct snapshots prevent a repeated-payload-only repair from passing.
+        from unittest.mock import Mock
+        real_command, real_popen = suite.command, subprocess.Popen
+        collector = suite.ROOT / 'scripts/mac_native/collect_packaged.py'
+        for distinct in (False, True):
+            with self.subTest(distinct=distinct), tempfile.TemporaryDirectory() as folder:
+                workspace = Path(folder).resolve()
+                scratch = workspace / 'native-probe.SYNTHETIC'
+                source = scratch / 'source'
+                source.mkdir(parents=True)
+                report = {'suite': 'packaged', 'platform': 'darwin'}
+                launched, inputs = [], []
+                def census():
+                    if not launched:
+                        return []
+                    phase = len(inputs) if distinct else 0
+                    lines = [f'1 0 1 ! Sat Nov 14 05:00:00 2026 /SYNTHETIC-{phase}-{i:02d}--'
+                             + '\\' * 300 for i in range(16)]
+                    inputs.append(lines)
+                    return suite.parse_census('\n'.join(lines) + '\n')
+                def checked(argv, *_args, **_kwargs):
+                    if argv[0] == '/usr/bin/ditto':
+                        shutil.copytree(argv[1], argv[2])
+                    return {'tail': 'a' * 40}
+                def build(argv, cwd, env, seconds):
+                    out = Path(argv[argv.index('--output-dir') + 1])
+                    for name in ('Contents/MacOS/HappyRanch',
+                                 'Contents/Resources/daemon/happyranch-daemon',
+                                 'Contents/Resources/daemon/happyranch'):
+                        path = out / 'HappyRanch.app' / name
+                        path.parent.mkdir(parents=True, exist_ok=True)
+                        path.write_bytes(b'SYNTHETIC never-executed Mac binary')
+                    archive = out / 'HappyRanch-1.0.1-1.0.1-arm64.zip'
+                    archive.write_bytes(b'SYNTHETIC retained ZIP')
+                    (out / 'build-receipt.json').write_text(json.dumps({
+                        'filename': archive.name, 'role': 'unsigned-inner-zip',
+                        'source_sha': 'a' * 40, 'source_tree': 'a' * 40,
+                        'run_id': '00000000-0000-0000-0000-000000000000',
+                        'size': archive.stat().st_size,
+                        'sha256': hashlib.sha256(archive.read_bytes()).hexdigest(),
+                        'app_inventory_sha256': '4' * 64}))
+                    return real_command([sys.executable, '-c', 'print("SYNTHETIC build output")'],
+                                        cwd, env, seconds)
+                def launch(argv, *args, **kwargs):
+                    if argv[0] == sys.executable:
+                        return real_popen(argv, *args, **kwargs)
+                    proc = Mock(pid=999999, returncode=0)
+                    proc.poll.return_value = None
+                    launched.append(proc)
+                    return proc
+                with (patch.object(suite, 'ROOT', source),
+                      patch.dict(os.environ, {'TMPDIR': str(scratch / 'tmp'), 'SOURCE_SHA': 'a' * 40,
+                                              'WORKSPACE': str(workspace)}),
+                      patch.object(suite, 'census', side_effect=census),
+                      patch.object(suite, 'checked', side_effect=checked),
+                      patch.object(suite, 'command', side_effect=build),
+                      patch.object(suite.subprocess, 'Popen', side_effect=launch),
+                      patch('scripts.mac_native.suite_toolchain.executor_feasibility', return_value={}),
+                      patch('scripts.mac_native.toolchain.provision', return_value=dict(os.environ))):
+                    with self.assertRaises(RuntimeError) as failure:
+                        suite.run(report)
+                # Match probe's real failure serialization, then invoke the real CLI.
+                report.update(completed=False, internal_error=f'RuntimeError: {failure.exception}')
+                probe, identity, collected = (workspace / name for name in
+                                               ('probe.json', 'identity.txt', 'collected.json'))
+                probe.write_text(json.dumps(report, separators=(',', ':')) + '\n')
+                identity.write_text('source_sha=' + 'a' * 40 + '\nsuite=packaged\nscratch_removed=true\n')
+                shutil.rmtree(scratch)
+                result = subprocess.run([sys.executable, '-B', str(collector), '--probe', str(probe),
+                    '--identity', str(identity), '--source-sha', 'a' * 40, '--output', str(collected)],
+                    capture_output=True, text=True, timeout=5)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertNotIn('report exceeds', str(failure.exception))
+                final = json.loads(collected.read_bytes())
+                self.assertLess(len(json.dumps(report).encode()), 60000)
+                self.assertLessEqual(collected.stat().st_size, 65536)
+                section = final['packaged']
+                phases = ('initial_daemon_survivors', 'failure_survivors', 'before_quit', 'post_stop_survivors')
+                self.assertEqual(len(inputs), len(phases))
+                for phase, lines in zip(phases, inputs, strict=True):
+                    snapshot = section[phase]
+                    self.assertEqual(snapshot['status'], 'UNKNOWN')
+                    evidence = snapshot['census_error']
+                    self.assertEqual((evidence['row_count'], evidence['rejected_count']), (16, 16))
+                    self.assertEqual(len(evidence['rejected_rows']), 16)
+                    for index, row in enumerate(evidence['rejected_rows']):
+                        escaped = json.dumps(lines[index], ensure_ascii=True)[1:-1]
+                        self.assertEqual((row['line_index'], row['reason']), (index + 1, 'state'))
+                        self.assertEqual(row['row_sha256'], hashlib.sha256(escaped.encode('ascii')).hexdigest())
+                        self.assertEqual(row['row_bytes'], len(escaped))
+                        self.assertTrue(row['truncated'])
+                        if row.get('report_truncated'):
+                            self.assertEqual(row['row'], '')
+                        else:
+                            self.assertEqual(len(row['row']), 512)
+                            self.assertTrue(escaped.startswith(row['row']))
+                first = section[phases[0]]['census_error']['rejected_rows'][0]
+                self.assertEqual(first['row'], json.dumps(inputs[0][0])[1:-1][:512])
+                self.assertTrue(any(row.get('report_truncated') for phase in phases
+                                    for row in section[phase]['census_error']['rejected_rows']))
+                self.assertFalse(final['completed'])
+                self.assertEqual(final['steps']['3']['status'], 'FAIL')
+                self.assertEqual(final['steps']['7']['status'], 'FAIL')
+                self.assertEqual(final['steps']['8']['status'], 'PASS')
+                build_result = section['commands']['build']
+                output = b'SYNTHETIC build output\n'
+                self.assertEqual((build_result['exit_code'], build_result['bytes'], build_result['tail']),
+                                 (0, len(output), output.decode()))
+                self.assertEqual(build_result['sha256'], hashlib.sha256(output).hexdigest())
+                kept = section['retained_product']
+                self.assertEqual(Path(kept['path']).read_bytes(), b'SYNTHETIC retained ZIP')
+                self.assertEqual(kept['sha256'], hashlib.sha256(b'SYNTHETIC retained ZIP').hexdigest())
+                launched[0].terminate.assert_called_once()
+                launched[0].wait.assert_called_once()
+
     def test_linux_dispatch_has_eight_not_run_steps(self):
         if sys.platform == 'darwin':
             self.skipTest('Linux skip boundary only; never build in portable tests')

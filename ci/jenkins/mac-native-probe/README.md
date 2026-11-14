@@ -623,7 +623,16 @@ owns scratch disposal even on failure. No automatic resubmission is permitted.
 Census diagnostics now retain the first 16 rejected LF-delimited `ps` rows, each
 at most 512 bytes of ASCII JSON escapes (controls escaped, escape sequences never
 split), with 1-based `line_index`, rejection `reason`, `truncated`, total
-`row_count` and `rejected_count`. No redaction is applied to these six requested
+`row_count` and `rejected_count`. Each retained row also carries `row_bytes` and
+`row_sha256` of the **full ASCII-escaped row**, before the 512-byte prefix cap.
+At run finalization, later row copies are emptied (`row: ""`,
+`report_truncated: true`) until the serialized report, including JSON re-escaping,
+fits 58,000 bytes. The first rejected row's bounded exact prefix is preserved;
+every snapshot keeps its indices, reasons, totals, full-row lengths/hashes and
+INCOMPLETE/UNKNOWN status. This aggregate budget covers distinct as well as
+repeated payloads and leaves 2,000 bytes below the unchanged 60,000-byte report
+cap for the failure envelope/EXIT join; the collector still caps at 64 KiB.
+No redaction is applied to these six requested
 fields (`pid/ppid/pgid/stat/lstart/comm`); argv and environment are never requested.
 Other subprocess/census failures retain only the exception class, avoiding raw
 command output. Empty/header/bad-ID/bad-state/bad-date/control rows and row/byte

@@ -228,6 +228,7 @@ def parse_census(raw: str) -> list[dict[str, Any]]:
         if reason:
             rejected_count += 1
             if len(rejected) < 16:
+                full_escaped = json.dumps(line, ensure_ascii=True)[1:-1]
                 # ASCII JSON escapes, never literal controls. Limit the escaped
                 # value to 512 bytes without cutting an escape sequence.
                 escaped = ''
@@ -237,7 +238,9 @@ def parse_census(raw: str) -> list[dict[str, Any]]:
                         break
                     escaped += part
                 rejected.append({'line_index': index, 'reason': reason, 'row': escaped,
-                                 'truncated': escaped != json.dumps(line, ensure_ascii=True)[1:-1]})
+                                 'truncated': escaped != full_escaped,
+                                 'row_bytes': len(full_escaped),
+                                 'row_sha256': hashlib.sha256(full_escaped.encode('ascii')).hexdigest()})
         elif len(rows) < 8192:
             rows.append(dict(zip((*PROCESS_FIELDS, 'executable'),
                 [*map(int, values[:3]), values[3], identity, values[9]], strict=True)))
@@ -315,6 +318,36 @@ def survivor_snapshot(select: Any) -> dict[str, Any]:
         if isinstance(exc, CensusError):
             result['census_error'] = exc.evidence
         return result
+
+
+def bound_census_evidence(report: dict[str, Any]) -> None:
+    """Spend only the report's remaining serialized-byte budget on row copies.
+
+    Keep the first rejected row's exact bounded prefix. Later copies may lose
+    their text, never their indices, reasons, full escaped-row hashes or counts.
+    Measure JSON bytes (including re-escaping), not the parser's prefix lengths.
+    The reserve covers probe's failure envelope and the collector's EXIT join.
+    """
+    rows: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    def visit(value: Any) -> None:
+        if isinstance(value, dict):
+            if 'rejected_rows' in value:
+                rows.extend((value, row) for row in value['rejected_rows'])
+            else:
+                for child in value.values():
+                    visit(child)
+        elif isinstance(value, list):
+            for child in value:
+                visit(child)
+    visit(report)
+    # Reverse retention order preserves the earliest exact evidence. This also
+    # handles distinct failures and command first/final payloads; deduplicating
+    # identical snapshots alone cannot bound those paths.
+    for evidence, row in reversed(rows[1:]):
+        if len(json.dumps(report).encode()) <= REPORT_CAP - 2000:
+            break
+        row.update(row='', report_truncated=True)
+        evidence['truncated'] = True
 
 
 def backend_diagnostics(path: Path, selected: dict[str, Any], secrets: tuple[str, ...]) -> dict[str, Any]:
@@ -965,6 +998,7 @@ def run(report: dict[str, Any]) -> None:
                     (api.token,) if api is not None else ())
         steps['8'] = dict(name=STEP_NAMES[7], status='NOT_RUN',
             reason='Outer Jenkins EXIT trap runs after probe.json emission; join identity.txt scratch_removed receipt. Never predict PASS.')
+        bound_census_evidence(report)
         if len(json.dumps(report).encode()) > REPORT_CAP:
             raise RuntimeError('packaged report exceeds 60000 bytes')
     if any(steps[str(i)]['status'] != 'PASS' for i in range(1, 8)):

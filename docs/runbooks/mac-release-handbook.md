@@ -121,7 +121,13 @@ immediately after health, before starting a session. Its retained
 candidate refusals from the daemon log. A fallback refusal still stops the daemon
 and runs the final census/EXIT cleanup. Census rejection now preserves bounded exact
 rows/counts/line indices/reasons under `census_error` (up to 16 rows, 512 escaped
-bytes each; six ps fields, no argv/environment, no redaction). Apple-documented
+bytes each; six ps fields, no argv/environment, no redaction). Full escaped-row
+lengths/SHA256 survive prefix truncation. Finalization empties later row copies
+with `report_truncated: true` to fit the serialized report in 58,000 bytes,
+preserving the first bounded exact row, indices/reasons/totals and every UNKNOWN
+snapshot. This includes distinct payloads; report 60,000-byte and collector
+64-KiB caps remain unchanged, with room for the failure envelope/EXIT join.
+Apple-documented
 `?` states retain present-process identity; malformed rows keep UNKNOWN. A
 command's exit/bytes/hash/tail survives sampling and final census failure;
 step1 still fails and preserves its build result. `build_output` contains

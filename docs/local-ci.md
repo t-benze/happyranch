@@ -272,8 +272,15 @@ macOS rows (including Apple's documented `?` state) and malformed rows. It check
 sampling/final census failure, actual child exit/output retention, timeout group
 kill/reap, initial refusal and same/later-step failure. No captured raw ps rows
 were found in builds 34–37 or THR104/MEM531 evidence. Rejections retain up to 16
-rows of 512 escaped bytes plus total counts/line indices/reasons, without argv or
-environment; no six-field redaction is applied. See the
+rows of 512 escaped bytes plus total counts/line indices/reasons and full
+escaped-row byte lengths/SHA256, without argv or environment. Finalization
+empties later row copies with `report_truncated: true` as needed to fit the
+serialized report in 58,000 bytes, preserving the first bounded exact row and
+every snapshot's UNKNOWN status/metadata under the unchanged report/collector
+caps. The maximum-row regression drives both repeated and distinct SYNTHETIC
+16×512-byte payloads through all four daemon failure/teardown snapshots and the
+real collector CLI, retaining the build result and verified ZIP after scratch
+removal. No six-field redaction is applied. See the
 [packaged evidence contract](../ci/jenkins/mac-native-probe/README.md#packaged-app-observation)
 for `census_error`, `command_result`, `command_result_key`, `build_output` and
 `retained_product`. A census failure keeps the child result and fails the step;
