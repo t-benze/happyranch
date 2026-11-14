@@ -1104,3 +1104,46 @@ through the paired bridge is required. Keychain/UI, native screenshots and
 release signing/pins remain later slices. Swift compile/tests and real managed
 tailnet acceptance are NOT RUN on the Linux implementation host; see the Mac
 README and PR evidence for exact limitations and the retained DIY keepers.
+
+### Mac join UI and login-Keychain custody addendum (THR-327, PR2)
+
+The existing CLIENT remote form now has an explicit Managed network selector;
+DIY remains the default NWConnection lane. The managed target is fixed before
+joining to match ClientBridge's immutable audience. Join uses a private,
+non-restored SecureField and a serialized file-based **login** Keychain store:
+exact service `ai.happyranch.HappyRanchApp.managed-enrollment`, attempt-UUID account,
+generic password, synchronizable=false, Data Protection omitted, default creator
+ACL, no access group/accessibility class/secret metadata. No entitlement or signing
+policy changes. Stage once, clear the field immediately, retrieve into owned C
+storage, require exact successful deletion and absence confirmation **before**
+calling native init/Up. Failure blocks network; locked/ACL guidance is fixed and
+there is no fallback store or raw Security/upstream error publication. Owned
+bytes are wiped before free on every exit; this is not forensic memory erasure.
+
+Before managed actions, enumerate stale metadata, delete every exact account in
+that login Keychain and confirm absence. Cancel invalidates late callbacks and
+awaits Security results and existing native teardown; no replay or automatic
+resume. Saved-profile selection and empty-key membership checks are explicit;
+native marker/state validation remains authoritative. A private nonsecret
+`revoked` file blocks saved membership when the operator-confirmed action is
+chosen. Failed/uncertain persistence blocks actions. Fresh recovery creates a
+new UUID profile and requires a fresh enrollment key and fresh pairing.
+
+Joined/unpaired/pairing is offline. Only authenticated paired runtime health is
+online; managed health uses five-second checks and maps loss to reconnecting,
+then paired-unreachable. Credential 401/403 says access denied/expired; timeout
+says unreachable; neither asserts revocation. Pairing 403 says invalid/expired
+pairing code, native -17/-18 remain distinct, and enrollment refusal does not
+pretend to distinguish used from expired keys. Cancel/interruption warns that
+remote enrollment may have completed and the key may be consumed. Disconnect
+closes traffic and retains membership. ClientBridge gains only fixed health
+categories and an awaitable wrapper on its existing teardown queue; the Bool
+health API, transport and native lifecycle contracts remain.
+
+PR2 adds real-Keychain custody and UI state tests under `app/mac/Tests` and
+retains DIY listener keepers. Linux maker verification cannot execute Swift,
+Security.framework or GUI capture. Native screenshots of every phase/error,
+Swift build/tests, signed ACL/locked behavior, actual deletion-failure/wipe proof
+and live join/relaunch/revocation remain **NOT RUN** pending a separately chosen
+native venue. See the Mac README for the real-state capture checklist; no test-only
+production state injection is provided. PR3 still owns release binding/signing.

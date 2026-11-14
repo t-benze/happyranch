@@ -1126,3 +1126,73 @@ They are NOT RUN on Linux. Buffer non-reuse is observable in Swift tests;
 zero-before-free is source reviewed, not observed after free or through a
 production test hook. Keychain/UI/screenshots remain PR2; release pins and
 owner-run signing remain PR3. No manual main-only Mac workflow is dispatched.
+
+## Managed join and pairing screen (PR2)
+
+In the existing CLIENT “Connect to Remote Runtime” form, DIY Tailscale remains
+selected by default. Select Managed network explicitly. Enter a trusted HTTPS
+control URL, enrollment key, home peer address/full tailnet DNS name and nonzero
+port, then Join Network. The home target is entered before joining because the
+existing ClientBridge binds it immutably; it stays frozen through pairing.
+Pair & Connect becomes available only after confirmed native join. Pairing alone
+is offline; authenticated runtime health publishes online. Five-second managed
+health checks distinguish access denied/expired (401/403), unreachable and native
+unsafe-target/peer-change errors. A session loss shows reconnecting, then
+unreachable. These do not assert revocation. The user must explicitly confirm
+“Device was revoked / Rejoin”; that closes traffic, discards pairing authority
+and writes a private nonsecret resume block. Fresh recovery uses a new profile,
+fresh enrollment key and fresh pairing approval.
+
+Enrollment custody uses only the existing file-based login Keychain, generic
+password service `ai.happyranch.HappyRanchApp.managed-enrollment`, UUID account,
+synchronizable=false, default creator ACL, no access group or secret metadata.
+Data Protection and accessibility attributes are omitted. Add is scoped to the
+opened login Keychain; reads/deletes use its explicit search list. No entitlement,
+provisioning or signing policy changes are required. Security work is serialized
+off MainActor. The private SecureField is cleared synchronously on submission
+and disappearance; draft/key text is never restored or published in AppDelegate.
+One staging Add is followed by CopyMatching into owned C storage, successful
+exact Delete and absence confirmation, before ClientBridge init/Up. Errors gate
+network with fixed unlock/access guidance and no plaintext/defaults/file fallback.
+All owned allocations are wiped before free, including failed deletion and
+cancellation; ARC/String/Data/Security and OS copies preclude forensic-erasure
+claims. No enrollment value enters logs, error detail, argv or environment.
+
+Managed selection first enumerates metadata, deletes each exact stale service/
+account item and confirms absence. Late Security results settle before another
+action; cancellation awaits the existing native teardown queue. No automatic
+retry, key replay or interrupted resume occurs. Check Keychain and saved profiles
+is explicit. Select a saved UUID profile and Check saved membership to use an
+empty key; native validation still owns the marker/state/lock decision. Unknown,
+missing or unsafe metadata refuses. Disconnect retains membership. Remote
+registration may have completed after cancellation; operator removal may be needed.
+
+Run `swift build` and `swift test` from `app/mac` on an authorized macOS host.
+`EnrollmentKeyStoreTests` uses synthetic items in the real **disposable** login
+Keychain and requires no preexisting app service items and no app running. It
+never locks a real user's Keychain or modifies its ACL/search list. It observes
+absence before owned-key consumption, multi-account cleanup and canceled custody.
+`ManagedJoinTests` covers validation, state/action gates, truthful errors, health
+transitions, fresh nonsecret identity and DIY defaults. Existing ClientBridge
+real-listener pairing/forwarding keepers remain, with health category assertions.
+These tests and Swift build are NOT RUN on the Linux PR2 maker host; source
+review is not execution, ACL proof or zero-before-free observation.
+
+Native capture checklist (later authorized macOS GUI session, disposable inputs,
+no secrets/codes visible): open this same form and capture draft, Keychain check,
+ACL waiting/denied, locked/unavailable Keychain, joining, joined, pairing, paired
+health check, online, reconnecting, unreachable, pairing-code refusal, join refusal
+(used/expired/invalid keys share one honest message), -17, -18, canceling,
+interrupted/relaunch/saved-membership check, confirmed revoked and fresh recovery.
+Use actual operator/OS/network actions; there is no screenshot-mode flag or test
+state injection. `managed-join-status` is an accessibility identifier on the real
+status text. Native screenshots, actual locked/ACL/deletion-failure behavior,
+private-cell join/relaunch/revocation and memory-wipe execution remain NOT RUN.
+
+The existing manual `build-mac-app.yml` uses reviewed `source_sha`/`source_tree`
+on macos-15 and builds the real archive/app, but does not run `swift test` or
+capture GUI states. It was inspected, not dispatched. Existing Jenkins native
+probe suites are bounded allowlisted probes, not a general app Swift-test/GUI
+venue; no Jenkins app-build job is installed, signing remains disabled. A later
+owner decision is required for any native run. PR3 retains release pins, source/
+resource hashes and the existing owner-run signing route.

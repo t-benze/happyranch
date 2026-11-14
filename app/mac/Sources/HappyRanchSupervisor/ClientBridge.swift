@@ -411,11 +411,32 @@ public final class ClientBridge: @unchecked Sendable {
         }
     }
 
+    /// UI cancellation waits for the existing serialized native teardown before
+    /// allowing a new custody attempt. This adds no second lifecycle owner.
+    public func stopManagedNetwork() async {
+        stop()
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            Self.engineQueue.async { continuation.resume() }
+        }
+    }
+
     /// Authenticated runtime health via this bridge's local loopback listener.
     /// No redirects/proxies: a remote Location must never escape the selected lane.
+    public enum RuntimeHealth: Sendable, Equatable {
+        case healthy, denied, unreachable
+        case managed(ManagedNetworkError)
+    }
+
     public func checkRuntimeHealth() async -> Bool {
+        await runtimeHealth() == .healthy
+    }
+
+    /// Fixed categories let the managed UI distinguish denial from reachability.
+    /// The Bool API remains for existing DIY callers.
+    public func runtimeHealth() async -> RuntimeHealth {
+        if lane == .managed, let failure = Self.tsnetLock.withLock({ managedFailure }) { return .managed(failure) }
         guard let credential = deviceCredential, !credential.isEmpty, let port = bridgePort,
-              let url = URL(string: "http://127.0.0.1:\(port)/api/v1/health") else { return false }
+              let url = URL(string: "http://127.0.0.1:\(port)/api/v1/health") else { return .unreachable }
         let attempt = Self.tsnetLock.withLock { managedAttempt }
         let configuration = URLSessionConfiguration.ephemeral
         configuration.connectionProxyDictionary = [:]
@@ -426,10 +447,12 @@ public final class ClientBridge: @unchecked Sendable {
         do {
             let (_, response) = try await session.bytes(from: url)
             guard let response = response as? HTTPURLResponse,
-                  bridgePort == port, deviceCredential == credential else { return false }
-            if lane == .managed && !Self.tsnetLock.withLock({ managedReady && managedPaired && managedAttempt == attempt }) { return false }
-            return (200...299).contains(response.statusCode)
-        } catch { return false }
+                  bridgePort == port, deviceCredential == credential else { return .unreachable }
+            if lane == .managed && !Self.tsnetLock.withLock({ managedReady && managedPaired && managedAttempt == attempt }) { return .unreachable }
+            if lane == .managed, let failure = Self.tsnetLock.withLock({ managedFailure }) { return .managed(failure) }
+            if response.statusCode == 401 || response.statusCode == 403 { return .denied }
+            return (200...299).contains(response.statusCode) ? .healthy : .unreachable
+        } catch { return .unreachable }
     }
 
     // MARK: - Pairing redeem (GAP #1)

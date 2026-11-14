@@ -59,6 +59,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
 
     /// The client loopback bridge (only active in CLIENT role).
     var clientBridge: ClientBridge?
+    let managedJoin = ManagedJoinModel()
+    @Published var clientLane: ClientBridge.Lane = .diy
+    private var remoteHealthTask: Task<Void, Never>?
 
     /// Connection state manager for the remote-connection surface.
     let connectionStateManager = ConnectionStateManager()
@@ -719,7 +722,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             return supervisor.isManagedBySelf &&
                    (supervisor.state == .running || supervisor.state == .starting || supervisor.state == .unhealthy)
         case .client:
-            return clientBridge != nil
+            return clientBridge != nil || managedJoin.bridge != nil || managedJoin.busy
         }
     }
 
@@ -758,7 +761,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             }
         case .client:
             // Disconnect client bridge if active.
-            if clientBridge != nil {
+            if clientBridge != nil || managedJoin.bridge != nil || managedJoin.busy {
                 disconnectRemote()
             }
         }
@@ -861,7 +864,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     /// home connector, sets deviceCredential on success, then points the
     /// WebView at the bridge's local URL.
     func connectToRemote() {
-        guard case .client = connectionRole else { return }
+        guard case .client = connectionRole, !isConnecting else { return }
+        let managed = clientLane == .managed
+        if managed && !managedJoin.canPair { return }
         guard !clientHomeHost.isEmpty,
               let port = UInt16(clientHomePort),
               !clientPairingCode.isEmpty else {
@@ -874,16 +879,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         connectionStateManager.forceState(.offline)  // pairing is not runtime health
         connectionState = connectionStateManager.state
 
-        let bridge = ClientBridge(
-            homeConnectorHost: clientHomeHost,
-            homeConnectorPort: port
-        )
+        let bridge: ClientBridge
+        if managed {
+            guard let joined = managedJoin.bridge else { isConnecting = false; return }
+            bridge = joined
+            managedJoin.pairingStarted()
+        } else {
+            bridge = ClientBridge(homeConnectorHost: clientHomeHost, homeConnectorPort: port)
+        }
+        let pairingCode = clientPairingCode
+        let homeHost = clientHomeHost
+        if managed { clientPairingCode = "" }
 
         do {
             try bridge.start()
         } catch {
             isConnecting = false
-            clientConnectError = "Failed to start bridge: \(error.localizedDescription)"
+            clientConnectError = managed ? "Failed to start local bridge" : "Failed to start bridge: \(error.localizedDescription)"
+            if managed { managedJoin.disconnect() }
             connectionStateManager.onHeartbeatFailed()
             connectionState = connectionStateManager.state
             return
@@ -900,6 +913,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                 waitCount += 1
             }
 
+            guard self.clientBridge === bridge else { return }
             guard case .running = bridge.state,
                   let bridgePort = bridge.bridgePort else {
                 await MainActor.run {
@@ -907,6 +921,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                     clientConnectError = "Bridge failed to start"
                     bridge.stop()
                     self.clientBridge = nil
+                    if managed { managedJoin.disconnect() }
                     connectionStateManager.onHeartbeatFailed()
                     connectionState = connectionStateManager.state
                 }
@@ -915,27 +930,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
 
             do {
                 try await bridge.redeemPairing(
-                    code: clientPairingCode,
-                    homeHost: clientHomeHost,
+                    code: pairingCode,
+                    homeHost: homeHost,
                     homePort: port,
                     timeout: 30
                 )
 
                 // Probe through the authenticated bridge, whose connector hop
                 // carries the device credential. Pairing alone is never online.
-                let healthy = await bridge.checkRuntimeHealth()
+                if managed { managedJoin.paired() }
+                let health = await bridge.runtimeHealth()
+                let healthy = health == .healthy
                 await MainActor.run {
                     guard self.clientBridge === bridge else { return }
                     isConnecting = false
-                    webViewURL = "http://127.0.0.1:\(bridgePort)/"
-                    if healthy { connectionStateManager.onHeartbeatSucceeded() }
-                    connectionState = connectionStateManager.state
+                    webViewURL = (!managed || healthy) ? "http://127.0.0.1:\(bridgePort)/" : nil
+                    if managed {
+                        applyManagedHealth(health)
+                        monitorManagedHealth(bridge, port: bridgePort)
+                    } else {
+                        if healthy { connectionStateManager.onHeartbeatSucceeded() }
+                        connectionState = connectionStateManager.state
+                    }
                 }
             } catch let error as RedeemPairingError {
                 await MainActor.run {
+                    guard self.clientBridge === bridge else { return }
                     isConnecting = false
                     bridge.stop()
                     self.clientBridge = nil
+                    if managed {
+                        managedJoin.pairingFailed(error)
+                    }
                     switch error {
                     case .refused:
                         clientConnectError = "Refused — invalid or expired pairing code"
@@ -951,10 +977,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                 }
             } catch {
                 await MainActor.run {
+                    guard self.clientBridge === bridge else { return }
                     isConnecting = false
                     bridge.stop()
                     self.clientBridge = nil
-                    clientConnectError = "Unexpected error: \(error.localizedDescription)"
+                    if managed { managedJoin.disconnect() }
+                    clientConnectError = managed ? "Pairing did not complete. Request fresh pairing approval." : "Unexpected error: \(error.localizedDescription)"
                     connectionStateManager.onHeartbeatFailed()
                     connectionState = connectionStateManager.state
                 }
@@ -964,12 +992,62 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
 
     /// Disconnect from the remote home runtime (CLIENT role).
     func disconnectRemote() {
+        remoteHealthTask?.cancel()
+        remoteHealthTask = nil
+        isConnecting = false
+        if clientLane == .managed { managedJoin.disconnect() }
         clientBridge?.stop()
         clientBridge = nil
         webViewURL = nil
         clientConnectError = nil
         connectionStateManager.onTailscaleLost()
         connectionState = connectionStateManager.state
+    }
+
+    func cancelManagedConnection() {
+        if isConnecting {
+            disconnectRemote()
+        } else {
+            managedJoin.cancel()
+        }
+    }
+
+    func confirmManagedRevocation() {
+        remoteHealthTask?.cancel()
+        remoteHealthTask = nil
+        clientBridge?.stop()
+        clientBridge = nil
+        webViewURL = nil
+        clientPairingCode = ""
+        managedJoin.confirmRevoked()
+        connectionState = managedJoin.connectionState
+    }
+
+    private func applyManagedHealth(_ health: ClientBridge.RuntimeHealth) {
+        switch health {
+        case .healthy: managedJoin.healthResult(true)
+        case .denied: managedJoin.healthResult(false, denied: true)
+        case .unreachable: managedJoin.healthResult(false)
+        case .managed(let failure):
+            managedJoin.pairingFailed(.managed(failure))
+            clientBridge = nil
+        }
+        connectionState = managedJoin.connectionState
+        if health != .healthy { webViewURL = nil }
+    }
+
+    private func monitorManagedHealth(_ bridge: ClientBridge, port: UInt16) {
+        remoteHealthTask?.cancel()
+        remoteHealthTask = Task { [weak self] in
+            while !Task.isCancelled {
+                do { try await Task.sleep(nanoseconds: 5_000_000_000) } catch { return }
+                guard let self, self.clientBridge === bridge else { return }
+                let health = await bridge.runtimeHealth()
+                guard !Task.isCancelled, self.clientBridge === bridge else { return }
+                self.applyManagedHealth(health)
+                if health == .healthy { self.webViewURL = "http://127.0.0.1:\(port)/" }
+            }
+        }
     }
 
     // MARK: - Helpers
