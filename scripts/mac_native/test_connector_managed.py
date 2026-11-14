@@ -63,10 +63,14 @@ class Coexistence(unittest.TestCase):
         for state, message in (("conflict", guard.MESSAGE), ("unavailable", guard.UNAVAILABLE)):
             for operation in ("install", "start", "restart", "enable"):
                 with self.subTest(state=state, operation=operation), fixture.home() as paths:
+                    if operation != "install":
+                        fixture.install(paths)  # All other admission prerequisites pass.
+                    args = ([operation, "--enrollment-key-file", str(paths["key"])]
+                            if operation == "install" else [operation])
                     before = {p.relative_to(paths["root"]): p.read_bytes()
                               for p in paths["root"].rglob("*") if p.is_file()}
                     with patch.object(managed, "observe", return_value={"state": state, "message": message}):
-                        code, output, error = fixture.command([operation])
+                        code, output, error = fixture.command(args)
                     self.assertEqual(code, 1)
                     self.assertIn(message, error)
                     self.assertEqual(output, "")
