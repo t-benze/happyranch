@@ -29,9 +29,14 @@ units at `/opt/happyranch`) and `--layout deb` (the installed desktop package at
 `packaging/linux/build-payload.sh` installs the runtime wheel into the private
 Python and ships `python3 -> python3.12` plus this sidecar. The installer checks
 literal root-owned, non-group/world-writable prefix directories and executable
-files, including that exact Python link. It never creates or chmods the dpkg
-prefix. Install/upgrade the package separately with the required deployment
-approval; neither provisioning nor installation below builds a package.
+files, including that exact Python link. Both executables and every payload
+parent through `/opt/happyranch-desktop` and `/opt` must grant the configured
+`happyranch` service account execute/search access, evaluated using Unix DAC
+owner bits first, otherwise matching primary/supplementary group bits, otherwise
+other bits. Missing access refuses before config/unit publication or start and
+names the path and permission; fresh-host provisioning rechecks after account
+creation. The installer never creates or chmods the dpkg prefix. Install/upgrade
+the package separately with the required deployment approval; neither provisioning nor installation below builds a package.
 
 Prepare operator-owned, single-link regular JSON input files with no symlinked
 parents and no group/world write bits. Inputs are bounded to 64 KiB each. Supply

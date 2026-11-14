@@ -51,7 +51,14 @@ The remote-access installer defaults to the separate source layout at
 `/opt/happyranch-desktop/python/bin/python3 -I` and packaged sidecar. See
 [Desktop package host](../../deploy/remote-access/RUNBOOK.md#desktop-package-host)
 for provisioning before installation. The installer validates the dpkg-owned
-prefix and executables without creating or changing their permissions.
+prefix and executables without creating or changing their permissions. The
+`happyranch` service account must have execute permission on both executables
+(including the resolved bundled Python target) and search permission on every
+payload parent through `/opt/happyranch-desktop` and `/opt`. Unix DAC owner,
+primary/supplementary group, then other bits determine access. Missing access
+refuses provisioning/install before configuration or unit publication, naming
+the path and missing permission. Fresh-host provisioning rechecks after account
+creation.
 
 Inside a runtime session (nonempty `HAPPYRANCH_RUNTIME_SESSION_ID`), the packaged
 `bin/happyranch` CLI refuses an unset or empty `HAPPYRANCH_DAEMON_HOME`, exits

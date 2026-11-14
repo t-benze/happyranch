@@ -344,8 +344,34 @@ class ManagedInstaller:
         if self.layout != "deb":
             return
         # dpkg owns this tree: validate only, never create or chmod it.
+        service_owner = self._account(create=False)
+        groups = set(os.getgrouplist("happyranch", service_owner[1])) if service_owner else set()
+
+        def require_execute(info: os.stat_result, relative: str) -> None:
+            # Fresh-host preflight can precede useradd. Provision and install
+            # repeat the payload check after account creation, before publication.
+            if service_owner is None:
+                return
+            uid, gid = service_owner
+            if info.st_uid == uid:
+                execute = stat.S_IXUSR
+            elif info.st_gid == gid or info.st_gid in groups:
+                execute = stat.S_IXGRP
+            else:
+                execute = stat.S_IXOTH
+            if not info.st_mode & execute:
+                permission = "search" if stat.S_ISDIR(info.st_mode) else "execute"
+                raise InstallerError(
+                    f"happyranch service account lacks {permission} permission: {self.root / relative}; "
+                    "repair or reinstall the package")
+
         for relative in (f"{_DEB_PREFIX}/bin/happyranch-tsnet-sidecar", f"{_DEB_PREFIX}/python/bin/python3"):
             path = Path(relative)
+            for ancestor in reversed(path.parents):
+                if ancestor == Path("."):
+                    continue
+                with self._directory(str(ancestor)) as directory:
+                    require_execute(os.fstat(directory), str(ancestor))
             with self._directory(str(path.parent)) as parent:
                 name = path.name
                 info = os.stat(name, dir_fd=parent, follow_symlinks=False)
@@ -362,6 +388,7 @@ class ManagedInstaller:
                     if (not stat.S_ISREG(info.st_mode) or (info.st_uid, info.st_gid) != self.root_owner
                             or info.st_mode & 0o022 or not info.st_mode & 0o111):
                         raise InstallerError("unsafe packaged executable")
+                    require_execute(info, str(path.with_name(name)))
                 finally:
                     os.close(descriptor)
 
@@ -403,6 +430,7 @@ class ManagedInstaller:
                 pass
             self._service_owner = self._account(create=True)
             self._preflight()
+            self._check_deb_payload()
             for path in self._layout():
                 with self._directory(path, create=True):
                     pass
@@ -597,6 +625,7 @@ class ManagedInstaller:
                 raise InstallerError("enrollment residue exists; inspect and uninstall before retrying with a fresh key")
             self._service_owner = self._account(create=True)
             self._preflight()
+            self._check_deb_payload()
             for path in self._layout():
                 with self._directory(path, create=True):
                     pass

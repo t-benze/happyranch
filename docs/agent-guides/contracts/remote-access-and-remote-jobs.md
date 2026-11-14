@@ -787,6 +787,13 @@ Python (`/opt/happyranch-desktop/python/bin/python3 -I -m`) and packaged sidecar
 `SidecarUnitSpec.binary_path` supplies its ExecStart. Dpkg-owned directories are
 only validated: root ownership, no group/world write, literal safe parents and
 both executable files, permitting only the shipped `python3 -> python3.12` link.
+The configured service UID, primary GID and supplementary groups must have
+execute access to both files (including the resolved Python target) and search
+access to every payload ancestor through `/opt/happyranch-desktop` and `/opt`.
+Unix DAC selects owner bits when the UID matches, otherwise group bits when a
+GID matches, otherwise other bits. Missing access raises a path/permission
+diagnostic before config/unit publication or start. Fresh-host provisioning
+rechecks after creating the account; dpkg paths remain read-only.
 
 The new `provision` command accepts connector/sidecar/current-policy JSON and an
 absolute daemon-token source. It validates before effects, creates only the

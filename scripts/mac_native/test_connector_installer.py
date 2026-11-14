@@ -896,8 +896,22 @@ class ManagedLinuxDebInstaller(unittest.TestCase):
                 instance.provision(**inputs)
 
     def test_linux_deb_payload_refusals(self):
-        for case in ('missing-sidecar', 'writable-prefix', 'foreign-prefix', 'missing-python', 'python-link'):
-            with self.subTest(case=case), self.host() as (root, instance, inputs, manager, _):
+        access_cases = {
+            'sidecar-0744': ('bin/happyranch-tsnet-sidecar', 0o744, 'execute'),
+            'python-0744': ('python/bin/python3.12', 0o744, 'execute'),
+            'account-created-0744': ('bin/happyranch-tsnet-sidecar', 0o744, 'execute'),
+            'prefix-0700': ('', 0o700, 'search'),
+            'bin-0700': ('bin', 0o700, 'search'),
+            'python-dir-0700': ('python', 0o700, 'search'),
+            'python-bin-0700': ('python/bin', 0o700, 'search'),
+            'owner-no-execute': ('bin/happyranch-tsnet-sidecar', 0o645, 'execute'),
+            'group-no-execute': ('bin/happyranch-tsnet-sidecar', 0o745, 'execute'),
+            'supplementary-no-execute': ('python/bin/python3.12', 0o745, 'execute'),
+        }
+        positive_cases = ('payload-0755', 'primary-group-0750', 'supplementary-0750')
+        for case in ('missing-sidecar', 'writable-prefix', 'foreign-prefix', 'missing-python', 'python-link',
+                     *access_cases, *positive_cases):
+            with self.subTest(case=case), self.host() as (root, instance, inputs, manager, options):
                 prefix = root / 'opt/happyranch-desktop'
                 if case == 'missing-sidecar':
                     (prefix / 'bin/happyranch-tsnet-sidecar').unlink()
@@ -908,19 +922,73 @@ class ManagedLinuxDebInstaller(unittest.TestCase):
                 elif case == 'python-link':
                     (prefix / 'python/bin/python3').unlink()
                     (prefix / 'python/bin/python3').symlink_to('/bin/true')
+                elif case in access_cases:
+                    relative, mode, permission = access_cases[case]
+                    (prefix / relative).chmod(mode)
+                if case in ('primary-group-0750', 'supplementary-0750'):
+                    for path in (prefix, *[p for p in prefix.rglob('*') if not p.is_symlink()]):
+                        path.chmod(0o750)
                 original = os.fstat
                 inode = prefix.stat().st_ino
+                owners = {}
+                def chown(fd, uid, gid):
+                    info = original(fd)
+                    owners[info.st_dev, info.st_ino] = (uid, gid)
                 def metadata(fd):
                     info = original(fd)
+                    values = list(info)
+                    values[4:6] = owners.get((info.st_dev, info.st_ino), (info.st_uid, info.st_gid))
                     if case == 'foreign-prefix' and info.st_ino == inode:
-                        values = list(info)
                         values[4] += 1  # Simulate foreign ownership on this exact directory only.
-                        return os.stat_result(values)
-                    return info
-                with patch('os.fstat', side_effect=metadata), self.assertRaises(installer.InstallerError):
-                    instance.provision(**inputs)
-                self.assertFalse((root / 'etc/happyranch').exists())
-                self.assertEqual(manager.method_calls, [])
+                    return os.stat_result(values) if values[4:6] != list(info)[4:6] else info
+                # Distinct synthetic account IDs model root-owned payload access
+                # without chown, useradd or any real service/privilege changes.
+                uid, gid = options['root_owner']
+                if case in (*access_cases, *positive_cases) and case != 'owner-no-execute':
+                    uid += 10000
+                    if case not in ('group-no-execute', 'primary-group-0750'):
+                        gid += 10000
+                user = SimpleNamespace(pw_uid=uid, pw_gid=gid, pw_shell='/usr/sbin/nologin', pw_dir='/nonexistent')
+                created = case != 'account-created-0744'
+                account_commands = []
+                def lookup_user(_):
+                    if not created:
+                        raise KeyError('happyranch')
+                    return user
+                def run(command, **_):
+                    nonlocal created
+                    self.assertEqual(command[0], 'useradd')
+                    account_commands.append(command)
+                    created = True
+                    return 0, ''
+                instance._lookup_user = lookup_user
+                instance._lookup_group = lambda _: SimpleNamespace(gr_gid=gid)
+                instance._run = run
+                groups = ([gid, options['root_owner'][1]]
+                          if case in ('supplementary-no-execute', 'supplementary-0750') else [gid])
+                with patch('os.fstat', side_effect=metadata), patch('os.fchown', side_effect=chown), \
+                        patch('os.getgrouplist', return_value=groups):
+                    if case in positive_cases:
+                        instance.provision(**inputs)
+                        instance.install(enrollment_key_file=root / 'operator/enrollment.key')
+                        self.assertTrue((root / 'etc/systemd/system' / installer.UNITS[0]).is_file())
+                        manager.start.assert_called_once_with(installer.UNITS[2], timeout=250.0)
+                        continue
+                    for operation in ('provision', 'install'):
+                        with self.subTest(operation=operation):
+                            with self.assertRaises(installer.InstallerError) as error:
+                                if operation == 'provision':
+                                    instance.provision(**inputs)
+                                else:
+                                    instance.install(enrollment_key_file=root / 'operator/enrollment.key')
+                            if case in access_cases:
+                                self.assertIn(str(prefix / relative), str(error.exception))
+                                self.assertIn(permission, str(error.exception))
+                            self.assertFalse((root / 'etc/happyranch').exists())
+                            self.assertFalse((root / 'etc/systemd/system').exists())
+                            self.assertEqual(manager.method_calls, [])
+                            manager.start.assert_not_called()
+                    self.assertEqual(len(account_commands), int(case == 'account-created-0744'))
 
     def test_linux_provision_input_refusals(self):
         for case in ('missing-policy', 'invalid-policy', 'expired-policy', 'home-state', 'root-sidecar-state',
