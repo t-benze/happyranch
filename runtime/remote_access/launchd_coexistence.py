@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import ipaddress
 import os
+import re
 import selectors
 import subprocess
 import time
@@ -21,17 +22,26 @@ def classify_inventory(code: int, output: str, uid: int) -> str:
     process = False
     listeners = 0
     process_listeners = 0
+    file_record = file_pending = False
     conflict = False
     try:
         for line in output.splitlines():
             field, value = line[:1], line[1:]
             if field == "p" and value.isdecimal() and int(value) > 0:
-                if process and not process_listeners:
+                if process and (not process_listeners or file_pending):
                     return "unavailable"
                 process, owner, process_listeners = True, None, 0
+                file_record = file_pending = False
             elif field == "u" and process and owner is None and value.isdecimal() and int(value) == uid:
                 owner = uid
-            elif field == "n" and owner == uid:
+            elif field == "f" and owner == uid and not file_pending:
+                # Apple lsof 4.91 store.c selects f by default; proc.c emits it
+                # before n. Non-error FD shapes are documented in its lsof.8.
+                if not re.fullmatch(r"[0-9]+|cwd|jld|ltx|m86|mem|mmap|pd|rtd|tr|txt|v86|L[0-9]+|M[0-9a-fA-F]{2}", value):
+                    return "unavailable"
+                file_record = file_pending = True
+            elif field == "n" and owner == uid and (not file_record or file_pending):
+                file_pending = False
                 host, port = value.rsplit(":", 1)
                 if port != "8443":
                     return "unavailable"
@@ -48,7 +58,7 @@ def classify_inventory(code: int, output: str, uid: int) -> str:
                 return "unavailable"
     except ValueError:
         return "unavailable"
-    return ("conflict" if conflict else "clear") if listeners and process_listeners else "unavailable"
+    return ("conflict" if conflict else "clear") if listeners and process_listeners and not file_pending else "unavailable"
 
 
 def observe() -> dict[str, str]:

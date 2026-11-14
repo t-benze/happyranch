@@ -977,7 +977,13 @@ checks and CI triggers remain unchanged.
 Before Darwin managed `install`, `start`, `restart` or `enable` performs any
 managed file write or launchctl operation, it reads the current user's TCP
 listeners through OS-shipped `/usr/sbin/lsof` (`-nP -a -u <uid> -iTCP:8443
--sTCP:LISTEN -Fpun`). A non-loopback listener on 8443 refuses with a fixed,
+-sTCP:LISTEN -Fpun`). Apple's lsof 4.91 also emits the default `f` descriptor
+field with this selection. The parser validates ASCII descriptor numbers or
+documented non-error FD tokens before each file's address; malformed, unknown,
+foreign-UID or incomplete file records remain unavailable. The `err` FD token
+also refuses. See Apple's pinned [field emission](https://github.com/apple-oss-distributions/lsof/blob/7a8a1b2a3c0f35c30a5fcd0927f31d441c3e5255/lsof/proc.c)
+and [FD grammar](https://github.com/apple-oss-distributions/lsof/blob/7a8a1b2a3c0f35c30a5fcd0927f31d441c3e5255/lsof/lsof.8).
+A non-loopback listener on 8443 refuses with a fixed,
 secret-free Swift HomeConnector message. A failed, malformed, diagnostic-bearing,
 oversized (64 KiB) or timed-out (5s) inventory also refuses. Loopback listeners,
 including the managed connector, do not conflict. `status` and `check-drift`

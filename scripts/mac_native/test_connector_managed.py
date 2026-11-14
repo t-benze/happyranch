@@ -26,8 +26,29 @@ class Coexistence(unittest.TestCase):
                 ("[::1]", "clear"), ("[::ffff:127.0.0.1]", "clear"),
                 ("100.64.0.1", "conflict"), ("[fd7a:115c:a1e0::1]", "conflict"),
                 ("0.0.0.0", "conflict"), ("*", "conflict")):
-            with self.subTest(host=host):
-                self.assertEqual(guard.classify_inventory(0, f"p123\nu{uid}\nn{host}:8443\n", uid), expected)
+            # Apple lsof 4.91 emits f by default even with -Fpun. Keep the
+            # earlier no-f cases too; access/lock suffixes belong to other fields.
+            for fd in ("", "f0\n", "f7\n", "f12345\n", "fcwd\n", "fjld\n",
+                    "fltx\n", "fm86\n", "fmem\n", "fmmap\n", "fpd\n", "frtd\n",
+                    "ftr\n", "ftxt\n", "fv86\n", "fL12\n", "fMab\n"):
+                with self.subTest(host=host, fd=fd):
+                    self.assertEqual(guard.classify_inventory(0, f"p123\nu{uid}\n{fd}n{host}:8443\n", uid), expected)
+        for fd in ("", "-1", "+7", "7u", "7rW", " 7", "7 ", "７", "unknown", "err", "L", "Mxyz"):
+            with self.subTest(malformed_fd=fd):
+                self.assertEqual(guard.classify_inventory(0, f"p123\nu{uid}\nf{fd}\nn127.0.0.1:8443\n", uid), "unavailable")
+        for text, expected in (
+                (f"p123\nu{uid}\nf7\nn127.0.0.1:8443\nf8\nn[::1]:8443\n", "clear"),
+                (f"p123\nu{uid}\nf7\nn127.0.0.1:8443\np999\nu{uid}\nf8\nn[fd7a::1]:8443\n", "conflict"),
+                (f"p123\nu{uid}\nf7\n", "unavailable"),
+                (f"p123\nu{uid}\nf7\nf8\nn127.0.0.1:8443\n", "unavailable"),
+                (f"p123\nu{uid}\nf7\nn127.0.0.1:8443\nf8\n", "unavailable"),
+                (f"p123\nu{uid}\nf7\np999\nu{uid}\nf8\nn127.0.0.1:8443\n", "unavailable"),
+                (f"p123\nf7\nu{uid}\nn127.0.0.1:8443\n", "unavailable"),
+                (f"p123\nu{uid}\nf7\nn127.0.0.1:8443\nn[::1]:8443\n", "unavailable"),
+                (f"p123\nu{uid+1}\nf7\nn100.64.0.1:8443\n", "unavailable"),
+                (f"p123\nu{uid}\nf7\nxunknown\nn127.0.0.1:8443\n", "unavailable")):
+            with self.subTest(text=text):
+                self.assertEqual(guard.classify_inventory(0, text, uid), expected)
         for code, text, expected in ((1, "", "clear"), (0, "", "unavailable"),
                 (2, "", "unavailable"), (1, "failure", "unavailable"),
                 (0, f"p123\nu{uid+1}\nn100.64.0.1:8443\n", "unavailable"),
@@ -44,6 +65,11 @@ class Coexistence(unittest.TestCase):
         for payload, stderr, code, expected in (
                 ("", "", 1, "clear"),
                 (f"p123\nu{os.getuid()}\nn100.64.0.1:8443\n", "", 0, "conflict"),
+                (f"p123\nu{os.getuid()}\nf7\nn127.0.0.1:8443\n", "", 0, "clear"),
+                (f"p123\nu{os.getuid()}\nf7\nn[::1]:8443\n", "", 0, "clear"),
+                (f"p123\nu{os.getuid()}\nf7\nn100.64.0.1:8443\n", "", 0, "conflict"),
+                (f"p123\nu{os.getuid()}\nf7\nn[fd7a::1]:8443\n", "", 0, "conflict"),
+                (f"p123\nu{os.getuid()}\nf7u\nn127.0.0.1:8443\n", "", 0, "unavailable"),
                 ("", "synthetic-secret-diagnostic", 1, "unavailable"),
                 ("x" * 65537, "", 0, "unavailable")):
             def child(argv, **kwargs):
@@ -51,7 +77,7 @@ class Coexistence(unittest.TestCase):
                 self.assertIn(str(os.getuid()), argv)
                 return spawn([sys.executable, "-c", "import sys; sys.stdout.write(" + repr(payload)
                     + "); sys.stderr.write(" + repr(stderr) + "); sys.exit(" + str(code) + ")"], **kwargs)
-            with self.subTest(expected=expected), patch.object(guard.subprocess, "Popen", child):
+            with self.subTest(payload=payload, expected=expected), patch.object(guard.subprocess, "Popen", child):
                 value = guard.observe()
                 self.assertEqual(value["state"], expected)
                 self.assertNotIn("synthetic-secret", json.dumps(value))
@@ -60,7 +86,17 @@ class Coexistence(unittest.TestCase):
 
     def test_cli_refuses_before_native_or_file_effects(self) -> None:
         fixture = fixtures.ManagedDarwinInstaller()
-        for state, message in (("conflict", guard.MESSAGE), ("unavailable", guard.UNAVAILABLE)):
+        spawn = subprocess.Popen
+        def child(argv, **kwargs):
+            self.assertEqual(argv, ["/usr/sbin/lsof", "-nP", "-a", "-u", str(os.getuid()),
+                "-iTCP:8443", "-sTCP:LISTEN", "-Fpun"])
+            return spawn([sys.executable, "-c", "import sys; sys.stdout.write(" + repr(payload) + ")"], **kwargs)
+        for payload, state, message in (
+                (f"p123\nu{os.getuid()}\nf7\nn100.64.0.1:8443\n", "conflict", guard.MESSAGE),
+                (f"p123\nu{os.getuid()}\nf7\nn[fd7a::1]:8443\n", "conflict", guard.MESSAGE),
+                (f"p123\nu{os.getuid()}\nf7u\nn127.0.0.1:8443\n", "unavailable", guard.UNAVAILABLE),
+                (f"p123\nu{os.getuid()+1}\nf7\nn127.0.0.1:8443\n", "unavailable", guard.UNAVAILABLE),
+                (f"p123\nu{os.getuid()}\nf7\nxunknown\nn127.0.0.1:8443\n", "unavailable", guard.UNAVAILABLE)):
             for operation in ("install", "start", "restart", "enable"):
                 with self.subTest(state=state, operation=operation), fixture.home() as paths:
                     if operation != "install":
@@ -69,13 +105,27 @@ class Coexistence(unittest.TestCase):
                             if operation == "install" else [operation])
                     before = {p.relative_to(paths["root"]): p.read_bytes()
                               for p in paths["root"].rglob("*") if p.is_file()}
-                    with patch.object(managed, "observe", return_value={"state": state, "message": message}):
+                    with patch.object(managed, "observe", guard.observe), patch.object(guard.subprocess, "Popen", child):
                         code, output, error = fixture.command(args)
                     self.assertEqual(code, 1)
                     self.assertIn(message, error)
                     self.assertEqual(output, "")
                     self.assertEqual(before, {p.relative_to(paths["root"]): p.read_bytes()
                         for p in paths["root"].rglob("*") if p.is_file()})
+        for host in ("127.0.0.1", "[::1]"):
+            payload = f"p123\nu{os.getuid()}\nf7\nn{host}:8443\n"
+            for operation in ("start", "restart", "enable"):
+                with self.subTest(host=host, operation=operation), fixture.home() as paths:
+                    fixture.install(paths)
+                    before = fixture.snapshot(paths)
+                    rows = [row("print", DOMAIN)]
+                    rows += (fixture.start_rows() if operation == "start" else
+                             fixture.stop_rows() + fixture.start_rows() if operation == "restart" else
+                             [row("enable", fixtures.TARGET), row("enable", fixtures.SIDE_TARGET)])
+                    with patch.object(managed, "observe", guard.observe), patch.object(guard.subprocess, "Popen", child):
+                        code, _, error = fixture.command([operation], rows, expected_code=0)
+                    self.assertEqual((code, error), (0, ""))
+                    self.assertEqual(before, fixture.snapshot(paths))
 
     def test_status_and_drift_report_conflict(self) -> None:
         fixture = fixtures.ManagedDarwinInstaller()
