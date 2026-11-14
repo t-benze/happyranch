@@ -13,6 +13,7 @@ import sys
 import tempfile
 import unittest
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
+from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -733,6 +734,43 @@ class ManagedDarwinInstaller(unittest.TestCase):
                         self.assertEqual((p["side_state"] / "tailscaled.state").read_bytes(), b"synthetic-node-state")
                     self.assertEqual(self.command(["uninstall"] + (["--purge"] if purge else []), self.uninstall_rows())[0], 0)
                     self.assertEqual(p["key"].read_bytes(), KEY)
+
+    def test_base_config_marker_reinstall_preserves_bytes_and_drift(self) -> None:
+        def base_asdict(cfg: object) -> dict:
+            # Base-era ConnectorConfig had every current field except this one.
+            value = asdict(cfg)
+            value.pop("excluded_daemon_ports", None)
+            return value
+
+        for explicit_empty in (False, True):
+            with self.subTest(explicit_empty=explicit_empty), self.home() as p:
+                # The real installer produces the historical config and receipt;
+                # only its dataclass serialization uses the pre-B1b field set.
+                with patch("runtime.remote_access.launchd_installer.asdict", base_asdict):
+                    self.install(p)
+                config = (p["state"] / "config.json").read_bytes()
+                self.assertNotIn("excluded_daemon_ports", json.loads(config))
+                receipt = json.loads((p["state"] / "install.json").read_bytes())
+                self.assertEqual(receipt["files"]["config.json"], hashlib.sha256(config).hexdigest())
+                marker = self.consume(p)
+                before = self.snapshot(p)
+                self.command(["check-drift"], [row("print", DOMAIN), *self.status_rows()], expected_code=0)
+                source = json.loads(p["source"].read_bytes())
+                if explicit_empty:
+                    source["excluded_daemon_ports"] = []
+                    private(p["source"], json.dumps(source).encode())
+                self.command(["install"], [row("print", DOMAIN), row("enable", TARGET),
+                             row("enable", SIDE_TARGET), *self.status_rows()], expected_code=0)
+                self.assertEqual(self.snapshot(p), before)
+                self.assertFalse((p["state"] / "enrollment.key").exists())
+                self.assertEqual((p["side_state"] / "credential.consumed").read_bytes(), marker)
+                for changed in ({"poll_seconds": 7.0}, {"excluded_daemon_ports": [19000]}):
+                    with self.subTest(changed=changed):
+                        private(p["source"], json.dumps(source | changed).encode())
+                        code, _, error = self.command(["install"])
+                        self.assertEqual(code, 1)
+                        self.assertIn("managed configuration drift", error)
+                        self.assertEqual(self.snapshot(p), before)
 
     def test_sidecar_drift_and_unsafe_state_pending_refuse_before_effects(self) -> None:
         for case in ("sidecar-config", "sidecar-plist", "sidecar-log", "binary-missing", "binary-symlink", "state-mode",

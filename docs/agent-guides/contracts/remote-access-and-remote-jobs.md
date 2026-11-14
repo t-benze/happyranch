@@ -631,6 +631,9 @@ Enrollment observations are `staged` (key only) or `consumed` (marker only).
 Key-only reinstall refuses to replace an unconsumed key; first enrollment needs
 `--enrollment-key-file`. Marker-only reinstall requires no new input and verifies
 the Go marker bytes: SHA256(`RoleIdentity + NUL + ControlURL`) plus newline.
+Mac staging omits empty `excluded_daemon_ports`, preserving pre-B1b config and
+receipt bytes on unchanged marker-only reinstalls. Nonempty lists remain
+serialized; changed configuration still refuses before writes or launchctl.
 Both present, invalid marker, or neither present refuse drift/start; both present
 also refuses reinstall. Neither present may install with a fresh explicit input.
 Only Go redeems, commits the marker and deletes the staged key; Python does not
@@ -830,8 +833,9 @@ including required exclusions even if the provenance hashes match.
 The shared Go sidecar accepts optional `ExcludedDaemonPorts` (integers in
 1..65535) and refuses any matching connector port. Its literal-loopback and
 literal-8765 guards remain; absent-list validation is unchanged for existing
-Mac configs. The Mac launchd writer and pairing/authentication contract are
-unchanged. Daemon bearer authentication cannot substitute for this boundary:
+Mac configs. Mac staging preserves the earlier bytes when connector exclusions
+are absent or empty; pairing/authentication is unchanged. Daemon bearer
+authentication cannot substitute for this boundary:
 loopback `/auth/bootstrap` exposes the daemon token. No
 installation, daemon/service restart, package build or Mac acceptance was
 performed by this source slice. The retained standalone installer-script tests
