@@ -224,9 +224,11 @@ public final class ClientBridge: @unchecked Sendable {
         cancelManagedNetwork(preserving: nil, failure: nil)
     }
 
-    private func cancelManagedNetwork(preserving errorConnection: NWConnection?, failure: ManagedNetworkError?) {
+    private func cancelManagedNetwork(preserving errorConnection: NWConnection?, failure: ManagedNetworkError?, expectedAttempt: UUID? = nil) {
         guard lane == .managed else { return }
-        let previous: UUID? = Self.tsnetLock.withLock {
+        let cancellation: (Bool, UUID?) = Self.tsnetLock.withLock {
+            // A late refusal from an old relay must not cancel a reopened engine.
+            if let expectedAttempt, managedAttempt != expectedAttempt { return (false, nil) }
             let previous = managedAttempt
             managedAttempt = nil
             managedReady = false
@@ -236,8 +238,10 @@ public final class ClientBridge: @unchecked Sendable {
             managedHandles.removeAll()
             // Owner stays reserved until the serial worker has settled Close.
             if previous != nil && Self.managedOwner == previous && nativeConfigured { tsnet_cancel() }
-            return previous
+            return (true, previous)
         }
+        guard cancellation.0 else { return }
+        let previous = cancellation.1
         queue.async {
             // Keep only the local fixed-error response alive until it flushes.
             // No managed remote handle survives tsnet_cancel/Close.
@@ -622,7 +626,7 @@ public final class ClientBridge: @unchecked Sendable {
                     guard handle >= 0 else {
                         let error = ManagedNetworkError.result(handle)
                         completer.finish(with: .failure(RedeemPairingError.managedDialFailure(handle)))
-                        if error == .peerChanged { self.cancelManagedNetwork(preserving: nil, failure: .peerChanged) }
+                        if error == .peerChanged { self.cancelManagedNetwork(preserving: nil, failure: .peerChanged, expectedAttempt: attempt) }
                         return
                     }
                     defer { self.closeManagedHandle(handle) }
@@ -631,7 +635,7 @@ public final class ClientBridge: @unchecked Sendable {
                     let written = Self.writeAll(Data(request.utf8), handle: handle)
                     guard written == 0 else {
                         completer.finish(with: .failure(RedeemPairingError.managedDialFailure(written)))
-                        if written == -18 { self.cancelManagedNetwork(preserving: nil, failure: .peerChanged) }
+                        if written == -18 { self.cancelManagedNetwork(preserving: nil, failure: .peerChanged, expectedAttempt: attempt) }
                         return
                     }
                     var response = Data()
@@ -1028,25 +1032,25 @@ public final class ClientBridge: @unchecked Sendable {
             let handle = self.managedDial(timeoutMs: 30_000, expectedAttempt: attempt)
             guard handle >= 0 else {
                 let error = ManagedNetworkError.result(handle)
-                if error == .peerChanged { self.cancelManagedNetwork(preserving: clientConnection, failure: .peerChanged) }
+                if error == .peerChanged { self.cancelManagedNetwork(preserving: clientConnection, failure: .peerChanged, expectedAttempt: attempt) }
                 self.sendErrorResponse(to: clientConnection, status: 502, message: RedeemPairingError.managedDialFailure(handle).localizedDescription)
                 return
             }
             let written = Self.writeAll(Data(requestToSend.utf8), handle: handle)
             guard written == 0 else {
                 self.closeManagedHandle(handle)
-                if written == -18 { self.cancelManagedNetwork(preserving: clientConnection, failure: .peerChanged) }
+                if written == -18 { self.cancelManagedNetwork(preserving: clientConnection, failure: .peerChanged, expectedAttempt: attempt) }
                 self.sendErrorResponse(to: clientConnection, status: 502, message: RedeemPairingError.managedDialFailure(written).localizedDescription)
                 return
             }
             let relayQueue = DispatchQueue(label: "com.happyranch.managed-relay")
             // Duplex continuation is needed for upgrades and streaming request bodies.
-            self.relayClientToTsnet(client: clientConnection, handle: handle)
+            self.relayClientToTsnet(client: clientConnection, handle: handle, attempt: attempt)
             self.relayTsnetToClient(connID: handle, client: clientConnection, queue: relayQueue)
         }
     }
 
-    private func relayClientToTsnet(client: NWConnection, handle: Int32) {
+    private func relayClientToTsnet(client: NWConnection, handle: Int32, attempt: UUID) {
         client.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [self] data, _, complete, error in
             DispatchQueue.global().async {
                 guard error == nil else { self.closeManagedHandle(handle); return }
@@ -1054,12 +1058,12 @@ public final class ClientBridge: @unchecked Sendable {
                     let result = Self.writeAll(data, handle: handle)
                     guard result == 0 else {
                         self.closeManagedHandle(handle)
-                        if result == -18 { self.cancelManagedNetwork(preserving: nil, failure: .peerChanged) }
+                        if result == -18 { self.cancelManagedNetwork(preserving: nil, failure: .peerChanged, expectedAttempt: attempt) }
                         client.cancel()
                         return
                     }
                 }
-                if !complete { self.relayClientToTsnet(client: client, handle: handle) }
+                if !complete { self.relayClientToTsnet(client: client, handle: handle, attempt: attempt) }
             }
         }
     }
