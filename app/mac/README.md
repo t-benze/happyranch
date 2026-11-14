@@ -527,7 +527,7 @@ and uses its original supervisor inspection path; the subcommand is never used
 as a helper filename. Preflight validates source identity and the absent output
 path without constructing an app. This does not establish native acceptance.
 
-Success requires a real release executable, all eleven strong tsnet exports
+Success requires a real release executable, all fifteen strong tsnet exports
 bound to fresh archive members, native component inspection, all 29 exact
 resources, exact frozen catalog JSON, manifest notices and ZIP reconciliation.
 Each export requires one final strong definition and one unambiguous map object
@@ -535,7 +535,7 @@ whose origin exactly matches the full archive path and a unique `ar -t` member.
 Both `archive(member)` and Apple's `archive[3](member)` syntax are accepted;
 the optional numeric index does not prove an archive ordinal. Foreign paths,
 prefixes/suffixes, malformed origins and duplicate object/member/symbol
-associations refuse; all eleven observations and raw origins remain evidence.
+associations refuse; all fifteen observations and raw origins remain evidence.
 App and ZIP inventories share relative-path string ordering and UTF8 JSON
 encoding, including hidden members and symlink targets. Native inspection
 resolves every loader/executable-relative rpath in its component context and
@@ -543,7 +543,7 @@ requires bundle containment through symlinks, even for unused paths. Absolute
 system exceptions use only `/usr/lib` and `/System/Library` roots and children;
 unknown tokens, escaping paths and spelling prefixes refuse with raw diagnostics.
 A named `TSNET_STRONG_LINK_UNPROVEN` still refuses release finalization. Small
-independent error/all-eleven symbol receipts survive separately from bulky nm
+independent error/all-fifteen symbol receipts survive separately from bulky nm
 and link-map evidence. Failed builds retain available Analysis/CLI PYZ/native
 union, toolchain and component provenance through the fixed diagnostic allowlist
 and whole-file raw/gzip bounds described in the packaging instructions. Missing,
@@ -1031,3 +1031,48 @@ relay checks do not establish those outcomes. Native18's aggregate cap and the
 native17/19 unknown stall causes are not resolved by these deadlines.
 
 </details>
+
+## Managed client native engine (PR1a)
+
+The separate Mac `tsnet-bridge` archive now exposes `tsnet_init_managed`,
+`tsnet_up_managed`, `tsnet_cancel`, and `tsnet_conn_dial_managed`. Swift managed
+lane selection, enrollment-key custody and join UI are subsequent slices.
+Legacy init remains ephemeral; legacy Start starts the engine without waiting
+for Running/IP. Managed selection makes both legacy dial exports refuse `-17`.
+
+Managed init only validates/configures; pass a trusted explicit HTTPS control
+URL, stable hostname, and absolute
+`~/Library/Application Support/ai.happyranch.HappyRanchApp/ManagedTailnet/<UUID>`
+(expand `~` before calling). The native boundary validates the literal path,
+private owned directories/files and exclusive lock. Fresh profiles take one
+explicit enrollment key. Up persists `submitting` before networking and uses
+one deadline capped at 120 seconds for Running, enrollment-engine close/release,
+same-state empty-key reopen, Running again, and durable consumed-marker commit.
+Saved membership always uses an empty key. Interrupted `submitting` state may
+only be checked by an explicit empty-key init/Up; missing or conflicting state
+refuses. No enrollment key is persisted by the bridge or included in errors.
+Cancellation can leave remote enrollment complete; it never replays the key.
+Cancel closes traffic; Close settles engine ownership before another init.
+An Up published while Close is pending is canceled before network start, and
+Close invalidates the selected engine generation before teardown.
+
+Managed TCP resolves exact current peer IPs/full map DNS names using embedded
+status only, checks the engine's exact peer route/address/key, pins the first
+peer key, and calls the captured netstack TCP callback directly. Post-dial,
+handle admission and each write recheck peer/generation. `-17` means unsafe
+initial target; `-18` means peer lost/changed and requires reconnect/fresh pairing.
+There is no OS-DNS or system-TCP fallback and no atomic control-plane revocation
+guarantee. Connector authorization/revocation remains authoritative.
+
+Native tests use the existing Go module with Go 1.23.12 (also on Linux):
+
+```sh
+cd app/mac/tsnet-bridge
+GOTOOLCHAIN=local go test -mod=readonly -v ./...
+GOTOOLCHAIN=local go vet -mod=readonly ./...
+```
+
+These local cases cover refusal, state admission, cancellation and bounded
+unreachable enrollment. Real enrollment/empty-key reopen and N1–N6/P1 require
+an authorized disposable tailnet; Swift entrypoint/sink tests belong to PR1b.
+Passing local cases do not establish those live-network or macOS results.

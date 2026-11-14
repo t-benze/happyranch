@@ -11,11 +11,11 @@ import Foundation
 // freshly built archive, CTsnet exposes only the unchanged C header (SwiftPM 6
 // supports header-only Clang targets); no stub definition enters the link.
 // Darwin -force_load extracts every member of this specific archive, including
-// ABI exports not referenced by Swift. Root the unchanged eleven ABI symbols
+// ABI exports not referenced by Swift. Root the unchanged fifteen ABI symbols
 // with -u because SwiftPM release links also use -dead_strip. No other archive
 // or symbol is force-loaded/rooted. Pass each linker operand separately so
 // a package path containing spaces remains one argument. Native verification
-// still requires all eleven strong definitions and their actual member origins.
+// still requires all fifteen strong definitions and their actual member origins.
 let tsnetBridgeDir = "\(Context.packageDirectory)/tsnet-bridge"
 let libtsnetPath = "\(tsnetBridgeDir)/libtsnet.a"
 let hasRealLib = FileManager.default.fileExists(atPath: libtsnetPath)
@@ -40,7 +40,8 @@ let package = Package(
                     "_tsnet_init", "_tsnet_start", "_tsnet_close", "_tsnet_dial",
                     "_tsnet_conn_dial", "_tsnet_conn_read", "_tsnet_conn_write",
                     "_tsnet_conn_close", "_tsnet_local_addr", "_tsnet_last_error",
-                    "_tsnet_free_string"
+                    "_tsnet_free_string", "_tsnet_init_managed", "_tsnet_up_managed",
+                    "_tsnet_cancel", "_tsnet_conn_dial_managed"
                 ].flatMap { ["-Xlinker", "-u", "-Xlinker", $0] })
             ] : []
         ),
