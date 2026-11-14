@@ -72,6 +72,16 @@ repeats the scripted TERM-ignoring disposable-child test with `--skip-build`.
 HOME, temporary files, SwiftPM scratch/cache/config/security paths, compiler
 module caches and products stay in build scratch. Release/no-debug compilation
 reduces debug product size; the existing 32 MiB/file cap is never raised.
+Before testing, the probe creates and unlocks a disposable login Keychain at
+scratch HOME's `Library/Keychains/login.keychain-db` and disables its timeout.
+Its random per-run password travels through `security -i` stdin, outside argv
+and retained output. Cleanup deletes that exact Keychain before removing scratch,
+including on test failure. Read-only search-list/default-keychain observations
+use the OS account's real HOME (without CFFIXED_USER_HOME) before and after,
+because Jenkins already redirects its inherited HOME; any change produces FAIL rows.
+The probe never sets the user's search list, default or login preference.
+`probe.json` retains named terminal test/suite lines up to 16 KiB (with an
+explicit truncation flag), alongside full-output byte counts, SHA-256 and tails.
 The full Swift suite, GUI integration and frozen-app acceptance are separate
 and are not proven by this focused source suite.
 
@@ -1198,8 +1208,9 @@ The existing manual `build-mac-app.yml` uses reviewed `source_sha`/`source_tree`
 on macos-15 and builds the real archive/app, but does not run `swift test` or
 capture GUI states. It was inspected, not dispatched. Existing Jenkins native
 probe suites are bounded allowlisted probes. The `supervisor` suite compiles all
-Swift app/test targets with weak stubs, then runs only its existing supervisor
-filter; it does not run new PR2 cases or capture GUI states. The Mac mini was
+Swift app/test targets with weak stubs, then runs the six selected classes listed
+above, including join, revocation and scratch login-Keychain custody; it does not
+capture GUI states. The Mac mini was
 online at read-only inspection. No Jenkins app-build job is installed, signing
 remains disabled. A later
 owner decision is required for any native run. PR3 retains release pins, source/
