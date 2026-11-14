@@ -871,7 +871,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
 
         clientConnectError = nil
         isConnecting = true
-        connectionStateManager.forceState(.online)  // transient — 'connecting'
+        connectionStateManager.forceState(.offline)  // pairing is not runtime health
         connectionState = connectionStateManager.state
 
         let bridge = ClientBridge(
@@ -921,10 +921,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                     timeout: 30
                 )
 
+                // Probe through the authenticated bridge, whose connector hop
+                // carries the device credential. Pairing alone is never online.
+                let healthy = await bridge.checkRuntimeHealth()
                 await MainActor.run {
+                    guard self.clientBridge === bridge else { return }
                     isConnecting = false
                     webViewURL = "http://127.0.0.1:\(bridgePort)/"
-                    connectionStateManager.onHeartbeatSucceeded()
+                    if healthy { connectionStateManager.onHeartbeatSucceeded() }
                     connectionState = connectionStateManager.state
                 }
             } catch let error as RedeemPairingError {
@@ -939,6 +943,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                         clientConnectError = "Connection failed: \(msg)"
                     case .invalidResponse:
                         clientConnectError = "Invalid response from home connector"
+                    case .managed(let failure):
+                        clientConnectError = failure.localizedDescription
                     }
                     connectionStateManager.onHeartbeatFailed()
                     connectionState = connectionStateManager.state

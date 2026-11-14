@@ -1056,7 +1056,7 @@ CI trigger or required lint/static check changes are included.
 ### Mac client native enrollment and peer dial addendum (THR-327, PR1a)
 
 The Mac-only archive implements the approved TASK-16100/TASK-16088 native slice;
-Swift transport selection and Keychain/UI are later slices. Managed init rejects
+Swift transport selection follows in PR1b; Keychain/UI remains a later slice. Managed init rejects
 presence (including empty) of TS_AUTHKEY, TS_AUTH_KEY, TSNET_FORCE_LOGIN and
 TS_DEBUGSYSPOLICY_AUTH_KEY, sets explicit persistent Dir/ControlURL/Hostname,
 uses non-ephemeral membership and discards logs with logtail disabled. Up waits
@@ -1077,3 +1077,30 @@ exports refuse in managed mode; legacy-initialized engines preserve their
 existing ephemeral/transport behavior. This changes no connector, sidecar,
 server, DIY, signing or revocation contract. See the Mac README for ABI/test
 commands; real-tailnet and macOS acceptance remains separate and unclaimed.
+
+
+### Mac ClientBridge managed lane addendum (THR-327, PR1b)
+
+The explicit `.managed` ClientBridge lane calls configure-only managed init and
+one 120-second managed Up; saved-membership resume supplies an empty key.
+Its caller-owned malloc/calloc buffer transfers custody to ManagedEnrollmentKey,
+which wipes the entire initialized allocation including terminator with
+explicit_bzero before free on every exit, immediately after init before Up.
+PR2 owns login-Keychain deletion before this API; no key String/environment,
+logging, defaults or fallback store is introduced.
+
+Both pairing and all subsequent HTTP/SSE/upgrades/probes use only
+`tsnet_conn_dial_managed` with shared read/write/close handling. Pairing retains
+one 30-second deadline, bounded fragmented responses, partial writes and no
+code retry. Initial target refusal (-17) and peer loss/change (-18) remain
+separate from pairing 403 and ordinary unreachable. Changed target/peer closes
+traffic/engine, discards credential/pin and requires empty-key reopen and
+explicit fresh pairing, retaining saved membership. Native ownership remains
+reserved until cancellation, Close and outstanding dials settle; generations
+reject late handles/credentials. The DIY default still uses NWConnection;
+the GUI developer environment enrollment/transport fallback is removed.
+CLIENT pairing alone no longer publishes online: authenticated runtime health
+through the paired bridge is required. Keychain/UI, native screenshots and
+release signing/pins remain later slices. Swift compile/tests and real managed
+tailnet acceptance are NOT RUN on the Linux implementation host; see the Mac
+README and PR evidence for exact limitations and the retained DIY keepers.
