@@ -2433,6 +2433,25 @@ Work status: Stale-but-alive — no substantive update recorded
 
 The full audit log (including inline `progress` messages) is unchanged.
 
+A job-parked task (`in_progress`, `block_kind=blocked_on_job`) whose
+`blocked_on_jobs` entries are ALL terminal (`completed`/`failed`/`rejected`)
+additionally prints `Waiting:    jobs finished · held by root pause` when the
+envelope's `pause.effective_hold` is true, otherwise `Waiting:    jobs
+finished · resume pending` — the same wording as the web Task detail page
+(THR-359). Display only: `block_kind` and the `Not applicable` work status
+are unchanged; only the claim clears the block.
+
+The web agent recent-task cards (AgentDetailPane and the AgentDetailDrawer
+caller) show the same qualifier through the shared
+`web/src/shared/tasks/finished-jobs.ts` helper that Task detail also uses.
+List items carry only `blocked_on_job_ids` (a JSON string of IDs), so a
+job-parked card with parseable IDs reads the EXISTING
+`GET /jobs/?task_id=<id>&status=all&limit=200` through `useJobsList` (its
+existing 10s polling). Other cards issue no jobs read. A pending or failed
+read, or any blocking ID missing from the response, shows no finished-jobs
+qualifier (the ordinary `waiting on jobs` label stays). No list response
+field, route or OpenAPI shape changed.
+
 The former A-mode dock is retired (THR-294); no assistant HTTP or WebSocket
 operation remains mounted.
 

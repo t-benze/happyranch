@@ -464,6 +464,28 @@ def _print_work_status(ws: dict) -> None:
         print("  Update:     No substantive update recorded")
 
 
+_TERMINAL_JOB_STATUSES = frozenset({"completed", "failed", "rejected"})
+
+
+def _finished_jobs_waiting(task: dict, body: dict) -> str | None:
+    """Mirror the web finished-jobs qualifier (TaskDetailPage, PR #1233).
+
+    A job-parked in_progress task whose blocking jobs are ALL terminal is no
+    longer waiting on jobs: it waits to be resumed. Display only; block_kind
+    is left untouched. Returns None to keep the ordinary output.
+    """
+    if task.get("status") != "in_progress" or task.get("block_kind") != "blocked_on_job":
+        return None
+    jobs = body.get("blocked_on_jobs")
+    if not isinstance(jobs, list) or not jobs or not all(
+        isinstance(entry, dict) and entry.get("status") in _TERMINAL_JOB_STATUSES for entry in jobs
+    ):
+        return None
+    pause = body.get("pause")
+    held = isinstance(pause, dict) and pause.get("effective_hold") is True
+    return "jobs finished · held by root pause" if held else "jobs finished · resume pending"
+
+
 def cmd_details(args: argparse.Namespace) -> None:
     """Show status of a specific task."""
     try:
@@ -535,6 +557,9 @@ def cmd_details(args: argparse.Namespace) -> None:
         print("Blocked on jobs:")
         for entry in body["blocked_on_jobs"]:
             print(f"  {entry['job_id']}  {entry['status']}")
+    finished = _finished_jobs_waiting(task, body)
+    if finished:
+        print(f"Waiting:    {finished}")
     if body.get("active_chain"):
         chain = body["active_chain"]
         total_legs = 1 + len(chain.get("legs", []))

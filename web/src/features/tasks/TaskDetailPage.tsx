@@ -1,4 +1,5 @@
 import { childWaitState, resolveTaskWaitingQualifier, taskWaitingLabels } from '@/shared/tasks/child-wait';
+import { finishedJobsQualifier, type BlockedJobEntry } from '@/shared/tasks/finished-jobs';
 import { IdentityName } from '@/shared/identities/IdentityName';
 /**
  * Task detail — Direction-A Pasture, full-page surface.
@@ -146,22 +147,6 @@ function TimelineNodeItem({
 interface ChainTimelineBlockInfo {
   isBlocked: boolean;
   blockerName?: string;
-}
-
-type BlockedJobEntry = { job_id: string; status: string };
-
-const TERMINAL_JOB_STATUSES = new Set(['completed', 'failed', 'rejected']);
-
-/**
- * A job-parked task whose blocking jobs are ALL terminal is no longer waiting on
- * jobs: it is waiting to be resumed. When an effective root Pause holds it, say
- * so; otherwise say the resume is pending. Null keeps the ordinary projection.
- */
-function finishedJobsQualifier(task: TaskRecord, blockedOnJobs: BlockedJobEntry[] | null | undefined, t: Translate): string | null {
-  if (task.status !== 'in_progress' || task.block_kind !== 'blocked_on_job') return null;
-  if (!blockedOnJobs || blockedOnJobs.length === 0
-    || !blockedOnJobs.every(entry => TERMINAL_JOB_STATUSES.has(entry.status))) return null;
-  return t(task.pause?.effective_hold === true ? 'tasks.waiting.jobsFinishedHeld' : 'tasks.waiting.jobsFinishedResumePending');
 }
 
 /** Detail-page waiting qualifier: finished-job state first, then the shared projection. */

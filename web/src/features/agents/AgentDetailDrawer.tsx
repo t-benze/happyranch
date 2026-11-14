@@ -1,4 +1,3 @@
-import { resolveTaskWaitingQualifier, taskWaitingLabels } from '@/shared/tasks/child-wait';
 import { IdentityName } from '@/shared/identities/IdentityName';
 import { AddressableNameEditor } from '@/shared/identities/AddressableNameEditor';
 import { SystemPromptEditor } from './SystemPromptEditor';
@@ -25,7 +24,7 @@ import {
   DrawerTitle,
 } from '@/design-system/primitives/Drawer';
 import { CurrentAgentChip as AgentChip } from '@/shared/identities/CurrentAgentChip';
-import { TaskCard } from '@/design-system/patterns/TaskCard';
+import { AgentTaskCard } from './AgentTaskCard';
 import { EmptyState } from '@/design-system/patterns/EmptyState';
 import { ApiError } from '@/lib/api';
 import {
@@ -119,9 +118,8 @@ export function AgentDetailDrawer({ agentName }: AgentDetailDrawerProps): JSX.El
             <ul className="space-y-2">
               {tasksQuery.data.tasks.map((task) => (
                 <li key={task.task_id}>
-                  <TaskCard
+                  <AgentTaskCard
                     task={task}
-                    waitingQualifier={resolveTaskWaitingQualifier(task, taskWaitingLabels(t))}
                     agentLabel={task.assigned_agent ? <IdentityName canonicalId={task.assigned_agent} /> : undefined}
                     to={taskRoutes.detail(task.task_id)}
                     density={density}
