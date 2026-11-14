@@ -155,6 +155,16 @@ their history.
 
 ## Root task Pause and Resume (THR-292)
 
+At job end, only a post-reap single observation confirming both the
+launch-captured original process group (killpg ESRCH) and original session empty
+closes the job Pause entry under the existing terminal CAS/audit/root writer.
+All unconfirmable cases, live group/session descendants, failed tails and missing
+handles stay unknown; periodic/startup do not re-probe jobs. Restart/legacy
+entries and historical unknowns stay as-is. Founder THR-359 seq13 OPTION A
+accepts the blind spot: setsid/daemonize descendants escape into a new session.
+This is not full descendant containment, and terminal status/PID absence alone
+never proves closure.
+
 THR-350's narrow ordinary unknown-session exception permits existing startup
 failure or periodic flag/TTL recovery only with positive death proof and no
 operator hold. Its post-terminal writer records producer_settled while retaining

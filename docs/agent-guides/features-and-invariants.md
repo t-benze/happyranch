@@ -3373,8 +3373,10 @@ Transient child_wait observations preserve stored lifecycle and exact report
 identity; completed reports on in_progress rows do not rewrite those rows or
 prove consumed results. Capped/unread evidence is unavailable, not empty.
 Detail unknown/job blockers say descendant cleanup unconfirmed; no terminal-job,
-exit0 or absent-PID heuristic discharges them. The future job-owned closure
-producer is excluded from TASK-11437, and historical unknowns stay fail-closed.
+exit0 or absent-PID heuristic discharges them. The job terminal owner now closes
+only a positively confirmed-empty original group AND session after leader reap (THR-359 OPTION A). Unconfirmable cases,
+restart/legacy entries and historical unknowns stay fail-closed. The accepted
+blind spot is setsid/daemonize descendants escaping into their own session.
 Seven fanout row categories and genuine prior audit attribution never infer
 running/queued/succeeded or parent resumed/completed. Backend/protected proof
 remains unexecuted; synthetic frontend observations establish only that boundary.

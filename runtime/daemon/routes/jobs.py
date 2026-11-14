@@ -25,7 +25,9 @@ from runtime.daemon.auth import optional_bearer, require_token
 from runtime.daemon.event_bus import job_topic
 from runtime.daemon.routes._org_dep import OrgDep, OrgStreamDep, _stream_org_events, _stream_org_reader
 from runtime.daemon.jobs_runner import run_job as _spawn_job
-from runtime.daemon.jobs_runner import _interpreter_binary, fire_resume_check_for_job
+from runtime.daemon.jobs_runner import (
+    _interpreter_binary, fire_resume_check_for_job, confirm_job_processes_empty,
+)
 from runtime.infrastructure.audit_logger import AuditLogger
 from runtime.orchestrator.task_pause import assert_origin_unheld, fingerprint
 from runtime.infrastructure.task_pause_controls import PauseControlError, normal_session_entry
@@ -958,7 +960,7 @@ def _authenticated_pending_submission(org, record: JobRecord, entry: dict | None
             and payload.get("submission_digest") == proof["digest"])
 
 
-def _settle_pause_job(db, task_id: str, job_id: str, *, control):
+def _settle_pause_job(db, task_id: str, job_id: str, *, control, processes_empty: bool):
     """Stage only in the caller's existing job terminal writer."""
     store = getattr(db, '_task_pause_store', None)
     if store is None:
@@ -970,8 +972,12 @@ def _settle_pause_job(db, task_id: str, job_id: str, *, control):
     if len(matches) != 1 or matches[0]['task_id'] != task_id:
         raise PauseControlError('pause_control_unavailable')
     entry = matches[0]
-    entry['phase'] = 'unknown'  # direct exit is not descendant cleanup
-    entry['started_at'] = entry['captured_generation'] = None
+    if (processes_empty and entry['phase'] != 'unknown'
+            and not entry['context'].get('execution_unknown')):
+        control['journal']['entries'].remove(entry)
+    else:
+        entry['phase'] = 'unknown'
+        entry['started_at'] = entry['captured_generation'] = None
     store.save_journal_uncommitted(control)
 
 
@@ -1282,6 +1288,15 @@ async def _run_job_core_impl(
                 reason='spawn_failed' if isinstance(exc, (FileNotFoundError, OSError)) else 'internal_error')
 
         # Execution handling ends here: publication failures cannot rewrite its result.
+        # OS I/O must precede root/DB writer acquisition. Only the boolean
+        # crosses into the existing CAS + audit + journal transaction. Failed
+        # output/execution tails and pre-existing unknowns retain uncertainty.
+        processes_empty = False
+        if not failed_tail and not registration.tail_failed:
+            try:
+                processes_empty = await asyncio.to_thread(confirm_job_processes_empty, registration)
+            except Exception:
+                pass  # Probe/executor failure cannot manufacture closure.
         candidate = None
         with _job_terminal_writer(org, record.task_id, registration) as control:
             _validate_registration(registration, running_task=True)
@@ -1301,7 +1316,7 @@ async def _run_job_core_impl(
                 'job_run_completed' if result.status == 'completed' else 'job_run_failed', payload)
             candidate = _stage_job_terminal_uncommitted(registration.owner,
                 observed=registration.observed, failed=failed_tail or registration.tail_failed)
-            _settle_pause_job(job_db, record.task_id, job_id, control=control)
+            _settle_pause_job(job_db, record.task_id, job_id, control=control, processes_empty=processes_empty)
         # COMMIT succeeded. Any exception/ambiguous COMMIT above retains unknown
         # ownership, without blind append/retry, terminal hint or wake.
         if candidate is not None:

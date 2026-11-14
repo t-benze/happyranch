@@ -108,9 +108,23 @@ Lost CAS has no duplicate effects; rollback/ambiguous COMMIT retains unknown
 ownership. Stop200 is a real owned signal request, never terminal or hold clearance.
 Startup retains unproven running jobs rather than inventing orphan/cleanup proof.
 
-The existing job runner returns its genuine process status and streams, without a containment/tree receipt. Its terminal result settles normally while missing descendant closure remains an unknown job blocker. A failure before runner entry can discharge the proven no-launch reservation. Direct process communicate/wait closes that process only; missing tree evidence
-remains an explicit unknown blocker, including after terminal lifecycle or
-restart. Interrupted possible launch or cleanup ACTION never becomes safe zero
+At job end, after waiting/reaping the leader, the original job owner observes
+its launch-captured process group and session once, outside the root/DB writer.
+Only `killpg(pgid, 0)` returning ESRCH AND a complete native session enumeration
+finding no member permit removal of that job's Pause entry in the existing
+serialized terminal CAS/audit/journal transaction. Linux enumerates `/proc`;
+macOS enumerates PIDs with libproc and queries their session IDs. Success from
+killpg, permission denial, malformed/unavailable enumeration, probe exceptions,
+missing launch handles and failed tails all retain phase `unknown`. PID/group
+reuse can only report nonempty and refuse closure. This is original-group/session
+emptiness, not descendant containment: founder OPTION A (THR-359 seq13) explicitly
+accepts that setsid/daemonize descendants can escape into their own session.
+Live descendants at this observation stay unknown forever; there is no polling
+or later re-probe. Restart/legacy entries have no launch proof and stay unknown;
+periodic/startup paths keep skipping job entries. Historical unknowns are left
+as-is, without migration or live edits. A failure before runner entry can still
+discharge the proven no-launch reservation. Terminal status or PID absence alone
+never proves closure. Interrupted possible launch or cleanup ACTION never becomes safe zero
 or an automatic retry merely because a PID is absent. An interrupted result-processing tail also remains unknown until authentic settlement is observed; settlement retires producer ownership without erasing unknown tree evidence.
 
 Pause reads all current non-recovery tracker bindings inside the serialized root/DB writer and keeps the short tracker mutex through COMMIT. Durable positively-running evidence, exact current task/agent/SID and server-admitted ordinary purpose must agree. New or moved bindings are considered there; ended or replaced SIDs are excluded. Advisory pre-request snapshots never decide capture. The tracker mutex is a leaf lock: no binding lease is acquired beneath root/DB, and no await, host/provider operation or backoff runs under these locks. Duplicate Pause preserves capture; Resume followed by a new Pause replaces previous-generation capture.
@@ -191,8 +205,12 @@ Detail unknown blockers with owner_kind=job and actual job_id read “Job
 descendant cleanup unconfirmed” / “作业子进程清理尚未确认”. Their summary counts
 job cleanup unconfirmed separately from known running sessions/jobs and other
 unresolved items. IDs/raw reasons remain literal. A terminal job, exit0 or PID
-absence never closes descendant uncertainty; the future job-owned closure
-producer is excluded. TASK-11345 and its16 historical unknowns remain held.
+absence alone never closes uncertainty. The job-owned terminal producer removes
+only an entry whose original group AND session are positively confirmed empty
+after leader reap, under the rule above. Everything else stays unknown, including
+restart/legacy entries and historical unknowns. setsid/daemonize descendants
+escape this check by the founder-accepted blind spot. TASK-11345 and its16
+historical unknowns remain held; no historical closure is performed.
 Backend/race/restart/Pause/R/E04 and protected red/mutation/repetition/test-authoring
 proof remain UNEXECUTED/held. Python units RETIRED; integration and actual CLI
 callback SKIPPED THR243seq42. Automated gates stay lint/static only; manual
