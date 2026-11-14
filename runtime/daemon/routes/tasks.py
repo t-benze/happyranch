@@ -971,8 +971,11 @@ async def _control_pause(task_id: str, body: TaskPauseControlRequest,
     # Durable release intent is the recovery backstop. No publication occurs
     # for duplicates; queueing never grants authority to launch.
     if changed and not held:
-        from runtime.orchestrator.task_pause import discover_pause_work
-        await discover_pause_work(org, org.orchestrator._queue)
+        from runtime.orchestrator.task_pause import discover_root_pause_work
+        try:
+            await discover_root_pause_work(org, org.orchestrator._queue, task_id, body.expected_generation + 1)
+        except Exception:
+            logger.exception("direct pause release remains pending: %s", task_id)
     return {"changed": changed, "pause": _pause_projection(org, task_id)}
 
 
