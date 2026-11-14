@@ -34,7 +34,9 @@ public final class ManagedEnrollmentKey: @unchecked Sendable {
 
     private func releaseAllocation() {
         guard let allocation else { return }
-        explicit_bzero(allocation, byteCount)
+        if memset_s(allocation, byteCount, 0, byteCount) != 0 {
+            NSLog("Managed enrollment allocation wipe failed")
+        }
         free(allocation)
         self.allocation = nil
     }

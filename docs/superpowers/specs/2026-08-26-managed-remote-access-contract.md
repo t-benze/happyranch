@@ -1085,7 +1085,7 @@ The explicit `.managed` ClientBridge lane calls configure-only managed init and
 one 120-second managed Up; saved-membership resume supplies an empty key.
 Its caller-owned malloc/calloc buffer transfers custody to ManagedEnrollmentKey,
 which wipes the entire initialized allocation including terminator with
-explicit_bzero before free on every exit, immediately after init before Up.
+memset_s before free on every exit, immediately after init before Up.
 PR2 owns login-Keychain deletion before this API; no key String/environment,
 logging, defaults or fallback store is introduced.
 

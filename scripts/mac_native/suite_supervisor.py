@@ -163,7 +163,7 @@ def supervisor(report: dict[str, Any]) -> None:
             "-Xcc", "-fmodules-cache-path=" + env["CLANG_MODULE_CACHE_PATH"],
         ]
         for name, extra in (
-            ("swift_test", ["--filter", "AppDelegateStopHonestyTests|ManagedHealthPollingTests"]),
+            ("swift_test", ["--filter", "AppDelegateStopHonestyTests|ManagedHealthPollingTests|ManagedClientBridgeTests|EnrollmentKeyStoreTests|ManagedJoinTests|ManagedMembershipRevocationTests"]),
             ("scripted_stop_escalation", ["--skip-build", "--filter",
                                          "AppDelegateStopHonestyTests/stopEscalatesRealChild"]),
         ):

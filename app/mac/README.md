@@ -67,7 +67,7 @@ the old monitor; an HTTP response arriving after Stop cannot revive it.
 The manual native `supervisor` probe discovers developer directory, macOS SDK,
 Swift path and Swift >=6 first. Missing tooling produces UNAVAILABLE rows and
 nonzero `toolchain unavailable`, without a build/test attempt. It runs focused
-`swift test` for `AppDelegateStopHonestyTests|ManagedHealthPollingTests`, then
+`swift test` for `AppDelegateStopHonestyTests|ManagedHealthPollingTests|ManagedClientBridgeTests|EnrollmentKeyStoreTests|ManagedJoinTests|ManagedMembershipRevocationTests`, then
 repeats the scripted TERM-ignoring disposable-child test with `--skip-build`.
 HOME, temporary files, SwiftPM scratch/cache/config/security paths, compiler
 module caches and products stay in build scratch. Release/no-debug compilation
@@ -1092,7 +1092,7 @@ successful login-Keychain deletion. `ManagedEnrollmentKey(taking:byteCount:)`
 takes ownership of a malloc/calloc allocation; the positive byte count covers
 the entire initialized allocation including its final NUL. The caller must
 neither access nor free it afterwards. No enrollment-key String API is supplied.
-The bridge checks bounded NUL termination, wipes with `explicit_bzero` before
+The bridge checks bounded NUL termination, wipes with `memset_s` before
 free on all exits, and wipes immediately after configure-only native init,
 before Up. This is custody minimization, not forensic erasure. The bridge never
 reads enrollment configuration from the environment or publishes raw native
