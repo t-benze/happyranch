@@ -41,11 +41,11 @@ from runtime.identities import registry as names
 from runtime.orchestrator import producer_move
 from runtime.orchestrator.agent_def import AgentDef, render_agent_text
 
-assert sys.argv[1:] in ([], ['--bounded-acquisition'], ['--trace-custody'], ['--sequential-reuse'], ['--sequential-load'], ['--sequential-faults'], ['--sequential-sql-exhaustion'], ['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--coding-authority-corruption'], ['--physical-corruption'], ['--sequential-uncommitted']), 'unknown schema-load selection'
+assert sys.argv[1:] in ([], ['--bounded-acquisition'], ['--trace-custody'], ['--sequential-reuse'], ['--sequential-load'], ['--sequential-faults'], ['--sequential-sql-exhaustion'], ['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--coding-authority-corruption'], ['--document-native-corruption'], ['--physical-corruption'], ['--sequential-uncommitted']), 'unknown schema-load selection'
 
 # A0b-2 custody extends this existing real-SQLite venue. No native connection
 # subclass, fake epoch, successful validator stub or production test seam.
-if sys.argv[1:] not in (['--bounded-acquisition'], ['--sequential-reuse'], ['--sequential-load'], ['--sequential-faults'], ['--sequential-sql-exhaustion'], ['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--coding-authority-corruption'], ['--physical-corruption'], ['--sequential-uncommitted']):
+if sys.argv[1:] not in (['--bounded-acquisition'], ['--sequential-reuse'], ['--sequential-load'], ['--sequential-faults'], ['--sequential-sql-exhaustion'], ['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--coding-authority-corruption'], ['--document-native-corruption'], ['--physical-corruption'], ['--sequential-uncommitted']):
     class TraceAbort(BaseException):
         pass
 
@@ -210,7 +210,7 @@ if sys.argv[1:] == ['--trace-custody']:
 # layouts. Existing private installers and storage owners prepare the fixtures.
 # Native SQLite statements, outcomes and original cumulative counters are the
 # oracles; no validator replacement, success stub or fabricated epoch.
-if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--sequential-faults'], ['--sequential-sql-exhaustion'], ['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--coding-authority-corruption'], ['--physical-corruption'], ['--sequential-uncommitted']):
+if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--sequential-faults'], ['--sequential-sql-exhaustion'], ['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--coding-authority-corruption'], ['--document-native-corruption'], ['--physical-corruption'], ['--sequential-uncommitted']):
     from runtime.infrastructure.workflow_schema import (
         initialize_complete_org_schema, install_sequential_schema,
         sequential_storage_inventory, _coding_org_identity, _schema_snapshot,
@@ -557,6 +557,82 @@ if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--seque
                       'workflow_draft_dispatch_intents', 'workflow_draft_dispatch_events'):
             assert conn.execute('SELECT count(*) FROM ' + table).fetchone()[0] > 0, table + ' document fixture is empty'
 
+    def populate_document_native(db):
+        import hashlib
+        from runtime.infrastructure.workflow_schema import _DRAFT_MUTABLE, _DRAFT_PROJECTION
+
+        populate_document_coding(db)
+        conn = db._conn
+        encode = seq_history._bytes
+        digest = lambda raw: hashlib.sha256(raw).hexdigest()
+        stamp = '2026-11-14T00:00:00.000000Z'
+        intent = dict(conn.execute('SELECT * FROM workflow_draft_dispatch_intents').fetchone())
+        result = dict(conn.execute("SELECT * FROM task_results WHERE task_id='document-root'").fetchone())
+        assert result['status'] == 'completed' and type(result['id']) is int
+        # Synthetic archival storage, never a callback/host/settlement producer.
+        # Replace only this fixture's prelaunch cancellation with the full
+        # original admitted -> claimed -> launch -> callback -> completed chain.
+        queued = dict(state='queued', is_current=1, cancellation_requested=0, claim_token=None,
+            claim_owner=None, host_launch_started=0, host_execution_id=None, session_id=None,
+            final_result_id=None)
+        claimed = dict(queued, state='claimed', claim_token='synthetic-claim', claim_owner='workflow_dispatcher')
+        launched = dict(claimed, host_launch_started=1)
+        running = dict(launched, state='running', host_execution_id='synthetic-host', session_id='doc-session')
+        callback = dict(running, final_result_id=result['id'])
+        completed = dict(callback, state='completed')
+        intent.update(completed)
+        conn.execute('UPDATE workflow_draft_dispatch_intents SET ' +
+            ','.join(key + '=?' for key in _DRAFT_PROJECTION) + ' WHERE id=?',
+            tuple(intent[key] for key in _DRAFT_PROJECTION) + (intent['id'],))
+        conn.execute("UPDATE tasks SET status='completed',current_session_id='doc-session' WHERE id='document-root'")
+        conn.execute('DELETE FROM workflow_draft_dispatch_events')
+        immutable = {key: value.hex() if type(value) is bytes else value for key, value in intent.items()
+                     if key not in _DRAFT_MUTABLE}
+        accepted = dict(record=result, id=result['id'], digest=digest(encode(result)),
+                        disposition='accepted', accepted=1)
+        previous, previous_digest = None, None
+        for sequence, (kind, after) in enumerate((('admitted', queued), ('claimed', claimed),
+                ('launch_reserved', launched), ('running', running),
+                ('callback_recorded', callback), ('completed', completed)), 1):
+            event_id = intent['id'] + ':' + str(sequence)
+            payload = encode(dict(format='workflow-draft-event@1', org_slug='scratch',
+                event=dict(id=event_id, event_seq=sequence, event_kind=kind, created_at=stamp),
+                previous_digest=previous_digest, intent=immutable, before=previous, after=after,
+                terminal_evidence=dict(host_quiescent=True) if kind == 'completed' else None,
+                result=accepted if kind in ('callback_recorded', 'completed') else None))
+            native = ((result['session_id'], result['id'], accepted['digest'], 1, 'accepted')
+                      if kind == 'callback_recorded' else (None,) * 5)
+            conn.execute('INSERT INTO workflow_draft_dispatch_events VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                (event_id, intent['id'], sequence, kind, None if previous is None else previous['state'],
+                 after['state'], payload, digest(payload), *native, stamp))
+            previous, previous_digest = after, digest(payload)
+
+        # G operation/provenance and INTEGER result-link storage are separate
+        # from the legacy source_result_id string used by the earlier fixture.
+        conn.execute("UPDATE workflow_submissions SET source_result_id=NULL WHERE id='doc-submission'")
+        submission = dict(conn.execute("SELECT * FROM workflow_submissions WHERE id='doc-submission'").fetchone())
+        request = encode(dict(instance_id=submission['instance_id'], revision=submission['revision'],
+            submission_id=submission['id'], submission_digest=submission['submission_digest']))
+        operation = dict(submission_id=submission['id'], instance_id=submission['instance_id'],
+            org_slug='scratch', principal=submission['author_principal'], source_task_id=result['task_id'],
+            source_session_id=result['session_id'], operation_key='synthetic-submission',
+            request_digest=digest(request), created_at=stamp)
+        proof = encode(dict(format='workflow-submission-operation@1', operation=operation,
+            submission={key: value.hex() if type(value) is bytes else value for key, value in submission.items()},
+            source_intent=immutable, request_bytes=request.hex()))
+        operation.update(provenance_bytes=proof, provenance_digest=digest(proof))
+        conn.execute('INSERT INTO workflow_submission_operations (' + ','.join(operation) + ') VALUES (' +
+            ','.join('?' for _ in operation) + ')', tuple(operation.values()))
+        conn.execute('INSERT INTO workflow_submission_result_links VALUES (?,?,?,?,?,?,?)',
+            (submission['id'], result['task_id'], result['session_id'], result['id'],
+             encode(result), accepted['digest'], stamp))
+        conn.commit()
+        assert read_sequential_history(conn, expected_org_slug='scratch').status == 'storage readable'
+        assert conn.execute('SELECT count(*) FROM workflow_submission_operations').fetchone()[0] == 1
+        assert conn.execute('SELECT count(*) FROM workflow_submission_result_links').fetchone()[0] == 1
+        assert [row[0] for row in conn.execute('SELECT event_kind FROM workflow_draft_dispatch_events ORDER BY event_seq')] == [
+            'admitted', 'claimed', 'launch_reserved', 'running', 'callback_recorded', 'completed']
+
     def populate_coding_authority(db, *, setup):
         import base64
         import hashlib
@@ -653,7 +729,7 @@ if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--seque
         else:
             assert history.retained[1].imported is not None
 
-    if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--coding-authority-corruption'], ['--physical-corruption'], ['--sequential-uncommitted']):
+    if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--coding-authority-corruption'], ['--document-native-corruption'], ['--physical-corruption'], ['--sequential-uncommitted']):
         corruptions = (
             ('definition digest', "UPDATE workflow_seq_definitions SET definition_digest='bad'"),
             ('definition bytes', "UPDATE workflow_seq_definitions SET definition_bytes=x'7b7d'"),
@@ -815,6 +891,50 @@ if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--seque
             ('Coding setup journal state', "UPDATE workflow_publication_journals SET state='prepared'"),
             ('Coding setup journal fence', 'UPDATE workflow_publication_journals SET profile_fence=1'),
         )
+        def corrupt_document_terminal(connection, *, witness):
+            import hashlib
+            row = connection.execute("SELECT id,event_bytes FROM workflow_draft_dispatch_events WHERE event_kind='completed'").fetchone()
+            payload = json.loads(row[1])
+            if witness:
+                payload['terminal_evidence']['host_quiescent'] = False
+            else:
+                payload['result']['accepted'] = 0
+            raw = seq_history._bytes(payload)
+            connection.execute('UPDATE workflow_draft_dispatch_events SET event_bytes=?,event_digest=? WHERE id=?',
+                (raw, hashlib.sha256(raw).hexdigest(), row[0]))
+
+        document_native_corruptions = (
+            ('document operation org', "UPDATE workflow_submission_operations SET org_slug='wrong'"),
+            ('document operation principal', "UPDATE workflow_submission_operations SET principal='wrong'"),
+            ('document operation key', "UPDATE workflow_submission_operations SET operation_key='wrong'"),
+            ('document operation request', "UPDATE workflow_submission_operations SET request_digest='bad'"),
+            ('document operation provenance', "UPDATE workflow_submission_operations SET provenance_bytes=x'7b7d'"),
+            ('document operation digest', "UPDATE workflow_submission_operations SET provenance_digest='bad'"),
+            ('document operation timestamp', "UPDATE workflow_submission_operations SET created_at='wrong'"),
+            ('document operation legacy source', "UPDATE workflow_submissions SET source_result_id='1' WHERE id='doc-submission'"),
+            ('document link INTEGER result', "UPDATE workflow_submission_result_links SET task_result_id=(SELECT id FROM task_results WHERE task_id='source')"),
+            ('document link result bytes', "UPDATE workflow_submission_result_links SET result_bytes=x'7b7d'"),
+            ('document link result digest', "UPDATE workflow_submission_result_links SET result_digest='bad'"),
+            ('document completed result principal', "UPDATE task_results SET agent='wrong' WHERE task_id='document-root'"),
+            ('document completed result session', "UPDATE task_results SET session_id='wrong' WHERE task_id='document-root'"),
+            ('document completed result status', "UPDATE task_results SET status='failed' WHERE task_id='document-root'"),
+            ('document completed task principal', "UPDATE tasks SET assigned_agent='wrong' WHERE id='document-root'"),
+            ('document completed task status', "UPDATE tasks SET status='failed' WHERE id='document-root'"),
+            ('document completed intent result', "UPDATE workflow_draft_dispatch_intents SET final_result_id=(SELECT id FROM task_results WHERE task_id='source')"),
+            ('document completed intent session', "UPDATE workflow_draft_dispatch_intents SET session_id='wrong'"),
+            ('document completed host identity', "UPDATE workflow_draft_dispatch_intents SET host_execution_id='wrong'"),
+            ('document completed claim owner', "UPDATE workflow_draft_dispatch_intents SET claim_owner='wrong'"),
+            ('document completed cancellation', 'UPDATE workflow_draft_dispatch_intents SET cancellation_requested=1'),
+            ('document callback session', "UPDATE workflow_draft_dispatch_events SET session_id='wrong' WHERE event_kind='callback_recorded'"),
+            ('document callback INTEGER result', "UPDATE workflow_draft_dispatch_events SET result_id=(SELECT id FROM task_results WHERE task_id='source') WHERE event_kind='callback_recorded'"),
+            ('document callback result digest', "UPDATE workflow_draft_dispatch_events SET result_digest='bad' WHERE event_kind='callback_recorded'"),
+            ('document callback disposition', "UPDATE workflow_draft_dispatch_events SET disposition='wrong' WHERE event_kind='callback_recorded'"),
+            ('document completed terminal witness', lambda conn: corrupt_document_terminal(conn, witness=True)),
+            ('document completed terminal result', lambda conn: corrupt_document_terminal(conn, witness=False)),
+        )
+        document_native_names = {name for name, _ in document_native_corruptions}
+        refusal_codes.update({name: ('workflow_submission_data_corrupt' if name.startswith(('document operation ', 'document link '))
+                                    else 'workflow_draft_data_corrupt') for name in document_native_names})
         coding_import_names = {name for name, _ in coding_import_corruptions}
         coding_setup_names = {name for name, _ in coding_setup_corruptions}
         refusal_codes.update({name: 'coding_registered_release_history_invalid' for name in coding_import_names})
@@ -831,6 +951,10 @@ if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--seque
             corruptions = coding_import_corruptions + coding_setup_corruptions
         elif sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-corruption'], ['--document-coding-corruption']):
             corruptions += coding_import_corruptions + coding_setup_corruptions
+        if sys.argv[1:] == ['--document-native-corruption']:
+            corruptions = document_native_corruptions
+        elif sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-corruption'], ['--document-coding-corruption']):
+            corruptions += document_native_corruptions
         def corrupt_physical_index(connection, *, surplus):
             # Synthetic private corruption: preserve the exact index definition
             # while making SQLite change its table without index maintenance.
@@ -883,6 +1007,8 @@ if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--seque
                     populate_retained(db, root)
                 if name in document_coding_names:
                     populate_document_coding(db)
+                if name in document_native_names:
+                    populate_document_native(db)
                 if name in coding_import_names or name in coding_setup_names:
                     populate_coding_authority(db, setup=name in coding_setup_names)
                 # Warm outside the new owner too: a forbidden cross-load cache
@@ -913,7 +1039,7 @@ if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--seque
                                 (mutation.split()[1] if isinstance(mutation, str) and mutation.startswith('UPDATE ') else '',)))
                             for trigger, ddl in triggers:
                                 connection.execute('DROP TRIGGER "' + trigger.replace('"', '""') + '"')
-                            if name in physical_names:
+                            if callable(mutation):
                                 mutation(connection)
                             else:
                                 connection.execute(mutation)
@@ -957,7 +1083,7 @@ if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--seque
                     corruption_failures.append((name, phase, str(exc)))
                     print('FAIL A0b sequential corruption matrix:', name, phase, str(exc), flush=True)
         assert not corruption_failures, 'sequential corruption matrix failures: ' + repr(corruption_failures)
-        if sys.argv[1:] in (['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--coding-authority-corruption'], ['--physical-corruption'], ['--sequential-uncommitted']):
+        if sys.argv[1:] in (['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--coding-authority-corruption'], ['--document-native-corruption'], ['--physical-corruption'], ['--sequential-uncommitted']):
             raise SystemExit(0)
 
     if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-faults'], ['--sequential-sql-exhaustion']):

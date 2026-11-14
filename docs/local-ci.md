@@ -385,6 +385,21 @@ Fixtures use fixed synthetic archival snapshots and native rows, without current
 setup, role/Allow, repository access, task/run or native-settlement claims.
 Full, `--sequential-reuse`, `--sequential-corruption` and
 `--document-coding-corruption` include these 116 phases.
+`--document-native-corruption` selects 27 additional rows from the same table.
+The private fixture retains a G submission operation and INTEGER native
+result link, plus the complete admitted/claimed/launch-reserved/running/
+callback-recorded/completed draft event chain. Operation ownership, request,
+provenance, timestamp and legacy-source mixing; result-link identity/bytes/digest;
+native result principal/session/status; task principal/status; intent result,
+session, host, claim and cancellation; and callback session/result/digest/
+disposition must refuse through their original submission or draft-history
+boundary. The terminal witness and accepted-result mutations recompute the
+event digest after corruption so they exercise semantic closure. All 108 phases compare
+the exact complete-reader refusal, preserve caller transactions and require
+a fresh complete read after rollback. Full, `--sequential-reuse`,
+`--sequential-corruption` and `--document-coding-corruption` include these cases.
+These are synthetic archival rows; no callback, host or settlement producer is
+invoked. They do not cover the separate H author-handoff/revision/review graph.
 `--sequential-uncommitted` selects the preceding sequential definition/settings/
 pin/native/mark/output/schema/index/FK rows inside explicit caller transactions,
 including restored triggers and rollback followed by a fresh complete read.
