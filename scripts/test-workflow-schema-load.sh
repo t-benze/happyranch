@@ -1016,6 +1016,124 @@ if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--seque
                         db._conn.rollback()
                 print('PASS A0b sequential borrowed deadline:', interval)
 
+        # The same original five-second deadline covers entry, real complete
+        # work and the final native snapshot release. Trace barriers advance a
+        # test clock; neither the real budget nor validator is replaced.
+        for state, boundary in product(('first', 'primed source', 'changed target'),
+                                       ('entry', 'integrity', 'release')):
+            name = 'whole deadline ' + state + ' ' + boundary
+            with sequential_fault_case(name), sequential_fixture() as (db, root, sql):
+                with org_load_validation(db, org_slug='scratch'):
+                    if state != 'first':
+                        seq_read(db)
+                    owner = load_guard._current.get()
+                    if state == 'changed target':
+                        db._conn.execute("UPDATE tasks SET brief=brief||'deadline' WHERE id='TASK-seq-load'")
+                        db._conn.commit()
+                    hits = owner.hits
+                    real_clock = time.monotonic
+                    def observe_expiry(operation):
+                        offset, reached, exhaustions = [0.0], [], []
+                        deadline = real_clock() + 5.0
+                        def expire(statement):
+                            if not reached and (boundary == 'entry' or
+                                    (boundary == 'integrity' and statement == 'PRAGMA integrity_check') or
+                                    (boundary == 'release' and statement == 'ROLLBACK')):
+                                reached.append(statement)
+                                offset[0] = 6.0
+                        with db.observe_trace(expire), patch.object(time, 'monotonic',
+                                side_effect=lambda: real_clock() + offset[0]):
+                            def observed():
+                                try:
+                                    return operation(deadline)
+                                except (ValueError, sqlite3.Error) as exc:
+                                    cause = exc
+                                    while cause is not None:
+                                        if isinstance(cause, ReadExhaustion):
+                                            exhaustions.append((cause.dimension, cause.requested, cause.remaining))
+                                        cause = cause.__cause__
+                                    raise
+                            outcome = sequential_outcome(observed)
+                        return outcome, reached, exhaustions
+                    # At entry/release the primed source exercises hit acquisition;
+                    # its integrity variant exercises a genuine post-write miss.
+                    if state == 'primed source' and boundary == 'integrity':
+                        db._conn.execute("UPDATE tasks SET brief=brief||'middle' WHERE id='TASK-seq-load'")
+                        db._conn.commit()
+                    operation = (lambda deadline: load_guard.read_workflow_schema_target_for_org_load(
+                        db._conn, expected_org_slug='scratch', legacy=lambda: validate_workflow_schema(
+                            db._conn, expected_org_slug='scratch'))) if state == 'changed target' else (
+                        lambda deadline: seq_read(db))
+                    actual, actual_barrier, actual_exhaustions = observe_expiry(operation)
+                    expected, expected_barrier, expected_exhaustions = observe_expiry(lambda deadline: read_sequential_history(
+                        db._conn, expected_org_slug='scratch', deadline=deadline).retained)
+                    assert actual_barrier and expected_barrier, name + ' did not reach native expiry barriers'
+                    assert actual == expected and actual[0] == 'refused', name + ' reset the original deadline'
+                    # Native progress interruption keeps its historical 'interrupted'
+                    # code; the causal allowance supplies deadline attribution.
+                    for exhausted in (actual_exhaustions, expected_exhaustions):
+                        assert exhausted and all(dimension == 'deadline' and remaining <= 0
+                            for dimension, requested, remaining in exhausted), name + ' lost original deadline attribution'
+                    assert owner.hits == hits and owner.sequential_saved is None, name + ' retained an expired certificate'
+                    assert not db._conn.in_transaction, name + ' leaked an owned snapshot'
+                assert not owner.active and not owner.ledgers and load_guard._current.get() is None
+                print('PASS A0b sequential whole deadline:', state, boundary)
+
+        for release in ('owned before ROLLBACK', 'owned after ROLLBACK',
+                        'source COMMIT', 'source ROLLBACK',
+                        'target COMMIT', 'target ROLLBACK'):
+            with sequential_fault_case('release race ' + release), sequential_fixture() as (db, root, sql):
+                other = sqlite3.connect(db.db_path, timeout=0)
+                try:
+                    with org_load_validation(db, org_slug='scratch'):
+                        seq_read(db)
+                        owner = load_guard._current.get()
+                        moved = []
+                        def corrupt():
+                            other.execute("UPDATE workflow_task_ownership SET org_slug='wrong'")
+                            other.commit()
+                            moved.append(True)
+                        hits = owner.hits
+                        if release.startswith('owned'):
+                            released = []
+                            def at_exit(statement):
+                                if moved:
+                                    return
+                                if statement == 'ROLLBACK':
+                                    if release == 'owned before ROLLBACK':
+                                        corrupt()  # WAL writer precedes native release.
+                                    else:
+                                        released.append(True)
+                                elif released and not db._conn.in_transaction:
+                                    corrupt()  # Native release finished; outside bookend has not.
+                            with db.observe_trace(at_exit):
+                                actual = sequential_outcome(lambda: seq_read(db))
+                        else:
+                            source = release.startswith('source')
+                            db._conn.execute('BEGIN IMMEDIATE' if source else 'BEGIN')
+                            operation = (lambda: seq_read(db, writer_source=True)) if source else (
+                                lambda: load_guard.read_workflow_schema_target_for_org_load(db._conn,
+                                    expected_org_slug='scratch', legacy=lambda: validate_workflow_schema(
+                                        db._conn, expected_org_slug='scratch')))
+                            assert sequential_outcome(operation)[0] == 'returned'
+                            assert db._conn.in_transaction and owner.hits == hits + 1, release + ' lost borrowed snapshot'
+                            # The caller alone releases its native reservation.
+                            db._conn.execute(release.split()[1])
+                            assert not db._conn.in_transaction, release + ' failed native release'
+                            corrupt()
+                            hits = owner.hits
+                            actual = sequential_outcome(lambda: seq_read(db))
+                        expected = sequential_outcome(lambda: read_sequential_history(
+                            db._conn, expected_org_slug='scratch').retained)
+                        assert moved, release + ' omitted native snapshot release barrier'
+                        assert actual == expected and actual[0] == 'refused', release + ' hid committed corruption'
+                        assert owner.hits == hits and owner.sequential_saved is None, release + ' reused a released certificate'
+                        assert not db._conn.in_transaction, release + ' stole or leaked transaction ownership'
+                    print('PASS A0b sequential release race:', release)
+                finally:
+                    other.rollback()
+                    other.close()
+
         assert not fault_failures, 'sequential fault matrix failures: ' + repr(fault_failures)
         if sys.argv[1:] == ['--sequential-faults']:
             raise SystemExit(0)

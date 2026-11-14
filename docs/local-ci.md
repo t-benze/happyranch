@@ -304,6 +304,14 @@ outcomes, forbids uncertified hits and preserves caller transactions. Named
 assertion failures accumulate and fail the selection; no failed case is skipped.
 The full selection and `--sequential-reuse` include these tables. They do not
 replace nonempty family-corruption or the remaining original SQL exhaustion forms.
+The deadline table additionally advances a deterministic test clock at native
+entry, full integrity work and snapshot release, on first reads, primed sources
+and changed targets. It requires the public reader's exact refusal chain and
+original causal deadline allowance, with no expired certificate or owned
+transaction left behind. Release races commit real WAL corruption immediately
+before and after the owned rollback, and after caller-owned source/target
+COMMIT and ROLLBACK. The next observation must revalidate; caller transactions
+remain caller-owned. These cases do not change a deadline or SQL allowance.
 The native configuration table also changes and restores journal/locking mode,
 synchronous and temp-store settings. Both Python autocommit modes compare the
 complete reader's outcome and transaction ownership before restoring legacy
