@@ -166,7 +166,9 @@ def _bounded_rows(conn: sqlite3.Connection, table: str, columns: tuple[str, ...]
     storage classes, per-value byte caps and the current shared row/byte budget.
     Original typeof and a separate validity sentinel distinguish a refused
     projection from genuine nullable NULL. No raw oversize/invalid cell reaches
-    Python. SQL-engine work/memory and decoded object memory are not bounded.
+    Python. Singleton materialization evaluates whole-row shape/size once;
+    all payload withholding and logical charges remain unchanged. SQL-engine
+    work/memory and decoded object memory are not bounded.
     """
     def quote(name: str) -> str:
         return '"' + name.replace('"', '""') + '"'
@@ -181,15 +183,17 @@ def _bounded_rows(conn: sqlite3.Connection, table: str, columns: tuple[str, ...]
         gates.append(f"(typeof({name}) IN ({kinds}) AND (typeof({name}) NOT IN ('text','blob') "
                      f"OR length(CAST({name} AS BLOB))<={value_limit}))")
     shape = ' AND '.join(gates)
-    valid = shape + ' AND ? > 0 AND (' + size + ')<=?'
+    valid = '_scan_shape AND ? > 0 AND _scan_size<=?'
     query = ('WITH candidate AS (SELECT rowid AS _scan_rowid,' + ','.join(names)
              + ' FROM ' + quote(table) + ' WHERE (' + where
              + ') AND rowid>=? ORDER BY rowid LIMIT 1), '
-             + 'gated AS MATERIALIZED (SELECT *,(' + valid + ') AS _scan_valid FROM candidate) '
+             + 'measured AS MATERIALIZED (SELECT *,(' + shape + ') AS _scan_shape,('
+             + size + ') AS _scan_size FROM candidate), '
+             + 'gated AS MATERIALIZED (SELECT *,(' + valid + ') AS _scan_valid FROM measured) '
              + 'SELECT _scan_rowid,_scan_valid,'
              + ','.join(f'CASE WHEN _scan_valid THEN {name} ELSE NULL END' for name in names)
              + ',' + ','.join(f'typeof({name})' for name in names)
-             + ',CASE WHEN ' + shape + ' THEN (' + size + ') ELSE NULL END FROM gated')
+             + ',CASE WHEN _scan_shape THEN _scan_size ELSE NULL END FROM gated')
     after = -9223372036854775808
     count = 0
     cursor = conn.cursor()

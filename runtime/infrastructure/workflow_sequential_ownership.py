@@ -114,10 +114,20 @@ def validate_sequential_ownership(conn: sqlite3.Connection, *, org_slug: str,
 
 
 def _gate(columns: tuple[str, ...], allowed: tuple[tuple[str, ...], ...]) -> str:
-    """The retained per-cell gate, without the removed acquisition's resource term."""
+    """Equivalent whole-table gate; specialize only the three proven shapes."""
     gates = []
     for column, choices in zip(columns, allowed, strict=True):
         name = '"' + column.replace('"', '""') + '"'
+        if choices == ('integer',):
+            gates.append(f"typeof({name})='integer'")
+            continue
+        text = f"(typeof({name})='text' AND length(CAST({name} AS BLOB))<={_VALUE_LIMIT})"
+        if choices == ('text',):
+            gates.append(text)
+            continue
+        if choices == ('text', 'null'):
+            gates.append(f"({name} IS NULL OR {text})")
+            continue
         kinds = ','.join("'" + kind + "'" for kind in choices)
         gates.append(f"(typeof({name}) IN ({kinds}) AND (typeof({name}) NOT IN ('text','blob') "
                      f"OR length(CAST({name} AS BLOB))<={_VALUE_LIMIT}))")
@@ -125,12 +135,11 @@ def _gate(columns: tuple[str, ...], allowed: tuple[tuple[str, ...], ...]) -> str
 
 
 def _candidates(columns: tuple[str, ...]) -> str:
-    """Only rowid-table text needing Python decoding; ASCII payload stays in SQL."""
+    """Private post-gate TEXT/NULL scan, in that same complete type snapshot."""
     terms = []
     for column in columns:
         name = '"' + column.replace('"', '""') + '"'
-        terms.append(f"(typeof({name})='text' AND (instr(CAST({name} AS BLOB),X'00')>0 "
-                     f"OR {name} GLOB '*[^ -~]*'))")
+        terms.append(f"(instr(CAST({name} AS BLOB),X'00')>0 OR {name} GLOB '*[^ -~]*')")
     return ' OR '.join(terms)
 
 
@@ -167,6 +176,8 @@ def validate_sequential_ownership_guards(conn: sqlite3.Connection, *, budget: _B
             budget.step()
             text_columns = tuple(name for name, choices in zip(columns, allowed, strict=True)
                                  if 'text' in choices)
+            # The complete preceding gate proved every projected text column
+            # TEXT or NULL in THIS snapshot. Never use this scan before it.
             for _ in _bounded_rows(conn, table, columns, allowed, budget,
                                    where=_candidates(text_columns)):
                 # _bounded_rows charges candidate rows, native bytes and decode work.

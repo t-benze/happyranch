@@ -1,5 +1,13 @@
 # Runtime And Configuration
 
+A0b finite SQL prerequisite for automatic workflow setup: shared bounded readers
+evaluate each singleton's whole-row shape/size once; sequential ownership uses
+equivalent specialized type gates before its exceptional-text scan in the same
+snapshot. Original payload withholding, logical charges, physical/FK validation,
+32M ordinary SQL, separate A/B/C 2M and 5s deadline remain. This component adds no
+setup caller or sequential load reuse; complete owner/observer/ledger work remains
+required. See [the shared contract](contracts/reusable-workflows.md).
+
 Ordinary Pause-unknown crash recovery (THR-350) is automatic only through the
 existing startup sweep or periodic reaper: positive dead-PID or exact
 current-session-start/host-boot proof, current ordinary ownership and an unheld

@@ -509,6 +509,20 @@ or changed observation runs its original full target callable and budget. A hit
 returns the identical cached complete result and charges as a source reuse hit;
 a target miss cannot seed complete-source reuse. Other targets and ordinary
 public reads retain their complete checks.
+
+A0b finite SQL prerequisite (THR-336 msg194): the shared bounded row reader
+materializes the unchanged whole-row shape and byte-size expressions once per
+singleton candidate, then uses those scalars for payload withholding and the
+separate diagnostic size. Storage classes, nullable sentinel, rowid order,
+per-value/shared limits, decoding and original logical charges stay exact.
+Sequential ownership specializes text, integer and nullable-text predicates;
+only after its complete whole-table type/size gate passes in the same snapshot
+may the private exceptional-text scan omit redundant `typeof` tests. That scan
+still uses bounded acquisition and the original decoder. This finite component
+does not extend load reuse; the complete owner/observer/ledger prerequisite is
+still required before automatic setup can ship. Full integrity/FK checks and
+the 32M ordinary SQL, separate A/B/C 2M and original 5s deadline remain intact.
+
 THR308seq426 Decision 4 leaves these guard semantics unchanged: only the cold
 naming loader's proven unchanged transaction omits native reservation/audit rows.
 Byte-identical Pause journals also avoid UPDATE. On a normal no-op restart those
