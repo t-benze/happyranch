@@ -1,5 +1,20 @@
 # Local CI
 
+## Focused manager prompt parse failure coverage (#602)
+
+```sh
+uv run --frozen pytest scripts/test_agent_parse_failure.py -v --tb=short
+```
+
+These no-launch checks reuse the synthetic-org fixture from
+`scripts/test_agent_retirement.py`, with real SQLite and queue publication.
+A malformed candidate worker file must fail the manager task and enqueue its
+parked parent. The serving Pause-store path retains native `launch_refused`
+settlement; the fallback uses the existing inner invocation failure note.
+No daemon lifespan, listeners, workers or executors run. This standalone script
+stays outside retired Python units and adds no required check or E2E trigger.
+General integration remains SKIPPED under THR-243 seq42.
+
 ## Focused founder cancellation coverage (#596 minimal wake)
 
 ```sh
