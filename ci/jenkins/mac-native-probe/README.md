@@ -513,6 +513,42 @@ launch; health + root HTML + one JS/CSS asset; a normal daemon task session and
 cancel with parent/child PID/PGID census; frozen cleanup; stop and final census;
 and outer EXIT cleanup. HTTP fetches prove serving, not browser rendering.
 
+Step4 requests JSON health at `/api/v1/health` and still requires `status ==
+'ok'`; `/health` is a SPA fallback, not the JSON API. HTTP failures retain
+method, path (without query), HTTP status, Content-Type and a JSON-safe body
+prefix of at most512 UTF8 bytes in the failed step's `http` field. Auth and
+adapter/profile endpoint bodies are redacted; bearer values never enter the
+report. Response byte caps remain unchanged. Malformed JSON/encoding fails
+immediately. Transient readiness failures retain the last observation under
+`packaged.health_readiness` and in the failed step, including on the45s deadline.
+
+Immediately after the successful strict build/archive verification, the suite
+checks `build-receipt.json` against the shipping ZIP's source SHA/tree, name,
+size and SHA256, and copies those exact bytes to
+`$WORKSPACE/retained/<SOURCE_SHA>-<packaging-run-id>/HappyRanch-1.0.1-1.0.1-arm64.zip`.
+It checks the copied size/hash again and writes `identity.json` alongside it;
+the same identity is in `probe.json.packaged.retained_product`, including the
+app inventory digest and app-executable, daemon and CLI component hashes.
+Retention precedes install/launch, so a later probe failure still leaves the
+verified product for the founder's Option A manual real-agent session. Verify
+the ZIP size/SHA256 before extracting, then compare those component hashes.
+This is an unsigned internal product, not a published release.
+
+Only the newest previous ZIP and the current ZIP are retained. Before pruning,
+the suite validates every entry in this at-most-two-directory namespace, its
+identity and ordinary single-link files; unknown, partial or aliased contents
+refuse rather than deleting them. The existing256MiB/file cap also applies to
+the retained ZIP. No host path outside the existing workspace is written.
+`config.xml.in` only replaces the named `evidence/` outputs at startup; its
+EXIT trap removes the one `native-probe.*` scratch directory. Neither touches
+the sibling `retained/` directory, and no workspace cleanup publisher is present.
+ArtifactArchiver still selects only
+`evidence/*.json,evidence/*.log,evidence/identity.txt`: retained ZIPs stay on
+the Mac mini workspace, outside Jenkins artifact uploads. No job, trigger,
+artifact pattern or host configuration change is required. A later successful
+build can evict the older ZIP; the founder must use the recorded retained path
+while it is still available, rather than substitute a rebuild.
+
 The Jenkins fallback uses the bundle's own daemon, exact app argv, home cwd
 and operational child environment, plus an explicit private TMPDIR for helper
 workspace isolation. The bundled AppDelegate persists NSHomeDirectory/Library
@@ -565,7 +601,8 @@ Portable manual harness checks (outside retired Python units/required CI):
 skip fields, census selection, command failure/output/time bounds, patch-bearing
 freezer argv, child-only Go cache flags, exact-source resource/ZIP mutation
 rejection, complete failure-list collection, completed app location and final
-EXIT receipt collection.
+EXIT receipt collection, bounded/redacted HTTP diagnostics, readiness failure
+observations, and exact shipping-copy retention through the existing EXIT trap.
 They neither build nor execute the product.
 
 ## S7 case-safety suite

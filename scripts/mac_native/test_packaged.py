@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import ast
 import hashlib
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import plistlib
 import runpy
@@ -15,6 +16,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 import warnings
 from unittest.mock import patch
@@ -23,6 +25,192 @@ from scripts.mac_native import suite_packaged as suite
 
 
 class PackagedHarnessTests(unittest.TestCase):
+    def test_http_failures_name_response_without_credentials_or_unbounded_body(self) -> None:
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *_args) -> None:
+                pass
+            def do_GET(self) -> None:
+                status, content, raw = {
+                    '/html': (200, 'text/html', b'<html>SPA fallback</html>'),
+                    '/utf8': (200, 'application/json', b'"\xff"'),
+                    '/malformed': (200, 'application/json', b'{broken'),
+                    '/overflow': (200, 'text/plain', b'x' * 1025),
+                    '/failure': (502, 'text/plain', b'\x00\xff' + b'x' * 1024),
+                    '/api/v1/auth/registration-token/runtime': (400, 'text/plain', b'synthetic-secret'),
+                }[self.path.split('?')[0]]
+                self.send_response(status)
+                self.send_header('Content-Type', content)
+                self.end_headers()
+                self.wfile.write(raw)
+            do_POST = do_GET
+        server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            with tempfile.TemporaryDirectory() as folder:
+                home = Path(folder)
+                (home / 'daemon.port').write_text(str(server.server_port))
+                (home / 'daemon.token').write_text('synthetic-secret')
+                api = suite.Api(home)
+                cases = [('/html', None, 200, 'text/html', 'JSONDecodeError'),
+                         ('/utf8', None, 200, 'application/json', 'UnicodeDecodeError'),
+                         ('/malformed', None, 200, 'application/json', 'JSONDecodeError'),
+                         ('/failure?limit=100', None, 502, 'text/plain', 'non-2xx response'),
+                         ('/failure', {}, 502, 'text/plain', 'non-2xx response'),
+                         ('/api/v1/auth/registration-token/runtime', {}, 400, 'text/plain', 'non-2xx response')]
+                for path, body, status, content, error in cases:
+                    with self.subTest(path=path, body=body):
+                        with self.assertRaises(Exception) as caught:
+                            api.json(path, body)
+                        row = getattr(caught.exception, 'observation', {})
+                        self.assertEqual(row.get('method'), 'GET' if body is None else 'POST')
+                        self.assertEqual(row['path'], path.split('?')[0])
+                        self.assertEqual((row['http_status'], row['content_type'], row['error']), (status, content, error))
+                        self.assertLessEqual(len(row['body_prefix'].encode()), 512)
+                        self.assertNotIn('synthetic-secret', json.dumps(row))
+                        if path.startswith('/api/v1/auth/'):
+                            self.assertTrue(row['body_redacted'])
+                        else:
+                            self.assertTrue(row['body_prefix'])
+                        self.assertEqual(json.loads(json.dumps(row)), row)
+                with self.assertRaises(Exception) as caught:
+                    api.get_bytes('/overflow', limit=1024)
+                self.assertEqual(getattr(caught.exception, 'observation', {}).get('error'), 'HTTP response cap')
+        finally:
+            server.shutdown()
+            thread.join(timeout=2)
+            server.server_close()
+
+    def test_readiness_keeps_last_http_failure_and_decode_fails_immediately(self) -> None:
+        row = {'method': 'GET', 'path': '/api/v1/health', 'http_status': 503,
+               'content_type': 'text/plain', 'body_prefix': 'starting'}
+        api = unittest.mock.Mock()
+        api.json.side_effect = suite.ApiFailure('non-2xx response', row)
+        readiness = {}
+        with patch.object(suite.time, 'monotonic', side_effect=[0, 0, 46]), patch.object(suite.time, 'sleep'):
+            with self.assertRaises(suite.ApiFailure) as caught:
+                suite.health_and_web(api, readiness)
+        self.assertEqual(caught.exception.observation['http_status'], 503)
+        self.assertEqual(caught.exception.observation['body_prefix'], 'starting')
+        api.json.reset_mock()
+        api.json.side_effect = suite.ApiFailure('JSONDecodeError', {**row, 'http_status': 200})
+        with patch.object(suite.time, 'sleep') as sleep:
+            with self.assertRaises(suite.ApiFailure) as caught:
+                suite.health_and_web(api, readiness)
+        self.assertEqual(caught.exception.observation['error'], 'JSONDecodeError')
+        api.json.assert_called_once_with('/api/v1/health')
+        sleep.assert_not_called()
+
+    def test_http_diagnostic_survives_failed_step_and_exit_collection(self) -> None:
+        row = {'method': 'GET', 'path': '/api/v1/health', 'http_status': 200,
+               'content_type': 'text/html', 'body_prefix': '<html>unexpected SPA</html>'}
+        failure = suite.ApiFailure('JSONDecodeError', row)
+        with tempfile.TemporaryDirectory() as folder:
+            scratch = Path(folder).resolve()
+            source = scratch / 'source'
+            source.mkdir()
+            report = {'suite': 'packaged', 'platform': 'darwin'}
+            def build(argv: list[str], *_args) -> dict:
+                out = Path(argv[argv.index('--output-dir') + 1])
+                app = out / 'HappyRanch.app'
+                for name in ('Contents/MacOS/HappyRanch', 'Contents/Resources/daemon/happyranch-daemon',
+                             'Contents/Resources/daemon/happyranch'):
+                    path = app / name
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_bytes(b'synthetic; never executed')
+                return {'exit_code': 0}
+            def checked(argv: list[str], *_args, **_kwargs) -> dict:
+                if argv[0] == '/usr/bin/ditto':
+                    shutil.copytree(argv[1], argv[2])
+                return {'tail': 'a' * 40}
+            def launch(*_args, **kwargs):
+                home = kwargs['cwd']
+                (home / 'daemon.port').write_text('1234')
+                (home / 'daemon.token').write_text('synthetic')
+                child = unittest.mock.Mock(pid=999999, returncode=0)
+                child.poll.return_value = None
+                child.wait.return_value = 0
+                return child
+            with (patch.object(suite, 'ROOT', source),
+                  patch.dict(os.environ, {'TMPDIR': str(scratch / 'tmp'), 'SOURCE_SHA': 'a' * 40,
+                                          'WORKSPACE': str(scratch)}),
+                  patch.object(suite, 'census', return_value=[]), patch.object(suite, 'checked', side_effect=checked),
+                  patch.object(suite, 'command', side_effect=build),
+                  patch.object(suite, 'retain_product', return_value={}),
+                  patch.object(suite.subprocess, 'Popen', side_effect=launch),
+                  patch.object(suite, 'health_and_web', side_effect=failure),
+                  patch('scripts.mac_native.suite_toolchain.executor_feasibility', return_value={}),
+                  patch('scripts.mac_native.toolchain.provision', return_value={'PATH': '/usr/bin:/bin'})):
+                with self.assertRaises(suite.ApiFailure):
+                    suite.run(report)
+            from scripts.mac_native.collect_packaged import join_exit_receipt
+            joined = join_exit_receipt(json.loads(json.dumps(report)),
+                'source_sha=' + 'a' * 40 + '\nsuite=packaged\nscratch_removed=true\n', 'a' * 40)
+            self.assertEqual(joined['steps']['4']['status'], 'FAIL')
+            self.assertEqual(joined['steps']['4'].get('http'), {**row, 'error': 'JSONDecodeError'})
+            self.assertEqual(joined['steps']['8']['status'], 'PASS')
+
+    def test_retained_shipping_zip_survives_outer_cleanup_and_keeps_latest_two(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            workspace = Path(folder).resolve()
+            scratch = workspace / 'native-probe.test'
+            out = scratch / 'packaged/build'
+            out.mkdir(parents=True)
+            archive = out / 'HappyRanch-1.0.1-1.0.1-arm64.zip'
+            archive.write_bytes(b'synthetic verified ZIP bytes')
+            hashes = {'app_executable': '1' * 64, 'daemon': '2' * 64, 'cli': '3' * 64}
+            identities = []
+            for index in range(3):
+                receipt = {'filename': archive.name, 'role': 'unsigned-inner-zip',
+                    'source_sha': 'a' * 40, 'source_tree': 'b' * 40,
+                    'run_id': f'00000000-0000-0000-0000-{index:012d}', 'size': archive.stat().st_size,
+                    'sha256': hashlib.sha256(archive.read_bytes()).hexdigest(), 'app_inventory_sha256': '4' * 64}
+                (out / 'build-receipt.json').write_text(json.dumps(receipt))
+                identities.append(suite.retain_product(out, workspace, scratch, 'a' * 40, 'b' * 40, hashes))
+                self.assertLessEqual(len(list((workspace / 'retained').glob('*/*.zip'))), 2)
+            self.assertFalse(Path(identities[0]['path']).exists())
+            # Execute the existing job's EXIT trap against only this fixture.
+            shell = (suite.ROOT / 'ci/jenkins/mac-native-probe/config.xml.in').read_text()
+            cleanup = shell[shell.index('cleanup() {'):shell.index('trap cleanup EXIT')]
+            (workspace / 'evidence').mkdir()
+            result = subprocess.run(['bash', '-ec', cleanup + '\nfinish_console() { exit "$1"; }\ntrap cleanup EXIT'],
+                env=dict(os.environ, WORKSPACE=str(workspace), scratch=str(scratch)),
+                capture_output=True, text=True, timeout=5)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertFalse(scratch.exists())
+            self.assertEqual((workspace / 'evidence/identity.txt').read_text(), 'scratch_removed=true\n')
+            for identity in identities[1:]:
+                target = Path(identity['path'])
+                self.assertEqual(target.read_bytes(), b'synthetic verified ZIP bytes')
+                self.assertEqual(target.stat().st_size, identity['size'])
+                self.assertEqual(hashlib.sha256(target.read_bytes()).hexdigest(), identity['sha256'])
+                self.assertEqual(identity['bundle_hashes'], hashes)
+                self.assertEqual(json.loads(target.with_name('identity.json').read_text()), identity)
+
+    def test_retention_refuses_mismatched_shipping_receipt_and_aliased_store(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            workspace = Path(folder).resolve()
+            scratch = workspace / 'scratch'
+            out = scratch / 'packaged/build'
+            out.mkdir(parents=True)
+            archive = out / 'HappyRanch-1.0.1-1.0.1-arm64.zip'
+            archive.write_bytes(b'synthetic shipping bytes')
+            receipt = {'filename': archive.name, 'role': 'unsigned-inner-zip',
+                'source_sha': 'a' * 40, 'source_tree': 'b' * 40, 'run_id': '00000000-0000-0000-0000-000000000000',
+                'size': archive.stat().st_size, 'sha256': '0' * 64, 'app_inventory_sha256': '4' * 64}
+            (out / 'build-receipt.json').write_text(json.dumps(receipt))
+            with self.assertRaisesRegex(RuntimeError, 'differs from strictly verified'):
+                suite.retain_product(out, workspace, scratch, 'a' * 40, 'b' * 40, {})
+            self.assertFalse((workspace / 'retained').exists())
+            receipt['sha256'] = hashlib.sha256(archive.read_bytes()).hexdigest()
+            (out / 'build-receipt.json').write_text(json.dumps(receipt))
+            outside = workspace / 'unrelated'
+            outside.mkdir()
+            (workspace / 'retained').symlink_to(outside, target_is_directory=True)
+            with self.assertRaisesRegex(RuntimeError, 'unsafe retained path'):
+                suite.retain_product(out, workspace, scratch, 'a' * 40, 'b' * 40, {})
+            self.assertEqual(list(outside.iterdir()), [])
+
     def archive_fixture(self, root: Path) -> tuple[Path, Path, dict]:
         fixture = runpy.run_path(str(suite.ROOT / 'packaging/verify_manifest_notices.py'))
         source, output, app, mapping = fixture['fixture'](root)
@@ -384,7 +572,9 @@ class PackagedHarnessTests(unittest.TestCase):
         final_move = next(line for line in (suite.ROOT / 'app/mac/scripts/build-app.sh').read_text().splitlines()
                           if line.startswith('mv "$APP" '))
         with tempfile.TemporaryDirectory() as folder:
-            scratch = Path(folder).resolve()
+            workspace = Path(folder).resolve()
+            scratch = workspace / 'native-probe.test'
+            scratch.mkdir()
             source = scratch / 'source'
             source.mkdir()
             report = {}
@@ -398,13 +588,22 @@ class PackagedHarnessTests(unittest.TestCase):
                     path.write_bytes(b'synthetic executable; never run')
                 subprocess.run(['bash', '-ec', final_move], check=True,
                                env=dict(os.environ, APP=str(app), OUTPUT=str(out)), timeout=5)
+                archive = out / 'HappyRanch-1.0.1-1.0.1-arm64.zip'
+                archive.write_bytes(b'synthetic verified archive')
+                (out / 'build-receipt.json').write_text(json.dumps({
+                    'filename': archive.name, 'role': 'unsigned-inner-zip',
+                    'source_sha': 'a' * 40, 'source_tree': 'a' * 40,
+                    'run_id': '00000000-0000-0000-0000-000000000000',
+                    'size': archive.stat().st_size, 'sha256': hashlib.sha256(archive.read_bytes()).hexdigest(),
+                    'app_inventory_sha256': '4' * 64}))
                 return {'exit_code': 0}
             def checked(argv: list[str], *_args, **_kwargs) -> dict:
                 if argv[0] == '/usr/bin/ditto':
                     raise RuntimeError('stop after completed app observation')
                 return {'tail': 'a' * 40}
             with (patch.object(suite, 'ROOT', source),
-                  patch.dict(os.environ, {'TMPDIR': str(scratch / 'tmp'), 'SOURCE_SHA': 'a' * 40}),
+                  patch.dict(os.environ, {'TMPDIR': str(scratch / 'tmp'), 'SOURCE_SHA': 'a' * 40,
+                                          'WORKSPACE': str(workspace)}),
                   patch.object(suite, 'census', return_value=[]), patch.object(suite, 'checked', side_effect=checked),
                   patch.object(suite, 'command', side_effect=build),
                   patch('scripts.mac_native.suite_toolchain.executor_feasibility', return_value={}),
@@ -413,6 +612,8 @@ class PackagedHarnessTests(unittest.TestCase):
                     suite.run(report)
             self.assertEqual(report['steps']['1']['status'], 'PASS')
             self.assertEqual(set(report['packaged']['bundle_hashes']), {'app_executable', 'daemon', 'cli'})
+            self.assertIn('retained_product', report['packaged'])
+            self.assertTrue(Path(report['packaged']['retained_product']['path']).is_file())
 
     def test_collector_joins_only_exact_outer_exit_receipts(self) -> None:
         sha = 'a' * 40
