@@ -20,9 +20,11 @@ class SequentialVenueUnavailable(ValueError):
         super().__init__(code)
 
 
-def live_daemon_home() -> Path:
-    """Account identity, independent of the venue's private HOME."""
-    return Path(os.path.realpath(Path(pwd.getpwuid(os.getuid()).pw_dir) / '.happyranch'))
+def live_daemon_home() -> tuple[Path, Path]:
+    """Persistent account homes, independent of the venue's environment."""
+    account = Path(pwd.getpwuid(os.getuid()).pw_dir)
+    return (Path(os.path.realpath(account / '.happyranch')),
+            Path(os.path.realpath(account / '.happyranch-release')))
 
 
 def _inside(path: Path, parent: Path) -> bool:
@@ -36,9 +38,10 @@ def _venue_home(org_root: Path) -> Path:
         raise SequentialVenueUnavailable('sequential_venue_env_absent')
     home = Path(value)
     resolved = Path(os.path.realpath(home))
-    live = live_daemon_home()
+    live_homes = live_daemon_home()
+    resolved_org = Path(os.path.realpath(org_root))
     # Classify a live alias as live_home too; never open it to diagnose it.
-    if _inside(resolved, live) or _inside(Path(os.path.realpath(org_root)), live):
+    if any(_inside(resolved, live) or _inside(resolved_org, live) for live in live_homes):
         raise SequentialVenueUnavailable('sequential_venue_live_home')
     try:
         info = home.lstat()

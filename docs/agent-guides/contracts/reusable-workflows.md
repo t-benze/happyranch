@@ -597,7 +597,10 @@ The existing sequential storage must already be installed through the explicit
 offline installer. The publisher refuses agent task environment markers,
 live-account daemon/org paths, unlisted/aliased runtime roots, unstopped daemon
 controls, invalid definitions/bindings/independence, and incompatible storage.
-The live-account home is obtained from passwd, independently of private `HOME`.
+The persistent live homes are the realpaths of `<passwd-home>/.happyranch` and
+`<passwd-home>/.happyranch-release`, independently of private `HOME` and
+`HAPPYRANCH_DAEMON_HOME`. The candidate daemon home and org root must be outside
+both; the selected disposable home is not itself added to that list.
 The operator maintains cooperative stopped-state exclusion; neither missing PID
 nor the confirmation flag proves historical cleanup or excludes same-UID writers.
 

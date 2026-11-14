@@ -9,7 +9,6 @@ from contextlib import contextmanager
 import json
 import math
 import os
-from pathlib import Path
 import re
 import stat
 from typing import Any, Iterator
@@ -18,6 +17,7 @@ from runtime.infrastructure.thread_delivery_release import (
     PreviewRequest, ReleaseCommand, RISKS, canonical, confirmation_inputs, decode,
     digest, validate_confirmation,
 )
+from runtime.runtime import daemon_home
 
 REQUEST_LIMIT = 16384
 RESPONSE_LIMIT = 32768
@@ -168,8 +168,8 @@ class PrivateReleaseRequests:
 
     def __init__(self, slug: str) -> None:
         self.slug = identifier(slug)
-        self.home = Path.home()
-        self.root = self.home / ".happyranch" / "client-thread-delivery-releases" / slug
+        self.home = daemon_home()
+        self.root = self.home / "client-thread-delivery-releases" / slug
 
     @staticmethod
     def _same(left: os.stat_result, right: os.stat_result, *, file: bool = False) -> bool:
@@ -184,13 +184,15 @@ class PrivateReleaseRequests:
         entries = []
         primary = None
         try:
+            # The daemon home may be outside $HOME. Require an existing owned
+            # no-follow anchor; only the two private store levels are created.
             parent = os.open(self.home, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
             descriptors.append(parent)
             home_info = os.fstat(parent)
             if (not stat.S_ISDIR(home_info.st_mode) or home_info.st_uid != os.getuid()
                     or not self._same(home_info, os.stat(self.home, follow_symlinks=False))):
                 raise ValueError("release_home_identity_unavailable")
-            for index, name in enumerate((".happyranch", "client-thread-delivery-releases", self.slug)):
+            for name in ("client-thread-delivery-releases", self.slug):
                 try:
                     os.mkdir(name, mode=0o700, dir_fd=parent)
                 except FileExistsError:
@@ -199,7 +201,7 @@ class PrivateReleaseRequests:
                 descriptors.append(child)
                 info = os.fstat(child)
                 if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid()
-                        or (index > 0 and stat.S_IMODE(info.st_mode) != 0o700)
+                        or stat.S_IMODE(info.st_mode) != 0o700
                         or not self._same(info, os.stat(name, dir_fd=parent, follow_symlinks=False))):
                     raise ValueError("release_directory_identity_unavailable")
                 entries.append((parent, name, child, info))

@@ -49,6 +49,39 @@ places first on agents' PATH, removing duplicate copies. This is source mode
 The remote-access connector's `/opt/happyranch/venv/bin/python` layout stays
 separate from desktop packaging (see the installation layout below).
 
+Inside a runtime session (nonempty `HAPPYRANCH_RUNTIME_SESSION_ID`), the packaged
+`bin/happyranch` CLI refuses an unset or empty `HAPPYRANCH_DAEMON_HOME`, exits
+nonzero and names that variable in one stderr line. Outside a session its
+behavior is unchanged. The desktop child sets the home explicitly; the planned
+release service must set it to `~/.happyranch-release`. Executors and jobs
+preserve that inherited home. This catches partial environment scrubs only:
+same-UID processes that clear both variables (for example `env -i`) are not
+detected. The daemon launcher is unchanged.
+
+Thread-delivery release requests stay under
+`<daemon-home>/client-thread-delivery-releases/<org-slug>`. The daemon home must
+already exist and belong to the current UID; it is opened without following a
+final symlink. Only the two store levels are created, with mode 0700, retaining
+descriptor-relative no-follow traversal, ownership/identity rechecks and
+no-overwrite/no-unlink custody. With no home override the root is still
+`~/.happyranch`. The canonical skill store's fallback also uses the selected
+daemon home (`<daemon-home>/canonical-skills`); explicit store/settings roots
+retain precedence.
+
+The disposable sequential-venue fence protects both persistent account homes,
+`<passwd-home>/.happyranch` and `<passwd-home>/.happyranch-release`, using their
+realpaths independently of `HOME` and `HAPPYRANCH_DAEMON_HOME`. A candidate home
+or org root inside either receives `sequential_venue_live_home` before any
+file open, including live aliases. A separate disposable home remains eligible
+under the existing marker and identity checks.
+
+Focused native home-isolation checks use temporary homes and synthetic request
+identities, with no daemon, installation or retired Python-unit selection:
+
+```sh
+uv run pytest packaging/linux/test_home_isolation.py -q
+```
+
 Focused PATH tests drive the real executor module with stdlib unittest,
 outside the retired pytest suite:
 
