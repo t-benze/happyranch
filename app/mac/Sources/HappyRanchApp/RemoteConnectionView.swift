@@ -217,7 +217,7 @@ private struct RemoteClientForm: View {
                         appDelegate.cancelManagedConnection()
                     }.disabled(model.phase == .canceling)
                 }
-                if managed, model.bridge != nil, !busy {
+                if managed, model.canConfirmRevoked {
                     Button("Device was revoked / Rejoin") { confirmingRevocation = true }
                         .foregroundColor(.red)
                         .confirmationDialog("Only confirm if your operator revoked this device. Denial or timeout alone does not prove revocation.",
@@ -266,6 +266,9 @@ private struct RemoteClientForm: View {
 
     @ViewBuilder
     private var managedSection: some View {
+        if let host = model.confirmedControlHost {
+            Text("Control server: \(host)").font(.caption).foregroundColor(.secondary)
+        }
         Text(model.phase.message)
             .font(.callout)
             .accessibilityIdentifier("managed-join-status")

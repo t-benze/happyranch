@@ -37,6 +37,16 @@ final class ManagedJoinModel: ObservableObject {
             return self == .online ? .reconnecting : .unreachable
         }
 
+        var connectionState: ConnectionState {
+            switch self {
+            case .online: return .online
+            case .joined, .pairing, .paired, .accessDenied: return .offline
+            case .reconnecting: return .reconnecting
+            case .unreachable: return .pairedUnreachable
+            default: return .tailnetNotDetected
+            }
+        }
+
         var busy: Bool {
             switch self {
             case .checkingKeychain, .waitingForKeychain, .joining, .pairing, .paired, .canceling: return true
@@ -50,24 +60,19 @@ final class ManagedJoinModel: ObservableObject {
     @Published private(set) var profiles: [ManagedJoinProfile] = []
     @Published var selectedProfileID = ""
     @Published var controlURL = ""
+    @Published private(set) var confirmedControlHost: String?
     private let keyStore = EnrollmentKeyStore()
     private var operation: Task<Void, Never>?
     private var generation = UUID()
     private(set) var bridge: ClientBridge?
     private var profile: ManagedJoinProfile?
     private var prepared = false
+    private var networkSubmitted = false
 
     var busy: Bool { phase.busy }
+    var canConfirmRevoked: Bool { !busy && (profile != nil || profiles.contains(where: { $0.uuid == selectedProfileID })) }
     var canPair: Bool { bridge != nil && [.joined, .accessDenied, .unreachable].contains(phase) }
-    var connectionState: ConnectionState {
-        switch phase {
-        case .online: return .online
-        case .joined, .pairing, .paired, .accessDenied: return .offline
-        case .reconnecting: return .reconnecting
-        case .unreachable: return .pairedUnreachable
-        default: return .tailnetNotDetected
-        }
-    }
+    var connectionState: ConnectionState { phase.connectionState }
 
     func prepare() {
         guard !prepared, !busy else { return }
@@ -76,19 +81,31 @@ final class ManagedJoinModel: ObservableObject {
     }
 
     func refreshCustody() {
-        guard !busy else { return }
+        guard !busy, bridge == nil else { return }
+        let token = UUID()
+        generation = token
         phase = .checkingKeychain
         custodyReady = false
         operation = Task {
+            defer { if generation == token { operation = nil } }
             do {
                 try await keyStore.removeStaleItems()
-                profiles = try ManagedJoinProfile.saved()
+                try Task.checkCancellation()
+                guard generation == token else { return }
                 custodyReady = true
-                phase = profiles.isEmpty ? .draft : .interrupted
+                do {
+                    profiles = try ManagedJoinProfile.saved()
+                    phase = profiles.isEmpty ? .draft : .interrupted
+                } catch {
+                    // Historical incomplete state refuses resume, but must not
+                    // prevent fresh-key recovery into a different UUID profile.
+                    profiles = []
+                    phase = .error(Self.safeMessage(error))
+                }
             } catch {
+                guard generation == token else { return }
                 phase = .error(Self.safeMessage(error))
             }
-            operation = nil
         }
     }
 
@@ -141,6 +158,8 @@ final class ManagedJoinModel: ObservableObject {
         let token = UUID()
         generation = token
         self.profile = profile
+        confirmedControlHost = URL(string: profile.controlURL)?.host
+        networkSubmitted = false
         let candidate = ClientBridge(homeConnectorHost: homeHost, homeConnectorPort: homePort, lane: .managed)
         bridge = candidate
         phase = .waitingForKeychain
@@ -158,6 +177,7 @@ final class ManagedJoinModel: ObservableObject {
                     draft = nil
                     try Task.checkCancellation()
                     guard generation == token else { throw CancellationError() }
+                    networkSubmitted = true
                     phase = .joining
                     try await candidate.joinManagedNetwork(key: owned, controlURL: profile.controlURL,
                         hostname: profile.hostname, stateDirectory: profile.directory)
@@ -165,6 +185,7 @@ final class ManagedJoinModel: ObservableObject {
                     try await keyStore.removeStaleItems()
                     try Task.checkCancellation()
                     guard generation == token, try !profile.isRevoked() else { throw CancellationError() }
+                    networkSubmitted = true
                     phase = .joining
                     try await candidate.resumeManagedNetwork(controlURL: profile.controlURL,
                         hostname: profile.hostname, stateDirectory: profile.directory)
@@ -205,6 +226,8 @@ final class ManagedJoinModel: ObservableObject {
     func disconnect(endingAt finalPhase: Phase = .interrupted) {
         let pending = operation
         let candidate = bridge
+        let settledPhase: Phase = finalPhase == .interrupted && !networkSubmitted
+            ? .error("Join canceled; nothing sent.") : finalPhase
         let token = UUID()
         generation = token
         phase = .canceling
@@ -215,14 +238,14 @@ final class ManagedJoinModel: ObservableObject {
             await candidate?.stopManagedNetwork()
             guard generation == token else { return }
             bridge = nil
-            do { profiles = try ManagedJoinProfile.saved(); phase = finalPhase }
-            catch { custodyReady = false; phase = .error(Self.safeMessage(error)) }
+            do { profiles = try ManagedJoinProfile.saved(); phase = settledPhase }
+            catch { profiles = []; phase = .error(Self.safeMessage(error)) }
             operation = nil
         }
     }
 
     func confirmRevoked() {
-        guard !busy, let profile else { return }
+        guard !busy, let profile = profile ?? profiles.first(where: { $0.uuid == selectedProfileID }) else { return }
         // Stop traffic immediately, even if persisting the resume block fails.
         bridge?.stop()
         do { try profile.markRevoked(); disconnect(endingAt: .revoked) }
@@ -235,7 +258,7 @@ final class ManagedJoinModel: ObservableObject {
     static func safeMessage(_ error: Error) -> String {
         if let failure = error as? EnrollmentKeyStore.Failure { return failure.localizedDescription }
         if let failure = error as? ManagedNetworkError { return failure.localizedDescription }
-        return "Managed membership state could not be safely opened or saved. Resolve it before checking saved membership."
+        return "Saved membership could not be safely opened or saved. Resolve it before resuming, or join a fresh profile with a fresh key and pairing approval."
     }
 }
 

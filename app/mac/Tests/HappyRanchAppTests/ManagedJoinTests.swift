@@ -25,6 +25,13 @@ struct ManagedJoinTests {
     @Test("Only authenticated paired health becomes online; loss and denial stay distinct")
     func pairedHealthTransitions() {
         typealias Phase = ManagedJoinModel.Phase
+        #expect(Phase.draft.connectionState == .tailnetNotDetected)
+        #expect(Phase.joined.connectionState == .offline)
+        #expect(Phase.pairing.connectionState == .offline)
+        #expect(Phase.paired.connectionState == .offline)
+        #expect(Phase.online.connectionState == .online)
+        #expect(Phase.reconnecting.connectionState == .reconnecting)
+        #expect(Phase.unreachable.connectionState == .pairedUnreachable)
         #expect(Phase.joined.afterHealth(true) == .joined)
         #expect(Phase.pairing.afterHealth(true) == .pairing)
         #expect(Phase.paired.afterHealth(true) == .online)

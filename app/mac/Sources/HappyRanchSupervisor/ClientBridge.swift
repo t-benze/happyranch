@@ -125,7 +125,7 @@ public final class ClientBridge: @unchecked Sendable {
     }
 
     /// Explicit selection; DIY preserves the existing system-Tailscale path.
-    public enum Lane: Sendable, Equatable { case diy, managed }
+    public enum Lane: Sendable, Equatable, Hashable { case diy, managed }
     public let lane: Lane
 
     // One native engine per process. The queue settles Up/Close before reuse;
@@ -446,10 +446,10 @@ public final class ClientBridge: @unchecked Sendable {
         defer { session.invalidateAndCancel() }
         do {
             let (_, response) = try await session.bytes(from: url)
+            if lane == .managed, let failure = Self.tsnetLock.withLock({ managedFailure }) { return .managed(failure) }
             guard let response = response as? HTTPURLResponse,
                   bridgePort == port, deviceCredential == credential else { return .unreachable }
             if lane == .managed && !Self.tsnetLock.withLock({ managedReady && managedPaired && managedAttempt == attempt }) { return .unreachable }
-            if lane == .managed, let failure = Self.tsnetLock.withLock({ managedFailure }) { return .managed(failure) }
             if response.statusCode == 401 || response.statusCode == 403 { return .denied }
             return (200...299).contains(response.statusCode) ? .healthy : .unreachable
         } catch { return .unreachable }

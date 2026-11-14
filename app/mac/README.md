@@ -1164,7 +1164,8 @@ action; cancellation awaits the existing native teardown queue. No automatic
 retry, key replay or interrupted resume occurs. Check Keychain and saved profiles
 is explicit. Select a saved UUID profile and Check saved membership to use an
 empty key; native validation still owns the marker/state/lock decision. Unknown,
-missing or unsafe metadata refuses. Disconnect retains membership. Remote
+missing or unsafe saved metadata refuses resume; fresh-key enrollment into a new
+UUID remains available without adopting that historical state. Disconnect retains membership. Remote
 registration may have completed after cancellation; operator removal may be needed.
 
 Run `swift build` and `swift test` from `app/mac` on an authorized macOS host.
@@ -1192,7 +1193,10 @@ private-cell join/relaunch/revocation and memory-wipe execution remain NOT RUN.
 The existing manual `build-mac-app.yml` uses reviewed `source_sha`/`source_tree`
 on macos-15 and builds the real archive/app, but does not run `swift test` or
 capture GUI states. It was inspected, not dispatched. Existing Jenkins native
-probe suites are bounded allowlisted probes, not a general app Swift-test/GUI
-venue; no Jenkins app-build job is installed, signing remains disabled. A later
+probe suites are bounded allowlisted probes. The `supervisor` suite compiles all
+Swift app/test targets with weak stubs, then runs only its existing supervisor
+filter; it does not run new PR2 cases or capture GUI states. The Mac mini was
+online at read-only inspection. No Jenkins app-build job is installed, signing
+remains disabled. A later
 owner decision is required for any native run. PR3 retains release pins, source/
 resource hashes and the existing owner-run signing route.

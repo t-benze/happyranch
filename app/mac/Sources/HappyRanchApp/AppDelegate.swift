@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import HappyRanchSupervisor
 
 /// Application delegate — owns the daemon supervisor and app-level state.
@@ -62,6 +63,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     let managedJoin = ManagedJoinModel()
     @Published var clientLane: ClientBridge.Lane = .diy
     private var remoteHealthTask: Task<Void, Never>?
+    private var managedJoinObservation: AnyCancellable?
+
+    override init() {
+        super.init()
+        managedJoinObservation = managedJoin.$phase.sink { [weak self] phase in
+            guard let self, self.clientLane == .managed else { return }
+            self.connectionState = phase.connectionState
+        }
+    }
 
     /// Connection state manager for the remote-connection surface.
     let connectionStateManager = ConnectionStateManager()
