@@ -55,10 +55,18 @@ retry/send or locale-triggered effect. Historical messages/delivery and release
 measurement keep their original interpretation. The exact finite scanner contract
 is in the current identity-names core spec (THR293seq174).
 
-You've been invoked because something happened on a thread (THR-NNN). The full
-prior history is in your prompt, along with a note explaining WHY you were
+You've been invoked because something happened on a thread (THR-NNN). The
+available prior history is in your prompt, along with a note explaining WHY you were
 invoked AND an `invocation_token` that authorizes this single turn. Read the
 history end-to-end, then decide one outcome.
+
+Thread prompts have a fixed 512 KiB UTF-8 bound, including instructions and
+per-turn notes. When needed, older optional history is omitted with an explicit
+marker; the newest optional messages that fit are retained. Every message in
+the claimed delivery range remains mandatory. If that context cannot fit, the
+daemon fails the invocation as `prompt_too_large` before provider launch rather
+than asking you to respond to a partial claimed range. This does not add a retry
+loop or count toward the provider breaker.
 
 > **Decision rule for reply-vs-decline** lives in the thread invocation prompt
 > (see the "Decline-by-Default" section injected for `purpose=REPLY` turns),

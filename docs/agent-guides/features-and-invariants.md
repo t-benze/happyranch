@@ -2936,6 +2936,26 @@ Traps:
 
 ## Thread Agent-Session Resume
 
+**Prompt size (#832 slice 1).** Before every fresh/delta, eviction-fallback or
+nudge launch (including phase reentry), the complete prompt is measured against
+`THREAD_PROMPT_MAX_BYTES = 512 * 1024` UTF-8 bytes. The limit matches the
+documented 512 KiB stdin canary floor; it is conservative local admission, not a
+provider token/context guarantee or a new setting. Under-bound prompts pass
+unchanged. Over-bound prompts retain a contiguous suffix of older optional
+history, selected most-recent-first, with an explicit omission marker. Every
+message from the claimed start onward remains mandatory; isolated bootstrap and
+task-followup turns retain the triggering message and everything after it.
+If mandatory context plus instructions/notes cannot fit, `prompt_too_large`
+settles the invocation FAILED before that phase's executor/supervisor/Popen,
+with the distinct reason in the existing failure audit. It saves no session,
+advances neither delivery acknowledgement nor resume watermark, and does not
+qualify for the provider breaker. An earlier genuine eviction still invalidates
+its stale session transactionally. Normal failed settlement leaves the obligation
+for a future arrival, without a new retry loop; the existing one-shot owed
+exchange catch-up remains unchanged. Canonical transcript loading and delta
+completeness proof stay uncapped; “full prompt” below means the full-context
+build path, subject to this presentation bound.
+
 Failed thread turns persist additive, capped ``stdout_tail`` and ``stderr_tail``
 audit diagnostics. The displayed reason may prefer a structured Claude terminal
 failure only when stderr consists solely of known workspace-trust warning lines;

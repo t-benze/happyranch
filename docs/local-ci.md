@@ -1,5 +1,21 @@
 # Local CI
 
+## Focused thread prompt-size coverage (#832 slice 1)
+
+```sh
+uv run --frozen pytest scripts/test_thread_prompt_size.py -v --tb=short
+```
+
+These standalone checks reuse the cancellation script's synthetic-org fixture
+and real SQLite. Provider execution is stubbed at the executor seam, and Popen
+is forbidden: no daemon lifespan, provider, listener or worker runs. They cover
+unchanged under-bound prompts, optional-history trimming that preserves every
+claimed message, and `prompt_too_large` settlement before phase launch across
+fresh/delta, eviction fallback and nudge rebuilds. Session saves, delivery
+acknowledgement, breaker counts and immediate retry creation are observed. This
+adds no required CI check or E2E trigger; retired units and general integration
+remain excluded.
+
 ## Focused founder cancellation coverage (#596 minimal wake)
 
 ```sh
