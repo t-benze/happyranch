@@ -356,6 +356,28 @@ if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--seque
                     assert sql.count('PRAGMA integrity_check') == before + 1, config + ' restoration resurrected a sequential fact'
                 print('PASS A0b sequential config identity:', config)
 
+        for limit, value in ((sqlite3.SQLITE_LIMIT_SQL_LENGTH, 64), (sqlite3.SQLITE_LIMIT_COLUMN, 1)):
+            with sequential_fault_case('native limit denial ' + str(limit)), sequential_fixture() as (db, root, sql):
+                with org_load_validation(db, org_slug='scratch'):
+                    seq_read(db)
+                    owner = load_guard._current.get()
+                    previous = db._conn.setlimit(limit, value)
+                    # Native authorizer installation expires SQLite's prepared
+                    # statement cache so these small limits genuinely deny SQL.
+                    db._conn.set_authorizer(lambda *_: sqlite3.SQLITE_OK)
+                    try:
+                        hits = owner.hits
+                        actual = sequential_outcome(lambda: seq_read(db))
+                        expected = sequential_outcome(lambda: read_sequential_history(
+                            db._conn, expected_org_slug='scratch').retained)
+                        assert actual == expected and actual[0] == 'refused', 'native limit denial returned a sequential tuple'
+                        assert owner.hits == hits and owner.sequential_saved is None, 'native limit denial retained a sequential certificate'
+                        assert not db._conn.in_transaction, 'native limit denial leaked its snapshot'
+                    finally:
+                        db._conn.setlimit(limit, previous)
+                        db._conn.set_authorizer(None)
+                print('PASS A0b sequential native limit denial:', limit)
+
         with sequential_fixture() as (db, root, sql):
             for schema, method in product(('main', 'temp'), ('connection', 'cursor', 'script')):
                 with sequential_fault_case('CREATE/DROP ' + schema + ' ' + method), org_load_validation(db, org_slug='scratch'):
@@ -421,6 +443,98 @@ if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--seque
                     assert owner.hits == hits and owner.sequential_saved is None, 'wrong connection borrowed a sequential certificate'
                     assert other_sql.count('PRAGMA integrity_check') == before + 2
                 print('PASS A0b sequential ownership exclusion: wrong connection')
+
+        for race in ('source acquisition', 'source writer fence', 'target acquisition', 'target pinned snapshot'):
+            with sequential_fault_case('borrowed ' + race), sequential_fixture() as (db, root, sql):
+                other = sqlite3.connect(db.db_path, timeout=0)
+                try:
+                    with org_load_validation(db, org_slug='scratch'):
+                        seq_read(db)
+                        owner = load_guard._current.get()
+                        moved, fenced = [], []
+                        def corrupt():
+                            other.execute("UPDATE workflow_task_ownership SET org_slug='wrong'")
+                            other.commit()
+                            moved.append(True)
+                        def at_boundary(statement):
+                            if moved or fenced:
+                                return
+                            if race == 'source acquisition' and statement == 'BEGIN IMMEDIATE':
+                                corrupt()  # Native callback precedes the writer reservation.
+                            elif race == 'target acquisition' and statement == 'SELECT rootpage FROM main.sqlite_schema LIMIT 1':
+                                corrupt()  # BEGIN exists, but its main snapshot is not pinned yet.
+                            elif race == 'target pinned snapshot' and statement == 'PRAGMA main.data_version':
+                                corrupt()  # Explicit main pin has selected the original snapshot.
+                        with db.observe_trace(at_boundary):
+                            db._conn.execute('BEGIN IMMEDIATE' if race.startswith('source') else 'BEGIN')
+                            try:
+                                if race == 'source writer fence':
+                                    try:
+                                        corrupt()
+                                    except sqlite3.OperationalError as exc:
+                                        assert str(exc) == 'database is locked', str(exc)
+                                        fenced.append(True)
+                                        other.rollback()
+                                    else:
+                                        raise AssertionError('borrowed source lost its native writer fence')
+                                hits = owner.hits
+                                pins = sql.count('SELECT rootpage FROM main.sqlite_schema LIMIT 1')
+                                operation = (lambda: seq_read(db, writer_source=True)) if race.startswith('source') else (
+                                    lambda: load_guard.read_workflow_schema_target_for_org_load(db._conn,
+                                        expected_org_slug='scratch', legacy=lambda: validate_workflow_schema(
+                                            db._conn, expected_org_slug='scratch')))
+                                actual = sequential_outcome(operation)
+                                assert sql.count('SELECT rootpage FROM main.sqlite_schema LIMIT 1') == pins + 1, race + ' omitted borrowed main pin'
+                                assert moved or fenced, race + ' did not reach its native barrier'
+                                expected = sequential_outcome(lambda: read_sequential_history(
+                                    db._conn, expected_org_slug='scratch').retained)
+                                assert actual == expected and db._conn.in_transaction, race + ' changed selected snapshot or stole caller transaction'
+                                if race in ('source acquisition', 'target acquisition'):
+                                    assert actual[0] == 'refused' and owner.hits == hits, race + ' returned speculative reuse'
+                                else:
+                                    assert actual[0] == 'returned' and owner.hits == hits + 1, race + ' lost valid pinned reuse'
+                            finally:
+                                db._conn.rollback()
+                        if race == 'target pinned snapshot':
+                            # The old result was valid only for the selected caller
+                            # snapshot. Its native exit must expose the committed corruption.
+                            actual = sequential_outcome(lambda: seq_read(db))
+                            expected = sequential_outcome(lambda: read_sequential_history(
+                                db._conn, expected_org_slug='scratch').retained)
+                            assert actual == expected and actual[0] == 'refused', 'borrowed target exit hid committed corruption'
+                    print('PASS A0b sequential borrowed race:', race)
+                finally:
+                    other.rollback()
+                    other.close()
+
+        for interval in ('source', 'target', 'changed target'):
+            with sequential_fault_case('deadline ' + interval), sequential_fixture() as (db, root, sql):
+                with org_load_validation(db, org_slug='scratch'):
+                    seq_read(db)
+                    owner = load_guard._current.get()
+                    db._conn.execute('BEGIN' if interval == 'target' else 'BEGIN IMMEDIATE')
+                    if interval == 'changed target':
+                        db._conn.execute("UPDATE tasks SET brief=brief||'expired' WHERE id='TASK-seq-load'")
+                    real_clock, offset = time.monotonic, [0.0]
+                    original_deadline = real_clock() + 5.0
+                    def expire(statement):
+                        if statement == 'SELECT rootpage FROM main.sqlite_schema LIMIT 1':
+                            offset[0] = 6.0
+                    try:
+                        with db.observe_trace(expire), patch.object(time, 'monotonic', side_effect=lambda: real_clock() + offset[0]):
+                            operation = (lambda: seq_read(db, writer_source=True)) if interval == 'source' else (
+                                lambda: load_guard.read_workflow_schema_target_for_org_load(db._conn,
+                                    expected_org_slug='scratch', legacy=lambda: validate_workflow_schema(
+                                        db._conn, expected_org_slug='scratch')))
+                            actual = sequential_outcome(operation)
+                            expected = sequential_outcome(lambda: read_sequential_history(db._conn,
+                                expected_org_slug='scratch', deadline=original_deadline).retained)
+                            assert offset[0] == 6.0 and actual == expected and actual[0] == 'refused', interval + ' reset the borrowed acquisition deadline'
+                            assert any(category[1] == 'workflow_seq_read_deadline_exhausted' for category in actual[1]), interval + ' did not refuse at original deadline'
+                            assert db._conn.in_transaction and owner.sequential_saved is None, interval + ' deadline stole caller transaction or retained a certificate'
+                    finally:
+                        db._conn.rollback()
+                print('PASS A0b sequential borrowed deadline:', interval)
 
         assert not fault_failures, 'sequential fault matrix failures: ' + repr(fault_failures)
         if sys.argv[1:] == ['--sequential-faults']:

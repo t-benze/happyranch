@@ -297,11 +297,13 @@ an exact-clean-head durable job; required hosted checks remain lint/static only.
 
 `--sequential-faults` selects the same venue's added sequential metadata-denial,
 native configuration/limit/factory, restored main/TEMP CREATE/DROP and wrong
-connection/org/transaction ownership tables. It compares actual complete-reader
+connection/org/transaction ownership tables, borrowed-source/target acquisition
+and pinned-snapshot races, native writer fencing and borrowed/changed-target
+deadline expiry. It compares actual complete-reader
 outcomes, forbids uncertified hits and preserves caller transactions. Named
 assertion failures accumulate and fail the selection; no failed case is skipped.
 The full selection and `--sequential-reuse` include these tables. They do not
-replace nonempty family-corruption or borrowed-interval race/exhaustion coverage.
+replace nonempty family-corruption or the remaining original SQL exhaustion forms.
 For A0b-2's capacity disposition, see the [storage contract](runbooks/sequential-workflow-storage.md):
 installed happyranch's default FIRST/attempted NEXT is recorded as expected
 refusal with zero changes/certificate/observer leaks and an original-base
