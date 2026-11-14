@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -94,11 +95,49 @@ func TestLoadConfigAndRefuseUnsafeFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"valid", "unknown", "trailing", "invalid", "symlink", "fifo", "directory", "oversized"} {
+	for _, name := range []string{"valid", "valid-no-list-release", "valid-exclusions", "listed-port", "listed-dev", "non-loopback",
+		"invalid-list-type", "invalid-list-bool", "invalid-list-float", "invalid-list-string", "invalid-list-range",
+		"unknown", "trailing", "invalid", "symlink", "fifo", "directory", "oversized"} {
 		t.Run(name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "config")
 			content := data
 			switch name {
+			case "valid-no-list-release":
+				value := cfg
+				value.ConnectorAddr = "127.0.0.1:8766"
+				content, err = json.Marshal(value)
+				if err != nil {
+					t.Fatal(err)
+				}
+			case "valid-exclusions", "listed-port", "listed-dev", "non-loopback",
+				"invalid-list-type", "invalid-list-bool", "invalid-list-float", "invalid-list-string", "invalid-list-range":
+				var value map[string]any
+				if err := json.Unmarshal(data, &value); err != nil {
+					t.Fatal(err)
+				}
+				value["ExcludedDaemonPorts"] = []int{1, 8765, 8766, 65535}
+				switch name {
+				case "listed-port":
+					value["ConnectorAddr"] = "127.0.0.1:8766"
+				case "listed-dev":
+					value["ConnectorAddr"] = "127.0.0.1:8765"
+				case "non-loopback":
+					value["ConnectorAddr"] = "localhost:9443"
+				case "invalid-list-type":
+					value["ExcludedDaemonPorts"] = "8766"
+				case "invalid-list-bool":
+					value["ExcludedDaemonPorts"] = []bool{true}
+				case "invalid-list-float":
+					value["ExcludedDaemonPorts"] = []float64{8766.5}
+				case "invalid-list-string":
+					value["ExcludedDaemonPorts"] = []string{"8766"}
+				case "invalid-list-range":
+					value["ExcludedDaemonPorts"] = []int{65536}
+				}
+				content, err = json.Marshal(value)
+				if err != nil {
+					t.Fatal(err)
+				}
 			case "unknown":
 				content = append(append([]byte(nil), data[:len(data)-1]...), []byte(",\"Unknown\":true}")...)
 			case "trailing":
@@ -122,8 +161,15 @@ func TestLoadConfigAndRefuseUnsafeFiles(t *testing.T) {
 				t.Fatal(err)
 			}
 			got, err := loadConfig(path, "")
-			if name == "valid" {
-				if err != nil || got != cfg {
+			if name == "valid" || name == "valid-no-list-release" || name == "valid-exclusions" {
+				want := cfg
+				if name == "valid-no-list-release" {
+					want.ConnectorAddr = "127.0.0.1:8766"
+				}
+				if name == "valid-exclusions" {
+					want.ExcludedDaemonPorts = []int{1, 8765, 8766, 65535}
+				}
+				if err != nil || !reflect.DeepEqual(got, want) {
 					t.Fatalf("config=%v err=%v", got, err)
 				}
 			} else if err == nil {
@@ -150,7 +196,7 @@ func TestLoadConfigCredentialOverride(t *testing.T) {
 	want := filepath.Join(t.TempDir(), "credentials", "enrollment-key")
 	got, err := loadConfig(path, want)
 	cfg.CredentialFile = want
-	if err != nil || got != cfg {
+	if err != nil || !reflect.DeepEqual(got, cfg) {
 		t.Fatalf("managed credential path override not applied: %v", err)
 	}
 	if _, err := loadConfig(path, "relative"); err == nil {

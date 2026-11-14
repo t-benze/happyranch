@@ -292,7 +292,7 @@ class ManagedInstaller:
         except (ValueError, UnicodeError):
             raise InstallerError("invalid provisioning JSON object") from None
 
-    def _validate_configs(self, files: dict[str, bytes]) -> None:
+    def _validate_configs(self, files: dict[str, bytes], *, staged: bool = False) -> None:
         # Reuse shipping connector/policy validators; never start a supervisor.
         from runtime.remote_access.managed_provider import ManagedProviderConfig
         from runtime.remote_access.policy import PolicyEnvelope, RoutePolicyConsumer
@@ -322,7 +322,19 @@ class ManagedInstaller:
             policy.require_current(datetime.now(timezone.utc))
             sidecar = self._json(files["sidecar.json"])
             required = {"StateDir", "ControlURL", "RoleIdentity", "ExpectedPeer", "DERPPolicy", "ListenAddr", "ConnectorAddr"}
-            if sidecar.keys() != required or any(not isinstance(value, str) for value in sidecar.values()):
+            if (not required <= sidecar.keys() <= required | {"ExcludedDaemonPorts"}
+                    or any(not isinstance(sidecar[key], str) for key in required)):
+                raise ValueError
+            sidecar_excluded = sidecar.get("ExcludedDaemonPorts", [])
+            if (not isinstance(sidecar_excluded, list)
+                    or any(type(port) is not int or not 1 <= port <= 65535 for port in sidecar_excluded)):
+                raise ValueError
+            excluded = sorted({8765, cfg.daemon_port, *cfg.excluded_daemon_ports, *sidecar_excluded})
+            if (cfg.managed.bind_port in excluded
+                    or sidecar["ConnectorAddr"] != f"127.0.0.1:{cfg.managed.bind_port}"):
+                raise ValueError
+            if (staged and self.layout == "deb"
+                    and (cfg.excluded_daemon_ports != excluded or sidecar_excluded != excluded)):
                 raise ValueError
             control = urlsplit(sidecar["ControlURL"])
             listen = re.fullmatch(r"(?:\[[^\]]+\]|[^:]*):([0-9]+)", sidecar["ListenAddr"])
@@ -414,6 +426,17 @@ class ManagedInstaller:
             files = {name: self._input(path) for name, path in (
                 ("connector.json", connector_config), ("sidecar.json", sidecar_config), ("policy.json", policy_file))}
             self._validate_configs(files)
+            if self.layout == "deb":
+                connector = self._json(files["connector.json"])
+                sidecar = self._json(files["sidecar.json"])
+                excluded = sorted({8765, connector["daemon_port"],
+                                   *connector.get("excluded_daemon_ports", []),
+                                   *sidecar.get("ExcludedDaemonPorts", [])})
+                connector["excluded_daemon_ports"] = excluded
+                sidecar["ExcludedDaemonPorts"] = excluded
+                for name, value in (("connector.json", connector), ("sidecar.json", sidecar)):
+                    files[name] = json.dumps(value, sort_keys=True).encode()
+                self._validate_configs(files, staged=True)
             token = self._input(daemon_token_source, token=True)
             self._check_deb_payload()
             self._service_owner = self._account(create=False)
@@ -457,7 +480,7 @@ class ManagedInstaller:
                          for name in ("connector.json", "sidecar.json", "policy.json")}
                 if record["configs"] != {name: hashlib.sha256(data).hexdigest() for name, data in files.items()}:
                     raise InstallerError("provisioned configuration drift")
-                self._validate_configs(files)
+                self._validate_configs(files, staged=True)
                 staged = self._read_file(parent, "daemon.token", owner=self._service_owner, mode=0o600)
             source = self._input(Path(record["token_source"]), token=True)
             if (hashlib.sha256(source).hexdigest() != record["token_sha256"]

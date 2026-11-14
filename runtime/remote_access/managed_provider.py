@@ -28,7 +28,8 @@ class ManagedProviderConfig:
     token_ttl_seconds: int = 300
     credential_ttl_days: int = 365
 
-    def validate(self) -> None:
+    def validate(self, *, daemon_port: int | None = None,
+                 excluded_daemon_ports: list[int] | None = None) -> None:
         if self.bind_host != MANAGED_LOOPBACK_HOST:
             raise ManagedProviderError("managed ingress requires literal loopback")
         if (
@@ -36,6 +37,8 @@ class ManagedProviderConfig:
             or not isinstance(self.bind_port, int)
             or not (0 <= self.bind_port <= 65535)
             or self.bind_port == 8765
+            or self.bind_port == daemon_port
+            or self.bind_port in (excluded_daemon_ports or [])
         ):
             raise ManagedProviderError("managed ingress port is invalid")
 

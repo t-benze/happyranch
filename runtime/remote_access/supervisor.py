@@ -30,7 +30,7 @@ import sys
 import threading
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable
@@ -123,6 +123,7 @@ class ConnectorConfig:
     connector_id: str = ""
     # daemon + credential sources
     daemon_port: int | None = None
+    excluded_daemon_ports: list[int] = field(default_factory=list)
     daemon_token_path: str | None = None
     credentials_directory: str | None = None
     # policy artifact (PolicyEnvelope JSON) and trust state file
@@ -157,6 +158,10 @@ class ConnectorConfig:
             raise ConnectorConfigError("tenant_id/home_id/connector_id are required")
         if self.daemon_port is None:
             raise ConnectorConfigError("daemon_port is required")
+        if (not isinstance(self.excluded_daemon_ports, list)
+                or any(type(port) is not int or not 1 <= port <= 65535
+                       for port in self.excluded_daemon_ports)):
+            raise ConnectorConfigError("excluded_daemon_ports must be a list of valid ports")
         if sys.platform == "darwin":
             self.validate_darwin_credentials()
         elif not self.daemon_token_path and not self.credentials_directory:
@@ -177,7 +182,8 @@ class ConnectorConfig:
                 raise ConnectorConfigError(f"invalid diy provider config: {exc}") from exc
         if self.managed is not None:
             try:
-                self.managed.validate()
+                self.managed.validate(daemon_port=self.daemon_port,
+                                      excluded_daemon_ports=self.excluded_daemon_ports)
             except ManagedProviderError as exc:
                 raise ConnectorConfigError("invalid managed provider config") from exc
 
@@ -681,6 +687,7 @@ class ConnectorSupervisor:
             home_id=cfg.home_id,
             connector_id=cfg.connector_id,
             daemon_port=cfg.daemon_port,
+            excluded_daemon_ports=list(cfg.excluded_daemon_ports),
             daemon_token_path=cfg.daemon_token_path,
             credentials_directory=cfg.credentials_directory,
             policy_path=str(root / "policy.json"),

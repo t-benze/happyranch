@@ -361,7 +361,11 @@ class DarwinManagedInstaller:
                 raise DarwinInstallerError("daemon_token_path requires an absolute literal path")
             cfg = replace(cfg, state_path=str(self.state / "trust-state.json"),
                           policy_path=str(self.state / "policy.json"), daemon_token_path=str(token_path))
-            config = json.dumps(asdict(cfg), indent=2, sort_keys=True).encode()
+            config_fields = asdict(cfg)
+            if not cfg.excluded_daemon_ports:
+                # Keep pre-B1b Mac config/receipt bytes for unchanged reinstalls.
+                config_fields.pop("excluded_daemon_ports", None)
+            config = json.dumps(config_fields, indent=2, sort_keys=True).encode()
             plist = self._plist()
             sidecar_plist = self._sidecar_agent(binary, cfg)
             files = {"config.json": config, "policy.json": policy,
