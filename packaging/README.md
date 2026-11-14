@@ -511,8 +511,11 @@ refused. The shipping archive passes the existing dedicated error-evidence path
 through the build trap and packaged harness into the collected probe, preserving
 the report after scratch removal independently of the command tail.
 
-After all prerequisites, `ditto -c -k --keepParent` creates
-`HappyRanch-VERSION-BUILD-arm64.zip`. `archive --app APP --archive ZIP --run-id ID`
+After all prerequisites, `ditto -c -k --norsrc --noextattr --noqtn --noacl --keepParent`
+creates `HappyRanch-VERSION-BUILD-arm64.zip` without resource forks/HFS metadata,
+extended attributes, quarantine information or ACLs. The option spellings and
+semantics follow the [Xcode ditto(1) manual](https://keith.github.io/xcode-man-pages/ditto.1.html).
+`archive --app APP --archive ZIP --run-id ID`
 compares full ZIP member bytes/modes/targets against canonical app inventory and
 emits exact inner ZIP size/hash/source/tree/version/build/CPU/run/filename.
 `reconcile --archive ZIP --receipt JSON --version VERSION --build BUILD

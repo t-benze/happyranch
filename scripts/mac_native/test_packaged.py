@@ -45,7 +45,7 @@ class PackagedHarnessTests(unittest.TestCase):
             ditto = bindir / 'ditto'
             ditto.write_text('#!' + sys.executable + '\n' +
                 'import pathlib,sys,zipfile\n' +
-                'assert sys.argv[1:4] == ["-c", "-k", "--keepParent"]\n' +
+                'assert sys.argv[1:-2] == ["-c", "-k", "--norsrc", "--noextattr", "--noqtn", "--noacl", "--keepParent"]\n' +
                 'app=pathlib.Path(sys.argv[-2])\n' +
                 'with zipfile.ZipFile(sys.argv[-1], "x", zipfile.ZIP_DEFLATED) as z:\n' +
                 ' for p in sorted(app.rglob("*")):\n' +
