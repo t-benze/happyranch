@@ -41,11 +41,11 @@ from runtime.identities import registry as names
 from runtime.orchestrator import producer_move
 from runtime.orchestrator.agent_def import AgentDef, render_agent_text
 
-assert sys.argv[1:] in ([], ['--bounded-acquisition'], ['--trace-custody'], ['--sequential-reuse'], ['--sequential-load'], ['--sequential-faults'], ['--sequential-sql-exhaustion'], ['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--coding-authority-corruption'], ['--document-native-corruption'], ['--author-handoff-corruption'], ['--document-revision-corruption'], ['--physical-corruption'], ['--sequential-uncommitted']), 'unknown schema-load selection'
+assert sys.argv[1:] in ([], ['--bounded-acquisition'], ['--trace-custody'], ['--sequential-reuse'], ['--sequential-load'], ['--sequential-faults'], ['--sequential-sql-exhaustion'], ['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--coding-authority-corruption'], ['--document-native-corruption'], ['--author-handoff-corruption'], ['--document-revision-corruption'], ['--coding-history-corruption'], ['--physical-corruption'], ['--sequential-uncommitted']), 'unknown schema-load selection'
 
 # A0b-2 custody extends this existing real-SQLite venue. No native connection
 # subclass, fake epoch, successful validator stub or production test seam.
-if sys.argv[1:] not in (['--bounded-acquisition'], ['--sequential-reuse'], ['--sequential-load'], ['--sequential-faults'], ['--sequential-sql-exhaustion'], ['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--coding-authority-corruption'], ['--document-native-corruption'], ['--author-handoff-corruption'], ['--document-revision-corruption'], ['--physical-corruption'], ['--sequential-uncommitted']):
+if sys.argv[1:] not in (['--bounded-acquisition'], ['--sequential-reuse'], ['--sequential-load'], ['--sequential-faults'], ['--sequential-sql-exhaustion'], ['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--coding-authority-corruption'], ['--document-native-corruption'], ['--author-handoff-corruption'], ['--document-revision-corruption'], ['--coding-history-corruption'], ['--physical-corruption'], ['--sequential-uncommitted']):
     class TraceAbort(BaseException):
         pass
 
@@ -130,6 +130,23 @@ if sys.argv[1:] not in (['--bounded-acquisition'], ['--sequential-reuse'], ['--s
             install_or_recover(db, expected_org_slug='scratch')
             def read():
                 return read_workflow_schema_for_org_load(db._conn, expected_org_slug='scratch')
+            import asyncio
+            cancelled = asyncio.CancelledError('synthetic load cancellation')
+            delivered = []
+            with db.observe_trace(delivered.append):
+                try:
+                    with org_load_validation(db, org_slug='scratch'):
+                        read()
+                        cancelled_owner = load_guard._current.get()
+                        assert cancelled_owner.saved is not None
+                        raise cancelled
+                except asyncio.CancelledError as exc:
+                    assert exc is cancelled, 'load cleanup replaced cancellation'
+                assert not cancelled_owner.active and cancelled_owner.saved is None
+                assert load_guard._current.get() is None and not db._conn.in_transaction
+                db._conn.execute('SELECT 71011').fetchone()
+                assert delivered[-1] == 'SELECT 71011', 'cancellation cleanup lost the outer observer'
+            print('PASS A0b trace custody: CancelledError preserves primary, clears owner and restores outer observer')
             for schema, method in product(('main', 'temp'), ('connection', 'cursor', 'script')):
                 with org_load_validation(db, org_slug='scratch'):
                     read()
@@ -210,7 +227,7 @@ if sys.argv[1:] == ['--trace-custody']:
 # layouts. Existing private installers and storage owners prepare the fixtures.
 # Native SQLite statements, outcomes and original cumulative counters are the
 # oracles; no validator replacement, success stub or fabricated epoch.
-if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--sequential-faults'], ['--sequential-sql-exhaustion'], ['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--coding-authority-corruption'], ['--document-native-corruption'], ['--author-handoff-corruption'], ['--document-revision-corruption'], ['--physical-corruption'], ['--sequential-uncommitted']):
+if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--sequential-faults'], ['--sequential-sql-exhaustion'], ['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--coding-authority-corruption'], ['--document-native-corruption'], ['--author-handoff-corruption'], ['--document-revision-corruption'], ['--coding-history-corruption'], ['--physical-corruption'], ['--sequential-uncommitted']):
     from runtime.infrastructure.workflow_schema import (
         initialize_complete_org_schema, install_sequential_schema,
         sequential_storage_inventory, _coding_org_identity, _schema_snapshot,
@@ -1273,7 +1290,446 @@ if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--seque
         else:
             assert history.retained[1].imported is not None
 
-    if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--coding-authority-corruption'], ['--document-native-corruption'], ['--author-handoff-corruption'], ['--document-revision-corruption'], ['--physical-corruption'], ['--sequential-uncommitted']):
+    def populate_coding_mapping(db):
+        import base64
+        import hashlib
+        from runtime.workflows._coding_registered_release import registration_rows
+        from runtime.workflows.release_templates import read_coding_release
+        from runtime.workflows._coding_settings_history import snapshot_for
+
+        # Inert native @1 prefix followed by explicit and disabled-retain human
+        # @2 publications. These are archival SQL inputs, never service calls,
+        # live role assignments, current Allow, source mints or Coding runs.
+        conn = db._conn
+        encode = seq_history._bytes
+        digest = lambda raw: hashlib.sha256(raw).hexdigest()
+        b64 = lambda raw: base64.b64encode(raw).decode('ascii')
+        stamp = '2026-11-14T00:00:00.000000Z'
+        def insert(table, row):
+            conn.execute('INSERT INTO ' + table + ' (' + ','.join(row) + ') VALUES (' +
+                         ','.join('?' for _ in row) + ')', tuple(row.values()))
+        for table, row in registration_rows('scratch', read_coding_release(), stamp).rows:
+            insert(table, row)
+        roles = {role: dict(principal='synthetic_' + role, team='engineering')
+                 for role in ('agent_manager', 'code_reviewer', 'implementer', 'qa_engineer')}
+        origin = 'https://example.invalid/synthetic.git'
+        reference = dict(repository_id='workflow-repository:' + digest(encode(
+            ['scratch', 'synthetic', digest(origin.encode())])), repo_key='synthetic',
+            origin_digest=digest(origin.encode()), object_format='sha1')
+        snapshot = dict(schema_version=1, org_slug='scratch',
+            agents=[dict(name=binding['principal'], role='manager' if role == 'agent_manager' else 'worker',
+                team='engineering', status='active', executor='synthetic', model=None,
+                repos=dict(synthetic=origin), allow_rules=[], description_digest=digest(b''),
+                system_prompt_digest=digest(b'')) for role, binding in roles.items()],
+            teams=[dict(name='engineering', manager=roles['agent_manager']['principal'],
+                workers=[roles[role]['principal'] for role in roles if role != 'agent_manager'])],
+            reviewer_agents=[], machine_global_profiles=[],
+            active_policy_selectors=[dict(team='engineering', selector=None)])
+        raw = encode(snapshot)
+        pin = dict(namespace='org/scratch', generation=1, snapshot_digest=digest(raw))
+        pointer = dict(current_generation=1, journal_id='synthetic-mapping-journal',
+            snapshot_digest=digest(raw), state='ready', profile_fence=0)
+        insert('workflow_publication_journals', dict(id=pointer['journal_id'], **pin,
+            expected_generation=0, snapshot_bytes=raw, publisher='human:founder',
+            publisher_invocation='synthetic-not-live', profile_fence=0, state='cache_installed',
+            recovery_owner='synthetic-history', file_phase_owner=None))
+        insert('workflow_authority_pointers', dict(namespace='org/scratch', **pointer))
+        mapping = dict(release=dict(identity='release/happyranch/coding', version=1,
+            definition_digest='6ee02be98738d3c95fe584b165abe07d0dbef66e510133c117ee0d62c953cad8'),
+            roles=roles, eligible_replacements={role: [] for role in roles},
+            repository_references=[reference], authority=pin)
+        manager = roles['agent_manager']['principal']
+        db.insert_task(TaskRecord(id='synthetic-mapping-source', assigned_agent=manager,
+            team='engineering', brief='Synthetic retained mapping source', status='in_progress',
+            current_session_id='synthetic-mapping-session', orchestration_step_count=1))
+        conn.execute('UPDATE tasks SET created_at=?,updated_at=? WHERE id=?',
+                     (stamp, stamp, 'synthetic-mapping-source'))
+        start = conn.execute('INSERT INTO audit_log(task_id,agent,action,payload,timestamp) VALUES(?,?,?,?,?)',
+            ('synthetic-mapping-source', manager, 'session_start', encode(dict(workspace='synthetic',
+                session_id='synthetic-mapping-session', invocation_purpose='manager_decision',
+                executor='synthetic', model=None)).decode(), stamp)).lastrowid
+        cursor = conn.execute("SELECT * FROM tasks WHERE id='synthetic-mapping-source'")
+        task = dict(zip((column[0] for column in cursor.description), cursor.fetchone(), strict=True))
+        from runtime.workflows.coding_source_history import _TASK_COLUMNS
+        columns = dict(columns=[dict(name=key, storage_class='null' if value is None else
+            'integer' if type(value) is int else 'text',
+            value=b64(value.encode()) if type(value) is str else value) for key, value in ((key, task[key]) for key in _TASK_COLUMNS)])
+        previous = None
+        explicit = None
+        for generation in (1, 2, 3):
+            human = generation != 1
+            at = f'2026-11-14T00:00:0{generation}.000000Z'
+            identity = 'coding-mapping:' + f'{generation:032x}'
+            admission_id = ('coding-settings-admission:' if human else 'synthetic-mapping-admission:') + f'{generation:032x}'
+            command = dict(format='workflow-coding-settings-command@1' if human else 'workflow-coding-mapping-command@2',
+                operation_key='synthetic-mapping-' + str(generation), mapping=mapping,
+                expected_generation=generation - 2 if human else 0)
+            if human:
+                command.update(org_slug='scratch', expected_mapping_generation=generation - 1,
+                               admission='disabled' if generation == 3 else 'explicit')
+            body = encode(command)
+            capture = dict(pin=pin, admission_record_id=admission_id, snapshot_bytes_base64=b64(raw),
+                grant_bytes_base64=b64(body), grant_digest=digest(body),
+                profile_evidence=dict(ready=dict(**pin, snapshot_bytes_hex=raw.hex()),
+                                      pointer=pointer, profiles=[], mirror=[]))
+            issuer = (dict(kind='human', principal='founder', proof_kind='founder_bearer') if human else
+                dict(kind='agent', principal=manager, task_id=task['id'],
+                     session_id='synthetic-mapping-session', result_id=None))
+            record = dict(format='workflow-coding-agent-read-role-record@2' if human else
+                'workflow-coding-agent-read-role-record@1', org_slug='scratch',
+                command_bytes_base64=b64(body), command_digest=digest(body), issuer=issuer,
+                authority=capture, mapping=mapping, created_at=at)
+            if human:
+                record['settings'] = dict(generation=generation - 1, admission=command['admission'],
+                    previous_snapshot_digest=None if previous is None else digest(encode(previous)))
+            encoded = encode(record)
+            values = (identity, 'scratch', 'release/happyranch/coding', generation,
+                      'human:founder' if human else 'agent:' + manager,
+                      command['operation_key'], digest(body), encoded, digest(encoded), at)
+            conn.execute('INSERT INTO workflow_coding_mappings VALUES(?,?,?,?,?,?,?,?,?,?)', values)
+            insert('workflow_admission_records', dict(id=admission_id, namespace='org/scratch',
+                generation=1, request_digest=digest(body), admitted_by=values[4]))
+            if human:
+                after = snapshot_for(values, record, command, previous)
+                publication = dict(format='workflow-coding-settings-publication@1', org_slug='scratch',
+                    principal='human:founder', operation_key=command['operation_key'], request_digest=digest(body),
+                    command_bytes_base64=b64(body), mapping_id=identity, mapping_generation=generation,
+                    mapping_digest=values[8], admission_id=admission_id, before=previous, after=after)
+                config = dict(section='coding', tiers=sorted(k for k in after if previous is None or
+                    previous[k] != after[k]), before=previous, after=after)
+                for action, payload in (('coding_settings_publication', publication), ('org_config_write', config)):
+                    conn.execute('INSERT INTO audit_log(task_id,agent,action,payload,timestamp) VALUES(?,?,?,?,?)',
+                                 ('config:coding', 'founder', action, encode(payload).decode(), at))
+                previous = after
+                if generation == 2:
+                    explicit = after
+            else:
+                payload = dict(format='workflow-coding-source-admission@1', phase='source', org_slug='scratch',
+                    source_admission_id=admission_id, native_owner=dict(table='workflow_coding_mappings', id=identity),
+                    command_bytes_base64=b64(body), task_record=columns, ancestor_records=[],
+                    session_start_audit_id=start, result=None, callback_admission_audit_id=None,
+                    native_claim=None, owner_invocation_id='synthetic-mapping-invocation',
+                    budgets=dict(source_step=1, source_revision=0, session_timeout_seconds=None,
+                        max_revise_rounds=3, coding_attempt_limit=64, coding_event_limit=4096,
+                        coding_revision_limit=3, coding_same_principal_retry_limit=1), observed_at=at)
+                conn.execute('INSERT INTO audit_log(task_id,agent,action,payload,timestamp) VALUES(?,?,?,?,?)',
+                             (task['id'], manager, 'coding_source_admission', encode(payload).decode(), at))
+        conn.execute('INSERT INTO org_settings(section,value_json,updated_at,updated_by) VALUES(?,?,?,?)',
+                     ('coding', encode(previous).decode(), previous['published_at'], 'founder'))
+        conn.commit()
+        history = read_sequential_history(conn, expected_org_slug='scratch')
+        assert history.status == 'storage readable'
+        inventory = history.retained[1]
+        assert len(inventory.mappings.mappings) == 3
+        assert inventory.mappings.selected.source_capture.payload['after']['admission'] == 'disabled'
+        return dict(mapping=mapping, explicit=explicit, capture=capture, snapshot=snapshot, pin=pin,
+                    pointer=pointer, stamp=stamp)
+
+
+    def populate_coding_source(db):
+        import base64
+        import hashlib
+        from runtime.workflows.coding_saved_records import ROLES
+        saved = populate_coding_mapping(db)
+        conn, encode = db._conn, seq_history._bytes
+        digest = lambda raw: hashlib.sha256(raw).hexdigest()
+        b64 = lambda raw: base64.b64encode(raw).decode('ascii')
+        roles, pin = saved['mapping']['roles'], saved['pin']
+        manager = roles['agent_manager']['principal']
+        repository = saved['mapping']['repository_references'][0]
+        issuer = dict(kind='agent', principal=manager, task_id='synthetic-mapping-source',
+                      session_id='synthetic-mapping-session', result_id=None)
+        def insert(table, row):
+            conn.execute('INSERT INTO ' + table + ' (' + ','.join(row) + ') VALUES (' +
+                         ','.join('?' for _ in row) + ')', tuple(row.values()))
+        def capture(grant, admission):
+            raw = encode(grant)
+            return dict(saved['capture'], admission_record_id=admission,
+                        grant_bytes_base64=b64(raw), grant_digest=digest(raw))
+        # Retain only the native mapping prefix. This separate private fixture
+        # supplies a custody mapping and a nonallocating capability; no run,
+        # allocator, repository operation or live setup service is called.
+        conn.execute('DELETE FROM org_settings WHERE section=\'coding\'')
+        conn.execute("DELETE FROM audit_log WHERE action IN ('coding_settings_publication','org_config_write')")
+        conn.execute('DELETE FROM workflow_coding_mappings WHERE generation>1')
+        conn.execute("DELETE FROM workflow_admission_records WHERE id LIKE 'coding-settings-admission:%'")
+        scope = dict(repository_id=repository['repository_id'], manager_selector=roles['agent_manager'],
+            actions=['import-release-coding', 'publish-coding-mapping', 'adopt-local-store'],
+            source_rule='current-assigned-manager-decision@1', base_rule='manager-select-local-base@1',
+            scope=dict(object_formats=['sha1'], store_owners=[manager], path_prefixes=['runtime'],
+                commands=[], recipient_rule='mapping-eligible-current@1', provider_rule=None,
+                original_limit_rule='lower-native-original@1'))
+        setup_key = digest(encode(['scratch', repository['repository_id'], roles['agent_manager']]))
+        command = dict(format='workflow-coding-capability-setup-command@1', operation_key='synthetic-source-setup',
+            setup_key=setup_key, expected_authorization_revision=0, mode='issue', scope=scope)
+        authority = capture(command, 'synthetic-source-setup-admission')
+        admission = dict(id=authority['admission_record_id'], namespace='org/scratch', generation=1,
+                         request_digest=digest(encode(command)), admitted_by='human:founder')
+        setup = dict(format='workflow-coding-setup-authority@1', id='synthetic-source-setup',
+            org_slug='scratch', **scope, authority=authority, created_at=saved['stamp'])
+        issuance = dict(format='workflow-coding-capability-issuance@1', command_bytes_base64=b64(encode(command)),
+            command_digest=digest(encode(command)), issuer=dict(principal_kind='human', principal_id='founder',
+                proof_kind='founder_bearer'), mode='issue', setup=setup,
+            admission=dict(record=admission, capture=authority), created_at=saved['stamp'])
+        insert('workflow_admission_records', admission)
+        insert('workflow_authorization_revisions', dict(id='synthetic-source-issue',
+            namespace='org/scratch/coding-setup/' + setup_key, revision=1, authority_bytes=encode(issuance),
+            authority_digest=digest(encode(issuance)), source_pin='coding-capability-issuer@1', created_at=saved['stamp']))
+        insert('workflow_active_authorizations', dict(namespace='org/scratch/coding-setup/' + setup_key,
+            authorization_revision_id='synthetic-source-issue'))
+        binding = dict(format='workflow-repository-binding@1', action='read-repository-artifact', org_slug='scratch',
+            repository_id=repository['repository_id'], repo_key=repository['repo_key'], origin_digest=repository['origin_digest'],
+            store_owner=manager, authority=pin,
+            recipients=[dict(role=role, kind='agent', **roles[role]) for role in ROLES], reader='local-git-objects@1')
+        store = dict(repo_device=1, repo_inode=2, git_device=1, git_inode=3,
+                     objects_device=1, objects_inode=4, config_digest=digest(b'synthetic'))
+        adoption = dict(format='workflow-repository-adoption@1', operation_id='synthetic-adoption',
+            store_identity_digest=digest(encode(store)), adopted_by=manager, authority=pin, policy='adopted-local-store@1')
+        proof = dict(format='workflow-repository-adoption-proof@1', repository_id=repository['repository_id'],
+            operation_id=adoption['operation_id'], issuer=issuer, authority=pin, store_identity=store,
+            configured_origin_digest=repository['origin_digest'], observed_origin_digest=repository['origin_digest'],
+            object_format='sha1', policy=adoption['policy'], observed_at=saved['stamp'],
+            checks={key: True for key in ('primary_store','no_follow','ordinary_git_directory','no_alternates',
+                                          'no_promisor','no_shallow','no_replace_or_graft','no_helpers')})
+        mapping = dict(format='workflow-coding-mapping@1', release=saved['mapping']['release'], roles=roles,
+            eligible_replacements=saved['mapping']['eligible_replacements'], authority=pin,
+            repository_bindings=[dict(binding=binding, adoption=adoption)])
+        command = dict(format='workflow-coding-mapping-command@1', operation_key='synthetic-mapping-1',
+            expected_generation=0, mapping=dict(release=mapping['release'], roles=roles,
+                eligible_replacements=mapping['eligible_replacements'], authority=pin,
+                repository_selectors=[dict(repository_id=repository['repository_id'], store_owner=manager,
+                    repo_key='synthetic', policy=adoption['policy'])]))
+        authority = capture(dict(format='workflow-coding-mapping-grant@1', setups=[setup]),
+                            'synthetic-mapping-admission:' + f'{1:032x}')
+        record = dict(format='workflow-coding-mapping-record@1', command_bytes_base64=b64(encode(command)),
+            command_digest=digest(encode(command)), issuer=issuer, authority=authority,
+            adoptions=[proof], mapping=mapping, created_at='2026-11-14T00:00:01.000000Z')
+        conn.execute('UPDATE workflow_coding_mappings SET request_digest=?,mapping_bytes=?,mapping_digest=? WHERE generation=1',
+                     (digest(encode(command)), encode(record), digest(encode(record))))
+        conn.execute('UPDATE workflow_admission_records SET request_digest=? WHERE id=?',
+                     (digest(encode(command)), authority['admission_record_id']))
+        old_capture = json.loads(conn.execute("SELECT payload FROM audit_log WHERE action='coding_source_admission'").fetchone()[0])
+        old_capture['command_bytes_base64'] = b64(encode(command))
+        conn.execute("UPDATE audit_log SET payload=? WHERE action='coding_source_admission'", (encode(old_capture).decode(),))
+        # Keep the source task distinct from the mapping issuer so source
+        # ancestry/result corruptions reach their own native reader.
+        from runtime.workflows.coding_source_history import _TASK_COLUMNS
+        issuer = dict(issuer, task_id='synthetic-capability-source', session_id='synthetic-capability-session')
+        ancestor_id = 'synthetic-source-ancestor'
+        for task_id, parent, status in ((ancestor_id, None, 'completed'),
+                                       (issuer['task_id'], ancestor_id, 'in_progress')):
+            db.insert_task(TaskRecord(id=task_id, assigned_agent=manager, team='engineering',
+                brief='Synthetic retained source ' + task_id, status=status, parent_task_id=parent,
+                current_session_id=issuer['session_id'] if parent else None,
+                orchestration_step_count=1 if parent else 0))
+            conn.execute('UPDATE tasks SET created_at=?,updated_at=?,completed_at=? WHERE id=?',
+                         (saved['stamp'], saved['stamp'], saved['stamp'] if status == 'completed' else None, task_id))
+        start_id = conn.execute('INSERT INTO audit_log(task_id,agent,action,payload,timestamp) VALUES(?,?,?,?,?)',
+            (issuer['task_id'], manager, 'session_start', encode(dict(workspace='synthetic',
+                session_id=issuer['session_id'], invocation_purpose='manager_decision', executor='synthetic', model=None)).decode(),
+                saved['stamp'])).lastrowid
+        def captured_task(task_id):
+            values = conn.execute('SELECT ' + ','.join(_TASK_COLUMNS) + ' FROM tasks WHERE id=?', (task_id,)).fetchone()
+            return dict(columns=[dict(name=key,
+                storage_class='null' if value is None else 'integer' if type(value) is int else 'text',
+                value=b64(value.encode()) if type(value) is str else value)
+                for key, value in zip(_TASK_COLUMNS, values, strict=True)])
+        old_capture = dict(old_capture, task_record=captured_task(issuer['task_id']),
+            ancestor_records=[captured_task(ancestor_id)], session_start_audit_id=start_id,
+            owner_invocation_id='synthetic-source-invocation')
+        mapping_row = conn.execute('SELECT id,generation,mapping_digest FROM workflow_coding_mappings').fetchone()
+        at = '2026-11-14T00:00:05.000000Z'
+        command = dict(format='workflow-coding-source-command@1', operation_key='synthetic-nonallocating-source',
+            parent_id=setup['id'], mapping=dict(id=mapping_row[0], generation=mapping_row[1], digest=mapping_row[2]),
+            action='adopt-local-store', work=dict(repository_id=repository['repository_id'], store_owner=manager,
+                object_format='sha1', base='1' * 40, paths=['runtime'], commands=[]))
+        authorization_id, admission_id = 'synthetic-source-capability', 'synthetic-source-admission'
+        capability = dict(format='workflow-coding-capability@1', id=authorization_id, parent_id=setup['id'],
+            level='source', issuer=issuer, subject=dict(org_slug='scratch', principal=manager, team='engineering',
+                source_task_id=issuer['task_id'], source_session_id=issuer['session_id'], instance_id=None,
+                attempt_id=None, control_id=None, task_id=issuer['task_id'], session_id=issuer['session_id']),
+            action=command['action'], radius=dict(command['work'], provider_repository=None, pr_number=None,
+                expected_head=None, head_rule='own-development-output@1'),
+            authority=capture(setup, admission_id), source_admission_id=admission_id, created_at=at)
+        insert('workflow_authorization_revisions', dict(id=authorization_id,
+            namespace='org/scratch/coding-capability/' + authorization_id, revision=1,
+            authority_bytes=encode(capability), authority_digest=digest(encode(capability)),
+            source_pin='workflow-coding-capability@1', created_at=at))
+        insert('workflow_admission_records', dict(id=admission_id, namespace='org/scratch', generation=1,
+            request_digest=digest(encode(capability)), admitted_by='agent:' + manager))
+        operation = dict(format='workflow-coding-source-operation@1', org_slug='scratch', principal='agent:' + manager,
+            authorization_id=authorization_id, admission_id=admission_id, session_id=issuer['session_id'],
+            command_bytes_base64=b64(encode(command)), command_digest=digest(encode(command)), created_at=at)
+        insert('audit_log', dict(task_id=issuer['task_id'], agent=manager, action='coding_source_operation',
+                                payload=encode(operation).decode(), timestamp=at))
+        original = dict(old_capture, native_owner=dict(table='workflow_authorization_revisions', id=authorization_id),
+            source_admission_id=admission_id, command_bytes_base64=b64(encode(command)), observed_at=at)
+        insert('audit_log', dict(task_id=issuer['task_id'], agent=manager, action='coding_source_admission',
+                                payload=encode(original).decode(), timestamp=at))
+        child_id, child_admission = 'synthetic-source-refinement', 'synthetic-refinement-admission'
+        child = dict(capability, id=child_id, parent_id=authorization_id,
+                     authority=capture(capability, child_admission), created_at='2026-11-14T00:00:06.000000Z')
+        insert('workflow_authorization_revisions', dict(id=child_id,
+            namespace='org/scratch/coding-capability/' + child_id, revision=1, authority_bytes=encode(child),
+            authority_digest=digest(encode(child)), source_pin='workflow-coding-capability@1', created_at=child['created_at']))
+        insert('workflow_admission_records', dict(id=child_admission, namespace='org/scratch', generation=1,
+            request_digest=digest(encode(child)), admitted_by='agent:' + manager))
+        child_command = dict(command, parent_id=authorization_id, operation_key='synthetic-refinement')
+        child_operation = dict(operation, authorization_id=child_id, admission_id=child_admission,
+            command_bytes_base64=b64(encode(child_command)), command_digest=digest(encode(child_command)),
+            created_at=child['created_at'])
+        insert('audit_log', dict(task_id=issuer['task_id'], agent=manager, action='coding_source_operation',
+                                payload=encode(child_operation).decode(), timestamp=child['created_at']))
+        conn.execute('INSERT INTO task_results(task_id,agent,session_id,status,created_at) VALUES(?,?,?,?,?)',
+                     (issuer['task_id'], manager, issuer['session_id'], 'completed', child['created_at']))
+        # Today's source is terminal, while its original capture remains exact.
+        # No queued graph or full queued-task comparison is involved.
+        conn.execute('UPDATE tasks SET status=?,completed_at=?,updated_at=? WHERE id=?',
+                     ('completed', at, at, issuer['task_id']))
+        conn.commit()
+        history = read_sequential_history(conn, expected_org_slug='scratch')
+        assert history.status == 'storage readable'
+        assert conn.execute('SELECT count(*) FROM workflow_coding_runs').fetchone()[0] == 0
+        assert conn.execute('SELECT status FROM tasks WHERE id=?', (issuer['task_id'],)).fetchone()[0] == 'completed'
+
+
+    def populate_coding_start(db):
+        # Preserved private reproducer for the step20 27/30-column limitation.
+        # It deliberately reaches the unchanged full-reader refusal and is
+        # never enrolled as a passing corruption-phase baseline.
+        import hashlib
+        from runtime.workflows.coding_bootstrap import encode_row, identity, initial_scope, journal_rows, pinned_rows, task_brief
+        from runtime.workflows.coding_start_history import claim_for
+
+        saved = populate_coding_mapping(db)
+        conn = db._conn
+        encode = seq_history._bytes
+        digest = lambda raw: hashlib.sha256(raw).hexdigest()
+        roles, mapping = saved['mapping']['roles'], saved['mapping']
+        at = '2026-11-14T00:00:04.000000Z'
+        from runtime.workflows.coding_source_history import _TASK_COLUMNS, _RESULT_COLUMNS, _AUDIT_COLUMNS
+        def row(table, where, args=()):
+            columns = _TASK_COLUMNS if table == 'tasks' else _RESULT_COLUMNS if table == 'task_results' else _AUDIT_COLUMNS
+            cursor = conn.execute('SELECT ' + ','.join(columns) + ' FROM ' + table + ' WHERE ' + where, args)
+            values = cursor.fetchone()
+            assert values is not None and cursor.fetchone() is None
+            return dict(zip((column[0] for column in cursor.description), values, strict=True))
+        command = dict(format='workflow-coding-start@2', operation_key='synthetic-coding-start',
+            release=mapping['release'], mapping=saved['explicit']['mapping'],
+            settings=dict(generation=saved['explicit']['generation'], snapshot_digest=digest(encode(saved['explicit']))),
+            work=dict(brief='Synthetic retained work', repository_id=mapping['repository_references'][0]['repository_id'],
+                      object_format='sha1', base='1' * 40, paths=['runtime']), implementer_override=None)
+        manager = roles['agent_manager']['principal']
+        source_id, carrier_id, leaf_id = 'synthetic-start-source', 'synthetic-start-carrier', 'synthetic-start-leaf'
+        db.insert_task(TaskRecord(id=source_id, task_type='task', assigned_agent=manager, team='engineering',
+            brief='Synthetic retained start source', status='in_progress', orchestration_step_count=1,
+            current_session_id='synthetic-start-session'))
+        conn.execute('UPDATE tasks SET created_at=?,updated_at=? WHERE id=?', (at, at, source_id))
+        source_before = row('tasks', 'id=?', (source_id,))
+        start_id = conn.execute('INSERT INTO audit_log(task_id,agent,action,payload,timestamp) VALUES(?,?,?,?,?)',
+            (source_id, manager, 'session_start', encode(dict(workspace='synthetic',
+                session_id='synthetic-start-session', invocation_purpose='manager_decision',
+                executor='synthetic', model=None)).decode(), at)).lastrowid
+        result_id = conn.execute('INSERT INTO task_results(task_id,agent,session_id,status,decision_json,created_at) '
+            'VALUES(?,?,?,?,?,?)', (source_id, manager, 'synthetic-start-session', 'completed',
+            encode(dict(action='workflow_start', workflow=command)).decode(), at)).lastrowid
+        callback = row('task_results', 'id=?', (result_id,))
+        native = dict(id='synthetic-start-invocation', org='scratch', root_task_id=source_id,
+            task_id=source_id, agent=manager, session_id='synthetic-start-session', owner='ordinary',
+            owner_identity={}, fingerprint=dict(status='pending', block_kind=None, count=0,
+                session_id=None, agent=manager, fanout=None, jobs=None, parent=None,
+                brief_digest=digest(source_before['brief'].encode())), generation=0, phase='running',
+            retry={}, context={}, started_at=at, captured_generation=None)
+        source = dict(task_id=source_id, session_id='synthetic-start-session', principal=manager,
+            result=dict(id=result_id, record=encode_row(callback)),
+            result_claim=dict(native_claim=claim_for(source_before, result_id),
+                owner_invocation_id=native['id'], action_fingerprint=digest(callback['decision_json'].encode())),
+            parent_task_id=None, root_ancestor_id=source_id,
+            budgets=dict(source_step=1, source_revision=0, session_timeout_seconds=None,
+                max_revise_rounds=3, coding_attempt_limit=64, coding_event_limit=4096,
+                coding_revision_limit=3, coding_same_principal_retry_limit=1))
+        native_source = dict(ancestors=[], session_start=row('audit_log', 'id=?', (start_id,)),
+            invocation=dict(id=native['id'], owner='ordinary', entry=native),
+            checkpoints=[dict(source=encode_row(source_before), ancestors=[])])
+        instance = identity('root', 'scratch', source_id, result_id, digest(encode(command)))
+        attempt_id = identity('attempt', instance, 1)
+        event_id = identity('event', 'scratch', instance, 'agent:' + manager, command['operation_key'])
+        authority = dict(saved['capture'], admission_record_id=identity('admission', instance))
+        import base64
+        authority.update(grant_bytes_base64=base64.b64encode(encode(command)).decode(), grant_digest=digest(encode(command)))
+        template = conn.execute("SELECT template_identity_id,template_version_id FROM workflow_template_identity_versions WHERE template_identity_id IN "
+            "(SELECT id FROM workflow_template_identities WHERE namespace='release/happyranch')").fetchone()
+        template = dict(identity_id=template[0], version_id=template[1], **command['release'])
+        pins, context, binding = pinned_rows(org='scratch', command=command, source=source,
+            native_source=native_source, authority=authority, mapping=mapping, roles=roles,
+            template=template, carrier_id=carrier_id, instance_id=instance, created_at=at)
+        # Only native private row construction and pure record serializers.
+        # No retired start, native allocation, queue, callback or host producer.
+        for task_id, selector, status, block, brief, parent in (
+            (carrier_id, roles['agent_manager'], 'in_progress', 'delegated', 'Structural coding carrier ' + instance, source_id),
+            (leaf_id, roles['implementer'], 'pending', None, task_brief(command['work']), carrier_id)):
+            db.insert_task(TaskRecord(id=task_id, task_type='subtask', assigned_agent=selector['principal'],
+                team=selector['team'], status=status, block_kind=block, brief=brief, parent_task_id=parent))
+            conn.execute('UPDATE tasks SET created_at=?,updated_at=? WHERE id=?', (at, at, task_id))
+        conn.commit()
+        conn.execute('PRAGMA foreign_keys=OFF')
+        for table, entries in pins.items():
+            for entry in entries:
+                conn.execute('INSERT INTO ' + table + ' (' + ','.join(entry) + ') VALUES (' +
+                             ','.join('?' for _ in entry) + ')', tuple(entry.values()))
+        scope = encode(initial_scope(org='scratch', instance=instance, attempt=attempt_id,
+                                    command=command, roles=roles, context=context))
+        run = dict(instance_id=instance, mapping_id=command['mapping']['id'], cas_version=1,
+            current_revision=0, state='development', current_attempt_id=attempt_id, last_event_id=event_id)
+        attempt = dict(id=attempt_id, instance_id=instance, revision=1, stage='development', attempt_sequence=1,
+            assignment_generation=1, predecessor_id=None, task_id=leaf_id, principal=roles['implementer']['principal'],
+            session_id=None, result_id=None, submission_id=None, review_request_id=None, state='queued',
+            scope_bytes=scope, scope_digest=digest(scope))
+        # Cyclic foreign references are checked after the full archival graph exists.
+        conn.execute('PRAGMA foreign_keys=OFF')
+        for table, entry in (('workflow_coding_runs', run), ('workflow_coding_attempts', attempt)):
+            conn.execute('INSERT INTO ' + table + ' (' + ','.join(entry) + ') VALUES (' +
+                         ','.join('?' for _ in entry) + ')', tuple(entry.values()))
+        conn.execute('UPDATE tasks SET block_kind=?,note=?,updated_at=? WHERE id=?',
+                     ('delegated', 'coding-owned:' + instance, at, source_id))
+        tasks = [row('tasks', 'id=?', (key,)) for key in sorted((source_id, carrier_id, leaf_id))]
+        before = dict(run=None, attempts=[dict(id=attempt_id, record=None)], instances=[dict(id=instance, record=None)],
+            tasks=[dict(id=task['id'], record=encode_row(source_before) if task['id'] == source_id else None) for task in tasks],
+            rounds=[], requests=[], assignments=[])
+        after = dict(run=run, attempts=[dict(id=attempt_id, record=encode_row(attempt))],
+            instances=[dict(id=instance, record=encode_row(pins['workflow_instances'][0]))],
+            tasks=[dict(id=task['id'], record=encode_row(task)) for task in tasks], rounds=[], requests=[], assignments=[])
+        payload = dict(format='workflow-coding-event@1', id=event_id, instance_id=instance, event_seq=1,
+            event_kind='run_started', attempt_id=attempt_id, operation=dict(org_slug='scratch', principal='agent:' + manager,
+                key=command['operation_key'], request_digest=digest(encode(command))), previous_digest=None,
+            before=before, after=after, created_at=at, evidence=dict(kind='run_started', command=command,
+                origin=dict(kind='manager_result', principal=manager, task_id=source_id,
+                    session_id='synthetic-start-session', result_id=result_id, claim=None), authority=authority,
+                native_task_observations=[], rows=journal_rows(pins), facts=dict(source=source,
+                    carrier_task_id=carrier_id, release=command['release'], mapping_id=command['mapping']['id'],
+                    mapping_digest=command['mapping']['digest'], context_id=identity('context', instance),
+                    binding_snapshot_id=identity('binding', instance), authorization_id=identity('authorization', instance),
+                    activation_id=identity('activation', instance), first_attempt_id=attempt_id)))
+        raw = encode(payload)
+        event = dict(id=event_id, instance_id=instance, event_seq=1, attempt_id=attempt_id, org_slug='scratch',
+            principal='agent:' + manager, operation_key=command['operation_key'], request_digest=digest(encode(command)),
+            event_kind='run_started', previous_digest=None, event_bytes=raw, event_digest=digest(raw), created_at=at)
+        conn.execute('INSERT INTO workflow_coding_events (' + ','.join(event) + ') VALUES (' +
+                     ','.join('?' for _ in event) + ')', tuple(event.values()))
+        for task_id, kind, owner in ((source_id, 'coding_source_waiting', instance),
+                (carrier_id, 'coding_carrier', instance), (leaf_id, 'coding_attempt', attempt_id)):
+            conn.execute('UPDATE workflow_task_ownership SET kind=?,owner_id=? WHERE task_id=?', (kind, owner, task_id))
+        conn.commit()
+        conn.execute('PRAGMA foreign_keys=ON')
+        history = read_sequential_history(conn, expected_org_slug='scratch')
+        assert history.status == 'storage readable'
+        entry = history.retained[1].queued.runs[instance]
+        assert entry['attempt']['state'] == 'queued' and entry['command']['settings'] == command['settings']
+        assert history.retained[1].mappings.selected.source_capture.payload['after']['admission'] == 'disabled'
+        return dict(saved=saved, instance=instance, source=source, command=command, native=native, payload=payload)
+
+
+    if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--coding-authority-corruption'], ['--document-native-corruption'], ['--author-handoff-corruption'], ['--document-revision-corruption'], ['--coding-history-corruption'], ['--physical-corruption'], ['--sequential-uncommitted']):
         corruptions = (
             ('definition digest', "UPDATE workflow_seq_definitions SET definition_digest='bad'"),
             ('definition bytes', "UPDATE workflow_seq_definitions SET definition_bytes=x'7b7d'"),
@@ -1816,6 +2272,418 @@ if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--seque
         refusal_codes.update({name: 'coding_registered_release_history_invalid' for name in coding_import_names})
         refusal_codes.update({name: 'coding_authority_history_invalid' for name in coding_setup_names})
         refusal_codes.update({name: code for name, _, code in document_coding_corruptions})
+        # Step13 convergence: each row owns a distinct native column, saved
+        # predicate or join; shared checks are not repeated per family.
+        coding_history_checks = []
+        def coding_case(name, mutation, predicate):
+            coding_history_checks.append((name, mutation, predicate))
+
+        def coding_json(connection, table, column, where, path, value, *, digest_column=None):
+            import hashlib
+            selected = list(connection.execute('SELECT rowid,' + column + ' FROM ' + table + ' WHERE ' + where))
+            assert len(selected) == 1, 'ambiguous synthetic Coding record'
+            rowid, original = selected[0]
+            body = json.loads(original)
+            target = body
+            for key in path[:-1]:
+                target = target[key]
+            target[path[-1]] = value
+            raw = seq_history._bytes(body)
+            stored = raw if type(original) is bytes else raw.decode()
+            if digest_column:
+                connection.execute('UPDATE ' + table + ' SET ' + column + '=?,' + digest_column + '=? WHERE rowid=?',
+                                   (stored, hashlib.sha256(raw).hexdigest(), rowid))
+            else:
+                connection.execute('UPDATE ' + table + ' SET ' + column + '=? WHERE rowid=?', (stored, rowid))
+
+        def corrupt_coding_column(conn, column, value):
+            previous = conn.execute('PRAGMA ignore_check_constraints').fetchone()[0]
+            if column == 'release_identity':
+                conn.execute('PRAGMA ignore_check_constraints=ON')
+            try:
+                conn.execute('UPDATE workflow_coding_mappings SET ' + column + '=? WHERE generation=1', (value,))
+            finally:
+                if column == 'release_identity':
+                    conn.execute('PRAGMA ignore_check_constraints=' + str(previous))
+                    assert conn.execute('PRAGMA ignore_check_constraints').fetchone()[0] == previous
+
+        for column, value in (('id', 'wrong-mapping'), ('org_slug', 'foreign'),
+                ('release_identity', 'release/foreign/coding'), ('generation', 4),
+                ('principal', 'agent:foreign'), ('operation_key', 'foreign-key'),
+                ('request_digest', '0' * 64), ('mapping_bytes', b'{}'),
+                ('mapping_digest', '0' * 64), ('created_at', '2026-11-14T00:00:04.000000Z')):
+            coding_case('Coding mapping column ' + column,
+                lambda conn, column=column, value=value: corrupt_coding_column(conn, column, value),
+                'coding_mapping_history.py:104-129 native ' + column)
+        for name, sql in (
+            ('missing prefix', 'DELETE FROM workflow_coding_mappings WHERE generation=1'),
+            ('orphan capture', "DELETE FROM audit_log WHERE action='coding_source_admission'"),
+            ('missing native admission', "DELETE FROM workflow_admission_records WHERE id LIKE 'synthetic-mapping-admission:%'"),
+            ('native admission namespace', "UPDATE workflow_admission_records SET namespace='org/foreign' WHERE id LIKE 'synthetic-mapping-admission:%'"),
+            ('native admission generation', "UPDATE workflow_admission_records SET generation=2 WHERE id LIKE 'synthetic-mapping-admission:%'"),
+            ('native admission request', "UPDATE workflow_admission_records SET request_digest='bad' WHERE id LIKE 'synthetic-mapping-admission:%'"),
+            ('native admission principal', "UPDATE workflow_admission_records SET admitted_by='agent:foreign' WHERE id LIKE 'synthetic-mapping-admission:%'"),
+            ('current native task identity', "UPDATE tasks SET created_at='2026-11-13T00:00:00.000000Z' WHERE id='synthetic-mapping-source'"),
+            ('current native task parent', "UPDATE tasks SET parent_task_id='source' WHERE id='synthetic-mapping-source'"),
+            ('current native task type', "UPDATE tasks SET task_type='subtask' WHERE id='synthetic-mapping-source'"),
+            ('missing session start', "DELETE FROM audit_log WHERE task_id='synthetic-mapping-source' AND action='session_start'"),
+            ('foreign session agent', "UPDATE audit_log SET agent='foreign' WHERE task_id='synthetic-mapping-source' AND action='session_start'"),
+            ('future session start', "UPDATE audit_log SET timestamp='2026-11-15T00:00:00.000000Z' WHERE task_id='synthetic-mapping-source' AND action='session_start'"),
+        ):
+            coding_case('Coding mapping ' + name, sql,
+                'coding_mapping_history.py:135-189; _coding_mapping_admission.py:74-135 ' + name)
+        for name, path, value in (
+            ('closed record', ('extra',), True), ('family', ('format',), 'workflow-coding-unknown@1'),
+            ('record org', ('org_slug',), 'foreign'), ('command encoding', ('command_bytes_base64',), 'e30='),
+            ('command digest', ('command_digest',), '0' * 64),
+            ('issuer principal', ('issuer', 'principal'), 'foreign'),
+            ('issuer task', ('issuer', 'task_id'), 'source'),
+            ('issuer session', ('issuer', 'session_id'), 'foreign'),
+            ('issuer result', ('issuer', 'result_id'), 1),
+            ('mapping equality', ('mapping', 'repository_references', 0, 'object_format'), 'sha256'),
+            ('capture admission', ('authority', 'admission_record_id'), 'foreign'),
+            ('capture grant', ('authority', 'grant_digest'), '0' * 64),
+            ('capture snapshot', ('authority', 'pin', 'snapshot_digest'), '0' * 64),
+            ('capture pointer', ('authority', 'profile_evidence', 'pointer', 'state'), 'recovering'),
+            ('capture ready', ('authority', 'profile_evidence', 'ready', 'generation'), 2),
+            ('capture mirror', ('authority', 'profile_evidence', 'mirror'), [dict(unknown=True)]),
+        ):
+            coding_case('Coding mapping ' + name, lambda conn, path=path, value=value:
+                coding_json(conn, 'workflow_coding_mappings', 'mapping_bytes', 'generation=1', path, value,
+                            digest_column='mapping_digest'),
+                '_coding_role_records.py:190-210; coding_mapping_history.py:116-129 ' + name)
+        for name, path, value in (
+            ('phase', ('phase',), 'callback'), ('org', ('org_slug',), 'foreign'),
+            ('native owner', ('native_owner', 'id'), 'foreign'),
+            ('source admission', ('source_admission_id',), 'foreign'),
+            ('command', ('command_bytes_base64',), 'e30='),
+            ('session reference', ('session_start_audit_id',), 999999),
+            ('original invocation', ('owner_invocation_id',), ''),
+            ('original step', ('budgets', 'source_step'), 2),
+            ('original revision', ('budgets', 'source_revision'), 1),
+            ('original timeout', ('budgets', 'session_timeout_seconds'), 1),
+            ('original attempt cap', ('budgets', 'coding_attempt_limit'), 65),
+            ('original event cap', ('budgets', 'coding_event_limit'), 4097),
+            ('original revision cap', ('budgets', 'coding_revision_limit'), 4),
+            ('original retry cap', ('budgets', 'coding_same_principal_retry_limit'), 2),
+            ('observed time', ('observed_at',), '2026-11-14T00:00:00.000000Z'),
+            ('ancestry closure', ('ancestor_records',), [dict(columns=[])]),
+        ):
+            coding_case('Coding mapping source ' + name, lambda conn, path=path, value=value:
+                coding_json(conn, 'audit_log', 'payload', "action='coding_source_admission'", path, value),
+                '_coding_source_capture.py:204-305; _coding_mapping_admission.py:74-135 ' + name)
+        for name, path, value in (
+            ('format', ('format',), 'wrong'), ('org', ('org_slug',), 'foreign'),
+            ('principal', ('principal',), 'agent:foreign'), ('operation', ('operation_key',), 'foreign'),
+            ('request', ('request_digest',), '0' * 64), ('command', ('command_bytes_base64',), 'e30='),
+            ('mapping reference', ('mapping_id',), 'foreign'), ('mapping generation', ('mapping_generation',), 4),
+            ('mapping digest', ('mapping_digest',), '0' * 64), ('admission reference', ('admission_id',), 'foreign'),
+            ('before snapshot', ('before',), {}), ('after snapshot', ('after', 'admission'), 'disabled'),
+            ('closed publication', ('extra',), True),
+        ):
+            coding_case('Coding settings publication ' + name, lambda conn, path=path, value=value:
+                coding_json(conn, 'audit_log', 'payload',
+                    "action='coding_settings_publication' AND json_extract(payload,'$.mapping_generation')=2", path, value),
+                '_coding_settings_history.py:113-151,173-192 ' + name)
+        for name, sql in (
+            ('missing config audit', "DELETE FROM audit_log WHERE action='org_config_write' AND json_extract(payload,'$.after.generation')=1"),
+            ('missing publication', "DELETE FROM audit_log WHERE action='coding_settings_publication' AND json_extract(payload,'$.mapping_generation')=2"),
+            ('publication scope', "UPDATE audit_log SET task_id='config:foreign' WHERE action='coding_settings_publication' AND json_extract(payload,'$.mapping_generation')=2"),
+            ('publication agent', "UPDATE audit_log SET agent='foreign' WHERE action='coding_settings_publication' AND json_extract(payload,'$.mapping_generation')=2"),
+            ('publication time', "UPDATE audit_log SET timestamp='2026-11-14T00:00:04.000000Z' WHERE action='coding_settings_publication' AND json_extract(payload,'$.mapping_generation')=2"),
+            ('config scope', "UPDATE audit_log SET task_id='config:foreign' WHERE action='org_config_write' AND json_extract(payload,'$.after.generation')=1"),
+            ('config agent', "UPDATE audit_log SET agent='foreign' WHERE action='org_config_write' AND json_extract(payload,'$.after.generation')=1"),
+            ('config time', "UPDATE audit_log SET timestamp='2026-11-14T00:00:04.000000Z' WHERE action='org_config_write' AND json_extract(payload,'$.after.generation')=1"),
+            ('missing current', "DELETE FROM org_settings WHERE section='coding'"),
+            ('current value type', "UPDATE org_settings SET value_json=x'7b7d' WHERE section='coding'"),
+            ('current timestamp', "UPDATE org_settings SET updated_at='2026-11-14T00:00:04.000000Z' WHERE section='coding'"),
+            ('current principal', "UPDATE org_settings SET updated_by='foreign' WHERE section='coding'"),
+            ('orphan admission', "INSERT INTO workflow_admission_records VALUES('coding-settings-admission:ffffffffffffffffffffffffffffffff','org/scratch',1,'synthetic','human:founder')"),
+        ):
+            coding_case('Coding settings ' + name, sql, '_coding_settings_history.py:95-164,195-219 ' + name)
+        for name, path, value in (
+            ('section', ('section',), 'foreign'), ('tiers', ('tiers',), []),
+            ('before', ('before',), {}), ('after', ('after', 'admission'), 'disabled'),
+            ('closed config', ('extra',), True),
+        ):
+            coding_case('Coding settings config ' + name, lambda conn, path=path, value=value:
+                coding_json(conn, 'audit_log', 'payload',
+                    "action='org_config_write' AND json_extract(payload,'$.after.generation')=1", path, value),
+                '_coding_settings_history.py:95-108,140-147 ' + name)
+        for name, path, value in (
+            ('format', ('format',), 'wrong'), ('org', ('org_slug',), 'foreign'),
+            ('generation', ('generation',), 1), ('admission', ('admission',), 'explicit'),
+            ('release', ('release', 'version'), 2), ('mapping id', ('mapping', 'id'), 'foreign'),
+            ('mapping generation', ('mapping', 'generation'), 2),
+            ('mapping digest', ('mapping', 'digest'), '0' * 64), ('operation', ('operation_key',), 'foreign'),
+            ('request', ('request_digest',), '0' * 64), ('predecessor', ('previous_snapshot_digest',), '0' * 64),
+            ('published time', ('published_at',), '2026-11-14T00:00:04.000000Z'),
+            ('published by', ('published_by',), 'agent:foreign'), ('closed snapshot', ('extra',), True),
+        ):
+            coding_case('Coding settings current ' + name, lambda conn, path=path, value=value:
+                coding_json(conn, 'org_settings', 'value_json', "section='coding'", path, value),
+                '_coding_settings_history.py:205-219; _coding_settings_records.py:48-67 ' + name)
+        for name, path, value in (
+            ('human issuer', ('issuer', 'proof_kind'), 'task_session'),
+            ('human record org', ('org_slug',), 'foreign'),
+            ('settings generation', ('settings', 'generation'), True),
+            ('settings admission', ('settings', 'admission'), 'disabled'),
+            ('settings predecessor', ('settings', 'previous_snapshot_digest'), 'bad'),
+            ('human capture pin', ('authority', 'pin', 'generation'), 2),
+        ):
+            coding_case('Coding settings record ' + name, lambda conn, path=path, value=value:
+                coding_json(conn, 'workflow_coding_mappings', 'mapping_bytes', 'generation=2', path, value,
+                            digest_column='mapping_digest'),
+                '_coding_settings_records.py:194-249 ' + name)
+        # Nonallocating source history remains reachable with a terminal
+        # native task and no queued graph. Shared mapping/capture predicates
+        # above retain their keeper; these rows add custody/P/operation joins.
+        from runtime.workflows.coding_mapping_history import CodingMappingHistoryError
+        from runtime.workflows.coding_saved_records import CodingSavedRecordError
+        from runtime.workflows.coding_source_history import CodingSourceHistoryError
+        from runtime.workflows.coding_capability_history import CodingCapabilityHistoryError
+        coding_source_names = set()
+        coding_source_refusals = {}
+        def source_case(name, mutation, predicate, error=CodingSourceHistoryError, code='coding_source_history_invalid'):
+            name = 'Coding source ' + name
+            coding_case(name, mutation, predicate)
+            coding_source_names.add(name)
+            coding_source_refusals[name] = (error, code)
+
+        def corrupt_source_order(conn):
+            operation = conn.execute("SELECT id FROM audit_log WHERE action='coding_source_operation' AND payload LIKE '%synthetic-source-capability%'").fetchone()[0]
+            original = conn.execute("SELECT id FROM audit_log WHERE action='coding_source_admission' AND payload LIKE '%synthetic-source-capability%'").fetchone()[0]
+            temporary = conn.execute('SELECT max(id)+1 FROM audit_log').fetchone()[0]
+            conn.execute('UPDATE audit_log SET id=? WHERE id=?', (temporary, operation))
+            conn.execute('UPDATE audit_log SET id=? WHERE id=?', (operation, original))
+            conn.execute('UPDATE audit_log SET id=? WHERE id=?', (original, temporary))
+
+        for column, value in (('id', 'foreign-capability'), ('namespace', 'org/foreign'), ('revision', 2),
+                ('authority_bytes', b'{}'), ('authority_digest', '0' * 64),
+                ('source_pin', 'wrong-source'), ('created_at', '2026-11-14T00:00:06.000000Z')):
+            source_case('native capability ' + column, lambda conn, column=column, value=value:
+                conn.execute('UPDATE workflow_authorization_revisions SET ' + column + '=? WHERE id=?',
+                    (value, 'synthetic-source-capability')),
+                'coding_capability_history.py:94-160 native ' + column,
+                CodingCapabilityHistoryError, 'coding_capability_history_invalid')
+        for name, sql in (
+            ('missing operation', "DELETE FROM audit_log WHERE action='coding_source_operation'"),
+            ('missing original', "DELETE FROM audit_log WHERE action='coding_source_admission' AND payload LIKE '%synthetic-source-capability%'"),
+            ('missing capability', "DELETE FROM workflow_authorization_revisions WHERE id='synthetic-source-capability'"),
+            ('missing own admission', "DELETE FROM workflow_admission_records WHERE id='synthetic-source-admission'"),
+            ('own namespace', "UPDATE workflow_admission_records SET namespace='org/foreign' WHERE id='synthetic-source-admission'"),
+            ('own generation', "UPDATE workflow_admission_records SET generation=2 WHERE id='synthetic-source-admission'"),
+            ('own request', "UPDATE workflow_admission_records SET request_digest='bad' WHERE id='synthetic-source-admission'"),
+            ('own principal', "UPDATE workflow_admission_records SET admitted_by='agent:foreign' WHERE id='synthetic-source-admission'"),
+            ('operation native agent', "UPDATE audit_log SET agent='foreign' WHERE action='coding_source_operation'"),
+            ('operation native task', "UPDATE audit_log SET task_id='source' WHERE action='coding_source_operation'"),
+            ('operation before mint', "UPDATE audit_log SET timestamp='2026-11-14T00:00:04.000000Z' WHERE action='coding_source_operation'"),
+            ('original before operation', corrupt_source_order),
+        ):
+            source_case(name, sql, '_coding_source_admission.py:68-151; coding_source_admission_history.py:136-167 ' + name)
+        for name, path, value in (
+            ('closed', ('extra',), True), ('format', ('format',), 'unknown'), ('org', ('org_slug',), 'foreign'),
+            ('principal', ('principal',), 'agent:foreign'), ('authorization', ('authorization_id',), 'foreign'),
+            ('admission', ('admission_id',), 'foreign'), ('session', ('session_id',), 'foreign'),
+            ('command encoding', ('command_bytes_base64',), 'e30='), ('command digest', ('command_digest',), '0' * 64),
+            ('created', ('created_at',), '2026-11-14T00:00:04.000000Z'),
+        ):
+            source_case('operation ' + name, lambda conn, path=path, value=value:
+                coding_json(conn, 'audit_log', 'payload', "action='coding_source_operation' AND payload LIKE '%synthetic-source-capability%'", path, value),
+                '_coding_source_admission.py:26-43,82-104 ' + name)
+        def source_command(conn, path, value):
+            import base64
+            import hashlib
+            row = conn.execute("SELECT id,payload FROM audit_log WHERE action='coding_source_operation' AND payload LIKE '%synthetic-source-capability%'").fetchone()
+            operation = json.loads(row[1])
+            command = json.loads(base64.b64decode(operation['command_bytes_base64']))
+            target = command
+            for key in path[:-1]:
+                target = target[key]
+            target[path[-1]] = value
+            raw = seq_history._bytes(command)
+            operation.update(command_bytes_base64=base64.b64encode(raw).decode(),
+                             command_digest=hashlib.sha256(raw).hexdigest())
+            conn.execute('UPDATE audit_log SET payload=? WHERE id=?', (seq_history._bytes(operation).decode(), row[0]))
+        for name, path, value in (
+            ('closed', ('extra',), True), ('format', ('format',), 'unknown'), ('operation', ('operation_key',), ''),
+            ('parent', ('parent_id',), 'foreign'), ('mapping id', ('mapping', 'id'), 'foreign'),
+            ('mapping generation', ('mapping', 'generation'), 2), ('mapping digest', ('mapping', 'digest'), '0' * 64),
+            ('action', ('action',), 'import-release-coding'), ('repository', ('work','repository_id'), 'workflow-repository:' + '0' * 64),
+            ('store owner', ('work','store_owner'), 'foreign'), ('format radius', ('work','object_format'), 'sha256'),
+            ('base', ('work','base'), '2' * 40), ('paths', ('work','paths'), ['other']),
+            ('commands', ('work','commands'), [['synthetic']]),
+        ):
+            source_case('command ' + name, lambda conn, path=path, value=value: source_command(conn, path, value),
+                'coding_saved_records.py:994-1017; _coding_source_admission.py:88-118 ' + name)
+        for name, path, value in (
+            ('closed', ('extra',), True), ('format', ('format',), 'unknown'), ('id', ('id',), 'foreign'),
+            ('parent', ('parent_id',), 'foreign'), ('level', ('level',), 'attempt'),
+            ('issuer kind', ('issuer','kind'), 'human'), ('issuer principal', ('issuer','principal'), 'foreign'),
+            ('issuer task', ('issuer','task_id'), 'source'), ('issuer session', ('issuer','session_id'), 'foreign'),
+            ('issuer result', ('issuer','result_id'), 1), ('subject org', ('subject','org_slug'), 'foreign'),
+            ('subject principal', ('subject','principal'), 'foreign'), ('subject team', ('subject','team'), 'foreign'),
+            ('subject source task', ('subject','source_task_id'), 'source'),
+            ('subject source session', ('subject','source_session_id'), 'foreign'),
+            ('subject instance', ('subject','instance_id'), 'foreign'), ('subject attempt', ('subject','attempt_id'), 'foreign'),
+            ('subject control', ('subject','control_id'), 'foreign'), ('subject task', ('subject','task_id'), 'source'),
+            ('subject session', ('subject','session_id'), 'foreign'),
+            ('action containment', ('action',), 'start-coding'),
+            ('repository containment', ('radius','repository_id'), 'workflow-repository:' + '0' * 64),
+            ('store containment', ('radius','store_owner'), 'foreign'), ('format containment', ('radius','object_format'), 'sha256'),
+            ('base syntax', ('radius','base'), 'bad'), ('path containment', ('radius','paths'), ['other']),
+            ('command containment', ('radius','commands'), [['synthetic']]),
+            ('provider closure', ('radius','provider_repository'), 'synthetic/foreign'),
+            ('PR closure', ('radius','pr_number'), 1), ('head closure', ('radius','expected_head'), '1' * 40),
+            ('head rule', ('radius','head_rule'), 'exact-subject@1'),
+            ('capture admission', ('authority','admission_record_id'), 'foreign'),
+            ('capture grant', ('authority','grant_digest'), '0' * 64),
+            ('capture pin', ('authority','pin','generation'), 2),
+            ('source admission', ('source_admission_id',), 'foreign'),
+            ('prior mint', ('created_at',), '2026-11-13T00:00:00.000000Z'),
+        ):
+            source_case('capability ' + name, lambda conn, path=path, value=value:
+                coding_json(conn, 'workflow_authorization_revisions', 'authority_bytes',
+                    "id='synthetic-source-capability'", path, value, digest_column='authority_digest'),
+                'coding_saved_records.py:807-940; coding_capability_history.py:143-169 ' + name,
+                CodingSavedRecordError, 'coding_saved_record_invalid')
+        for name, path, value in (
+            ('format', ('mapping','format'), 'unknown'),
+            ('adoption issuer', ('adoptions',0,'issuer','principal'), 'foreign'),
+            ('adoption origin', ('adoptions',0,'observed_origin_digest'), '0' * 64),
+            ('adoption identity', ('adoptions',0,'store_identity','repo_inode'), 5),
+            ('adoption time', ('adoptions',0,'observed_at'), '2026-11-15T00:00:00.000000Z'),
+            ('adoption checks', ('adoptions',0,'checks','no_helpers'), False),
+            ('adoption format', ('adoptions',0,'object_format'), 'sha256'),
+            ('binding recipient', ('mapping','repository_bindings',0,'binding','recipients',0,'principal'), 'foreign'),
+            ('binding authority', ('mapping','repository_bindings',0,'binding','authority','generation'), 2),
+            ('binding origin', ('mapping','repository_bindings',0,'binding','origin_digest'), '0' * 64),
+            ('adoption policy', ('mapping','repository_bindings',0,'adoption','policy'), 'unknown'),
+        ):
+            source_case('custody mapping ' + name, lambda conn, path=path, value=value:
+                coding_json(conn, 'workflow_coding_mappings', 'mapping_bytes', 'generation=1', path, value,
+                            digest_column='mapping_digest'),
+                'coding_saved_records.py:642-719; _coding_mapping_admission.py:91-116 ' + name,
+                CodingMappingHistoryError, 'coding_mapping_history_invalid')
+
+
+        for name, sql in (
+            ('native ancestor cycle', "UPDATE tasks SET parent_task_id='synthetic-capability-source' WHERE id='synthetic-source-ancestor'"),
+            ('native ancestor team', "UPDATE tasks SET team='foreign' WHERE id='synthetic-source-ancestor'"),
+            ('native ancestor created', "UPDATE tasks SET created_at='2026-11-13T00:00:00.000000Z' WHERE id='synthetic-source-ancestor'"),
+            ('native ancestor type', "UPDATE tasks SET task_type='subtask' WHERE id='synthetic-source-ancestor'"),
+            ('native result agent', "UPDATE task_results SET agent='foreign' WHERE task_id='synthetic-capability-source'"),
+            ('native result status', "UPDATE task_results SET status='' WHERE task_id='synthetic-capability-source'"),
+            ('native result timestamp', "UPDATE task_results SET created_at='bad' WHERE task_id='synthetic-capability-source'"),
+            ('native result decision', "UPDATE task_results SET decision_json='{' WHERE task_id='synthetic-capability-source'"),
+            ('native result risks', "UPDATE task_results SET risks_flagged='{' WHERE task_id='synthetic-capability-source'"),
+            ('native result jobs', "UPDATE task_results SET waiting_on_job_ids='{' WHERE task_id='synthetic-capability-source'"),
+            ('native result CI', "UPDATE task_results SET local_ci='{' WHERE task_id='synthetic-capability-source'"),
+            ('refinement missing parent operation', "DELETE FROM audit_log WHERE action='coding_source_operation' AND payload LIKE '%synthetic-source-capability%'"),
+            ('refinement operation order', "UPDATE audit_log SET id=5 WHERE action='coding_source_operation' AND payload LIKE '%synthetic-source-refinement%'"),
+            ('refinement native parent absent', "DELETE FROM workflow_authorization_revisions WHERE id='synthetic-source-capability'"),
+        ):
+            source_case(name, sql, 'coding_source_history.py:242-396; coding_source_admission_history.py:59-71; _coding_source_admission.py:120-140 ' + name)
+        for name, path, value in (
+            ('closed original', ('extra',), True),
+            ('original task link', ('task_record','columns',0,'value'), 'Zm9yZWlnbg=='),
+            ('original observed time', ('observed_at',), '2026-11-14T00:00:04.000000Z'),
+            ('original own admission', ('source_admission_id',), 'synthetic-refinement-admission'),
+            ('original native owner', ('native_owner','id'), 'synthetic-source-refinement'),
+            ('original session start', ('session_start_audit_id',), 999),
+            ('original command link', ('command_bytes_base64',), 'e30='),
+            ('original callback absence', ('callback_admission_audit_id',), 1),
+            ('original result absence', ('result',), {}),
+            ('original ancestor closure', ('ancestor_records',), []),
+        ):
+            source_case(name, lambda conn, path=path, value=value:
+                coding_json(conn, 'audit_log', 'payload',
+                    "action='coding_source_admission' AND payload LIKE '%synthetic-source-capability%'", path, value),
+                'coding_source_admission_history.py:74-97,138-167; _coding_source_capture.py:222-285 ' + name)
+        def refined_capability(conn, path, value):
+            import hashlib
+            coding_json(conn, 'workflow_authorization_revisions', 'authority_bytes',
+                "id='synthetic-source-refinement'", path, value, digest_column='authority_digest')
+            raw = conn.execute("SELECT authority_bytes FROM workflow_authorization_revisions WHERE id='synthetic-source-refinement'").fetchone()[0]
+            conn.execute("UPDATE workflow_admission_records SET request_digest=? WHERE id='synthetic-refinement-admission'",
+                         (hashlib.sha256(raw).hexdigest(),))
+        for name, path, value in (
+            ('refinement issuer equality', ('issuer','session_id'), 'foreign'),
+            ('refinement radius widening', ('radius','paths'), ['runtime/child', 'other']),
+            ('refinement source admission', ('source_admission_id',), 'synthetic-refinement-admission'),
+            ('refinement parent identity', ('parent_id',), 'foreign'),
+        ):
+            source_case(name, lambda conn, path=path, value=value: refined_capability(conn, path, value),
+                'coding_saved_records.py:944-984 ' + name, CodingSavedRecordError, 'coding_saved_record_invalid')
+
+
+        source_case('operation duplicate key', lambda conn: source_command(conn, ('operation_key',), 'synthetic-refinement'),
+            '_coding_mapping_admission.py:42-46 operation uniqueness',
+            CodingMappingHistoryError, 'coding_mapping_history_invalid')
+        def corrupt_parent_bytes(conn):
+            import base64
+            import hashlib
+            row = json.loads(conn.execute("SELECT authority_bytes FROM workflow_authorization_revisions WHERE id='synthetic-source-refinement'").fetchone()[0])
+            parent = json.loads(base64.b64decode(row['authority']['grant_bytes_base64']))
+            parent['created_at'] = '2026-11-14T00:00:04.000000Z'
+            raw = seq_history._bytes(parent)
+            row['authority'].update(grant_bytes_base64=base64.b64encode(raw).decode(), grant_digest=hashlib.sha256(raw).hexdigest())
+            raw = seq_history._bytes(row)
+            conn.execute("UPDATE workflow_authorization_revisions SET authority_bytes=?,authority_digest=? WHERE id='synthetic-source-refinement'",
+                         (raw, hashlib.sha256(raw).hexdigest()))
+            conn.execute("UPDATE workflow_admission_records SET request_digest=? WHERE id='synthetic-refinement-admission'",
+                         (hashlib.sha256(raw).hexdigest(),))
+        source_case('refinement native parent bytes', corrupt_parent_bytes,
+            'coding_capability_history.py:168-170 complete native parent byte equality',
+            CodingCapabilityHistoryError, 'coding_capability_history_invalid')
+
+        # Exact first owners: the shared capture inventory refuses malformed
+        # operations during mapping; native admissions and JSON retain their
+        # original categories rather than being relabeled as source errors.
+        from runtime.workflows.coding_authority_history import CodingAuthorityHistoryError
+        for name, error, code in (
+            ('Coding source native capability id', CodingSourceHistoryError, 'coding_source_history_invalid'),
+            ('Coding source missing original', CodingSourceHistoryError, 'coding_source_capture_unavailable'),
+            ('Coding source missing own admission', CodingAuthorityHistoryError, 'coding_authority_history_invalid'),
+            ('Coding source own namespace', CodingAuthorityHistoryError, 'coding_authority_history_invalid'),
+            ('Coding source own generation', CodingAuthorityHistoryError, 'coding_authority_history_invalid'),
+            ('Coding source own request', CodingAuthorityHistoryError, 'coding_authority_history_invalid'),
+            ('Coding source own principal', CodingAuthorityHistoryError, 'coding_authority_history_invalid'),
+            ('Coding source operation native agent', CodingMappingHistoryError, 'coding_mapping_history_invalid'),
+            ('Coding source operation before mint', CodingMappingHistoryError, 'coding_mapping_history_invalid'),
+            ('Coding source operation closed', CodingMappingHistoryError, 'coding_mapping_history_invalid'),
+            ('Coding source operation format', CodingMappingHistoryError, 'coding_mapping_history_invalid'),
+            ('Coding source operation org', CodingMappingHistoryError, 'coding_mapping_history_invalid'),
+            ('Coding source operation principal', CodingMappingHistoryError, 'coding_mapping_history_invalid'),
+            ('Coding source operation command encoding', CodingMappingHistoryError, 'coding_mapping_history_invalid'),
+            ('Coding source operation command digest', CodingMappingHistoryError, 'coding_mapping_history_invalid'),
+            ('Coding source command closed', CodingMappingHistoryError, 'coding_mapping_history_invalid'),
+            ('Coding source command format', CodingMappingHistoryError, 'coding_mapping_history_invalid'),
+            ('Coding source command operation', CodingMappingHistoryError, 'coding_mapping_history_invalid'),
+            ('Coding source command format radius', CodingMappingHistoryError, 'coding_mapping_history_invalid'),
+            ('Coding source capability id', CodingCapabilityHistoryError, 'coding_capability_history_invalid'),
+            ('Coding source native ancestor cycle', CodingSourceHistoryError, 'coding_source_history_invalid'),
+            ('Coding source native ancestor created', CodingSourceHistoryError, 'coding_source_history_invalid'),
+            ('Coding source native ancestor type', CodingSourceHistoryError, 'coding_source_history_invalid'),
+            ('Coding source native result status', CodingAuthorityHistoryError, 'coding_authority_history_invalid'),
+            ('Coding source native result decision', json.JSONDecodeError, 'Expecting property name enclosed in double quotes: line 1 column 2 (char 1)'),
+            ('Coding source native result risks', json.JSONDecodeError, 'Expecting property name enclosed in double quotes: line 1 column 2 (char 1)'),
+            ('Coding source native result jobs', json.JSONDecodeError, 'Expecting property name enclosed in double quotes: line 1 column 2 (char 1)'),
+            ('Coding source native result CI', json.JSONDecodeError, 'Expecting property name enclosed in double quotes: line 1 column 2 (char 1)'),
+            ('Coding source closed original', CodingMappingHistoryError, 'coding_mapping_history_invalid'),
+            ('Coding source original task link', CodingMappingHistoryError, 'coding_mapping_history_invalid'),
+            ('Coding source original callback absence', CodingMappingHistoryError, 'coding_mapping_history_invalid'),
+            ('Coding source original result absence', CodingMappingHistoryError, 'coding_mapping_history_invalid'),
+            ('Coding source original ancestor closure', CodingMappingHistoryError, 'coding_mapping_history_invalid'),
+        ):
+            coding_source_refusals[name] = (error, code)
+
+        coding_history_corruptions = tuple((name, mutation) for name, mutation, _ in coding_history_checks)
+        coding_history_names = {name for name, _ in coding_history_corruptions}
+        refusal_codes.update({name: 'coding_mapping_history_invalid' for name in coding_history_names})
+        refusal_codes.update({name: refusal[1] for name, refusal in coding_source_refusals.items()})
+
+
         if sys.argv[1:] == ['--retained-corruption']:
             corruptions = ()
         corruptions += tuple((name, mutation) for name, mutation, _ in retained_corruptions)
@@ -1839,6 +2707,10 @@ if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--seque
             corruptions = family_corruptions
         elif sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-corruption'], ['--document-coding-corruption']):
             corruptions += family_corruptions
+        if sys.argv[1:] == ['--coding-history-corruption']:
+            corruptions = coding_history_corruptions
+        elif sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-corruption'], ['--document-coding-corruption']):
+            corruptions += coding_history_corruptions
         def corrupt_physical_index(connection, *, surplus):
             # Synthetic private corruption: preserve the exact index definition
             # while making SQLite change its table without index maintenance.
@@ -1899,6 +2771,8 @@ if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--seque
                     populate_handoff_graph(db)
                 if name in family_populators:
                     family_populators[name](db)
+                if name in coding_history_names:
+                    (populate_coding_source if name in coding_source_names else populate_coding_mapping)(db)
                 if name in coding_import_names or name in coding_setup_names:
                     populate_coding_authority(db, setup=name in coding_setup_names)
                 # Warm outside the new owner too: a forbidden cross-load cache
@@ -1952,6 +2826,9 @@ if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--seque
                         elif name == 'document compiler pin':
                             from runtime.workflows.templates import WorkflowTemplateError
                             error_type = WorkflowTemplateError
+                        elif name in coding_history_names:
+                            from runtime.workflows.coding_mapping_history import CodingMappingHistoryError
+                            error_type = coding_source_refusals[name][0] if name in coding_source_names else CodingMappingHistoryError
                         elif name in coding_setup_names:
                             from runtime.workflows.coding_authority_history import CodingAuthorityHistoryError
                             error_type = CodingAuthorityHistoryError
@@ -1976,7 +2853,7 @@ if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--seque
                     corruption_failures.append((name, phase, str(exc)))
                     print('FAIL A0b sequential corruption matrix:', name, phase, str(exc), flush=True)
         assert not corruption_failures, 'sequential corruption matrix failures: ' + repr(corruption_failures)
-        if sys.argv[1:] in (['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--coding-authority-corruption'], ['--document-native-corruption'], ['--author-handoff-corruption'], ['--document-revision-corruption'], ['--physical-corruption'], ['--sequential-uncommitted']):
+        if sys.argv[1:] in (['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--coding-authority-corruption'], ['--document-native-corruption'], ['--author-handoff-corruption'], ['--document-revision-corruption'], ['--coding-history-corruption'], ['--physical-corruption'], ['--sequential-uncommitted']):
             raise SystemExit(0)
 
     if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-faults'], ['--sequential-sql-exhaustion']):
@@ -2798,6 +3675,35 @@ if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--seque
                         db._conn.rollback()
                 print('PASS A0b sequential corruption:', 'external' if external else 'local', 'exact fresh refusal')
 
+            for variant in ('mark', 'schema'):
+                with org_load_validation(db, org_slug='scratch'):
+                    seq_read(db)
+                    owner = load_guard._current.get()
+                    hits, local = owner.hits, db._conn.total_changes
+                    before = db._conn.execute('PRAGMA main.data_version').fetchone()[0]
+                    with sqlite3.connect(db.db_path) as writer:
+                        writer.execute("UPDATE workflow_task_ownership SET org_slug='wrong'" if variant == 'mark' else
+                                       'ALTER TABLE workflow_seq_definitions ADD COLUMN unexpected TEXT')
+                        writer.commit()
+                        changed = db._conn.execute('PRAGMA main.data_version').fetchone()[0]
+                        assert changed != before and db._conn.total_changes == local, 'external mutation omitted independent version/counter evidence'
+                        expected = sequential_outcome(lambda: read_sequential_history(db._conn, expected_org_slug='scratch').retained)
+                        actual = sequential_outcome(lambda: seq_read(db))
+                        assert actual == expected and actual[0] == 'refused', 'external ' + variant + ' escaped complete refusal'
+                        assert all(kind is not ReadExhaustion for kind, _ in actual[1]), 'external mutation hidden by exhaustion'
+                        assert owner.hits == hits and owner.sequential_saved is None
+                        writer.execute("UPDATE workflow_task_ownership SET org_slug='scratch'" if variant == 'mark' else
+                                       'ALTER TABLE workflow_seq_definitions DROP COLUMN unexpected')
+                        writer.commit()
+                    assert db._conn.execute('PRAGMA main.data_version').fetchone()[0] != changed
+                    assert db._conn.total_changes == local
+                    full = sql.count('PRAGMA integrity_check')
+                    restored = seq_read(db)
+                    assert restored == read_sequential_history(db._conn, expected_org_slug='scratch').retained
+                    assert sql.count('PRAGMA integrity_check') == full + 2 and owner.hits == hits, 'external restoration reused a certificate'
+                    assert not db._conn.in_transaction
+                print('PASS A0b sequential external restore:', variant, 'data_version changed, local counter fixed, fresh complete read')
+
             for exclusion in ('arbitrary snapshot', 'public', 'nondefault budget', 'unaccounted budget', 'validator policy'):
                 with org_load_validation(db, org_slug='scratch'):
                     seq_read(db)
@@ -3008,6 +3914,18 @@ if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--seque
             # prepared ordinary journal for the measured first/next pair.
             state = OrgState.load(slug='scratch', root=root, settings=Settings())
             state.close()
+            control_sql = []
+            @contextmanager
+            def uncached_load(database, **kwargs):
+                with database.observe_trace(control_sql.append):
+                    yield
+            with patch.object(org_state_module, 'org_load_validation', uncached_load):
+                state = OrgState.load(slug='scratch', root=root, settings=Settings())
+                assert state.naming_readiness == 'ready'
+                state.close()
+            assert control_sql.count('PRAGMA integrity_check') == 10, 'uncached whole-load control did not execute ten complete reads'
+            assert control_sql.count('PRAGMA foreign_key_check') == 10, 'uncached whole-load control omitted FK checks'
+            print('PASS A0b actual sequential OrgState.load: uncached control ten full integrity/FK reads')
             store = TaskPauseStore(db, 'scratch')
             fingerprint = dict(status='pending', block_kind=None, count=0,
                 session_id=None, agent=None, fanout=None, jobs=None, parent=None, brief_digest='0' * 64)
@@ -3070,6 +3988,10 @@ gate_cases = (
     ('nullable-text', (4, "'nullable'"), {}, 8192, 8, None, (16, 1, 7)),
     ('empty-text', (0, "''"), {}, 8192, 8, None, (2, 1, 7)),
     ('empty-blob', (1, "X''"), {}, 8192, 8, None, (6, 1, 7)),
+    ('SQL-TRUE-integer', (2, 'TRUE'), {}, 8192, 8, None, (8, 1, 7)),
+    ('SQL-FALSE-integer', (2, 'FALSE'), {}, 8192, 8, None, (8, 1, 7)),
+    ('minimum-integer-cell', (2, '-9223372036854775808'), {}, 8192, 8, None, (8, 1, 7)),
+    ('maximum-integer-cell', (2, '9223372036854775807'), {}, 8192, 8, None, (8, 1, 7)),
     ('exact-value-limit', (0, "'12345678'"), {}, 8192, 8, None, (10, 1, 7)),
     ('over-value-limit', (0, "'123456789'"), {}, 8192, 8, 'withheld', (0, 1, 1)),
     ('oversized-blob', (1, 'zeroblob(9)'), {}, 8192, 8, 'withheld', (0, 1, 1)),
@@ -3113,6 +4035,7 @@ for label, replacement, initial, maximum, cap, phase, deltas in gate_cases:
             assert phase is not None and str(exc) == 'coding_authority_history_invalid', (label, exc)
         else:
             assert phase is None and rows == [(*expected_values, *expected_types)], (label, rows)
+            assert tuple(type(value) for value in rows[0][:5]) == tuple(type(value) for value in expected_values), label
         assert tuple(value - old for value, old in zip(
             (budget.consumed, budget.accepted_rows, budget.traversed), before)) == deltas, label
         if conn.fetched:

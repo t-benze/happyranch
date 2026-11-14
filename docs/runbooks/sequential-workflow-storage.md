@@ -13,11 +13,15 @@ capacity acceptance requires actual default writable installed danze, family and
 genuine fresh-org FIRST/NEXT returns on Python3.12/3.14. Installed happyranch's
 FIRST and attempted NEXT must refuse with zero DB changes, no partial certificate
 and no leaked trace registration: **EXPECTED REFUSAL - part 1 retained until I2**,
-never PASS. Compare the same private image once at the original pre-A0b-2 base.
+never PASS. Retain the once-only original pre-A0b-2 observation of that private
+image; continuation and head re-verification must not repeat it.
 Installed happyranch FIRST/NEXT/Pause/all-org-tail capacity acceptance belongs to
 I2, on its fresh base and capture; all other A0b-2 cases remain required. No cap,
 check, deadline or caller changes here. Automatic install stays size-guarded/held
 for over-budget orgs; no setup or operating authority follows.
+The [v3/F1 case map](../local-ci.md#a0b-2-requirement-to-case-map-v3-section-4-and-f1)
+records each named assertion and the separately evidenced old-Coding queued-family
+applicability limit. It is not an executed capacity or readiness receipt.
 
 A0b finite SQL prerequisite: complete readers materialize shared singleton row
 shape/size once and specialize equivalent ownership type predicates. The private

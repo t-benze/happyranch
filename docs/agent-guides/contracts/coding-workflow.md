@@ -138,6 +138,13 @@ is still acquired/decoded under the original limits only after the whole-table
 type/size prerequisite passes in the same snapshot. This does not extend the
 load reuse contract above or remove any physical/FK/history check. See the
 [shared finite SQL contract](reusable-workflows.md) for the unchanged charges.
+The A0b-2 [requirement-to-case map](../../local-ci.md#a0b-2-requirement-to-case-map-v3-section-4-and-f1)
+distinguishes reachable nonallocating source/mapping/settings history from the
+old queued-family column limitation. The original Coding reconstruction retains
+27 task columns; today's native schema has 30. Full matching therefore refuses
+even NULL override columns in an archival queued or cancelled graph. Fresh old
+starts are retired; this prerequisite neither repairs that reader nor drops
+columns or weakens equality. The manager routes the latent defect separately.
 Before any workflow DDL, the entire reserved coding family is observed. Partial,
 extra, case-changed, wrong-kind or malformed objects and real shared dependency
 failures refuse without repair or adoption. Body/interruption
