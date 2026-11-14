@@ -114,10 +114,10 @@ def command(argv: list[str], cwd: Path, env: dict[str, str], seconds: float,
 
 
 def build_failure_evidence(out: Path) -> dict[str, Any]:
-    """Keep the full fixed-row verifier failure before outer scratch removal."""
+    """Keep bounded resource/archive verifier failures before scratch removal."""
     path = out / 'diagnostics/resource-failure.json'
     if not path.exists():
-        return {'status': 'NOT_AVAILABLE', 'reason': 'resource verifier failure file absent'}
+        return {'status': 'NOT_AVAILABLE', 'reason': 'resource/archive verifier failure file absent'}
     if path.is_symlink() or not path.is_file():
         raise RuntimeError('unsafe resource failure evidence')
     with path.open('rb') as stream:
@@ -125,7 +125,11 @@ def build_failure_evidence(out: Path) -> dict[str, Any]:
     if len(raw) > 49152:
         raise RuntimeError('resource failure evidence cap')
     value = json.loads(raw)
-    if value.get('error') != 'RESOURCE_VERIFICATION_FAILED' or not isinstance(value.get('detail'), list):
+    resource = value.get('error') == 'RESOURCE_VERIFICATION_FAILED' and isinstance(value.get('detail'), list)
+    membership = (value.get('error') == 'ARCHIVE_IDENTITY_MISMATCH'
+                  and isinstance(value.get('detail'), dict)
+                  and value['detail'].get('reason') == 'archive membership')
+    if not (resource or membership):
         raise RuntimeError('invalid resource failure evidence')
     return {'status': 'COMPLETE', 'bytes': len(raw), 'sha256': hashlib.sha256(raw).hexdigest(),
             'report': value}

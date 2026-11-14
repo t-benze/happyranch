@@ -501,6 +501,14 @@ frozen CLI `skills catalog list --json` and `validate --json` outside checkout,
 without root/policy overrides; exit zero alone is insufficient. Ordinary-reader
 execution stays explicitly UNEXECUTED.
 
+Archive mode compares membership before ZIP notice/resource/member lookups, so
+missing entries produce structured `ARCHIVE_IDENTITY_MISMATCH` diagnostics.
+Sorted extra/absent names (first64 each, at most256 JSON bytes/name) include total,
+omitted and truncated-name counts plus duplicate count. Unknown metadata is still
+refused. The shipping archive passes the existing dedicated error-evidence path
+through the build trap and packaged harness into the collected probe, preserving
+the report after scratch removal independently of the command tail.
+
 After all prerequisites, `ditto -c -k --keepParent` creates
 `HappyRanch-VERSION-BUILD-arm64.zip`. `archive --app APP --archive ZIP --run-id ID`
 compares full ZIP member bytes/modes/targets against canonical app inventory and

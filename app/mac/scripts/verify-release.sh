@@ -142,7 +142,9 @@ def fail(code, detail):
         except (OSError, ValueError):
             print('NATIVE_FAILURE_EVIDENCE_WRITE_REFUSED', file=sys.stderr)
     value = {'error': code, 'detail': detail, 'available': False, 'approved_url': None}
-    if code == 'RESOURCE_VERIFICATION_FAILED' and getattr(a, 'resource_evidence', None):
+    membership = (code == 'ARCHIVE_IDENTITY_MISMATCH' and isinstance(detail, dict)
+                  and detail.get('reason') == 'archive membership')
+    if (code == 'RESOURCE_VERIFICATION_FAILED' or membership) and getattr(a, 'resource_evidence', None):
         raw = (json.dumps(value, sort_keys=True) + '\n').encode()
         if len(raw) > 49152:
             raise ValueError('RESOURCE_EVIDENCE_CAP_EXCEEDED')
@@ -672,12 +674,36 @@ try:
               'signature_notary_staple_acceptance': 'UNPROVEN', 'available': False, 'approved_url': None})
     elif a.mode == 'archive':
         basic(a.app, **selection)
+        inv = inventory(a.app)
+        with zipfile.ZipFile(a.archive) as z:
+            expected_names = {'HappyRanch.app/' + r['path'] + ('/' if r['type'] == 'directory' else '') for r in inv['members']}
+            names = z.namelist()
+            actual_names = set(names) - {'HappyRanch.app/'}
+            extra = sorted(actual_names - expected_names)
+            absent = sorted(expected_names - actual_names)
+            duplicates = len(names) - len(set(names))
+            if extra or absent or duplicates:
+                # Keep the existing 48KiB error/probe transport bounded even
+                # for long names, control characters and escaped Unicode.
+                detail = {'reason': 'archive membership', 'duplicate_count': duplicates,
+                          'member_limit': 64, 'name_json_bytes_limit': 256}
+                for key, values in (('extra', extra), ('absent', absent)):
+                    selected, truncated = [], 0
+                    for name in values[:64]:
+                        prefix = name[:256]
+                        while len(json.dumps(prefix).encode()) > 256:
+                            prefix = prefix[:-1]
+                        truncated += prefix != name
+                        selected.append(prefix)
+                    detail.update({key: selected, key + '_count': len(values),
+                                   key + '_omitted': max(0, len(values) - 64),
+                                   key + '_truncated_names': truncated})
+                fail('ARCHIVE_IDENTITY_MISMATCH', detail)
         notice_receipt = notices['validate'](a.app)
         if notices['validate_archive'](a.archive) != notice_receipt:
             fail('MANIFEST_NOTICE_ARCHIVE_MISMATCH', 'candidate and archive notice receipts differ')
         resources(a.app, a.archive, **selection)
         with zipfile.ZipFile(a.archive) as z:
-            inv = inventory(a.app)
             for row in inv['members']:
                 name = 'HappyRanch.app/' + row['path'] + ('/' if row['type'] == 'directory' else '')
                 entry = z.getinfo(name)
@@ -687,9 +713,6 @@ try:
                     fail('ARCHIVE_IDENTITY_MISMATCH', name + ': bytes')
                 if row['type'] == 'symlink' and z.read(entry).decode() != row['target']:
                     fail('ARCHIVE_IDENTITY_MISMATCH', name + ': symlink')
-            expected_names = {'HappyRanch.app/' + r['path'] + ('/' if r['type'] == 'directory' else '') for r in inv['members']}
-            if set(z.namelist()) - {'HappyRanch.app/'} != expected_names:
-                fail('ARCHIVE_IDENTITY_MISMATCH', 'extra or absent members')
         info = plistlib.loads((a.app / 'Contents/Info.plist').read_bytes())
         emit({'role': 'unsigned-inner-zip', 'filename': a.archive.name,
               'size': a.archive.stat().st_size, 'sha256': digest(a.archive),

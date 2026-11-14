@@ -29,13 +29,11 @@ integration remains SKIPPED under THR-243 seq42, not PASS.
 C7 adds frozen argv/default-or-explicit helper, missing/moved executable drift,
 and real hidden-dispatch parser coverage to the installer selection. The bundle
 selection reuses `packaging/verify_manifest_notices.py` with the existing
-verifier's SHA-checked historical resource blobs; its default current-source
-baseline checks remain intact. It checks the actual notice collector/validator,
+verifier's exact committed-source resource blobs. It checks the actual notice collector/validator,
 the portable basic bundle reader with synthetic Mach-O headers, and both
 signing scripts' actual inventory function. No codesign, app build, packaged
-execution or native launchd acceptance is implied. Current-source resource
-baseline drift is outside this focused selection and must be reconciled by the
-packaged-app owner before that acceptance.
+execution or native launchd acceptance is implied. Packaged resource expectations
+now derive from committed Git identity; the fixed path/mode checks remain.
 
 ## Frozen repository child launch regressions (THR-346 P2)
 

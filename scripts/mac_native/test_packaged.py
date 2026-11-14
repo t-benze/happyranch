@@ -5,6 +5,9 @@ import ast
 import hashlib
 import json
 import plistlib
+import runpy
+import shlex
+import shutil
 import stat
 import zipfile
 import os
@@ -13,12 +16,161 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import warnings
 from unittest.mock import patch
 
 from scripts.mac_native import suite_packaged as suite
 
 
 class PackagedHarnessTests(unittest.TestCase):
+    def archive_fixture(self, root: Path) -> tuple[Path, Path, dict]:
+        fixture = runpy.run_path(str(suite.ROOT / 'packaging/verify_manifest_notices.py'))
+        source, output, app, mapping = fixture['fixture'](root)
+        for directory in (output, output / 'diagnostics', app):
+            directory.chmod(0o700)
+        fixture['H']['collect'](source, app, output, mapping)
+        return output, app, fixture
+
+    def test_archive_membership_names_survive_trap_harness_collection_and_scratch_removal(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder).resolve()
+            output, _app, fixture = self.archive_fixture(root / 'fixture')
+            sha, tree = fixture['SOURCE_SHA'], fixture['SOURCE_TREE']
+            extra = ['__MACOSX/HappyRanch.app/._X', '.DS_Store', 'HappyRanch.app/.DS_Store']
+            absent = ['HappyRanch.app/Contents/Info.plist',
+                      'HappyRanch.app/Contents/Resources/licenses/LICENSE',
+                      'HappyRanch.app/Contents/Resources/daemon/_internal/runtime/skills/README.md']
+            bindir = root / 'bin'
+            bindir.mkdir()
+            ditto = bindir / 'ditto'
+            ditto.write_text('#!' + sys.executable + '\n' +
+                'import pathlib,sys,zipfile\n' +
+                'assert sys.argv[1:4] == ["-c", "-k", "--keepParent"]\n' +
+                'app=pathlib.Path(sys.argv[-2])\n' +
+                'with zipfile.ZipFile(sys.argv[-1], "x", zipfile.ZIP_DEFLATED) as z:\n' +
+                ' for p in sorted(app.rglob("*")):\n' +
+                '  name="HappyRanch.app/"+p.relative_to(app).as_posix()\n' +
+                '  if name not in ' + repr(absent) + ': z.write(p,name)\n' +
+                ' for name in ' + repr(extra) + ': z.writestr(name,b"injected extra")\n')
+            ditto.chmod(0o755)
+            build = (suite.ROOT / 'app/mac/scripts/build-app.sh').read_text()
+            finish = build[build.index('finish() {'):build.index('trap finish EXIT')]
+            real_command = suite.command
+            shipping_archive = suite.ROOT / 'app/mac/scripts/archive-app.sh'
+            source = root / 'checkout'
+            source.mkdir()
+            report = {'suite': 'packaged', 'platform': 'darwin'}
+            build_out = root / 'packaged/build'
+
+            def failed_build(argv: list[str], *_args) -> dict:
+                out = Path(argv[argv.index('--output-dir') + 1])
+                self.assertEqual(out, build_out)
+                shutil.move(str(output), str(out))
+                archive = ['bash', str(shipping_archive), str(out / 'HappyRanch.app'), str(out),
+                           '1.0.1', '1.0.1', sha, tree, 'arm64', 'synthetic']
+                script = finish + '\ntrap finish EXIT\n' + shlex.join(archive)
+                env = dict(os.environ, PATH=str(bindir) + ':' + os.environ['PATH'],
+                           OUTPUT=str(out), STAGE='archive', RUN_ID='synthetic',
+                           SOURCE_SHA=sha, SOURCE_TREE=tree, VERSION='1.0.1', BUILD='1.0.1', ARCH='arm64')
+                return real_command(['bash', '-ec', script], root, env, 30)
+
+            with (patch.object(suite, 'ROOT', source),
+                  patch.dict(os.environ, {'TMPDIR': str(root / 'tmp'), 'SOURCE_SHA': sha}),
+                  patch.object(suite, 'census', return_value=[]),
+                  patch.object(suite, 'checked', return_value={'tail': sha}),
+                  patch.object(suite, 'command', side_effect=failed_build),
+                  patch('scripts.mac_native.suite_toolchain.executor_feasibility', return_value={}),
+                  patch('scripts.mac_native.toolchain.provision', return_value={})):
+                with self.assertRaisesRegex(RuntimeError, 'documented app build failed'):
+                    suite.run(report)
+            kept = report['packaged']['build_failure_evidence']
+            self.assertEqual(kept['status'], 'COMPLETE', report)
+            failure = kept['report']
+            self.assertEqual(failure['error'], 'ARCHIVE_IDENTITY_MISMATCH')
+            for key, names in (('extra', extra), ('absent', absent)):
+                self.assertEqual(failure['detail'][key], sorted(names))
+                self.assertEqual(failure['detail'][key + '_count'], len(names))
+                self.assertEqual(failure['detail'][key + '_omitted'], 0)
+            self.assertEqual(report['steps']['1']['status'], 'FAIL')
+            bounded = build_out / 'diagnostics/bounded'
+            index = json.loads((bounded / 'evidence-index.json').read_text())
+            row = next(r for r in index['inputs'] if r['name'] == 'resource-failure.json')
+            self.assertTrue(row['complete'])
+            self.assertEqual(json.loads((bounded / row['artifact']).read_bytes()), failure)
+            self.assertEqual(kept['sha256'], hashlib.sha256(
+                (build_out / 'diagnostics/resource-failure.json').read_bytes()).hexdigest())
+            probe = root / 'probe.json'
+            probe.write_text(json.dumps(report))
+            identity = root / 'identity.txt'
+            identity.write_text('source_sha=' + sha + '\nsuite=packaged\nscratch_removed=true\n')
+            shutil.rmtree(build_out)
+            self.assertFalse(build_out.exists())
+            collected = root / 'collected.json'
+            result = subprocess.run([sys.executable, '-B', str(suite.ROOT / 'scripts/mac_native/collect_packaged.py'),
+                '--probe', str(probe), '--identity', str(identity), '--source-sha', sha,
+                '--output', str(collected)], capture_output=True, text=True, timeout=5)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            final = json.loads(collected.read_bytes())
+            self.assertEqual(final['packaged']['build_failure_evidence'], kept)
+            self.assertEqual(final['steps']['8']['status'], 'PASS')
+
+    def test_archive_membership_diagnostics_cover_empty_classes_duplicates_and_bounds(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder).resolve()
+            _output, app, _fixture = self.archive_fixture(root)
+            members = {'HappyRanch.app/' + p.relative_to(app).as_posix() + ('/' if p.is_dir() else ''): p
+                       for p in sorted(app.rglob('*'))}
+            archive = root / 'candidate.zip'
+            ordinary = 'HappyRanch.app/Contents/Info.plist'
+            resource = 'HappyRanch.app/Contents/Resources/daemon/_internal/runtime/skills/README.md'
+            notice = 'HappyRanch.app/Contents/Resources/licenses/LICENSE'
+            long_names = ['HappyRanch.app/extra/' + f'{i:03d}' + '\x01\u2603' * 200 for i in range(70)]
+            cases = [('extra', ['HappyRanch.app/.DS_Store'], [], False),
+                     ('ordinary absent', [], [ordinary], False),
+                     ('resource absent', [], [resource], False),
+                     ('notice absent', [], [notice], False),
+                     ('duplicate', [], [], True),
+                     ('bounded', long_names, sorted(members)[:70], False)]
+            for case, extra, absent, duplicate in cases:
+                with self.subTest(case=case):
+                    with zipfile.ZipFile(archive, 'w', zipfile.ZIP_DEFLATED) as z:
+                        for name, path in members.items():
+                            if name not in absent:
+                                z.write(path, name)
+                        for name in extra:
+                            z.writestr(name, b'injected extra')
+                        if duplicate:
+                            # Duplicate app-root entries do not change set membership.
+                            z.writestr('HappyRanch.app/', b'')
+                            with warnings.catch_warnings():
+                                warnings.simplefilter('ignore', UserWarning)
+                                z.writestr('HappyRanch.app/', b'')
+                    evidence = root / (case + '.json')
+                    result = subprocess.run(['bash', str(suite.ROOT / 'app/mac/scripts/verify-release.sh'),
+                        'archive', '--app', str(app), '--archive', str(archive), '--run-id', 'synthetic',
+                        '--resource-evidence', str(evidence)], capture_output=True, text=True, timeout=15)
+                    self.assertEqual(result.returncode, 1, result.stderr)
+                    self.assertTrue(evidence.is_file(), result.stderr)
+                    raw = evidence.read_bytes()
+                    failure = json.loads(raw)
+                    self.assertEqual(failure, json.loads(result.stderr))
+                    self.assertEqual(failure['error'], 'ARCHIVE_IDENTITY_MISMATCH')
+                    detail = failure['detail']
+                    self.assertEqual(detail['duplicate_count'], int(duplicate))
+                    for key, names in (('extra', extra), ('absent', absent)):
+                        self.assertEqual(detail[key + '_count'], len(names))
+                        self.assertEqual(detail[key + '_omitted'], max(0, len(names) - 64))
+                        self.assertEqual(len(detail[key]), min(64, len(names)))
+                        self.assertEqual(detail[key], sorted(detail[key]))
+                        if case != 'bounded':
+                            self.assertEqual(detail[key], sorted(names))
+                            self.assertEqual(detail[key + '_truncated_names'], 0)
+                        self.assertTrue(all(len(json.dumps(name).encode()) <= 256 for name in detail[key]))
+                    if case == 'bounded':
+                        self.assertEqual(detail['extra_truncated_names'], 64)
+                        self.assertEqual(detail['absent_count'], 70)
+                        self.assertLess(len(raw), 49152)
+
     def resource_fixture(self, root: Path) -> tuple[Path, list[dict], str, str]:
         script = suite.ROOT / 'app/mac/scripts/verify-release.sh'
         text = script.read_text().split("<<'PYTHON'\n", 1)[1].rsplit('\nPYTHON', 1)[0]

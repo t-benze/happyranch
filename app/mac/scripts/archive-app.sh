@@ -31,6 +31,7 @@ PYPATH
 python3 "$SCRIPT_DIR/manifest_notices.py" verify --app "$APP" > "$OUTPUT/diagnostics/manifest-notice-verification.json"
 bash "$SCRIPT_DIR/verify-release.sh" basic --app "$APP" --source-sha "$SOURCE_SHA" --source-tree "$SOURCE_TREE" > "$OUTPUT/diagnostics/basic-app.json"
 ditto -c -k --keepParent "$APP" "$ZIP"
-bash "$SCRIPT_DIR/verify-release.sh" archive --app "$APP" --archive "$ZIP" --source-sha "$SOURCE_SHA" --source-tree "$SOURCE_TREE" --run-id "$RUN_ID" > "$OUTPUT/diagnostics/inner-zip.json"
+bash "$SCRIPT_DIR/verify-release.sh" archive --app "$APP" --archive "$ZIP" --source-sha "$SOURCE_SHA" --source-tree "$SOURCE_TREE" --run-id "$RUN_ID" \
+    --resource-evidence "$OUTPUT/diagnostics/resource-failure.json" > "$OUTPUT/diagnostics/inner-zip.json"
 bash "$SCRIPT_DIR/verify-release.sh" reconcile --archive "$ZIP" --receipt "$OUTPUT/diagnostics/inner-zip.json" \
     --version "$VERSION" --build "$BUILD" --source-sha "$SOURCE_SHA" --source-tree "$SOURCE_TREE" --arch "$ARCH" --run-id "$RUN_ID" > "$OUTPUT/diagnostics/reconciliation.json"

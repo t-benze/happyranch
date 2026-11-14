@@ -495,6 +495,14 @@ On a resource verification failure, the wrapper writes the whole error list to
 bounded diagnostics, and the harness copies its parsed report, byte count and
 SHA-256 into `probe.json.packaged.build_failure_evidence` before outer EXIT.
 The entire list survives collection independently of the2KiB command tail.
+Archive membership failures use that same dedicated error file and transport.
+Before any ZIP member lookup, archive verification reports sorted `extra` and
+`absent` lists, total counts, omitted counts, truncated-name counts and duplicate
+count. Each list retains at most64 names; each name's JSON encoding is at most
+256 bytes. The original archive failure remains a refusal, including unknown
+macOS metadata members. These diagnostics survive build trap, harness capture
+and the collected probe after scratch removal; they do not identify build29's
+lost member names or prove an AppleDouble cause.
 The final EXIT collector writes compact JSON so diagnostic rows do not expand
 past its existing64KiB artifact limit; it preserves all parsed values.
 
