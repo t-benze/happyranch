@@ -68,6 +68,7 @@ final class ManagedJoinModel: ObservableObject {
     private var profile: ManagedJoinProfile?
     private var prepared = false
     private var networkSubmitted = false
+    private var blockedResumeIDs: Set<String> = []
 
     var busy: Bool { phase.busy }
     var canConfirmRevoked: Bool { !busy && (profile != nil || profiles.contains(where: { $0.uuid == selectedProfileID })) }
@@ -111,12 +112,17 @@ final class ManagedJoinModel: ObservableObject {
 
     static func validatedControlURL(_ input: String) throws -> String {
         guard !input.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }),
-              let parts = URLComponents(string: input), parts.scheme?.lowercased() == "https",
-              let host = parts.host, !host.isEmpty, parts.user == nil, parts.password == nil,
-              parts.query == nil, parts.fragment == nil,
+              var parts = URLComponents(string: input), parts.scheme?.lowercased() == "https",
+              let host = parts.host, !host.isEmpty,
+              !host.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) || CharacterSet.whitespaces.contains($0) }),
+              parts.user == nil, parts.password == nil, parts.query == nil, parts.fragment == nil,
+              parts.path.isEmpty || parts.path == "/",
               parts.port == nil || (1...65535).contains(parts.port!),
-              let url = parts.url else { throw ManagedNetworkError.invalidConfiguration }
-        return url.absoluteString
+              parts.url != nil else { throw ManagedNetworkError.invalidConfiguration }
+        parts.scheme = "https"
+        parts.host = host.lowercased()
+        parts.path = ""
+        return parts.string!
     }
 
     static func validTarget(_ host: String, port: String) -> UInt16? {
@@ -145,10 +151,13 @@ final class ManagedJoinModel: ObservableObject {
 
     func resume(homeHost: String, port: String) {
         guard !busy, custodyReady, bridge == nil,
-              let saved = profiles.first(where: { $0.uuid == selectedProfileID }),
-              let homePort = Self.validTarget(homeHost, port: port) else { return }
+              let saved = profiles.first(where: { $0.uuid == selectedProfileID }) else { return }
+        guard let homePort = Self.validTarget(homeHost, port: port) else {
+            phase = .error("Enter a home tailnet address and a port from 1 to 65535.")
+            return
+        }
         do {
-            guard try !saved.isRevoked() else { phase = .revoked; return }
+            guard !blockedResumeIDs.contains(saved.uuid), try !saved.isRevoked() else { phase = .revoked; return }
             _ = try Self.validatedControlURL(saved.controlURL)
         } catch { phase = .error(Self.safeMessage(error)); return }
         begin(profile: saved, homeHost: homeHost, homePort: homePort, key: nil)
@@ -246,6 +255,8 @@ final class ManagedJoinModel: ObservableObject {
 
     func confirmRevoked() {
         guard !busy, let profile = profile ?? profiles.first(where: { $0.uuid == selectedProfileID }) else { return }
+        // Keep uncertainty sticky across explicit refreshes in this process.
+        blockedResumeIDs.insert(profile.uuid)
         // Stop traffic immediately, even if persisting the resume block fails.
         bridge?.stop()
         do { try profile.markRevoked(); disconnect(endingAt: .revoked) }

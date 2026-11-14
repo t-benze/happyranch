@@ -55,7 +55,7 @@ struct ManagedJoinTests {
     @Test("HTTPS control and home inputs refuse unsafe metadata and zero ports")
     func inputValidation() throws {
         #expect(try ManagedJoinModel.validatedControlURL("https://control.example:8443") == "https://control.example:8443")
-        for input in ["http://control.example", "https://user:secret@control.example", "https://control.example?x=y", "https://control.example#fragment", "https://control.example:0", "https://control.example\n"] {
+        for input in ["http://control.example", "https://user:secret@control.example", "https://control.example?x=y", "https://control.example#fragment", "https://control.example:0", "https://control.example/path", "https://control.example\n"] {
             #expect(throws: ManagedNetworkError.invalidConfiguration) { try ManagedJoinModel.validatedControlURL(input) }
         }
         #expect(ManagedJoinModel.validTarget("100.64.0.1", port: "8443") == 8443)

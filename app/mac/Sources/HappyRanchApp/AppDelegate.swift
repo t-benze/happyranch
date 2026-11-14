@@ -948,6 +948,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
 
                 // Probe through the authenticated bridge, whose connector hop
                 // carries the device credential. Pairing alone is never online.
+                guard self.clientBridge === bridge else { return }
                 if managed { managedJoin.paired() }
                 let health = await bridge.runtimeHealth()
                 let healthy = health == .healthy
