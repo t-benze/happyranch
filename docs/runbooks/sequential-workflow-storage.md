@@ -1,5 +1,12 @@
 # Sequential workflow storage — operator draft
 
+A0b finite SQL prerequisite: complete readers materialize shared singleton row
+shape/size once and specialize equivalent ownership type predicates. The private
+exceptional-text scan still follows a complete whole-table type/size proof in
+the same snapshot, with bounded acquisition and original logical charges.
+This component adds no installer/startup caller or new reuse and retains full
+physical/FK checks and every existing runtime/operator allowance below.
+
 **SOURCE ONLY; isolated-copy installer evidence, no live acceptance.** TASK-14597 adds
 `scripts/install_workflow_sequential_schema.py` and the explicit installer in
 `runtime/infrastructure/workflow_schema.py`. It uses the U2a

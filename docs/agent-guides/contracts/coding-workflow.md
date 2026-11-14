@@ -120,6 +120,12 @@ two borrow their writer's BEGIN IMMEDIATE without ending it. Any write, changed
 or unavailable bookend uses the exact original target reader and budget.
 Arbitrary caller-owned read snapshots and public reads remain uncached.
 No cross-load or persisted reuse exists.
+A0b's finite SQL component materializes bounded whole-row shape/size once and
+specializes sequential ownership's equivalent type predicates. Exceptional text
+is still acquired/decoded under the original limits only after the whole-table
+type/size prerequisite passes in the same snapshot. This does not extend the
+load reuse contract above or remove any physical/FK/history check. See the
+[shared finite SQL contract](reusable-workflows.md) for the unchanged charges.
 Before any workflow DDL, the entire reserved coding family is observed. Partial,
 extra, case-changed, wrong-kind or malformed objects and real shared dependency
 failures refuse without repair or adoption. Body/interruption

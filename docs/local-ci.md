@@ -263,6 +263,14 @@ only the A0 cases on either runtime; omit it for the complete existing venue. Th
 before-fetch payload withholding and closure; it supplies no production result.
 This prerequisite retains full integrity/FK checking and adds no install/startup
 caller, required check or test/build trigger.
+A0b's finite SQL component extends that same `--bounded-acquisition` selection
+on both runtimes with sequential ownership cell classes, nullable text, exact
+and oversized UTF8/NUL byte lengths, malformed UTF8, exact logical charges and
+mixed-corruption rows in both orders. The real companion guard must prove the
+whole table's types/sizes before exceptional text can reach its bounded decoder.
+This component materializes shared row shape/size once and specializes equivalent
+ownership predicates. The unpublished-load observer/ledger work remains separate;
+these focused cases do not prove sequential load reuse or whole-startup timing.
 THR308 PR4 extends that same script with actual OrgState naming reservation/audit
 observations (no-op, would-write, unreadable, failed read/COMMIT, COMMIT plus
 ROLLBACK failure with main-equivalent durable active history, interruption and

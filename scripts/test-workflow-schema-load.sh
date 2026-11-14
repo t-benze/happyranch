@@ -180,6 +180,102 @@ for width in (1, 4, 11, 32):
               'logical=', logical.consumed, logical.accepted_rows, logical.traversed)
     conn.close()
 
+# A0b's companion guard uses the same native-class/byte/decoding table style.
+# These are guard inputs, not a replacement complete schema or history reader.
+# No affinity allows malformed classes to reach the production prerequisite.
+from runtime.infrastructure.workflow_sequential_ownership import validate_sequential_ownership_guards
+
+ownership_tables = (
+    ('tasks', ('id', 'parent_task_id', 'assigned_agent', 'current_session_id'),
+     ("'task'", "'parent'", "'builder'", "'sid'"), (False, True, True, True)),
+    ('workflow_task_ownership', ('task_id', 'org_slug', 'version', 'kind', 'owner_id'),
+     ("'task'", "'scratch'", '1', "'legacy'", 'NULL'), (False, False, False, False, True)),
+)
+for table, columns, literals, nullable in ownership_tables:
+    for index, column in enumerate(columns):
+        integer = column == 'version'
+        variants = (
+            ('integer', '2', integer),
+            ('real', '2.5', False),
+            ('blob', "X'61'", False),
+            ('NULL', 'NULL', nullable[index]),
+            ('empty-text', "''", not integer),
+            ('ASCII', "'plain'", not integer),
+            ('multibyte', "'é尾'", not integer),
+            ('NUL-suffix', "'a'||char(0)||'尾'", not integer),
+            ('exact-byte-cap', "printf('%.*c',1048576,'x')", not integer),
+            ('over-byte-cap', "printf('%.*c',1048577,'x')", False),
+            ('NUL-over-byte-cap', "'a'||char(0)||printf('%.*c',1048575,'x')", False),
+            ('invalid-UTF8', "CAST(X'80' AS TEXT)", False),
+        )
+        for label, literal, valid in variants:
+            with GateConnection(':memory:') as conn:
+                conn.fetched, conn.closed_cursors = [], 0
+                for fixture_table, fixture_columns, fixture_literals, _ in ownership_tables:
+                    conn.execute('CREATE TABLE ' + fixture_table + ' (' + ','.join(fixture_columns) + ')')
+                    cells = list(fixture_literals)
+                    if fixture_table == table:
+                        cells[index] = literal
+                    conn.execute('INSERT INTO ' + fixture_table + ' VALUES (' + ','.join(cells) + ')')
+                conn.execute('CREATE VIEW workflow_task_owner_bindings AS '
+                             'SELECT task_id,kind AS relation,owner_id,task_id AS instance_id '
+                             'FROM workflow_task_ownership WHERE 0')
+                budget = _Budget()
+                try:
+                    validate_sequential_ownership_guards(conn, budget=budget)
+                except CodingAuthorityHistoryError as exc:
+                    assert not valid and str(exc) == 'coding_authority_history_invalid', (table, column, label, exc)
+                else:
+                    assert valid, (table, column, label, 'guard accepted invalid cell')
+                if valid and label in ('multibyte', 'NUL-suffix'):
+                    stored = tuple(conn.execute('SELECT * FROM ' + table).fetchone())
+                    expected = (sum(len(value.encode('utf8')) for value in stored if type(value) is str),
+                                1, 8 + len(columns) + 1)
+                    assert (budget.consumed, budget.accepted_rows, budget.traversed) == expected, (table, column, label)
+                    assert len([row for row in conn.fetched if row is not None]) == 1
+                elif valid:
+                    # Two binding probes; each table adds gate, exceptional
+                    # phase and terminal keyset traversal: 2 + 3 + 3 = 8.
+                    assert (budget.consumed, budget.accepted_rows, budget.traversed) == (0, 0, 8), (table, column, label)
+                else:
+                    # Whole-table type/size refusal must precede payload fetch.
+                    # Invalid UTF8 reaches the actual decoder only for text slots.
+                    decoded = label == 'invalid-UTF8' and not integer
+                    expected_work = (3 if table == 'tasks' else 6) + (2 if decoded else 0)
+                    assert (budget.consumed, budget.accepted_rows, budget.traversed) == (0, 0, expected_work), (table, column, label)
+                    assert all(row is None for row in conn.fetched), (table, column, label, 'payload acquired before type proof')
+                print('PASS A0b ownership guard:', table, column, label,
+                      'charges', budget.consumed, budget.accepted_rows, budget.traversed)
+            conn.close()
+
+# A malformed class anywhere in a table prevents the exceptional-text scan of
+# that table, even when another row contains malformed UTF8. Check both orders.
+for table, columns, literals, _ in ownership_tables:
+    for bad_first in (False, True):
+        with GateConnection(':memory:') as conn:
+            conn.fetched, conn.closed_cursors = [], 0
+            for fixture_table, fixture_columns, _, _ in ownership_tables:
+                conn.execute('CREATE TABLE ' + fixture_table + ' (' + ','.join(fixture_columns) + ')')
+            rows = [list(literals), list(literals)]
+            rows[0][0] = '7'
+            rows[1][0] = "CAST(X'80' AS TEXT)"
+            for cells in rows if bad_first else reversed(rows):
+                conn.execute('INSERT INTO ' + table + ' VALUES (' + ','.join(cells) + ')')
+            conn.execute('CREATE VIEW workflow_task_owner_bindings AS '
+                         'SELECT task_id,kind AS relation,owner_id,task_id AS instance_id '
+                         'FROM workflow_task_ownership WHERE 0')
+            budget = _Budget()
+            try:
+                validate_sequential_ownership_guards(conn, budget=budget)
+            except CodingAuthorityHistoryError:
+                pass
+            else:
+                raise AssertionError((table, bad_first, 'mixed corruption accepted'))
+            assert all(row is None for row in conn.fetched), (table, bad_first, 'type prerequisite lost')
+            assert (budget.consumed, budget.accepted_rows, budget.traversed) == (0, 0, 3 if table == 'tasks' else 6)
+            print('PASS A0b whole-table prerequisite:', table, 'bad-first', bad_first)
+        conn.close()
+
 if sys.argv[1:] == ['--bounded-acquisition']:
     raise SystemExit(0)
 

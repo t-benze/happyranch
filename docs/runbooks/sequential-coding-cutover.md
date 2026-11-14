@@ -1,5 +1,12 @@
 # Sequential Coding cutover and backout — operator draft
 
+A0b's finite SQL component changes expression evaluation only: shared singleton
+shape/size is measured once, and ownership's exceptional-text scan follows its
+complete type/size prerequisite in the same snapshot. Payload withholding,
+logical charges, physical/FK checks and runtime/operator budgets remain exact.
+It adds no setup/cutover caller or load reuse; automatic setup still requires
+the complete owner/observer/ledger prerequisite and subsequent reviewed stages.
+
 **SOURCE ONLY: atomic public Coding cutover and old-fresh fence delivered.**
 TASK-15624 attaches reviewed Coding v2 selection and unconditional old fresh
 refusal together. Public Coding requires compatible installed storage, registered
