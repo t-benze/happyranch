@@ -304,6 +304,12 @@ outcomes, forbids uncertified hits and preserves caller transactions. Named
 assertion failures accumulate and fail the selection; no failed case is skipped.
 The full selection and `--sequential-reuse` include these tables. They do not
 replace nonempty family-corruption or the remaining original SQL exhaustion forms.
+The native configuration table also changes and restores journal/locking mode,
+synchronous and temp-store settings. Both Python autocommit modes compare the
+complete reader's outcome and transaction ownership before restoring legacy
+control. Attachment cases exercise an additional native database, restored
+ATTACH/DETACH and a privately moved or dangling main path; they require fresh
+validation or the explicit attachment-change refusal without a cached hit.
 `--retained-corruption` selects the corruption table's nonempty Pause journal,
 naming owner/claim and terminal team-move row/audit cases. The real storage
 owners prepare synthetic private history; first-read, between-use local/external

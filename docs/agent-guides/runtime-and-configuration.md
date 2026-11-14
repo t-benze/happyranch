@@ -13,8 +13,10 @@ The unpublished load owns one registration and enters before sequential selectio
 Its complete certificate is private to the exact native connection, attachment
 path/device/inode, org, thread/async execution and default validator/budget policy.
 Transient DDL/config execution, observer loss/failure, writes and write rollback
-invalidate it. FK ON/deferred FK OFF is required before metadata reads. Hits pin
-main inside the original snapshot, compare outside/inside/exit bookends, preserve
+invalidate it. FK ON/deferred FK OFF is required before metadata reads.
+The TEMP schema-cookie PRAGMA is prepared afresh for each bookend, preserving
+the native check after a temp-store reset invalidates cached native metadata.
+Hits pin main inside the original snapshot, compare outside/inside/exit bookends, preserve
 borrowed transactions, and refuse a replaced file. Public/nondefault/arbitrary
 snapshots and later loads remain fresh. Each compatible caller imports retained
 charges once; changed targets debit its original cumulative ledger. All original

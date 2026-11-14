@@ -15,11 +15,13 @@ import sqlite3
 import time
 from contextlib import ExitStack, contextmanager
 from contextvars import ContextVar
+from itertools import count
 from collections.abc import Callable
 from typing import Any, Iterator
 
 logger = logging.getLogger(__name__)
 _current: ContextVar[_LoadValidation | None] = ContextVar('org_load_schema_validation', default=None)
+_temp_cookie_reads = count()
 _SQLITE_CONFIGS = tuple((name, getattr(sqlite3, name)) for name in dir(sqlite3)
                         if name.startswith('SQLITE_DBCONFIG_'))
 _SQLITE_LIMITS = tuple((name, getattr(sqlite3, name)) for name in dir(sqlite3)
@@ -61,7 +63,10 @@ def _bookend(conn: sqlite3.Connection) -> tuple | None:
         version = conn.execute('PRAGMA main.data_version').fetchone()[0]
         changes = conn.total_changes
         main = conn.execute('PRAGMA main.schema_version').fetchone()[0]
-        temp = conn.execute('PRAGMA temp.schema_version').fetchone()[0]
+        # Reprepare the same native cookie read: cached TEMP PRAGMAs can retain
+        # invalid native metadata after temp_store resets (SQLite 3.53.1).
+        # This counter only varies SQL text; it retains no validation state.
+        temp = conn.execute(f'PRAGMA temp.schema_version -- {next(_temp_cookie_reads)}').fetchone()[0]
         databases = tuple(tuple(row) for row in conn.execute('PRAGMA database_list'))
         if (not databases or databases[0][:2] != (0, 'main') or not databases[0][2]
                 or any(row != (1, 'temp', '') for row in databases[1:])):

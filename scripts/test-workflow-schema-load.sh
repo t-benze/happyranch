@@ -705,7 +705,8 @@ if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--seque
         for config in ('native config', 'SQL limit', 'row factory', 'text factory', 'isolation level',
                        'query_only', 'foreign_keys', 'defer_foreign_keys',
                        'read_uncommitted', 'writable_schema', 'ignore_check_constraints',
-                       'recursive_triggers', 'trusted_schema'):
+                       'recursive_triggers', 'trusted_schema',
+                       'journal_mode', 'locking_mode', 'synchronous', 'temp_store'):
             with sequential_fault_case('config ' + config), sequential_fixture() as (db, root, sql):
                 conn = db._conn
                 with org_load_validation(db, org_slug='scratch'):
@@ -735,7 +736,12 @@ if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--seque
                         restore = lambda: setattr(conn, 'isolation_level', previous)
                     else:
                         previous = conn.execute('PRAGMA ' + config).fetchone()[0]
-                        conn.execute(f'PRAGMA {config}={1 - previous}')
+                        value = dict(journal_mode='DELETE', locking_mode='EXCLUSIVE',
+                                     synchronous=0, temp_store=2).get(config)
+                        if value is None:
+                            value = 1 - previous
+                        conn.execute(f'PRAGMA {config}={value}')
+                        assert conn.execute('PRAGMA ' + config).fetchone()[0] != previous, config + ' fixture did not change native configuration'
                         restore = lambda: conn.execute(f'PRAGMA {config}={previous}')
                     try:
                         hits = owner.hits
@@ -751,6 +757,84 @@ if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--seque
                     seq_read(db)
                     assert sql.count('PRAGMA integrity_check') == before + 1, config + ' restoration resurrected a sequential fact'
                 print('PASS A0b sequential config identity:', config)
+
+        for autocommit in (True, False):
+            with sequential_fault_case('autocommit ' + str(autocommit)), sequential_fixture() as (db, root, sql):
+                conn = db._conn
+                with org_load_validation(db, org_slug='scratch'):
+                    seq_read(db)
+                    owner = load_guard._current.get()
+                    hits = owner.hits
+                    conn.autocommit = autocommit
+                    try:
+                        # Preserve the complete reader's native ownership even
+                        # when Python autocommit makes rollback() a no-op.
+                        initial_transaction = conn.in_transaction
+                        expected = sequential_outcome(lambda: read_sequential_history(
+                            conn, expected_org_slug='scratch').retained)
+                        expected_transaction = conn.in_transaction
+                        if not initial_transaction and conn.in_transaction:
+                            conn.execute('ROLLBACK')
+                        actual = sequential_outcome(lambda: seq_read(db))
+                        assert actual == expected, 'autocommit changed complete outcome'
+                        assert conn.in_transaction == expected_transaction, 'autocommit changed complete snapshot ownership'
+                        assert owner.hits == hits and owner.sequential_saved is None, 'autocommit returned a sequential hit'
+                    finally:
+                        conn.autocommit = sqlite3.LEGACY_TRANSACTION_CONTROL
+                        conn.rollback()
+                    before = sql.count('PRAGMA integrity_check')
+                    seq_read(db)
+                    assert sql.count('PRAGMA integrity_check') == before + 1, 'autocommit restoration resurrected a fact'
+                print('PASS A0b sequential autocommit identity:', autocommit)
+
+        for attachment in ('additional database', 'restored ATTACH/DETACH', 'missing main', 'dangling main'):
+            with sequential_fault_case('attachment ' + attachment), sequential_fixture() as (db, root, sql):
+                conn = db._conn
+                with org_load_validation(db, org_slug='scratch'):
+                    seq_read(db)
+                    owner = load_guard._current.get()
+                    hits = owner.hits
+                    before = load_guard._bookend(conn)
+                    original = Path(db.db_path)
+                    held = original.with_suffix('.held')
+                    if attachment in ('additional database', 'restored ATTACH/DETACH'):
+                        conn.execute("ATTACH DATABASE ':memory:' AS extra")
+                        if attachment == 'restored ATTACH/DETACH':
+                            conn.execute('DETACH DATABASE extra')
+                            assert load_guard._bookend(conn) == before, 'ATTACH/DETACH failed to restore native metadata'
+                        try:
+                            full = sql.count('PRAGMA integrity_check')
+                            actual = sequential_outcome(lambda: seq_read(db))
+                            assert owner.hits == hits, attachment + ' returned a sequential hit'
+                            if attachment == 'additional database':
+                                expected = sequential_outcome(lambda: read_sequential_history(
+                                    conn, expected_org_slug='scratch').retained)
+                                assert actual == expected and owner.sequential_saved is None, 'attached database changed complete outcome or certified'
+                            else:
+                                assert actual[0] == 'returned' and sql.count('PRAGMA integrity_check') == full + 1, 'restored ATTACH/DETACH skipped complete validation'
+                        finally:
+                            if attachment == 'additional database':
+                                conn.execute('DETACH DATABASE extra')
+                    else:
+                        # Move only this private synthetic DB; the native main
+                        # connection remains open. No live path is touched.
+                        original.rename(held)
+                        if attachment == 'dangling main':
+                            original.symlink_to(original.with_suffix('.absent'))
+                        try:
+                            actual = sequential_outcome(lambda: seq_read(db))
+                            assert actual == ('refused', ((ValueError, 'workflow_load_attachment_changed'),)), attachment + ' lost explicit attachment refusal'
+                            assert owner.hits == hits and owner.sequential_saved is None, attachment + ' retained a certificate'
+                            assert not conn.in_transaction, attachment + ' leaked an owned snapshot'
+                        finally:
+                            if original.is_symlink():
+                                original.unlink()
+                            held.rename(original)
+                    full = sql.count('PRAGMA integrity_check')
+                    seq_read(db)
+                    if attachment != 'restored ATTACH/DETACH':
+                        assert sql.count('PRAGMA integrity_check') == full + 1, attachment + ' restoration resurrected a fact'
+                print('PASS A0b sequential attachment identity:', attachment)
 
         for limit, value in ((sqlite3.SQLITE_LIMIT_SQL_LENGTH, 64), (sqlite3.SQLITE_LIMIT_COLUMN, 1)):
             with sequential_fault_case('native limit denial ' + str(limit)), sequential_fixture() as (db, root, sql):
