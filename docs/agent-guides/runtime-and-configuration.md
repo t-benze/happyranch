@@ -36,8 +36,13 @@ closed dispatcher before heavyweight product imports. `repository-git` takes
 exactly DIRECTORY OBJECT_FORMAT MODE (`sha1`/`sha256`, `check`/`body`);
 `repository-reader` takes exactly PRIVATE_DIRECTORY DEADLINE. They run the fixed
 shipped repository object helper's existing `--git-child`/`--reader-child` entries,
-including their original resource limits, restricted Git environment and reader
-deadline. No caller-selected module or script can run. Source launches retain
+including their platform-specific resource limits, restricted Git environment and
+reader deadline. Linux keeps the 128 MiB Git / 256 MiB reader AS caps; Darwin
+retains inherited AS limits with no new hard process-memory cap. CPU, CORE,
+Git FSIZE, NOFILE and application byte/output/deadline bounds remain unchanged
+and selected-limit failures are fatal; see the
+[repository child bounds](../../packaging/README.md).
+No caller-selected module or script can run. Source launches retain
 exactly `python -I <repository_artifact_objects.py> --git-child/--reader-child ...`.
 The spec retains that module as `pyz+py` in both Analysis lanes so fixed-path
 execution can apply limits before product imports. The frozen PyInstaller
