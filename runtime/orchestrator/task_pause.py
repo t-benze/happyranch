@@ -1204,9 +1204,9 @@ async def discover_root_pause_work(org: Any, queue: Any, root_id: str, generatio
     store = getattr(org.db, "_task_pause_store", None)
     if store is None or queue is None:
         return False
-    from runtime.workflows.recovery import SEQUENTIAL_HELD_KINDS, classify_task
+    from runtime.workflows.recovery import classify_task
     from runtime.orchestrator.authority import (
-        ENQUEUE_DISPATCH_NO_QUEUE, ENQUEUE_DISPATCH_REFUSED, enqueue_task_generation_aware,
+        ENQUEUE_DISPATCH_ORDINARY, ENQUEUE_DISPATCH_PUBLISHED, enqueue_task_generation_aware,
     )
     from runtime.daemon.routes.jobs import _run_job_core
     with org.db.coherent_read_view() as conn:
@@ -1269,9 +1269,13 @@ async def discover_root_pause_work(org: Any, queue: Any, root_id: str, generatio
             task = org.db.get_task(task_id)
             # Retain unknown evidence, but terminal owners cannot launch
             # or replay consumed callbacks through the deferred branch.
-            if task is None or task.cancelled_at is not None or task.status.value in {"completed", "failed", "cancelled", "superseded"}:
+            if task is None:
+                release_failed = True
                 continue
-            publication = None
+            if task.cancelled_at is not None or task.status.value in {"completed", "failed", "cancelled", "superseded"}:
+                continue
+            publication = False
+            owner_notification = False
             if task_id in deferred:
                 entry = deferred[task_id]
                 if "authority_v2_generation" in entry["owner_identity"]:
@@ -1279,6 +1283,7 @@ async def discover_root_pause_work(org: Any, queue: Any, root_id: str, generatio
                         with org.db.coherent_read_view():
                             _authenticate_deferred_v2(store, entry)
                     except DeferredRootPause:
+                        release_failed = True
                         continue
                     # This is delivery for the already admitted SAME
                     # owner, not publication/admission of a pending G.
@@ -1287,8 +1292,9 @@ async def discover_root_pause_work(org: Any, queue: Any, root_id: str, generatio
                     publication = queue.enqueue_if_absent(org.slug, task_id,
                         publisher=lambda task_id=task_id, entry=entry: enqueue_task_generation_aware(
                             org.orchestrator, queue, org.slug, task_id, metadata=dict(entry["owner_identity"])))
-            elif task is not None and eligible(org.orchestrator, task):
+            elif eligible(org.orchestrator, task):
                 ownership = classify_task(org.db, task_id, org_slug=org.slug)
+                owner_notification = ownership.kind in {"draft", "f5", "coding_attempt", "seq_visit"}
                 if ownership.kind == "draft":
                     publication = org.workflow_drafts.notify_queued(task_id, queue)
                 elif ownership.kind == "f5":
@@ -1297,13 +1303,19 @@ async def discover_root_pause_work(org: Any, queue: Any, root_id: str, generatio
                     publication = org.workflow_coding_dispatch.notify_queued(task_id, queue)
                 elif ownership.kind == 'seq_visit':
                     publication = org.workflow_sequential_dispatch.notify_queued(task_id, queue)
-                elif ownership.kind in SEQUENTIAL_HELD_KINDS or ownership.kind.startswith('coding_'):
-                    continue
                 elif ownership.kind == "legacy":
-                    publication = enqueue_task_generation_aware(org.orchestrator, queue, org.slug, task_id)
+                    publication = queue.enqueue_if_absent(org.slug, task_id,
+                        publisher=lambda task_id=task_id: enqueue_task_generation_aware(
+                            org.orchestrator, queue, org.slug, task_id))
+                # Unavailable or nonpublishing owners retain the default
+                # failure. Their classification never permits legacy enqueue.
+            else:
+                continue  # No current release work for an ineligible task.
             # Owner notification methods have a void return contract. Explicit
-            # queue/generation refusals cannot acknowledge durable release.
-            if publication is False or publication in (ENQUEUE_DISPATCH_REFUSED, ENQUEUE_DISPATCH_NO_QUEUE):
+            # refusals and unhandled outcomes cannot acknowledge release.
+            if publication is None and owner_notification:
+                continue
+            if publication not in (True, ENQUEUE_DISPATCH_ORDINARY, ENQUEUE_DISPATCH_PUBLISHED):
                 release_failed = True
         for entry in entries:
             if entry["owner"] == "job" and entry["phase"] == "pending_job":
@@ -1319,6 +1331,8 @@ async def discover_root_pause_work(org: Any, queue: Any, root_id: str, generatio
                         release_failed = True
                         import logging
                         logging.getLogger(__name__).exception("pause rediscovery job remains pending: %s", job_id)
+                elif job is None or job.status.value != "running":
+                    release_failed = True
         with store.writer(root_id) as (_, current):
             if not release_failed and current["generation"] == generation and not current["held"]:
                 org.db._conn.execute("UPDATE task_pause_controls SET release_pending_generation=NULL WHERE root_task_id=?", (root_id,))

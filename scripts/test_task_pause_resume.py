@@ -14,6 +14,7 @@ from scripts.test_agent_retirement import PREFIX, fixture
 from runtime.daemon.org_state import OrgState
 from runtime.models import TaskRecord, TaskStatus
 from runtime.orchestrator.task_pause import discover_pause_work
+from runtime.workflows.recovery import WorkflowTaskOwnership
 
 
 def seed(org: OrgState, *, ended: int = 40) -> str:
@@ -103,35 +104,75 @@ class TaskPauseResumeTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIsNone(release_flag(org, root_id))
 
     async def test_refused_release_retains_ended_root_backstop(self) -> None:
+        for table in ("authority_policy_v2_root_dispatch", "workflow_task_ownership"):
+            with self.subTest(denied_read=table):
+                await self.check_refused_release(table)
+
+    async def check_refused_release(self, denied_table: str) -> None:
         with tempfile.TemporaryDirectory() as temp:
             async with fixture(Path(temp) / "org") as (org, client):
                 root_id = seed(org, ended=0)
                 denied = []
 
-                def deny_dispatch_read(action: int, table: str | None, column: str | None,
-                                       database: str | None, source: str | None) -> int:
-                    if action == sqlite3.SQLITE_READ and table == "authority_policy_v2_root_dispatch":
+                def deny_release_read(action: int, table: str | None, column: str | None,
+                                      database: str | None, source: str | None) -> int:
+                    if action == sqlite3.SQLITE_READ and table == denied_table:
                         denied.append(table)
                         return sqlite3.SQLITE_DENY
                     return sqlite3.SQLITE_OK
 
-                org.db._conn.set_authorizer(deny_dispatch_read)
+                org.db._conn.set_authorizer(deny_release_read)
                 try:
                     response = await client.post(f"{PREFIX}/tasks/{root_id}/resume", json={"expected_generation": 1})
                     self.assertEqual(response.status_code, 200, response.text)
                     self.assertTrue(response.json()["changed"])
-                    self.assertTrue(denied, "Fault must reach the real generation-dispatch read")
+                    self.assertTrue(denied, f"Fault must reach the real {denied_table} read")
                     self.assertEqual(queued(org), [])
                     self.assertEqual(release_flag(org, root_id), 2)
-                    org.db.update_task(root_id, status=TaskStatus.COMPLETED)
+                    if denied_table == "authority_policy_v2_root_dispatch":
+                        org.db.update_task(root_id, status=TaskStatus.COMPLETED)
                     await discover_pause_work(org, org.orchestrator._queue)
                     self.assertEqual(queued(org), [])
                     self.assertEqual(release_flag(org, root_id), 2)
                 finally:
                     org.db._conn.set_authorizer(None)
+                # Native terminal mutation itself requires readable ownership.
+                if denied_table == "workflow_task_ownership":
+                    org.db.update_task(root_id, status=TaskStatus.COMPLETED)
                 # The refused sweep advanced its traversal cursor. The next
                 # empty page wraps it before normal backstop rediscovery.
                 await discover_pause_work(org, org.orchestrator._queue)
+                await discover_pause_work(org, org.orchestrator._queue)
+                self.assertEqual(queued(org), [(org.slug, "TASK-Zchild", None)])
+                self.assertIsNone(release_flag(org, root_id))
+
+    async def test_nonpublishing_owner_kinds_retain_release(self) -> None:
+        for kind in ("seq_source_waiting", "seq_carrier", "coding_source_waiting", "coding_carrier"):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as temp:
+                async with fixture(Path(temp) / "org") as (org, client):
+                    root_id = seed(org, ended=0)
+                    with patch("runtime.workflows.recovery.classify_task", return_value=WorkflowTaskOwnership(kind)):
+                        response = await client.post(f"{PREFIX}/tasks/{root_id}/resume", json={"expected_generation": 1})
+                    self.assertEqual(response.status_code, 200, response.text)
+                    self.assertTrue(response.json()["changed"])
+                    self.assertEqual(queued(org), [])
+                    self.assertEqual(release_flag(org, root_id), 2)
+                    org.db.update_task(root_id, status=TaskStatus.COMPLETED)
+                    await discover_pause_work(org, org.orchestrator._queue)
+                    self.assertEqual(queued(org), [(org.slug, "TASK-Zchild", None)])
+                    self.assertIsNone(release_flag(org, root_id))
+
+    async def test_stopping_queue_retains_release(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            async with fixture(Path(temp) / "org") as (org, client):
+                root_id = seed(org, ended=0)
+                with patch.object(org.orchestrator._queue, "_stopping", True):
+                    response = await client.post(f"{PREFIX}/tasks/{root_id}/resume", json={"expected_generation": 1})
+                self.assertEqual(response.status_code, 200, response.text)
+                self.assertTrue(response.json()["changed"])
+                self.assertEqual(queued(org), [])
+                self.assertEqual(release_flag(org, root_id), 2)
+                org.db.update_task(root_id, status=TaskStatus.COMPLETED)
                 await discover_pause_work(org, org.orchestrator._queue)
                 self.assertEqual(queued(org), [(org.slug, "TASK-Zchild", None)])
                 self.assertIsNone(release_flag(org, root_id))

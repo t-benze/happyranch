@@ -26,9 +26,15 @@ journal evidence refuses pause_control_unavailable.
 
 An accepted Resume immediately rediscovers that root after the control COMMIT,
 using the same bounded per-root owner publishers and eligibility checks as the
-periodic sweep. Release intent is cleared only after complete inspection without
-a task-publication refusal or pending-job admission failure/deferral, under the
-matching generation and unheld-state guard. An accepted Resume still succeeds
+periodic sweep. Release intent is cleared only after complete inspection and
+delivery of all current release work, under the matching generation and
+unheld-state guard. Unavailable/reconciliation-required or nonpublishing task ownership,
+deferred authentication refusal, missing task/job observations, queue refusal
+(including a stopping queue), and pending-job failure/deferral or absence of a
+running receipt retain intent. Normal completion of an existing owner's void
+notification is delivery to that owner; None alone is not a failure. Existing
+eligibility and terminal/settled journal handling remain unchanged. An accepted
+Resume still succeeds
 when publication fails; durable intent remains for the unchanged 30-second sweep.
 Its 32-root pages skip ended roots (completed, failed, cancelled or superseded)
 without pending release;
