@@ -34,6 +34,7 @@ CASES = (
 def _command(
     argv: list[str], env: dict[str, str], cwd: Path, deadline: float,
     *, output_cap: int = OUTPUT_CAP, input_data: bytes | None = None,
+    stderr_data: bytearray | None = None,
 ) -> tuple[int, bytes]:
     """Drain incrementally; never leave a timed-out compiler/test group running."""
     data = bytearray()
@@ -43,7 +44,9 @@ def _command(
         child = subprocess.Popen(
             argv, cwd=cwd, env=env,
             stdin=subprocess.PIPE if input_data is not None else subprocess.DEVNULL,
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE if stderr_data is not None else subprocess.STDOUT,
+            start_new_session=True,
         )
     except OSError as exc:
         return 127, str(exc).encode()
@@ -56,7 +59,10 @@ def _command(
                 except BrokenPipeError:
                     pass  # Drain diagnostics and preserve the child's exit code.
             with selectors.DefaultSelector() as selector:
-                selector.register(child.stdout, selectors.EVENT_READ)
+                selector.register(child.stdout, selectors.EVENT_READ, data)
+                if stderr_data is not None:
+                    selector.register(child.stderr, selectors.EVENT_READ, stderr_data)
+                received = 0
                 while selector.get_map():
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
@@ -65,10 +71,11 @@ def _command(
                         block = os.read(key.fileobj.fileno(), 4096)
                         if not block:
                             selector.unregister(key.fileobj)
-                        elif len(data) + len(block) > output_cap:
+                        elif received + len(block) > output_cap:
                             raise RuntimeError("supervisor command output cap exceeded")
                         else:
-                            data.extend(block)
+                            received += len(block)
+                            key.data.extend(block)
             code = child.wait(timeout=max(0.001, deadline - time.monotonic()))
             return code, bytes(data)
         finally:
@@ -200,19 +207,46 @@ def supervisor(report: dict[str, Any]) -> None:
             values = {}
             for command in ("list-keychains", "default-keychain"):
                 argv = ["/usr/bin/security", command, "-d", "user"]
+                stderr = bytearray()
                 try:
                     code, output = _command(argv, real_env, scratch,
                                             min(deadline + 30, time.monotonic() + 10),
-                                            output_cap=4096)
-                    values[command] = {"exit_code": code, "output": output.decode(errors="replace")}
+                                            output_cap=4096, stderr_data=stderr)
+                    stdout = "\n".join(line.strip() for line in output.decode(errors="replace").splitlines()).strip()
+                    diagnostic = stderr.decode(errors="replace").strip()
+                    category = "unexpected_error"
+                    if code == 0 and not diagnostic:
+                        category = "none"
+                    elif (command == "default-keychain" and code == 1 and not stdout
+                          and diagnostic == "security: SecKeychainCopyDomainDefault user: A default keychain could not be found."):
+                        category = "no_default_keychain"
+                    values[command] = {"exit_code": code, "stdout": stdout, "stderr_category": category}
+                    if category == "unexpected_error":
+                        values[command]["diagnostic"] = diagnostic[:1024]
                 except (RuntimeError, TimeoutError, subprocess.TimeoutExpired) as exc:
-                    values[command] = {"error": type(exc).__name__}
+                    values[command] = {"exit_code": None, "stdout": "", "stderr_category": "read_error",
+                                       "error": type(exc).__name__}
             return values
 
         before = preferences()
-        before_ok = all(value.get("exit_code") == 0 for value in before.values())
+
+        def preferences_unchanged() -> None:
+            after = preferences()
+            for command in before:
+                unchanged = before[command] == after[command]
+                row("real_keychain_" + command.replace("-", "_") + "_unchanged",
+                    "PASS" if unchanged else "FAIL", "original user preference unchanged",
+                    {"before": before[command], "after": after[command]})
+            if any(item["status"] == "FAIL" for item in checks):
+                raise RuntimeError("native verification or Keychain fixture failed; inspect checks")
+
+        # Registered before fixture creation; runs after exact keychain deletion
+        # and before scratch removal, even when preflight or tests fail.
+        cleanup.callback(preferences_unchanged)
+        before_ok = all(value["stderr_category"] in {"none", "no_default_keychain"}
+                        for value in before.values())
         row("real_keychain_preferences_before", "PASS" if before_ok else "FAIL",
-            "read user search list and default with account HOME; no CFFIXED_USER_HOME", before)
+            "read user preferences with account HOME; empty list/no default are valid", before)
         if not before_ok:
             raise RuntimeError("real Keychain preferences unavailable; no fixture or tests ran")
         keychain = scratch / "home/Library/Keychains/login.keychain-db"
@@ -220,30 +254,20 @@ def supervisor(report: dict[str, Any]) -> None:
         create_attempted = False
 
         def remove_keychain() -> None:
-            try:
-                if create_attempted:
-                    argv = ["/usr/bin/security", "delete-keychain", str(keychain)]
-                    try:
-                        code, output = _command(argv, env, scratch,
-                                                min(deadline + 30, time.monotonic() + 10),
-                                                output_cap=4096)
-                        gone = not keychain.exists()
-                        row("disposable_keychain_deleted", "PASS" if code == 0 and gone else "FAIL",
-                            "delete exact scratch login Keychain before scratch removal",
-                            {"command": argv, "exit_code": code, "absent": gone,
-                             "output": output.decode(errors="replace")[:1024]})
-                    except (RuntimeError, TimeoutError, subprocess.TimeoutExpired) as exc:
-                        row("disposable_keychain_deleted", "FAIL", "delete exact scratch login Keychain",
-                            {"error": type(exc).__name__})
-            finally:
-                after = preferences()
-                for command in before:
-                    unchanged = after[command].get("exit_code") == 0 and before[command] == after[command]
-                    row("real_keychain_" + command.replace("-", "_") + "_unchanged",
-                        "PASS" if unchanged else "FAIL", "original user preference unchanged",
-                        {"before": before[command], "after": after[command]})
-            if any(item["status"] == "FAIL" for item in checks):
-                raise RuntimeError("native verification or Keychain fixture failed; inspect checks")
+            if create_attempted:
+                argv = ["/usr/bin/security", "delete-keychain", str(keychain)]
+                try:
+                    code, output = _command(argv, env, scratch,
+                                            min(deadline + 30, time.monotonic() + 10),
+                                            output_cap=4096)
+                    gone = not keychain.exists()
+                    row("disposable_keychain_deleted", "PASS" if code == 0 and gone else "FAIL",
+                        "delete exact scratch login Keychain before scratch removal",
+                        {"command": argv, "exit_code": code, "absent": gone,
+                         "output": output.decode(errors="replace")[:1024]})
+                except (RuntimeError, TimeoutError, subprocess.TimeoutExpired) as exc:
+                    row("disposable_keychain_deleted", "FAIL", "delete exact scratch login Keychain",
+                        {"error": type(exc).__name__})
 
         cleanup.callback(remove_keychain)
         password = secrets.token_hex(32)

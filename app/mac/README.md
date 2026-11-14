@@ -78,7 +78,12 @@ Its random per-run password travels through `security -i` stdin, outside argv
 and retained output. Cleanup deletes that exact Keychain before removing scratch,
 including on test failure. Read-only search-list/default-keychain observations
 use the OS account's real HOME (without CFFIXED_USER_HOME) before and after,
-because Jenkins already redirects its inherited HOME; any change produces FAIL rows.
+because Jenkins already redirects its inherited HOME. Each read records its exit
+code, normalized stdout and fixed stderr category; an empty search list and the
+known missing-default-keychain response are valid baselines. Unavailable reads
+or unexpected errors abort before fixture creation. The AFTER comparison is
+registered before creation and runs on failure too; only exact equality of both
+observations produces unchanged-preference PASS rows. Any difference fails the probe.
 The probe never sets the user's search list, default or login preference.
 `probe.json` retains named terminal test/suite lines up to 16 KiB (with an
 explicit truncation flag), alongside full-output byte counts, SHA-256 and tails.
