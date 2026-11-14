@@ -397,8 +397,9 @@ public final class ClientBridge: @unchecked Sendable {
     /// Authenticated runtime health via this bridge's local loopback listener.
     /// No redirects/proxies: a remote Location must never escape the selected lane.
     public func checkRuntimeHealth() async -> Bool {
-        guard deviceCredential?.isEmpty == false, let port = bridgePort,
+        guard let credential = deviceCredential, !credential.isEmpty, let port = bridgePort,
               let url = URL(string: "http://127.0.0.1:\(port)/api/v1/health") else { return false }
+        let attempt = Self.tsnetLock.withLock { managedAttempt }
         let configuration = URLSessionConfiguration.ephemeral
         configuration.connectionProxyDictionary = [:]
         configuration.timeoutIntervalForRequest = 5
@@ -407,7 +408,9 @@ public final class ClientBridge: @unchecked Sendable {
         defer { session.invalidateAndCancel() }
         do {
             let (_, response) = try await session.bytes(from: url)
-            guard let response = response as? HTTPURLResponse else { return false }
+            guard let response = response as? HTTPURLResponse,
+                  bridgePort == port, deviceCredential == credential else { return false }
+            if lane == .managed && !Self.tsnetLock.withLock({ managedReady && managedPaired && managedAttempt == attempt }) { return false }
             return (200...299).contains(response.statusCode)
         } catch { return false }
     }

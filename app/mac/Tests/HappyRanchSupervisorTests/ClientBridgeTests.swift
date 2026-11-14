@@ -1342,6 +1342,12 @@ struct ManagedClientBridgeTests {
         let valid = ManagedEnrollmentKey(taking: UnsafeMutableRawPointer(validAllocation), byteCount: 10)
         #expect(try valid.consume { String(cString: $0) } == "synthetic")
         #expect(throws: ManagedNetworkError.invalidConfiguration) { try valid.consume { _ in } }
+        let throwingAllocation = try #require(strdup("synthetic"))
+        let throwing = ManagedEnrollmentKey(taking: UnsafeMutableRawPointer(throwingAllocation), byteCount: 10)
+        #expect(throws: ManagedNetworkError.backend) {
+            try throwing.consume { _ in throw ManagedNetworkError.backend }
+        }
+        #expect(throws: ManagedNetworkError.invalidConfiguration) { try throwing.consume { _ in } }
     }
 
     @Test("Join validation failures destroy the transferred key without environment fallback")
