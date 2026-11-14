@@ -46,12 +46,34 @@ def digest(path: Path) -> str:
     return value.hexdigest()
 
 
+class CensusError(ValueError):
+    def __init__(self, evidence: dict[str, Any]) -> None:
+        self.evidence = evidence
+        super().__init__('incomplete process census: ' + evidence['reason'])
+
+
+def census_failure(exc: Exception) -> dict[str, Any]:
+    # Other census failures may carry arbitrary subprocess output. Keep their
+    # class only; the parser's evidence contains exclusively the requested ps fields.
+    return exc.evidence if isinstance(exc, CensusError) else {
+        'status': 'INCOMPLETE', 'reason': type(exc).__name__}
+
+
+class CommandFailure(RuntimeError):
+    def __init__(self, result: dict[str, Any]) -> None:
+        self.result = result
+        super().__init__(f'command failed exit={result["exit_code"]}; '
+                         + ('process census incomplete' if result.get('census_error')
+                            else result.get('error', result['tail'][-1024:])))
+
+
 def command(argv: list[str], cwd: Path, env: dict[str, str], seconds: float,
             *, stdin: bytes = b'', cap: int = STREAM_CAP) -> dict[str, Any]:
-    """Bound both elapsed time and retained output, kill/reap the owned group.
+    """Drain child output despite census failure; always stop/reap owned group.
 
     Only build/fixture/helper commands use this runner; authentication responses
-    and daemon output never enter this report.
+    and daemon output never enter this report. Census uncertainty latches failure
+    independently of the child's exit, without aborting a running build.
     """
     proc = subprocess.Popen(argv, cwd=cwd, env=env, stdin=subprocess.PIPE,
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -62,6 +84,22 @@ def command(argv: list[str], cwd: Path, env: dict[str, str], seconds: float,
     end = time.monotonic() + seconds
     observed = {(proc.pid, proc.pid)}
     next_sample = 0.0
+    result: dict[str, Any] = {}
+    def sample(phase: str) -> list[dict[str, Any]] | None:
+        try:
+            current = census()
+            observed.update((row['pid'], row['pgid']) for row in descendants(current, proc.pid))
+            if len(observed) > 8192:
+                raise RuntimeError('command process identity cap')
+            return current
+        except Exception as exc:
+            evidence = census_failure(exc)
+            error = result.setdefault('census_error', {'status': 'INCOMPLETE',
+                'first': evidence, 'phases': []})
+            error['phases'].append(phase)
+            if evidence != error['first']:
+                error[phase] = evidence
+            return None
     try:
         assert proc.stdin is not None and proc.stdout is not None
         proc.stdin.write(stdin)
@@ -69,10 +107,8 @@ def command(argv: list[str], cwd: Path, env: dict[str, str], seconds: float,
         with selectors.DefaultSelector() as selector:
             selector.register(proc.stdout, selectors.EVENT_READ)
             while selector.get_map():
-                if time.monotonic() >= next_sample:
-                    observed.update((row['pid'], row['pgid']) for row in descendants(census(), proc.pid))
-                    if len(observed) > 8192:
-                        raise RuntimeError('command process identity cap')
+                if time.monotonic() >= next_sample and 'census_error' not in result:
+                    sample('sampling')
                     next_sample = time.monotonic() + .5
                 if time.monotonic() >= end:
                     raise TimeoutError('packaged command deadline')
@@ -87,34 +123,46 @@ def command(argv: list[str], cwd: Path, env: dict[str, str], seconds: float,
                     del data[:-2048]
                     if total > cap:
                         raise RuntimeError('packaged command output cap')
-        code = proc.wait(timeout=max(.001, end - time.monotonic()))
-        return {'exit_code': code, 'bytes': total, 'sha256': sha.hexdigest(),
-                'tail': data.decode('utf-8', errors='replace')}
-    except (OSError, RuntimeError, TimeoutError, subprocess.TimeoutExpired) as exc:
-        return {'exit_code': None, 'bytes': total, 'sha256': sha.hexdigest(),
-                'tail': data.decode('utf-8', errors='replace'),
-                'error': type(exc).__name__ + ': ' + str(exc)}
+        proc.wait(timeout=max(.001, end - time.monotonic()))
+    except Exception as exc:
+        result['error'] = type(exc).__name__ + ': ' + str(exc)
     finally:
         # A frozen helper may start its own worker session. Signal only groups
         # witnessed under this command, with a still-matching member, never a
         # process selected merely by a scratch-looking command name.
         try:
-            current = census()
-            observed.update((row['pid'], row['pgid']) for row in descendants(current, proc.pid))
-            alive = {(row['pid'], row['pgid']) for row in current}
-            for group in {group for pid, group in observed if (pid, group) in alive}:
-                if group != os.getpgrp():
-                    try:
-                        os.killpg(group, signal.SIGKILL)
-                    except ProcessLookupError:
-                        pass
+            current = sample('finally')
+            if current is not None:
+                alive = {(row['pid'], row['pgid']) for row in current}
+                for group in {group for pid, group in observed if (pid, group) in alive}:
+                    if group != os.getpgrp():
+                        try:
+                            os.killpg(group, signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
+        except Exception as exc:
+            result['cleanup_error'] = type(exc).__name__
         finally:
+            # This group is ours by start_new_session, even when ps is unknown.
             try:
                 os.killpg(proc.pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
-            proc.wait(timeout=5)
-            proc.stdout.close()
+            except OSError as exc:
+                result['cleanup_error'] = type(exc).__name__
+            try:
+                proc.wait(timeout=5)
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                result['cleanup_error'] = type(exc).__name__
+            for stream in (proc.stdin, proc.stdout):
+                if stream is not None:
+                    try:
+                        stream.close()
+                    except OSError as exc:
+                        result['cleanup_error'] = type(exc).__name__
+    result.update(exit_code=proc.returncode, bytes=total, sha256=sha.hexdigest(),
+                  tail=data.decode('utf-8', errors='replace'))
+    return result
 
 
 
@@ -143,24 +191,63 @@ def build_failure_evidence(out: Path) -> dict[str, Any]:
 def checked(argv: list[str], cwd: Path, env: dict[str, str], seconds: float,
             **kwargs: Any) -> dict[str, Any]:
     row = command(argv, cwd, env, seconds, **kwargs)
-    if row['exit_code'] != 0:
-        raise RuntimeError(f'command failed exit={row["exit_code"]}: {row["tail"][-1024:]}')
+    if row['exit_code'] != 0 or any(key in row for key in ('error', 'census_error', 'cleanup_error')):
+        raise CommandFailure(row)
     return row
 
 
 def parse_census(raw: str) -> list[dict[str, Any]]:
     rows = []
-    for line in raw.splitlines():
+    rejected: list[dict[str, Any]] = []
+    rejected_count = 0
+    # LF is ps's row separator. splitlines() would hide CR/control characters
+    # and corrupt the original line indices in rejected-row evidence.
+    lines = raw.split('\n')
+    if lines[-1] == '':
+        lines.pop()
+    for index, line in enumerate(lines, 1):
         values = line.split(None, 9)
-        if (len(values) != 10 or not all(v.isdecimal() for v in values[:3])
-                or not re.fullmatch(r'[A-Za-z][A-Za-z0-9+<\-]*', values[3])):
-            raise ValueError('incomplete process census')
-        identity = ' '.join(values[4:9])
-        time.strptime(identity, '%a %b %d %H:%M:%S %Y')
-        rows.append(dict(zip((*PROCESS_FIELDS, 'executable'),
-                             [*map(int, values[:3]), values[3], identity, values[9]], strict=True)))
-    if not rows or len(rows) > 8192:
-        raise ValueError('process census empty/row cap')
+        reason = ''
+        if len(values) != 10:
+            reason = 'field_count'
+        elif not all(re.fullmatch(r'[0-9]{1,10}', value) and int(value) <= 2147483647
+                     for value in values[:3]):
+            reason = 'pid_ppid_pgid'
+        # Apple adv_cmds ps/tasks.c mach_state_table includes '?'. It is a
+        # process with unknown state, never proof that the process is absent.
+        elif not re.fullmatch(r'[A-Za-z?][A-Za-z0-9+<\-]*', values[3]):
+            reason = 'state'
+        elif any(ord(char) < 32 and char != '\t' for char in line):
+            reason = 'control_character'
+        else:
+            identity = ' '.join(values[4:9])
+            try:
+                time.strptime(identity, '%a %b %d %H:%M:%S %Y')
+            except ValueError:
+                reason = 'lstart'
+        if reason:
+            rejected_count += 1
+            if len(rejected) < 16:
+                # ASCII JSON escapes, never literal controls. Limit the escaped
+                # value to 512 bytes without cutting an escape sequence.
+                escaped = ''
+                for char in line:
+                    part = json.dumps(char, ensure_ascii=True)[1:-1]
+                    if len(escaped) + len(part) > 512:
+                        break
+                    escaped += part
+                rejected.append({'line_index': index, 'reason': reason, 'row': escaped,
+                                 'truncated': escaped != json.dumps(line, ensure_ascii=True)[1:-1]})
+        elif len(rows) < 8192:
+            rows.append(dict(zip((*PROCESS_FIELDS, 'executable'),
+                [*map(int, values[:3]), values[3], identity, values[9]], strict=True)))
+    if rejected_count or not lines or len(lines) > 8192:
+        raise CensusError({'status': 'INCOMPLETE',
+            'reason': 'rejected_rows' if rejected_count else 'empty' if not lines else 'row_cap',
+            'row_count': len(lines), 'rejected_count': rejected_count, 'rejected_rows': rejected,
+            'truncated': rejected_count > len(rejected) or any(row['truncated'] for row in rejected),
+            'row_limit': 16, 'row_bytes_limit': 512,
+            'redaction': 'none; ps pid/ppid/pgid/stat/lstart/comm only, no argv; JSON-escaped rows'})
     return rows
 
 
@@ -224,8 +311,10 @@ def survivor_snapshot(select: Any) -> dict[str, Any]:
                 'truncated': len(rows) > SURVIVOR_CAP, 'rows': rows[:SURVIVOR_CAP],
                 'identity_source': 'ps lstart (seconds); same-second PID reuse conservatively survives'}
     except Exception as exc:
-        # Census errors can include host command output: retain only the class.
-        return {'status': 'UNKNOWN', 'error': type(exc).__name__}
+        result = {'status': 'UNKNOWN', 'error': type(exc).__name__}
+        if isinstance(exc, CensusError):
+            result['census_error'] = exc.evidence
+        return result
 
 
 def backend_diagnostics(path: Path, selected: dict[str, Any], secrets: tuple[str, ...]) -> dict[str, Any]:
@@ -575,13 +664,7 @@ def run(report: dict[str, Any]) -> None:
     api = None
     selected_backend: dict[str, Any] = {}
     daemon_env: dict[str, str] = {}
-    before = census()
     ancestors = {os.getpid()}
-    for _ in range(len(before)):
-        parents = {r['ppid'] for r in before if r['pid'] in ancestors}
-        if parents <= ancestors:
-            break
-        ancestors.update(parents)
     groups: set[int] = set()
     tracked_identities: set[tuple[int, str]] = set()
     daemon_identity: tuple[int, str] | None = None
@@ -621,6 +704,12 @@ def run(report: dict[str, Any]) -> None:
     section['post_cancel_survivors'] = {'status': 'NOT_RUN', 'reason': 'cancel not reached'}
     active = '1'
     try:
+        before = census()
+        for _ in range(len(before)):
+            parents = {r['ppid'] for r in before if r['pid'] in ancestors}
+            if parents <= ancestors:
+                break
+            ancestors.update(parents)
         source = checked(['git', '--no-replace-objects', 'rev-parse', 'HEAD'], ROOT, dict(os.environ), 5)['tail'].strip()
         if not re.fullmatch('[a-f0-9]{40}', source) or source != section['source_sha']:
             raise RuntimeError('SOURCE_SHA does not match exact checked out commit')
@@ -639,6 +728,9 @@ def run(report: dict[str, Any]) -> None:
         build_env['GOFLAGS'] = (build_env.get('GOFLAGS', '') + ' -modcacherw').strip()
         originals = area / 'web-originals'
         out = area / 'build'
+        section['build_output'] = {'output_dir': str(out), 'app_path': str(out / 'HappyRanch.app'),
+            'zip_path': str(out / 'HappyRanch-1.0.1-1.0.1-arm64.zip'),
+            'availability': 'scratch paths only until retained_product verifies the ZIP'}
         section['commands']['originals'] = checked([sys.executable, '-B',
             str(ROOT / 'app/mac/scripts/prepare_web_originals.py'), '--source', str(ROOT),
             '--destination', str(originals)], area, build_env, 900)
@@ -649,6 +741,8 @@ def run(report: dict[str, Any]) -> None:
             '--output-dir', str(out)], area, build_env, 2700)
         if section['commands']['build']['exit_code'] != 0:
             section['build_failure_evidence'] = build_failure_evidence(out)
+            if section['commands']['build'].get('census_error'):
+                raise CommandFailure(section['commands']['build'])
             raise RuntimeError('documented app build failed; see build command evidence')
         app = out / 'HappyRanch.app'
         binary = app / 'Contents/Resources/daemon/happyranch-daemon'
@@ -659,6 +753,9 @@ def run(report: dict[str, Any]) -> None:
             'daemon': binary, 'cli': binary.with_name('happyranch')}.items()}
         section['retained_product'] = retain_product(out, Path(os.environ['WORKSPACE']),
             scratch, source, tree, section['bundle_hashes'])
+        build_result = section['commands']['build']
+        if any(key in build_result for key in ('error', 'census_error', 'cleanup_error')):
+            raise CommandFailure(build_result)
         steps['1'] = dict(name=STEP_NAMES[0], status='PASS', source_sha=source, source_tree=tree,
                           signing='unsigned internal; no feed URL supplied or baked by suite')
         active = '2'
@@ -686,7 +783,8 @@ def run(report: dict[str, Any]) -> None:
             cwd=home, env=daemon_env, stdin=subprocess.DEVNULL, stdout=log,
             stderr=subprocess.STDOUT, start_new_session=True)
         groups.add(daemon.pid)
-        if capture_snapshot()['status'] == 'UNKNOWN':
+        section['initial_daemon_survivors'] = capture_snapshot()
+        if section['initial_daemon_survivors']['status'] == 'UNKNOWN':
             raise RuntimeError('initial daemon descendant evidence unknown')
         steps['3'] = dict(name=STEP_NAMES[2], status='PASS', pid=daemon.pid, pgid=daemon.pid,
             mode='bundled daemon fallback', gui=section['gui_launch'], temp_override=daemon_env['TMPDIR'],
@@ -806,7 +904,9 @@ def run(report: dict[str, Any]) -> None:
         if (sweep['exit_code'] != 0 or git_helper['exit_code'] != 0 or
                 f'{oid} commit ' not in git_helper['tail'] or not finishes or
                 not any(item.get('task_id') == task for item in outcomes) or
-                section['commands'].get('worktree_safety', {}).get('exit_code', 0) != 0):
+                section['commands'].get('worktree_safety', {}).get('exit_code', 0) != 0 or
+                any(key in row for row in (sweep, git_helper, section['commands'].get('worktree_safety', {}))
+                    for key in ('error', 'census_error', 'cleanup_error'))):
             raise RuntimeError('frozen cleanup/helper failed or terminal cleanup receipt absent')
         steps['6'] = dict(name=STEP_NAMES[5], status='PASS', frozen_git_helper=git_helper,
             terminal_cleanup_audit_ids=[r['id'] for r in finishes], worktree_removed=not candidate.exists(),
@@ -815,6 +915,14 @@ def run(report: dict[str, Any]) -> None:
     except Exception as exc:
         steps[active] = dict(name=STEP_NAMES[int(active) - 1], status='FAIL',
                              reason=f'{type(exc).__name__}: {exc}'[:2048])
+        if isinstance(exc, CensusError):
+            steps[active]['census_error'] = exc.evidence
+        if isinstance(exc, CommandFailure):
+            key = next((key for key, value in section['commands'].items() if value is exc.result), None)
+            if key is None:
+                steps[active]['command_result'] = exc.result
+            else:
+                steps[active]['command_result_key'] = key
         if isinstance(exc, ApiFailure):
             steps[active]['http'] = exc.observation
         if active == '4' and section.get('health_readiness'):

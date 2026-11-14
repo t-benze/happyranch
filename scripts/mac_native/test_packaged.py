@@ -1027,6 +1027,170 @@ uv() { printf '%s\\n' "$@"; }
         self.assertEqual(inherited, {'PATH': '/synthetic/tools', 'GOFLAGS': '-mod=readonly',
                                      'PYTHONUSERBASE': '/job/bootstrap'})
 
+    def test_synthetic_darwin_census_forms_keep_unknown_state_and_opaque_comm(self) -> None:
+        # SYNTHETIC, source-derived: Apple adv_cmds ps/tasks.c and print.c.
+        forms = [(0, '?', '(kernel_task)'), (12, '?NLs', '/bin/tool with spaces'),
+                 (13, 'Z', '<defunct>'), (14, 'S+', '(exiting)')]
+        rows = suite.parse_census(''.join(
+            f' {pid} 0 0 {state} Sat Nov 14 05:00:00 2026 {comm}\n'
+            for pid, state, comm in forms))
+        self.assertEqual([(r['pid'], r['state'], r['executable']) for r in rows], forms)
+        self.assertEqual(len(suite.descendants(rows, 0)), 4)
+
+    def test_rejected_census_rows_are_bounded_exact_and_never_partial_absence(self) -> None:
+        good = '1 0 1 S Sat Nov 14 05:00:00 2026 /sbin/launchd'
+        # SYNTHETIC malformed ps rows; no captured build37 row was retained.
+        rejected = ['PID PPID PGID STAT STARTED COMM', 'x 0 1 S Sat Nov 14 05:00:00 2026 comm',
+                    '2 0 2 ! Sat Nov 14 05:00:00 2026 comm',
+                    '3 0 3 S Sat Nov 99 05:00:00 2026 comm',
+                    '4 0 4 S Sat Nov 14 05:00:00 2026',
+                    'bad\t\x1b\r\x00' + '\u2603' * 600] + ['bad'] * 14
+        raw = good + '\n' + '\n'.join(rejected) + '\n'
+        with patch.object(suite.subprocess, 'run', return_value=subprocess.CompletedProcess(
+                ['/bin/ps'], 0, raw.encode(), b'')):
+            result = suite.survivor_snapshot(lambda rows: [])
+        self.assertEqual(result['status'], 'UNKNOWN')
+        evidence = result.get('census_error', {})
+        self.assertEqual(evidence.get('rejected_count'), 20, result)
+        self.assertEqual(evidence['row_count'], 21)
+        self.assertEqual(len(evidence['rejected_rows']), 16)
+        self.assertEqual([r['line_index'] for r in evidence['rejected_rows']], list(range(2, 18)))
+        self.assertEqual(evidence['rejected_rows'][0]['row'], rejected[0])
+        self.assertEqual([r['reason'] for r in evidence['rejected_rows'][:5]],
+                         ['field_count', 'pid_ppid_pgid', 'state', 'lstart', 'field_count'])
+        self.assertTrue(evidence['rejected_rows'][5]['truncated'])
+        self.assertIn(r'\t\u001b\r\u0000', evidence['rejected_rows'][5]['row'])
+        self.assertTrue(all(len(r['row'].encode()) <= 512 for r in evidence['rejected_rows']))
+        self.assertTrue(evidence['truncated'])
+        for raw, reason in [('', 'empty'), ((good + '\n') * 8193, 'row_cap')]:
+            with self.subTest(reason=reason):
+                with patch.object(suite.subprocess, 'run', return_value=subprocess.CompletedProcess(
+                        ['/bin/ps'], 0, raw.encode(), b'')):
+                    refused = suite.survivor_snapshot(lambda rows: [])
+                self.assertEqual(refused['status'], 'UNKNOWN')
+                self.assertEqual(refused.get('census_error', {}).get('reason'), reason, refused)
+
+    def test_command_retains_child_result_after_sampling_or_final_census_failure(self) -> None:
+        for phase in ('sampling', 'finally', 'both'):
+            with self.subTest(phase=phase), tempfile.TemporaryDirectory() as folder:
+                children = []
+                popen = subprocess.Popen
+                def launch(*args, **kwargs):
+                    child = popen(*args, **kwargs)
+                    children.append(child)
+                    return child
+                def census():
+                    final = children[0].returncode is not None
+                    if phase == 'both' or (phase == 'finally') == final:
+                        return suite.parse_census('synthetic rejected ps row' + (' finally' if final else ''))
+                    return []
+                with patch.object(suite, 'census', side_effect=census), patch.object(suite.subprocess, 'Popen', side_effect=launch):
+                    result = suite.command([sys.executable, '-c',
+                        'print("build37-shape-output"); raise SystemExit(7)'], Path(folder), dict(os.environ), 5)
+                payload = b'build37-shape-output\n'
+                self.assertEqual(result['exit_code'], 7)
+                self.assertEqual(result['bytes'], len(payload))
+                self.assertEqual(result['sha256'], hashlib.sha256(payload).hexdigest())
+                self.assertEqual(result['tail'], payload.decode())
+                self.assertIn(phase if phase != 'both' else 'sampling', result['census_error']['phases'])
+                self.assertEqual(result['census_error']['first']['rejected_rows'][0]['row'],
+                    'synthetic rejected ps row' + (' finally' if phase == 'finally' else ''))
+                if phase == 'both':
+                    self.assertEqual(result['census_error']['finally']['rejected_rows'][0]['row'],
+                                     'synthetic rejected ps row finally')
+                self.assertIsNotNone(children[0].returncode, 'owned child must be reaped')
+
+    def test_run_retains_real_command_and_zip_before_census_or_later_failure(self) -> None:
+        # SYNTHETIC build executable/receipt, never a Mac build; real command,
+        # parse_census, run, retain_product and collector/EXIT contracts.
+        real_command = suite.command
+        real_checked = suite.checked
+        for failure in ('census', 'later', 'build_exit', 'initial', 'checked'):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as folder:
+                workspace = Path(folder).resolve()
+                scratch = workspace / 'native-probe.synthetic'
+                source = scratch / 'source'
+                source.mkdir(parents=True)
+                report = {'suite': 'packaged', 'platform': 'darwin'}
+                def checked(argv, *_args, **_kwargs):
+                    if failure == 'checked':
+                        def refused():
+                            return suite.parse_census('synthetic rejected checked ps row')
+                        with (patch.object(suite, 'command', real_command),
+                              patch.object(suite, 'census', side_effect=refused)):
+                            return real_checked([sys.executable, '-c', 'print("checked child ran")'],
+                                                scratch, dict(os.environ), 5)
+                    if argv[0] == '/usr/bin/ditto':
+                        raise RuntimeError('synthetic later install failure')
+                    return {'tail': 'a' * 40}
+                def build(argv, cwd, env, seconds):
+                    out = Path(argv[argv.index('--output-dir') + 1])
+                    app = out / 'HappyRanch.app'
+                    for name in ('Contents/MacOS/HappyRanch', 'Contents/Resources/daemon/happyranch-daemon',
+                                 'Contents/Resources/daemon/happyranch'):
+                        path = app / name
+                        path.parent.mkdir(parents=True, exist_ok=True)
+                        path.write_bytes(b'synthetic never-executed binary')
+                    archive = out / 'HappyRanch-1.0.1-1.0.1-arm64.zip'
+                    archive.write_bytes(b'synthetic shipping archive')
+                    (out / 'build-receipt.json').write_text(json.dumps({
+                        'filename': archive.name, 'role': 'unsigned-inner-zip',
+                        'source_sha': 'a' * 40, 'source_tree': 'a' * 40,
+                        'run_id': '00000000-0000-0000-0000-000000000000',
+                        'size': archive.stat().st_size, 'sha256': hashlib.sha256(archive.read_bytes()).hexdigest(),
+                        'app_inventory_sha256': '4' * 64}))
+                    def census():
+                        return suite.parse_census('synthetic rejected build ps row')
+                    with patch.object(suite, 'census', side_effect=census if failure == 'census' else lambda: []):
+                        return real_command([sys.executable, '-c',
+                            'print("retained build output"); raise SystemExit(' +
+                            ('7' if failure == 'build_exit' else '0') + ')'], cwd, env, seconds)
+                def initial_census():
+                    if failure == 'initial':
+                        return suite.parse_census('synthetic rejected initial ps row')
+                    return []
+                with (patch.object(suite, 'ROOT', source),
+                      patch.dict(os.environ, {'TMPDIR': str(scratch / 'tmp'), 'SOURCE_SHA': 'a' * 40,
+                                              'WORKSPACE': str(workspace)}),
+                      patch.object(suite, 'census', side_effect=initial_census),
+                      patch.object(suite, 'checked', side_effect=checked),
+                      patch.object(suite, 'command', side_effect=build),
+                      patch('scripts.mac_native.suite_toolchain.executor_feasibility', return_value={}),
+                      patch('scripts.mac_native.toolchain.provision', return_value=dict(os.environ))):
+                    with self.assertRaises((RuntimeError, ValueError)):
+                        suite.run(report)
+                if failure == 'checked':
+                    self.assertEqual(report['steps']['1']['status'], 'FAIL')
+                    row = report['steps']['1']['command_result']
+                    self.assertEqual(row['exit_code'], 0)
+                    self.assertEqual(row['tail'], 'checked child ran\n')
+                    self.assertEqual(row['census_error']['first']['rejected_count'], 1)
+                    continue
+                if failure == 'initial':
+                    self.assertEqual(report['steps']['1']['status'], 'FAIL')
+                    self.assertEqual(report['steps']['1']['census_error']['rejected_count'], 1)
+                    continue
+                kept = report['packaged']['commands']['build']
+                self.assertEqual(kept['exit_code'], 7 if failure == 'build_exit' else 0)
+                self.assertEqual(kept['tail'], 'retained build output\n')
+                self.assertEqual(kept['bytes'], 22)
+                self.assertEqual(kept['sha256'], hashlib.sha256(b'retained build output\n').hexdigest())
+                self.assertEqual(report['packaged']['build_output']['zip_path'],
+                    str(scratch / 'packaged/build/HappyRanch-1.0.1-1.0.1-arm64.zip'))
+                self.assertEqual(report['steps']['1']['status'], 'PASS' if failure == 'later' else 'FAIL')
+                if failure == 'build_exit':
+                    continue
+                identity = report['packaged']['retained_product']
+                shutil.rmtree(scratch)
+                self.assertEqual(Path(identity['path']).read_bytes(), b'synthetic shipping archive')
+                self.assertEqual(hashlib.sha256(Path(identity['path']).read_bytes()).hexdigest(), identity['sha256'])
+                from scripts.mac_native.collect_packaged import join_exit_receipt
+                joined = join_exit_receipt(json.loads(json.dumps(report)), 'source_sha=' + 'a' * 40 +
+                    '\nsuite=packaged\nscratch_removed=true\n', 'a' * 40)
+                self.assertEqual(joined['packaged']['commands']['build'], kept)
+                self.assertEqual(joined['steps']['8']['status'], 'PASS')
+                self.assertLess(len(json.dumps(joined).encode()), 60000)
+
     def test_linux_dispatch_has_eight_not_run_steps(self):
         if sys.platform == 'darwin':
             self.skipTest('Linux skip boundary only; never build in portable tests')
@@ -1063,13 +1227,31 @@ uv() { printf '%s\\n' "$@"; }
             self.assertIn('failure-evidence', failed['tail'])
             overflow = suite.command([sys.executable, '-c', 'print("x"*8192)'],
                                      cwd, dict(os.environ), 2, cap=1024)
-            self.assertIsNone(overflow['exit_code'])
+            self.assertIsNotNone(overflow['exit_code'])
             self.assertIn('output cap', overflow['error'])
             self.assertLessEqual(len(overflow['tail']), 2048)
-            timeout = suite.command([sys.executable, '-c', 'import time; time.sleep(30)'],
-                                    cwd, dict(os.environ), .1)
-            self.assertIsNone(timeout['exit_code'])
+            children = []
+            popen = subprocess.Popen
+            def launch(*args, **kwargs):
+                child = popen(*args, **kwargs)
+                children.append(child)
+                return child
+            with (patch.object(suite.subprocess, 'Popen', side_effect=launch),
+                  patch.object(suite, 'census', side_effect=ValueError('synthetic unavailable census'))):
+                timeout = suite.command([sys.executable, '-c', 'import time; time.sleep(30)'],
+                                        cwd, dict(os.environ), .1)
+            self.assertIsNotNone(timeout['exit_code'])
             self.assertIn('deadline', timeout['error'])
+            self.assertLess(timeout['exit_code'], 0)
+            self.assertEqual(children[0].returncode, timeout['exit_code'])
+            with self.assertRaises(ProcessLookupError):
+                os.killpg(children[0].pid, 0)
+            with patch.object(suite, 'census', side_effect=ValueError('synthetic unavailable census')):
+                with self.assertRaises(RuntimeError) as caught:
+                    suite.checked([sys.executable, '-c', 'print("checked output")'], cwd, dict(os.environ), 2)
+            self.assertEqual(caught.exception.result['exit_code'], 0)
+            self.assertEqual(caught.exception.result['tail'], 'checked output\n')
+            self.assertEqual(caught.exception.result['census_error']['first']['reason'], 'ValueError')
 
 
 if __name__ == '__main__':
