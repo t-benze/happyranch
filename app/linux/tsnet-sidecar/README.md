@@ -5,6 +5,17 @@ HTTP or daemon-bearer knowledge. `tailscale.com v1.78.0`, the module identity an
 the existing dependency pins are shared by Linux and Darwin. Use Go 1.23.12
 (the Mac toolchain pin), with CGO disabled.
 
+`ConnectorAddr` must use literal `127.0.0.1`; literal port 8765 is always
+refused. Optional JSON `ExcludedDaemonPorts` is a list of integers in 1..65535;
+validation refuses any matching connector port. Omission preserves existing
+validation, including for Mac configs. Linux deb provisioning writes this list
+and connector `excluded_daemon_ports` as the sorted unique union of 8765, the
+configured daemon port and any extra operator exclusions. It also requires
+`ConnectorAddr` to equal exactly `127.0.0.1:<managed.bind_port>` before staging,
+install/start and drift verification. Raw TCP must reach the connector ingress,
+where pairing and policy are enforced, before the connector forwards to the
+daemon. A direct daemon hop could expose loopback `/auth/bootstrap`.
+
 Linux uses the existing `NOTIFY_SOCKET` READY/WATCHDOG/STOPPING protocol and
 `WATCHDOG_USEC`/`WATCHDOG_PID` cadence. systemd owns restart and the injected
 read-only credential copy. The new readiness flags are refused on Linux.

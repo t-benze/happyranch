@@ -60,6 +60,18 @@ refuses provisioning/install before configuration or unit publication, naming
 the path and missing permission. Fresh-host provisioning rechecks after account
 creation.
 
+Managed remote access also enforces the cross-config port contract before
+provisioning publishes files or install starts services: sidecar `ConnectorAddr`
+must be exactly `127.0.0.1:<managed.bind_port>`, and ingress must differ from
+`daemon_port`, permanent DEV 8765 and all excluded daemon ports. Deb staging
+writes matching sorted unique connector `excluded_daemon_ports` and sidecar
+`ExcludedDaemonPorts` containing 8765 and the configured daemon port (8766 for
+RELEASE), preserving any extra operator exclusions. List entries must be
+integers in 1..65535. Install and check-drift reject missing or inconsistent
+staged lists or addresses. Older source configs may omit the lists; the shared
+Go sidecar retains its previous absent-list behavior for Mac configs. See the
+Desktop package host runbook above for inputs and operator recovery.
+
 Inside a runtime session (nonempty `HAPPYRANCH_RUNTIME_SESSION_ID`), the packaged
 `bin/happyranch` CLI refuses an unset or empty `HAPPYRANCH_DAEMON_HOME`, exits
 nonzero and names that variable in one stderr line. Outside a session its

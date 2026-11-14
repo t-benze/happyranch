@@ -266,21 +266,29 @@ func TestRestartRetainsStartupFailureGates(t *testing.T) {
 
 func TestValidateRejectsUnsafeTopology(t *testing.T) {
 	base := validConfig(t)
-	cases := []func(*Config){
-		func(c *Config) { c.ControlURL = "https://controlplane.tailscale.com" },
-		func(c *Config) { c.ControlURL = "http://headscale.private.example" },
-		func(c *Config) { c.ConnectorAddr = "0.0.0.0:9443" },
-		func(c *Config) { c.ConnectorAddr = "127.0.0.2:9443" },
-		func(c *Config) { c.ConnectorAddr = "127.0.0.1:8765" },
-		func(c *Config) { c.RoleIdentity = "ambiguous" },
-		func(c *Config) { c.DERPPolicy = "public-fallback" },
+	cases := map[string]func(*Config){
+		"public-control":  func(c *Config) { c.ControlURL = "https://controlplane.tailscale.com" },
+		"http-control":    func(c *Config) { c.ControlURL = "http://headscale.private.example" },
+		"wildcard":        func(c *Config) { c.ConnectorAddr = "0.0.0.0:9443" },
+		"other-loopback":  func(c *Config) { c.ConnectorAddr = "127.0.0.2:9443" },
+		"dev-port":        func(c *Config) { c.ConnectorAddr = "127.0.0.1:8765" },
+		"listed-release":  func(c *Config) { c.ConnectorAddr = "127.0.0.1:8766"; c.ExcludedDaemonPorts = []int{8765, 8766} },
+		"listed-padded":   func(c *Config) { c.ConnectorAddr = "127.0.0.1:08766"; c.ExcludedDaemonPorts = []int{8766} },
+		"listed-custom":   func(c *Config) { c.ExcludedDaemonPorts = []int{9443} },
+		"listed-zero":     func(c *Config) { c.ExcludedDaemonPorts = []int{0} },
+		"listed-negative": func(c *Config) { c.ExcludedDaemonPorts = []int{-1} },
+		"listed-overflow": func(c *Config) { c.ExcludedDaemonPorts = []int{65536} },
+		"identity":        func(c *Config) { c.RoleIdentity = "ambiguous" },
+		"derp":            func(c *Config) { c.DERPPolicy = "public-fallback" },
 	}
-	for i, mutate := range cases {
-		c := base
-		mutate(&c)
-		if err := c.Validate(); !errors.Is(err, ErrConfiguration) {
-			t.Fatalf("case %d: %v", i, err)
-		}
+	for name, mutate := range cases {
+		t.Run(name, func(t *testing.T) {
+			c := base
+			mutate(&c)
+			if err := c.Validate(); !errors.Is(err, ErrConfiguration) {
+				t.Fatalf("unsafe topology accepted: %v", err)
+			}
+		})
 	}
 }
 

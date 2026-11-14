@@ -872,7 +872,10 @@ class ManagedLinuxDebInstaller(unittest.TestCase):
             config_dir = root / 'etc/happyranch'
             for name in ('connector', 'sidecar', 'policy'):
                 path = config_dir / f'{name}.json'
-                self.assertEqual(path.read_bytes(), (root / 'operator' / path.name).read_bytes())
+                expected = json.loads((root / 'operator' / path.name).read_bytes())
+                if name != 'policy':
+                    expected['excluded_daemon_ports' if name == 'connector' else 'ExcludedDaemonPorts'] = [8765, 8766]
+                self.assertEqual(json.loads(path.read_bytes()), expected)
                 self.assertEqual((path.stat().st_uid, path.stat().st_gid, stat.S_IMODE(path.stat().st_mode)), (*options['root_owner'], 0o640))
             self.assertEqual((config_dir / 'daemon.token').read_bytes(), TOKEN)
             self.assertEqual(stat.S_IMODE((config_dir / 'daemon.token').stat().st_mode), 0o600)
@@ -992,7 +995,9 @@ class ManagedLinuxDebInstaller(unittest.TestCase):
 
     def test_linux_provision_input_refusals(self):
         for case in ('missing-policy', 'invalid-policy', 'expired-policy', 'home-state', 'root-sidecar-state',
-                     'token-mode', 'literal-8765', 'sidecar-8765', 'duplicate-json'):
+                     'token-mode', 'literal-8765', 'sidecar-8765', 'duplicate-json',
+                     'daemon-8766', 'daemon-custom', 'excluded-ingress', 'sidecar-excluded-ingress',
+                     'sidecar-mismatch', 'sidecar-leading-zero', 'sidecar-invalid-exclusions'):
             with self.subTest(case=case), self.host() as (root, instance, inputs, manager, _):
                 if case == 'missing-policy':
                     inputs['policy_file'].unlink()
@@ -1016,6 +1021,26 @@ class ManagedLinuxDebInstaller(unittest.TestCase):
                     private(inputs['sidecar_config'], json.dumps(value).encode())
                 elif case == 'duplicate-json':
                     private(inputs['sidecar_config'], b'{"StateDir":"a","StateDir":"b"}')
+                elif case in ('daemon-8766', 'daemon-custom', 'excluded-ingress'):
+                    connector = json.loads(inputs['connector_config'].read_text())
+                    if case.startswith('daemon'):
+                        port = 8766 if case == 'daemon-8766' else 18766
+                        connector['daemon_port'] = connector['managed']['bind_port'] = port
+                        sidecar = json.loads(inputs['sidecar_config'].read_text())
+                        sidecar['ConnectorAddr'] = f'127.0.0.1:{port}'
+                        private(inputs['sidecar_config'], json.dumps(sidecar).encode())
+                    else:
+                        connector['excluded_daemon_ports'] = [18443]
+                    private(inputs['connector_config'], json.dumps(connector).encode())
+                elif case.startswith('sidecar-'):
+                    sidecar = json.loads(inputs['sidecar_config'].read_text())
+                    if case == 'sidecar-excluded-ingress':
+                        sidecar['ExcludedDaemonPorts'] = [18443]
+                    elif case == 'sidecar-invalid-exclusions':
+                        sidecar['ExcludedDaemonPorts'] = [True]
+                    else:
+                        sidecar['ConnectorAddr'] = '127.0.0.1:9443' if case == 'sidecar-mismatch' else '127.0.0.1:018443'
+                    private(inputs['sidecar_config'], json.dumps(sidecar).encode())
                 else:
                     inputs['daemon_token_source'].chmod(0o644)
                 with self.assertRaises(installer.InstallerError) as error:
@@ -1023,6 +1048,48 @@ class ManagedLinuxDebInstaller(unittest.TestCase):
                 self.assertNotIn(TOKEN.decode(), str(error.exception))
                 self.assertFalse((root / 'etc/happyranch').exists())
                 self.assertEqual(manager.method_calls, [])
+
+    def test_linux_connector_config_port_contract(self):
+        from runtime.remote_access.supervisor import ConnectorConfig, ConnectorConfigError, ConnectorSupervisor
+
+        cases = [({}, True), ({'excluded_daemon_ports': [1, 65535, 8765, 8766]}, True),
+                 ({'managed': {'bind_port': 8765}}, False),
+                 ({'managed': {'bind_port': 8766}}, False),
+                 ({'daemon_port': 18443}, False),
+                 ({'excluded_daemon_ports': [18443]}, False)]
+        cases += [({'excluded_daemon_ports': value}, False) for value in
+                  (None, 8766, '8766', {}, [True], [False], [0], [-1], [65536], [8766.0], ['8766'])]
+        for settings, valid in cases:
+            with self.subTest(settings=settings), self.host() as (root, _, inputs, _, _):
+                original = json.loads(inputs['connector_config'].read_text())
+                private(inputs['connector_config'], json.dumps(original | settings).encode())
+                if not valid:
+                    with self.assertRaises(ConnectorConfigError):
+                        ConnectorConfig.from_file(inputs['connector_config'])
+                    continue
+                cfg = ConnectorConfig.from_file(inputs['connector_config'])
+                self.assertEqual(cfg.excluded_daemon_ports, settings.get('excluded_daemon_ports', []))
+                # Source-layout staging must carry optional exclusions to the service.
+                cfg.managed_dir_root = str(root / 'source-state')
+                staged = ConnectorSupervisor(config=cfg)._managed_config()
+                path = root / 'roundtrip.json'
+                staged.to_file(path)
+                self.assertEqual(ConnectorConfig.from_file(path).excluded_daemon_ports, cfg.excluded_daemon_ports)
+
+    def test_linux_provision_preserves_operator_exclusions(self):
+        with self.host() as (root, instance, inputs, _, _):
+            for name, field, ports in (('connector', 'excluded_daemon_ports', [18765, 8765, 18765]),
+                                       ('sidecar', 'ExcludedDaemonPorts', [18766, 18765])):
+                path = inputs[f'{name}_config']
+                value = json.loads(path.read_text())
+                value[field] = ports
+                private(path, json.dumps(value).encode())
+            before = {path: path.read_bytes() for path in inputs.values()}
+            instance.provision(**inputs)
+            for name, field in (('connector', 'excluded_daemon_ports'), ('sidecar', 'ExcludedDaemonPorts')):
+                self.assertEqual(json.loads((root / f'etc/happyranch/{name}.json').read_text())[field],
+                                 [8765, 8766, 18765, 18766])
+            self.assertEqual({path: path.read_bytes() for path in inputs.values()}, before)
 
     def test_linux_deb_start_requires_provision(self):
         for case in ('missing-record', 'missing-config', 'invalid-config', 'invalid-record', 'wrong-layout'):
@@ -1057,7 +1124,9 @@ class ManagedLinuxDebInstaller(unittest.TestCase):
             self.assertTrue((root / 'etc/happyranch/provision.json').is_file())
 
     def test_linux_deb_token_and_unit_drift(self):
-        for case in ('source-rotation', 'staged-rotation', 'both-rotated', 'source-missing', 'unit-drift'):
+        for case in ('source-rotation', 'staged-rotation', 'both-rotated', 'source-missing', 'unit-drift',
+                     'port-mismatch', 'port-daemon', 'missing-exclusions', 'missing-dev', 'missing-daemon',
+                     'unequal-exclusions', 'invalid-exclusions'):
             with self.subTest(case=case), self.host() as (root, instance, inputs, manager, options):
                 instance.provision(**inputs)
                 instance.install(enrollment_key_file=root / 'operator/enrollment.key')
@@ -1069,9 +1138,40 @@ class ManagedLinuxDebInstaller(unittest.TestCase):
                     inputs['daemon_token_source'].unlink()
                 if case == 'unit-drift':
                     (root / 'etc/systemd/system' / installer.UNITS[1]).write_text('[Service]\nExecStart=/bin/true\n')
+                config_cases = ('port-mismatch', 'port-daemon', 'missing-exclusions', 'missing-dev',
+                                'missing-daemon', 'unequal-exclusions', 'invalid-exclusions')
+                if case in config_cases:
+                    directory = root / 'etc/happyranch'
+                    connector = json.loads((directory / 'connector.json').read_text())
+                    sidecar = json.loads((directory / 'sidecar.json').read_text())
+                    if case == 'port-mismatch':
+                        sidecar['ConnectorAddr'] = '127.0.0.1:9443'
+                    elif case == 'port-daemon':
+                        connector['managed']['bind_port'] = 8766
+                        sidecar['ConnectorAddr'] = '127.0.0.1:8766'
+                    elif case == 'missing-exclusions':
+                        connector.pop('excluded_daemon_ports')
+                        sidecar.pop('ExcludedDaemonPorts')
+                    elif case in ('missing-dev', 'missing-daemon'):
+                        ports = [8766] if case == 'missing-dev' else [8765]
+                        connector['excluded_daemon_ports'] = sidecar['ExcludedDaemonPorts'] = ports
+                    elif case == 'unequal-exclusions':
+                        sidecar['ExcludedDaemonPorts'] = [8765, 8766, 18765]
+                    else:
+                        sidecar['ExcludedDaemonPorts'] = [False]
+                    # Matching provenance hashes cannot mask a semantic contract violation.
+                    record = json.loads((directory / 'provision.json').read_text())
+                    for name, value in (('connector.json', connector), ('sidecar.json', sidecar)):
+                        data = json.dumps(value).encode()
+                        (directory / name).write_bytes(data)
+                        record['configs'][name] = hashlib.sha256(data).hexdigest()
+                    (directory / 'provision.json').write_text(json.dumps(record))
                 manager.reset_mock()
-                with self.assertRaisesRegex(installer.InstallerError, 'token|digest'):
+                with self.assertRaisesRegex(installer.InstallerError, 'provisioning' if case in config_cases else 'token|digest'):
                     installer.ManagedInstaller(**options).check_drift()
+                if case in config_cases:
+                    with self.assertRaises(installer.InstallerError):
+                        instance.install(enrollment_key_file=root / 'operator/enrollment.key')
                 if case != 'unit-drift':
                     self.assertEqual(manager.method_calls, [])
                 manager.start.assert_not_called()

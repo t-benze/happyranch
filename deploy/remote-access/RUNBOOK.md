@@ -55,7 +55,8 @@ For the planned release daemon, `connector.json` is:
   "system": true,
   "service_user": "happyranch",
   "service_group": "happyranch",
-  "managed": {"bind_host": "127.0.0.1", "bind_port": 18443}
+  "managed": {"bind_host": "127.0.0.1", "bind_port": 18443},
+  "excluded_daemon_ports": [8765, 8766]
 }
 ```
 
@@ -71,7 +72,8 @@ paths, including private `/var/lib/happyranch-tsnet-sidecar`. `sidecar.json` is:
   "ExpectedPeer": "YOUR-EXPECTED-PEER",
   "DERPPolicy": "private-only",
   "ListenAddr": ":443",
-  "ConnectorAddr": "127.0.0.1:18443"
+  "ConnectorAddr": "127.0.0.1:18443",
+  "ExcludedDaemonPorts": [8765, 8766]
 }
 ```
 
@@ -125,11 +127,18 @@ Use `uninstall --layout deb` (and optionally the existing `--purge`) to remove
 units/state. Configs, record, staged token, package, logs and account are retained.
 A missing package is not required for uninstall; unit safety checks still apply.
 
-This is slice B1a of THR-327. B1b's Python/Go cross-config port exclusions remain
-pending. Keep ingress 18443 separate from DEV 8765 and RELEASE 8766; both
-existing literal-8765 guards remain. These source changes do not authorize
-installation on the live host. Activation and Mac testing wait for B1b and their
-separate approvals; the proxy/Headscale environment is unchanged.
+The THR-327 B1b port contract requires `ConnectorAddr` to equal exactly
+`127.0.0.1:<managed.bind_port>`. Ingress must differ from `daemon_port`, DEV
+8765 and every explicit excluded port. Deb provisioning fills both lists with
+sorted unique `[8765, <daemon_port>]`, preserving additional exclusions from
+either input. Omitted input lists are allowed; staged deb lists are required,
+equal and revalidated at install/check-drift. Entries must be integers in
+1..65535; Booleans are invalid. The Go sidecar independently rejects listed
+ports and retains the literal-loopback and literal-8765 refusals. Existing
+source/Mac configs may omit the new list. Daemon bearer auth is insufficient
+because loopback `/auth/bootstrap` returns the token. These source changes do
+not authorize live installation, activation or Mac testing; those retain their
+separate approvals. The proxy/Headscale environment is unchanged.
 
 ## Overview
 

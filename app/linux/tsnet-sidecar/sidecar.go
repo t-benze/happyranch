@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -32,6 +33,7 @@ const consumedMarker = "credential.consumed"
 type Config struct {
 	StateDir, CredentialFile, ControlURL, RoleIdentity  string
 	ExpectedPeer, ListenAddr, ConnectorAddr, DERPPolicy string
+	ExcludedDaemonPorts                                 []int `json:",omitempty"`
 }
 
 func (c Config) Validate() error {
@@ -48,6 +50,12 @@ func (c Config) Validate() error {
 	host, port, err := net.SplitHostPort(c.ConnectorAddr)
 	if err != nil || host != "127.0.0.1" || port == "" || port == "8765" {
 		return ErrConfiguration
+	}
+	for _, excluded := range c.ExcludedDaemonPorts {
+		connectorPort, err := strconv.Atoi(port)
+		if excluded < 1 || excluded > 65535 || err != nil || connectorPort == excluded {
+			return ErrConfiguration
+		}
 	}
 	if _, p, err := net.SplitHostPort(c.ListenAddr); err != nil || p == "" {
 		return ErrConfiguration
