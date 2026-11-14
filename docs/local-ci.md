@@ -250,6 +250,19 @@ restore the retired Python unit selection or execute general integration/E2E.
 
 Focused schema-load observation (THR308seq348/353/354): run
 `bash scripts/test-workflow-schema-load.sh` locally with frozen Python3.14.
+A0 (THR-336 msg194) extends its acquisition case table with native storage
+classes, exact/oversized byte lengths (including NUL/multibyte text), whole-row
+withholding, nullable NULL versus refusal sentinel, invalid UTF8/nonfinite REAL,
+rowid extremes/gaps, WHERE parameters and original row/byte/work charges.
+Widths 1/4/11/32 each acquire 400 complete rows under the original 2M SQL/5s
+allowance; the singleton materialized gate avoids repeated per-column gates.
+Run the same venue on Python3.12 with
+`WORKFLOW_SCHEMA_PYTHON=3.12 bash scripts/test-workflow-schema-load.sh`;
+the default remains frozen Python3.14. Add `--bounded-acquisition` to select
+only the A0 cases on either runtime; omit it for the complete existing venue. The test-side cursor observes actual
+before-fetch payload withholding and closure; it supplies no production result.
+This prerequisite retains full integrity/FK checking and adds no install/startup
+caller, required check or test/build trigger.
 THR308 PR4 extends that same script with actual OrgState naming reservation/audit
 observations (no-op, would-write, unreadable, failed read/COMMIT, COMMIT plus
 ROLLBACK failure with main-equivalent durable active history, interruption and
