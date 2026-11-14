@@ -1,13 +1,16 @@
 # Coding workflow contracts
 
-The unpublished load now observes schema/config execution through the generic
-`Database.observe_trace` owner. Outer instrumentation composes with the load
-observer, and every exit disables the load certificate before unregistering.
-Callback failure, unknown classification or unavailable custody forces complete
-reads; transient DDL and assigning/restored PRAGMAs invalidate legacy reuse, with
-FK ON/deferred FK OFF required. This does not yet provide sequential certificate
-reuse or its cumulative retained-charge ledger. Complete sequential validation,
-physical/FK checks and all original allowances remain mandatory.
+The unpublished load composes its execution observer through
+`Database.observe_trace`. The audited sources and three unchanged target readers
+enter the owner before sequential selection. A complete result can be borrowed
+only with exact execution/connection/org/file and default-policy identity, FK ON,
+deferred FK OFF and coherent zero-write snapshot bookends. Writes, write rollback,
+transient schema/config execution and observation failures invalidate it. Snapshot
+pinning preserves caller transactions and acquisition/exit races fall back fresh.
+Each compatible retained budget imports a fact once; changed targets charge their
+actual new work cumulatively. Scope exit clears all associations on BaseException.
+Public/nondefault/unknown snapshots and later loads remain fresh. Full physical/FK
+checks and original budgets remain; no automatic setup or operating grant follows.
 
 > Moved verbatim from the repository-root `AGENTS.md` on 2026-10-30. Sections keep
 > their original relative order. Where a later section says it supersedes or

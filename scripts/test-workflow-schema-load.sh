@@ -41,11 +41,11 @@ from runtime.identities import registry as names
 from runtime.orchestrator import producer_move
 from runtime.orchestrator.agent_def import AgentDef, render_agent_text
 
-assert sys.argv[1:] in ([], ['--bounded-acquisition'], ['--trace-custody']), 'unknown schema-load selection'
+assert sys.argv[1:] in ([], ['--bounded-acquisition'], ['--trace-custody'], ['--sequential-reuse'], ['--sequential-load']), 'unknown schema-load selection'
 
 # A0b-2 custody extends this existing real-SQLite venue. No native connection
 # subclass, fake epoch, successful validator stub or production test seam.
-if sys.argv[1:] != ['--bounded-acquisition']:
+if sys.argv[1:] not in (['--bounded-acquisition'], ['--sequential-reuse'], ['--sequential-load']):
     class TraceAbort(BaseException):
         pass
 
@@ -204,6 +204,441 @@ if sys.argv[1:] != ['--bounded-acquisition']:
         print('PASS A0b trace custody: failed cleanup preserves primary and refuses reuse')
 
 if sys.argv[1:] == ['--trace-custody']:
+    raise SystemExit(0)
+
+# Extend the load/source/three-target keeper to actual installed sequential
+# layouts. The only fixture writer is the existing private installer primitive.
+# Native SQLite statements, outcomes and original cumulative counters are the
+# oracles; no validator replacement, success stub or fabricated epoch.
+if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load']):
+    from runtime.infrastructure.workflow_schema import (
+        initialize_complete_org_schema, install_sequential_schema,
+        sequential_storage_inventory, _coding_org_identity, _schema_snapshot,
+    )
+    from runtime.workflows.coding_authority_history import _Budget
+    from runtime.workflows.sequential_history import read_sequential_history
+    from runtime.workflows import sequential_history as seq_history
+    from runtime.workflows._read_exhaustion import ReadExhaustion
+
+    @contextmanager
+    def sequential_fixture():
+        with tempfile.TemporaryDirectory(prefix='sequential-load-reuse-') as scratch:
+            root = Path(scratch) / 'orgs' / 'scratch'
+            (root / 'org/agents').mkdir(parents=True)
+            db = Database(OrgPaths(root).db_path)
+            try:
+                initialize_complete_org_schema(db, expected_org_slug='scratch', layout='J')
+                install_pause_schema(db, org_slug='scratch')
+                install_task_ownership(db, org_slug='scratch')
+                db.insert_task(TaskRecord(id='TASK-seq-load', brief='synthetic ordinary owner'))
+                with _schema_snapshot(db._conn):
+                    identity = _coding_org_identity(db._conn, expected_org_slug='scratch',
+                                                   expected_path=str(db.db_path))
+                    inventory = sequential_storage_inventory(db._conn)
+                def offline():
+                    assert _coding_org_identity(db._conn, expected_org_slug='scratch',
+                                                expected_path=str(db.db_path)) == identity
+                assert install_sequential_schema(db._conn, expected_org_slug='scratch',
+                    expected_path=str(db.db_path), source_identity=identity,
+                    source_inventory=inventory, offline_check=offline) == 'installed'
+                sql = []
+                with db.observe_trace(sql.append):
+                    yield db, root, sql
+            finally:
+                db.close()
+
+    def counters(budget):
+        return budget.consumed, budget.accepted_rows, budget.traversed
+
+    def seq_read(db, **kwargs):
+        return read_workflow_schema_for_org_load(db._conn, expected_org_slug='scratch', **kwargs)
+
+    if sys.argv[1:] != ['--sequential-load']:
+        with sequential_fixture() as (db, root, sql):
+            with org_load_validation(db, org_slug='scratch'):
+                first = seq_read(db)
+                owner = load_guard._current.get()
+                assert owner.sequential_saved is not None, 'sequential source did not certify complete validation'
+                for _ in range(9):
+                    assert seq_read(db) is first, 'same-load sequential tuple was not reused'
+                assert owner.full_runs == 1 and owner.hits == 9, 'sequential selection bypass repeated complete reads'
+                assert sql.count('PRAGMA integrity_check') == 1 and 'PRAGMA foreign_key_check' in sql
+                original = owner.sequential_saved[3]
+                assert all(value > 0 for value in original), 'complete source did not retain original charges'
+                caller = _Budget()
+                seq_read(db, budget=caller)
+                assert counters(caller) == original, 'fresh caller did not import retained charges once'
+                seq_read(db, budget=caller)
+                assert counters(caller) == original, 'same fact charged twice to original caller'
+                db._conn.execute('BEGIN IMMEDIATE')
+                try:
+                    seq_read(db, budget=caller, writer_source=True)
+                    load_guard.read_workflow_schema_target_for_org_load(db._conn,
+                        expected_org_slug='scratch', budget=caller,
+                        legacy=lambda: validate_workflow_schema(db._conn, expected_org_slug='scratch'))
+                    assert db._conn.in_transaction, 'sequential target stole caller transaction'
+                    assert counters(caller) == original, 'unchanged source/target double charged'
+                    begin = max(i for i, statement in enumerate(sql) if statement == 'BEGIN IMMEDIATE')
+                    assert sql[begin + 1] == 'SELECT rootpage FROM main.sqlite_schema LIMIT 1', 'borrowed source lost explicit main snapshot pin before metadata'
+                    db._conn.execute("UPDATE tasks SET brief=brief||'x' WHERE id='TASK-seq-load'")
+                    seq_read(db, budget=caller, writer_source=True)
+                    assert counters(caller) == tuple(2 * value for value in original), 'changed target reset or lost cumulative work'
+                    assert owner.full_runs == 2, 'local write reused stale sequential validation'
+                finally:
+                    db._conn.rollback()
+                seq_read(db)
+                assert owner.full_runs == 3, 'rollback resurrected old sequential certificate'
+            assert owner.sequential_saved is None and not owner.ledgers, 'scope exit leaked certificate or ledger'
+            print('PASS A0b sequential ledger: ten reads, import once, unchanged target, changed target and rollback')
+
+            for site in ('cutover', 'ownership', 'naming'):
+                org = SimpleNamespace(root=root, db=db, slug='scratch')
+                if site == 'naming':
+                    reconcile_namespace(org, Namespace((), ()), install=True)
+                with org_load_validation(db, org_slug='scratch'):
+                    seq_read(db)
+                    before = sql.count('PRAGMA integrity_check')
+                    if site == 'cutover':
+                        WorkflowCutoverStore(db, org_slug='scratch').recover_authorized()
+                    elif site == 'ownership':
+                        install_task_ownership(db, org_slug='scratch')
+                    else:
+                        reconcile_namespace(org, Namespace((), ()), install=True, compare_only=True)
+                    assert sql.count('PRAGMA integrity_check') == before, site + ' sequential unchanged target read fresh'
+                    if site == 'cutover':
+                        begin = max(i for i, statement in enumerate(sql) if statement == 'BEGIN')
+                        assert sql[begin + 1] == 'SELECT rootpage FROM main.sqlite_schema LIMIT 1', 'cutover target lost fresh explicit main snapshot pin'
+                print('PASS A0b sequential targets:', site, 'original transaction and complete source')
+
+            for boundary in ('BEGIN', 'ROLLBACK'):
+                other = sqlite3.connect(db.db_path)
+                try:
+                    with org_load_validation(db, org_slug='scratch'):
+                        seq_read(db)
+                        before = sql.count('PRAGMA integrity_check')
+                        moved = []
+                        def move(statement):
+                            if statement == boundary and not moved:
+                                moved.append(True)
+                                other.execute("UPDATE tasks SET brief=brief||'r' WHERE id='TASK-seq-load'")
+                                other.commit()
+                        with db.observe_trace(move):
+                            seq_read(db)
+                        assert moved and sql.count('PRAGMA integrity_check') == before + 1, boundary + ' race returned speculative reuse'
+                        assert not db._conn.in_transaction, 'owned snapshot leaked after race'
+                finally:
+                    other.close()
+                print('PASS A0b sequential snapshot race:', boundary)
+
+            for schema, method in product(('main', 'temp'), ('connection', 'cursor', 'script')):
+                with org_load_validation(db, org_slug='scratch'):
+                    seq_read(db)
+                    owner = load_guard._current.get()
+                    for repeat in range(2):
+                        before = load_guard._bookend(db._conn)
+                        full = owner.full_runs
+                        ddl = f'/* repeated */ -- execution observer\n CREATE TABLE {schema}.seq_transient (v)'
+                        if method == 'script':
+                            db._conn.executescript('BEGIN; ' + ddl + '; ROLLBACK;')
+                        else:
+                            db._conn.execute('BEGIN')
+                            cursor = db._conn if method == 'connection' else db._conn.cursor()
+                            try:
+                                cursor.execute(ddl)
+                            finally:
+                                if cursor is not db._conn:
+                                    cursor.close()
+                            db._conn.rollback()
+                        assert load_guard._bookend(db._conn) == before
+                        seq_read(db)
+                        assert owner.full_runs == full + 1, 'sequential restored DDL returned stale tuple'
+                print('PASS A0b sequential observer:', schema, method, 'cached rolled-back DDL')
+
+            for pragma in ('query_only', 'defer_foreign_keys'):
+                with org_load_validation(db, org_slug='scratch'):
+                    seq_read(db)
+                    owner = load_guard._current.get()
+                    full = owner.full_runs
+                    db._conn.execute(f'PRAGMA {pragma}(ON)')
+                    if pragma == 'defer_foreign_keys':
+                        assert owner.bookend(db._conn) is None, 'sequential deferred FK allowed a hit'
+                    db._conn.execute(f'PRAGMA {pragma}=OFF')
+                    seq_read(db)
+                    assert owner.full_runs == full + 1, 'sequential restored config returned stale tuple'
+                print('PASS A0b sequential observer: restored', pragma)
+
+            # Real corruption, differential against the unchanged public reader.
+            for external in (False, True):
+                other = sqlite3.connect(db.db_path) if external else db._conn
+                try:
+                    with org_load_validation(db, org_slug='scratch'):
+                        seq_read(db)
+                        owner = load_guard._current.get()
+                        local = db._conn.total_changes
+                        other.execute("UPDATE workflow_task_ownership SET org_slug='wrong'")
+                        if external:
+                            other.commit()
+                            assert db._conn.total_changes == local
+                        errors = []
+                        for operation in (lambda: seq_read(db, writer_source=not external),
+                                          lambda: read_sequential_history(db._conn, expected_org_slug='scratch')):
+                            try:
+                                operation()
+                            except ValueError as exc:
+                                cause = exc
+                                while cause is not None:
+                                    assert not isinstance(cause, ReadExhaustion), 'corruption hidden by exhaustion'
+                                    cause = cause.__cause__
+                                errors.append((type(exc), str(exc)))
+                            else:
+                                raise AssertionError('corrupt sequential ownership disappeared behind a hit')
+                        assert errors[0] == errors[1], 'fresh/reused corruption refusals differ'
+                        assert owner.sequential_saved is None
+                finally:
+                    if external:
+                        other.execute("UPDATE workflow_task_ownership SET org_slug='scratch'")
+                        other.commit()
+                        other.close()
+                    else:
+                        db._conn.rollback()
+                print('PASS A0b sequential corruption:', 'external' if external else 'local', 'exact fresh refusal')
+
+            for exclusion in ('arbitrary snapshot', 'public', 'nondefault budget', 'unaccounted budget', 'validator policy'):
+                with org_load_validation(db, org_slug='scratch'):
+                    seq_read(db)
+                    before = sql.count('PRAGMA integrity_check')
+                    if exclusion == 'arbitrary snapshot':
+                        db._conn.execute('BEGIN')
+                        db._conn.execute('SELECT rootpage FROM sqlite_schema LIMIT 1').fetchone()
+                        try:
+                            seq_read(db)
+                            assert db._conn.in_transaction
+                        finally:
+                            db._conn.rollback()
+                    elif exclusion == 'public':
+                        read_sequential_history(db._conn, expected_org_slug='scratch')
+                    elif exclusion == 'nondefault budget':
+                        class Nondefault(_Budget):
+                            pass
+                        try:
+                            seq_read(db, budget=Nondefault())
+                        except ValueError as exc:
+                            assert str(exc) == 'workflow_coding_data_invalid_budget'
+                        else:
+                            raise AssertionError('nondefault budget bypassed original exact-type refusal')
+                    elif exclusion == 'unaccounted budget':
+                        seq_read(db, budget=_Budget(consumed=1))
+                    else:
+                        # Observe by delegation to the REAL reader, never stub success.
+                        with patch.object(seq_history, 'read_sequential_history', wraps=read_sequential_history):
+                            seq_read(db)
+                    if exclusion != 'nondefault budget':
+                        assert sql.count('PRAGMA integrity_check') == before + 1, exclusion + ' escaped reuse policy'
+                    else:
+                        assert load_guard._current.get().sequential_saved is None, 'nondefault budget retained reuse'
+                print('PASS A0b sequential exclusion:', exclusion)
+
+            for dimension, limit in (('consumed', 16 * 1048576), ('accepted_rows', 8192), ('traversed', 16384)):
+                with org_load_validation(db, org_slug='scratch'):
+                    seq_read(db)
+                    # A fresh known caller first imports the actual complete charge.
+                    ledger = _Budget()
+                    seq_read(db, budget=ledger)
+                    setattr(ledger, dimension, limit)
+                    db._conn.execute("UPDATE tasks SET brief=brief||'e' WHERE id='TASK-seq-load'")
+                    db._conn.commit()
+                    before = counters(ledger)
+                    fresh_ledger = _Budget(*before)
+                    errors = []
+                    for operation in (lambda: seq_read(db, budget=ledger),
+                                      lambda: read_sequential_history(db._conn,
+                                          expected_org_slug='scratch', retained_budget=fresh_ledger)):
+                        try:
+                            operation()
+                        except ValueError as exc:
+                            errors.append((type(exc), str(exc)))
+                        else:
+                            raise AssertionError('changed sequential target widened original ' + dimension + ' allowance')
+                    assert errors[0] == errors[1], 'original exhaustion category changed'
+                    assert counters(ledger) == counters(fresh_ledger), 'changed target reset cumulative original charges'
+                    assert all(a >= b for a, b in zip(counters(ledger), before)), 'exhausted caller allowance reset'
+                print('PASS A0b sequential exhaustion: original cumulative', dimension)
+
+            import asyncio
+            import threading
+            for execution in ('thread', 'async task'):
+                before = []
+                with org_load_validation(db, org_slug='scratch'):
+                    seq_read(db)
+                    context = copy_context()
+                    count = sql.count('PRAGMA integrity_check')
+                    errors = []
+                    def foreign():
+                        try:
+                            seq_read(db)
+                        except BaseException as exc:
+                            errors.append(exc)
+                    if execution == 'thread':
+                        worker = threading.Thread(target=lambda: context.run(foreign))
+                        worker.start()
+                        worker.join(10)
+                        assert not worker.is_alive(), 'foreign execution did not return'
+                    else:
+                        async def foreign_task():
+                            foreign()
+                        asyncio.run(foreign_task())
+                    assert not errors and sql.count('PRAGMA integrity_check') == count + 1, 'sequential certificate crossed ' + execution
+                print('PASS A0b sequential exclusion: foreign', execution)
+
+            with org_load_validation(db, org_slug='scratch'):
+                seq_read(db)
+                inherited = copy_context()
+            before = sql.count('PRAGMA integrity_check')
+            inherited.run(seq_read, db)
+            with org_load_validation(db, org_slug='scratch'):
+                seq_read(db)
+            seq_read(db)
+            assert sql.count('PRAGMA integrity_check') == before + 3, 'sequential certificate escaped load lifetime'
+            print('PASS A0b sequential exclusion: inherited inactive context, fresh load and outside scope')
+
+            with org_load_validation(db, org_slug='scratch'):
+                seq_read(db)
+                owner = load_guard._current.get()
+                original_bookend = owner.bookend
+                calls = []
+                class SnapshotAbort(BaseException):
+                    pass
+                abort = SnapshotAbort('synthetic owned snapshot interruption')
+                def interrupted_bookend(conn):
+                    result = original_bookend(conn)
+                    calls.append(True)
+                    if len(calls) == 2:
+                        conn.set_authorizer(lambda action, arg1, *_: sqlite3.SQLITE_DENY
+                            if action == sqlite3.SQLITE_TRANSACTION and arg1 == 'ROLLBACK' else sqlite3.SQLITE_OK)
+                        raise abort
+                    return result
+                try:
+                    with patch.object(owner, 'bookend', interrupted_bookend):
+                        seq_read(db)
+                except BaseException as exc:
+                    assert exc is abort and exc.__notes__ == ['Workflow load snapshot cleanup failed'], 'snapshot cleanup replaced primary BaseException'
+                    assert owner.observer_failed and owner.sequential_saved is None
+                else:
+                    raise AssertionError('snapshot interruption suppressed')
+                finally:
+                    db._conn.set_authorizer(None)
+                    db._conn.rollback()
+            print('PASS A0b sequential BaseException: owned snapshot cleanup failure preserves primary and disables reuse')
+
+            with org_load_validation(db, org_slug='scratch'):
+                seq_read(db)
+                owner = load_guard._current.get()
+                real_clock = time.monotonic
+                offset = [0.0]
+                def advance_clock(statement):
+                    if statement == 'SELECT rootpage FROM main.sqlite_schema LIMIT 1':
+                        offset[0] = 6.0
+                with db.observe_trace(advance_clock), patch.object(time, 'monotonic', side_effect=lambda: real_clock() + offset[0]):
+                    try:
+                        seq_read(db)
+                    except ValueError as exc:
+                        assert str(exc) == 'workflow_seq_read_deadline_exhausted'
+                    else:
+                        raise AssertionError('sequential hit reset the original acquisition deadline')
+                assert not db._conn.in_transaction and owner.sequential_saved is None
+            print('PASS A0b sequential deadline: hit acquisition expiry preserves original deadline and cleanup')
+
+        for failure in ('installation', 'delivery', 'classification', 'lost native slot'):
+            with sequential_fixture() as (db, root, sql):
+                @contextmanager
+                def unavailable(callback):
+                    raise RuntimeError('synthetic unavailable registration')
+                    yield
+                def bad_delivery(statement):
+                    raise ValueError('synthetic delivery error')
+                with ExitStack() as stack:
+                    if failure == 'installation':
+                        stack.enter_context(patch.object(db, 'observe_trace', unavailable))
+                    with org_load_validation(db, org_slug='scratch'):
+                        seq_read(db)
+                        owner = load_guard._current.get()
+                        assert (owner.sequential_saved is None) == (failure == 'installation'), 'observer failure fixture lacked a live certificate'
+                        if failure == 'delivery':
+                            stack.enter_context(db.observe_trace(bad_delivery))
+                        elif failure == 'classification':
+                            db._conn.execute('PRAGMA page_count').fetchone()
+                        elif failure == 'lost native slot':
+                            # Adversarial contract violation: prove the next real
+                            # observation notices absence without a native getter.
+                            db._conn.set_trace_callback(None)
+                        hits = owner.hits
+                        seq_read(db)
+                        seq_read(db)
+                        assert owner.hits == hits and owner.sequential_saved is None, failure + ' retained sequential reuse'
+                print('PASS A0b sequential observer failure:', failure)
+
+
+        with sequential_fixture() as (db, root, sql):
+            with org_load_validation(db, org_slug='scratch'):
+                seq_read(db)
+                replacement = root / 'replacement.db'
+                other = sqlite3.connect(replacement)
+                other.close()
+                replacement.replace(db.db_path)
+                try:
+                    seq_read(db)
+                except ValueError as exc:
+                    assert str(exc) == 'workflow_load_attachment_changed'
+                else:
+                    raise AssertionError('replaced attachment validated old open descriptor')
+            print('PASS A0b sequential attachment: replaced file refuses old descriptor')
+
+    # Actual installed OrgState calls all ten discriminators. Observe the real
+    # owner and native checks without replacing a validator or fabricating epoch.
+    from runtime.daemon import org_state as org_state_module
+    with sequential_fixture() as (db, root, sql):
+        reconcile_namespace(SimpleNamespace(root=root, db=db, slug='scratch'), Namespace((), ()), install=True)
+        (root / 'org/teams.yaml').write_text('teams: {}\n')
+        observed_loads = []
+        @contextmanager
+        def capture_load(database, **kwargs):
+            with org_load_validation(database, **kwargs):
+                owner = load_guard._current.get()
+                statements = []
+                with database.observe_trace(statements.append):
+                    yield
+                observed_loads.append((owner.full_runs, owner.hits, statements.count('PRAGMA integrity_check')))
+        with patch.dict(os.environ, {'HAPPYRANCH_DAEMON_HOME': str(root.parent.parent)}), patch.object(org_state_module, 'org_load_validation', capture_load):
+            # Establish original settings/namespace once, then retain a genuine
+            # prepared ordinary journal for the measured first/next pair.
+            state = OrgState.load(slug='scratch', root=root, settings=Settings())
+            state.close()
+            store = TaskPauseStore(db, 'scratch')
+            fingerprint = dict(status='pending', block_kind=None, count=0,
+                session_id=None, agent=None, fanout=None, jobs=None, parent=None, brief_digest='0' * 64)
+            entry = dict(id='ordinary', org='scratch', root_task_id='TASK-seq-load',
+                task_id='TASK-seq-load', agent='builder', session_id='synthetic-session',
+                owner='ordinary', owner_identity={}, fingerprint=fingerprint,
+                generation=0, phase='prepared', retry={}, context={}, started_at=None, captured_generation=None)
+            with store.writer('TASK-seq-load'):
+                row = store.ensure_uncommitted('TASK-seq-load')
+                row['journal']['entries'] = [entry]
+                store.save_journal_uncommitted(row)
+            observed_loads.clear()
+            for phase in ('first', 'next'):
+                state = OrgState.load(slug='scratch', root=root, settings=Settings())
+                assert state.naming_readiness == 'ready'
+                state.close()
+                assert store.row_uncommitted('TASK-seq-load')['journal']['entries'] == [
+                    dict(entry, phase='unknown', context={'execution_unknown': True})
+                ], phase + ' did not retain the actual Pause restoration'
+                full, hits, physical = observed_loads[-1]
+                assert full + hits == 10, phase + ' did not exercise all ten sequential discriminators: ' + str(observed_loads[-1])
+                assert full == (2 if phase == 'first' else 1), phase + ' lost write-sensitive whole-load validation count: ' + str(observed_loads[-1])
+                assert physical == full, phase + ' lost full physical checks on misses'
+                print('PASS A0b actual sequential OrgState.load:', phase, 'full', full, 'hits', hits)
+
+if sys.argv[1:] in (['--sequential-reuse'], ['--sequential-load']):
     raise SystemExit(0)
 
 # A0 extends this venue's real-SQLite case tables at the shared acquisition seam.

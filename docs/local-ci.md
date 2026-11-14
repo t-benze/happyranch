@@ -270,6 +270,18 @@ focused cases use real SQLite and the legacy complete reader; they do not certif
 the still-open sequential owner/ledger matrix or production-size timing. Omit
 the selector for the full existing venue; `--bounded-acquisition` stays unchanged.
 
+The same venue accepts `--sequential-reuse` on both runtimes for actual installed
+sequential fixtures (`--sequential-load` selects only its real first/next load
+table). It observes ten same-load reads, all three production target owners, real first/next OrgState loads with a prepared Pause journal, cumulative
+retained charges/exhaustion, native acquisition/exit races, repeated restored
+main/TEMP DDL, configuration changes, public/policy/execution/lifetime exclusions,
+observer failure, deadline/BaseException cleanup and replaced-file refusal.
+Assertions compare real native physical/FK statements, original counters and
+public-reader refusal categories. No success-stub validator or fabricated epoch.
+These focused cases do not replace the entire v3 corruption/fault matrix or
+current-data writable sizing. Run full schema-load3.12/3.14 plus local_ci all as
+an exact-clean-head durable job; required hosted checks remain lint/static only.
+
 Focused schema-load observation (THR308seq348/353/354): run
 `bash scripts/test-workflow-schema-load.sh` locally with frozen Python3.14.
 A0 (THR-336 msg194) extends its acquisition case table with native storage

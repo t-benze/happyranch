@@ -1,19 +1,22 @@
 # Sequential Coding cutover and backout — operator draft
 
-Load instrumentation now composes through `Database.observe_trace` with the
-load's schema/config observer; raw trace replacement on Database connections is
-unsupported. Legacy reuse invalidates on transient execution, observation failure
-or unknown classification and requires FK ON/deferred FK OFF. The observer owns
-neither authorizer nor progress hooks. Complete sequential certificate/ledger
-work remains open; this custody prerequisite changes no cutover caller, full
-physical/FK check, budget, install/admission authority or live acceptance gate.
+Load instrumentation composes through `Database.observe_trace`; raw native trace
+replacement is unsupported. The load owner enters before sequential selection,
+requires FK ON/deferred FK OFF and binds complete facts to the exact connection,
+file, org, execution and default policy. Only audited sources and the three
+unchanged targets borrow a pinned zero-write result. Changed/unknown snapshots,
+write rollback or observation failure force fresh reads; replaced files refuse.
+Retained charges import once into each compatible caller's original cumulative
+ledger. Public cutover reads/changed targets, later loads and nondefault policies
+remain fresh. Native constructor/caller order, full physical/FK checks, limits,
+install/admission authority and live acceptance gates remain unchanged.
 
 A0b's finite SQL component changes expression evaluation only: shared singleton
 shape/size is measured once, and ownership's exceptional-text scan follows its
 complete type/size prerequisite in the same snapshot. Payload withholding,
 logical charges, physical/FK checks and runtime/operator budgets remain exact.
-It adds no setup/cutover caller or load reuse; automatic setup still requires
-the complete owner/observer/ledger prerequisite and subsequent reviewed stages.
+The SQL reductions add no setup/cutover caller. Automatic setup still requires
+complete owner acceptance/sizing and subsequent reviewed stages.
 
 **SOURCE ONLY: atomic public Coding cutover and old-fresh fence delivered.**
 TASK-15624 attaches reviewed Coding v2 selection and unconditional old fresh

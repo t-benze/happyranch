@@ -1,11 +1,15 @@
 # Sequential workflow storage — operator draft
 
-The trace-custody prerequisite makes Database the sole native trace owner via
-`observe_trace`, preserving composed observers and BaseException cleanup without
-changing native connection type or constructor order. The load scope uses it for
-execution-time legacy invalidation and requires deferred FK OFF. This adds no
-sequential certificate/ledger, setup operation or operating authority. Sequential
-loads still run the original complete physical/FK checks and finite budgets.
+Database owns composed native trace registration through `observe_trace`; native
+connection type, constructor and independent authorizer/progress slots stay exact.
+The unpublished load now borrows complete sequential validation only in audited
+source/three unchanged target intervals, with exact file/execution/default-policy
+identity and a pinned zero-write snapshot. Writes/write rollback, schema/config
+execution or failed observation invalidate it; replaced files refuse. Retained
+charges import once per compatible caller and changed targets debit original
+cumulative counters. Public/unknown snapshots and later loads validate fresh.
+Every miss retains full physical/FK checks and original finite limits. Complete
+current-data sizing/acceptance remains separate; no setup or operating authority.
 
 A0b finite SQL prerequisite: complete readers materialize shared singleton row
 shape/size once and specialize equivalent ownership type predicates. The private

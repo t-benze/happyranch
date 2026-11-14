@@ -1,12 +1,15 @@
 """Explicit source-validation reuse, confined to one unpublished org load.
 
-Sequential layouts use complete validation. Only cutover recovery's final read,
-ownership installation's target and naming installation's target may reuse a
-complete source with the unchanged zero-write proof; mutated targets read fresh.
+Only audited source wrappers and the three unchanged cutover/ownership/naming
+startup targets borrow complete validation. Public reads and changed or unknown
+intervals remain fresh, with the original cumulative budgets and deadlines.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
+import threading
+from pathlib import Path
 import re
 import sqlite3
 import time
@@ -89,6 +92,18 @@ def _bookend(conn: sqlite3.Connection) -> tuple | None:
 class _LoadValidation:
     def __init__(self, database: Any, org_slug: str) -> None:
         self.database = database
+        self.connection = database._conn
+        self.execution = _execution()
+        self.attachment = _attachment(database.db_path)
+        self.sequential_saved: tuple | None = None
+        self.certificate = 0
+        # Strong object references prevent id recycling; associations never
+        # leave this unpublished owner. Each new complete fact is charged once.
+        self.ledgers: dict[int, tuple[Any, set[int], tuple[int, int, int]]] = {}
+        self.statements = 0
+        self.transaction_mode: str | None = None
+        self.transaction_fresh = False
+        self.transaction_changes = self.connection.total_changes
         self.org_slug = org_slug
         self.saved: tuple | None = None
         self.active = True
@@ -105,14 +120,31 @@ class _LoadValidation:
         This observes only. It changes no native authorizer or progress handler.
         Unknown syntax makes this interval unusable rather than guessing a hit.
         """
+        self.statements += 1
         start = _SQL_PREFIX.match(statement).end()
         word = _SQL_WORD.match(statement, start)
         if word is None:
             if statement[start:].strip(' ;'):
                 self.observer_failed = True
                 self.saved = None
+                self.sequential_saved = None
             return
         keyword = word.group().upper()
+        if keyword == 'BEGIN':
+            tail = statement[word.end():].strip().upper().rstrip(';').strip()
+            self.transaction_mode = 'writer' if tail in ('IMMEDIATE', 'IMMEDIATE TRANSACTION') else 'read'
+            self.transaction_fresh = True
+            self.transaction_changes = self.connection.total_changes
+        elif keyword in {'COMMIT', 'END', 'ROLLBACK'}:
+            if keyword == 'ROLLBACK' and self.connection.total_changes != self.transaction_changes:
+                # A complete check of uncommitted writes cannot survive their
+                # rollback: total_changes is monotone, not a commit identity.
+                self.clear()
+            # ROLLBACK TO is not a new fresh transaction interval.
+            self.transaction_mode = None
+            self.transaction_fresh = False
+        else:
+            self.transaction_fresh = False
         if keyword in {'SELECT', 'WITH', 'INSERT', 'UPDATE', 'DELETE', 'REPLACE',
                        'BEGIN', 'COMMIT', 'END', 'ROLLBACK', 'SAVEPOINT', 'RELEASE'}:
             return
@@ -130,22 +162,160 @@ class _LoadValidation:
                     if tail.startswith(('=', '(')):
                         self.schema_epoch += 1
                         self.saved = None
+                        self.sequential_saved = None
                         return
         elif keyword in {'CREATE', 'DROP', 'ALTER', 'ATTACH', 'DETACH', 'VACUUM',
                          'ANALYZE', 'REINDEX'}:
             self.schema_epoch += 1
             self.saved = None
+            self.sequential_saved = None
             return
         self.observer_failed = True
         self.saved = None
+        self.sequential_saved = None
 
     def bookend(self, conn: sqlite3.Connection) -> tuple | None:
         if self.trace is None or self.trace.failed or self.observer_failed:
             return None
+        serial = self.statements
         observed = _bookend(conn)
+        if self.statements == serial:
+            self.observer_failed = True
+            self.clear()
         if observed is None or self.trace.failed or self.observer_failed:
             return None
         return observed, self.schema_epoch
+
+    def clear(self) -> None:
+        self.saved = None
+        self.sequential_saved = None
+
+    def attachment_matches(self) -> bool:
+        current = _attachment(self.database.db_path)
+        if self.attachment is not None and current != self.attachment:
+            self.clear()
+            raise ValueError('workflow_load_attachment_changed')
+        return current is not None
+
+    def compatible_budget(self, budget: Any) -> bool:
+        if budget is None:
+            return True
+        if type(budget) is not _DEFAULT_BUDGET or set(vars(budget)) != {
+                'consumed', 'accepted_rows', 'traversed'}:
+            return False
+        counters = _charges(budget)
+        if (any(type(value) is not int or value < 0 for value in counters)
+                or any(value > limit for value, limit in zip(counters, (
+                    _retained._BYTE_LIMIT, _retained._CALL_ROW_LIMIT, _retained._TRAVERSAL_LIMIT)))):
+            return False
+        known = self.ledgers.get(id(budget))
+        return (counters == (0, 0, 0) if known is None else
+                known[0] is budget and all(a >= b for a, b in zip(counters, known[2])))
+
+    def charge(self, budget: Any, certificate: int, charges: tuple[int, int, int]) -> None:
+        if budget is None:
+            return
+        known = self.ledgers.get(id(budget))
+        charged = set() if known is None else known[1]
+        if certificate not in charged:
+            budget._charge_reused(*charges)
+            charged.add(certificate)
+        self.ledgers[id(budget)] = (budget, charged, _charges(budget))
+
+    def read_layout(self, conn: sqlite3.Connection, *, expected_org_slug: str | None,
+                    legacy: Callable[[], Any], budget: Any = None,
+                    writer_source: bool = False, load_target: bool = False) -> Any:
+        from runtime.infrastructure.workflow_schema import _schema_snapshot
+        from runtime.workflows.sequential_history import _ReadBudget
+
+        # Acquisition time includes bookends, pinning and ledger import. A hit
+        # never resets the original selector's absolute five-second deadline.
+        selector = _ReadBudget()
+        with self.database._lock:
+            same_attachment = self.attachment_matches()
+            eligible = (self.active and conn is self.connection is self.database._conn
+                        and expected_org_slug == self.org_slug and _execution() == self.execution
+                        and same_attachment and _default_policy() and self.compatible_budget(budget)
+                        and (not conn.in_transaction or
+                             (writer_source and self.transaction_mode == 'writer') or
+                             (load_target and (self.transaction_mode == 'writer' or
+                                               (self.transaction_mode == 'read' and self.transaction_fresh)))))
+            if not eligible:
+                self.clear()
+                return read_org_layout(conn, expected_org_slug=expected_org_slug,
+                                       legacy=legacy, budget=budget)
+            # The fresh named borrowed interval may not yet have read main.
+            # Pin before ANY metadata comparison; never end that transaction.
+            if conn.in_transaction:
+                conn.execute('SELECT rootpage FROM main.sqlite_schema LIMIT 1').fetchone()
+            opening = self.bookend(conn)
+            saved = self.sequential_saved
+            if saved is not None and opening is not None and saved[0] == opening:
+                owned = not conn.in_transaction
+                primary: BaseException | None = None
+                try:
+                    if owned:
+                        conn.execute('BEGIN')
+                        conn.execute('SELECT rootpage FROM main.sqlite_schema LIMIT 1').fetchone()
+                    pinned = self.bookend(conn)
+                    closing = self.bookend(conn)
+                    if owned:
+                        conn.rollback()
+                    outside = self.bookend(conn)
+                    self.attachment_matches()
+                    selector.check()
+                    if (opening == pinned == closing == outside and self.active
+                            and _execution() == self.execution and _default_policy()):
+                        self.charge(budget, saved[2], saved[3])
+                        selector.check()
+                        self.hits += 1
+                        return saved[1]
+                except BaseException as exc:
+                    primary = exc
+                    self.clear()
+                    raise
+                finally:
+                    if owned and conn.in_transaction:
+                        try:
+                            conn.rollback()
+                        except BaseException:
+                            self.observer_failed = True
+                            self.clear()
+                            if primary is None:
+                                raise
+                            primary.add_note('Workflow load snapshot cleanup failed')
+                # One ordinary finite fallback. No race retry or allowance reset.
+            self.sequential_saved = None
+            retained = _DEFAULT_BUDGET() if budget is None else budget
+            before = _charges(retained)
+            with _schema_snapshot(conn):
+                present = sequential_storage_present(conn, budget=selector)
+                if present:
+                    start = time.monotonic()
+                    self.full_runs += 1
+                    try:
+                        result = _complete_sequential(conn, expected_org_slug=expected_org_slug,
+                                                      budget=retained, selector=selector)
+                    finally:
+                        self.full_seconds += time.monotonic() - start
+            if not present:
+                # Keep legacy target result shapes and metadata-only fallbacks.
+                return self.read(conn, expected_org_slug=expected_org_slug, budget=budget,
+                                 writer_source=writer_source, load_target=load_target,
+                                 fallback=legacy if load_target else None)
+            selector.check()
+            self.attachment_matches()
+            closing = self.bookend(conn)
+            if (opening is not None and closing == opening and self.active and _default_policy()
+                    and _execution() == self.execution):
+                self.certificate += 1
+                delta = tuple(a - b for a, b in zip(_charges(retained), before))
+                self.sequential_saved = (closing, result, self.certificate, delta)
+                known = self.ledgers.get(id(retained))
+                charged = set() if known is None else known[1]
+                charged.add(self.certificate)  # The real reader already charged it.
+                self.ledgers[id(retained)] = (retained, charged, _charges(retained))
+            return result
 
     def full(self, conn: sqlite3.Connection, *, fallback: Callable[[], Any] | None = None, **kwargs: Any) -> Any:
         from runtime.infrastructure.workflow_schema import _read_workflow_schema
@@ -226,10 +396,12 @@ def org_load_validation(database: Any, *, org_slug: str) -> Iterator[None]:
             finally:
                 # Disable before unregistering, including every BaseException.
                 owner.active = False
-                owner.saved = None
+                owner.clear()
+                owner.ledgers.clear()
     finally:
         owner.active = False
-        owner.saved = None
+        owner.clear()
+        owner.ledgers.clear()
         _current.reset(token)
         logger.info('startup_workflow_validation org=%s guarded_full_runs=%d reused=%d full_seconds=%.6f',
                     org_slug, owner.full_runs, owner.hits, owner.full_seconds)
@@ -258,24 +430,19 @@ def read_org_layout(
     """Select a complete sequential read or the caller's unchanged legacy path.
 
     Selection and sequential validation share one snapshot and absolute deadline.
-    Only this read's authenticated rows/inventory may escape as its result; a
-    writer target always calls anew after mutation. Absence leaves the original
+    Only this read's authenticated rows/inventory may escape as its result;
+    this public/default path always runs fresh, including inside a load owner. Absence leaves the original
     reader's transaction ownership, errors and source-reuse contract intact.
     """
     from runtime.infrastructure.workflow_schema import _schema_snapshot
-    from runtime.workflows.sequential_history import _ReadBudget, read_sequential_history
+    from runtime.workflows.sequential_history import _ReadBudget
 
     selector = _ReadBudget()
     with _schema_snapshot(conn):
         present = sequential_storage_present(conn, budget=selector)
         if present:
-            history = read_sequential_history(conn, expected_org_slug=expected_org_slug,
-                retained_budget=budget, deadline=selector.deadline)
-            validated = history.retained
-            if validated is None or validated[1] is None:
-                # Never reach install_or_recover's automatic Coding DDL branch
-                # for a never-booted literal-I plus sequential layout.
-                raise ValueError('workflow_schema_object_set_mismatch')
+            validated = _complete_sequential(conn, expected_org_slug=expected_org_slug,
+                                             budget=budget, selector=selector)
     if not present:
         # End only our own selection snapshot BEFORE the original expression.
         return legacy()
@@ -295,9 +462,11 @@ def read_workflow_schema_for_org_load(
     owner = _current.get()
     kwargs = dict(expected_org_slug=expected_org_slug, budget=budget)
     from runtime.infrastructure.workflow_schema import _read_workflow_schema
-    return read_org_layout(conn, expected_org_slug=expected_org_slug, budget=budget,
-        legacy=lambda: (_read_workflow_schema(conn, **kwargs) if owner is None else
-                        owner.read(conn, writer_source=writer_source, **kwargs)))
+    legacy = lambda: _read_workflow_schema(conn, **kwargs)
+    if owner is None:
+        return read_org_layout(conn, expected_org_slug=expected_org_slug, budget=budget, legacy=legacy)
+    return owner.read_layout(conn, expected_org_slug=expected_org_slug, budget=budget,
+                             writer_source=writer_source, legacy=legacy)
 
 
 def read_workflow_schema_target_for_org_load(
@@ -309,13 +478,14 @@ def read_workflow_schema_target_for_org_load(
     Cutover owns a fresh BEGIN snapshot; ownership/naming own BEGIN IMMEDIATE.
     The selector pins that snapshot before bookends. Never admit an arbitrary
     pre-existing reader transaction here, or end the caller's transaction.
-    A hit returns the identical complete tuple with the existing source charge.
+    A hit returns the identical complete tuple; each compatible caller imports
+    its retained charge once. Changed targets debit that same original budget.
     """
     owner = _current.get()
-    return read_org_layout(conn, expected_org_slug=expected_org_slug, budget=budget,
-        legacy=lambda: (legacy() if owner is None else owner.read(
-            conn, expected_org_slug=expected_org_slug, budget=budget,
-            load_target=True, fallback=legacy)))
+    if owner is None:
+        return read_org_layout(conn, expected_org_slug=expected_org_slug, budget=budget, legacy=legacy)
+    return owner.read_layout(conn, expected_org_slug=expected_org_slug, budget=budget,
+                             load_target=True, legacy=legacy)
 
 
 def read_installed_for_org_load(conn: sqlite3.Connection, *, expected_org_slug: str, budget: Any) -> tuple:
@@ -327,3 +497,64 @@ def read_installed_for_org_load(conn: sqlite3.Connection, *, expected_org_slug: 
                                            validate_data=False, budget=budget))
     return read_workflow_schema_for_org_load(conn, expected_org_slug=expected_org_slug,
                                             writer_source=True, budget=budget)
+
+
+def _execution() -> tuple:
+    try:
+        task = asyncio.current_task()
+    except RuntimeError:
+        task = None
+    return threading.current_thread(), task
+
+
+def _attachment(path: Any) -> tuple | None:
+    try:
+        resolved = Path(path).resolve(strict=True)
+        stat = resolved.stat()
+        return str(resolved), stat.st_dev, stat.st_ino
+    except (OSError, ValueError, TypeError):
+        return None
+
+
+def _charges(budget: Any) -> tuple[int, int, int]:
+    return budget.consumed, budget.accepted_rows, budget.traversed
+
+
+def _complete_sequential(conn: sqlite3.Connection, *, expected_org_slug: str | None,
+                         budget: Any, selector: Any) -> tuple:
+    from runtime.workflows.sequential_history import read_sequential_history
+    history = read_sequential_history(conn, expected_org_slug=expected_org_slug,
+                                      retained_budget=budget, deadline=selector.deadline)
+    validated = history.retained
+    if validated is None or validated[1] is None:
+        # Never route literal-I plus sequential through automatic Coding DDL.
+        raise ValueError('workflow_schema_object_set_mismatch')
+    return validated
+
+
+# Named default validator/policy only. Alternate readers, subclasses, adjusted
+# defaults or policy constants retain fresh validation and their own refusals.
+from runtime.workflows import sequential_history as _sequential
+from runtime.workflows import coding_authority_history as _retained
+from runtime.infrastructure import workflow_schema as _schema
+_DEFAULT_READER = _sequential.read_sequential_history
+_DEFAULT_BUDGET = _retained._Budget
+_DEFAULT_READ_BUDGET = _sequential._ReadBudget
+_DEFAULT_POLICY = (_DEFAULT_READER.__kwdefaults__.copy(), _DEFAULT_READ_BUDGET.check,
+                   _DEFAULT_READ_BUDGET.progress, _DEFAULT_BUDGET.step,
+                   _DEFAULT_BUDGET.candidate, _DEFAULT_BUDGET.remaining_bytes,
+                   _schema._read_workflow_schema, _retained._BYTE_LIMIT,
+                   _retained._CALL_ROW_LIMIT, _retained._TRAVERSAL_LIMIT,
+                   _DEFAULT_READ_BUDGET.__init__.__defaults__, _sequential._sql_budget)
+
+
+def _default_policy() -> bool:
+    return (_sequential.read_sequential_history is _DEFAULT_READER
+            and _retained._Budget is _DEFAULT_BUDGET
+            and _sequential._ReadBudget is _DEFAULT_READ_BUDGET
+            and (_DEFAULT_READER.__kwdefaults__, _DEFAULT_READ_BUDGET.check,
+                 _DEFAULT_READ_BUDGET.progress, _DEFAULT_BUDGET.step,
+                 _DEFAULT_BUDGET.candidate, _DEFAULT_BUDGET.remaining_bytes,
+                 _schema._read_workflow_schema, _retained._BYTE_LIMIT,
+                 _retained._CALL_ROW_LIMIT, _retained._TRAVERSAL_LIMIT,
+                 _DEFAULT_READ_BUDGET.__init__.__defaults__, _sequential._sql_budget) == _DEFAULT_POLICY)
