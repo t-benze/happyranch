@@ -2,13 +2,14 @@
 set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
-uv run --frozen --python 3.14 python - <<'PY'
+uv run --frozen --python "${WORKFLOW_SCHEMA_PYTHON:-3.14}" python - "$@" <<'PY'
 from pathlib import Path
 from contextlib import contextmanager
 from contextvars import copy_context
 from itertools import product
 import json
 import sqlite3
+import sys
 import logging
 import os
 import tempfile
@@ -39,6 +40,148 @@ from runtime.config import Settings
 from runtime.identities import registry as names
 from runtime.orchestrator import producer_move
 from runtime.orchestrator.agent_def import AgentDef, render_agent_text
+
+assert sys.argv[1:] in ([], ['--bounded-acquisition']), 'unknown schema-load selection'
+
+# A0 extends this venue's real-SQLite case tables at the shared acquisition seam.
+from runtime.workflows.coding_authority_history import (
+    CodingAuthorityHistoryError, _Budget, _bounded_rows,
+)
+from runtime.workflows.sequential_history import _ReadBudget, _sql_budget
+
+class GateCursor(sqlite3.Cursor):
+    def fetchone(self):
+        row = super().fetchone()
+        self.connection.fetched.append(row)
+        return row
+
+    def close(self):
+        self.connection.closed_cursors += 1
+        super().close()
+
+class GateConnection(sqlite3.Connection):
+    def cursor(self):
+        return super().cursor(factory=GateCursor)
+
+# No affinity: each literal retains its native SQLite storage class.
+gate_columns = ('text_cell', 'blob_cell', 'integer_cell', 'real_cell', 'null_cell')
+gate_types = ('text', 'blob', 'integer', 'real', 'null')
+gate_allowed = tuple((kind,) for kind in gate_types)
+gate_literals = ("'é'||char(0)||'尾'", "X'00ff'", '7', '1.25', 'NULL')
+gate_values = ('é\x00尾', b'\x00\xff', 7, 1.25, None)
+# label, substituted cell/expression, initial counters, local limit, value cap,
+# refusal phase (or success), final consumed/rows/work deltas.
+gate_cases = (
+    ('native-classes-NUL-multibyte', None, {}, 8192, 8, None, (8, 1, 7)),
+    ('nullable-NULL', None, {}, 8192, 8, None, (8, 1, 7)),
+    ('nullable-text', (4, "'nullable'"), {}, 8192, 8, None, (16, 1, 7)),
+    ('empty-text', (0, "''"), {}, 8192, 8, None, (2, 1, 7)),
+    ('empty-blob', (1, "X''"), {}, 8192, 8, None, (6, 1, 7)),
+    ('exact-value-limit', (0, "'12345678'"), {}, 8192, 8, None, (10, 1, 7)),
+    ('over-value-limit', (0, "'123456789'"), {}, 8192, 8, 'withheld', (0, 1, 1)),
+    ('oversized-blob', (1, 'zeroblob(9)'), {}, 8192, 8, 'withheld', (0, 1, 1)),
+    ('exact-default-value-limit', (1, 'zeroblob(1048576)'), {}, 8192, 1048576, None, (1048582, 1, 7)),
+    ('over-default-value-limit', (1, 'zeroblob(1048577)'), {}, 8192, 1048576, 'withheld', (0, 1, 1)),
+    ('NUL-suffix-byte-limit', None, {}, 8192, 5, 'withheld', (0, 1, 1)),
+    ('text-is-integer', (0, '9'), {}, 8192, 8, 'withheld', (0, 1, 1)),
+    ('text-is-blob', (0, "X'61'"), {}, 8192, 8, 'withheld', (0, 1, 1)),
+    ('text-is-NULL', (0, 'NULL'), {}, 8192, 8, 'withheld', (0, 1, 1)),
+    ('blob-is-text', (1, "'blob'"), {}, 8192, 8, 'withheld', (0, 1, 1)),
+    ('integer-is-real', (2, '7.5'), {}, 8192, 8, 'withheld', (0, 1, 1)),
+    ('real-is-integer', (3, '1'), {}, 8192, 8, 'withheld', (0, 1, 1)),
+    ('NULL-is-text', (4, "'null'"), {}, 8192, 8, 'withheld', (0, 1, 1)),
+    ('nonfinite-real', (3, '1e999'), {}, 8192, 8, 'decoded', (8, 1, 5)),
+    ('invalid-UTF8', (0, "CAST(X'80' AS TEXT)"), {}, 8192, 8, 'fetch', (0, 0, 1)),
+    ('exact-shared-bytes', None, {'consumed': 16777208}, 8192, 8, None, (8, 1, 7)),
+    ('shared-byte-overflow', None, {'consumed': 16777209}, 8192, 8, 'withheld', (0, 1, 1)),
+    ('shared-row-overflow', None, {'accepted_rows': 8192}, 8192, 8, 'withheld', (0, 1, 1)),
+    ('shared-work-overflow', None, {'traversed': 16384}, 8192, 8, 'unfetched', (0, 0, 1)),
+    ('local-row-overflow', None, {}, 0, 8, 'withheld', (0, 1, 1)),
+)
+for label, replacement, initial, maximum, cap, phase, deltas in gate_cases:
+    with GateConnection(':memory:') as conn:
+        conn.fetched, conn.closed_cursors = [], 0
+        conn.execute('CREATE TABLE gate_cells (' + ','.join(gate_columns) + ')')
+        literals = list(gate_literals)
+        if replacement:
+            literals[replacement[0]] = replacement[1]
+        conn.execute('INSERT INTO gate_cells VALUES (' + ','.join(literals) + ')')
+        expected_values = tuple(conn.execute('SELECT * FROM gate_cells').fetchone()) if phase != 'fetch' else None
+        stored_types = tuple(conn.execute('SELECT ' + ','.join(
+            'typeof(' + column + ')' for column in gate_columns) + ' FROM gate_cells').fetchone())
+        allowed = gate_allowed[:4] + (('null', 'text'),) if label.startswith('nullable-') else gate_allowed
+        expected_types = (*gate_types[:4], 'text') if label == 'nullable-text' else gate_types
+        budget = _Budget(**initial)
+        before = (budget.consumed, budget.accepted_rows, budget.traversed)
+        try:
+            rows = list(_bounded_rows(conn, 'gate_cells', gate_columns, allowed,
+                                     budget, maximum=maximum, value_limit=cap))
+        except CodingAuthorityHistoryError as exc:
+            assert phase is not None and str(exc) == 'coding_authority_history_invalid', (label, exc)
+        else:
+            assert phase is None and rows == [(*expected_values, *expected_types)], (label, rows)
+        assert tuple(value - old for value, old in zip(
+            (budget.consumed, budget.accepted_rows, budget.traversed), before)) == deltas, label
+        if conn.fetched:
+            assert conn.fetched[0][7:12] == stored_types, label
+        if phase == 'withheld':
+            assert len(conn.fetched) == 1 and conn.fetched[0][1] == 0, label
+            assert conn.fetched[0][2:7] == (None,) * 5, (label, conn.fetched)
+        elif phase in ('unfetched', 'fetch'):
+            assert conn.fetched == [], label
+        else:
+            assert conn.fetched[0][1] == 1 and conn.fetched[0][2:7] == expected_values, label
+        assert conn.closed_cursors == 1, label
+        print('PASS A0 bounded acquisition:', label, 'charges', deltas)
+    conn.close()
+
+for maximum, expected_ids, expected_charges in (
+        (8192, (-9223372036854775808, -2, 9223372036854775807), (24, 3, 18)),
+        (2, None, (16, 3, 13))):
+    with GateConnection(':memory:') as conn:
+        conn.fetched, conn.closed_cursors = [], 0
+        conn.execute('CREATE TABLE gate_cells (' + ','.join(gate_columns) + ')')
+        for identity in (-9223372036854775808, -2, 5, 9223372036854775807):
+            values = (*gate_values[:2], 8 if identity == 5 else 7, *gate_values[3:])
+            conn.execute('INSERT INTO gate_cells (rowid,' + ','.join(gate_columns) + ') VALUES (?,?,?,?,?,?)', (identity, *values))
+        budget = _Budget()
+        try:
+            rows = list(_bounded_rows(conn, 'gate_cells', gate_columns, gate_allowed, budget,
+                                     where='integer_cell=?', args=(7,), maximum=maximum, with_rowid=True))
+        except CodingAuthorityHistoryError as exc:
+            assert expected_ids is None and str(exc) == 'coding_authority_history_invalid'
+            assert conn.fetched[-1][1:7] == (0, None, None, None, None, None)
+        else:
+            assert tuple(row[0] for row in rows) == expected_ids
+            assert all(row[1:] == (*gate_values, *gate_types) for row in rows)
+        assert (budget.consumed, budget.accepted_rows, budget.traversed) == expected_charges
+        assert conn.closed_cursors == 1
+        print('PASS A0 rowid extremes/gaps/WHERE/overflow:', maximum, expected_charges)
+    conn.close()
+
+# Same finite SQL allowance and original retained logical counters at each width.
+# The wide valid fixture must complete, rather than silently validating a subset.
+for width in (1, 4, 11, 32):
+    with sqlite3.connect(':memory:') as conn:
+        columns = tuple('cell_' + str(index) for index in range(width))
+        conn.execute('CREATE TABLE gate_width (' + ','.join(columns) + ')')
+        conn.executemany('INSERT INTO gate_width VALUES (' + ','.join('?' for _ in columns) + ')',
+                         [('x',) * width] * 400)
+        logical = _Budget()
+        sql = _ReadBudget()  # Original 2M SQL / 5s; no raised or reset allowance.
+        try:
+            with _sql_budget(conn, sql):
+                rows = list(_bounded_rows(conn, 'gate_width', columns, (('text',),) * width, logical))
+        except ValueError as exc:
+            raise AssertionError(f'A0 width={width} complete acquisition refused; SQL={sql.sql_steps}; cause={exc.__cause__}') from exc
+        assert rows == [('x',) * width + ('text',) * width] * 400, width
+        assert (logical.consumed, logical.accepted_rows, logical.traversed) == (400 * width, 400, 400 * (width + 1) + 1), width
+        print('PASS A0 width:', width, 'rows=400 SQL=', sql.sql_steps,
+              'logical=', logical.consumed, logical.accepted_rows, logical.traversed)
+    conn.close()
+
+if sys.argv[1:] == ['--bounded-acquisition']:
+    raise SystemExit(0)
 
 startup_failures = []
 def startup_expect(condition, case):

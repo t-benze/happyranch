@@ -316,7 +316,15 @@ The sequential acquisition path uses the retained
 `coding_authority_history._Budget` / `_bounded_rows` / `_decoded` model and
 `workflow_schema._candidate_structure` / `_structure_cells` metadata acquisition.
 SQL `typeof`/byte-length gates withhold wrong-class or oversized cells before
-payload fetch. Decision 2 (THR336 msg102; accepted TASK-14643 rev4) separates
+payload fetch. A0 (THR-336 msg194) materializes only the singleton `gated` CTE
+in the shared `_bounded_rows` query, computing whole-row validity once per
+keyset candidate. Candidate ORDER/LIMIT/WHERE, payload CASE expressions, original
+storage classes, raw byte lengths, nullable-NULL/refusal sentinel, rowid bounds,
+cursor custody and all row/byte/work/SQL/deadline allowances remain unchanged.
+It neither caches validation nor removes integrity/FK checks or adds an
+install/startup caller. The existing schema-load case table observes these
+contracts on supported Python3.12/3.14 SQLite runtimes.
+Decision 2 (THR336 msg102; accepted TASK-14643 rev4) separates
 observed schema/native metadata (A), independent reference metadata/comparison (B),
 and sequential data, native links, decoded/model copies and per-run replay (C). Each sequential table is acquired once; visits/events
 are grouped once instead of rescanning all history for every run. Ownership acquisition is scoped to authenticated run-bound tasks: cached run/visit

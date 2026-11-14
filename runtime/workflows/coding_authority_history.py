@@ -185,7 +185,7 @@ def _bounded_rows(conn: sqlite3.Connection, table: str, columns: tuple[str, ...]
     query = ('WITH candidate AS (SELECT rowid AS _scan_rowid,' + ','.join(names)
              + ' FROM ' + quote(table) + ' WHERE (' + where
              + ') AND rowid>=? ORDER BY rowid LIMIT 1), '
-             + 'gated AS (SELECT *,(' + valid + ') AS _scan_valid FROM candidate) '
+             + 'gated AS MATERIALIZED (SELECT *,(' + valid + ') AS _scan_valid FROM candidate) '
              + 'SELECT _scan_rowid,_scan_valid,'
              + ','.join(f'CASE WHEN _scan_valid THEN {name} ELSE NULL END' for name in names)
              + ',' + ','.join(f'typeof({name})' for name in names)
