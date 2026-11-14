@@ -12,6 +12,9 @@ order, exact native connection type, authorizer and progress owners are unchange
 The unpublished load owns one registration and enters before sequential selection.
 Its complete certificate is private to the exact native connection, attachment
 path/device/inode, org, thread/async execution and default validator/budget policy.
+An unavailable initial attachment identity disables certification and reuse for
+that entire load owner, including after path restoration or replacement; every
+read remains complete without adopting a later pathname's identity.
 Transient DDL/config execution, observer loss/failure, writes and write rollback
 invalidate it. FK ON/deferred FK OFF is required before metadata reads.
 The TEMP schema-cookie PRAGMA is prepared afresh for each bookend, preserving

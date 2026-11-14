@@ -3303,9 +3303,31 @@ if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--seque
                         assert actual == expected and owner.hits == 0 and owner.sequential_saved is None, 'unknown initial attachment certified reuse'
                         assert not db._conn.in_transaction, 'unknown initial attachment leaked snapshot'
                     held.rename(original)
-                    full = sql.count('PRAGMA integrity_check')
-                    seq_read(db)
-                    assert sql.count('PRAGMA integrity_check') == full + 1, 'initial attachment restoration skipped complete read'
+                    detached = original.with_suffix('.initial-detached')
+                    replacement = root / 'initial-replacement.db'
+                    sqlite3.connect(replacement).close()
+                    try:
+                        for phase in ('restored', 'replaced'):
+                            if phase == 'replaced':
+                                original.rename(detached)
+                                replacement.rename(original)
+                            for repeat in range(2):
+                                full = sql.count('PRAGMA integrity_check')
+                                foreign = sql.count('PRAGMA foreign_key_check')
+                                actual = sequential_outcome(lambda: seq_read(db))
+                                assert sql.count('PRAGMA integrity_check') == full + 1, phase + ' initial attachment skipped complete read'
+                                assert sql.count('PRAGMA foreign_key_check') == foreign + 1, phase + ' initial attachment skipped FK read'
+                                expected = sequential_outcome(lambda: read_sequential_history(
+                                    db._conn, expected_org_slug='scratch').retained)
+                                assert actual == expected and actual[0] == 'returned', phase + ' initial attachment changed complete outcome'
+                                assert owner.hits == 0 and owner.sequential_saved is None and owner.certificate == 0, phase + ' initial attachment certified reuse'
+                                assert owner.attachment is None, phase + ' initial attachment fabricated identity'
+                                assert not db._conn.in_transaction, phase + ' initial attachment leaked snapshot'
+                            print('PASS A0b sequential initial attachment unavailable:', phase)
+                    finally:
+                        if detached.exists():
+                            original.unlink()
+                            detached.rename(original)
             finally:
                 if held.exists():
                     held.rename(original)

@@ -196,8 +196,12 @@ class _LoadValidation:
         self.sequential_saved = None
 
     def attachment_matches(self) -> bool:
+        # A later pathname cannot prove the original native attachment's identity.
+        # Keep an initially unknown owner ineligible for its entire interval.
+        if self.attachment is None:
+            return False
         current = _attachment(self.database.db_path)
-        if self.attachment is not None and current != self.attachment:
+        if current != self.attachment:
             self.clear()
             raise ValueError('workflow_load_attachment_changed')
         return current is not None
