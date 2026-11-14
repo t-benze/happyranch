@@ -1,5 +1,13 @@
 # Sequential Coding cutover and backout — operator draft
 
+Load instrumentation now composes through `Database.observe_trace` with the
+load's schema/config observer; raw trace replacement on Database connections is
+unsupported. Legacy reuse invalidates on transient execution, observation failure
+or unknown classification and requires FK ON/deferred FK OFF. The observer owns
+neither authorizer nor progress hooks. Complete sequential certificate/ledger
+work remains open; this custody prerequisite changes no cutover caller, full
+physical/FK check, budget, install/admission authority or live acceptance gate.
+
 A0b's finite SQL component changes expression evaluation only: shared singleton
 shape/size is measured once, and ownership's exceptional-text scan follows its
 complete type/size prerequisite in the same snapshot. Payload withholding,

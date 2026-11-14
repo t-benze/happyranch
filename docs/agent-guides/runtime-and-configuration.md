@@ -1,5 +1,20 @@
 # Runtime And Configuration
 
+`Database.observe_trace(callback)` explicitly owns and composes the native trace
+slot on Database-owned connections. Production callers register through this
+owner; raw `set_trace_callback` is unsupported. One dispatcher delivers in
+registration order, preserves outer observers when inner scopes leave, and clears
+the native slot only on the last exit. Callers must check the yielded sticky
+`failed` flag before trusting observations: SQLite suppresses callback exceptions.
+Delivery failures poison current registrations; failed native cleanup makes
+custody unavailable. Primary BaseExceptions survive cleanup failure. Constructor
+order, exact native connection type, authorizer and progress owners are unchanged.
+The unpublished load owns one registration and disables its existing legacy
+certificate on transient schema/config execution or unknown observation, including
+cached/cursor/script execution. Its bookend requires FK ON/deferred FK OFF.
+Sequential reads still validate fully; the complete sequential certificate and
+cumulative retained-budget ledger remain prerequisites for automatic setup.
+
 A0b finite SQL prerequisite for automatic workflow setup: shared bounded readers
 evaluate each singleton's whole-row shape/size once; sequential ownership uses
 equivalent specialized type gates before its exceptional-text scan in the same

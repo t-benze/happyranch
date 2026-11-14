@@ -260,6 +260,16 @@ backend fields, pre-import clock placement and Bash's portable clock fallback.
 It starts no serving daemon or worker, adds no CI trigger/check, and does not
 restore the retired Python unit selection or execute general integration/E2E.
 
+The same schema-load venue accepts `--trace-custody` on Python3.12/3.14 for
+A0b-2's composed native trace ownership, registration order, repeated cached and
+cursor/script delivery, equal callbacks, BaseException/failed-native-cleanup
+restoration, sticky observer failures, real rolled-back main/TEMP DDL and
+assigning/restored configuration. Outer instrumentation registers through
+`Database.observe_trace`, so it composes with the actual load observer. These
+focused cases use real SQLite and the legacy complete reader; they do not certify
+the still-open sequential owner/ledger matrix or production-size timing. Omit
+the selector for the full existing venue; `--bounded-acquisition` stays unchanged.
+
 Focused schema-load observation (THR308seq348/353/354): run
 `bash scripts/test-workflow-schema-load.sh` locally with frozen Python3.14.
 A0 (THR-336 msg194) extends its acquisition case table with native storage

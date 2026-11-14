@@ -1,5 +1,14 @@
 # Coding workflow contracts
 
+The unpublished load now observes schema/config execution through the generic
+`Database.observe_trace` owner. Outer instrumentation composes with the load
+observer, and every exit disables the load certificate before unregistering.
+Callback failure, unknown classification or unavailable custody forces complete
+reads; transient DDL and assigning/restored PRAGMAs invalidate legacy reuse, with
+FK ON/deferred FK OFF required. This does not yet provide sequential certificate
+reuse or its cumulative retained-charge ledger. Complete sequential validation,
+physical/FK checks and all original allowances remain mandatory.
+
 > Moved verbatim from the repository-root `AGENTS.md` on 2026-10-30. Sections keep
 > their original relative order. Where a later section says it supersedes or
 > extends an earlier one, the later section controls; sections marked

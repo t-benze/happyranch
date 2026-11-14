@@ -7,9 +7,10 @@ complete source with the unchanged zero-write proof; mutated targets read fresh.
 from __future__ import annotations
 
 import logging
+import re
 import sqlite3
 import time
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from contextvars import ContextVar
 from collections.abc import Callable
 from typing import Any, Iterator
@@ -20,6 +21,21 @@ _SQLITE_CONFIGS = tuple((name, getattr(sqlite3, name)) for name in dir(sqlite3)
                         if name.startswith('SQLITE_DBCONFIG_'))
 _SQLITE_LIMITS = tuple((name, getattr(sqlite3, name)) for name in dir(sqlite3)
                        if name.startswith('SQLITE_LIMIT_'))
+_SQL_PREFIX = re.compile(r'(?:\s+|--[^\n]*(?:\n|$)|/\*.*?\*/)*', re.DOTALL)
+_SQL_WORD = re.compile(r'[A-Za-z_][A-Za-z_0-9]*')
+_PRAGMA_NAME = re.compile(r'(?:(?:main|temp)\s*\.\s*)?([A-Za-z_][A-Za-z_0-9]*)', re.IGNORECASE)
+_READ_PRAGMAS = frozenset((
+    'database_list', 'table_list', 'table_info', 'table_xinfo', 'index_list',
+    'index_info', 'index_xinfo', 'foreign_key_list', 'foreign_key_check',
+    'integrity_check', 'quick_check', 'compile_options',
+))
+_CONFIG_PRAGMAS = frozenset((
+    'data_version', 'schema_version', 'user_version', 'application_id',
+    'foreign_keys', 'defer_foreign_keys', 'read_uncommitted', 'writable_schema',
+    'ignore_check_constraints', 'recursive_triggers', 'trusted_schema',
+    'query_only', 'journal_mode', 'locking_mode', 'synchronous', 'temp_store',
+    'busy_timeout', 'cache_size', 'cache_spill', 'mmap_size', 'encoding',
+))
 
 
 def _bookend(conn: sqlite3.Connection) -> tuple | None:
@@ -33,6 +49,12 @@ def _bookend(conn: sqlite3.Connection) -> tuple | None:
         if (conn.isolation_level != '' or conn.autocommit != sqlite3.LEGACY_TRANSACTION_CONTROL
                 or conn.text_factory is not str):
             return None
+        # Some native metadata PRAGMAs complete an implicit read transaction and
+        # reset defer_foreign_keys. Refuse the original deferred state BEFORE
+        # those reads; a later zero observation cannot certify its absence.
+        if (conn.execute('PRAGMA foreign_keys').fetchone()[0] != 1
+                or conn.execute('PRAGMA defer_foreign_keys').fetchone()[0] != 0):
+            return None
         version = conn.execute('PRAGMA main.data_version').fetchone()[0]
         changes = conn.total_changes
         main = conn.execute('PRAGMA main.schema_version').fetchone()[0]
@@ -42,7 +64,7 @@ def _bookend(conn: sqlite3.Connection) -> tuple | None:
                 or any(row != (1, 'temp', '') for row in databases[1:])):
             return None
         config = tuple(conn.execute('PRAGMA ' + name).fetchone()[0] for name in (
-            'foreign_keys', 'read_uncommitted', 'writable_schema', 'ignore_check_constraints',
+            'foreign_keys', 'defer_foreign_keys', 'read_uncommitted', 'writable_schema', 'ignore_check_constraints',
             'recursive_triggers', 'trusted_schema', 'query_only',
         ))
         storage_config = tuple(conn.execute('PRAGMA ' + name).fetchone()[0] for name in (
@@ -54,7 +76,7 @@ def _bookend(conn: sqlite3.Connection) -> tuple | None:
                 or min(version, changes, main, temp) < 0
                 or any(type(value) is not bool for _, value in native_config)
                 or any(type(value) is not int for _, value in limits)
-                or config[:4] != (1, 0, 0, 0)
+                or config[:5] != (1, 0, 0, 0, 0)
                 or conn.execute('PRAGMA main.data_version').fetchone()[0] != version
                 or conn.total_changes != changes):
             return None
@@ -73,6 +95,57 @@ class _LoadValidation:
         self.full_runs = 0
         self.hits = 0
         self.full_seconds = 0.0
+        self.trace: Any = None
+        self.schema_epoch = 0
+        self.observer_failed = False
+
+    def observe_statement(self, statement: str) -> None:
+        """Execution-time invalidation, including cached/cursor/script execution.
+
+        This observes only. It changes no native authorizer or progress handler.
+        Unknown syntax makes this interval unusable rather than guessing a hit.
+        """
+        start = _SQL_PREFIX.match(statement).end()
+        word = _SQL_WORD.match(statement, start)
+        if word is None:
+            if statement[start:].strip(' ;'):
+                self.observer_failed = True
+                self.saved = None
+            return
+        keyword = word.group().upper()
+        if keyword in {'SELECT', 'WITH', 'INSERT', 'UPDATE', 'DELETE', 'REPLACE',
+                       'BEGIN', 'COMMIT', 'END', 'ROLLBACK', 'SAVEPOINT', 'RELEASE'}:
+            return
+        if keyword == 'PRAGMA':
+            name_start = _SQL_PREFIX.match(statement, word.end()).end()
+            name = _PRAGMA_NAME.match(statement, name_start)
+            if name is not None:
+                pragma = name.group(1).lower()
+                tail = statement[_SQL_PREFIX.match(statement, name.end()).end():].strip(' ;')
+                if pragma in _READ_PRAGMAS:
+                    return
+                if pragma in _CONFIG_PRAGMAS:
+                    if not tail:
+                        return
+                    if tail.startswith(('=', '(')):
+                        self.schema_epoch += 1
+                        self.saved = None
+                        return
+        elif keyword in {'CREATE', 'DROP', 'ALTER', 'ATTACH', 'DETACH', 'VACUUM',
+                         'ANALYZE', 'REINDEX'}:
+            self.schema_epoch += 1
+            self.saved = None
+            return
+        self.observer_failed = True
+        self.saved = None
+
+    def bookend(self, conn: sqlite3.Connection) -> tuple | None:
+        if self.trace is None or self.trace.failed or self.observer_failed:
+            return None
+        observed = _bookend(conn)
+        if observed is None or self.trace.failed or self.observer_failed:
+            return None
+        return observed, self.schema_epoch
 
     def full(self, conn: sqlite3.Connection, *, fallback: Callable[[], Any] | None = None, **kwargs: Any) -> Any:
         from runtime.infrastructure.workflow_schema import _read_workflow_schema
@@ -91,7 +164,7 @@ class _LoadValidation:
                     or (conn.in_transaction and not (writer_source or load_target))):
                 self.saved = None
                 return self.full(conn, fallback=fallback, **kwargs)
-            opening = _bookend(conn)
+            opening = self.bookend(conn)
             if opening is None:
                 self.saved = None
                 return self.full(conn, fallback=fallback, **kwargs)
@@ -103,7 +176,7 @@ class _LoadValidation:
                 result = self.full(conn, fallback=fallback, **kwargs)
                 # A target fallback can be a metadata-only legacy reader. Never
                 # promote it into a reusable complete-source validation.
-                if fallback is None and _bookend(conn) == opening:
+                if fallback is None and self.bookend(conn) == opening:
                     self.saved = (opening, result)
                 return result
             owned = not conn.in_transaction
@@ -115,11 +188,11 @@ class _LoadValidation:
                     # the outside observation. A commit in the acquisition gap
                     # cannot attach an old validation to a newer snapshot.
                     conn.execute('SELECT rootpage FROM main.sqlite_schema LIMIT 1').fetchone()
-                pinned = _bookend(conn)
-                closing = _bookend(conn)
+                pinned = self.bookend(conn)
+                closing = self.bookend(conn)
                 if owned:
                     conn.rollback()
-                outside = _bookend(conn)
+                outside = self.bookend(conn)
                 if pinned == opening == closing == outside:
                     self.saved = (outside, result)
                     self.hits += 1
@@ -138,11 +211,22 @@ class _LoadValidation:
 
 @contextmanager
 def org_load_validation(database: Any, *, org_slug: str) -> Iterator[None]:
-    """No persisted state, cross-load reuse or change to Database ownership."""
+    """Own one composed trace registration for this unpublished load only."""
     owner = _LoadValidation(database, org_slug)
     token = _current.set(owner)
     try:
-        yield
+        with ExitStack() as observers:
+            try:
+                try:
+                    owner.trace = observers.enter_context(database.observe_trace(owner.observe_statement))
+                except Exception:
+                    # An unsupported/failed installation can only run full reads.
+                    owner.observer_failed = True
+                yield
+            finally:
+                # Disable before unregistering, including every BaseException.
+                owner.active = False
+                owner.saved = None
     finally:
         owner.active = False
         owner.saved = None

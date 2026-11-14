@@ -4,7 +4,7 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 uv run --frozen --python "${WORKFLOW_SCHEMA_PYTHON:-3.14}" python - "$@" <<'PY'
 from pathlib import Path
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from contextvars import copy_context
 from itertools import product
 import json
@@ -41,7 +41,170 @@ from runtime.identities import registry as names
 from runtime.orchestrator import producer_move
 from runtime.orchestrator.agent_def import AgentDef, render_agent_text
 
-assert sys.argv[1:] in ([], ['--bounded-acquisition']), 'unknown schema-load selection'
+assert sys.argv[1:] in ([], ['--bounded-acquisition'], ['--trace-custody']), 'unknown schema-load selection'
+
+# A0b-2 custody extends this existing real-SQLite venue. No native connection
+# subclass, fake epoch, successful validator stub or production test seam.
+if sys.argv[1:] != ['--bounded-acquisition']:
+    class TraceAbort(BaseException):
+        pass
+
+    with tempfile.TemporaryDirectory(prefix='workflow-trace-custody-') as scratch:
+        db = Database(Path(scratch) / 'org.db')
+        try:
+            assert type(db._conn) is sqlite3.Connection, 'trace custody changed native type'
+            outer_sql = []
+            abort = TraceAbort('synthetic interruption')
+            with db.observe_trace(outer_sql.append) as outer:
+                try:
+                    with org_load_validation(db, org_slug='scratch'):
+                        owner = load_guard._current.get()
+                        db._conn.execute('SELECT 71001').fetchone()
+                        db._conn.execute('CREATE TEMP TABLE trace_custody (value)')
+                        assert owner.schema_epoch == 1, 'load observer lost native execution'
+                        raise abort
+                except TraceAbort as exc:
+                    assert exc is abort, 'trace cleanup replaced the primary BaseException'
+                assert not owner.active and owner.saved is None, 'load observer survived exit'
+                assert load_guard._current.get() is None, 'load context was not restored'
+                db._conn.execute('DROP TABLE temp.trace_custody')
+                assert owner.schema_epoch == 1, 'load observer still receives statements after exit'
+                assert outer_sql == ['SELECT 71001', 'CREATE TEMP TABLE trace_custody (value)',
+                                     'DROP TABLE temp.trace_custody'], 'load outer observer silently replaced'
+                assert not outer.failed, 'successful composed observation marked failed'
+            db._conn.execute('SELECT 71002').fetchone()
+            assert len(outer_sql) == 3, 'last observer exit leaked native registration'
+            print('PASS A0b trace custody: load composition and BaseException restoration')
+
+            delivered = []
+            def observe(label):
+                return lambda sql: delivered.append((label, sql))
+            with db.observe_trace(observe('outer')):
+                with db.observe_trace(observe('inner')):
+                    cursor = db._conn.cursor()
+                    try:
+                        for _ in range(2):
+                            cursor.execute('SELECT 71003').fetchone()  # Same cached SQL.
+                        db._conn.executescript('SELECT 71004; SELECT 71005;')
+                    finally:
+                        cursor.close()
+                db._conn.execute('SELECT 71006').fetchone()
+            assert delivered == [(label, sql) for sql in (
+                'SELECT 71003', 'SELECT 71003', 'SELECT 71004;', ' SELECT 71005;',
+            ) for label in ('outer', 'inner')] + [('outer', 'SELECT 71006')], 'ordered trace delivery lost an observer'
+            print('PASS A0b trace custody: ordered cached cursor and executescript delivery')
+
+            repeated = []
+            first = db.observe_trace(repeated.append)
+            second = db.observe_trace(repeated.append)
+            first.__enter__()
+            second.__enter__()
+            try:
+                db._conn.execute('SELECT 71007').fetchone()
+            finally:
+                first.__exit__(None, None, None)
+            try:
+                db._conn.execute('SELECT 71008').fetchone()
+            finally:
+                second.__exit__(None, None, None)
+            db._conn.execute('SELECT 71009').fetchone()
+            assert repeated == ['SELECT 71007', 'SELECT 71007', 'SELECT 71008'], 'identity-based trace removal lost the remaining registration'
+            print('PASS A0b trace custody: equal callbacks and independent exit order')
+
+            for failure in (ValueError, TraceAbort):
+                received = []
+                def failing(sql):
+                    raise failure('synthetic observer failure')
+                with db.observe_trace(failing) as failed:
+                    with db.observe_trace(received.append) as remaining:
+                        db._conn.execute('SELECT 71010').fetchone()
+                        assert received == ['SELECT 71010'], 'observer failure suppressed later delivery'
+                        assert failed.failed and remaining.failed, 'observer failure did not poison all current observations'
+                        with org_load_validation(db, org_slug='scratch'):
+                            owner = load_guard._current.get()
+                            assert owner.trace.failed and owner.bookend(db._conn) is None, 'failed outer observation certified a load'
+                with db.observe_trace(received.append) as fresh:
+                    assert not fresh.failed, 'finished delivery failure leaked into a fresh interval'
+                print('PASS A0b trace custody: sticky delivery failure', failure.__name__)
+
+            install_or_recover(db, expected_org_slug='scratch')
+            def read():
+                return read_workflow_schema_for_org_load(db._conn, expected_org_slug='scratch')
+            for schema, method in product(('main', 'temp'), ('connection', 'cursor', 'script')):
+                with org_load_validation(db, org_slug='scratch'):
+                    read()
+                    owner = load_guard._current.get()
+                    assert owner.saved is not None, 'legacy source could not establish real certificate'
+                    for repeat in range(2):
+                        before = load_guard._bookend(db._conn)
+                        full = owner.full_runs
+                        ddl = f'/* custody */ -- cached execution\n CREATE TABLE {schema}.transient_trace (value)'
+                        if method == 'script':
+                            db._conn.executescript('BEGIN; ' + ddl + '; ROLLBACK;')
+                        else:
+                            db._conn.execute('BEGIN')
+                            if method == 'cursor':
+                                cursor = db._conn.cursor()
+                                try:
+                                    cursor.execute(ddl)
+                                finally:
+                                    cursor.close()
+                            else:
+                                db._conn.execute(ddl)
+                            db._conn.rollback()
+                        assert load_guard._bookend(db._conn) == before, 'transient DDL fixture failed to restore metadata'
+                        read()
+                        assert owner.full_runs == full + 1, 'transient DDL reused a stale certificate'
+                print('PASS A0b legacy observer: repeated rolled-back DDL', schema, method)
+
+            for pragma in ('query_only', 'defer_foreign_keys'):
+                with org_load_validation(db, org_slug='scratch'):
+                    read()
+                    owner = load_guard._current.get()
+                    full = owner.full_runs
+                    db._conn.execute(f'/* assigning config */ PRAGMA {pragma}(ON)')
+                    assert owner.bookend(db._conn) is None or owner.saved is None, 'assigning PRAGMA kept a certificate'
+                    if pragma == 'defer_foreign_keys':
+                        assert load_guard._bookend(db._conn) is None, 'deferred FK configuration remained eligible'
+                    db._conn.execute(f'PRAGMA {pragma}=OFF')
+                    read()
+                    assert owner.full_runs == full + 1, 'restored PRAGMA reused a stale certificate'
+                print('PASS A0b legacy observer: assigning and restored PRAGMA', pragma)
+
+            with org_load_validation(db, org_slug='scratch'):
+                read()
+                owner = load_guard._current.get()
+                db._conn.execute('PRAGMA page_count').fetchone()
+                assert owner.observer_failed and owner.saved is None, 'unknown statement classification retained reuse'
+                full = owner.full_runs
+                read()
+                read()
+                assert owner.full_runs == full + 2, 'unknown classification did not force full fallback'
+            print('PASS A0b legacy observer: unknown classification disables interval')
+        finally:
+            db.close()
+
+    with tempfile.TemporaryDirectory(prefix='workflow-trace-closed-') as scratch:
+        db = Database(Path(scratch) / 'org.db')
+        abort = TraceAbort('synthetic body interruption')
+        try:
+            with db.observe_trace(lambda sql: None) as observation:
+                db._conn.close()  # Genuine native cleanup failure, not a mocked setter.
+                raise abort
+        except TraceAbort as exc:
+            assert exc is abort and observation.failed, 'cleanup lost primary failure or claimed restored custody'
+            assert exc.__notes__ == ['Database trace observer cleanup failed']
+        else:
+            raise AssertionError('trace cleanup suppressed BaseException')
+        try:
+            with db.observe_trace(lambda sql: None):
+                raise AssertionError('failed native custody was reused')
+        except RuntimeError as exc:
+            assert str(exc) == 'database_trace_custody_unavailable'
+        print('PASS A0b trace custody: failed cleanup preserves primary and refuses reuse')
+
+if sys.argv[1:] == ['--trace-custody']:
+    raise SystemExit(0)
 
 # A0 extends this venue's real-SQLite case tables at the shared acquisition seam.
 from runtime.workflows.coding_authority_history import (
@@ -593,8 +756,9 @@ for first, second in (('convert','convert'), ('convert','clear'), ('clear','conv
         def trace_second(sql):
             if sql == 'BEGIN IMMEDIATE':
                 waiting.set()
-        dbs[0]._conn.set_trace_callback(trace_first)
-        dbs[1]._conn.set_trace_callback(trace_second)
+        trace_observers = ExitStack()
+        trace_observers.enter_context(dbs[0].observe_trace(trace_first))
+        trace_observers.enter_context(dbs[1].observe_trace(trace_second))
         def act(db, action):
             try:
                 if action == 'convert':
@@ -619,8 +783,7 @@ for first, second in (('convert','convert'), ('convert','clear'), ('clear','conv
             for thread in threads:
                 if thread.ident is not None:
                     thread.join(10)
-            for db in dbs:
-                db._conn.set_trace_callback(None)
+            trace_observers.close()
         expected = [] if 'clear' in (first,second) else ['other'] if any('configure' in action for action in (first,second)) else ['code_reviewer']
         startup_expect(not errors and not any(t.is_alive() for t in threads)
                        and json.loads(dbs[0].get_org_setting('reviewer_agents')) == expected
@@ -858,6 +1021,7 @@ for site in ('cutover', 'ownership', 'naming'):
             paths.org_dir.mkdir()
             paths.agents_dir.mkdir()
             db = Database(paths.db_path)
+            trace_observers = ExitStack()
             try:
                 install_or_recover(db, expected_org_slug='scratch')
                 with db.workflow_schema_transaction() as conn:
@@ -884,7 +1048,7 @@ for site in ('cutover', 'ownership', 'naming'):
                             marker, events, _ = cutover._read(conn, budget=budget)
                             cutover._advance(conn, marker, events, key='disable-fixture' if marker['generation'] == 4 else 'enable-fixture', budget=budget)
                 statements = []
-                db._conn.set_trace_callback(statements.append)
+                trace_observers.enter_context(db.observe_trace(statements.append))
                 original_source = load_guard.read_workflow_schema_for_org_load
                 injected = False
                 target_results = []
@@ -965,6 +1129,7 @@ for site in ('cutover', 'ownership', 'naming'):
                         assert sum(sql == 'PRAGMA integrity_check' for sql in statements) == before + 1, 'public cutover get reused within load scope'
             finally:
                 db._conn.set_authorizer(None)
+                trace_observers.close()
                 db.close()
 assert not target_failures, target_failures
 
@@ -1022,6 +1187,7 @@ with tempfile.TemporaryDirectory(prefix='workflow-load-') as scratch:
     paths.org_dir.mkdir()
     paths.agents_dir.mkdir()
     db = Database(paths.db_path)
+    trace_observers = ExitStack()
     try:
         install_or_recover(db, expected_org_slug='scratch')
         install_team_move_schema(db, org_slug='scratch')
@@ -1033,7 +1199,7 @@ with tempfile.TemporaryDirectory(prefix='workflow-load-') as scratch:
         with store.writer('TASK-1'):
             store.ensure_uncommitted('TASK-1')
         statements = []
-        db._conn.set_trace_callback(statements.append)
+        trace_observers.enter_context(db.observe_trace(statements.append))
 
         def checks():
             return sum(s == 'PRAGMA integrity_check' for s in statements)
@@ -1173,16 +1339,12 @@ with tempfile.TemporaryDirectory(prefix='workflow-load-') as scratch:
                     moved = False
                     def move_at_boundary(sql):
                         global moved
-                        statements.append(sql)
                         if sql == boundary and not moved:
                             moved = True
                             other.execute("UPDATE org_settings SET value_json=? WHERE section='probe'", ('"' + boundary + '"',))
                             other.commit()
-                    db._conn.set_trace_callback(move_at_boundary)
-                    try:
+                    with db.observe_trace(move_at_boundary):
                         read()
-                    finally:
-                        db._conn.set_trace_callback(statements.append)
                     assert moved, boundary + ' did not exercise the real snapshot boundary'
                     expect(checks() == before + 1, boundary + ' movement returned reused validation')
                 print('CASE independent movement at snapshot boundary:', boundary)
@@ -1258,7 +1420,7 @@ with tempfile.TemporaryDirectory(prefix='workflow-load-') as scratch:
 
         assert not failures, failures
         print('PASS all named invalidation/bookend cases')
-        db._conn.set_trace_callback(None)
+        trace_observers.close()
         start = time.perf_counter()
         for _ in range(10):
             validate_workflow_schema(db._conn, expected_org_slug='scratch')
@@ -1271,6 +1433,7 @@ with tempfile.TemporaryDirectory(prefix='workflow-load-') as scratch:
         print(f'ISOLATED ten unchanged source validations: before={baseline:.6f}s after={optimized:.6f}s')
         print('Synthetic local SQLite; not a serving-daemon restart or production-size estimate.')
     finally:
+        trace_observers.close()
         db.close()
 assert not startup_failures, startup_failures
 PY

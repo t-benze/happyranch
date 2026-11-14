@@ -1,5 +1,16 @@
 # Reusable workflow contracts
 
+Database-owned native trace registrations compose only through
+`Database.observe_trace`; the load observer and outer instrumentation never
+replace one another. Check the yielded sticky failure flag before relying on
+delivery. The last observer clears the native slot; BaseException exits preserve
+outer registrations, and failed native cleanup retains unavailable custody.
+The existing legacy load certificate now observes executed schema/config changes
+(cached statements, cursors and scripts included), rejects deferred FK, and falls
+back fully on unknown classification or failed observation. No sequential
+certificate/ledger is introduced by this custody prerequisite, and all complete
+reader semantics, physical/FK checks and original budgets remain unchanged.
+
 Founder THR-336 message 85 approved TASK-14461 plan revision 3 under manager
 root TASK-14478. TASK-14483 delivered **U1a**, the records/validator half of U1.
 TASK-14509 adds **U1b**, the common pure reducer and data-driven brief renderer, for
