@@ -41,11 +41,11 @@ from runtime.identities import registry as names
 from runtime.orchestrator import producer_move
 from runtime.orchestrator.agent_def import AgentDef, render_agent_text
 
-assert sys.argv[1:] in ([], ['--bounded-acquisition'], ['--trace-custody'], ['--sequential-reuse'], ['--sequential-load'], ['--sequential-faults'], ['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--sequential-uncommitted']), 'unknown schema-load selection'
+assert sys.argv[1:] in ([], ['--bounded-acquisition'], ['--trace-custody'], ['--sequential-reuse'], ['--sequential-load'], ['--sequential-faults'], ['--sequential-sql-exhaustion'], ['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--physical-corruption'], ['--sequential-uncommitted']), 'unknown schema-load selection'
 
 # A0b-2 custody extends this existing real-SQLite venue. No native connection
 # subclass, fake epoch, successful validator stub or production test seam.
-if sys.argv[1:] not in (['--bounded-acquisition'], ['--sequential-reuse'], ['--sequential-load'], ['--sequential-faults'], ['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--sequential-uncommitted']):
+if sys.argv[1:] not in (['--bounded-acquisition'], ['--sequential-reuse'], ['--sequential-load'], ['--sequential-faults'], ['--sequential-sql-exhaustion'], ['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--physical-corruption'], ['--sequential-uncommitted']):
     class TraceAbort(BaseException):
         pass
 
@@ -210,7 +210,7 @@ if sys.argv[1:] == ['--trace-custody']:
 # layouts. Existing private installers and storage owners prepare the fixtures.
 # Native SQLite statements, outcomes and original cumulative counters are the
 # oracles; no validator replacement, success stub or fabricated epoch.
-if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--sequential-faults'], ['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--sequential-uncommitted']):
+if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--sequential-faults'], ['--sequential-sql-exhaustion'], ['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--physical-corruption'], ['--sequential-uncommitted']):
     from runtime.infrastructure.workflow_schema import (
         initialize_complete_org_schema, install_sequential_schema,
         sequential_storage_inventory, _coding_org_identity, _schema_snapshot,
@@ -557,7 +557,7 @@ if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--seque
                       'workflow_draft_dispatch_intents', 'workflow_draft_dispatch_events'):
             assert conn.execute('SELECT count(*) FROM ' + table).fetchone()[0] > 0, table + ' document fixture is empty'
 
-    if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--sequential-uncommitted']):
+    if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--physical-corruption'], ['--sequential-uncommitted']):
         corruptions = (
             ('definition digest', "UPDATE workflow_seq_definitions SET definition_digest='bad'"),
             ('definition bytes', "UPDATE workflow_seq_definitions SET definition_bytes=x'7b7d'"),
@@ -694,6 +694,41 @@ if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--seque
             corruptions = ()
         if sys.argv[1:] != ['--retained-corruption']:
             corruptions += tuple((name, mutation) for name, mutation, _ in document_coding_corruptions)
+        def corrupt_physical_index(connection, *, surplus):
+            # Synthetic private corruption: preserve the exact index definition
+            # while making SQLite change its table without index maintenance.
+            entry = tuple(connection.execute("SELECT rowid,type,name,tbl_name,rootpage,sql "
+                "FROM sqlite_schema WHERE name='load_integrity_index'").fetchone())
+            cookie = connection.execute('PRAGMA schema_version').fetchone()[0]
+            connection.execute('PRAGMA writable_schema=ON')
+            try:
+                connection.execute('DELETE FROM sqlite_schema WHERE rowid=?', (entry[0],))
+                connection.execute('PRAGMA schema_version=' + str(cookie + 1))
+                connection.execute('PRAGMA writable_schema=RESET')
+                if surplus:
+                    connection.execute('DELETE FROM load_integrity_probe WHERE id=1')
+                else:
+                    connection.execute("UPDATE load_integrity_probe SET value='changed' WHERE id=1")
+                connection.execute('PRAGMA writable_schema=ON')
+                connection.execute('INSERT INTO sqlite_schema(rowid,type,name,tbl_name,rootpage,sql) '
+                    'VALUES(?,?,?,?,?,?)', entry)
+                connection.execute('PRAGMA schema_version=' + str(cookie + 2))
+            finally:
+                connection.execute('PRAGMA writable_schema=RESET')
+            restored = tuple(connection.execute("SELECT rowid,type,name,tbl_name,rootpage,sql "
+                "FROM sqlite_schema WHERE name='load_integrity_index'").fetchone())
+            assert restored == entry, 'physical fixture changed the original index definition'
+
+        physical_corruptions = (
+            ('physical missing index entry', lambda conn: corrupt_physical_index(conn, surplus=False)),
+            ('physical surplus index entry', lambda conn: corrupt_physical_index(conn, surplus=True)),
+        )
+        physical_names = {name for name, _ in physical_corruptions}
+        refusal_codes.update({name: 'workflow_source_data_corrupt' for name in physical_names})
+        if sys.argv[1:] == ['--physical-corruption']:
+            corruptions = physical_corruptions
+        elif sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-corruption']):
+            corruptions += physical_corruptions
         corruption_failures = []
         corruption_cases = [(row, phase) for row in corruptions
             for phase in ('first', 'between local', 'between external', 'between uncommitted')
@@ -702,6 +737,11 @@ if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--seque
         for (name, mutation), phase in corruption_cases:
             with sequential_fixture() as (db, root, sql):
                 populate_sequential(db)
+                if name in physical_names:
+                    db._conn.execute('CREATE TABLE load_integrity_probe (id INTEGER PRIMARY KEY, value TEXT)')
+                    db._conn.execute('CREATE INDEX load_integrity_index ON load_integrity_probe(value)')
+                    db._conn.execute("INSERT INTO load_integrity_probe VALUES(1,'original')")
+                    db._conn.commit()
                 if name in retained_names:
                     populate_retained(db, root)
                 if name in document_coding_names:
@@ -731,10 +771,13 @@ if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--seque
                             # parity then prevents a missing-trigger false negative.
                             triggers = list(connection.execute(
                                 "SELECT name,sql FROM sqlite_schema WHERE type='trigger' AND tbl_name=?",
-                                (mutation.split()[1] if mutation.startswith('UPDATE ') else '',)))
+                                (mutation.split()[1] if isinstance(mutation, str) and mutation.startswith('UPDATE ') else '',)))
                             for trigger, ddl in triggers:
                                 connection.execute('DROP TRIGGER "' + trigger.replace('"', '""') + '"')
-                            connection.execute(mutation)
+                            if name in physical_names:
+                                mutation(connection)
+                            else:
+                                connection.execute(mutation)
                             for trigger, ddl in triggers:
                                 connection.execute(ddl)
                             if phase != 'between uncommitted':
@@ -772,10 +815,10 @@ if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--seque
                     corruption_failures.append((name, phase, str(exc)))
                     print('FAIL A0b sequential corruption matrix:', name, phase, str(exc), flush=True)
         assert not corruption_failures, 'sequential corruption matrix failures: ' + repr(corruption_failures)
-        if sys.argv[1:] in (['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--sequential-uncommitted']):
+        if sys.argv[1:] in (['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--physical-corruption'], ['--sequential-uncommitted']):
             raise SystemExit(0)
 
-    if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-faults']):
+    if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-faults'], ['--sequential-sql-exhaustion']):
         fault_failures = []
         @contextmanager
         def sequential_fault_case(name):
@@ -784,6 +827,71 @@ if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--seque
             except AssertionError as exc:
                 fault_failures.append((name, str(exc)))
                 print('FAIL A0b sequential fault:', name, str(exc), flush=True)
+
+        # Add real VM work inside the original A/B/C/L progress contexts.
+        # Delegation preserves each actual allowance and the original deadline;
+        # no counter is preset and no native/progress limit is reduced.
+        for phase, allowance in product(('first', 'changed source', 'changed target'), ('A', 'B', 'C', 'L')):
+            name = 'original SQL ' + allowance + ' ' + phase
+            with sequential_fault_case(name), sequential_fixture() as (db, root, sql):
+                seq_read(db)  # Cross-owner caching must not hide first-read exhaustion.
+                with org_load_validation(db, org_slug='scratch'):
+                    owner = load_guard._current.get()
+                    if phase != 'first':
+                        seq_read(db)
+                        db._conn.execute("UPDATE tasks SET brief=brief||'sql' WHERE id='TASK-seq-load'")
+                        db._conn.commit()
+                    if phase == 'changed target':
+                        db._conn.execute('BEGIN IMMEDIATE')
+                        db._conn.execute("UPDATE tasks SET brief=brief||'target' WHERE id='TASK-seq-load'")
+                    hits = owner.hits
+                    def observe_sql_exhaustion(operation):
+                        selected, charged = [None], []
+                        original_layout, original_sql = seq_history._read_layout, seq_history._sql_budget
+                        def select_layout(conn, observed, reference, data):
+                            selected[0] = dict(A=observed, B=reference, C=data).get(allowance)
+                            return original_layout(conn, observed, reference, data)
+                        @contextmanager
+                        def metered(conn, budget):
+                            with original_sql(conn, budget):
+                                if not charged and (budget is selected[0] or
+                                        (allowance == 'L' and budget.sql_limit == 32000000)):
+                                    charged.append(budget)
+                                    conn.execute('WITH RECURSIVE load_work(n) AS '
+                                        '(VALUES(0) UNION ALL SELECT n+1 FROM load_work WHERE n<4000000) '
+                                        'SELECT sum(n) FROM load_work').fetchone()
+                                yield
+                        with patch.object(seq_history, '_read_layout', select_layout), patch.object(
+                                seq_history, '_sql_budget', metered):
+                            outcome = sequential_outcome(operation)
+                        return outcome, charged
+                    operation = (lambda: load_guard.read_workflow_schema_target_for_org_load(
+                        db._conn, expected_org_slug='scratch', legacy=lambda: validate_workflow_schema(
+                            db._conn, expected_org_slug='scratch'))) if phase == 'changed target' else (
+                        lambda: seq_read(db))
+                    try:
+                        actual, actual_charged = observe_sql_exhaustion(operation)
+                        expected, expected_charged = observe_sql_exhaustion(lambda: read_sequential_history(
+                            db._conn, expected_org_slug='scratch').retained)
+                        assert actual == expected and actual[0] == 'refused', name + ' changed complete refusal'
+                        for charged in (actual_charged, expected_charged):
+                            assert len(charged) == 1, name + ' omitted its original native SQL meter'
+                            budget = charged[0]
+                            limit = 32000000 if allowance == 'L' else 2000000
+                            exhaustion = budget._sql_exhaustion
+                            assert type(budget) is seq_history._ReadBudget and budget.sql_limit == limit
+                            assert budget.sql_steps == limit + 1000, name + ' changed its original SQL limit'
+                            assert isinstance(exhaustion, ReadExhaustion) and exhaustion.allowance is budget
+                            assert (exhaustion.dimension, exhaustion.requested, exhaustion.remaining) == ('sql', 1000, 0)
+                        assert owner.hits == hits and owner.sequential_saved is None, name + ' retained an exhausted certificate'
+                        assert db._conn.in_transaction == (phase == 'changed target'), name + ' stole native snapshot ownership'
+                    finally:
+                        if db._conn.in_transaction:
+                            db._conn.rollback()
+                print('PASS A0b sequential SQL exhaustion:', allowance, phase, flush=True)
+        if sys.argv[1:] == ['--sequential-sql-exhaustion']:
+            assert not fault_failures, 'sequential SQL exhaustion failures: ' + repr(fault_failures)
+            raise SystemExit(0)
 
         # Extend the legacy metadata keeper to the complete sequential branch.
         # A native denial must fall back/refuse exactly like the public reader;

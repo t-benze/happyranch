@@ -303,7 +303,14 @@ deadline expiry. It compares actual complete-reader
 outcomes, forbids uncertified hits and preserves caller transactions. Named
 assertion failures accumulate and fail the selection; no failed case is skipped.
 The full selection and `--sequential-reuse` include these tables. They do not
-replace nonempty family-corruption or the remaining original SQL exhaustion forms.
+replace nonempty family-corruption coverage. `--sequential-sql-exhaustion` selects
+twelve cases from the same fault keeper: each original A/B/C2M and L32M native
+SQL meter on first reads, changed sources and changed caller-owned targets.
+Delegating test-side contexts add real recursive SQLite work inside those actual
+meters. No counter is preset and no limit or deadline changes. Each interruption
+must retain the original allowance and limit-plus-1000-step attribution, exactly
+match the public complete-reader refusal, clear the certificate and preserve
+native transaction ownership. Full, reuse and fault selections include them.
 The deadline table additionally advances a deterministic test clock at native
 entry, full integrity work and snapshot release, on first reads, primed sources
 and changed targets. It requires the public reader's exact refusal chain and
@@ -368,8 +375,17 @@ the complete reader's exact semantic refusal and preserve transaction ownership.
 pin/native/mark/output/schema/index/FK rows inside explicit caller transactions,
 including restored triggers and rollback followed by a fresh complete read.
 Full, `--sequential-reuse` and `--sequential-corruption` include both additions.
-Retained handoff/revision-operation/native closure, Coding setup/mapping/run and
-physical-corruption coverage remain separate requirements.
+`--physical-corruption` selects two native index-content inconsistencies from
+that same table: a missing entry after an unindexed update, and a surplus entry
+after an unindexed delete. Private fixture preparation restores the exact index
+schema entry before reading. The unchanged full integrity check must refuse
+both with the original physical-corruption category in all four phases; wrapper
+and public complete reader must agree without exhaustion or stale reuse.
+Uncommitted rollback restores the index/table relationship and requires a fresh
+complete check. Full, `--sequential-reuse` and `--sequential-corruption` include
+these cases. No live database, raw page write or production hook is involved.
+Retained handoff/revision-operation/native closure and Coding setup/mapping/run
+coverage remain separate requirements.
 For A0b-2's capacity disposition, see the [storage contract](runbooks/sequential-workflow-storage.md):
 installed happyranch's default FIRST/attempted NEXT is recorded as expected
 refusal with zero changes/certificate/observer leaks and an original-base
