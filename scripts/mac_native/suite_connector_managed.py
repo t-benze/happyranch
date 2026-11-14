@@ -95,12 +95,17 @@ def run(report: dict[str, Any]) -> None:
         domains: list[str] = []
         owned = False
         python = scratch / "venv/bin/python3"
+        cleanup_deadline: float | None = None
 
         def command(argv: list[str], *, seconds: float = 10, cwd: Path = scratch,
                     cleanup: bool = False) -> tuple[int, str]:
             until = time.monotonic() + seconds
             if not cleanup:
                 until = min(deadline, until)
+            elif cleanup_deadline is not None:
+                until = min(cleanup_deadline, until)
+            if until <= time.monotonic():
+                raise TimeoutError("connector-managed command deadline")
             code, raw = _command(argv, env, cwd, until, output_cap=1024 * 1024)
             output = raw.decode("utf-8", errors="replace")
             if argv[:1] == ["launchctl"]:
@@ -123,7 +128,8 @@ def run(report: dict[str, Any]) -> None:
 
         def cli(*args: str, expected: int = 0, cleanup: bool = False) -> dict:
             code, output = command([str(python), "-B", "-m", "runtime.remote_access.installer", *args],
-                                   seconds=35, cleanup=cleanup)
+                                   seconds=120 if args[0] in {"stop", "restart", "uninstall"} else 35,
+                                   cleanup=cleanup)
             # Inputs are synthetic; still retain only bounded CLI diagnostics.
             section.setdefault("cli", {})[step] = {"exit_code": code, "excerpt": output[:8192]}
             check(f"{step}_exit", code == expected)
@@ -281,14 +287,40 @@ def run(report: dict[str, Any]) -> None:
             if owned:
                 # Reserve independent bounded cleanup even after the main deadline.
                 # Boot out ONLY targets proven absent before this run's install.
+                from runtime.remote_access.launchd_agent import parse_launchctl_print
+
+                cleanup_deadline = time.monotonic() + 100
                 complete = True
                 try:
                     for domain in domains:
                         for label in reversed(LABELS):
-                            command(["launchctl", "bootout", f"{domain}/{label}"], cleanup=True)
-                            code, output = command(["launchctl", "print", f"{domain}/{label}"], cleanup=True)
-                            absent = service_absent(code, output, label)
-                            cleanup[f"{domain}/{label}_absent"] = absent
+                            target = f"{domain}/{label}"
+                            command(["launchctl", "bootout", target], cleanup=True)
+                            started = time.monotonic()
+                            until = min(cleanup_deadline, started + 30)
+                            receipt: dict[str, Any] = {"last_print": None, "elapsed_seconds": 0}
+                            cleanup.setdefault("settle", {})[target] = receipt
+                            absent = False
+                            try:
+                                while time.monotonic() < until:
+                                    code, output = command(["launchctl", "print", target], cleanup=True,
+                                                           seconds=min(10, until - time.monotonic()))
+                                    receipt["last_print"] = {"exit_code": code, "excerpt": output[:2048]}
+                                    if service_absent(code, output, label):
+                                        domain_code, _ = command(["launchctl", "print", domain], cleanup=True,
+                                                                seconds=min(10, until - time.monotonic()))
+                                        absent = domain_code == 0 and time.monotonic() < until
+                                        break
+                                    if code:
+                                        break
+                                    parse_launchctl_print(label, output, enabled=False)
+                                    remaining = until - time.monotonic()
+                                    if remaining <= 0:
+                                        break
+                                    time.sleep(min(.5, remaining))
+                            finally:
+                                receipt["elapsed_seconds"] = time.monotonic() - started
+                                cleanup[f"{target}_absent"] = absent
                             complete &= absent
                         command(["launchctl", "print-disabled", domain], cleanup=True)
                 except Exception as exc:

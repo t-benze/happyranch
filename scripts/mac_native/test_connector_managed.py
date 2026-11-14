@@ -120,6 +120,72 @@ class Coexistence(unittest.TestCase):
 
 
 class AcceptanceLogic(unittest.TestCase):
+    def test_finally_settles_sigtermed_and_records_last_print(self) -> None:
+        for stuck in (False, True):
+            with self.subTest(stuck=stuck), tempfile.TemporaryDirectory() as folder:
+                root = Path(folder).resolve()
+                home, tmp, interpreter = root / "home", root / "tmp", root / "venv"
+                home.mkdir(); tmp.mkdir(); interpreter.mkdir()
+                clock = [0.0]
+                booted = {}
+                settled = set()
+                suite_scratch = []
+                def staged(path: Path) -> None:
+                    suite_scratch.append(path.parent)
+                    agents = path.parent / "home/Library/LaunchAgents"
+                    agents.mkdir(parents=True)
+                    for label in suite.LABELS:
+                        (agents / f"{label}.plist").write_text("owned synthetic plist")
+                    raise RuntimeError("synthetic staging failure")
+                def command(argv: list[str], env: dict[str, str], cwd: Path, deadline: float,
+                            *, output_cap: int) -> tuple[int, bytes]:
+                    self.assertGreater(deadline, clock[0])
+                    verb, target = argv[1:3]
+                    if verb == "bootout":
+                        if not stuck and target.endswith(suite.LABELS[0]):
+                            self.assertIn(target.rsplit("/", 1)[0] + "/" + suite.LABELS[1], settled)
+                        booted[target] = clock[0]
+                        return 0, b""
+                    label = target.rsplit("/", 1)[-1]
+                    if verb == "print" and label in suite.LABELS:
+                        if target in booted:
+                            self.assertTrue(all((suite_scratch[0] / f"home/Library/LaunchAgents/{name}.plist").exists()
+                                                for name in suite.LABELS))
+                            if stuck or clock[0] - booted[target] < 1:
+                                return 0, f'{target} = {{\n state = SIGTERMed\n}}'.encode()
+                            settled.add(target)
+                        return 113, f'Could not find service "{label}" in domain'.encode()
+                    return 0, b"domain observation"
+                def sleep(seconds: float) -> None:
+                    self.assertGreater(seconds, 0)
+                    self.assertLessEqual(seconds, .5)
+                    clock[0] += seconds
+                report = {}
+                with patch.dict(os.environ, HOME=str(home), TMPDIR=str(tmp)), \
+                        patch.object(sys, "prefix", str(interpreter)), patch.object(suite, "_command", command), \
+                        patch.object(suite.venv.EnvBuilder, "create", side_effect=staged), \
+                        patch.object(suite.time, "monotonic", side_effect=lambda: clock[0]), \
+                        patch.object(suite.time, "sleep", side_effect=sleep):
+                    with self.assertRaisesRegex(RuntimeError, "cleanup incomplete" if stuck else "synthetic staging failure"):
+                        suite.run(report)
+                section = report["connector_managed"]
+                self.assertEqual(section["scratch_removed"], not stuck)
+                cleanup = section["cleanup"]
+                for target in booted:
+                    self.assertEqual(cleanup[f"{target}_absent"], not stuck)
+                    self.assertIn("settle", cleanup, "cleanup did not record settlement")
+                    receipt = cleanup["settle"][target]
+                    self.assertGreaterEqual(receipt["elapsed_seconds"], min(30, 100 - booted[target]) if stuck else 1)
+                    self.assertLessEqual(receipt["elapsed_seconds"], 30)
+                    self.assertEqual(receipt["last_print"]["exit_code"], 0 if stuck else 113)
+                    self.assertIn("SIGTERMed" if stuck else "Could not find service", receipt["last_print"]["excerpt"])
+                self.assertLessEqual(clock[0], 100)
+                if stuck:
+                    self.assertEqual(clock[0], 100, "cleanup reset its original total budget")
+                    retained = Path(cleanup["scratch_retained"])
+                    self.assertTrue(all((retained / f"home/Library/LaunchAgents/{name}.plist").exists() for name in suite.LABELS))
+                    shutil.rmtree(retained)
+
     def test_cleanup_uncertainty_preserves_suite_scratch(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder).resolve()

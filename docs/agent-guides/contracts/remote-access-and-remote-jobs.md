@@ -66,6 +66,13 @@ and explicit start. The packaged Mac app runs in the GUI domain.
 - `KeepAlive=true` recovers after every process exit, including SIGKILL and exit
   zero; `ThrottleInterval=10` limits repeated rapid launches. `stop` bootouts the
   service and confirms it is unloaded, so KeepAlive cannot undo the stop.
+  Successful bootout may leave a transient `SIGTERMed` service. Stop polls
+  `print` at intervals no greater than 0.5s for at most 30s after bootout;
+  print and the confirming domain probe share that deadline. Only not-found
+  with a still-accessible domain proves absence. Deadline, denied/lost domain
+  or malformed print refuses; no plist/state removal follows. An already absent
+  service needs no bootout. Composite stop settles the sidecar before the
+  connector; replacement and uninstall wait for verified absence before writes.
   `uninstall` bootouts, disables and removes the plist, and is idempotent when
   already absent. launchd may retain the label's disabled override; uninstall
   does not edit launchd's private preference database or remove logs/backups.
@@ -711,6 +718,14 @@ uninstall/reinstall. The generic LaunchAgent renderer's default remains unchange
 Source mode still requires an absolute interpreter that can import the checkout
 outside its working directory; no product PYTHONPATH or WorkingDirectory is added.
 
+The `connector-managed` finally cleanup uses the same <=30s post-bootout settle
+per target, <=0.5s polling and domain-confirmed absence. Each attempted target
+records its last raw print (<=2048 characters) and elapsed settle seconds;
+failure retains owned files/scratch. Its existing total cleanup cap is 100s,
+so the final target may have less than 30s remaining. Stop/restart/uninstall
+CLI calls allow up to 120s for both agents inside the unchanged 240s lifecycle,
+3300s suite and 5400s job budgets. No ExitTimeOut/plist key is changed.
+
 The new allowlisted `connector-managed` native suite uses the existing job's
 private HOME/TMPDIR and fixed UID-scoped labels `ai.happyranch.connector` and
 `ai.happyranch.tsnet-sidecar`. Before managed effects it proves both services
@@ -733,8 +748,10 @@ plist and scratch receipts survive failures. Cleanup uncertainty is a failure;
 any suite-local retained scratch remains subject to the existing job EXIT trap.
 The existing connector-launchd stand-in suite is unchanged.
 
-C8 maker delivery uses ZERO Mac-mini runs (PRs 9/10; Mac mini 6/8 used).
-The combined native suite is NOT RUN in this leg. Its future run proves source
+C8 maker delivery and this fix-forward use ZERO Mac-mini runs (PRs 9/10;
+Mac mini 7/8 used). Build31 at `bc42318f` passed build/install/start/status and
+KeepAlive recovery, then failed at stop and immediate cleanup absence. The
+repaired head's combined native suite is NOT RUN in this leg. A future run proves source
 CLI/native lifecycle only: real tailnet enrollment/readiness is unproven, as are
 login/reboot persistence and packaged execution. Packaged-app connector acceptance
 depends on the separate THR-346 packaged-app check, pending founder approval.

@@ -191,15 +191,23 @@ class LaunchdServiceManager:
     def _path(self, name: str) -> Path:
         return self.unit_dir / f"{launchd_label(name)}.plist"
 
-    def _print(self, name: str) -> str | None:
+    def _print(self, name: str, *, deadline: float | None = None) -> str | None:
+        def remaining() -> float:
+            if deadline is None:
+                return 10.0
+            seconds = deadline - time.monotonic()
+            if seconds <= 0:
+                raise ServiceManagerError("LaunchAgent still loaded after bootout")
+            return min(10.0, seconds)
+
         target = self._target(name)
-        code, output = self._run(["launchctl", "print", target], timeout=10.0)
+        code, output = self._run(["launchctl", "print", target], timeout=remaining())
         if not code:
             return output
         label = launchd_label(name)
         if f'Could not find service "{label}" in domain' in output:
             # A vanished domain is not an absent service.
-            self._call("print", self.domain)
+            self._call("print", self.domain, timeout=remaining())
             return None
         raise ServiceManagerError(f"launchctl print {target} failed ({code}): {output.strip()[:200]}")
 
@@ -337,10 +345,23 @@ class LaunchdServiceManager:
                 self.disable(unit_name)
 
     def stop(self, unit_name: str, *, timeout: float = 10.0) -> None:
-        if self._print(unit_name) is not None:
-            self._call("bootout", self._target(unit_name), timeout=timeout)
-        if self._print(unit_name) is not None:
-            raise ServiceManagerError("LaunchAgent still loaded after bootout")
+        if self._print(unit_name) is None:
+            if self._print(unit_name) is not None:
+                raise ServiceManagerError("LaunchAgent still loaded after bootout")
+            return
+        self._call("bootout", self._target(unit_name), timeout=timeout)
+        # bootout may return while launchd is still waiting for SIGTERM/exit.
+        # One post-bootout deadline includes print and its domain recheck.
+        deadline = time.monotonic() + 30.0
+        while True:
+            output = self._print(unit_name, deadline=deadline)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise ServiceManagerError("LaunchAgent still loaded after bootout")
+            if output is None:
+                return
+            parse_launchctl_print(launchd_label(unit_name), output, enabled=False)
+            time.sleep(min(max(self._poll_seconds, 0.001), 0.5, remaining))
 
     def restart(self, unit_name: str) -> None:
         enabled = self._enabled(unit_name)

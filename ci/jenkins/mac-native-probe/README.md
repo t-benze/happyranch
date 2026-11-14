@@ -782,7 +782,21 @@ builds the real checked-out Go command with CGO disabled, GOWORK=off and
 -mod=readonly (<=2700s). Go module fetches may occur; no module/source change is
 made. Lifecycle has <=240s inside one <=3300s suite budget, plus <=100s finally
 cleanup. With the existing <=300s Python bootstrap this fits the 90-minute job.
-Cold-build completion within this budget is NOT yet proven on the Mac mini.
+Stop/restart/uninstall CLI calls allow <=120s for the two sequential agents,
+still clipped to the original lifecycle deadline. Successful bootout can leave
+`SIGTERMed` while the process exits: production stop and finally cleanup poll
+print at <=0.5s intervals for <=30s after bootout per target, including the
+confirming domain probe. Already-absent production stop does not bootout.
+No ExitTimeOut or other plist key changes. Only not-found in an accessible
+domain proves absence; denied/lost domains, malformed output and deadline
+exhaustion refuse and preserve files/scratch. Sidecar stop settles before
+connector stop in the CLI; uninstall/replacement waits before removing/writing.
+Finally cleanup records each attempted target under `cleanup.settle` with
+`last_print` (exit_code and <=2048-character raw excerpt) and `elapsed_seconds`.
+The shared 100s cleanup cap can shorten a later target's 30s allowance.
+Build31 at `bc42318f` completed the native build and pre-stop lifecycle, then
+failed at stop and immediate cleanup absence. The repaired head's complete
+native lifecycle is NOT RUN in this maker leg.
 Commands retain <=1MiB output each; excerpts are <=2048 characters for launchctl
 and build observations and <=8192 for CLI results. Existing 4MiB job log caps and
 256MiB per-file limits are unchanged. Exceeding a bound fails the suite.
@@ -806,7 +820,7 @@ Claims require a separately authorized native run at an exact reviewed SHA.
 This suite does not prove real tailnet enrollment/readiness, packaged-app
 connector execution, login/reboot persistence or signing. Packaged-app acceptance
 still depends on the separate THR-346 check pending founder approval. Budget for
-this maker leg: PRs 9/10, Mac mini 6/8, zero submitted runs.
+this fix-forward leg: PRs 9/10, Mac mini 7/8, zero submitted runs.
 
 Portable focused checks in the existing standalone venue:
 

@@ -445,7 +445,9 @@ class ManagedDarwinInstaller(unittest.TestCase):
                         rows += ([row("bootout", TARGET, code=1, output=TOKEN.decode())] if phase == "bootout" else [
                             row("bootout", TARGET), row("print", TARGET, output=RUNNING),
                         ])
-                        code, _, _ = self.command(["uninstall"] + (["--purge"] if purge else []), rows)
+                        with patch("runtime.remote_access.launchd_agent.time.monotonic",
+                                   side_effect=[0, 0, 0, 30] if phase == "still-loaded" else lambda: 0):
+                            code, _, _ = self.command(["uninstall"] + (["--purge"] if purge else []), rows)
                         self.assertEqual(code, 1)
                         self.assertEqual(retained.read_bytes(), original)
                         self.assertTrue((p["state"] / "config.json").exists())
@@ -532,6 +534,73 @@ class ManagedDarwinInstaller(unittest.TestCase):
                 for path in (p["plist"], p["side_plist"], *p["state"].iterdir(), *p["side_state"].iterdir(), *p["logs"].iterdir())
                 if path.is_file()}
 
+    def test_composite_settle_orders_and_deadline_retains_files(self) -> None:
+        for operation in ("stop", "restart", "uninstall", "purge"):
+            for stuck in (None, SIDECAR_LABEL, LABEL):
+                with self.subTest(operation=operation, stuck=stuck), self.home() as p:
+                    self.install(p)
+                    before = self.snapshot(p)
+                    clock = [0.0]
+                    started = {}
+                    settled = set()
+                    def run(argv: list[str], *, timeout: float = 10.0) -> tuple[int, str]:
+                        self.assertEqual(self.snapshot(p), before, "files changed before both writers settled")
+                        verb, target = argv[1:3]
+                        if verb == "print" and target == DOMAIN:
+                            return 0, "domain present"
+                        label = target.rsplit("/", 1)[-1]
+                        if verb == "bootout":
+                            if label == LABEL:
+                                self.assertIn(SIDECAR_LABEL, settled, "connector stopped before sidecar settled")
+                            started[label] = clock[0]
+                            return 0, ""
+                        self.assertEqual(verb, "print")
+                        if label in started:
+                            if clock[0] - started[label] >= 1 and label != stuck:
+                                settled.add(label)
+                                return 113, f'Could not find service "{label}" in domain'
+                            return 0, RUNNING.replace(LABEL, label).replace("state = running", "state = SIGTERMed")
+                        return 0, RUNNING.replace(LABEL, label)
+                    # Once stop has proved both writers absent, retain the existing
+                    # exact disable/start argv fixture for the rest of the operation.
+                    tail = Runner(self, ([row("disable", SIDE_TARGET), row("disable", TARGET)]
+                                  if operation in ("uninstall", "purge") else
+                                  self.start_rows() if operation == "restart" else []))
+                    def observed(argv: list[str], *, timeout: float = 10.0) -> tuple[int, str]:
+                        if len(settled) == 2 and argv[1] != "print":
+                            return tail(argv, timeout=timeout)
+                        if tail.calls:
+                            return tail(argv, timeout=timeout)
+                        return run(argv, timeout=timeout)
+                    def sleep(seconds: float) -> None:
+                        self.assertGreater(seconds, 0)
+                        self.assertLessEqual(seconds, .5)
+                        clock[0] += seconds
+                    args = ["uninstall", "--purge"] if operation == "purge" else [operation]
+                    out, err = io.StringIO(), io.StringIO()
+                    with patch("runtime.remote_access.launchd_agent._default_run", side_effect=observed), \
+                            patch("runtime.remote_access.launchd_agent.time.monotonic", side_effect=lambda: clock[0]), \
+                            patch("runtime.remote_access.launchd_agent.time.sleep", side_effect=sleep), \
+                            redirect_stdout(out), redirect_stderr(err):
+                        code = installer.main(args)
+                    self.assertEqual(code, 1 if stuck else 0)
+                    if stuck:
+                        self.assertIn(stuck, started, "stop never reached the requested writer")
+                        self.assertEqual(clock[0] - started[stuck], 30)
+                        self.assertEqual(self.snapshot(p), before)
+                        self.assertFalse(tail.calls)
+                        if stuck == SIDECAR_LABEL:
+                            self.assertNotIn(LABEL, started)
+                    else:
+                        self.assertEqual(settled, {SIDECAR_LABEL, LABEL})
+                        self.assertFalse(tail.rows)
+                        if operation in ("uninstall", "purge"):
+                            self.assertFalse(p["plist"].exists())
+                            self.assertFalse(p["side_plist"].exists())
+                            self.assertEqual(p["state"].exists(), operation != "purge")
+                        else:
+                            self.assertEqual(self.snapshot(p), before)
+
     def test_composite_lifecycle_orders_and_partial_failures(self) -> None:
         for command in ("start", "stop", "restart", "enable", "disable"):
             with self.subTest(command=command), self.home() as p:
@@ -554,10 +623,14 @@ class ManagedDarwinInstaller(unittest.TestCase):
                             rows += [row("bootout", SIDE_TARGET, code=1, output=KEY.decode())]
                         elif phase == "sidecar-still-loaded":
                             rows += [row("bootout", SIDE_TARGET), row("print", SIDE_TARGET, output=RUNNING.replace(LABEL, SIDECAR_LABEL))]
+                            # Advance the real stop deadline on its first settled observation.
+                            # Keep the original refusal/retention assertion and native argv.
                         else:
                             rows += [row("bootout", SIDE_TARGET), *missing(SIDECAR_LABEL),
                                      row("print", TARGET, output=RUNNING), row("bootout", TARGET, code=1, output=TOKEN.decode())]
-                        self.assertEqual(self.command([command] + (["--purge"] if purge else []), rows)[0], 1)
+                        with patch("runtime.remote_access.launchd_agent.time.monotonic",
+                                   side_effect=[0, 0, 0, 30] if phase == "sidecar-still-loaded" else lambda: 0):
+                            self.assertEqual(self.command([command] + (["--purge"] if purge else []), rows)[0], 1)
                         self.assertEqual(self.snapshot(p), before)
         for fail_sidecar in (False, True):
             with self.subTest(fail_sidecar=fail_sidecar), self.home() as p:

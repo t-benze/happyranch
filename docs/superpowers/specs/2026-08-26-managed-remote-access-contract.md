@@ -642,6 +642,18 @@ disables and removes the plist idempotently. Enable/disable alone do not stop
 an existing process. `KeepAlive=true` recovers on every exit; the ten-second
 throttle limits rapid retries. Upgrade/rollback reread replaced plists through
 bootout/bootstrap, back up owner-only files and verify process recovery.
+Successful bootout can precede process exit (`SIGTERMed`). Stop polls print
+for at most 30s after bootout, at intervals <=0.5s; all print/domain probes
+consume that same deadline. Only not-found with an accessible domain proves
+absence. Deadline, denied/lost domain or malformed output fails closed with
+files retained. Already absent skips bootout. Sidecar stop settles before
+connector stop; replacement and uninstall cannot write/remove before absence.
+No ExitTimeOut or other plist key changes. The connector-managed finally path
+uses the same per-target settle, preserving its 100s total cleanup cap and
+recording each attempted target's last <=2048-character raw print and elapsed
+settle seconds. A target can receive less time when that total cap is near.
+Its stop/restart/uninstall CLI calls allow <=120s for the two agents within
+the unchanged 240s lifecycle, 3300s suite and 5400s job budgets.
 Backups are completely written, flushed and fsynced in a nonselectable temporary
 file before atomic publication. Rollback fully reads and validates its chosen
 backup before bootout; invalid candidates leave the running service untouched.
@@ -1011,8 +1023,10 @@ plist and scratch receipts survive failures. Cleanup uncertainty is a failure;
 any suite-local retained scratch remains subject to the existing job EXIT trap.
 The existing connector-launchd stand-in suite is unchanged.
 
-C8 maker delivery uses ZERO Mac-mini runs (PRs 9/10; Mac mini 6/8 used).
-The combined native suite is NOT RUN in this leg. Its future run proves source
+C8 maker delivery and this fix-forward use ZERO Mac-mini runs (PRs 9/10;
+Mac mini 7/8 used). Build31 at `bc42318f` passed build/install/start/status and
+KeepAlive recovery, then failed at stop and immediate cleanup absence. The
+repaired head's combined native suite is NOT RUN in this leg. A future run proves source
 CLI/native lifecycle only: real tailnet enrollment/readiness is unproven, as are
 login/reboot persistence and packaged execution. Packaged-app connector acceptance
 depends on the separate THR-346 packaged-app check, pending founder approval.
