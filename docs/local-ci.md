@@ -313,8 +313,21 @@ without exhaustion, a certificate hit or transaction leakage. No human admission
 domain move or native settlement is claimed. The full venue,
 `--sequential-reuse` and `--sequential-corruption` include these rows. Retained
 uncommitted cases preserve the caller transaction and require a fresh complete
-read after rollback. Document/Coding and physical-corruption cases remain
-separate requirements.
+read after rollback.
+
+`--document-coding-corruption` selects nonempty retained document template
+draft/version, authority/binding/context, activation/pointer, historical
+submission/round and exact built-in Coding registration corruption cases.
+Inert template publication and canonical registration rows prepare private
+storage; historical activation/submission rows do not invoke retired services
+or confer admission. All four first/local/external/uncommitted phases compare
+the complete reader's exact semantic refusal and preserve transaction ownership.
+`--sequential-uncommitted` selects the preceding sequential definition/settings/
+pin/native/mark/output/schema/index/FK rows inside explicit caller transactions,
+including restored triggers and rollback followed by a fresh complete read.
+Full, `--sequential-reuse` and `--sequential-corruption` include both additions.
+Retained handoff/revision, Coding setup/mapping/run and physical-corruption
+coverage remain separate requirements.
 For A0b-2's capacity disposition, see the [storage contract](runbooks/sequential-workflow-storage.md):
 installed happyranch's default FIRST/attempted NEXT is recorded as expected
 refusal with zero changes/certificate/observer leaks and an original-base

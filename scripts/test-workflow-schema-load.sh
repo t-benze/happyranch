@@ -41,11 +41,11 @@ from runtime.identities import registry as names
 from runtime.orchestrator import producer_move
 from runtime.orchestrator.agent_def import AgentDef, render_agent_text
 
-assert sys.argv[1:] in ([], ['--bounded-acquisition'], ['--trace-custody'], ['--sequential-reuse'], ['--sequential-load'], ['--sequential-faults'], ['--sequential-corruption'], ['--retained-corruption']), 'unknown schema-load selection'
+assert sys.argv[1:] in ([], ['--bounded-acquisition'], ['--trace-custody'], ['--sequential-reuse'], ['--sequential-load'], ['--sequential-faults'], ['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--sequential-uncommitted']), 'unknown schema-load selection'
 
 # A0b-2 custody extends this existing real-SQLite venue. No native connection
 # subclass, fake epoch, successful validator stub or production test seam.
-if sys.argv[1:] not in (['--bounded-acquisition'], ['--sequential-reuse'], ['--sequential-load'], ['--sequential-faults'], ['--sequential-corruption'], ['--retained-corruption']):
+if sys.argv[1:] not in (['--bounded-acquisition'], ['--sequential-reuse'], ['--sequential-load'], ['--sequential-faults'], ['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--sequential-uncommitted']):
     class TraceAbort(BaseException):
         pass
 
@@ -210,7 +210,7 @@ if sys.argv[1:] == ['--trace-custody']:
 # layouts. Existing private installers and storage owners prepare the fixtures.
 # Native SQLite statements, outcomes and original cumulative counters are the
 # oracles; no validator replacement, success stub or fabricated epoch.
-if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--sequential-faults'], ['--sequential-corruption'], ['--retained-corruption']):
+if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--sequential-faults'], ['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--sequential-uncommitted']):
     from runtime.infrastructure.workflow_schema import (
         initialize_complete_org_schema, install_sequential_schema,
         sequential_storage_inventory, _coding_org_identity, _schema_snapshot,
@@ -409,7 +409,74 @@ if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--seque
         assert db._conn.execute("SELECT count(*) FROM audit_log WHERE action IN ('team_move_reserved','team_move_transition')").fetchone()[0] == 2
         assert read_sequential_history(db._conn, expected_org_slug='scratch').status == 'storage readable'
 
-    if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-corruption'], ['--retained-corruption']):
+    def populate_document_coding(db):
+        import hashlib
+        from runtime.workflows.templates import WorkflowTemplateStore, WorkflowTemplatePrincipal
+        from runtime.workflows._coding_registered_release import registration_rows
+        from runtime.workflows.release_templates import read_coding_release
+
+        # Inert template publication and exact saved built-in rows, as in the
+        # retained coding-audit keeper. No current setup, Allow or run exists.
+        template = WorkflowTemplateStore(db).publish_version(org_slug='scratch',
+            principal=WorkflowTemplatePrincipal.agent(org_slug='scratch',
+                agent_name='synthetic-manager', team_slug='engineering',
+                task_id='source', session_id='source-session', revalidate=lambda: None),
+            operation_key='synthetic-document-template', namespace='org/scratch/team/engineering',
+            template_name='synthetic-document', expected_current_version=0,
+            definition=dict(kind='document-review', schema_version=2,
+                description='Synthetic retained document', author=dict(role='author', kind='agent'),
+                output=dict(primitive='immutable-document-revision', description='Synthetic output'),
+                reviewers=[dict(role='reviewer', kind='agent')], outcomes=['approved'],
+                approval=dict(mode='all', revision='current', required_roles=['reviewer']),
+                request_changes=None, submission=dict(timing='on-completion')))
+        conn = db._conn
+        encode = seq_history._bytes
+        digest = lambda raw: hashlib.sha256(raw).hexdigest()
+        stamp = '2026-11-14T00:00:00.000000Z'
+        for table, row in registration_rows('scratch', read_coding_release(), stamp).rows:
+            conn.execute('INSERT INTO ' + table + ' (' + ','.join(row) + ') VALUES (' +
+                         ','.join('?' for _ in row) + ')', tuple(row.values()))
+        conn.commit()
+        db.insert_task(TaskRecord(id='document-root', assigned_agent='synthetic-author',
+                                  brief='Synthetic historical document root'))
+        # Historical foundation/submission rows use the retained storage grammar,
+        # not the retired activation/submission services. No admission is claimed.
+        raw = encode(dict(synthetic='retained-document'))
+        conn.execute('INSERT INTO workflow_authorization_revisions VALUES (?,?,?,?,?,?,?)',
+            ('doc-authority', template.namespace, 1, raw, digest(raw), 'operator-input@2', stamp))
+        conn.execute('INSERT INTO workflow_binding_snapshots VALUES (?,?,?,?,?,?)',
+            ('doc-binding', template.version_id, 'doc-authority', raw, digest(raw), stamp))
+        conn.execute('INSERT INTO workflow_contexts VALUES (?,?,?,?,?,?)',
+            ('doc-context', 'doc-binding', raw, digest(raw), 'synthetic-history', 'doc-source'))
+        conn.execute('INSERT INTO workflow_instances VALUES (?,?,?,?,?,?)',
+            ('doc-instance', 'doc-binding', 'doc-context', 'document-root', 'synthetic-author', 'draft'))
+        conn.execute('UPDATE workflow_task_ownership SET kind=?,owner_id=? WHERE task_id=?',
+            ('document', 'doc-instance', 'document-root'))
+        conn.execute('INSERT INTO workflow_activations VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
+            ('doc-activation', 'doc-instance', 1, template.identity_id, template.version_id,
+             template.namespace, 1, digest(raw), digest(raw), 'agent:synthetic-manager', 'active', stamp))
+        conn.execute('INSERT INTO workflow_template_identities VALUES (?,?,?,?,?,?)',
+            ('doc-other-identity', template.namespace, 'synthetic-unused', 0, 'active', stamp))
+        conn.execute('INSERT INTO workflow_active_activations VALUES (?,?,?)',
+            ('doc-instance', 'doc-activation', 1))
+        result = conn.execute('INSERT INTO task_results(task_id,agent,session_id,created_at) VALUES (?,?,?,?)',
+            ('document-root', 'synthetic-author', 'doc-session', stamp)).lastrowid
+        content = b'Synthetic historical document bytes'
+        conn.execute('INSERT INTO workflow_submissions VALUES (?,?,?,?,?,?,?,?,?,?)',
+            ('doc-submission', 'doc-instance', 1, content, digest(content), None,
+             'document-root', 'doc-session', str(result), 'synthetic-author'))
+        conn.execute('INSERT INTO workflow_rounds VALUES (?,?,?,?,?)',
+            ('doc-round', 'doc-instance', 'doc-submission', 1, 'reviewing'))
+        conn.commit()
+        history = read_sequential_history(conn, expected_org_slug='scratch')
+        assert history.status == 'storage readable' and history.retained[1].release is not None
+        for table in ('workflow_template_drafts', 'workflow_template_versions',
+                      'workflow_authorization_revisions', 'workflow_binding_snapshots', 'workflow_contexts',
+                      'workflow_instances', 'workflow_activations', 'workflow_active_activations',
+                      'workflow_submissions', 'workflow_rounds'):
+            assert conn.execute('SELECT count(*) FROM ' + table).fetchone()[0] > 0, table + ' document fixture is empty'
+
+    if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--sequential-uncommitted']):
         corruptions = (
             ('definition digest', "UPDATE workflow_seq_definitions SET definition_digest='bad'"),
             ('definition bytes', "UPDATE workflow_seq_definitions SET definition_bytes=x'7b7d'"),
@@ -462,6 +529,7 @@ if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--seque
             'complete schema': 'workflow_seq_complete_layout_mismatch',
             'foreign key': 'workflow_seq_foreign_key_invalid',
         })
+        sequential_names = set(refusal_codes)
         retained_corruptions = (
             ('Pause parity', "UPDATE task_pause_controls SET held=1", 'pause_control_unavailable'),
             ('Pause actor', "UPDATE task_pause_controls SET actor=''", 'pause_control_unavailable'),
@@ -481,18 +549,48 @@ if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--seque
         )
         retained_names = {name for name, _, _ in retained_corruptions}
         refusal_codes.update({name: code for name, _, code in retained_corruptions})
+        document_coding_corruptions = (
+            ('document draft digest', "UPDATE workflow_template_drafts SET definition_digest='bad' WHERE namespace!='release/happyranch'", 'workflow_source_data_corrupt'),
+            ('document version digest', "UPDATE workflow_template_versions SET definition_digest='bad' WHERE namespace!='release/happyranch'", 'workflow_source_data_corrupt'),
+            ('document compiler pin', "UPDATE workflow_template_versions SET compiler_pin='wrong' WHERE namespace!='release/happyranch'", 'invalid_template_definition'),
+            ('document version draft equality', "UPDATE workflow_template_versions SET template_name='wrong' WHERE namespace!='release/happyranch'", 'workflow_source_data_corrupt'),
+            ('document authority digest', "UPDATE workflow_authorization_revisions SET authority_digest='bad'", 'workflow_source_data_corrupt'),
+            ('document binding digest', "UPDATE workflow_binding_snapshots SET binding_digest='bad'", 'workflow_source_data_corrupt'),
+            ('document context digest', "UPDATE workflow_contexts SET context_digest='bad'", 'workflow_source_data_corrupt'),
+            ('document activation namespace', "UPDATE workflow_activations SET authority_namespace='wrong'", 'workflow_source_data_corrupt'),
+            ('document activation identity', "UPDATE workflow_activations SET template_identity_id='doc-other-identity'", 'workflow_source_data_corrupt'),
+            ('document active pointer', 'UPDATE workflow_active_activations SET activation_revision=2', 'workflow_source_data_corrupt'),
+            ('document submission digest', "UPDATE workflow_submissions SET submission_digest='bad'", 'workflow_submission_data_corrupt'),
+            ('document round revision', 'UPDATE workflow_rounds SET current_revision=2', 'workflow_submission_data_corrupt'),
+            ('Coding built-in provenance', "UPDATE workflow_template_versions SET published_by='{}' WHERE namespace='release/happyranch'", 'coding_registered_release_history_invalid'),
+            ('Coding built-in org', "UPDATE workflow_template_versions SET published_by=json_set(published_by,'$.org_slug','wrong') WHERE namespace='release/happyranch'", 'coding_registered_release_history_invalid'),
+            ('Coding built-in draft', "UPDATE workflow_template_drafts SET author_principal='{}' WHERE namespace='release/happyranch'", 'coding_registered_release_history_invalid'),
+            ('Coding built-in definition', "UPDATE workflow_template_versions SET definition_bytes=x'7b7d' WHERE namespace='release/happyranch'", 'coding_registered_release_history_invalid'),
+            ('Coding built-in pin', "UPDATE workflow_template_versions SET compiler_pin='wrong' WHERE namespace='release/happyranch'", 'coding_registered_release_history_invalid'),
+            ('Coding built-in identity', "UPDATE workflow_template_identities SET current_version=2 WHERE namespace='release/happyranch'", 'coding_registered_release_history_invalid'),
+            ('Coding built-in version link', "UPDATE workflow_template_identity_versions SET content_digest='bad' WHERE template_identity_id IN (SELECT id FROM workflow_template_identities WHERE namespace='release/happyranch')", 'coding_registered_release_history_invalid'),
+        )
+        document_coding_names = {name for name, _, _ in document_coding_corruptions}
+        refusal_codes.update({name: code for name, _, code in document_coding_corruptions})
         if sys.argv[1:] == ['--retained-corruption']:
             corruptions = ()
         corruptions += tuple((name, mutation) for name, mutation, _ in retained_corruptions)
+        if sys.argv[1:] == ['--document-coding-corruption']:
+            corruptions = ()
+        if sys.argv[1:] != ['--retained-corruption']:
+            corruptions += tuple((name, mutation) for name, mutation, _ in document_coding_corruptions)
         corruption_failures = []
         corruption_cases = [(row, phase) for row in corruptions
-            for phase in ('first', 'between local', 'between external') +
-                (('between uncommitted',) if row[0] in retained_names else ())]
+            for phase in ('first', 'between local', 'between external', 'between uncommitted')
+            if sys.argv[1:] != ['--sequential-uncommitted'] or
+                (row[0] in sequential_names and phase == 'between uncommitted')]
         for (name, mutation), phase in corruption_cases:
             with sequential_fixture() as (db, root, sql):
                 populate_sequential(db)
                 if name in retained_names:
                     populate_retained(db, root)
+                if name in document_coding_names:
+                    populate_document_coding(db)
                 # Warm outside the new owner too: a forbidden cross-load cache
                 # must not certify even the first use in the following scope.
                 seq_read(db)
@@ -510,6 +608,8 @@ if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--seque
                             # must reach the complete checker, not config fallback.
                             if name not in retained_names:
                                 connection.execute('PRAGMA foreign_keys=OFF')
+                            if phase == 'between uncommitted':
+                                connection.execute('BEGIN')
                             # Corruption preparation alone suspends immutable
                             # fixture triggers; restore their exact SQL before
                             # either reader sees this private image. Schema
@@ -536,6 +636,9 @@ if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--seque
                             from runtime.infrastructure.team_move_store import TeamMoveError
                             error_type = (PauseControlError if name.startswith('Pause ') else
                                           names.NamingError if name.startswith('name ') else TeamMoveError)
+                        elif name == 'document compiler pin':
+                            from runtime.workflows.templates import WorkflowTemplateError
+                            error_type = WorkflowTemplateError
                         else:
                             error_type = ValueError
                         assert expected[1][0] == (error_type, refusal_codes[name]), name + ' missed its semantic boundary: ' + repr(expected)
@@ -545,6 +648,7 @@ if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--seque
                         assert db._conn.in_transaction == (phase == 'between uncommitted'), name + ' corruption changed snapshot ownership'
                         if phase == 'between uncommitted':
                             db._conn.rollback()
+                            db._conn.execute('PRAGMA foreign_keys=ON')
                             full = owner.full_runs
                             seq_read(db)
                             assert owner.full_runs == full + 1 and owner.hits == hits, name + ' rollback resurrected a certificate'
@@ -553,7 +657,7 @@ if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--seque
                     corruption_failures.append((name, phase, str(exc)))
                     print('FAIL A0b sequential corruption matrix:', name, phase, str(exc), flush=True)
         assert not corruption_failures, 'sequential corruption matrix failures: ' + repr(corruption_failures)
-        if sys.argv[1:] in (['--sequential-corruption'], ['--retained-corruption']):
+        if sys.argv[1:] in (['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--sequential-uncommitted']):
             raise SystemExit(0)
 
     if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-faults']):
