@@ -371,6 +371,261 @@ backend fields, pre-import clock placement and Bash's portable clock fallback.
 It starts no serving daemon or worker, adds no CI trigger/check, and does not
 restore the retired Python unit selection or execute general integration/E2E.
 
+The same schema-load venue accepts `--trace-custody` on Python3.12/3.14 for
+A0b-2's composed native trace ownership, registration order, repeated cached and
+cursor/script delivery, equal callbacks, BaseException/failed-native-cleanup
+restoration, sticky observer failures, real rolled-back main/TEMP DDL and
+assigning/restored configuration. Outer instrumentation registers through
+`Database.observe_trace`, so it composes with the actual load observer. These
+focused cases use real SQLite and the legacy complete reader; they do not certify
+the entire sequential owner/ledger matrix or production-size timing. Omit
+the selector for the full existing venue; `--bounded-acquisition` stays unchanged.
+
+The same venue accepts `--sequential-reuse` on both runtimes for actual installed
+sequential fixtures (`--sequential-load` selects only its real first/next load
+table). It observes ten same-load reads, all three production target owners, real first/next OrgState loads with a prepared Pause journal, cumulative
+retained charges/exhaustion, native acquisition/exit races, repeated restored
+main/TEMP DDL, configuration changes, public/policy/execution/lifetime exclusions,
+observer failure, deadline/BaseException cleanup and replaced-file refusal.
+Assertions compare real native physical/FK statements, original counters and
+public-reader refusal categories. No success-stub validator or fabricated epoch.
+These focused cases do not replace the entire v3 corruption/fault matrix or
+current-data writable sizing. Run full schema-load3.12/3.14 plus local_ci all as
+an exact-clean-head durable job; required hosted checks remain lint/static only.
+
+`--sequential-faults` selects the same venue's added sequential metadata-denial,
+native configuration/limit/factory, restored main/TEMP CREATE/DROP and wrong
+connection/org/transaction ownership tables, borrowed-source/target acquisition
+and pinned-snapshot races, native writer fencing and borrowed/changed-target
+deadline expiry. It compares actual complete-reader
+outcomes, forbids uncertified hits and preserves caller transactions. Named
+assertion failures accumulate and fail the selection; no failed case is skipped.
+The full selection and `--sequential-reuse` include these tables. They do not
+replace nonempty family-corruption coverage. `--sequential-sql-exhaustion` selects
+twelve cases from the same fault keeper: each original A/B/C2M and L32M native
+SQL meter on first reads, changed sources and changed caller-owned targets.
+Delegating test-side contexts add real recursive SQLite work inside those actual
+meters. No counter is preset and no limit or deadline changes. Each interruption
+must retain the original allowance and limit-plus-1000-step attribution, exactly
+match the public complete-reader refusal, clear the certificate and preserve
+native transaction ownership. Full, reuse and fault selections include them.
+The deadline table additionally advances a deterministic test clock at native
+entry, full integrity work and snapshot release, on first reads, primed sources
+and changed targets. It requires the public reader's exact refusal chain and
+original causal deadline allowance, with no expired certificate or owned
+transaction left behind. Release races commit real WAL corruption immediately
+before and after the owned rollback, and after caller-owned source/target
+COMMIT and ROLLBACK. The next observation must revalidate; caller transactions
+remain caller-owned. These cases do not change a deadline or SQL allowance.
+The native configuration table also changes and restores journal/locking mode,
+synchronous and temp-store settings. Both Python autocommit modes compare the
+complete reader's outcome and transaction ownership before restoring legacy
+control. Attachment cases exercise an additional native database, restored
+ATTACH/DETACH and a privately moved or dangling main path; they require fresh
+validation or the explicit attachment-change refusal without a cached hit.
+The same keeper checks PRAGMA settings restored before any intervening read,
+transactions opened
+before the load observer (reader, pinned reader, writer and savepoint; source
+and target) and an initially unavailable main-file identity. Unknown intervals
+remain uncertified, preserve the caller's transaction and use the public complete
+reader's exact outcome. Restoration starts a new complete fact.
+Metadata denials cover both the initial read and an already primed owner. Two
+denied attempts must match the public complete reader; removing the denial
+requires a new complete integrity read. Initial native SQL-length/column limits
+likewise preserve the exact refusal and recover through fresh validation after
+restoration, without a certificate, hit or owned-transaction leak.
+`--retained-corruption` selects the corruption table's nonempty Pause journal,
+naming owner/claim and terminal team-move row/audit cases. The real storage
+owners prepare synthetic private history; first-read, between-use local/external
+commits and uncommitted writes must produce the exact public complete-reader
+semantic refusal,
+without exhaustion, a certificate hit or transaction leakage. No human admission,
+domain move or native settlement is claimed. The full venue,
+`--sequential-reuse` and `--sequential-corruption` include these rows. Retained
+uncommitted cases preserve the caller transaction and require a fresh complete
+read after rollback.
+
+`--document-coding-corruption` selects nonempty retained document template
+draft/version, authority/binding/context, activation/pointer, historical
+submission/round and exact built-in Coding registration corruption cases.
+The same table includes a retained draft intent with admitted, cancellation-requested
+and prelaunch-cancelled events. Request/scope/authority/principal/effect/host-key
+corruption, final-projection mismatch, event digest/gap and native task cancellation
+mismatch must reach the exact draft-history refusal in all four phases. The
+stored prelaunch history contains no host/session/result or native-settlement claim.
+Two retained document revisions also exercise their joined-event/round/replay
+closures: the first uses the historical opaque preimage with exactly three
+approved receipts, and the second uses a canonical explicit subject with two
+receipts. Both must remain readable together without selecting the newest
+round for an older event. Fifteen corruption rows cover each revision's stored
+digest/round/event revision, the prior event preimage, missing or mismatched
+replay, incomplete receipts, request scope/generation/status and receipt
+proof/scope/generation/outcome. All four phases require the original exact
+semantic refusal and no stale certificate. The original first-submission digest
+case corrupts bytes against the stored digest so the new receipt FK does not
+mask its semantic boundary; the first-round case uses an unused wrong revision
+so the new unique revision does not stop fixture preparation.
+Inert template publication and canonical registration rows prepare private
+storage; historical activation/submission rows do not invoke retired services
+or confer admission. All four first/local/external/uncommitted phases compare
+the complete reader's exact semantic refusal and preserve transaction ownership.
+`--coding-authority-corruption` selects the same table's retained human-import
+and setup issue/withdraw closures. Fourteen import rows cover original command,
+publisher and capture, draft/definition/pins/identity/link, replay request/result,
+native admission issuer/generation and publication state/fence. Fifteen setup
+rows cover both original issue and subsequent withdrawal pins/timestamps/revisions,
+missing issue, stale/missing latest pointer, both admissions/generations and
+publication state/fence. A withdrawn pointer must still validate the complete
+historical issue prefix. Every row runs first/local/external/uncommitted and
+compares the exact public complete-reader refusal, including its causal chain;
+rollback must restore the valid history and require a fresh complete check.
+Fixtures use fixed synthetic archival snapshots and native rows, without current
+setup, role/Allow, repository access, task/run or native-settlement claims.
+Full, `--sequential-reuse`, `--sequential-corruption` and
+`--document-coding-corruption` include these 116 phases.
+`--document-native-corruption` selects 27 additional rows from the same table.
+The private fixture retains a G submission operation and INTEGER native
+result link, plus the complete admitted/claimed/launch-reserved/running/
+callback-recorded/completed draft event chain. Operation ownership, request,
+provenance, timestamp and legacy-source mixing; result-link identity/bytes/digest;
+native result principal/session/status; task principal/status; intent result,
+session, host, claim and cancellation; and callback session/result/digest/
+disposition must refuse through their original submission or draft-history
+boundary. The terminal witness and accepted-result mutations recompute the
+event digest after corruption so they exercise semantic closure. All 108 phases compare
+the exact complete-reader refusal, preserve caller transactions and require
+a fresh complete read after rollback. Full, `--sequential-reuse`,
+`--sequential-corruption` and `--document-coding-corruption` include these cases.
+These are synthetic archival rows; no callback, host or settlement producer is
+invoked. They do not cover the separate H author-handoff/revision/review graph.
+`--author-handoff-corruption` selects 74 rows from that same keeper: 39
+staged H admission/candidate/request, source-generation/event, exact saved pins
+and captured authority/profile-mirror cases, plus 35 completed H graph cases.
+The completed fixture retains its original G operation/INTEGER result link,
+round/request/contributors, reviewer dispatch/stage/callback/effect history,
+native result, receipt/evidence/assignment and joined collection/replay closure.
+It has one agent reviewer; the staged fixture has no G operation or round.
+Collection and terminal-event mutations rehash their payloads (and collection
+replay) so the assertions reach semantic closure. All 296 first/local/external/
+uncommitted phases require the exact public complete-reader refusal and causal
+chain, no stale hit/certificate, preserved caller transactions and a fresh read
+after rollback. Full, reuse, sequential-corruption and document-coding selections
+include these rows. Compiled templates and native rows are synthetic archival
+inputs only: no retired admission, dispatcher, callback, host or settlement
+producer runs. These 74 rows retain the original document/agent family.
+`--document-revision-corruption` selects 259 additional rows in the same keeper:
+42 staged artifact H@2 rows, 35 completed artifact agent-graph rows, 21 human
+receipt rows for each document/artifact family, and 37 return-to-author
+admission rows for each family; each family also has ten staged revision2 rows,
+15 completed agent-review revision2 rows and eight human-review revision2 rows.
+Artifact inputs retain the @4 compiled contract,
+grant, binding, context and null repository relationship. Human receipts retain
+the separate Founder bearer actor, command, findings, captured authority and
+signature proof, with no reviewer task, callback or agent evidence bridge.
+The revision fixture retains the closed changes-requested predecessor, original
+receipt/findings, retired original author, second queued author intent, revision
+context and operation with predecessor, feedback, scope and authority pins.
+Mutations rehash structured payloads to reach semantic closure. The original
+complete reader supplies the exact error/cause; earlier FK, draft and archival
+event-mapping refusals keep their own categories. All 1036 first/local/external/
+uncommitted phases use the same no-stale-certificate, transaction and rollback
+assertions. Full, reuse, sequential-corruption and document-coding selections
+include them. Staged revision2 retains its running original author and exact
+G operation/provenance without a result link or review round. Completed revision2
+retains the second author callback/terminal/result link, both authors' contribution
+history, @3 request/receipt and collection/replay; agent and human variants keep
+their separate native evidence. The original current-assignment row is replaced
+only when the second agent receipt becomes current, while old receipts and
+events survive. Coding applicability is recorded in the map below.
+No retired admission, return, human-signature, host or settlement
+producer is invoked by these synthetic archival fixtures.
+`--sequential-uncommitted` selects the preceding sequential definition/settings/
+pin/native/mark/output/schema/index/FK rows inside explicit caller transactions,
+including restored triggers and rollback followed by a fresh complete read.
+Full, `--sequential-reuse` and `--sequential-corruption` include both additions.
+`--physical-corruption` selects two native index-content inconsistencies from
+that same table: a missing entry after an unindexed update, and a surplus entry
+after an unindexed delete. Private fixture preparation restores the exact index
+schema entry before reading. The unchanged full integrity check must refuse
+both with the original physical-corruption category in all four phases; wrapper
+and public complete reader must agree without exhaustion or stale reuse.
+Uncommitted rollback restores the index/table relationship and requires a fresh
+complete check. Full, `--sequential-reuse` and `--sequential-corruption` include
+these cases. No live database, raw page write or production hook is involved.
+`--coding-history-corruption` selects the same keeper's 226 distinct Coding
+mapping/settings/custody/nonallocating-source rows. Each has a passing nonempty
+complete-reader baseline and the original four phase assertions. The native
+release_identity CHECK is suspended only during the one synthetic mutation and
+restored to its exact prior value in finally; the pinned first refusal remains
+coding_mapping_history_invalid. No corrupt row is silently omitted.
+For A0b-2's capacity disposition, see the [storage contract](runbooks/sequential-workflow-storage.md):
+installed happyranch's default FIRST/attempted NEXT is recorded as expected
+refusal with zero changes/certificate/observer leaks and an original-base
+comparison; its successful capacity gate moves to I2. All caps/checks remain.
+
+### A0b-2 requirement-to-case map (v3 section 4 and F1)
+
+This map identifies assertions in `scripts/test-workflow-schema-load.sh`; it is
+an implementation inventory. Exact-head command receipts, intended failures,
+byte-exact restoration, runtime identities and capacity results belong in the PR.
+A named assertion is not an execution claim. The existing four corruption phases
+are `first`, `between local`, `between external`, and `between uncommitted`.
+Every row compares the entire original public-reader refusal chain, excludes
+exhaustion, forbids hits/partial certificates, checks external local-counter
+identity, preserves caller transaction ownership and requires a fresh read after
+uncommitted rollback.
+
+| v3 row / every required variant | Named assertion or applicability |
+| --- | --- |
+| 1: all ten real load calls; uncached control; unchanged candidate | `actual sequential OrgState.load: uncached control ten full integrity/FK reads`; actual `first`/`next` assert ten discriminator calls, respectively 2/1 complete reads and 8/9 hits. `sequential ledger: ten reads, import once, unchanged target, changed target and rollback` independently asserts 1 complete + 9 hits. |
+| 1: genuine intervening writes; three original targets | Actual first load retains the prepared-to-unknown Pause journal, never a preseeded restoration. `sequential targets: cutover/ownership/naming` and the ledger assert unchanged source/target reuse, changed target debit and rollback invalidation. |
+| 1: retained installed/pre-install images, whole walls/profile/selector | Same-private-image writable FIRST/genuine NEXT sizing remains a separate exact-head receipt. Installed primary successful FIRST/NEXT/Pause/all-org-tail is NOT APPLICABLE to A0b-2 acceptance under the capacity ruling: **EXPECTED REFUSAL - part 1 retained until I2**, zero changes/certificate/observer leaks; original-base observation is retained once, never repeated. Successful primary/tail acceptance belongs to I2. Other orgs must return on both runtimes. |
+| 2: committed local UPDATE; uncommitted UPDATE; next source/target | Every corruption-table row's local/uncommitted phases; `sequential corruption: local exact fresh refusal`; ledger's changed source/target counters. These use real native writes and semantic refusals, not timeouts. |
+| 2: rollback cannot resurrect a certificate | Per-row `rollback resurrected a certificate` assertion plus ledger `rollback resurrected old sequential certificate`; caller transaction survives the refused read. |
+| 3: two native connections; invalid mark; invalid schema; fixed local counter and changed data_version | Every external corruption phase plus `sequential external restore: mark/schema` explicitly observes both independent counters before/after the external commit and compares exact semantic refusal with the original complete path. |
+| 3: restore followed by a new complete read | `sequential external restore: mark/schema` observes another data_version change, unchanged total_changes, zero hits and one wrapped plus one independent complete integrity check after restoration. |
+| 4: CREATE+ROLLBACK twice; cached/repeated SQL; comment prefix; main/TEMP; connection/cursor/executescript | `legacy observer: repeated rolled-back DDL` and `sequential observer: ... cached rolled-back DDL`, each main/TEMP x connection/cursor/script x two repeats, assert restored bookends and another full read. Trace custody `ordered cached cursor and executescript delivery` establishes delivery order. |
+| 4: CREATE/DROP with restored cookies | `sequential restored CREATE/DROP: main/temp connection/cursor/script` asserts bookend equality and full read; execution-time observation prevents a cookie-only hit. |
+| 5: before pin; after rollback; owned snapshot entry/exit | `sequential snapshot race: BEGIN/ROLLBACK`; `sequential release race: owned before ROLLBACK/owned after ROLLBACK` compare fresh actual-snapshot outcomes, clear the certificate and preserve ownership. |
+| 5: borrowed BEGIN target and BEGIN IMMEDIATE source | `sequential borrowed race: source acquisition/source writer fence/target acquisition/target pinned snapshot`; the real second connection either commits before the pin, remains outside the pinned snapshot, or receives the native writer-lock refusal. Explicit main-pin/order, fresh oracle, hit and transaction assertions prevent speculative reuse or theft. |
+| 5: caller COMMIT/ROLLBACK; no retry/reset | `sequential release race: source COMMIT/source ROLLBACK/target COMMIT/target ROLLBACK`; `sequential borrowed deadline: source/target` and whole-deadline cases retain the original deadline/allowance and cleanup. |
+| 6: different connection/org | `sequential ownership exclusion: wrong connection/wrong org` compares original complete outcomes and clears reuse. |
+| 6: different thread/async execution; copied context after exit; new load; public path | `sequential exclusion: foreign thread/async task`; `sequential exclusion: inherited inactive context, fresh load and outside scope`; `sequential exclusion: public`. |
+| 6: arbitrary active read/write/savepoint, known and predating observation | `sequential ownership exclusion: arbitrary source/arbitrary target/savepoint source`; `sequential unknown transaction ownership: preexisting ownership reader/pinned reader/writer/savepoint source/target`, twice each, preserves the caller's transaction and proves fresh validation after its release. |
+| 6: default validator identity; nondefault/tightened/unaccounted/cumulative retained budgets | `sequential exclusion: validator policy/nondefault budget/unaccounted budget`; `sequential ledger` imports real retained work once, preserves unchanged target charges and doubles changed-target charges; `sequential exhaustion: original cumulative consumed/accepted_rows/traversed` compares the exact fresh-path counters and refusal category. |
+| 6: replaced/unavailable attachment | `sequential attachment: replaced file refuses old descriptor`; `sequential attachment identity` main filename/inode/attached database variants; `sequential initial attachment unavailable` forbids reuse before and after restoration. |
+| 7: every metadata observation denied initially/after certification | `sequential metadata denial: initial/primed` x data_version/schema_version/database_list/foreign_keys/defer_foreign_keys/read_uncommitted/writable_schema/ignore_check_constraints/recursive_triggers/trusted_schema/query_only/journal_mode/locking_mode/synchronous/temp_store. Each tests two attempts and restoration. |
+| 7: changed schema/config/limits; FK OFF/deferred FK ON including restored settings | Corruption schema/index/FK rows, `sequential config identity` native config/SQL limit/row factory/text factory/isolation level and the listed pragmas; `sequential restored configuration` ten assignable settings; `sequential observer: restored query_only/defer_foreign_keys`; initial/native limit denial tables; autocommit and attachment identity tables. |
+| 7: lost observer/classification/callback; sticky failure; cancellation/BaseException; primary and cleanup custody | Trace custody composition, independent exit order, equal callbacks, sticky ValueError/TraceAbort, failed cleanup preserving primary; `sequential observer failure: installation/delivery/classification/lost native slot`; `sequential BaseException: owned snapshot cleanup failure preserves primary and disables reuse`. `trace custody: CancelledError preserves primary, clears owner and restores outer observer` raises the actual asyncio cancellation class after a certified read; no production session or OS signal is launched. |
+| 7: original deadline at acquisition/integrity/release and borrowed intervals | `sequential whole deadline: first/primed source/changed target` x entry/integrity/release; `sequential deadline: hit acquisition expiry preserves original deadline and cleanup`; `sequential borrowed deadline: source/target`, with exact causal allowance/deadline attribution. |
+| 8: sequential definitions/settings/pins/marks/native references/output/schema/index/FK | `corruptions` table, all four phases, including integer-FK and mark/native/reference corruption; `physical missing index entry`/`physical surplus index entry` restore exact schema before the unchanged full integrity oracle refuses. |
+| 8: retained Pause/move/name and document/Coding import/setup | `retained_corruptions`, `document_coding_corruptions`, `coding_import_corruptions`, `coding_setup_corruptions`; paired whole native/public outcomes, all four phases. |
+| 8: G native attempt/callback/result; H staged/completed graphs and artifact/human variants; I predecessor/feedback/return/staged/completed revision2 | `document_native_corruptions` (27 rows/108 phases); `author_handoff_corruptions` and `author_graph_corruptions`; `family_corruptions` names each H artifact/human and I agent/human/document/artifact variant. The PR lists every row and its keeper. Code-change H is NOT APPLICABLE: no positive complete-reader owner, workflow_schema.py:1838-1863 requires document and null repository closure (step12/13). |
+| 8: Coding mapping/settings; nonallocating source operation/capability/native ancestry/results | `coding_history_checks` names each predicate and original file:line; 106 role/settings plus 120 custody/source rows. The source fixture has a completed native source, nonempty ancestry and later result, original setup/custody mapping, root capability and refinement, original capture and ordered operations, with zero Coding runs. The complete baseline passes before mutation. |
+| 8: Coding start/native attempt/event/return/cancellation queued-family predicates | NOT APPLICABLE where every positive complete baseline enrolls old queued-family tasks. coding_source_history.py:35-51 and coding_start_history.py:40-49/300-302 reconstruct 27 columns; :473-515 (task enrollment at :512-515) unconditionally enrolls the replayed task rows, including terminal states. workflow_coding_schema.py:603-630/690/701-703/750-751 compares all 30 actual columns. Fresh old starts are retired at sequential_release.py:77. Step20's original conflict records and the nonqueued cancelled-graph attempt show `read_queued` returning the cancelled graph before the same exact full-row refusal. Nonallocating source rows above remain applicable. Native journal Coding owners require that graph at coding_native_history.py:889-917; ordinary retained cancellations require nonempty run anchors at _coding_cancellation_history.py:251-259. No standalone positive bypass exists. |
+| 8: allocating C0/C1 and downstream P capability variants without a queued run | NOT APPLICABLE to the nonallocating complete source family: _coding_source_admission.py:73-75 explicitly requires source level and NULL issuer.result_id. Queued allocating/history predicates remain under the preceding step20 disposition. Direct-reader-only validity cannot replace a passing complete baseline. |
+| 8: SQL/deadline/row/byte/traversal exhaustion at original caps | `sequential SQL exhaustion: A/B/C/L first/changed source/changed target` uses real VM work inside original 2M/32M meters; cumulative consumed/accepted_rows/traversed cases and the deadline cases above preserve exact original categories, counters and caller ownership. |
+| 9: all native classes; nullable NULL; booleans/integer limits; finite/nonfinite REAL; UTF8/NUL/suffix | `gate_cases`: native-classes-NUL-multibyte, nullable-NULL/nullable-text, empty-text/empty-blob, SQL-TRUE-integer/SQL-FALSE-integer, minimum-integer-cell/maximum-integer-cell, real-is-integer/integer-is-real, nonfinite-real, invalid-UTF8 and NUL-suffix-byte-limit. Successful rows assert exact native Python types as well as values. JSON bool rejection additionally has the named Coding settings generation cases. |
+| 9: exact/oversize cell, whole row, shared bytes/rows/work, minimum/maximum/gapped rowids, WHERE/overflow, wide rows | `gate_cases` exact/over-value-limit, oversized-blob, exact/over-default-value-limit, exact-shared-bytes/shared-byte-overflow/shared-row-overflow/shared-work-overflow/local-row-overflow assert whole-row withholding, original typeof, exact counters and cursor closure. `rowid extremes/gaps/WHERE/overflow: 8192/2`; `width: 1/4/11/32 rows=400` preserves full rows and original finite SQL/logical charges. |
+| 9: type prerequisite before exceptional-text scan, including malformed text mixed with invalid types | `ownership guard: tasks/workflow_task_ownership` x every column x integer/real/blob/NULL/empty/ASCII/multibyte/NUL/exact cap/over cap/NUL over cap/invalid UTF8; `whole-table prerequisite: ... bad-first False/True` asserts no payload acquisition and exact logical counters in both orders. |
+
+F1 maps to rows 1–9 above, all named H/I/G/Coding table rows and their four
+unchanged phases, the exact-head fail/restore/pass pairs on Python3.12/3.14,
+both full schema-load commands, `scripts/local_ci.sh all`, final clean/head/guard
+and both literal hosted lints. Capacity has only the stated I2 sequencing
+exception; it does not waive any reachable predicate or original allowance.
+Readiness requires actual settled receipts. Independent review and scoped QA remain separate merge gates.
+
+Known limitation / follow-up: the current 30-column native task schema adds
+model_override, reasoning_effort_override and override_source to the unchanged
+27-column old-Coding reconstruction. Even NULL values prevent complete-row
+matching. A private archival queued graph, or the same graph after full cancelled
+replay, reproduces `workflow_coding_expected_row_mismatch`. No columns are
+stripped, no equality/validator is weakened and no reader is repaired here.
+This is separately routed by the manager; importing this source grants no live
+operation, setup, Coding role, migration, restart or installation authority.
+
+
 Focused schema-load observation (THR308seq348/353/354): run
 `bash scripts/test-workflow-schema-load.sh` locally with frozen Python3.14.
 A0 (THR-336 msg194) extends its acquisition case table with native storage

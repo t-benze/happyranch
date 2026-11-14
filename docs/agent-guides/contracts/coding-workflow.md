@@ -1,5 +1,17 @@
 # Coding workflow contracts
 
+The unpublished load composes its execution observer through
+`Database.observe_trace`. The audited sources and three unchanged target readers
+enter the owner before sequential selection. A complete result can be borrowed
+only with exact execution/connection/org/file and default-policy identity, FK ON,
+deferred FK OFF and coherent zero-write snapshot bookends. Writes, write rollback,
+transient schema/config execution and observation failures invalidate it. Snapshot
+pinning preserves caller transactions and acquisition/exit races fall back fresh.
+Each compatible retained budget imports a fact once; changed targets charge their
+actual new work cumulatively. Scope exit clears all associations on BaseException.
+Public/nondefault/unknown snapshots and later loads remain fresh. Full physical/FK
+checks and original budgets remain; no automatic setup or operating grant follows.
+
 > Moved verbatim from the repository-root `AGENTS.md` on 2026-10-30. Sections keep
 > their original relative order. Where a later section says it supersedes or
 > extends an earlier one, the later section controls; sections marked
@@ -126,6 +138,13 @@ is still acquired/decoded under the original limits only after the whole-table
 type/size prerequisite passes in the same snapshot. This does not extend the
 load reuse contract above or remove any physical/FK/history check. See the
 [shared finite SQL contract](reusable-workflows.md) for the unchanged charges.
+The A0b-2 [requirement-to-case map](../../local-ci.md#a0b-2-requirement-to-case-map-v3-section-4-and-f1)
+distinguishes reachable nonallocating source/mapping/settings history from the
+old queued-family column limitation. The original Coding reconstruction retains
+27 task columns; today's native schema has 30. Full matching therefore refuses
+even NULL override columns in an archival queued or cancelled graph. Fresh old
+starts are retired; this prerequisite neither repairs that reader nor drops
+columns or weakens equality. The manager routes the latent defect separately.
 Before any workflow DDL, the entire reserved coding family is observed. Partial,
 extra, case-changed, wrong-kind or malformed objects and real shared dependency
 failures refuse without repair or adoption. Body/interruption

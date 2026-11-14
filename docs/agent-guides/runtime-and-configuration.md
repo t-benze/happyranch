@@ -1,12 +1,42 @@
 # Runtime And Configuration
 
+`Database.observe_trace(callback)` explicitly owns and composes the native trace
+slot on Database-owned connections. Production callers register through this
+owner; raw `set_trace_callback` is unsupported. One dispatcher delivers in
+registration order, preserves outer observers when inner scopes leave, and clears
+the native slot only on the last exit. Callers must check the yielded sticky
+`failed` flag before trusting observations: SQLite suppresses callback exceptions.
+Delivery failures poison current registrations; failed native cleanup makes
+custody unavailable. Primary BaseExceptions survive cleanup failure. Constructor
+order, exact native connection type, authorizer and progress owners are unchanged.
+The unpublished load owns one registration and enters before sequential selection.
+Its complete certificate is private to the exact native connection, attachment
+path/device/inode, org, thread/async execution and default validator/budget policy.
+Transient DDL/config execution, observer loss/failure, writes and write rollback
+invalidate it. FK ON/deferred FK OFF is required before metadata reads.
+The TEMP schema-cookie PRAGMA is prepared afresh for each bookend, preserving
+the native check after a temp-store reset invalidates cached native metadata.
+Hits pin main inside the original snapshot, compare outside/inside/exit bookends, preserve
+borrowed transactions, and refuse a replaced file. Public/nondefault/arbitrary
+snapshots and later loads remain fresh. Each compatible caller imports retained
+charges once; changed targets debit its original cumulative ledger. All original
+physical/FK checks, caps and deadlines remain. Whole current-data sizing and the
+complete acceptance matrix remain gates before automatic setup.
+For A0b-2 specifically, installed danze/family/genuine fresh FIRST/NEXT must
+return on both runtimes; installed happyranch FIRST/attempted NEXT must refuse
+without DB changes, partial certificates or observer leaks, with the same-image
+original-base comparison. Record **EXPECTED REFUSAL - part 1 retained until I2**.
+Installed happyranch successful FIRST/NEXT/Pause/all-org-tail capacity acceptance
+is I2's fresh-base/fresh-capture gate. All other A0b-2 cases remain required; see
+the [capacity contract](../runbooks/sequential-workflow-storage.md).
+
 A0b finite SQL prerequisite for automatic workflow setup: shared bounded readers
 evaluate each singleton's whole-row shape/size once; sequential ownership uses
 equivalent specialized type gates before its exceptional-text scan in the same
 snapshot. Original payload withholding, logical charges, physical/FK validation,
-32M ordinary SQL, separate A/B/C 2M and 5s deadline remain. This component adds no
-setup caller or sequential load reuse; complete owner/observer/ledger work remains
-required. See [the shared contract](contracts/reusable-workflows.md).
+32M ordinary SQL, separate A/B/C 2M and 5s deadline remain. These SQL reductions
+add no setup caller. Complete acceptance and sizing remain required for the load
+owner. See [the shared contract](contracts/reusable-workflows.md).
 
 Ordinary Pause-unknown crash recovery (THR-350) is automatic only through the
 existing startup sweep or periodic reaper: positive dead-PID or exact

@@ -1,11 +1,29 @@
 # Sequential Coding cutover and backout — operator draft
 
+Load instrumentation composes through `Database.observe_trace`; raw native trace
+replacement is unsupported. The load owner enters before sequential selection,
+requires FK ON/deferred FK OFF and binds complete facts to the exact connection,
+file, org, execution and default policy. Only audited sources and the three
+unchanged targets borrow a pinned zero-write result. Changed/unknown snapshots,
+write rollback or observation failure force fresh reads; replaced files refuse.
+Retained charges import once into each compatible caller's original cumulative
+ledger. Public cutover reads/changed targets, later loads and nondefault policies
+remain fresh. Native constructor/caller order, full physical/FK checks, limits,
+install/admission authority and live acceptance gates remain unchanged.
+
 A0b's finite SQL component changes expression evaluation only: shared singleton
 shape/size is measured once, and ownership's exceptional-text scan follows its
 complete type/size prerequisite in the same snapshot. Payload withholding,
 logical charges, physical/FK checks and runtime/operator budgets remain exact.
-It adds no setup/cutover caller or load reuse; automatic setup still requires
-the complete owner/observer/ledger prerequisite and subsequent reviewed stages.
+The SQL reductions add no setup/cutover caller. Automatic setup still requires
+complete owner acceptance/sizing and subsequent reviewed stages. A0b-2 retains
+part1 and records installed happyranch's fail-closed default FIRST/attempted NEXT
+as **EXPECTED REFUSAL - part 1 retained until I2**, with zero changes/certificate/
+observer leaks and an original-base comparison of the same private image.
+Successful installed happyranch FIRST/NEXT/Pause/all-org-tail capacity acceptance
+moves to I2's fresh base/capture. Installed danze/family/genuine fresh FIRST/NEXT
+returns on both runtimes and every other A0b-2 case remain required; see the
+[storage capacity contract](sequential-workflow-storage.md).
 
 **SOURCE ONLY: atomic public Coding cutover and old-fresh fence delivered.**
 TASK-15624 attaches reviewed Coding v2 selection and unconditional old fresh
