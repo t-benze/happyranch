@@ -450,6 +450,18 @@ A verification failure retains the complete bounded resource error list in the
 packaged probe artifact before scratch removal. See the
 [packaged observation contract](../../ci/jenkins/mac-native-probe/README.md#packaged-app-observation).
 
+For the founder's Option A manual agent session, use the exact shipping ZIP
+named by `probe.json.packaged.retained_product.path`, retained inside the Mac
+mini's existing Jenkins workspace under `retained/<SOURCE_SHA>-<run-id>/`.
+Compare its byte size and SHA256 with that record and adjacent `identity.json`
+before extraction, then compare the recorded app-executable, daemon and CLI
+SHA256 values. These ZIP bytes passed the ordinary strict shipping verifier;
+they are unsigned internal builds, not public releases. Scratch cleanup leaves
+this workspace copy intact, including after a later runtime-probe failure.
+Only two ZIPs are retained; a future build may evict the older one. The ZIP is
+not a Jenkins archived artifact. If the recorded copy is gone, a rebuild is a
+different product identity and does not satisfy the same-app manual check.
+
 ## Managed connector sidecar source target (C6a)
 
 The managed Go transport now supports a CGO-disabled Darwin/arm64 cross-build

@@ -6,12 +6,15 @@ executable or HTTP boundary. Native execution needs separate job authorization.
 from __future__ import annotations
 
 import hashlib
+import http.client
+from itertools import islice
 import json
 import os
 from pathlib import Path
 import re
 import selectors
 import signal
+import stat
 import subprocess
 import sys
 import time
@@ -198,11 +201,33 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
+class ApiFailure(RuntimeError):
+    def __init__(self, reason: str, observation: dict[str, Any]):
+        self.observation = {**observation, 'error': reason}
+        super().__init__('packaged HTTP ' + json.dumps(self.observation, ensure_ascii=True))
+
+
 class Api:
     def __init__(self, home: Path):
         self.base = 'http://127.0.0.1:' + str(int((home / 'daemon.port').read_text()))
         self.token = (home / 'daemon.token').read_text().strip()
         self.opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
+        self.last_observation: dict[str, Any] = {}
+
+    def observe(self, method: str, path: str, status: int | None,
+                content_type: str | None, raw: bytes, token: str | None) -> dict[str, Any]:
+        # Never retain auth/profile responses, or echo a bearer in an error body.
+        sensitive = path.startswith(('/api/v1/auth/', '/api/v1/runtime/custom-cli/',
+                                     '/api/v1/runtime/adapters/'))
+        for secret in (self.token, token):
+            if secret:
+                raw = raw.replace(secret.encode(), b'[redacted]')
+        prefix = '[redacted: credential-bearing endpoint]' if sensitive else raw[:512].decode('utf-8', errors='replace')
+        prefix = prefix.encode('utf-8')[:512].decode('utf-8', errors='ignore')
+        self.last_observation = {'method': method, 'path': path.split('?')[0],
+            'http_status': status, 'content_type': (content_type or '')[:256],
+            'body_prefix': prefix, 'body_redacted': sensitive}
+        return self.last_observation
 
     def get_bytes(self, path: str, *, limit: int = 1024 * 1024,
                   body: dict | None = None, token: str | None = None) -> bytes:
@@ -210,18 +235,152 @@ class Api:
             data=None if body is None else json.dumps(body).encode(),
             headers={'Authorization': 'Bearer ' + (self.token if token is None else token),
                      'Content-Type': 'application/json'})
+        observation = self.observe(request.get_method(), path, None, None, b'', token)
         try:
             with self.opener.open(request, timeout=45 if body is not None else 5) as response:
+                observation = self.observe(request.get_method(), path, response.status,
+                                           response.headers.get('Content-Type'), b'', token)
                 raw = response.read(limit + 1)
+                observation = self.observe(request.get_method(), path, response.status,
+                                           response.headers.get('Content-Type'), raw, token)
                 if len(raw) > limit:
-                    raise RuntimeError('HTTP response cap')
+                    raise ApiFailure('HTTP response cap', observation)
                 return raw
         except urllib.error.HTTPError as exc:
-            # Bodies for token/profile endpoints must never enter diagnostics.
-            raise RuntimeError(f'packaged HTTP {exc.code}: {path.split("?")[0]}') from None
+            observation = self.observe(request.get_method(), path, exc.code,
+                                       exc.headers.get('Content-Type'), b'', token)
+            with exc:
+                try:
+                    raw = exc.read(512 + max(len(self.token), len(token or '')))
+                except (OSError, http.client.HTTPException) as read_error:
+                    raise ApiFailure(type(read_error).__name__, observation) from None
+            observation = self.observe(request.get_method(), path, exc.code,
+                                       exc.headers.get('Content-Type'), raw, token)
+            raise ApiFailure('non-2xx response', observation) from None
+        except (OSError, http.client.HTTPException) as exc:
+            raise ApiFailure(type(exc).__name__, observation) from None
 
     def json(self, path: str, body: dict | None = None, *, token: str | None = None) -> Any:
-        return json.loads(self.get_bytes(path, body=body, token=token))
+        raw = self.get_bytes(path, body=body, token=token)
+        try:
+            return json.loads(raw)
+        except (ValueError, UnicodeError) as exc:
+            raise ApiFailure(type(exc).__name__, self.last_observation) from None
+
+
+def health_and_web(api: Api, readiness: dict[str, Any]) -> dict[str, Any]:
+    def healthy() -> Any:
+        try:
+            value = api.json('/api/v1/health')
+        except ApiFailure as exc:
+            readiness.update(exc.observation)
+            # Malformed responses name themselves immediately, rather than
+            # spending the entire readiness window retrying a decode failure.
+            if exc.observation['http_status'] is not None and exc.observation['error'] != 'non-2xx response':
+                raise
+            return None
+        readiness.clear()
+        readiness.update(api.last_observation)
+        readiness['health_status'] = value.get('status') if isinstance(value, dict) else None
+        return value if readiness['health_status'] == 'ok' else None
+    try:
+        health = await_value(healthy, 45, 'daemon health endpoint')
+    except TimeoutError:
+        raise ApiFailure('readiness deadline', readiness) from None
+    html = api.get_bytes('/')
+    match = re.search(rb'(?:src|href)=["\'](/assets/[^"\']+\.(?:js|css))["\']', html)
+    if not match or b'<html' not in html.lower():
+        raise RuntimeError('served root is not packaged UI HTML with asset')
+    asset_path = match[1].decode('ascii')
+    asset = api.get_bytes(asset_path, limit=4 * 1024 * 1024)
+    if not asset:
+        raise RuntimeError('empty packaged web asset')
+    return dict(name=STEP_NAMES[3], status='PASS', health_status=health.get('status'),
+        root_bytes=len(html), root_sha256=hashlib.sha256(html).hexdigest(), asset=asset_path,
+        asset_bytes=len(asset), asset_sha256=hashlib.sha256(asset).hexdigest(), browser='NOT_RUN: HTTP only')
+
+
+def retain_product(out: Path, workspace: Path, scratch: Path, source: str, tree: str,
+                   bundle_hashes: dict[str, str]) -> dict[str, Any]:
+    """Keep two receipt-verified ZIPs outside outer scratch, never archive them."""
+    workspace = workspace.resolve(strict=True)
+    if not scratch.is_relative_to(workspace) or scratch == workspace:
+        raise RuntimeError('retention requires job scratch inside Jenkins workspace')
+    receipt_path = out / 'build-receipt.json'
+    if receipt_path.is_symlink() or receipt_path.stat().st_size > 65536:
+        raise RuntimeError('unsafe/oversized build receipt')
+    receipt = json.loads(receipt_path.read_bytes())
+    run_id = receipt.get('run_id', '')
+    if (receipt.get('role') != 'unsigned-inner-zip' or receipt.get('source_sha') != source
+            or receipt.get('source_tree') != tree or not re.fullmatch(r'[a-f0-9-]{36}', run_id)
+            or receipt.get('filename') != 'HappyRanch-1.0.1-1.0.1-arm64.zip'):
+        raise RuntimeError('retained product receipt identity mismatch')
+    archive = out / receipt['filename']
+    if (archive.is_symlink() or not archive.is_file() or archive.stat().st_size > 256 * 1024 * 1024
+            or archive.stat().st_size != receipt['size'] or digest(archive) != receipt['sha256']):
+        raise RuntimeError('retained ZIP differs from strictly verified shipping receipt')
+    root = workspace / 'retained'
+    if root.is_relative_to(scratch):
+        raise RuntimeError('retention location is inside outer scratch')
+    def safe(path: Path, directory: bool) -> None:
+        info = path.lstat()
+        if (not (stat.S_ISDIR(info.st_mode) if directory else stat.S_ISREG(info.st_mode))
+                or info.st_uid != os.getuid() or info.st_mode & 0o022
+                or (not directory and info.st_nlink != 1)):
+            raise RuntimeError('unsafe retained path: ' + str(path))
+    if not root.exists() and not root.is_symlink():
+        root.mkdir(mode=0o700)
+    safe(root, True)
+    previous = list(islice(root.iterdir(), 3))
+    if len(previous) > 2:
+        raise RuntimeError('retention directory count exceeds two')
+    # Validate the entire small owned namespace before removing any entry.
+    for directory in previous:
+        safe(directory, True)
+        if not re.fullmatch(r'[a-f0-9]{40}-[a-f0-9-]{36}', directory.name):
+            raise RuntimeError('unknown retained directory')
+        entries = list(islice(directory.iterdir(), 3))
+        if {p.name for p in entries} != {'identity.json', receipt['filename']}:
+            raise RuntimeError('unknown retained contents')
+        for path in entries:
+            safe(path, False)
+        identity = directory / 'identity.json'
+        if identity.stat().st_size > 4096:
+            raise RuntimeError('retained identity cap')
+        old = json.loads(identity.read_bytes())
+        if (directory.name != old['source_sha'] + '-' + old['run_id']
+                or old['path'] != str(directory / receipt['filename'])):
+            raise RuntimeError('retained identity mismatch')
+    # Keep the newest previous product plus this product. Never touch any
+    # directory outside this validated, nonrecursive workspace namespace.
+    for directory in sorted(previous, key=lambda p: p.stat().st_mtime_ns, reverse=True)[1:]:
+        for path in (directory / 'identity.json', directory / receipt['filename']):
+            path.unlink()
+        directory.rmdir()
+    destination = root / (source + '-' + run_id)
+    destination.mkdir(mode=0o700)
+    target = destination / archive.name
+    with archive.open('rb') as src, target.open('xb') as dst:
+        remaining = receipt['size']
+        while block := src.read(min(1024 * 1024, remaining + 1)):
+            remaining -= len(block)
+            if remaining < 0:
+                raise RuntimeError('retained ZIP grew beyond verified size')
+            dst.write(block)
+    target.chmod(0o600)
+    if target.stat().st_size != receipt['size'] or digest(target) != receipt['sha256']:
+        raise RuntimeError('retained ZIP copy identity mismatch')
+    identity = {key: receipt[key] for key in ('source_sha', 'source_tree', 'run_id', 'size',
+                                             'sha256', 'app_inventory_sha256')}
+    identity.update(path=str(target), bundle_hashes=bundle_hashes,
+                    availability='Jenkins workspace only; latest two verified ZIPs')
+    raw_identity = json.dumps(identity)
+    if len(raw_identity.encode()) > 4096:
+        raise RuntimeError('retained identity cap')
+    identity_path = destination / 'identity.json'
+    with os.fdopen(os.open(identity_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), 'w') as stream:
+        stream.write(raw_identity)
+    return identity
 
 
 # The child is a declared deterministic CLI. It consumes the entire prompt and
@@ -358,6 +517,8 @@ def run(report: dict[str, Any]) -> None:
         section['bundle_hashes'] = {name: digest(path) for name, path in {
             'app_executable': app / 'Contents/MacOS/HappyRanch',
             'daemon': binary, 'cli': binary.with_name('happyranch')}.items()}
+        section['retained_product'] = retain_product(out, Path(os.environ['WORKSPACE']),
+            scratch, source, tree, section['bundle_hashes'])
         steps['1'] = dict(name=STEP_NAMES[0], status='PASS', source_sha=source, source_tree=tree,
                           signing='unsigned internal; no feed URL supplied or baked by suite')
         active = '2'
@@ -397,24 +558,9 @@ def run(report: dict[str, Any]) -> None:
             return (home / 'daemon.port').is_file() and (home / 'daemon.token').is_file()
         await_value(ready, 45, 'daemon startup files')
         api = Api(home)
-        def healthy() -> Any:
-            try:
-                value = api.json('/health')
-                return value if value.get('status') == 'ok' else None
-            except (OSError, RuntimeError):
-                return None
-        health = await_value(healthy, 45, 'daemon health endpoint')
-        html = api.get_bytes('/')
-        match = re.search(rb'(?:src|href)=["\'](/assets/[^"\']+\.(?:js|css))["\']', html)
-        if not match or b'<html' not in html.lower():
-            raise RuntimeError('served root is not packaged UI HTML with asset')
-        asset_path = match[1].decode('ascii')
-        asset = api.get_bytes(asset_path, limit=4 * 1024 * 1024)
-        if not asset:
-            raise RuntimeError('empty packaged web asset')
-        steps['4'] = dict(name=STEP_NAMES[3], status='PASS', health_status=health.get('status'),
-            root_bytes=len(html), root_sha256=hashlib.sha256(html).hexdigest(), asset=asset_path,
-            asset_bytes=len(asset), asset_sha256=hashlib.sha256(asset).hexdigest(), browser='NOT_RUN: HTTP only')
+        readiness: dict[str, Any] = {}
+        section['health_readiness'] = readiness
+        steps['4'] = health_and_web(api, readiness)
         active = '5'
         runtime = area / 'runtime'
         api.json('/api/v1/runtime', {'path': str(runtime)})
@@ -512,6 +658,10 @@ def run(report: dict[str, Any]) -> None:
     except Exception as exc:
         steps[active] = dict(name=STEP_NAMES[int(active) - 1], status='FAIL',
                              reason=f'{type(exc).__name__}: {exc}'[:2048])
+        if isinstance(exc, ApiFailure):
+            steps[active]['http'] = exc.observation
+        if active == '4' and section.get('health_readiness'):
+            steps[active]['last_readiness_observation'] = section['health_readiness']
         raise
     finally:
         if daemon is not None:

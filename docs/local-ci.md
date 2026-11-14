@@ -231,6 +231,18 @@ Its portable harness checks run with
 `python3 -B -m unittest scripts.mac_native.test_packaged -v`; Linux reports all
 eight steps NOT_RUN/SKIPPED, never native PASS.
 
+The portable packaged tests also exercise HTTP error metadata, malformed JSON,
+readiness diagnostics and workspace-only ZIP retention through the unchanged
+Jenkins EXIT trap. They use synthetic HTTP/filesystem fixtures. An explicitly
+authorized Linux source-daemon rehearsal can additionally import the suite's
+`Api`, `health_and_web` and `connect_deterministic` request code with private
+HOME/daemon-home/runtime/cache/temp and freshly built web assets. Check the
+suite's exact agent/task/cancel/audit payloads and subsequent field accesses,
+and retain per-call HTTP statuses/shapes as task evidence. This is a separate
+manual rehearsal, outside `all`, the retired Python units, general integration
+and Product E2E. It does not execute frozen cleanup entries, AppKit, ditto or a
+frozen binary, and cannot establish packaged/native acceptance.
+
 Behavioral tests and builds are outside all/pre-push/required merge checks.
 Normal hooks stay enabled; never bypass hooks or the guarded worktree.
 Independent full code review and scoped QA remain mandatory. Static checks
