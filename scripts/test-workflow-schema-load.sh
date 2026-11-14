@@ -41,11 +41,11 @@ from runtime.identities import registry as names
 from runtime.orchestrator import producer_move
 from runtime.orchestrator.agent_def import AgentDef, render_agent_text
 
-assert sys.argv[1:] in ([], ['--bounded-acquisition'], ['--trace-custody'], ['--sequential-reuse'], ['--sequential-load'], ['--sequential-faults'], ['--sequential-sql-exhaustion'], ['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--physical-corruption'], ['--sequential-uncommitted']), 'unknown schema-load selection'
+assert sys.argv[1:] in ([], ['--bounded-acquisition'], ['--trace-custody'], ['--sequential-reuse'], ['--sequential-load'], ['--sequential-faults'], ['--sequential-sql-exhaustion'], ['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--coding-authority-corruption'], ['--physical-corruption'], ['--sequential-uncommitted']), 'unknown schema-load selection'
 
 # A0b-2 custody extends this existing real-SQLite venue. No native connection
 # subclass, fake epoch, successful validator stub or production test seam.
-if sys.argv[1:] not in (['--bounded-acquisition'], ['--sequential-reuse'], ['--sequential-load'], ['--sequential-faults'], ['--sequential-sql-exhaustion'], ['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--physical-corruption'], ['--sequential-uncommitted']):
+if sys.argv[1:] not in (['--bounded-acquisition'], ['--sequential-reuse'], ['--sequential-load'], ['--sequential-faults'], ['--sequential-sql-exhaustion'], ['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--coding-authority-corruption'], ['--physical-corruption'], ['--sequential-uncommitted']):
     class TraceAbort(BaseException):
         pass
 
@@ -210,7 +210,7 @@ if sys.argv[1:] == ['--trace-custody']:
 # layouts. Existing private installers and storage owners prepare the fixtures.
 # Native SQLite statements, outcomes and original cumulative counters are the
 # oracles; no validator replacement, success stub or fabricated epoch.
-if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--sequential-faults'], ['--sequential-sql-exhaustion'], ['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--physical-corruption'], ['--sequential-uncommitted']):
+if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--sequential-faults'], ['--sequential-sql-exhaustion'], ['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--coding-authority-corruption'], ['--physical-corruption'], ['--sequential-uncommitted']):
     from runtime.infrastructure.workflow_schema import (
         initialize_complete_org_schema, install_sequential_schema,
         sequential_storage_inventory, _coding_org_identity, _schema_snapshot,
@@ -557,7 +557,103 @@ if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--seque
                       'workflow_draft_dispatch_intents', 'workflow_draft_dispatch_events'):
             assert conn.execute('SELECT count(*) FROM ' + table).fetchone()[0] > 0, table + ' document fixture is empty'
 
-    if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--physical-corruption'], ['--sequential-uncommitted']):
+    def populate_coding_authority(db, *, setup):
+        import base64
+        import hashlib
+        from runtime.workflows._coding_release_history import publication_rows
+        from runtime.workflows.release_templates import read_coding_release
+
+        # Fixed synthetic archival input, following the supported coding-reader
+        # fixture grammar. No setup service, current human/role grant, local
+        # repository, admission action, task, run or native settlement exists.
+        conn = db._conn
+        encode = seq_history._bytes
+        digest = lambda raw: hashlib.sha256(raw).hexdigest()
+        b64 = lambda raw: base64.b64encode(raw).decode('ascii')
+        stamp = '2026-11-14T00:00:00.000000Z'
+        namespace = 'org/scratch'
+        origin = 'https://example.invalid/synthetic.git'
+        manager = dict(principal='synthetic_manager', team='synthetic')
+        snapshot = dict(schema_version=1, org_slug='scratch', agents=[], teams=[],
+            reviewer_agents=[], machine_global_profiles=[], active_policy_selectors=[])
+        if setup:
+            snapshot.update(agents=[dict(name=manager['principal'], role='manager',
+                team=manager['team'], status='active', executor='synthetic', model=None,
+                repos=dict(synthetic=origin), allow_rules=[],
+                description_digest=digest(b''), system_prompt_digest=digest(b''))],
+                teams=[dict(name=manager['team'], manager=manager['principal'], workers=[])],
+                active_policy_selectors=[dict(team=manager['team'], selector=None)])
+        raw = encode(snapshot)
+        pin = dict(namespace=namespace, generation=1, snapshot_digest=digest(raw))
+        pointer = dict(current_generation=1, journal_id='synthetic-coding-journal',
+            snapshot_digest=digest(raw), state='ready', profile_fence=0)
+        def insert(table, row):
+            conn.execute('INSERT INTO ' + table + ' (' + ','.join(row) + ') VALUES (' +
+                ','.join('?' for _ in row) + ')', tuple(row.values()))
+        insert('workflow_publication_journals', dict(id=pointer['journal_id'], **pin,
+            expected_generation=0, snapshot_bytes=raw, publisher='human:founder',
+            publisher_invocation='synthetic-not-live', profile_fence=0,
+            state='cache_installed', recovery_owner='synthetic-history', file_phase_owner=None))
+        insert('workflow_authority_pointers', dict(namespace=namespace, **pointer))
+        def capture(command, identity):
+            body = encode(command)
+            admission = dict(id=identity, namespace=namespace, generation=1,
+                request_digest=digest(body), admitted_by='human:founder')
+            saved = dict(pin=pin, admission_record_id=identity, snapshot_bytes_base64=b64(raw),
+                grant_bytes_base64=b64(body), grant_digest=digest(body),
+                profile_evidence=dict(ready=dict(**pin, snapshot_bytes_hex=raw.hex()),
+                    pointer=pointer, profiles=[], mirror=[]))
+            return body, admission, saved
+        if not setup:
+            command, admission, saved = capture(dict(format='workflow-coding-release-import-command@1',
+                operation_key='synthetic-import', expected_current_version=0), 'synthetic-import-admission')
+            provenance = dict(format='workflow-coding-release-import-provenance@1', org_slug='scratch',
+                publisher=dict(principal_kind='human', principal_id='founder', proof_kind='founder_bearer'),
+                command_bytes_base64=b64(command), command_digest=digest(command),
+                admission=dict(record=admission, capture=saved), created_at=stamp)
+            for table, row in publication_rows(org_slug='scratch', definition=read_coding_release(),
+                                               provenance=provenance).rows:
+                insert(table, row)
+        else:
+            repository = 'workflow-repository:' + digest(encode(['scratch', 'synthetic', digest(origin.encode())]))
+            scope = dict(repository_id=repository, manager_selector=manager,
+                actions=['start-coding'], source_rule='current-assigned-manager-decision@1',
+                base_rule='manager-select-local-base@1', scope=dict(object_formats=['sha1'],
+                    store_owners=[manager['principal']], path_prefixes=['runtime'], commands=[],
+                    recipient_rule='mapping-eligible-current@1', provider_rule=None,
+                    original_limit_rule='lower-native-original@1'))
+            key = digest(encode(['scratch', repository, manager]))
+            for revision, mode in enumerate(('issue', 'withdraw'), 1):
+                command, admission, saved = capture(dict(format='workflow-coding-capability-setup-command@1',
+                    operation_key='synthetic-' + mode, setup_key=key,
+                    expected_authorization_revision=revision - 1, mode=mode,
+                    scope=scope if mode == 'issue' else None), 'synthetic-' + mode + '-admission')
+                issued = (dict(format='workflow-coding-setup-authority@1', id='synthetic-setup',
+                    org_slug='scratch', **scope, authority=saved, created_at=stamp) if mode == 'issue' else None)
+                body = encode(dict(format='workflow-coding-capability-issuance@1',
+                    command_bytes_base64=b64(command), command_digest=digest(command),
+                    issuer=dict(principal_kind='human', principal_id='founder', proof_kind='founder_bearer'),
+                    mode=mode, setup=issued, admission=dict(record=admission, capture=saved), created_at=stamp))
+                insert('workflow_admission_records', admission)
+                insert('workflow_authorization_revisions', dict(id='synthetic-' + mode,
+                    namespace=namespace + '/coding-setup/' + key, revision=revision,
+                    authority_bytes=body, authority_digest=digest(body),
+                    source_pin='coding-capability-issuer@1', created_at=stamp))
+            insert('workflow_active_authorizations', dict(namespace=namespace + '/coding-setup/' + key,
+                authorization_revision_id='synthetic-withdraw'))
+        conn.commit()
+        history = read_sequential_history(conn, expected_org_slug='scratch')
+        assert history.status == 'storage readable'
+        assert (history.retained[1].release is not None) == (not setup)
+        if setup:
+            from runtime.workflows.coding_authority_history import read_setup_storage
+            with _schema_snapshot(conn):
+                storage = read_setup_storage(conn, expected_org_slug='scratch')
+            assert len(storage.issuances) == 2 and storage.pointers[0][1] == 'synthetic-withdraw'
+        else:
+            assert history.retained[1].imported is not None
+
+    if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--coding-authority-corruption'], ['--physical-corruption'], ['--sequential-uncommitted']):
         corruptions = (
             ('definition digest', "UPDATE workflow_seq_definitions SET definition_digest='bad'"),
             ('definition bytes', "UPDATE workflow_seq_definitions SET definition_bytes=x'7b7d'"),
@@ -686,6 +782,43 @@ if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--seque
         )
         document_coding_names.update(name for name, _, _ in document_review_corruptions)
         document_coding_corruptions += document_review_corruptions
+        coding_import_corruptions = (
+            ('Coding import command', "UPDATE workflow_template_versions SET published_by=json_set(published_by,'$.command_digest','bad') WHERE namespace='release/happyranch'"),
+            ('Coding import publisher', "UPDATE workflow_template_versions SET published_by=json_set(published_by,'$.publisher.principal_id','wrong') WHERE namespace='release/happyranch'"),
+            ('Coding import capture', "UPDATE workflow_template_versions SET published_by=json_set(published_by,'$.admission.capture.grant_digest','bad') WHERE namespace='release/happyranch'"),
+            ('Coding import draft', "UPDATE workflow_template_drafts SET author_principal='{}' WHERE namespace='release/happyranch'"),
+            ('Coding import definition', "UPDATE workflow_template_versions SET definition_bytes=x'7b7d' WHERE namespace='release/happyranch'"),
+            ('Coding import pin', "UPDATE workflow_template_versions SET compiler_pin='wrong' WHERE namespace='release/happyranch'"),
+            ('Coding import identity', "UPDATE workflow_template_identities SET current_version=2 WHERE namespace='release/happyranch'"),
+            ('Coding import version link', "UPDATE workflow_template_identity_versions SET content_digest='bad'"),
+            ('Coding import replay request', "UPDATE workflow_template_publish_operations SET request_digest='bad'"),
+            ('Coding import replay result', 'UPDATE workflow_template_publish_operations SET result_version=2'),
+            ('Coding import admission issuer', "UPDATE workflow_admission_records SET admitted_by='agent:synthetic'"),
+            ('Coding import admission generation', 'UPDATE workflow_admission_records SET generation=2'),
+            ('Coding import journal state', "UPDATE workflow_publication_journals SET state='prepared'"),
+            ('Coding import journal fence', 'UPDATE workflow_publication_journals SET profile_fence=1'),
+        )
+        coding_setup_corruptions = (
+            ('Coding setup issue pin', "UPDATE workflow_authorization_revisions SET source_pin='wrong' WHERE id='synthetic-issue'"),
+            ('Coding setup withdraw pin', "UPDATE workflow_authorization_revisions SET source_pin='wrong' WHERE id='synthetic-withdraw'"),
+            ('Coding setup issue timestamp', "UPDATE workflow_authorization_revisions SET created_at='2026-11-15T00:00:00.000000Z' WHERE id='synthetic-issue'"),
+            ('Coding setup withdraw timestamp', "UPDATE workflow_authorization_revisions SET created_at='2026-11-15T00:00:00.000000Z' WHERE id='synthetic-withdraw'"),
+            ('Coding setup issue revision', "UPDATE workflow_authorization_revisions SET revision=3 WHERE id='synthetic-issue'"),
+            ('Coding setup withdraw revision', "UPDATE workflow_authorization_revisions SET revision=3 WHERE id='synthetic-withdraw'"),
+            ('Coding setup missing issue', "DELETE FROM workflow_authorization_revisions WHERE id='synthetic-issue'"),
+            ('Coding setup stale pointer', "UPDATE workflow_active_authorizations SET authorization_revision_id='synthetic-issue'"),
+            ('Coding setup missing pointer', 'DELETE FROM workflow_active_authorizations'),
+            ('Coding setup issue admission', "UPDATE workflow_admission_records SET admitted_by='agent:synthetic' WHERE id='synthetic-issue-admission'"),
+            ('Coding setup withdraw admission', "UPDATE workflow_admission_records SET admitted_by='agent:synthetic' WHERE id='synthetic-withdraw-admission'"),
+            ('Coding setup issue generation', "UPDATE workflow_admission_records SET generation=2 WHERE id='synthetic-issue-admission'"),
+            ('Coding setup withdraw generation', "UPDATE workflow_admission_records SET generation=2 WHERE id='synthetic-withdraw-admission'"),
+            ('Coding setup journal state', "UPDATE workflow_publication_journals SET state='prepared'"),
+            ('Coding setup journal fence', 'UPDATE workflow_publication_journals SET profile_fence=1'),
+        )
+        coding_import_names = {name for name, _ in coding_import_corruptions}
+        coding_setup_names = {name for name, _ in coding_setup_corruptions}
+        refusal_codes.update({name: 'coding_registered_release_history_invalid' for name in coding_import_names})
+        refusal_codes.update({name: 'coding_authority_history_invalid' for name in coding_setup_names})
         refusal_codes.update({name: code for name, _, code in document_coding_corruptions})
         if sys.argv[1:] == ['--retained-corruption']:
             corruptions = ()
@@ -694,6 +827,10 @@ if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--seque
             corruptions = ()
         if sys.argv[1:] != ['--retained-corruption']:
             corruptions += tuple((name, mutation) for name, mutation, _ in document_coding_corruptions)
+        if sys.argv[1:] == ['--coding-authority-corruption']:
+            corruptions = coding_import_corruptions + coding_setup_corruptions
+        elif sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-corruption'], ['--document-coding-corruption']):
+            corruptions += coding_import_corruptions + coding_setup_corruptions
         def corrupt_physical_index(connection, *, surplus):
             # Synthetic private corruption: preserve the exact index definition
             # while making SQLite change its table without index maintenance.
@@ -746,6 +883,8 @@ if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--seque
                     populate_retained(db, root)
                 if name in document_coding_names:
                     populate_document_coding(db)
+                if name in coding_import_names or name in coding_setup_names:
+                    populate_coding_authority(db, setup=name in coding_setup_names)
                 # Warm outside the new owner too: a forbidden cross-load cache
                 # must not certify even the first use in the following scope.
                 seq_read(db)
@@ -797,6 +936,9 @@ if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--seque
                         elif name == 'document compiler pin':
                             from runtime.workflows.templates import WorkflowTemplateError
                             error_type = WorkflowTemplateError
+                        elif name in coding_setup_names:
+                            from runtime.workflows.coding_authority_history import CodingAuthorityHistoryError
+                            error_type = CodingAuthorityHistoryError
                         else:
                             error_type = ValueError
                         assert expected[1][0] == (error_type, refusal_codes[name]), name + ' missed its semantic boundary: ' + repr(expected)
@@ -815,7 +957,7 @@ if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--seque
                     corruption_failures.append((name, phase, str(exc)))
                     print('FAIL A0b sequential corruption matrix:', name, phase, str(exc), flush=True)
         assert not corruption_failures, 'sequential corruption matrix failures: ' + repr(corruption_failures)
-        if sys.argv[1:] in (['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--physical-corruption'], ['--sequential-uncommitted']):
+        if sys.argv[1:] in (['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--coding-authority-corruption'], ['--physical-corruption'], ['--sequential-uncommitted']):
             raise SystemExit(0)
 
     if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-faults'], ['--sequential-sql-exhaustion']):

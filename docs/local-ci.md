@@ -371,6 +371,20 @@ Inert template publication and canonical registration rows prepare private
 storage; historical activation/submission rows do not invoke retired services
 or confer admission. All four first/local/external/uncommitted phases compare
 the complete reader's exact semantic refusal and preserve transaction ownership.
+`--coding-authority-corruption` selects the same table's retained human-import
+and setup issue/withdraw closures. Fourteen import rows cover original command,
+publisher and capture, draft/definition/pins/identity/link, replay request/result,
+native admission issuer/generation and publication state/fence. Fifteen setup
+rows cover both original issue and subsequent withdrawal pins/timestamps/revisions,
+missing issue, stale/missing latest pointer, both admissions/generations and
+publication state/fence. A withdrawn pointer must still validate the complete
+historical issue prefix. Every row runs first/local/external/uncommitted and
+compares the exact public complete-reader refusal, including its causal chain;
+rollback must restore the valid history and require a fresh complete check.
+Fixtures use fixed synthetic archival snapshots and native rows, without current
+setup, role/Allow, repository access, task/run or native-settlement claims.
+Full, `--sequential-reuse`, `--sequential-corruption` and
+`--document-coding-corruption` include these 116 phases.
 `--sequential-uncommitted` selects the preceding sequential definition/settings/
 pin/native/mark/output/schema/index/FK rows inside explicit caller transactions,
 including restored triggers and rollback followed by a fresh complete read.
@@ -384,7 +398,7 @@ and public complete reader must agree without exhaustion or stale reuse.
 Uncommitted rollback restores the index/table relationship and requires a fresh
 complete check. Full, `--sequential-reuse` and `--sequential-corruption` include
 these cases. No live database, raw page write or production hook is involved.
-Retained handoff/revision-operation/native closure and Coding setup/mapping/run
+Retained handoff/revision-operation/native closure and Coding mapping/settings/run
 coverage remain separate requirements.
 For A0b-2's capacity disposition, see the [storage contract](runbooks/sequential-workflow-storage.md):
 installed happyranch's default FIRST/attempted NEXT is recorded as expected
