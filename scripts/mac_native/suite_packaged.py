@@ -584,8 +584,40 @@ def run(report: dict[str, Any]) -> None:
         ancestors.update(parents)
     groups: set[int] = set()
     tracked_identities: set[tuple[int, str]] = set()
+    daemon_identity: tuple[int, str] | None = None
+    ownership_unknown = False
     def select_owned(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        if ownership_unknown:
+            raise RuntimeError('daemon descendant evidence unknown')
         return owned_rows(rows, scratch, groups, ancestors, tracked_identities)
+    def capture_owned(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        nonlocal daemon_identity
+        root = next((row for row in rows if row['pid'] == daemon.pid), None)
+        if root is None:
+            raise RuntimeError('daemon ancestry unavailable')
+        identity = (root['pid'], root['start_identity'])
+        if daemon_identity is None:
+            # Popen still owns a live, unreaped child at this first census.
+            if daemon.poll() is not None or root['pgid'] != daemon.pid:
+                raise RuntimeError('daemon identity unavailable')
+            daemon_identity = identity
+        if identity != daemon_identity:
+            raise RuntimeError('daemon identity changed')
+        tree = descendants(rows, daemon.pid)
+        tracked_identities.update((row['pid'], row['start_identity']) for row in tree)
+        by_pid = {row['pid']: row for row in tree}
+        # A private group's leader must itself be an authenticated descendant.
+        # These groups only select evidence; they never authorize signals.
+        groups.update(row['pgid'] for row in tree if row['pgid'] != root['pgid']
+                      and row['pgid'] in by_pid
+                      and by_pid[row['pgid']]['pgid'] == row['pgid'])
+        return select_owned(rows)
+    def capture_snapshot() -> dict[str, Any]:
+        nonlocal ownership_unknown
+        result = survivor_snapshot(capture_owned)
+        if result['status'] == 'UNKNOWN':
+            ownership_unknown = True
+        return result
     section['post_cancel_survivors'] = {'status': 'NOT_RUN', 'reason': 'cancel not reached'}
     active = '1'
     try:
@@ -654,6 +686,8 @@ def run(report: dict[str, Any]) -> None:
             cwd=home, env=daemon_env, stdin=subprocess.DEVNULL, stdout=log,
             stderr=subprocess.STDOUT, start_new_session=True)
         groups.add(daemon.pid)
+        if capture_snapshot()['status'] == 'UNKNOWN':
+            raise RuntimeError('initial daemon descendant evidence unknown')
         steps['3'] = dict(name=STEP_NAMES[2], status='PASS', pid=daemon.pid, pgid=daemon.pid,
             mode='bundled daemon fallback', gui=section['gui_launch'], temp_override=daemon_env['TMPDIR'],
             executable=str(binary), argv=['--reader-guarded-start=online-team-move@3'])
@@ -702,15 +736,18 @@ def run(report: dict[str, Any]) -> None:
         if marker.stat().st_size > 4096:
             raise RuntimeError('session marker cap')
         pin = json.loads(marker.read_text())
-        current = census()
+        try:
+            current = census()
+            capture_owned(current)
+        except Exception:
+            ownership_unknown = True
+            raise
         tree_rows = descendants(current, pin['pid'])
         if not {pin['pid'], pin['child']} <= {r['pid'] for r in tree_rows}:
             raise RuntimeError('session parent/child not independently observed')
         daemon_descendants = {r['pid'] for r in descendants(current, daemon.pid)}
         if pin['pid'] not in daemon_descendants:
             raise RuntimeError('session was not spawned by bundled daemon')
-        groups.update(r['pgid'] for r in tree_rows)
-        tracked_identities.update((r['pid'], r['start_identity']) for r in descendants(current, daemon.pid))
         private_groups = private_session_groups(current, pin['pid'], daemon.pid)
         section['session_private_groups'] = sorted(private_groups)
         # Register a real task worktree before the terminal hook runs. No host
@@ -783,12 +820,12 @@ def run(report: dict[str, Any]) -> None:
         if active == '4' and section.get('health_readiness'):
             steps[active]['last_readiness_observation'] = section['health_readiness']
         if daemon is not None:
-            section['failure_survivors'] = survivor_snapshot(select_owned)
+            section['failure_survivors'] = capture_snapshot()
         raise
     finally:
         if daemon is not None:
             try:
-                section['before_quit'] = survivor_snapshot(select_owned)
+                section['before_quit'] = capture_snapshot()
                 daemon.terminate()
                 try:
                     daemon.wait(timeout=5)

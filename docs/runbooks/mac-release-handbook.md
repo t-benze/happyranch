@@ -121,6 +121,9 @@ immediately after health, before starting a session. Its retained
 candidate refusals from the daemon log. A fallback refusal still stops the daemon
 and runs the final census/EXIT cleanup. Inspect the state/start-identity-aware
 failure, post-cancel and post-stop survivor snapshots; UNKNOWN or survivors fail.
+Daemon-descendant PID/start identities and proven private groups are captured
+before failure/pre-quit snapshots and daemon termination even when the session
+marker is missing or invalid. Unobservable ancestry stays UNKNOWN through shutdown.
 Only an ancestry-proven session-private PGID is subject to the session-group
 absence assertion. The final native run remains separately authorized; source
 tests do not prove macOS backend selection or packaged cleanup.

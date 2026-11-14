@@ -539,6 +539,12 @@ most32 rows plus total/truncation/status. Unreadable evidence is UNKNOWN and
 fails; observed survivors, including unreaped zombies, fail. Known identities
 remain in the final census even if they leave their original group. A shared
 daemon PGID is never treated as session-private. No no-leftovers gate is waived.
+The suite pins the live daemon's PID/start identity immediately after launch and
+captures its currently observable descendants and ancestry-proven private groups
+before failure/pre-quit snapshots and termination, independently of session
+marker success. Captured descendants remain owned after reparenting or group
+escape. Incomplete ancestry observation latches UNKNOWN through the final census;
+a later empty table cannot certify cleanup.
 
 Immediately after the successful strict build/archive verification, the suite
 checks `build-receipt.json` against the shipping ZIP's source SHA/tree, name,
