@@ -197,6 +197,7 @@ public final class ClientBridge: @unchecked Sendable {
                         continuation.resume()
                     } else {
                         if Self.tsnetLock.withLock({ self.nativeConfigured }) { tsnet_close() }
+                        self.queue.sync {} // settle queued local teardown before reuse
                         Self.tsnetLock.withLock {
                             self.nativeConfigured = false
                             if Self.managedOwner == attempt { Self.managedOwner = nil }
@@ -258,6 +259,7 @@ public final class ClientBridge: @unchecked Sendable {
             guard Self.tsnetLock.withLock({ Self.managedOwner == previous }) else { return }
             if Self.tsnetLock.withLock({ self.nativeConfigured }) { tsnet_close() }
             self.managedDials.wait()
+            self.queue.sync {} // local listener/client teardown also belongs to this attempt
             Self.tsnetLock.withLock {
                 self.nativeConfigured = false
                 Self.managedOwner = nil
@@ -377,16 +379,18 @@ public final class ClientBridge: @unchecked Sendable {
             throw ClientBridgeError.listenerCreationFailed(underlying: error.localizedDescription)
         }
 
-        listener.stateUpdateHandler = { [weak self] newState in
-            guard let self else { return }
+        listener.stateUpdateHandler = { [weak self, weak listener] newState in
+            guard let self, let listener else { return }
             self.queue.async {
+                guard self.listener === listener else { return }
                 self.handleListenerState(newState)
             }
         }
 
-        listener.newConnectionHandler = { [weak self] connection in
-            guard let self else { return }
+        listener.newConnectionHandler = { [weak self, weak listener] connection in
+            guard let self, let listener else { connection.cancel(); return }
             self.queue.async {
+                guard self.listener === listener else { connection.cancel(); return }
                 self.handleNewConnection(connection)
             }
         }
