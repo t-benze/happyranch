@@ -67,11 +67,26 @@ the old monitor; an HTTP response arriving after Stop cannot revive it.
 The manual native `supervisor` probe discovers developer directory, macOS SDK,
 Swift path and Swift >=6 first. Missing tooling produces UNAVAILABLE rows and
 nonzero `toolchain unavailable`, without a build/test attempt. It runs focused
-`swift test` for `AppDelegateStopHonestyTests|ManagedHealthPollingTests`, then
+`swift test` for `AppDelegateStopHonestyTests|ManagedHealthPollingTests|ManagedClientBridgeTests|EnrollmentKeyStoreTests|ManagedJoinTests|ManagedMembershipRevocationTests`, then
 repeats the scripted TERM-ignoring disposable-child test with `--skip-build`.
 HOME, temporary files, SwiftPM scratch/cache/config/security paths, compiler
 module caches and products stay in build scratch. Release/no-debug compilation
 reduces debug product size; the existing 32 MiB/file cap is never raised.
+Before testing, the probe creates and unlocks a disposable login Keychain at
+scratch HOME's `Library/Keychains/login.keychain-db` and disables its timeout.
+Its random per-run password travels through `security -i` stdin, outside argv
+and retained output. Cleanup deletes that exact Keychain before removing scratch,
+including on test failure. Read-only search-list/default-keychain observations
+use the OS account's real HOME (without CFFIXED_USER_HOME) before and after,
+because Jenkins already redirects its inherited HOME. Each read records its exit
+code, normalized stdout and fixed stderr category; an empty search list and the
+known missing-default-keychain response are valid baselines. Unavailable reads
+or unexpected errors abort before fixture creation. The AFTER comparison is
+registered before creation and runs on failure too; only exact equality of both
+observations produces unchanged-preference PASS rows. Any difference fails the probe.
+The probe never sets the user's search list, default or login preference.
+`probe.json` retains named terminal test/suite lines up to 16 KiB (with an
+explicit truncation flag), alongside full-output byte counts, SHA-256 and tails.
 The full Swift suite, GUI integration and frozen-app acceptance are separate
 and are not proven by this focused source suite.
 
@@ -1092,7 +1107,7 @@ successful login-Keychain deletion. `ManagedEnrollmentKey(taking:byteCount:)`
 takes ownership of a malloc/calloc allocation; the positive byte count covers
 the entire initialized allocation including its final NUL. The caller must
 neither access nor free it afterwards. No enrollment-key String API is supplied.
-The bridge checks bounded NUL termination, wipes with `explicit_bzero` before
+The bridge checks bounded NUL termination, wipes with `memset_s` before
 free on all exits, and wipes immediately after configure-only native init,
 before Up. This is custody minimization, not forensic erasure. The bridge never
 reads enrollment configuration from the environment or publishes raw native
@@ -1198,8 +1213,9 @@ The existing manual `build-mac-app.yml` uses reviewed `source_sha`/`source_tree`
 on macos-15 and builds the real archive/app, but does not run `swift test` or
 capture GUI states. It was inspected, not dispatched. Existing Jenkins native
 probe suites are bounded allowlisted probes. The `supervisor` suite compiles all
-Swift app/test targets with weak stubs, then runs only its existing supervisor
-filter; it does not run new PR2 cases or capture GUI states. The Mac mini was
+Swift app/test targets with weak stubs, then runs the six selected classes listed
+above, including join, revocation and scratch login-Keychain custody; it does not
+capture GUI states. The Mac mini was
 online at read-only inspection. No Jenkins app-build job is installed, signing
 remains disabled. A later
 owner decision is required for any native run. PR3 retains release pins, source/
