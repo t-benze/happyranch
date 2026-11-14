@@ -248,7 +248,9 @@ class PackagedHarnessTests(unittest.TestCase):
             self.assertEqual(restored.returncode, 0, restored.stderr)
 
     def test_resource_expectations_ignore_changed_live_source(self) -> None:
-        with tempfile.TemporaryDirectory() as folder:
+        with tempfile.TemporaryDirectory() as folder, patch.dict(os.environ):
+            os.environ.pop('GIT_NO_REPLACE_OBJECTS', None)
+            os.environ.pop('GIT_REPLACE_REF_BASE', None)
             root = Path(folder)
             app, rows, _sha, _tree = self.resource_fixture(root)
             source = root / 'source'
@@ -272,6 +274,37 @@ class PackagedHarnessTests(unittest.TestCase):
             bad = self.resource_command(app, '--source', str(source), '--source-tree', '0' * 40)
             self.assertEqual(bad.returncode, 1)
             self.assertEqual(json.loads(bad.stderr)['error'], 'SOURCE_TREE_MISMATCH')
+            (source / rows[0]['path']).write_bytes((app / rows[0]['member']).read_bytes())
+            self.assertEqual(git('status', '--porcelain'), '')
+            victim = app / 'Contents/Resources/licenses/LICENSE'
+            original = victim.read_bytes()
+            original_oid = git('rev-parse', sha + ':LICENSE')
+            replacement = root / 'replacement'
+            replacement.write_bytes(b'replacement resource must not become committed data\n')
+            replacement_oid = git('hash-object', '-w', str(replacement))
+            git('replace', original_oid, replacement_oid)
+            try:
+                self.assertEqual(git('cat-file', 'blob', original_oid), replacement.read_text().strip())
+                self.assertEqual((git('rev-parse', 'HEAD'), git('rev-parse', 'HEAD^{tree}')), (sha, tree))
+                self.assertEqual(git('status', '--porcelain'), '')
+                good = self.resource_command(app, '--source', str(source), '--source-sha', sha, '--source-tree', tree)
+                with self.subTest(bundle='committed bytes with local replacement'):
+                    self.assertEqual(good.returncode, 0, good.stderr)
+                victim.write_bytes(replacement.read_bytes())
+                bad = self.resource_command(app, '--source', str(source), '--source-sha', sha, '--source-tree', tree)
+                with self.subTest(bundle='replacement bytes with local replacement'):
+                    self.assertEqual(bad.returncode, 1, bad.stderr)
+                    failure = json.loads(bad.stderr)
+                    self.assertEqual(failure['error'], 'RESOURCE_VERIFICATION_FAILED')
+                    self.assertEqual([row['error'] for row in failure['detail']], ['RESOURCE_MISMATCH'])
+                    self.assertEqual(failure['detail'][0]['expected']['sha256'], hashlib.sha256(original).hexdigest())
+            finally:
+                victim.write_bytes(original)
+                git('replace', '-d', original_oid)
+            self.assertEqual(victim.read_bytes(), original)
+            self.assertEqual(git('for-each-ref', 'refs/replace'), '')
+            self.assertEqual(git('status', '--porcelain'), '')
+            self.assertEqual(self.resource_command(app, '--source', str(source)).returncode, 0)
 
     def test_resource_failure_artifact_keeps_all_rows_before_scratch_cleanup(self) -> None:
         with tempfile.TemporaryDirectory() as folder:

@@ -67,8 +67,9 @@ The existing workflow keeps Build45/job95 limits, exact one-candidate success
 selection and separate bounded failure/cancellation diagnostics. No workflow
 interface or definition change is required. Custom helper deadline/receipt/IPC
 and per-byte closure requirements are retired; ordinary process status and the
-runner's timeout/cancellation remain. Failure diagnostics keep their 52-input,
-106-output and byte/metadata caps; absent retired records are honestly unavailable.
+runner's timeout/cancellation remain. Failure diagnostics keep their 53-input,
+108-output caps, four critical files and existing byte/metadata caps; absent
+retired records are honestly unavailable.
 
 Run finite portable checks outside CI:
 

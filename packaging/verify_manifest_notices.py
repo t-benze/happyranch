@@ -25,8 +25,8 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 SOURCE = Path(__file__).resolve().parent.parent
-SOURCE_SHA = subprocess.check_output(['git', '-C', str(SOURCE), 'rev-parse', 'HEAD'], text=True).strip()
-SOURCE_TREE = subprocess.check_output(['git', '-C', str(SOURCE), 'rev-parse', 'HEAD^{tree}'], text=True).strip()
+SOURCE_SHA = subprocess.check_output(['git', '--no-replace-objects', '-C', str(SOURCE), 'rev-parse', 'HEAD'], text=True).strip()
+SOURCE_TREE = subprocess.check_output(['git', '--no-replace-objects', '-C', str(SOURCE), 'rev-parse', 'HEAD^{tree}'], text=True).strip()
 H = runpy.run_path(str(SOURCE / 'app/mac/scripts/manifest_notices.py'))
 REPORT = []
 
@@ -137,7 +137,7 @@ def fixture(root, *, retained_resources=False):
     for row in baseline:
         # Both callers use the exact committed identity; historical literals
         # are no longer needed after the packaged resource baseline repair.
-        data = subprocess.check_output(['git', '-C', str(SOURCE), 'show', SOURCE_SHA + ':' + row['path']])
+        data = subprocess.check_output(['git', '--no-replace-objects', '-C', str(SOURCE), 'show', SOURCE_SHA + ':' + row['path']])
         dest = app / ('Contents/Resources/licenses/LICENSE' if row['path'] == 'LICENSE' else 'Contents/Resources/daemon/_internal/' + row['path'])
         write(dest, data)
         dest.chmod(int(row['posix_mode'], 8))

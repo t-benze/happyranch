@@ -322,10 +322,10 @@ def run(report: dict[str, Any]) -> None:
     groups: set[int] = set()
     active = '1'
     try:
-        source = checked(['git', 'rev-parse', 'HEAD'], ROOT, dict(os.environ), 5)['tail'].strip()
+        source = checked(['git', '--no-replace-objects', 'rev-parse', 'HEAD'], ROOT, dict(os.environ), 5)['tail'].strip()
         if not re.fullmatch('[a-f0-9]{40}', source) or source != section['source_sha']:
             raise RuntimeError('SOURCE_SHA does not match exact checked out commit')
-        tree = checked(['git', 'rev-parse', 'HEAD^{tree}'], ROOT, dict(os.environ), 5)['tail'].strip()
+        tree = checked(['git', '--no-replace-objects', 'rev-parse', 'HEAD^{tree}'], ROOT, dict(os.environ), 5)['tail'].strip()
         section['source_tree'] = tree
         feasibility = executor_feasibility(time.monotonic() + 30)
         section['executor_feasibility'] = feasibility

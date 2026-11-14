@@ -416,13 +416,13 @@ complete manifest inventory and retained originals pass the new shipping gate.
 
 The failure bundle preserves complete small files (up to 262144 bytes) as
 `.diagnostic` and larger complete files as `.diagnostic.gz`, with no JSON byte
-tails. A fixed 50-input allowlist covers available Analysis/daemon and CLI PYZ
+tails. A fixed 53-input allowlist covers available Analysis/daemon and CLI PYZ
 TOC descriptors, native/data union, Python/toolchain, Go inputs/members, link
 map and component/notice provenance plus per-command CLI/catalog/trust results.
 Inputs are capped at 8 MiB each and 32 MiB total; stored bulk is capped at
-2 MiB each and 8 MiB total. Three independent critical files (build failure,
-native failure and all eleven symbol observations) each have a 262144-byte
-budget. At most 106 files and 128 KiB of metadata describe source hashes/sizes,
+2 MiB each and 8 MiB total. Four independent critical files (resource failure,
+build failure, native failure and all eleven symbol observations) each have a 262144-byte
+budget. At most 108 files and 128 KiB of metadata describe source hashes/sizes,
 whole-file identity/gzip encoding, original/retained/omitted byte and known row
 counts. Missing or uncountable inputs use null counts, never zero-loss claims;
 malformed, unsafe or over-cap inputs get valid explicit loss records. The
@@ -493,8 +493,10 @@ bash app/mac/scripts/verify-release.sh licenses \
 
 Resource expectations retain the accepted 29 paths and regular-file modes.
 Expected size, SHA-256 and blob identity are derived from the selected committed
-source; standalone verification needs those Git objects locally. Build/archive
-callers constrain the selected source SHA/tree. Real bundle or ZIP mismatches
+source; all source identity, resource reads and the build Git archive export
+ignore local Git object replacements. Standalone verification needs those Git
+objects locally. Build/archive callers constrain the selected source SHA/tree.
+Real bundle or ZIP mismatches
 still fail with `RESOURCE_VERIFICATION_FAILED` / `RESOURCE_MISMATCH`. Catalog expectations compare every list field
 and validation key, replacing only the relocated app prefix. Capture actual
 frozen CLI `skills catalog list --json` and `validate --json` outside checkout,

@@ -248,7 +248,7 @@ PYFAIL
 trap finish EXIT
 SOURCE="$OUTPUT/scratch/source"
 mkdir "$SOURCE"
-git -c tar.umask=0022 -C "$REPO_ROOT" archive "$SOURCE_SHA" | tar -xp -C "$SOURCE"
+git --no-replace-objects -c tar.umask=0022 -C "$REPO_ROOT" archive "$SOURCE_SHA" | tar -xp -C "$SOURCE"
 PROJECT="$SOURCE/app/mac"
 APP="$OUTPUT/scratch/HappyRanch.app"
 export TMPDIR="$OUTPUT/scratch/tmp"
@@ -404,9 +404,9 @@ ZIP="$OUTPUT/HappyRanch-${VERSION}-${BUILD}-${ARCH}.zip"
 bash "$SCRIPT_DIR/archive-app.sh" "$APP" "$OUTPUT" "$VERSION" "$BUILD" "$SOURCE_SHA" "$SOURCE_TREE" "$ARCH" "$RUN_ID"
 # Recheck the actual source before any success finalization. The output still
 # exists, so use the read-only Git observations rather than new-path admission.
-test "$(git -C "$REPO_ROOT" rev-parse HEAD)" = "$SOURCE_SHA"
-test "$(git -C "$REPO_ROOT" rev-parse HEAD^{tree})" = "$SOURCE_TREE"
-test -z "$(git -C "$REPO_ROOT" status --porcelain --untracked-files=all)"
+test "$(git --no-replace-objects -C "$REPO_ROOT" rev-parse HEAD)" = "$SOURCE_SHA"
+test "$(git --no-replace-objects -C "$REPO_ROOT" rev-parse HEAD^{tree})" = "$SOURCE_TREE"
+test -z "$(git --no-replace-objects -C "$REPO_ROOT" status --porcelain --untracked-files=all)"
 bash "$VERIFY" inventory --app "$APP" > "$OUTPUT/diagnostics/app-inventory.json"
 mv "$APP" "$OUTPUT/HappyRanch.app"
 cp "$OUTPUT/diagnostics/inner-zip.json" "$OUTPUT/build-receipt.json"

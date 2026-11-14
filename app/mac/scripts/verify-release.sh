@@ -206,13 +206,13 @@ def safe_new(path, source=None):
 def source_identity(source, sha, tree):
     if not re.fullmatch('[0-9a-f]{40}', sha) or not re.fullmatch('[0-9a-f]{40}', tree):
         fail('SOURCE_IDENTITY_INVALID', [sha, tree])
-    actual = run('git', '-C', str(source), 'rev-parse', 'HEAD').strip()
-    actual_tree = run('git', '-C', str(source), 'rev-parse', 'HEAD^{tree}').strip()
+    actual = run('git', '--no-replace-objects', '-C', str(source), 'rev-parse', 'HEAD').strip()
+    actual_tree = run('git', '--no-replace-objects', '-C', str(source), 'rev-parse', 'HEAD^{tree}').strip()
     if actual != sha:
         fail('SOURCE_COMMIT_MISMATCH', [sha, actual])
     if actual_tree != tree:
         fail('SOURCE_TREE_MISMATCH', [tree, actual_tree])
-    dirty = run('git', '-C', str(source), 'status', '--porcelain', '--untracked-files=all')
+    dirty = run('git', '--no-replace-objects', '-C', str(source), 'status', '--porcelain', '--untracked-files=all')
     if dirty:
         fail('SOURCE_NOT_CLEAN', dirty)
 
@@ -295,22 +295,22 @@ def zip_inventory(archive):
 
 
 def resource_baseline(source, sha, tree):
-    """Read Git objects, never mutable checkout files or bundle bytes."""
+    """Read original Git objects, ignoring local replacement refs and checkout bytes."""
     if not re.fullmatch('[0-9a-f]{40}', sha) or not re.fullmatch('[0-9a-f]{40}', tree):
         fail('SOURCE_IDENTITY_INVALID', [sha, tree])
-    if run('git', '-C', str(source), 'rev-parse', '--verify', sha + '^{commit}').strip() != sha:
+    if run('git', '--no-replace-objects', '-C', str(source), 'rev-parse', '--verify', sha + '^{commit}').strip() != sha:
         fail('SOURCE_COMMIT_MISMATCH', sha)
-    if run('git', '-C', str(source), 'rev-parse', '--verify', sha + '^{tree}').strip() != tree:
+    if run('git', '--no-replace-objects', '-C', str(source), 'rev-parse', '--verify', sha + '^{tree}').strip() != tree:
         fail('SOURCE_TREE_MISMATCH', tree)
     rows = []
     for required in BASELINE:
         path = required['path']
-        entry = run('git', '-C', str(source), 'ls-tree', sha, '--', path).strip()
+        entry = run('git', '--no-replace-objects', '-C', str(source), 'ls-tree', sha, '--', path).strip()
         fields = entry.split(None, 3)
         mode = '100755' if required['posix_mode'] == '0755' else '100644'
         if len(fields) != 4 or fields[0] != mode or fields[1] != 'blob' or fields[3] != path:
             fail('SOURCE_RESOURCE_INVALID', path)
-        blob = subprocess.run(['git', '-C', str(source), 'cat-file', 'blob', fields[2]],
+        blob = subprocess.run(['git', '--no-replace-objects', '-C', str(source), 'cat-file', 'blob', fields[2]],
                               capture_output=True, timeout=60, check=True).stdout
         rows.append({**required, 'size': len(blob), 'sha256': hashlib.sha256(blob).hexdigest(),
                      'blob_oid': fields[2], 'git_mode': mode})
