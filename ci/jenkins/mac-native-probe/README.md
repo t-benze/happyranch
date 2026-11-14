@@ -793,7 +793,8 @@ exhaustion refuse and preserve files/scratch. Sidecar stop settles before
 connector stop in the CLI; uninstall/replacement waits before removing/writing.
 Finally cleanup records each attempted target under `cleanup.settle` with
 `last_print` (exit_code and <=2048-character raw excerpt) and `elapsed_seconds`.
-The shared 100s cleanup cap can shorten a later target's 30s allowance.
+The shared 100s cleanup cap includes scratch removal and can shorten a later
+target's 30s allowance or the remaining removal time.
 Build31 at `bc42318f` completed the native build and pre-stop lifecycle, then
 failed at stop and immediate cleanup absence. The repaired head's complete
 native lifecycle is NOT RUN in this maker leg.
@@ -812,7 +813,18 @@ install/start/restart/enable and conflict reporting from status/check-drift;
 it is closed on exit. No real daemon or tailnet/control server is started.
 Raw bounded launchctl print/print-disabled observations accompany each lifecycle
 step; finally cleanup reports exact owned-service/plist absence and scratch
-removal. Failed native cleanup preserves uncertainty and fails; suite-local
+removal. Only this suite's Go environment adds `-modcacherw` alongside
+`-mod=readonly`, keeping downloaded cache directories writable without changing
+modules. After service absence, scratch removal traverses literal directories
+with no-follow descriptors, checks the created root identity, and unlinks
+symlinks without following their targets. A permission error adds owner write
+and execute only to its contained parent directory fd, then retries once;
+regular files, outside targets and the scratch root's parent are never chmodded.
+Traversal checks the same cleanup deadline per entry and refuses depth >=128.
+`connector_managed.scratch_removed` is always a Boolean; `scratch_error` is empty
+on successful removal or contains <=512 characters on failure/retention.
+Removal failure remains a failed suite. Failed native cleanup preserves
+uncertainty and fails; suite-local
 retention is still subject to the existing parent job EXIT scratch removal.
 Uncatchable termination/agent loss retains the existing job's limitations.
 
@@ -820,7 +832,11 @@ Claims require a separately authorized native run at an exact reviewed SHA.
 This suite does not prove real tailnet enrollment/readiness, packaged-app
 connector execution, login/reboot persistence or signing. Packaged-app acceptance
 still depends on the separate THR-346 check pending founder approval. Budget for
-this fix-forward leg: PRs 9/10, Mac mini 7/8, zero submitted runs.
+this scratch-cleanup fix-forward leg: PRs 9/10, Mac mini 8/8 spent, zero submitted
+runs. Build32 at `52fa59a9` passed lifecycle and final service/plist absence but
+failed deleting its Go module cache, before recording the suite scratch receipt.
+Its suite/job scratch residue remains unobserved and untouched. Further native
+runs require Founder authorization; the repaired head is not native-verified.
 
 Portable focused checks in the existing standalone venue:
 

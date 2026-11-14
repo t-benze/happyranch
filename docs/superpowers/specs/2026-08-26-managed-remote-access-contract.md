@@ -651,7 +651,8 @@ connector stop; replacement and uninstall cannot write/remove before absence.
 No ExitTimeOut or other plist key changes. The connector-managed finally path
 uses the same per-target settle, preserving its 100s total cleanup cap and
 recording each attempted target's last <=2048-character raw print and elapsed
-settle seconds. A target can receive less time when that total cap is near.
+settle seconds. Scratch removal shares that deadline; later targets/removal
+receive only the remaining time.
 Its stop/restart/uninstall CLI calls allow <=120s for the two agents within
 the unchanged 240s lifecycle, 3300s suite and 5400s job budgets.
 Backups are completely written, flushed and fsynced in a nonselectable temporary
@@ -1015,7 +1016,9 @@ Any collision or unavailable observation fails closed without installing or
 cleaning preexisting targets. Cleanup ownership begins only after this proof.
 The source suite stages an offline scratch venv/.pth using already-bootstrapped
 packages, provisions the existing pinned Go1.23.12 toolchain, builds the checked-out
-sidecar with readonly modules, then drives the real source installer CLI.
+sidecar with `GOFLAGS="-mod=readonly -modcacherw"` in this suite only, then drives
+the real source installer CLI. Modules remain readonly; downloaded cache
+directories remain writable.
 It exercises both-agent install/start/status, exact connector PID SIGKILL and
 KeepAlive replacement, stop/drift, coexistence refusal using its own temporary
 non-loopback 8443 listener (occupied port refuses), normal uninstall and purge.
@@ -1025,14 +1028,25 @@ while launchd retries). Missing/corrupt records and fabricated ready are rejecte
 Synthetic config/policy/enrollment/token files and a loopback unavailable control
 endpoint provide no real enrollment or daemon. No real credentials are used.
 Bounded raw launchctl print/print-disabled excerpts and finally-path service,
-plist and scratch receipts survive failures. Cleanup uncertainty is a failure;
+plist and scratch receipts survive failures. Scratch removal validates the
+created root identity and traverses literal directories through no-follow fds;
+symlinks are unlinked without following targets. Permission errors add owner
+write/execute only to the contained parent directory fd and retry once. Regular
+files, outside targets and the root's parent are never chmodded. Each entry
+checks the shared cleanup deadline; depth >=128 refuses. `scratch_removed` is
+always a Boolean and `scratch_error` is empty on success or <=512 characters
+on failure/retention. Removal failure and cleanup uncertainty still fail the suite;
 any suite-local retained scratch remains subject to the existing job EXIT trap.
 The existing connector-launchd stand-in suite is unchanged.
 
 C8 maker delivery and this fix-forward use ZERO Mac-mini runs (PRs 9/10;
-Mac mini 7/8 used). Build31 at `bc42318f` passed build/install/start/status and
+Mac mini 8/8 spent). Build31 at `bc42318f` passed build/install/start/status and
 KeepAlive recovery, then failed at stop and immediate cleanup absence. The
-repaired head's combined native suite is NOT RUN in this leg. A future run proves source
+subsequent build32 at `52fa59a9` passed lifecycle and final service/plist absence
+but failed removing its Go module cache before the suite scratch receipt.
+Build31/build32 scratch residue remains unobserved and untouched; further native
+runs are Founder-reserved. The repaired head's combined native suite is NOT RUN
+in this leg. A future run proves source
 CLI/native lifecycle only: real tailnet enrollment/readiness is unproven, as are
 login/reboot persistence and packaged execution. Packaged-app connector acceptance
 depends on the separate THR-346 packaged-app check, pending founder approval.

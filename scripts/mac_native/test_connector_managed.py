@@ -9,7 +9,9 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
+from typing import Any, Iterator
 from unittest.mock import patch
 
 from runtime.remote_access import launchd_coexistence as guard
@@ -170,6 +172,153 @@ class Coexistence(unittest.TestCase):
 
 
 class AcceptanceLogic(unittest.TestCase):
+    @contextmanager
+    def scratch_environment(self, root: Path, command: Any, staged: Any) -> Iterator[Path]:
+        home, tmp, interpreter = root / "home", root / "tmp", root / "venv"
+        home.mkdir(); tmp.mkdir(); interpreter.mkdir()
+        with patch.dict(os.environ, HOME=str(home), TMPDIR=str(tmp)), \
+                patch.object(sys, "prefix", str(interpreter)), patch.object(suite, "_command", command), \
+                patch.object(suite.venv.EnvBuilder, "create", side_effect=staged):
+            yield tmp
+
+    @staticmethod
+    def absent_command(argv: list[str], *args: Any, **kwargs: Any) -> tuple[int, bytes]:
+        label = argv[-1].rsplit("/", 1)[-1]
+        if argv[1] == "print" and label in suite.LABELS:
+            return 113, f'Could not find service "{label}" in domain'.encode()
+        return 0, b"domain observation"
+
+    def test_readonly_module_cache_removed_and_receipt_recorded(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder).resolve()
+            dependencies = root / "dependencies/site-packages"
+            dependencies.mkdir(parents=True)
+            build_env = {}
+            def staged(path: Path) -> None:
+                (path / "lib/python3/site-packages").mkdir(parents=True)
+            def provision(path: Path, *args: Any) -> dict[str, str]:
+                return {"GOMODCACHE": str(path / "go-modules")}
+            def command(argv: list[str], env: dict[str, str], *args: Any, **kwargs: Any) -> tuple[int, bytes]:
+                if argv[1] == "version":
+                    return 0, b"go version go1.23.12 darwin/arm64"
+                if argv[1] == "build":
+                    build_env.update(env)
+                    cache = Path(env["GOMODCACHE"])
+                    module = cache / "gvisor.dev/gvisor@v0.0.0-synthetic/pkg"
+                    module.mkdir(parents=True)
+                    source = module / "module.go"
+                    source.write_text("package synthetic\n")
+                    source.chmod(0o444)
+                    for directory in (module, module.parent, module.parent.parent, cache):
+                        directory.chmod(0o555)
+                    raise RuntimeError("synthetic build failure after cache download")
+                return self.absent_command(argv)
+            report = {}
+            with self.scratch_environment(root, command, staged) as tmp, \
+                    patch.object(sys, "path", [*sys.path, str(dependencies)]), \
+                    patch.object(suite, "provision", provision):
+                try:
+                    suite.run(report)
+                except Exception as exc:
+                    error = exc
+                else:
+                    self.fail("build failure was converted to a pass")
+            self.assertIsInstance(error, RuntimeError, str(error))
+            self.assertIn("synthetic build failure", str(error))
+            section = report["connector_managed"]
+            self.assertTrue(section.get("scratch_removed"), section)
+            self.assertEqual(section.get("scratch_error"), "")
+            self.assertEqual(list(tmp.iterdir()), [])
+            self.assertEqual(build_env["GOFLAGS"], "-mod=readonly -modcacherw")
+            self.assertTrue(Path(build_env["GOMODCACHE"]).is_relative_to(tmp))
+
+    def test_scratch_cleanup_does_not_follow_outside_symlinks(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder).resolve()
+            outside = root / "outside"
+            outside.mkdir()
+            sentinel = outside / "sentinel"
+            sentinel.write_bytes(b"outside must survive unchanged")
+            sentinel.chmod(0o444)
+            outside.chmod(0o555)
+            before = (outside.stat().st_mode, sentinel.stat().st_mode, sentinel.read_bytes())
+            def staged(path: Path) -> None:
+                cache = path.parent / "tools/go-modules/synthetic@v1"
+                cache.mkdir(parents=True)
+                (cache / "directory-link").symlink_to(outside, target_is_directory=True)
+                (cache / "file-link").symlink_to(sentinel)
+                (cache / "dangling-link").symlink_to(outside / "missing")
+                cache.chmod(0o555)
+                raise RuntimeError("synthetic staging failure")
+            report = {}
+            with self.scratch_environment(root, self.absent_command, staged) as tmp:
+                try:
+                    suite.run(report)
+                except Exception as exc:
+                    error = exc
+                else:
+                    self.fail("staging failure was converted to a pass")
+            self.assertIsInstance(error, RuntimeError, str(error))
+            self.assertIn("synthetic staging failure", str(error))
+            self.assertTrue(report["connector_managed"].get("scratch_removed"))
+            self.assertEqual(report["connector_managed"].get("scratch_error"), "")
+            self.assertEqual(list(tmp.iterdir()), [])
+            self.assertEqual((outside.stat().st_mode, sentinel.stat().st_mode, sentinel.read_bytes()), before)
+
+    def test_scratch_removal_failure_records_bounded_error_and_shared_deadline(self) -> None:
+        for failure in ("permission", "deadline"):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as folder:
+                root = Path(folder).resolve()
+                clock = [0.0]
+                cleaning = False
+                def staged(path: Path) -> None:
+                    (path.parent / "scratch-file").write_text("owned")
+                    raise RuntimeError("synthetic staging failure")
+                def command(argv: list[str], *args: Any, **kwargs: Any) -> tuple[int, bytes]:
+                    nonlocal cleaning
+                    if argv[1] == "bootout":
+                        cleaning = True
+                    if cleaning and argv[1:3] == ["print-disabled", f"gui/{os.getuid()}"]:
+                        clock[0] = 99
+                    return self.absent_command(argv)
+                scan = os.scandir
+                def exhausted_scan(path: Any) -> Any:
+                    clock[0] = 100
+                    return scan(path)
+                unlink = os.unlink
+                denied = []
+                def denied_unlink(path: Any, *args: Any, **kwargs: Any) -> None:
+                    if os.fspath(path) == "scratch-file":
+                        denied.append(path)
+                        raise PermissionError("denied-" * 100)
+                    unlink(path, *args, **kwargs)
+                report = {}
+                with self.scratch_environment(root, command, staged) as tmp, \
+                        patch.object(suite.time, "monotonic", side_effect=lambda: clock[0]):
+                    if failure == "permission":
+                        failure_patch = patch.object(suite.os, "unlink", side_effect=denied_unlink)
+                    else:
+                        failure_patch = patch.object(suite.os, "scandir", side_effect=exhausted_scan)
+                    with failure_patch as failure_mock:
+                        try:
+                            suite.run(report)
+                        except Exception as exc:
+                            error = exc
+                        else:
+                            self.fail("scratch removal failure was converted to a pass")
+                section = report["connector_managed"]
+                self.assertIs(section.get("scratch_removed"), False, section)
+                self.assertIsInstance(error, RuntimeError)
+                self.assertIn("check failed: scratch_removed", str(error))
+                error = section.get("scratch_error", "")
+                self.assertIn("PermissionError" if failure == "permission" else "TimeoutError", error)
+                self.assertLessEqual(len(error), 512)
+                self.assertEqual(section["checks"][-1], {"name": "scratch_removed", "status": "FAIL"})
+                self.assertEqual(len(list(tmp.iterdir())), 1)
+                self.assertLessEqual(clock[0], 100)
+                self.assertEqual(len(denied) if failure == "permission" else failure_mock.call_count,
+                                 2 if failure == "permission" else 1)
+
     def test_finally_settles_sigtermed_and_records_last_print(self) -> None:
         for stuck in (False, True):
             with self.subTest(stuck=stuck), tempfile.TemporaryDirectory() as folder:

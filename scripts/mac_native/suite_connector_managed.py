@@ -8,8 +8,8 @@ import json
 import os
 import plistlib
 import signal
-import shutil
 import socket
+import stat
 import sys
 import tempfile
 import time
@@ -58,10 +58,79 @@ def private(path: Path, value: bytes) -> None:
         stream.write(value)
 
 
+def remove_owned_scratch(scratch: Path, identity: tuple[int, int], deadline: float) -> None:
+    """Remove the created root without following links or chmodding its parent."""
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+
+    def remaining() -> None:
+        if time.monotonic() >= deadline:
+            raise TimeoutError("owned scratch removal deadline")
+
+    def remove_entry(fd: int, name: str, directory: bool) -> None:
+        operation = os.rmdir if directory else os.unlink
+        remaining()
+        try:
+            operation(name, dir_fd=fd)
+        except PermissionError:
+            # POSIX unlink/rmdir needs write+search on the containing directory,
+            # not write on the file. This fd is always INSIDE the owned root;
+            # regular files (including external hardlinks) are never chmodded.
+            remaining()
+            os.fchmod(fd, stat.S_IMODE(os.fstat(fd).st_mode) | stat.S_IWUSR | stat.S_IXUSR)
+            remaining()
+            operation(name, dir_fd=fd)  # One retry only; further errors fail.
+
+    def empty(fd: int, depth: int = 0) -> None:
+        remaining()
+        if depth >= 128:
+            raise RuntimeError("owned scratch depth exceeds 128")
+        with os.scandir(fd) as entries:
+            for entry in entries:
+                remaining()
+                info = entry.stat(follow_symlinks=False)
+                directory = stat.S_ISDIR(info.st_mode)
+                if directory:
+                    child = os.open(entry.name, flags, dir_fd=fd)
+                    try:
+                        current = os.fstat(child)
+                        if (current.st_dev, current.st_ino) != (info.st_dev, info.st_ino):
+                            raise RuntimeError("owned scratch entry changed")
+                        empty(child, depth + 1)
+                    finally:
+                        os.close(child)
+                remove_entry(fd, entry.name, directory)
+
+    # Traverse literal parents too: an aliased/replaced root must fail closed.
+    parent = os.open(scratch.anchor, flags)
+    try:
+        for name in scratch.parts[1:-1]:
+            remaining()
+            child = os.open(name, flags, dir_fd=parent)
+            os.close(parent)
+            parent = child
+        remaining()
+        root = os.open(scratch.name, flags, dir_fd=parent)
+        try:
+            info = os.fstat(root)
+            if (info.st_dev, info.st_ino) != identity:
+                raise RuntimeError("owned scratch root changed")
+            empty(root)
+            remaining()
+            current = os.stat(scratch.name, dir_fd=parent, follow_symlinks=False)
+            if (current.st_dev, current.st_ino) != identity:
+                raise RuntimeError("owned scratch root changed")
+            os.rmdir(scratch.name, dir_fd=parent)
+        finally:
+            os.close(root)
+    finally:
+        os.close(parent)
+
+
 def run(report: dict[str, Any]) -> None:
     checks: list[dict[str, Any]] = []
     section: dict[str, Any] = {"checks": checks, "observations": {}, "cleanup": {},
-                               "labels": LABELS, "uid": os.getuid(), "owned": False}
+                               "labels": LABELS, "uid": os.getuid(), "owned": False,
+                               "scratch_removed": False, "scratch_error": "scratch not created"}
     report["connector_managed"] = section
     # 240s provisioning + <=2700s cold Go build + <=240s lifecycle + cleanup,
     # within the existing 5400s job (including its <=300s bootstrap).
@@ -81,7 +150,11 @@ def run(report: dict[str, Any]) -> None:
             raise RuntimeError(f"connector-managed check failed: {name}")
 
     scratch = Path(tempfile.mkdtemp(prefix="connector-managed-", dir=job_tmp)).resolve()
+    info = scratch.stat()
+    scratch_identity = (info.st_dev, info.st_ino)
+    section["scratch_error"] = "scratch cleanup not attempted"
     retain_scratch = False
+    cleanup_deadline: float | None = None
     try:
         home, tmp = scratch / "home", scratch / "tmp"
         home.mkdir(mode=0o700)
@@ -95,7 +168,6 @@ def run(report: dict[str, Any]) -> None:
         domains: list[str] = []
         owned = False
         python = scratch / "venv/bin/python3"
-        cleanup_deadline: float | None = None
 
         def command(argv: list[str], *, seconds: float = 10, cwd: Path = scratch,
                     cleanup: bool = False) -> tuple[int, str]:
@@ -173,7 +245,7 @@ def run(report: dict[str, Any]) -> None:
                               min(deadline, time.monotonic() + 240), section["provisioning"]["attempts"])
             env.update({key: value for key, value in tools.items() if key in {
                 "PATH", "GOROOT", "GOPATH", "GOTOOLCHAIN", "GOCACHE", "GOMODCACHE"}})
-            env.update(CGO_ENABLED="0", GOOS="darwin", GOARCH="arm64", GOFLAGS="-mod=readonly", GOWORK="off")
+            env.update(CGO_ENABLED="0", GOOS="darwin", GOARCH="arm64", GOFLAGS="-mod=readonly -modcacherw", GOWORK="off")
             go = str(scratch / "tools/go/bin/go")
             code, version = command([go, "version"])
             section["go"] = {"path": go, "version": version.strip(), "exit_code": code}
@@ -284,12 +356,12 @@ def run(report: dict[str, Any]) -> None:
         finally:
             step = "cleanup"
             cleanup = section["cleanup"]
+            cleanup_deadline = time.monotonic() + 100
             if owned:
                 # Reserve independent bounded cleanup even after the main deadline.
                 # Boot out ONLY targets proven absent before this run's install.
                 from runtime.remote_access.launchd_agent import parse_launchctl_print
 
-                cleanup_deadline = time.monotonic() + 100
                 complete = True
                 try:
                     for domain in domains:
@@ -338,8 +410,16 @@ def run(report: dict[str, Any]) -> None:
             else:
                 cleanup["not_owned_no_service_or_plist_cleanup"] = True
     finally:
+        section["scratch_error"] = "owned service cleanup incomplete; scratch retained"
         if not retain_scratch:
-            shutil.rmtree(scratch)
-        section["scratch_removed"] = not scratch.exists()
-        if not retain_scratch:
+            # Early staging failures also get one bounded cleanup allowance.
+            if cleanup_deadline is None:
+                cleanup_deadline = time.monotonic() + 100
+            section["scratch_error"] = "scratch removal interrupted"
+            try:
+                remove_owned_scratch(scratch, scratch_identity, cleanup_deadline)
+                section["scratch_removed"] = True
+                section["scratch_error"] = ""
+            except Exception as exc:
+                section["scratch_error"] = f"{type(exc).__name__}: {exc}"[:512]
             check("scratch_removed", section["scratch_removed"])
