@@ -318,6 +318,12 @@ complete reader's outcome and transaction ownership before restoring legacy
 control. Attachment cases exercise an additional native database, restored
 ATTACH/DETACH and a privately moved or dangling main path; they require fresh
 validation or the explicit attachment-change refusal without a cached hit.
+The same keeper checks PRAGMA settings restored before any intervening read,
+transactions opened
+before the load observer (reader, pinned reader, writer and savepoint; source
+and target) and an initially unavailable main-file identity. Unknown intervals
+remain uncertified, preserve the caller's transaction and use the public complete
+reader's exact outcome. Restoration starts a new complete fact.
 `--retained-corruption` selects the corruption table's nonempty Pause journal,
 naming owner/claim and terminal team-move row/audit cases. The real storage
 owners prepare synthetic private history; first-read, between-use local/external

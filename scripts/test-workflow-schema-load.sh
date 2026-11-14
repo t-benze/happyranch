@@ -702,6 +702,33 @@ if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--seque
                         db._conn.set_authorizer(None)
                 print('PASS A0b sequential metadata denial:', pragma)
 
+        # Restoring a setting before the next read also restores the metadata
+        # tuple. Only observation of the actual assignments invalidates reuse.
+        for pragma in ('foreign_keys', 'defer_foreign_keys', 'read_uncommitted',
+                       'writable_schema', 'ignore_check_constraints',
+                       'recursive_triggers', 'trusted_schema', 'query_only',
+                       'synchronous', 'temp_store'):
+            with sequential_fault_case('restored config ' + pragma), sequential_fixture() as (db, root, sql):
+                with org_load_validation(db, org_slug='scratch'):
+                    seq_read(db)
+                    owner = load_guard._current.get()
+                    before = load_guard._bookend(db._conn)
+                    previous = db._conn.execute('PRAGMA ' + pragma).fetchone()[0]
+                    changed = 2 if pragma == 'temp_store' else (0 if previous else 1)
+                    db._conn.execute(f'PRAGMA {pragma}={changed}')
+                    assert db._conn.execute('PRAGMA ' + pragma).fetchone()[0] != previous, pragma + ' fixture did not change configuration'
+                    db._conn.execute(f'PRAGMA {pragma}={previous}')
+                    assert load_guard._bookend(db._conn) == before, pragma + ' fixture failed to restore metadata'
+                    hits = owner.hits
+                    full = sql.count('PRAGMA integrity_check')
+                    actual = sequential_outcome(lambda: seq_read(db))
+                    assert owner.hits == hits and sql.count('PRAGMA integrity_check') == full + 1, pragma + ' restored configuration returned a hit'
+                    expected = sequential_outcome(lambda: read_sequential_history(
+                        db._conn, expected_org_slug='scratch').retained)
+                    assert actual == expected and actual[0] == 'returned', pragma + ' restoration changed complete outcome'
+                    assert not db._conn.in_transaction, pragma + ' restoration leaked owned snapshot'
+                print('PASS A0b sequential restored configuration:', pragma)
+
         for config in ('native config', 'SQL limit', 'row factory', 'text factory', 'isolation level',
                        'query_only', 'foreign_keys', 'defer_foreign_keys',
                        'read_uncommitted', 'writable_schema', 'ignore_check_constraints',
@@ -923,6 +950,65 @@ if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--seque
                     assert owner.hits == hits and owner.sequential_saved is None, 'wrong connection borrowed a sequential certificate'
                     assert other_sql.count('PRAGMA integrity_check') == before + 2
                 print('PASS A0b sequential ownership exclusion: wrong connection')
+
+        # Transactions that predate observation have unknown ownership, even
+        # when their SQL resembles an audited source or a fresh cutover target.
+        for kind, target in product(('reader', 'pinned reader', 'writer', 'savepoint'), (False, True)):
+            name = 'preexisting ownership ' + kind + (' target' if target else ' source')
+            with sequential_fault_case(name), sequential_fixture() as (db, root, sql):
+                conn = db._conn
+                conn.execute({'reader': 'BEGIN', 'pinned reader': 'BEGIN',
+                              'writer': 'BEGIN IMMEDIATE', 'savepoint': 'SAVEPOINT original'}[kind])
+                if kind == 'pinned reader':
+                    conn.execute('SELECT rootpage FROM main.sqlite_schema LIMIT 1').fetchone()
+                try:
+                    with org_load_validation(db, org_slug='scratch'):
+                        owner = load_guard._current.get()
+                        assert owner.transaction_mode is None, name + ' fixture observed preexisting transaction'
+                        for repeat in range(2):
+                            full = sql.count('PRAGMA integrity_check')
+                            operation = (lambda: load_guard.read_workflow_schema_target_for_org_load(
+                                conn, expected_org_slug='scratch', legacy=lambda: validate_workflow_schema(
+                                    conn, expected_org_slug='scratch'))) if target else (
+                                lambda: seq_read(db, writer_source=True))
+                            actual = sequential_outcome(operation)
+                            assert sql.count('PRAGMA integrity_check') == full + 1, name + ' bypassed complete fallback'
+                            expected = sequential_outcome(lambda: read_sequential_history(
+                                conn, expected_org_slug='scratch').retained)
+                            assert actual == expected and actual[0] == 'returned', name + ' changed complete outcome'
+                            assert conn.in_transaction and owner.hits == 0 and owner.sequential_saved is None, name + ' stole ownership or certified unknown interval'
+                        conn.rollback()  # Only the original caller releases it.
+                        full = sql.count('PRAGMA integrity_check')
+                        seq_read(db)
+                        assert sql.count('PRAGMA integrity_check') == full + 1 and owner.sequential_saved is not None, name + ' exit did not start a fresh complete fact'
+                finally:
+                    conn.rollback()
+                print('PASS A0b sequential unknown transaction ownership:', name)
+
+        with sequential_fault_case('initial attachment unavailable'), sequential_fixture() as (db, root, sql):
+            original = Path(db.db_path)
+            held = original.with_suffix('.initial-held')
+            original.rename(held)
+            try:
+                with org_load_validation(db, org_slug='scratch'):
+                    owner = load_guard._current.get()
+                    assert owner.attachment is None, 'initial attachment fixture retained identity'
+                    for repeat in range(2):
+                        full = sql.count('PRAGMA integrity_check')
+                        actual = sequential_outcome(lambda: seq_read(db))
+                        assert sql.count('PRAGMA integrity_check') == full + 1, 'unknown initial attachment skipped complete read'
+                        expected = sequential_outcome(lambda: read_sequential_history(
+                            db._conn, expected_org_slug='scratch').retained)
+                        assert actual == expected and owner.hits == 0 and owner.sequential_saved is None, 'unknown initial attachment certified reuse'
+                        assert not db._conn.in_transaction, 'unknown initial attachment leaked snapshot'
+                    held.rename(original)
+                    full = sql.count('PRAGMA integrity_check')
+                    seq_read(db)
+                    assert sql.count('PRAGMA integrity_check') == full + 1, 'initial attachment restoration skipped complete read'
+            finally:
+                if held.exists():
+                    held.rename(original)
+            print('PASS A0b sequential initial attachment unavailable')
 
         for race in ('source acquisition', 'source writer fence', 'target acquisition', 'target pinned snapshot'):
             with sequential_fault_case('borrowed ' + race), sequential_fixture() as (db, root, sql):
