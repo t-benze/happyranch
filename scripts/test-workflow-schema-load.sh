@@ -673,16 +673,20 @@ if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--seque
         # Extend the legacy metadata keeper to the complete sequential branch.
         # A native denial must fall back/refuse exactly like the public reader;
         # checking only the final tuple would miss an illicit successful hit.
-        for pragma in ('data_version', 'schema_version', 'database_list',
+        for phase, pragma in product(('initial', 'primed'), ('data_version', 'schema_version', 'database_list',
                        'foreign_keys', 'defer_foreign_keys', 'read_uncommitted',
                        'writable_schema', 'ignore_check_constraints',
                        'recursive_triggers', 'trusted_schema', 'query_only',
-                       'journal_mode', 'locking_mode', 'synchronous', 'temp_store'):
-            with sequential_fault_case('metadata ' + pragma), sequential_fixture() as (db, root, sql):
+                       'journal_mode', 'locking_mode', 'synchronous', 'temp_store')):
+            name = ('initial metadata ' if phase == 'initial' else 'metadata ') + pragma
+            with sequential_fault_case(name), sequential_fixture() as (db, root, sql):
                 with org_load_validation(db, org_slug='scratch'):
-                    seq_read(db)
                     owner = load_guard._current.get()
-                    assert owner.sequential_saved is not None
+                    if phase == 'primed':
+                        seq_read(db)
+                        assert owner.sequential_saved is not None
+                    else:
+                        assert owner.sequential_saved is None
                     denied = []
                     def deny(action, arg1, *_):
                         if action == sqlite3.SQLITE_PRAGMA and arg1 == pragma:
@@ -692,15 +696,45 @@ if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--seque
                     db._conn.set_authorizer(deny)
                     try:
                         hits = owner.hits
-                        actual = sequential_outcome(lambda: seq_read(db))
                         expected = sequential_outcome(lambda: read_sequential_history(
                             db._conn, expected_org_slug='scratch').retained)
-                        assert denied and actual == expected, pragma + ' denial changed complete outcome'
-                        assert owner.hits == hits and owner.sequential_saved is None, pragma + ' denial returned a sequential hit'
-                        assert not db._conn.in_transaction, pragma + ' denial leaked owned snapshot'
+                        for attempt in range(2):
+                            actual = sequential_outcome(lambda: seq_read(db))
+                            assert denied and actual == expected, name + ' denial changed complete outcome'
+                            assert owner.hits == hits and owner.sequential_saved is None, name + ' denial returned a sequential hit'
+                            assert not db._conn.in_transaction, name + ' denial leaked owned snapshot'
                     finally:
                         db._conn.set_authorizer(None)
-                print('PASS A0b sequential metadata denial:', pragma)
+                    full = sql.count('PRAGMA integrity_check')
+                    seq_read(db)
+                    assert sql.count('PRAGMA integrity_check') == full + 1 and owner.hits == hits, name + ' restoration resurrected a fact'
+                    assert not db._conn.in_transaction, name + ' restoration leaked owned snapshot'
+                print('PASS A0b sequential metadata denial:', phase, pragma)
+
+        for limit, value in ((sqlite3.SQLITE_LIMIT_SQL_LENGTH, 16), (sqlite3.SQLITE_LIMIT_COLUMN, 1)):
+            with sequential_fault_case('initial native limit denial ' + str(limit)), sequential_fixture() as (db, root, sql):
+                previous = db._conn.setlimit(limit, value)
+                db._conn.set_authorizer(lambda *_: sqlite3.SQLITE_OK)
+                try:
+                    with org_load_validation(db, org_slug='scratch'):
+                        owner = load_guard._current.get()
+                        expected = sequential_outcome(lambda: read_sequential_history(
+                            db._conn, expected_org_slug='scratch').retained)
+                        for attempt in range(2):
+                            actual = sequential_outcome(lambda: seq_read(db))
+                            assert actual == expected and actual[0] == 'refused', 'initial native limit denial changed complete outcome'
+                            assert owner.hits == 0 and owner.sequential_saved is None, 'initial native limit denial certified reuse'
+                            assert not db._conn.in_transaction, 'initial native limit denial leaked snapshot'
+                        db._conn.setlimit(limit, previous)
+                        db._conn.set_authorizer(None)
+                        full = sql.count('PRAGMA integrity_check')
+                        seq_read(db)
+                        assert sql.count('PRAGMA integrity_check') == full + 1 and owner.hits == 0, 'initial native limit restoration resurrected a fact'
+                        assert not db._conn.in_transaction, 'initial native limit restoration leaked snapshot'
+                finally:
+                    db._conn.setlimit(limit, previous)
+                    db._conn.set_authorizer(None)
+                print('PASS A0b sequential initial native limit denial:', limit)
 
         # Restoring a setting before the next read also restores the metadata
         # tuple. Only observation of the actual assignments invalidates reuse.

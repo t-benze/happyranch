@@ -324,6 +324,11 @@ before the load observer (reader, pinned reader, writer and savepoint; source
 and target) and an initially unavailable main-file identity. Unknown intervals
 remain uncertified, preserve the caller's transaction and use the public complete
 reader's exact outcome. Restoration starts a new complete fact.
+Metadata denials cover both the initial read and an already primed owner. Two
+denied attempts must match the public complete reader; removing the denial
+requires a new complete integrity read. Initial native SQL-length/column limits
+likewise preserve the exact refusal and recover through fresh validation after
+restoration, without a certificate, hit or owned-transaction leak.
 `--retained-corruption` selects the corruption table's nonempty Pause journal,
 naming owner/claim and terminal team-move row/audit cases. The real storage
 owners prepare synthetic private history; first-read, between-use local/external
