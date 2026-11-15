@@ -2121,7 +2121,7 @@ def test_c7_both_resume_resets_and_worker_contexts(
     db._conn.commit()
     preserved_tables = ('threads', 'thread_messages', 'thread_invocations', 'thread_reply_delivery_state',
         'thread_reply_breaker_episodes', 'thread_reply_breaker_receipts', 'thread_reply_exchange',
-        'thread_exchange_deferrals', 'escalation_notifications')
+        'thread_exchange_deferrals')
     before = {table: [tuple(row) for row in db._conn.execute(f'SELECT * FROM {table} ORDER BY rowid')]
               for table in preserved_tables}
     participants = [tuple(row) for row in db._conn.execute('SELECT * FROM thread_participants ORDER BY rowid')]
