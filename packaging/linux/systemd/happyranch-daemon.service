@@ -1,0 +1,19 @@
+[Unit]
+Description=HappyRanch release daemon
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+ExecStart=/opt/happyranch-desktop/bin/happyranch-daemon
+Environment=HAPPYRANCH_DAEMON_HOME=%h/.happyranch-release
+Environment=HAPPYRANCH_DAEMON_PORT=8766
+Environment=HAPPYRANCH_DAEMON_BIND_HOST=127.0.0.1
+Environment=HAPPYRANCH_BUNDLED_BIN=/opt/happyranch-desktop/bin
+Environment=PATH=/opt/happyranch-desktop/bin:/usr/local/bin:/usr/bin:/bin
+EnvironmentFile=-%h/.config/happyranch/daemon.env
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
