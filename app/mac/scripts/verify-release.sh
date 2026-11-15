@@ -713,20 +713,12 @@ try:
                                    key + '_omitted': max(0, len(values) - 64),
                                    key + '_truncated_names': truncated})
                 fail('ARCHIVE_IDENTITY_MISMATCH', detail)
+        if zip_inventory(a.archive) != inv['inventory_sha256']:
+            fail('ARCHIVE_IDENTITY_MISMATCH', 'ZIP inventory differs from app inventory')
         notice_receipt = notices['validate'](a.app)
         if notices['validate_archive'](a.archive) != notice_receipt:
             fail('MANIFEST_NOTICE_ARCHIVE_MISMATCH', 'candidate and archive notice receipts differ')
         resources(a.app, a.archive, **selection)
-        with zipfile.ZipFile(a.archive) as z:
-            for row in inv['members']:
-                name = 'HappyRanch.app/' + row['path'] + ('/' if row['type'] == 'directory' else '')
-                entry = z.getinfo(name)
-                if (entry.external_attr >> 16) & 0o7777 != int(row['mode'], 8):
-                    fail('ARCHIVE_IDENTITY_MISMATCH', name + ': mode')
-                if row['type'] == 'file' and hashlib.sha256(z.read(entry)).hexdigest() != row['sha256']:
-                    fail('ARCHIVE_IDENTITY_MISMATCH', name + ': bytes')
-                if row['type'] == 'symlink' and z.read(entry).decode() != row['target']:
-                    fail('ARCHIVE_IDENTITY_MISMATCH', name + ': symlink')
         info = plistlib.loads((a.app / 'Contents/Info.plist').read_bytes())
         emit({'role': 'unsigned-inner-zip', 'filename': a.archive.name,
               'size': a.archive.stat().st_size, 'sha256': digest(a.archive),

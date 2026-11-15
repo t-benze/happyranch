@@ -722,6 +722,49 @@ class PackagedHarnessTests(unittest.TestCase):
             self.assertEqual(final['packaged']['build_failure_evidence'], kept)
             self.assertEqual(final['steps']['8']['status'], 'PASS')
 
+    def test_archive_refuses_file_type_substitutions_with_matching_payload_and_permissions(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder).resolve()
+            _output, app, _fixture = self.archive_fixture(root)
+            original = root / 'original.zip'
+            with zipfile.ZipFile(original, 'w', zipfile.ZIP_DEFLATED) as z:
+                for path in sorted(app.rglob('*')):
+                    name = 'HappyRanch.app/' + path.relative_to(app).as_posix()
+                    if path.is_symlink():
+                        info = zipfile.ZipInfo(name)
+                        info.create_system = 3
+                        info.external_attr = path.lstat().st_mode << 16
+                        z.writestr(info, os.readlink(path))
+                    else:
+                        z.write(path, name)
+            archive = root / 'candidate.zip'
+            cases = [
+                ('unchanged', None, None, None),
+                ('regular-to-symlink', 'Contents/Resources/web/dist/index.html',
+                 stat.S_IFLNK, 'SPARKLE_SYMLINK_REFUSED'),
+                ('allowlisted-symlink-to-regular', 'Contents/Frameworks/Sparkle.framework/Sparkle',
+                 stat.S_IFREG, 'ARCHIVE_IDENTITY_MISMATCH'),
+            ]
+            for case, relative, kind, error in cases:
+                with self.subTest(case=case):
+                    with zipfile.ZipFile(original) as source, zipfile.ZipFile(archive, 'w') as target:
+                        for info in source.infolist():
+                            payload = source.read(info)
+                            if info.filename == 'HappyRanch.app/' + str(relative):
+                                # Change only Unix type bits; retain permissions and payload.
+                                info.external_attr = (info.external_attr & ~(0o170000 << 16)) | (kind << 16)
+                            target.writestr(info, payload)
+                    result = subprocess.run(['bash', str(suite.ROOT / 'app/mac/scripts/verify-release.sh'),
+                        'archive', '--app', str(app), '--archive', str(archive), '--run-id', 'synthetic'],
+                        capture_output=True, text=True, timeout=15)
+                    if error is None:
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        self.assertEqual(json.loads(result.stdout)['role'], 'unsigned-inner-zip')
+                    else:
+                        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                        self.assertEqual(result.stdout, '', 'refused archive must not emit a receipt')
+                        self.assertIn(error, result.stderr)
+
     def test_archive_membership_diagnostics_cover_empty_classes_duplicates_and_bounds(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder).resolve()
