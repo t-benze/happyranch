@@ -4334,3 +4334,16 @@ allocates work. Stable original-operation lookup returns the original receipt,
 separately from current settings. No schema installation/migration or live
 config is performed by source delivery. See the current
 [U7 specification](../superpowers/specs/2026-11-11-sequential-coding-u7.md).
+
+## I1a explicit install-time physical integrity
+
+Offline sequential installation now requires full native integrity at source,
+RO/query-only backup, writer source and writable target before COMMIT. Its
+single cumulative integrity ledger (at most 640M VM steps, original 900s ceiling)
+is independent of ownership, inventory and complete-reader limits. Sanitized
+stage/cause refusals publish `not_installed` only with proved preservation;
+rollback/close/independent original-inventory uncertainty stays `unknown`.
+No post-COMMIT physical veto or automatic restore is added. Inline load checks
+remain until I2; daily read-only reporting is I1b and bootstrap calling is A4.
+No daemon scheduling, startup or activation changes land here. See the
+[I1a contract](../superpowers/specs/2026-11-14-automatic-workflow-setup.md).
