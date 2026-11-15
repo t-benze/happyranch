@@ -45,11 +45,6 @@ load_build_pins() {
     done <<< "$parsed"
     BUILD_PINS=$1
 }
-public_key_ok() {
-    /usr/bin/perl -MMIME::Base64=decode_base64,encode_base64 -e '
-        my $v=shift; exit !(length(decode_base64($v))==32 && encode_base64(decode_base64($v),"") eq $v);
-    ' "$1"
-}
 # Mirror sparkle_bundle.py LINKS exactly, for both ZIP and filesystem members.
 # ZIP metadata is read before extraction; link contents come from stock unzip.
 check_members() {
@@ -238,10 +233,18 @@ private_dir() {
     [ -d "$1" ] && [ "$(stat -f '%u:%Lp' "$1")" = "$(id -u):700" ] || fail "Need an existing owner-only mode0700 directory: $1"
 }
 plist_value() { /usr/bin/plutil -extract "$2" raw -o - "$1"; }
+# Compare the whole raw stream, including exactly plutil's one formatter LF.
+# Never let shell command substitution strip LF bytes belonging to the value.
+plist_equals() {
+    plist_value "$1" "$2" | /usr/bin/perl -e '
+        local $/; my $raw=<STDIN>;
+        exit !(defined($raw) && $raw eq "$ARGV[0]\n");
+    ' "$3"
+}
 uuid_ok() { [[ $1 =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]; }
 lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
 check_plist() {
-    local f=$1 key
+    local f=$1
     [ "$(plist_value "$f" CFBundleIdentifier)" = "$BUNDLE" ]
     [ "$(plist_value "$f" CFBundleExecutable)" = HappyRanch ]
     [ "$(plist_value "$f" CFBundlePackageType)" = APPL ]
@@ -251,9 +254,9 @@ check_plist() {
     [ "$(plist_value "$f" GitCommitSHA)" = "$SOURCE" ]
     [ "$(plist_value "$f" GitTreeSHA)" = "$SOURCE_TREE" ]
     [ "$(plist_value "$f" ReleaseArchitecture)" = arm64 ]
-    key=$(plist_value "$f" SUPublicEDKey) || fail "Missing SUPublicEDKey."
-    public_key_ok "$key" && [ "$key" = "$SUPUBLIC_ED_KEY" ] || fail "Invalid/mismatched SUPublicEDKey."
-    [ "$(plist_value "$f" SUFeedURL)" = https://app.happyranch.ai/mac/appcast.xml ] || fail "Wrong Sparkle feed."
+    # The pin reader already requires a canonical 32-byte public key.
+    plist_equals "$f" SUPublicEDKey "$SUPUBLIC_ED_KEY" || fail "Invalid/mismatched SUPublicEDKey."
+    plist_equals "$f" SUFeedURL https://app.happyranch.ai/mac/appcast.xml || fail "Wrong Sparkle feed."
 }
 # Read every byte (also preserving upstream unzip/pipefail errors), retaining
 # only the header and arm64 slice header. Sparkle ships universal Mach-O files.
@@ -302,7 +305,7 @@ preflight() {
         printf '%s arm64 Mach-O type%s\n' "$rel" "$typ"
     done < "$INVENTORY"
     # plutil reads the original member on stdin; no extraction or temp file.
-    local key expected actual
+    local key expected
     for key in CFBundleIdentifier CFBundleExecutable CFBundlePackageType CFBundleShortVersionString CFBundleVersion LSMinimumSystemVersion GitCommitSHA GitTreeSHA ReleaseArchitecture SUPublicEDKey SUFeedURL; do
         case "$key" in
             CFBundleIdentifier) expected=$BUNDLE ;; CFBundleExecutable) expected=HappyRanch ;;
@@ -311,9 +314,7 @@ preflight() {
             GitTreeSHA) expected=$SOURCE_TREE ;; ReleaseArchitecture) expected=arm64 ;;
             SUPublicEDKey) expected=$SUPUBLIC_ED_KEY ;; SUFeedURL) expected=https://app.happyranch.ai/mac/appcast.xml ;;
         esac
-        actual=$(/usr/bin/unzip -p "$zip" HappyRanch.app/Contents/Info.plist | /usr/bin/plutil -extract "$key" raw -o - -) || fail "Missing archived plist field: $key"
-        if [ "$key" = SUPublicEDKey ]; then public_key_ok "$actual" || fail "Invalid archived SUPublicEDKey."; fi
-        [ "$actual" = "$expected" ] || fail "Archived plist mismatch: $key"
+        /usr/bin/unzip -p "$zip" HappyRanch.app/Contents/Info.plist | plist_equals - "$key" "$expected" || fail "Archived plist mismatch: $key"
     done
     /usr/bin/sw_vers
     /usr/bin/xcodebuild -version

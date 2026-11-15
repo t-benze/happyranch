@@ -195,7 +195,7 @@ class MacSigningTests(unittest.TestCase):
     def test_plist_public_key_feed_refusal(self) -> None:
         for script in SCRIPTS:
             path, env = self.adapted(script)
-            for case in ("valid", "missing", "mismatch", "noncanonical", "feed"):
+            for case in ("valid", "missing", "mismatch", "noncanonical", "feed", "key-lf", "feed-lf"):
                 with self.subTest(script=script, case=case):
                     data = dict(self.info)
                     if case == "missing":
@@ -206,6 +206,8 @@ class MacSigningTests(unittest.TestCase):
                         data["SUPublicEDKey"] = KEY[:-2] + "9="
                     elif case == "feed":
                         data["SUFeedURL"] = "https://example.invalid/appcast.xml"
+                    elif case in ("key-lf", "feed-lf"):
+                        data["SUPublicEDKey" if case == "key-lf" else "SUFeedURL"] += "\n"
                     (self.app / "Contents/Info.plist").write_bytes(plistlib.dumps(data))
                     # Extract from the tool-adapted script, preserving real guards.
                     code = extract_functions(path.read_text())
@@ -214,6 +216,7 @@ class MacSigningTests(unittest.TestCase):
                     self.assertEqual(r.returncode, 0 if case == "valid" else 1, r.stderr)
                     if case != "valid":
                         self.assertRegex(r.stderr, "SUPublicEDKey|Sparkle feed")
+                    self.assertFalse(Path(env["SIGNING_CALLS"]).exists(), "refusal must precede codesign")
 
     def test_real_sign_dispatch_inside_out_and_resumed_pins(self) -> None:
         import json
@@ -251,7 +254,7 @@ class MacSigningTests(unittest.TestCase):
         for script in SCRIPTS:
             path, env = self.adapted(script)
             env["ACTION"] = "preflight"
-            for case in ("missing", "mismatch", "noncanonical", "feed", "xpc", "wrong-arch"):
+            for case in ("missing", "mismatch", "noncanonical", "feed", "key-lf", "feed-lf", "xpc", "wrong-arch"):
                 with self.subTest(script=script, case=case):
                     self.info = dict(original)
                     if case == "missing":
@@ -262,6 +265,8 @@ class MacSigningTests(unittest.TestCase):
                         self.info["SUPublicEDKey"] = KEY[:-2] + "9="
                     elif case == "feed":
                         self.info["SUFeedURL"] = "https://example.invalid/appcast.xml"
+                    elif case in ("key-lf", "feed-lf"):
+                        self.info["SUPublicEDKey" if case == "key-lf" else "SUFeedURL"] += "\n"
                     extra = self.app / FW / "Versions/B/XPCServices/Installer.xpc"
                     binary = self.app / FW / "Versions/B/Autoupdate"
                     saved = binary.read_bytes()
