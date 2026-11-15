@@ -31,6 +31,7 @@ import sqlite3
 import threading
 import time as _time
 import uuid
+from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
@@ -374,6 +375,14 @@ def _decode_cursor(cursor: str) -> tuple[str, int]:
 
 
 
+@dataclass(eq=False)
+class _TraceObservation:
+    """One registration; callback failures are sticky, without retaining SQL/errors."""
+
+    callback: Callable[[str], None]
+    failed: bool = False
+
+
 class _CleanupReadRefused(Exception):
     """Category-only refusal; no raw native error or evidence in diagnostics."""
 
@@ -553,6 +562,77 @@ class Database(
             self._conn.close()
             raise
 
+
+    def _dispatch_trace(self, statement: str) -> None:
+        # SQLite suppresses trace callback exceptions. Deliver to every observer
+        # even if an earlier one fails, and expose failure to ALL current owners.
+        # Do not execute SQL here or retain statements/exception payloads.
+        observers = tuple(self._trace_observers)
+        for observer in observers:
+            try:
+                observer.callback(statement)
+            except BaseException:
+                for current in self._trace_observers:
+                    current.failed = True
+
+    @contextmanager
+    def observe_trace(self, callback: Callable[[str], None]) -> Iterator[_TraceObservation]:
+        """Compose execution observers on this Database's exact native connection.
+
+        Database exclusively owns its native trace slot. Production callers and
+        instrumentation must use this API, never raw set_trace_callback. One
+        dispatcher serves registrations in order; only the final exit clears it.
+        The caller must check the yielded registration's sticky ``failed`` flag
+        before relying on observations: SQLite cannot propagate callback errors.
+        This API owns neither the authorizer nor the progress slot.
+        """
+        if not callable(callback):
+            raise TypeError("database_trace_callback_not_callable")
+        observation = _TraceObservation(callback)
+        with self._lock:
+            if getattr(self, "_trace_custody_failed", False):
+                raise RuntimeError("database_trace_custody_unavailable")
+            # Lazy state keeps the constructor and its schema/open order intact.
+            if not hasattr(self, "_trace_observers"):
+                self._trace_observers: list[_TraceObservation] = []
+            observers = self._trace_observers
+            connection = self._conn
+            first = not observers
+            observation.failed = any(item.failed for item in observers)
+            try:
+                observers.append(observation)
+                if first:
+                    connection.set_trace_callback(self._dispatch_trace)
+            except BaseException as exc:
+                observers.remove(observation)
+                observation.failed = True
+                if first:
+                    try:
+                        connection.set_trace_callback(None)
+                    except BaseException:
+                        self._trace_custody_failed = True
+                        exc.add_note("Database trace installation cleanup failed")
+                raise
+        primary: BaseException | None = None
+        try:
+            yield observation
+        except BaseException as exc:
+            primary = exc
+            raise
+        finally:
+            with self._lock:
+                # Identity removal also permits independently nested owners to
+                # leave out of order without removing an equal callback's lease.
+                observers.remove(observation)
+                if not observers:
+                    try:
+                        connection.set_trace_callback(None)
+                    except BaseException:
+                        observation.failed = True
+                        self._trace_custody_failed = True
+                        if primary is None:
+                            raise
+                        primary.add_note("Database trace observer cleanup failed")
 
     @_synchronized
     def execute(self, sql: str, parameters=()):

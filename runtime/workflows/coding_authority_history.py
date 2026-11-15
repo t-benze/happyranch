@@ -116,6 +116,23 @@ class _Budget:
     def remaining_bytes(self) -> int:
         return _BYTE_LIMIT - self.consumed
 
+    def _charge_reused(self, consumed: int, accepted_rows: int, traversed: int) -> None:
+        """Import already-proved work once into an original default ledger.
+
+        Only the unpublished load owner calls this after identity/snapshot proof.
+        These are the same retained caps and exhaustion categories as fresh work;
+        no allowance is created, replaced or widened, including on refusal.
+        """
+        self.traversed += traversed
+        _budget_check(self.traversed <= _TRAVERSAL_LIMIT, _check, self, 'work', traversed,
+                      _TRAVERSAL_LIMIT - self.traversed + traversed)
+        self.accepted_rows += accepted_rows
+        _budget_check(self.accepted_rows <= _CALL_ROW_LIMIT, _check, self, 'rows', accepted_rows,
+                      _CALL_ROW_LIMIT - self.accepted_rows + accepted_rows)
+        self.consumed += consumed
+        _budget_check(self.consumed <= _BYTE_LIMIT, _check, self, 'bytes', consumed,
+                      _BYTE_LIMIT - self.consumed + consumed)
+
     def native_row(self, row: tuple, allowed: tuple[tuple[str, ...], ...]) -> tuple:
         """Already charged candidate; native TEXT is projected as raw BLOB.
 
