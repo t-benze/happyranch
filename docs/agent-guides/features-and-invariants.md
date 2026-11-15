@@ -3352,7 +3352,7 @@ later obligation.
 
 ## Feishu Notifications (REMOVED)
 
-Feishu was removed in TASK-302 (THR-022). The web UI and threads are the sole control path for dispatch / revisit / resolve-escalation. Legacy `feishu_notifications` config blocks are tolerated on load but ignored. Database correlation tables (`escalation_notifications`, `processed_event_ids`) remain dormant in place.
+Feishu was removed in TASK-302 (THR-022). The web UI and threads are the sole control path for dispatch / revisit / resolve-escalation. Legacy `feishu_notifications` config blocks are tolerated on load but ignored. Database correlation tables (`escalation_notifications`, `processed_event_ids`) and their task index are dropped by the idempotent database-open migration (THR-365 PR2/3); fresh databases no longer create them.
 
 ## Retired autonomous thread continuation
 

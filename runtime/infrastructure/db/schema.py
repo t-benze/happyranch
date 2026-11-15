@@ -1154,7 +1154,7 @@ class SchemaMixin:
 
     def _migrate_jobs_table_if_needed(self) -> None:
         """Rename legacy ``script_requests`` table to ``jobs`` and ripple the
-        rename through audit_log + escalation_notifications.
+        rename through audit_log.
 
         Idempotent: if ``jobs`` already exists OR ``script_requests`` does not
         exist, this is a no-op. Must run BEFORE ``_create_tables`` so the
@@ -1179,7 +1179,7 @@ class SchemaMixin:
         # would issue an implicit COMMIT at start AND swallow rollback on
         # mid-script failure — leaving the DB half-migrated and the
         # idempotency check above tripping on the next startup (jobs table
-        # exists but audit/notifications still reference SR-NNN). Each
+        # exists but audit payloads still reference SR-NNN). Each
         # statement goes through `execute` so any failure raises with the
         # full transaction rolled back.
         # SQLite 3.35+ supports DROP COLUMN; we rely on that for
@@ -1221,14 +1221,6 @@ class SchemaMixin:
             "   SET stderr_path = REPLACE(REPLACE(stderr_path, '/scripts/SR-', '/jobs/JOB-'),"
             "                             '/scripts/', '/jobs/')"
             " WHERE stderr_path IS NOT NULL",
-
-            # Ripple through cross-referencing tables.
-            "UPDATE escalation_notifications"
-            "   SET task_id = 'JOB-' || SUBSTR(task_id, 4)"
-            " WHERE kind = 'script_request' AND task_id LIKE 'SR-%'",
-            "UPDATE escalation_notifications"
-            "   SET kind = 'job_request'"
-            " WHERE kind = 'script_request'",
 
             # Audit rewrites. NB: real columns are `action` and `payload`
             # (NOT `kind`/`payload_json` — spec §6.2 corrected).
@@ -1784,29 +1776,6 @@ class SchemaMixin:
                 invocation_purpose TEXT,
                 created_at TEXT NOT NULL,
                 UNIQUE (task_id, agent, session_id)
-            );
-
-            CREATE TABLE IF NOT EXISTS escalation_notifications (
-                feishu_message_id TEXT PRIMARY KEY,
-                org_slug          TEXT NOT NULL,
-                task_id           TEXT NOT NULL,
-                chat_id           TEXT NOT NULL,
-                created_at        TEXT NOT NULL,
-                expires_at        TEXT NOT NULL,
-                consumed_at       TEXT,
-                consumed_by       TEXT,
-                kind              TEXT NOT NULL DEFAULT 'escalation'
-            );
-            CREATE INDEX IF NOT EXISTS idx_escalation_notifications_task
-                ON escalation_notifications (task_id);
-
-            CREATE TABLE IF NOT EXISTS processed_event_ids (
-                org_slug          TEXT NOT NULL,
-                feishu_event_id   TEXT NOT NULL,
-                processed_at      TEXT NOT NULL,
-                outcome           TEXT NOT NULL,
-                reason            TEXT,
-                PRIMARY KEY (org_slug, feishu_event_id)
             );
 
             CREATE TABLE IF NOT EXISTS threads (
@@ -2579,15 +2548,11 @@ class SchemaMixin:
             )
         except sqlite3.OperationalError:
             pass
-        # kind column for escalation_notifications: 'escalation' (default) or
-        # 'failure'. Additive; existing rows keep the default.
-        try:
-            self._conn.execute(
-                "ALTER TABLE escalation_notifications ADD COLUMN kind "
-                "TEXT NOT NULL DEFAULT 'escalation'"
-            )
-        except sqlite3.OperationalError:
-            pass
+        # Feishu correlation storage is retired. Run on every database open,
+        # outside the fresh CREATE script, including pre-kind legacy layouts.
+        self._conn.execute("DROP INDEX IF EXISTS idx_escalation_notifications_task")
+        self._conn.execute("DROP TABLE IF EXISTS escalation_notifications")
+        self._conn.execute("DROP TABLE IF EXISTS processed_event_ids")
 
         # --- Revisit link backfill ---
         # Historical revisit rows (created before revisit_of_task_id existed)
