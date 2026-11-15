@@ -1,5 +1,25 @@
 # Reusable workflow contracts
 
+Database-owned native trace registrations compose only through
+`Database.observe_trace`; the load observer and outer instrumentation never
+replace one another. Check the yielded sticky failure flag before relying on
+delivery. The last observer clears the native slot; BaseException exits preserve
+outer registrations, and failed native cleanup retains unavailable custody.
+The load owner now precedes sequential selection for its audited source wrappers
+and unchanged cutover, ownership and naming targets. A complete sequential fact
+is bound to the native connection, file path/device/inode, org, execution and
+named default validator/budget policy. Main is explicitly pinned before comparing
+bookends; borrowed transactions survive, and changed acquisition/exit bookends
+force one finite fresh read. Public/default read_org_layout and
+read_sequential_history never borrow it. Actual DML, write rollback, schema/config
+execution (including cached/cursor/script and restored cookies), observation loss
+or failure invalidates reuse. Require FK ON/deferred FK OFF. A fresh compatible
+caller imports the original retained charges once per fact, while changed targets
+charge their actual work to that same cumulative budget. No reset or widening;
+all associations end with the unpublished load, including BaseException exits.
+Full physical/FK checks and original L/A/B/C and logical limits remain unchanged.
+This source does not authorize setup, installation, admission or live operation.
+
 Founder THR-336 message 85 approved TASK-14461 plan revision 3 under manager
 root TASK-14478. TASK-14483 delivered **U1a**, the records/validator half of U1.
 TASK-14509 adds **U1b**, the common pure reducer and data-driven brief renderer, for

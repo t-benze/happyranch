@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[2]
-SUITES = ("truth", "teardown", "disk-sweep", "cleanup-helpers", "case-safety", "inode-telemetry", "supervisor", "repo-refresh", "cleanup-process-use", "toolchain", "packaged", "connector-launchd", "connector-managed")
+SUITES = ("truth", "teardown", "disk-sweep", "cleanup-helpers", "case-safety", "inode-telemetry", "supervisor", "repo-refresh", "cleanup-process-use", "toolchain", "packaged", "connector-launchd", "connector-managed", "env-sanitizer")
 PROC_PIDTBSDINFO = 3
 
 
@@ -1465,6 +1465,11 @@ def main() -> int:
                 from suite_inode_telemetry import run as inode_telemetry
 
                 inode_telemetry(report)
+            elif args.suite == 'env-sanitizer':
+                sys.path.insert(0, str(ROOT))
+                from scripts.mac_native.suite_env_sanitizer import run as env_sanitizer
+
+                env_sanitizer(report)
             elif args.suite == 'supervisor':
                 from suite_supervisor import supervisor
                 supervisor(report)

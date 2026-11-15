@@ -491,7 +491,7 @@ class AuditLogger:
         first-step context header.
 
         `actor` identifies the surface that triggered the revisit: "cli"
-        (HTTP route / happyranch revisit command) or "feishu-reply" (Feishu listener).
+        (HTTP route / happyranch revisit command).
         Defaults to "cli" for backward compatibility with existing callers.
         """
         selected = {key: value for key, value in (overrides or {}).items()

@@ -100,13 +100,42 @@ struct EnvironmentSanitizerTests {
                 "HOME must survive sanitization")
     }
 
+    @Test("USER and LOGNAME pass through only when present in parent")
+    func userAndLognameConditionalPassThrough() {
+        let parents: [[String: String]] = [
+            ["USER": "testuser", "LOGNAME": "testlogin"],
+            ["USER": "testuser"],
+            ["LOGNAME": "testlogin"],
+            [:],
+            ["USER": "", "LOGNAME": ""],
+        ]
+        for parent in parents {
+            let child = EnvironmentSanitizer.buildChildEnvironment(
+                daemonHome: "/tmp/hr",
+                parentEnvironment: parent
+            )
+            #expect(child["USER"] == parent["USER"],
+                    "USER must pass through unchanged when present and stay absent otherwise")
+            #expect(child["LOGNAME"] == parent["LOGNAME"],
+                    "LOGNAME must pass through unchanged when present and stay absent otherwise")
+        }
+    }
+
     @Test("no extra variables leak through")
     func noExtraVariablesLeak() {
         let parent: [String: String] = [
             "PATH": "/usr/bin:/bin",
             "HOME": "/Users/test",
+            "USER": "testuser",
+            "LOGNAME": "testlogin",
+            "SHELL": "/bin/zsh",
+            "LANG": "en_US.UTF-8",
+            "TMPDIR": "/tmp/parent-temp",
             "SECRET_API_KEY": "should-not-leak",
             "AWS_ACCESS_KEY_ID": "should-not-leak",
+            "CLAUDE_CODE_OAUTH_TOKEN": "synthetic-should-not-leak",
+            "HAPPYRANCH_FOO": "bar-value",
+            "HAPPYRANCH_SECRET_TOKEN": "synthetic-should-not-leak",
             "HAPPYRANCH_DAEMON_BIND_HOST": "0.0.0.0",
             "HAPPYRANCH_AUTH_SECRET": "topsecret",
             "HAPPYRANCH_DEBUG": "1",
@@ -119,13 +148,15 @@ struct EnvironmentSanitizerTests {
         )
 
         // Only these should survive
-        let allowedKeys: Set<String> = ["PATH", "HOME", "HAPPYRANCH_DAEMON_HOME", "HAPPYRANCH_WEB_DIST"]
+        let allowedKeys: Set<String> = [
+            "PATH", "HOME", "USER", "LOGNAME", "HAPPYRANCH_DAEMON_HOME", "HAPPYRANCH_WEB_DIST",
+        ]
         for key in child.keys {
             #expect(allowedKeys.contains(key),
                     "Unexpected key '\(key)' leaked into child environment")
         }
 
-        // Verify count is at most 4
-        #expect(child.count <= 4, "Child environment should have at most 4 variables")
+        // Verify count is at most 6, including the intended USER/LOGNAME pass-through.
+        #expect(child.count <= 6, "Child environment should have at most 6 variables")
     }
 }

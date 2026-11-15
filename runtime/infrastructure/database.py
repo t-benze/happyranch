@@ -31,6 +31,7 @@ import sqlite3
 import threading
 import time as _time
 import uuid
+from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
@@ -374,6 +375,14 @@ def _decode_cursor(cursor: str) -> tuple[str, int]:
 
 
 
+@dataclass(eq=False)
+class _TraceObservation:
+    """One registration; callback failures are sticky, without retaining SQL/errors."""
+
+    callback: Callable[[str], None]
+    failed: bool = False
+
+
 class _CleanupReadRefused(Exception):
     """Category-only refusal; no raw native error or evidence in diagnostics."""
 
@@ -553,6 +562,77 @@ class Database(
             self._conn.close()
             raise
 
+
+    def _dispatch_trace(self, statement: str) -> None:
+        # SQLite suppresses trace callback exceptions. Deliver to every observer
+        # even if an earlier one fails, and expose failure to ALL current owners.
+        # Do not execute SQL here or retain statements/exception payloads.
+        observers = tuple(self._trace_observers)
+        for observer in observers:
+            try:
+                observer.callback(statement)
+            except BaseException:
+                for current in self._trace_observers:
+                    current.failed = True
+
+    @contextmanager
+    def observe_trace(self, callback: Callable[[str], None]) -> Iterator[_TraceObservation]:
+        """Compose execution observers on this Database's exact native connection.
+
+        Database exclusively owns its native trace slot. Production callers and
+        instrumentation must use this API, never raw set_trace_callback. One
+        dispatcher serves registrations in order; only the final exit clears it.
+        The caller must check the yielded registration's sticky ``failed`` flag
+        before relying on observations: SQLite cannot propagate callback errors.
+        This API owns neither the authorizer nor the progress slot.
+        """
+        if not callable(callback):
+            raise TypeError("database_trace_callback_not_callable")
+        observation = _TraceObservation(callback)
+        with self._lock:
+            if getattr(self, "_trace_custody_failed", False):
+                raise RuntimeError("database_trace_custody_unavailable")
+            # Lazy state keeps the constructor and its schema/open order intact.
+            if not hasattr(self, "_trace_observers"):
+                self._trace_observers: list[_TraceObservation] = []
+            observers = self._trace_observers
+            connection = self._conn
+            first = not observers
+            observation.failed = any(item.failed for item in observers)
+            try:
+                observers.append(observation)
+                if first:
+                    connection.set_trace_callback(self._dispatch_trace)
+            except BaseException as exc:
+                observers.remove(observation)
+                observation.failed = True
+                if first:
+                    try:
+                        connection.set_trace_callback(None)
+                    except BaseException:
+                        self._trace_custody_failed = True
+                        exc.add_note("Database trace installation cleanup failed")
+                raise
+        primary: BaseException | None = None
+        try:
+            yield observation
+        except BaseException as exc:
+            primary = exc
+            raise
+        finally:
+            with self._lock:
+                # Identity removal also permits independently nested owners to
+                # leave out of order without removing an equal callback's lease.
+                observers.remove(observation)
+                if not observers:
+                    try:
+                        connection.set_trace_callback(None)
+                    except BaseException:
+                        observation.failed = True
+                        self._trace_custody_failed = True
+                        if primary is None:
+                            raise
+                        primary.add_note("Database trace observer cleanup failed")
 
     @_synchronized
     def execute(self, sql: str, parameters=()):
@@ -2919,148 +2999,6 @@ class Database(
 
 
 
-
-
-
-
-
-    # --- Escalation Notifications ---
-
-    @_synchronized
-    def mint_escalation_notification(
-        self,
-        feishu_message_id: str,
-        org_slug: str,
-        task_id: str,
-        chat_id: str,
-        expires_at: datetime,
-        kind: str = "escalation",
-    ) -> None:
-        if kind not in ("escalation", "failure", "job_request"):
-            raise ValueError(
-                f"kind must be 'escalation', 'failure', or 'job_request', got {kind!r}"
-            )
-        expires_at_str = expires_at.astimezone(timezone.utc).isoformat()
-        self._conn.execute(
-            """INSERT INTO escalation_notifications
-               (feishu_message_id, org_slug, task_id, chat_id,
-                created_at, expires_at, consumed_at, consumed_by, kind)
-               VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, ?)""",
-            (
-                feishu_message_id, org_slug, task_id, chat_id,
-                datetime.now(timezone.utc).isoformat(),
-                expires_at_str,
-                kind,
-            ),
-        )
-        self._conn.commit()
-
-    @_synchronized
-    def get_escalation_notification(self, feishu_message_id: str) -> dict | None:
-        cur = self._conn.execute(
-            """SELECT feishu_message_id, org_slug, task_id, chat_id,
-                      created_at, expires_at, consumed_at, consumed_by, kind
-               FROM escalation_notifications WHERE feishu_message_id = ?""",
-            (feishu_message_id,),
-        )
-        row = cur.fetchone()
-        if row is None:
-            return None
-        return dict(row)
-
-    @_synchronized
-    def get_latest_notification_for_sr(
-        self, job_id: str, *, kind: str,
-    ) -> dict | None:
-        """Look up the most-recent escalation_notifications row for an SR.
-
-        Used by the terminal-result follow-up: when a Feishu-initiated script run
-        finishes, we post a threaded reply to the original push's message_id.
-        Returns consumed rows too — the APPROVE reply consumes the row, but the
-        parent message_id is still needed to thread the result post.
-        """
-        cur = self._conn.execute(
-            """SELECT feishu_message_id, org_slug, task_id, chat_id,
-                      created_at, expires_at, consumed_at, consumed_by, kind
-               FROM escalation_notifications
-               WHERE task_id = ? AND kind = ?
-               ORDER BY created_at DESC LIMIT 1""",
-            (job_id, kind),
-        )
-        row = cur.fetchone()
-        return dict(row) if row is not None else None
-
-    @_synchronized
-    def consume_escalation_notification(
-        self, feishu_message_id: str, consumed_by: str, *, uncommitted: bool = False,
-    ) -> bool:
-        """Atomically mark a notification consumed. Returns True on first
-        consume, False if already consumed or missing."""
-        cur = self._conn.execute(
-            """UPDATE escalation_notifications
-               SET consumed_at = ?, consumed_by = ?
-               WHERE feishu_message_id = ? AND consumed_at IS NULL""",
-            (datetime.now(timezone.utc).isoformat(), consumed_by, feishu_message_id),
-        )
-        if not uncommitted:
-            self._conn.commit()
-        return cur.rowcount == 1
-
-    # --- Processed Event Dedup ---
-
-    @_synchronized
-    def record_processed_event(
-        self,
-        org_slug: str,
-        feishu_event_id: str,
-        outcome: str,
-        reason: str | None,
-    ) -> bool:
-        """INSERT OR IGNORE into the dedup table. Returns True on first insert,
-        False on duplicate."""
-        cur = self._conn.execute(
-            """INSERT OR IGNORE INTO processed_event_ids
-               (org_slug, feishu_event_id, processed_at, outcome, reason)
-               VALUES (?, ?, ?, ?, ?)""",
-            (
-                org_slug, feishu_event_id,
-                datetime.now(timezone.utc).isoformat(),
-                outcome, reason,
-            ),
-        )
-        self._conn.commit()
-        return cur.rowcount == 1
-
-    @_synchronized
-    def update_processed_event_outcome(
-        self,
-        org_slug: str,
-        feishu_event_id: str,
-        outcome: str,
-        reason: str | None = None,
-    ) -> None:
-        """Update the outcome on an existing processed_event_ids row. Used when
-        the listener has decided how the event was disposed (consumed/rejected/ignored)."""
-        self._conn.execute(
-            """UPDATE processed_event_ids
-               SET outcome = ?, reason = ?
-               WHERE org_slug = ? AND feishu_event_id = ?""",
-            (outcome, reason, org_slug, feishu_event_id),
-        )
-        self._conn.commit()
-
-    @_synchronized
-    def list_open_notifications_for_task(self, task_id: str) -> list[dict]:
-        """Return un-consumed notification rows for a task. Used by CLI
-        resolve-escalation to mark the matching Feishu row consumed."""
-        cur = self._conn.execute(
-            """SELECT feishu_message_id, org_slug, task_id, chat_id,
-                      created_at, expires_at, consumed_at, consumed_by, kind
-               FROM escalation_notifications
-               WHERE task_id = ? AND consumed_at IS NULL""",
-            (task_id,),
-        )
-        return [dict(row) for row in cur.fetchall()]
 
 
 
