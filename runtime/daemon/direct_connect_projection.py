@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Literal
 
+from runtime.daemon.direct_connect_binding import bind_direct_connect_adapter
 from runtime.daemon.direct_connect_store import DirectConnectAuthorityStore
 from runtime.orchestrator.runtime_executor_store import load_runtime_profiles
 
@@ -105,14 +106,7 @@ def _project_once(
     compensates so no partial adapter/profile/registry state survives.
     """
     from runtime.orchestrator import custom_adapter_registry
-    from runtime.orchestrator.adapter_store import (
-        AdapterEntry,
-        acquire_store_lock,
-        get_adapter,
-        remove_adapter,
-        release_store_lock,
-        save_adapter,
-    )
+    from runtime.orchestrator.adapter_store import AdapterEntry
 
     existing = store.get_projection(operation_id)
     if existing is not None and existing.state == "committed":
@@ -194,9 +188,6 @@ def _project_once(
         dependencies=[{"executable": c["executable"], "sha256": c["sha256"]} for c in artifacts.children],
     )
 
-    adapter_created = False
-    replaced_adapter: AdapterEntry | None = None
-
     def projection_is_terminal() -> bool:
         current = store.get_projection(operation_id)
         return current is not None and current.state in {"committed", "failed"}
@@ -228,35 +219,17 @@ def _project_once(
                     f"terminal projection claim disappeared for operation {operation_id!r}"
                 )
             return outcome
-        acquire_store_lock()
         try:
-            existing_adapter = get_adapter(adapter_id)
-            if existing_adapter is None:
-                save_adapter(entry)
-                adapter_created = True
-            elif existing_adapter.executable_hash != entry.executable_hash:
-                save_adapter(entry)
-                replaced_adapter = existing_adapter
-            try:
-                bind_result = custom_adapter_registry._perform_adapter_profile_binding(
-                    adapter_id=adapter_id,
-                    profile_name=artifacts.intended_profile_name,
-                    workspace_adapter=artifacts.workspace_adapter_id,
-                )
-            except Exception:
-                if adapter_created:
-                    remove_adapter(adapter_id)
-                elif replaced_adapter is not None:
-                    save_adapter(replaced_adapter)
-                # The direct gate persists only a fixed category; arbitrary
-                # exception text, paths, hashes, or candidate output must never
-                # reach durable rows or the HTTP response.
-                store.mark_failed(operation_id, "profile_binding_failed", now=now)
-                return ProjectionOutcome(
-                    state="failed", adapter_id=None, profile_name=None, reason="profile_binding_failed",
-                )
-        finally:
-            release_store_lock()
+            bind_result = bind_direct_connect_adapter(
+                entry, operation_id=operation_id, via="direct_connect",
+            )
+        except Exception:
+            # The shared binding helper compensates before this fixed category
+            # is persisted; candidate-controlled diagnostics stay private.
+            store.mark_failed(operation_id, "profile_binding_failed", now=now)
+            return ProjectionOutcome(
+                state="failed", adapter_id=None, profile_name=None, reason="profile_binding_failed",
+            )
         # Close the resumable planned window before releasing the profile
         # lease, so a later route/sweep caller observes the terminal winner
         # instead of redundantly publishing another profile generation.

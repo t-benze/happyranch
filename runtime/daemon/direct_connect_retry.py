@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
 
+from runtime.daemon.direct_connect_binding import bind_direct_connect_adapter
 from runtime.daemon.direct_connect_store import DirectConnectAuthorityStore, DirectConnectReceiptArtifacts
 from runtime.daemon.routes.direct_connect import _artifact_facts
 from runtime.orchestrator.runtime_executor_store import load_runtime_profiles
@@ -85,14 +86,7 @@ def _await_running_retry(
 def _bind_persisted_snapshot(artifacts: DirectConnectReceiptArtifacts, probe_output: object) -> tuple[str, str]:
     """Use the projection's approved adapter/profile persistence primitives."""
     from runtime.orchestrator import custom_adapter_registry
-    from runtime.orchestrator.adapter_store import (
-        AdapterEntry,
-        acquire_store_lock,
-        get_adapter,
-        remove_adapter,
-        release_store_lock,
-        save_adapter,
-    )
+    from runtime.orchestrator.adapter_store import AdapterEntry
 
     adapter_id = custom_adapter_registry.generate_adapter_id(f"{artifacts.intended_profile_name}-adapter")
     entry = AdapterEntry(
@@ -113,31 +107,9 @@ def _bind_persisted_snapshot(artifacts: DirectConnectReceiptArtifacts, probe_out
         dependency_manifest_version=1,
         dependencies=[{"executable": c["executable"], "sha256": c["sha256"]} for c in artifacts.children],
     )
-    adapter_created = False
-    replaced_adapter: AdapterEntry | None = None
-    acquire_store_lock()
-    try:
-        existing_adapter = get_adapter(adapter_id)
-        if existing_adapter is None:
-            save_adapter(entry)
-            adapter_created = True
-        elif existing_adapter.executable_hash != entry.executable_hash:
-            save_adapter(entry)
-            replaced_adapter = existing_adapter
-        try:
-            bound = custom_adapter_registry._perform_adapter_profile_binding(
-                adapter_id=adapter_id,
-                profile_name=artifacts.intended_profile_name,
-                workspace_adapter=artifacts.workspace_adapter_id,
-            )
-        except Exception:
-            if adapter_created:
-                remove_adapter(adapter_id)
-            elif replaced_adapter is not None:
-                save_adapter(replaced_adapter)
-            raise
-    finally:
-        release_store_lock()
+    bound = bind_direct_connect_adapter(
+        entry, operation_id=artifacts.operation_id, via="direct_connect_retry",
+    )
     return adapter_id, bound["profile_name"]
 
 

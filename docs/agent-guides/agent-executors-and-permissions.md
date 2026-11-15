@@ -850,6 +850,21 @@ fences, including the wrapper-declared `workspace_adapter_id`. The PENDING/appro
 tooling for existing records and ordinary same-profile input2 updates. A new
 custom CLI uses the normal direct Connect flow, which does not opt into input2.
 
+**Upgrade/reconnect:** a fresh founder-minted connect token plus reconnect for
+an existing profile approves the upgraded artifacts. Projection and retry share
+replacement on the full material identity: wrapper `executable_hash`, dependency
+set of `{executable, sha256}` pairs, or `dependency_manifest_version`. Reordering
+dependencies alone keeps the prior entry. Each successful replacement adds one
+`executor_adapter_updated` runtime-audit row with before/after wrapper hashes,
+dependency lists, adapter/operation IDs and `via=direct_connect` or
+`direct_connect_retry`; tokens and probe output are excluded. It shares the
+existing binding audit transaction and profile compensation. Probe or binding
+failure preserves the prior adapter and profile binding. Launch hash checks
+continue to refuse changed artifacts until reconnect succeeds; retry only
+validates the failed receipt's stored snapshot. See the
+[upgrade lifecycle](../superpowers/specs/2026-07-19-custom-cli-adapter-envelope-design.md#direct-connect-upgrade-and-reconnect-lifecycle-701)
+for audit fields and ordering.
+
 Before submitting the receipt, wrapper authors must locally send a fresh,
 opaque canary through the ordinary one-shot provider path in the entire
 ``AdapterInput.prompt`` through one real provider invocation. It must obtain a
