@@ -6,6 +6,31 @@ a copy, submits it once to Apple, then staples and verifies another copy. That
 produces a **different signed/notarized/stapled ZIP with a new SHA256**.
 Signing is not publication. Never create a public release or upload here.
 
+The Sparkle PR1 build embeds pinned **Sparkle 2.10.1** and retains an updater
+controller with `startingUpdater: false`; there are no update checks, menu item,
+or installations. Its feed is `https://app.happyranch.ai/mac/appcast.xml`, with
+both `SUEnableAutomaticChecks` and `SUAutomaticallyUpdate` false. Optional build
+argument `--sparkle-public-key PUBLIC_KEY` requires canonical base64 of exactly
+32 bytes; omission leaves `SUPublicEDKey` absent. Only the founder supplies the
+public key; no private key or key generation is part of this build.
+
+**The 1.0.1-pinned signing package below cannot sign this Sparkle build yet.**
+Both signing scripts, signing inventory and Jenkins signing source remain
+unchanged in PR1; their Sparkle changes and new artifact pins belong to PR3.
+Use the existing pinned procedure only for its original pinned artifact.
+The unsigned build embeds `Contents/Frameworks/Sparkle.framework`, preserves
+its eight known relative links, and removes both XPC services and their alias.
+`@executable_path/../Frameworks` resolves from `Contents/MacOS/HappyRanch` to
+that directory. Sparkle's full release LICENSE, including bsdiff/bspatch,
+sais-lite, portable Ed25519 and SUSignatureVerifier terms, ships under the
+`swift:Sparkle` notice owner. See the [build details](../../app/mac/README.md#internal-candidate-build).
+
+PR1's native acceptance remains a separately budgeted packaged run after
+independent review and QA: observe the framework in the bundle, all eight links
+resolving, XPCServices absent, successful app launch with the updater inert,
+all packaged steps passing, and archive notices passing. Swift compilation,
+runtime loading and native launch cannot be verified by the Linux script tests.
+
 THR-360 C7 bundles the separate managed connector helper at
 `Contents/Helpers/happyranch-tsnet-sidecar` (Darwin/arm64, Go1.23.12, cgo off).
 Its Darwin THIRD_PARTY_NOTICES and dependency inventory are separate originals

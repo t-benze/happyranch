@@ -186,6 +186,9 @@ def expected(e):
     """Derive all owners, including explicit exclusions, without reading notices."""
     require(e.get('schema') == SCHEMA, 'inventory', 'unsupported schema')
     rows = []
+    for package in e.get('swift_packages', []):
+        rows.append(owner('swift', package['name'], package['name'], package['version'],
+                          package['url'], 'included: executable Swift binary dependency'))
     installed = e['npm_installed']
     for location, package in sorted(e['npm_lock']['packages'].items()):
         if not location:
@@ -301,6 +304,17 @@ def python_snapshot(distributions, analysis, python_component, evidence, prefix,
         encode(dict(distributions=sorted(rows, key=lambda r: (norm(r['name']), r['version'])), runtime=runtime)))
 
 
+def swift_snapshot(source):
+    """Read the direct exact binary target; SwiftPM authenticates its ZIP."""
+    manifest = read(source / 'app/mac/Package.swift', source).decode()
+    targets = re.findall(r'\.binaryTarget\(\s*name:\s*"([^"]+)"\s*,\s*url:\s*"([^"]+)"\s*,\s*checksum:\s*"([0-9a-f]{64})"\s*\)', manifest)
+    require(len(targets) == 1 and targets[0][0] == 'Sparkle', 'swift', 'expected one pinned Sparkle binary target')
+    name, url, checksum = targets[0]
+    match = re.fullmatch(r'https://github.com/sparkle-project/Sparkle/releases/download/(2\.\d+\.\d+)/Sparkle-for-Swift-Package-Manager.zip', url)
+    require(match is not None, 'swift', 'expected exact official Sparkle release URL')
+    return [dict(name=name, version=match[1], url=url, checksum=checksum)]
+
+
 def snapshot(source, output, mapping):
     lock = json.loads(read(source / 'web/package-lock.json', source, MAX_JSON))
     installed = {}
@@ -390,6 +404,7 @@ def snapshot(source, output, mapping):
         version=sha(sidecar_inventory), source=str(sidecar_root),
         originals=[str(sidecar_root / name) for name in ('THIRD_PARTY_NOTICES.md', 'dependency-inventory.json')])
     return dict(schema=SCHEMA, target='darwin-arm64', source_tree=mapping['source_tree'],
+                swift_packages=swift_snapshot(source),
                 npm_lock=lock, npm_installed=installed, npm_emitted=sorted(emitted),
                 go_modules=go_modules,
                 go_deps=go_deps,
@@ -398,11 +413,14 @@ def snapshot(source, output, mapping):
                     key='Go', name='Go runtime', version=mapping['go_version'], source=mapping['go_root'], originals=mapping['go_originals'])],
                 assets=assets,
                 input_digests={p: sha(read(source / p, source, MAX_JSON)) for p in
-                               ('web/package-lock.json', 'uv.lock', 'app/mac/tsnet-bridge/go.mod', 'app/mac/tsnet-bridge/go.sum', 'packaging/notice-data/font-assets.json')})
+                               ('web/package-lock.json', 'uv.lock', 'app/mac/tsnet-bridge/go.mod', 'app/mac/tsnet-bridge/go.sum', 'packaging/notice-data/font-assets.json', 'app/mac/Package.swift', 'app/mac/third_party/Sparkle/LICENSE')})
 
 
 def sources_for(row, e, source, mapping):
     family = row['family']
+    if family == 'swift':
+        require(row['component'] == 'Sparkle', row['id'], 'unknown Swift notice owner')
+        return [(source / 'app/mac/third_party/Sparkle/LICENSE', source)]
     if family == 'npm':
         location = row['id'][4:]
         root = source / 'web' / relative(location)

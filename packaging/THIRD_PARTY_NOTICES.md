@@ -11,6 +11,7 @@ observations and their notice copies are retained too.
 | Layer | Membership and original text association |
 | --- | --- |
 | First-party Swift/C/Python/resources | Source tree and original root LICENSE; all 29 resource checks remain |
+| Swift binary packages | Sparkle 2.10.1 exact official SwiftPM ZIP URL/checksum from Package.swift; complete release LICENSE includes bsdiff/bspatch, sais-lite, portable Ed25519 and SUSignatureVerifier terms |
 | Python distributions | Every uv.lock identity; installed frozen-environment superset has its own metadata/RECORD original texts, unselected marker/group/version rows are explicit |
 | Python runtime/stdlib | Effective interpreter original or exact authenticated CPython fallback; independent native vendor files cannot inherit that text |
 | PyInstaller | Exact installed distribution and its complete original COPYING/redistribution-exception terms |

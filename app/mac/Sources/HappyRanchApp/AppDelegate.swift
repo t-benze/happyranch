@@ -1,12 +1,16 @@
 import AppKit
 import Combine
 import HappyRanchSupervisor
+@preconcurrency import Sparkle
 
 /// Application delegate — owns the daemon supervisor and app-level state.
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
 
     let supervisor = DaemonSupervisor()
+    // PR2 adds the install gate. Never start this updater before that gate exists.
+    private let updaterController = SPUStandardUpdaterController(
+        startingUpdater: false, updaterDelegate: nil, userDriverDelegate: nil)
     let diagnostics = DiagnosticsCollector(homeDir: daemonHome())
 
     /// Transport for constructing daemon URLs. Only LocalLoopbackTransport is wired.

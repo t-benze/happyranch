@@ -114,6 +114,38 @@ uses invocation-local Go/npm/Swift/temp caches, and builds Go c-archive, frozen
 daemon+CLI, Vite web and Swift app with ordinary tools. Iconutil produces the
 app icon. Runtime skill/catalog resources and their originals remain bundled.
 
+Sparkle **2.10.1** is a direct binary target used only by HappyRanchApp. The
+official `Sparkle-for-Swift-Package-Manager.zip` is pinned in `Package.swift`
+with SHA256 `4c2e48a3e50ebcc2c88a58a4c7264a1a99c3c31857ce754357afb9cdb323022a`;
+SwiftPM checks the download. No git package dependency or `Package.resolved`
+is needed. This release includes the fixes for the published advisories
+through 2.9.6 and supports our macOS14 minimum.
+
+The build copies Sparkle.framework into `Contents/Frameworks` with `ditto`,
+preserving the pinned relative links, then removes `Versions/B/XPCServices`
+and its top-level alias (both Installer.xpc and Downloader.xpc are unused in
+this non-sandboxed app). The executable at `Contents/MacOS/HappyRanch` uses
+`@executable_path/../Frameworks` to locate that sibling directory. Exactly eight
+framework links are allowed: `Versions/Current -> B` and `Sparkle`, `Resources`,
+`Headers`, `PrivateHeaders`, `Modules`, `Autoupdate`, `Updater.app` each pointing
+to `Versions/Current/<name>`. Other app/archive links are refused.
+
+The app constructs an updater with `startingUpdater: false`. It never starts,
+checks, presents an update menu item, or installs. PR2 adds the install gate.
+The built plist contains `SUFeedURL=https://app.happyranch.ai/mac/appcast.xml`,
+`SUEnableAutomaticChecks=false` and `SUAutomaticallyUpdate=false`. Optional
+`--sparkle-public-key PUBLIC_KEY` accepts canonical base64 of exactly 32 bytes;
+without it `SUPublicEDKey` is omitted. This input is a public key only; the
+build does not generate or handle any private key. The notice manifest includes
+`swift:Sparkle` and the release's complete LICENSE with all four external licences.
+
+The existing **1.0.1-pinned signing package cannot sign this Sparkle build**.
+Signing-script and code-inventory changes belong to PR3 and are not included here.
+After review and QA, the separately authorized native packaged run must observe
+the embedded framework, all eight links resolving, no XPCServices, successful app
+launch with the updater inert, every packaged step passing, and the archive notice
+check passing. Linux script checks do not establish any of those native outcomes.
+
 The managed remote-access sidecar is built separately from
 `app/linux/tsnet-sidecar/cmd/happyranch-tsnet-sidecar` for Darwin/arm64 with
 Go1.23.12, `GOTOOLCHAIN=local`, `-mod=readonly`, `GOWORK=off` and `CGO_ENABLED=0`.

@@ -5,11 +5,13 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd -P)"
 VERIFY="$SCRIPT_DIR/verify-release.sh"
 WEB_TOOL_ORIGINALS=""
+SPARKLE_PUBLIC_KEY=""
 VERSION="" BUILD="" SOURCE_SHA="" SOURCE_TREE="" ARCH="" OUTPUT=""
 while [ "$#" -gt 0 ]; do
     [ "$#" -ge 2 ] || { echo 'RELEASE_ARGUMENT_MISSING' >&2; exit 2; }
     case "$1" in
         --web-tool-originals) [ -z "$WEB_TOOL_ORIGINALS" ] || exit 2; WEB_TOOL_ORIGINALS="$2" ;;
+        --sparkle-public-key) [ -z "$SPARKLE_PUBLIC_KEY" ] || exit 2; SPARKLE_PUBLIC_KEY="$2" ;;
         --version) [ -z "$VERSION" ] || exit 2; VERSION="$2" ;;
         --build) [ -z "$BUILD" ] || exit 2; BUILD="$2" ;;
         --source-sha) [ -z "$SOURCE_SHA" ] || exit 2; SOURCE_SHA="$2" ;;
@@ -20,6 +22,7 @@ while [ "$#" -gt 0 ]; do
     esac
     shift 2
 done
+python3 -I "$SCRIPT_DIR/sparkle_bundle.py" validate-public-key -- "$SPARKLE_PUBLIC_KEY"
 # Refuse inherited uv selection/source/mirror/catalog/cache modes, including
 # future UV_* controls, before ANY uv invocation. Cache is replaced below;
 # only the pinned caller's literal UV_PYTHON=3.12 is admitted, then unset.
@@ -301,7 +304,9 @@ npm run build
 STAGE=swift
 cd "$PROJECT"
 LINK_MAP="$OUTPUT/diagnostics/swift-link.map"
-swift build -v -c release --arch arm64 --scratch-path "$OUTPUT/scratch/swift" -Xlinker -map -Xlinker "$LINK_MAP"
+# Contents/MacOS/HappyRanch loads the sibling Contents/Frameworks directory.
+swift build -v -c release --arch arm64 --scratch-path "$OUTPUT/scratch/swift" -Xlinker -map -Xlinker "$LINK_MAP" \
+    -Xlinker -rpath -Xlinker '@executable_path/../Frameworks'
 BIN_DIR="$(swift build -c release --arch arm64 --scratch-path "$OUTPUT/scratch/swift" --show-bin-path)"
 printf '%s\n' "$BIN_DIR" > "$OUTPUT/diagnostics/swift-bin-path.txt"
 test -x "$BIN_DIR/HappyRanchApp" || { echo RELEASE_BINARY_MISSING >&2; exit 1; }
@@ -311,6 +316,20 @@ mkdir "$APP/Contents/Helpers"
 cp "$OUTPUT/scratch/happyranch-tsnet-sidecar" "$APP/Contents/Helpers/happyranch-tsnet-sidecar"
 chmod 755 "$APP/Contents/Helpers/happyranch-tsnet-sidecar"
 cp "$BIN_DIR/HappyRanchApp" "$APP/Contents/MacOS/HappyRanch"
+SPARKLE_FRAMEWORK="$(python3 - "$OUTPUT/scratch/swift/artifacts" <<'PYSPARKLE'
+import sys
+from pathlib import Path
+matches = list(Path(sys.argv[1]).rglob('Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework'))
+if len(matches) != 1 or matches[0].is_symlink():
+    raise SystemExit('SPARKLE_ARTIFACT_MISSING_OR_AMBIGUOUS')
+print(matches[0])
+PYSPARKLE
+)"
+mkdir "$APP/Contents/Frameworks"
+ditto "$SPARKLE_FRAMEWORK" "$APP/Contents/Frameworks/Sparkle.framework"
+# Non-sandboxed app: remove both services and their top-level alias.
+rm -rf "$APP/Contents/Frameworks/Sparkle.framework/Versions/B/XPCServices"
+rm "$APP/Contents/Frameworks/Sparkle.framework/XPCServices"
 shasum -a 256 "$BIN_DIR/HappyRanchApp" "$APP/Contents/MacOS/HappyRanch" > "$OUTPUT/diagnostics/swift-release.sha256"
 cp -R "$OUTPUT/scratch/freeze-dist/happyranch-daemon" "$APP/Contents/Resources/daemon"
 cp -R "$SOURCE/web/dist" "$APP/Contents/Resources/web/dist"
@@ -359,6 +378,7 @@ data.update(CFBundleShortVersionString=version, CFBundleVersion=build,
             LSEnvironment={'PACKAGING_MODE': 'bundled'})
 Path(dest).write_bytes(plistlib.dumps(data))
 PY
+python3 -I "$PROJECT/scripts/sparkle_bundle.py" plist "$APP/Contents/Info.plist" -- "$SPARKLE_PUBLIC_KEY"
 STAGE=notices
 cp "$SOURCE/packaging/THIRD_PARTY_NOTICES.md" "$APP/Contents/Resources/licenses/THIRD_PARTY_NOTICES.md"
 python3 "$SOURCE/app/mac/scripts/manifest_notices.py" inputs --source "$SOURCE" --output "$OUTPUT" \
