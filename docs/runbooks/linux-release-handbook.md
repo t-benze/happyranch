@@ -87,10 +87,16 @@ cancelled at shutdown without delaying transport teardown or sd_notify.
 `RuntimeDirectoryPreserve=yes` retains the file after stop (not reboot).
 [systemd.exec](https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html#RuntimeDirectoryMode=)
 documents the directory mode default of 0755, so the desktop user can traverse
-the directory and read this 0644 file without privilege. Existing installations
-receive preservation only when the installer re-renders their units; source
-publication performs no live unit action. Sidecar on-demand refresh remains the
-five-minute periodic cadence in v1.
+the directory and read this 0644 file without privilege. Existing units are not
+automatically upgraded: `ManagedInstaller._preflight` compares their bytes with
+the newly rendered units and refuses any difference before install or uninstall.
+An operator must inspect and explicitly reconcile the installed units with the
+new rendering, including `RuntimeDirectoryPreserve=yes`, and reload systemd to
+apply changed unit files. Rerunning install alone does not replace an old unit;
+uninstall with the new renderer also refuses the old bytes. This documents the
+existing drift refusal, not an automatic upgrade procedure. Source publication
+performs no live unit action. Sidecar on-demand refresh remains the five-minute
+periodic cadence in v1.
 
 Managed remote access also enforces the cross-config port contract before
 provisioning publishes files or install starts services: sidecar `ConnectorAddr`

@@ -61,6 +61,8 @@ type healthMonitor struct {
 	expected, dir string
 	out           io.Writer
 	at            time.Time
+	now           func() time.Time
+	changeAfter   time.Time
 	runner        *tsnethealth.Runner
 	dm            *tailcfg.DERPMap
 	probe         tsnethealth.ProbeResult
@@ -72,7 +74,11 @@ type healthMonitor struct {
 }
 
 func (m *healthMonitor) run(ctx context.Context, ticks <-chan time.Time) {
-	m.runner = tsnethealth.NewRunner(func() time.Time { return m.at })
+	if m.now == nil {
+		m.now = time.Now
+	}
+	// Tick timestamps schedule samples; limits must include time spent in I/O.
+	m.runner = tsnethealth.NewRunner(m.now)
 	next := m.at.Add(5 * time.Minute)
 	m.sample(ctx, "join")
 	for {
@@ -151,13 +157,17 @@ func (m *healthMonitor) sample(ctx context.Context, trigger string) {
 	if json.Unmarshal(data, &state) != nil {
 		return
 	}
-	if trigger == "change" && (state == m.previous || !m.runner.AllowChange()) {
+	if trigger == "change" && (state == m.previous || m.now().Before(m.changeAfter) || !m.runner.AllowChange()) {
 		return
 	}
 	m.previous = state
 	// No raw LocalAPI, probe, serialization or filesystem errors enter the journal.
 	fmt.Fprintf(m.out, "tsnet-health %s\n", data)
 	_ = writeHealthFile(m.dir, data)
+	if trigger == "change" {
+		// Start the output gap after both sinks, including slow journal writes.
+		m.changeAfter = m.now().Add(30 * time.Second)
+	}
 }
 
 func writeHealthFile(dir string, data []byte) error {

@@ -1,7 +1,8 @@
 # Shared tsnet health
 
 The package provides map-only STUN measurements, refresh guards, and the closed
-v1 health record (A2a-i/ii). No consumer is wired yet.
+v1 health record (A2a-i/ii). The Linux tsnet sidecar consumes it for journal
+records and its atomic runtime health file.
 
 Call `BuildRecord(at, trigger, status, expectedKey, ping, derpMap, probe, age)`
 with real v1.78.0 Status/PingResult/DERPMap snapshots and Refresh's result/age.
@@ -26,7 +27,7 @@ duplicate wins. Self.Relay supplies derp_home. Region labels accept 1–16 ASCII
 lowercase letters/digits/hyphens, starting with a letter. Portmap is always
 unknown, the approved narrowing that avoids portmapper traffic.
 
-The future consumers can require `happyranch/tsnethealth` with a local
+The Linux sidecar requires `happyranch/tsnethealth` with a local
 `replace happyranch/tsnethealth => ../../shared/tsnethealth`. Both Linux payload
 and Mac app scripts export the full source tree, preserving that relative path.
 Keep the existing `tailscale.com v1.78.0` pin in all three modules.

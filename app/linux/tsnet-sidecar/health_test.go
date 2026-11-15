@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -18,6 +19,7 @@ import (
 	"happyranch/tsnethealth"
 	"tailscale.com/client/tailscale"
 	"tailscale.com/ipn/ipnstate"
+	"tailscale.com/net/stun"
 	"tailscale.com/tailcfg"
 	"tailscale.com/types/key"
 )
@@ -27,6 +29,9 @@ type fakeHealth struct {
 	statuses     []*ipnstate.Status
 	calls, pings int
 	block        chan struct{}
+	onStatus     func(int)
+	onDERP       func()
+	dm           *tailcfg.DERPMap
 }
 
 func (f *fakeHealth) Status(ctx context.Context) (*ipnstate.Status, error) {
@@ -35,6 +40,9 @@ func (f *fakeHealth) Status(ctx context.Context) (*ipnstate.Status, error) {
 		<-ctx.Done()
 		return nil, errors.New("RAW-error-198.51.100.7")
 	}
+	if f.onStatus != nil {
+		f.onStatus(f.calls)
+	}
 	s := f.status
 	if f.calls < len(f.statuses) {
 		s = f.statuses[f.calls]
@@ -42,7 +50,12 @@ func (f *fakeHealth) Status(ctx context.Context) (*ipnstate.Status, error) {
 	f.calls++
 	return s, nil
 }
-func (*fakeHealth) CurrentDERPMap(context.Context) (*tailcfg.DERPMap, error) { return nil, nil }
+func (f *fakeHealth) CurrentDERPMap(context.Context) (*tailcfg.DERPMap, error) {
+	if f.onDERP != nil {
+		f.onDERP()
+	}
+	return f.dm, nil
+}
 func (f *fakeHealth) PingWithOpts(ctx context.Context, ip netip.Addr, kind tailcfg.PingType, opts tailscale.PingOpts) (*ipnstate.PingResult, error) {
 	f.pings++
 	deadline, ok := ctx.Deadline()
@@ -63,12 +76,22 @@ type healthLines chan string
 
 type timedHealthLines struct {
 	healthLines
-	at    *time.Time
-	times []time.Time
+	now     func() time.Time
+	advance func(time.Duration)
+	delay   time.Duration
+	times   []time.Time
+	changes []time.Time
 }
 
 func (w *timedHealthLines) Write(b []byte) (int, error) {
-	w.times = append(w.times, *w.at)
+	if len(w.times) == 1 && w.advance != nil {
+		w.advance(w.delay)
+	}
+	at := w.now()
+	w.times = append(w.times, at)
+	if bytes.Contains(b, []byte(`"trigger":"change"`)) {
+		w.changes = append(w.changes, at)
+	}
 	return w.healthLines.Write(b)
 }
 
@@ -113,47 +136,109 @@ func TestHealthCadenceAndChanges(t *testing.T) {
 	}
 	backend := rerouted
 	backend.BackendState = "Stopped"
-	f := &fakeHealth{status: &backend, statuses: []*ipnstate.Status{up, &rerouted, &down, &down, &down, up, &backend, &backend, &backend}}
-	lines := make(healthLines, 16)
-	ticks := make(chan time.Time)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	writer := &timedHealthLines{healthLines: lines}
-	m := healthMonitor{client: f, expected: "expected.tail.invalid", out: writer, at: at}
-	writer.at = &m.at
-	done := make(chan struct{})
-	go func() { m.run(ctx, ticks); close(done) }()
-	takeHealth(t, lines, "join", "direct")
-	ticks <- at.Add(time.Second)
-	takeHealth(t, lines, "change", "none")
-	ticks <- at.Add(2 * time.Second)
-	ticks <- at.Add(3 * time.Second)
-	ticks <- at.Add(32 * time.Second)
-	takeHealth(t, lines, "change", "none")
-	ticks <- at.Add(62 * time.Second)
-	takeHealth(t, lines, "change", "none")
-	ticks <- at.Add(92 * time.Second)
-	takeHealth(t, lines, "change", "none")
-	ticks <- at.Add(5*time.Minute - time.Second)
-	ticks <- at.Add(5 * time.Minute)
-	takeHealth(t, lines, "periodic", "direct")
-	cancel()
-	select {
-	case <-done:
-	case <-time.After(time.Second):
-		t.Fatal("loop did not stop")
-	}
-	wantTimes := []time.Duration{0, time.Second, 32 * time.Second, 62 * time.Second, 92 * time.Second, 5 * time.Minute}
-	if len(writer.times) != len(wantTimes) {
-		t.Fatalf("emissions=%v", writer.times)
-	}
-	for i, d := range wantTimes {
-		if writer.times[i] != at.Add(d) {
-			t.Fatalf("record %d emitted at %v, want %v", i, writer.times[i], at.Add(d))
-		}
-	}
-	if len(lines) != 0 || f.pings != 2 || f.calls != 9 {
-		t.Fatalf("extra record/ping or wrong cadence: lines=%d pings=%d calls=%d", len(lines), f.pings, f.calls)
+	for _, slow := range []string{"instant", "change-status", "change-output", "join-status", "join-derp"} {
+		t.Run(slow, func(t *testing.T) {
+			var clock atomic.Int64
+			clock.Store(at.UnixNano())
+			now := func() time.Time { return time.Unix(0, clock.Load()).UTC() }
+			advance := func(d time.Duration) { clock.Add(int64(d)) }
+			// Observe actual loopback STUN starts, not Refresh calls or cache state.
+			conn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			probes := make(chan time.Time, 16)
+			responded := make(chan struct{})
+			defer func() { conn.Close(); <-responded }()
+			go func() {
+				defer close(responded)
+				buffer := make([]byte, 2048)
+				for {
+					n, source, err := conn.ReadFromUDP(buffer)
+					if err != nil {
+						return
+					}
+					if n < 20 {
+						continue
+					}
+					probes <- now()
+					var tx stun.TxID
+					copy(tx[:], buffer[8:20])
+					conn.WriteToUDP(stun.Response(tx, netip.MustParseAddrPort("198.51.100.1:1234")), source)
+				}
+			}()
+			f := &fakeHealth{status: &backend, statuses: []*ipnstate.Status{up, &rerouted, &down, &down, &down, &down, up, up, &backend}}
+			f.dm = &tailcfg.DERPMap{Regions: map[int]*tailcfg.DERPRegion{1: {RegionID: 1, RegionCode: "local", Nodes: []*tailcfg.DERPNode{{IPv4: "127.0.0.1", STUNPort: conn.LocalAddr().(*net.UDPAddr).Port}}}}}
+			lines := make(healthLines, 16)
+			ticks := make(chan time.Time)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			writer := &timedHealthLines{healthLines: lines, now: now, advance: advance}
+			if slow == "change-output" {
+				writer.delay = 8 * time.Second
+			}
+			m := healthMonitor{client: f, expected: "expected.tail.invalid", out: writer, at: at, now: now}
+			f.onStatus = func(call int) {
+				// Advance independently of tick time, including inside LocalAPI.
+				clock.Store(max(clock.Load(), m.at.UnixNano()))
+				if (slow == "change-status" && call == 1) || (slow == "join-status" && call == 0) {
+					advance(8 * time.Second)
+				}
+			}
+			f.onDERP = func() {
+				if slow == "join-derp" && f.calls == 1 {
+					advance(8 * time.Second)
+				}
+			}
+			done := make(chan struct{})
+			go func() { m.run(ctx, ticks); close(done) }()
+			takeHealth(t, lines, "join", "direct")
+			for _, d := range []time.Duration{time.Second, 2 * time.Second, 3 * time.Second, 31 * time.Second, 39 * time.Second, 62 * time.Second, 69 * time.Second, 99 * time.Second, 5*time.Minute - time.Second} {
+				ticks <- at.Add(d)
+			}
+			for _, d := range []time.Duration{5 * time.Minute, 10 * time.Minute, 15 * time.Minute} {
+				ticks <- at.Add(d)
+			}
+			for i := 0; i < 4; i++ {
+				takeHealth(t, lines, "change", "none")
+			}
+			for i := 0; i < 3; i++ {
+				takeHealth(t, lines, "periodic", "direct")
+			}
+			cancel()
+			select {
+			case <-done:
+			case <-time.After(time.Second):
+				t.Fatal("loop did not stop")
+			}
+			if len(lines) != 0 || len(writer.times) != 8 || len(writer.changes) != 4 || f.pings != 4 || f.calls != 13 {
+				t.Fatalf("wrong cadence: changes=%v pings=%d calls=%d", writer.changes, f.pings, f.calls)
+			}
+			for i := 1; i < len(writer.changes); i++ {
+				if gap := writer.changes[i].Sub(writer.changes[i-1]); gap < 30*time.Second {
+					t.Errorf("change records emitted only %v apart, want >=30s", gap)
+				}
+			}
+			if len(probes) != 2 {
+				t.Fatalf("STUN starts=%d, want 2", len(probes))
+			}
+			first, second := <-probes, <-probes
+			t.Logf("change emit times=%v; STUN starts=%v, %v", writer.changes, first.Sub(at), second.Sub(at))
+			if (slow == "join-status" || slow == "join-derp") && !first.Equal(at.Add(8*time.Second)) {
+				t.Fatalf("slow join did not advance probe start: %v", first.Sub(at))
+			}
+			if gap := second.Sub(first); gap < 10*time.Minute {
+				t.Errorf("STUN probes started only %v apart, want >=10m", gap)
+			}
+			if slow == "instant" {
+				wantTimes := []time.Duration{0, time.Second, 31 * time.Second, 62 * time.Second, 99 * time.Second, 5 * time.Minute, 10 * time.Minute, 15 * time.Minute}
+				for i, d := range wantTimes {
+					if writer.times[i] != at.Add(d) {
+						t.Fatalf("record %d emitted at %v, want %v", i, writer.times[i], at.Add(d))
+					}
+				}
+			}
+		})
 	}
 }
 
