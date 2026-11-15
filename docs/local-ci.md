@@ -14,6 +14,22 @@ writes; matching ownership records canonical roots and retains primary-edit
 detection through continuation verification. No existing worktrees, daemon,
 retired Python units, general integration or Product E2E are exercised.
 
+## Focused workspace memory bootstrap coverage (THR-366 PR-A)
+
+```sh
+uv run --frozen pytest scripts/test_workspace_memory.py -v --tb=short
+```
+
+These standalone no-launch checks exercise the real store and prompt renderer
+on temporary workspaces: UTF-8 byte limits, deterministic whole-line topic and
+directive truncation, retained commands and later Codex instructions, stale or
+missing index independence, bootstrap index repair and legacy flat-file bounds.
+Historical null, nonstring, malformed and missing IDs beside a valid neighbor
+exercise public adapter rendering/bootstrap with existing and missing indexes;
+entry files remain unchanged and only valid IDs receive digest attribution.
+No daemon, provider or live workspace is written. This venue is outside retired
+Python units and adds no required check or E2E trigger.
+
 ## Focused memory digest ranking and audit shape (THR-366 item 2)
 
 ```sh
@@ -3296,3 +3312,18 @@ verification uses the new field. Run the OpenAPI operator with `--write` then
 Swift gate/decoder checks remain manager-owned on macOS:
 `swift test --package-path app/mac --filter 'UpdateGateTests|UpdateConfigurationTests'`.
 Retired Python/Web unit lanes are not restored by these focused checks.
+
+
+## Focused founder initial-name coverage (THR-368)
+
+`uv run --frozen --python 3.14 python scripts/test_founder_agent_name.py` reuses
+the existing standalone ASGI/synthetic-org retirement fixture, with real SQLite,
+naming and authority stores, without daemon lifespan, listeners or providers.
+It observes initial chosen-name enrollment, case-insensitive current/former
+conflicts, reserved/invalid names, generated-ID suffixes and terminated-ID
+retention, legacy calls, and file/claim failure compensation for workers and
+managers. Independent SQLite reads during insertion prove that neither the
+owner nor claim is committed separately. The OpenAPI snapshot and TS mirror
+remain maintained; the retired Web OpenAPI-coverage Vitest is not restored.
+General integration stays SKIPPED24342; retired Python/Web unit lanes and
+Product E2E are not invoked. Dialog screenshots remain independent scoped QA.

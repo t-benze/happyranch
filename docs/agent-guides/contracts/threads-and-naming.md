@@ -147,6 +147,22 @@ are 1–64 ASCII letters/digits/underscore/hyphen with a letter/digit first and 
 trimming. An admitted `_worker` ID remains an owner-bound default/address; it is
 not an editable-name exception or permission to admit longer IDs.
 
+Founder `POST /agents` accepts exactly one of legacy `name` (an explicit ID)
+or additive `display_name` (the chosen initial name). `display_name` uses the
+existing editable-name rule and must start with a letter so its ID can be
+generated: lowercase, hyphens replaced by underscores. Existing claims and all
+retained agent IDs, including terminated IDs, are unavailable. ID collisions
+try `_2` through `_1000`, truncating the base to keep IDs within 64 characters;
+exhaustion refuses with `agent_id_exhausted`. The chosen label and permanent
+claim are inserted with the initial owner at revision 1, under the enrollment
+writer, without a rename or default-label owner commit. Naming failure compensates
+the new agent file and team membership. Later workspace bootstrap failure keeps
+both enrolled ID and chosen name, preserving the existing bootstrap contract.
+Responses retain `name` as the ID and add `canonical_id` and `addressable_name`.
+Label conflicts return `identity_name_unavailable` (409), reserved identity IDs
+return `identity_name_reserved` (409), and invalid labels return
+`invalid_identity_label` (422). Manager-session `/agents/manage` is unchanged.
+
 The internal rename service uses revision CAS and one atomic existing-shaped
 founder audit; pure rename changes no task/session/workspace/permission/authority
 binding. Supported lifecycle writers reconcile actual terminal canonical results

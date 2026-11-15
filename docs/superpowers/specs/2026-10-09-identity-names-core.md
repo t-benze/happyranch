@@ -292,7 +292,9 @@ atomic existing-shaped audit. Name conflict/stale revision is409, absent owner40
 naming/storage refusal503 with category-only diagnostics. Lost/ambiguous response
 requires readback through GET /identities before another CAS. No canonical change,
 namespace generation, request receipt, initial enrollment label or lifecycle
-prohibition is introduced. CLI/prompt and functional UI/TS source are described below; routing source is above.
+prohibition is introduced.
+THR-368 later adds an optional initial name on the founder create route only (`display_name`; server-generated ID, chosen name and permanent claim inserted with the initial owner in the same naming transaction); see `docs/agent-guides/contracts/threads-and-naming.md`. Manager `/agents/manage` enrollment is unchanged.
+CLI/prompt and functional UI/TS source are described below; routing source is above.
 
 A11 retains its twelve historical manifest-domain assertion bodies. Four readable
 routing scenario bodies in the same integrated source contribute to current

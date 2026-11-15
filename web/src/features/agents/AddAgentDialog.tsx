@@ -39,13 +39,14 @@ import { useExecutorOptions } from '@/hooks/executor-options';
 import { useTranslation } from '@/hooks/i18n';
 import { classifyAgentError, renderAgentError, type AgentErrorView } from './strings';
 
-const NAME_RE = /^[a-z][a-z0-9_]*$/;
+const NAME_RE = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
 
 function defaultTeamForName(name: string): string {
   if (!name) return '';
-  const i = name.lastIndexOf('_');
-  if (i <= 0) return name;
-  return name.slice(0, i);
+  const normalized = name.toLowerCase().replaceAll('-', '_');
+  const i = normalized.lastIndexOf('_');
+  if (i <= 0) return normalized;
+  return normalized.slice(0, i);
 }
 
 type Role = 'worker' | 'manager';
@@ -141,7 +142,7 @@ export function AddAgentDialog({ open, onOpenChange }: Props): JSX.Element {
     const body =
       role === 'worker'
         ? {
-            name,
+            display_name: name,
             role,
             team,
             executor,
@@ -149,7 +150,7 @@ export function AddAgentDialog({ open, onOpenChange }: Props): JSX.Element {
             system_prompt: systemPrompt,
           }
         : {
-            name,
+            display_name: name,
             role,
             new_team: newTeam,
             executor,
@@ -157,9 +158,9 @@ export function AddAgentDialog({ open, onOpenChange }: Props): JSX.Element {
             system_prompt: systemPrompt,
           };
     try {
-      await create.mutateAsync(body);
+      const created = await create.mutateAsync(body);
       onOpenChange(false);
-      if (slug) navigate(`/orgs/${slug}/agents/${name}`);
+      if (slug) navigate(`/orgs/${slug}/agents/${created.canonical_id}`);
     } catch (err: unknown) {
       setServerError({
         view: classifyAgentError(err, 'agents.error.createFailed'),
@@ -184,8 +185,13 @@ export function AddAgentDialog({ open, onOpenChange }: Props): JSX.Element {
               onChange={(e) => onNameChange(e.target.value)}
               placeholder={t('agents.add.namePlaceholder')}
               autoFocus
+              aria-invalid={name.length > 0 && !nameOk}
+              aria-describedby="agent-name-hint agent-name-error"
             />
-            <p className="text-fg-muted text-xs">{t('agents.add.nameHint')}</p>
+            <p id="agent-name-hint" className="text-fg-muted text-xs">{t('agents.add.nameHint')}</p>
+            <p id="agent-name-error" className="text-tier-red text-xs" aria-live="polite">
+              {name.length > 0 && !nameOk ? t('agents.error.invalidName') : null}
+            </p>
           </div>
 
           <fieldset>
@@ -348,7 +354,7 @@ export function AddAgentDialog({ open, onOpenChange }: Props): JSX.Element {
           </div>
 
           {serverError && (
-            <p className="text-tier-red text-sm">
+            <p role="alert" className="text-tier-red text-sm">
               {renderAgentError(serverError.view, t, serverError.params)}
             </p>
           )}

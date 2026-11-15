@@ -670,18 +670,22 @@ logs/screenshots/review packets to Shared Artifacts as an ownership workaround.
    do NOT emit for every file edit, grep, or trivial mid-step bookkeeping.
    Treat it like a status line, not a log.
 
-6. **Report mid-task learnings (optional).** Whenever you discover something reusable for future tasks.
+6. **Record mid-task memory (optional).** Whenever you discover something reusable for future tasks.
 
-   **Migrated workspaces (per-entry learnings, `learnings/` dir exists):** write a YAML payload to `/tmp/lrn-<slug>.yaml` (`slug`, `title`, `topic`, optional `tags`, `related_to`, `body`) and call:
+   **Migrated workspaces (per-entry memory, `memory/` dir exists):** write a YAML payload to `/tmp/mem-<slug>.yaml` (`slug`, `title`, `topic`, optional `tags`, `related_to`, `body`) and call:
+
+   For memory add/update, quote YAML values containing ' #' or use a JSON payload.
 
    ```bash
-   happyranch learning add --org {ORG_SLUG} --agent <your_agent_name> --from-file /tmp/lrn-<slug>.yaml
+   happyranch memory add --org {ORG_SLUG} --agent <your_agent_id> --from-file /tmp/mem-<slug>.yaml
    ```
 
-   **Pre-migration workspaces (legacy flat `learnings.md`):** the single-line `--text` form still appends to the flat file. The daemon returns `410 Gone` for this form on migrated workspaces; switch to the verb-dispatched form above if you see that error.
+   `learning` is a deprecated alias of `memory`.
+
+   **Pre-migration workspaces (legacy flat `learnings.md`, neither `memory/` nor structured legacy `learnings/` exists):** the bare `memory --text` callback appends to the flat file only with the active task/session binding. The daemon returns `410 Gone` when either structured directory exists; use the verb-dispatched form above for migrated workspaces.
 
    ```bash
-   happyranch learning --org {ORG_SLUG} --task-id <task_id> --session-id <session_id> --agent <your_agent_name> --text "..."
+   happyranch memory --org {ORG_SLUG} --task-id <task_id> --session-id <session_id> --agent <your_agent_id> --text "..."
    ```
 
 7. **Contribute to the KB (optional).** Before reporting completion, ask yourself: did I discover or confirm durable, cross-agent-relevant knowledge that isn't already in the KB?
@@ -693,7 +697,7 @@ logs/screenshots/review packets to Shared Artifacts as an ownership workaround.
 
    **Contribute NO if:**
    - The info is specific to this task (→ task artifact).
-   - It's your own operational preference (record it via the mid-task learning callback instead).
+   - It's your own operational preference (record it via the mid-task memory callback instead).
    - It duplicates runtime instructions or implementation reference material.
    - The info has a <12-month useful lifespan.
 

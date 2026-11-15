@@ -1380,6 +1380,12 @@ def inject_managed_skills(
     )
 
 
+# Hard UTF-8 budget for the entire Persistent Files + Your Memory block,
+# including commands and joining/trailing newlines. Keep room for later
+# instructions under Codex's default 32 KiB project-document cap.
+MEMORY_BOOTSTRAP_MAX_BYTES = 4096
+
+
 def _memory_bootstrap_section(workspace: Path) -> list[str]:
     """Returns the 'Persistent Files' + 'Your Memory' block.
 
@@ -1387,45 +1393,81 @@ def _memory_bootstrap_section(workspace: Path) -> list[str]:
     """
     flat = workspace / "learnings.md"
     memory_dir = workspace / "memory"
-    index = memory_dir / "_index.md"
 
-    if memory_dir.exists() and index.exists():
-        index_body = index.read_text()
-        return [
+    if memory_dir.exists():
+        from runtime.infrastructure.learnings_store import MemoryStore
+
+        # Read current store metadata rather than an optionally stale index.
+        # Like the full on-disk index, omit evicted items and keep directives
+        # as ID/title pointers; full bodies remain available through memory get.
+        summaries = [s for s in MemoryStore(memory_dir).list_entries() if s.lifecycle != "evicted"]
+        counts: dict[str, int] = {}
+        for summary in summaries:
+            counts[summary.topic] = counts.get(summary.topic, 0) + 1
+        # Historical reads may contain non-string IDs; keep a total sort key.
+        directives = [
+            f"- `{s.id}` — {' '.join(s.title.split())}"
+            for s in sorted(summaries, key=lambda s: (str(s.id), str(s.slug)))
+            if s.provenance == "directive"
+        ]
+        topics = [f"- {' '.join(topic.split())} ({counts[topic]})" for topic in sorted(counts)]
+        prefix = [
             "## Persistent Files\n",
             "- `memory/_index.md` -- index of your operational memory",
-            "  (full bodies via `happyranch memory get`)",
+            "  (full index on disk; full bodies via `happyranch memory get`)",
             "- `task_history.md` -- read-only, updated by orchestrator\n",
             "## Your Memory\n",
-            index_body,
-            "\nFetch any entry's body:",
+            "Bounded overview; use memory search for relevant recall.",
+            "Directives (ID/title pointers; fetch bodies with memory get):",
+        ]
+        topic_heading = ["Topics (entry counts):"]
+        commands = [
+            "\nSearch, fetch, add, or update memory (file payload: slug/title/topic/tags/body):",
+            "Quote YAML values containing ' #' or use a JSON payload.",
             "```",
+            'happyranch memory search --org <slug> --agent <you> "<terms>"',
             "happyranch memory get --org <slug> --agent <you> <MEM-NNN-or-slug>",
-            "```",
-            "Write a new memory item (file payload with slug/title/topic/tags/body):",
-            "```",
             "happyranch memory add --org <slug> --agent <you> --from-file <path>",
-            "```",
-            "Update an existing memory item:",
-            "```",
             "happyranch memory update --org <slug> --agent <you> <MEM-NNN> --from-file <path>",
             "```",
-            "Promote a durable cross-agent rule to the shared KB (one-way):",
+            "After writing the shared KB entry, replace local memory with a locked KB pointer (one-way):",
             "```",
             "happyranch memory promote --org <slug> --agent <you> <MEM-NNN> --kb-slug <slug>",
             "```\n",
             "_Old `LRN-` ids and `happyranch learning …` still resolve "
             "(`learning` is a deprecated alias of `memory`)._\n",
         ]
+        # Reserve both omission notices at their largest counts before packing.
+        # Directive pointers take priority, then topics; both use stable order.
+        # Only complete lines fit, including when a single title is oversized.
+        notices = [
+            f"... {len(directives)} more directives; run memory search",
+            f"... {len(topics)} more topics; run memory search",
+        ]
+        used = len(("\n".join(prefix + topic_heading + commands + notices) + "\n").encode("utf-8"))
+        packed: list[list[str]] = []
+        for label, lines in (("directives", directives), ("topics", topics)):
+            included: list[str] = []
+            for line in lines:
+                size = len(line.encode("utf-8")) + 1
+                if used + size > MEMORY_BOOTSTRAP_MAX_BYTES:
+                    break
+                included.append(line)
+                used += size
+            omitted = len(lines) - len(included)
+            if omitted:
+                included.append(f"... {omitted} more {label}; run memory search")
+            packed.append(included)
+        return prefix + packed[0] + topic_heading + packed[1] + commands
     if flat.exists():
-        flat_body = flat.read_text()
         return [
             "## Persistent Files\n",
             "- `learnings.md` -- your accumulated operational memory (legacy flat-file format)",
             "- `task_history.md` -- read-only, updated by orchestrator\n",
             "## Your Memory\n",
-            flat_body + "\n",
-            "Append a new line via `happyranch memory --agent <you> --text \"...\"`.",
+            "Read `learnings.md` on disk for your legacy operational memory.\n",
+            "Append a new line via `happyranch memory --org <slug> --task-id <task_id> "
+            '--session-id <session_id> --agent <you> --text "..."`.',
             "_The structured per-entry format is available once this workspace is migrated._\n",
         ]
     # Brand-new workspace, ensure() should have created memory/ already.
@@ -1815,10 +1857,11 @@ class PersistentWorkspaceSetup:
         flat_path = workspace / "learnings.md"
         memory_dir = workspace / "memory"
         if memory_dir.exists():
-            # Migrated or natively-new layout: idempotently ensure _index.md.
+            # Regenerate even a present index: entry edits/additions/removals
+            # can leave it stale. This is bootstrap, not per-session refresh;
+            # memory/_index.md is already a declared rollback-owned write.
             store = MemoryStore(memory_dir)
-            if not (memory_dir / "_index.md").exists():
-                store.regenerate_index()
+            store.regenerate_index()
         elif flat_path.exists():
             # Pre-migration legacy flat-file workspace: leave untouched.
             pass
@@ -4070,26 +4113,26 @@ class ClaudeWorkspaceAdapter:
             repo_refresh_note + "\n",
             *_memory_bootstrap_section(workspace),
             "## Knowledge Base (shared across agents)\n",
-            "Path: `<runtime>/kb/`. Read: everyone. Write: any agent (via `--from-file`).",
+            "Path: `<runtime>/orgs/<slug>/kb/`. Read: everyone. Write: any agent (via `--from-file`).",
             "Delete: any team manager (audited); founder via `--as-founder`.",
         ]
         if include_start_task:
             sections.extend([
-                "The **start-task** skill's *Consult KB* and *Contribute to KB* steps are",
-                "mandatory — do not skip them.\n",
+                "The **start-task** skill requires consulting relevant KB knowledge before planning.",
+                "Contributing durable cross-agent knowledge is optional; follow its contribution criteria.\n",
             ])
         sections.extend([
             "Read:",
             "```",
-            "happyranch kb list [--topic <t>] [--type <label>]",
-            "happyranch kb search \"<keywords>\"",
-            "happyranch kb get <slug>",
+            "happyranch kb list --org <slug> [--topic <t>] [--type <label>]",
+            "happyranch kb search --org <slug> \"<keywords>\"",
+            "happyranch kb get --org <slug> <entry-slug>",
             "```\n",
             "Write (durable, cross-agent knowledge only — regulations, partner-API quirks,",
             "payment flows, founder rulings; **not** task-specific notes):",
             "```",
-            "happyranch kb add --agent <you> --from-file /tmp/kb-<slug>.md",
-            "happyranch kb update <slug> --agent <you> --from-file /tmp/kb-<slug>.md",
+            "happyranch kb add --org <slug> --agent <you> --from-file /tmp/kb-<slug>.md",
+            "happyranch kb update --org <slug> <entry-slug> --agent <you> --from-file /tmp/kb-<slug>.md",
             "```",
             "Payload file needs YAML frontmatter (`slug`, `title`, `type`, `topic`,",
             "optional `tags`, `source_task`) followed by a markdown body. `type` is a",
