@@ -114,8 +114,8 @@ scope is its literal admin path with candidate_count=0 and the exact native
 linked row or allocation is inferred; zero counts known candidates only, leaving
 location/allocation unknown. Discovery remains partial and outcome incomplete.
 Residue and local errors latch for the attempt; healing never grants clearance.
-No residue repair, metadata cleanup or repository-wide prune is allowed. Git rows
-must still equal the primary plus independently proven linked paths, except
+No residue repair, metadata cleanup or repository-wide prune is allowed. At discovery,
+Git rows must still equal the primary plus independently proven linked paths, except
 captured-list omissions of newly arriving validated TASK pairs, which remain
 locally retained. Only actual unmapped admin residue omissions are otherwise
 explained. Other discrepancies refuse shared scope.
@@ -453,7 +453,7 @@ Failure is recorded partial/unknown and is never retried with more force.
 
 Only actual Git registrations exactly under an owner's
 `repos/*/.claude/worktrees/TASK-*` qualify. Require matching guard task/worktree/
-primary-root ownership, ordinary no-follow primary `.git`, and a complete
+primary-root ownership, ordinary no-follow primary `.git`, and, at discovery, a complete
 `.git/worktrees` inventory reconciled with Git output and literal task-worktree
 roots. The common/admin/entry directories and exhaustive file/name census must
 be ordinary and unaliased, with canonical unique matching `gitdir`, `commondir`
@@ -477,7 +477,7 @@ re-read after slow common inspections. Dirty paths are reported. Unique detached
 commits remain. Local branches/remotes preserve committed work without GitHub
 publication. Any different linked registration strictly beneath a candidate
 retains that containing worktree, including ignored paths, detached HEADs and
-nonmatching task-root names. Every proven canonical path in the complete
+nonmatching task-root names. Every proven canonical path in discovery's complete
 reciprocal census, including locally uncertain registrations, is consumed with
 the existing deadline; discovery's selected
 task-root subset is insufficient. Literal path components define ancestry, self
@@ -510,18 +510,24 @@ candidate at every final boundary. Candidate-local metadata errors also block it
 own remove/repair/retry. Fresh admission binds own literal ancestors, mapping/pointers and metadata;
 unrelated sibling churn does not enter that equality. An incomplete discovery
 census or uncertain own mapping still refuses the shared scope.
-Local unknowns are reported against their proven worktree and exact metadata
-cause, including non-task descendants; discovery stays partial, uncertain totals
+Local unknowns observed at discovery are reported against their proven worktree
+and exact metadata cause, including non-task descendants; discovery stays partial, uncertain totals
 and physical freed space stay null, and only known reached/unreached counts are
 reported. Any partial/unknown/shared scope or remaining registration prohibits
 repository-wide prune. Post-remove credit requires independently confirmed
-worktree-root absence and absence of the actual Git registration row, while an
-independently retained unmapped safe admin residue, including one at the former
-admin pathname, neither blocks nor erases that credit and keeps its unknown
-worktree location/allocation, E scope with candidate_count=0 and exact native
-gitdir ENOENT reason, partial/incomplete outcome and zero repository-wide prune; a sibling's new local error cannot erase verified
-credit, while shared confirmation uncertainty preserves the physical partial effect
-without unverified credit. Earlier verified effects retain their actual accounting.
+absence of the own worktree root, admin entry and actual Git registration row;
+the admitted named branch must still resolve to its admitted commit. An unmapped
+safe admin residue observed at discovery keeps its unknown worktree location/
+allocation, E scope with candidate_count=0 and exact native gitdir ENOENT reason,
+partial/incomplete outcome and zero repository-wide prune. It does not erase
+independently confirmed removal credit for another candidate. A recreated residue
+at the removed candidate's former admin pathname fails own-entry absence and leaves
+that attempted removal partial/unknown with zero removal credit. A post-effect
+shared-container identity change or new non-TASK admin name has the same result,
+even if the residue contents are otherwise safe. A sibling's new local error cannot erase
+verified credit, while shared confirmation uncertainty preserves the physical
+partial effect without unverified credit. Earlier verified effects retain their
+actual accounting.
 This Git version
 can unregister a worktree on permission failure;
 that partial/unregistered root fails fresh admission and is retained, with no
@@ -641,8 +647,9 @@ sampled observations under the existing same-user model, not a rename fence.
 Each org records `inventory_window` and `coverage` (`complete`, reasons,
 `unknown_discovery`, candidate count and unreached count, null when unknown),
 `scope_classifications`, exclusions and deferred arrivals. Legacy `discovery`
-remains partial for local errors; legacy counts remain known-only/null. Coverage
-states when the scope is fully located despite such a legacy partial label.
+remains partial for local errors observed at discovery; legacy counts remain
+known-only/null. Coverage states when the scope is fully located despite such a
+legacy partial label.
 The date JSON and matching org audit carry `night` with definition
 `thr307-review3-coverage`, Boolean complete and explicit reasons, policy, source
 revision and elapsed seconds. A complete scheduled night requires every selected

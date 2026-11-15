@@ -315,15 +315,15 @@ same-UID threat model, without an atomic identity guarantee. See the maintained
 and hardlink contract. Devices/unknown special types retain. Worktrees and
 Git metadata keep strict special-object checks; all ownership/jobs/age/link/
 mount gates and durable manifest/lock/output exclusions remain.
-Founder THR307seq235 approving234 permits registration-local retention only after
-exhaustive literal no-follow names, fresh common/admin/entry identities, canonical
-unique reciprocal mappings and task-root/containment reconciliation before Git.
+At discovery, Founder THR307seq235 approving234 permits registration-local retention
+only after exhaustive literal no-follow names, fresh common/admin/entry identities,
+canonical unique reciprocal mappings and task-root/containment reconciliation before Git.
 An ordinary index/HEAD/auxiliary read/change error retains its proven worktree with
 its exact metadata path/native cause; independently validated same-repository peers
 can progress. A literal unregistered conventional TASK directory without a `.git`
 pointer retains only that path as `unknown_unregistered_task_worktree:<exact path>`.
-Additive TASK roots and new canonical reciprocal TASK-folder/admin-entry pairs
-across censuses or Git listing retain only the arriving task with that same reason;
+At discovery, additive TASK roots and new canonical reciprocal TASK-folder/admin-entry
+pairs across censuses or Git listing retain only the arriving task with that same reason;
 existing identities/pointers stay exact and new admin names are TASK names.
 These paths protect containing trees and latch partial discovery; only proven, listed arrivals satisfy coverage.
 At discovery, other missing or changed mapping/enumeration/entry, non-TASK additions, unsafe
@@ -332,7 +332,8 @@ the shared scope.
 All proven paths, including locally uncertain non-task descendants, protect
 containing trees at every final remove/repair/retry boundary. Retention is latched
 for the attempt, never clearance; own metadata and shared topology stay fresh.
-Reports keep local discovery partial, known-only counts and unknown allocation;
+For local unknowns observed at discovery, reports keep discovery partial, known-only
+counts and unknown allocation;
 repository-wide prune is removed for every scope.
 This changes none of this skill's legacy gates or agent cleanup authority.
 Durable output and sibling task-scratch manifests/locks stay excluded. Put

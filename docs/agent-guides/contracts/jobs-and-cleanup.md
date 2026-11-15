@@ -333,9 +333,9 @@ Any different linked registration strictly beneath a worktree candidate retains
 its containing candidate, even if ignored, detached or not named as a task root.
 Use the discovery census and fresh own-registration proof at admission and before Git
 remove, contained repair and single retry; siblings do not veto one another.
-Founder THR307seq235 approving234 permits registration-local retention only after
-exhaustive literal no-follow names, fresh common/admin/entry identities, canonical
-unique reciprocal mappings and task-root/containment reconciliation before Git.
+At discovery, Founder THR307seq235 approving234 permits registration-local retention
+only after exhaustive literal no-follow names, fresh common/admin/entry identities,
+canonical unique reciprocal mappings and task-root/containment reconciliation before Git.
 An ordinary index/HEAD/auxiliary read/change error retains its proven worktree with
 its exact metadata path/native cause; independently validated same-repository peers
 can progress. Founder THR307seq285–290 permits a safe admin entry with final
@@ -347,8 +347,8 @@ no worktree location, candidate, HEAD, branch, linked row or allocation is infer
 Discovery stays partial/incomplete and residue is never repaired, cleaned or pruned.
 A literal unregistered conventional TASK directory without a `.git` pointer
 retains only that path as `unknown_unregistered_task_worktree:<exact path>`.
-Across censuses and Git listing, additive TASK roots and new canonical reciprocal
-TASK-folder/admin-entry pairs retain only the arriving task with that same reason;
+At discovery, across censuses and Git listing, additive TASK roots and new canonical
+reciprocal TASK-folder/admin-entry pairs retain only the arriving task with that same reason;
 existing identities/pointers must remain exact, and a new pair's admin name must
 also be a TASK name. The arrival latches partial discovery; a proven, listed arrival does not block coverage.
 At discovery, other missing or changed mapping/enumeration/entry, non-TASK additions, unsafe
@@ -362,13 +362,14 @@ candidate's own root `.git` is exempt. This is unconditional, latched, and check
 at initial/fresh/repair/retry admissions before snapshot mismatch can mask it;
 linked_descendant keeps precedence and prior mutation stays partial_or_unknown.
 It adds no scan, nested content read, ownership inference or cross-org pre-pass;
-scratch under seq194 is unchanged. Real Git rows must still exactly equal the
-primary plus proven linked paths, allowing only captured-list omissions of newly
+scratch under seq194 is unchanged. At discovery, real Git rows must still exactly
+equal the primary plus proven linked paths, allowing only captured-list omissions of newly
 arriving validated TASK pairs, which remain locally retained for the attempt.
 All proven paths, including locally uncertain non-task descendants, protect
 containing trees at every final remove/repair/retry boundary. Retention is latched
 for the attempt, never clearance; own metadata and shared topology stay fresh.
-Reports keep local discovery partial, known-only counts and unknown allocation;
+For local unknowns observed at discovery, reports keep discovery partial, known-only
+counts and unknown allocation;
 repository-wide prune is removed for every scope.
 Local `metadata_changed:<exact native path>` reasons append bounded
 `;signature_change=` JSON for `snapshot_to_read`, `pre_git_censuses` or

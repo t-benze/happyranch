@@ -2241,27 +2241,27 @@ apply to both phases. Git additionally requires owned registration,
 clean/nonignored-untracked status and HEAD reachability through retained local
 branches/remotes; branches remain. Any different linked registration strictly
 beneath the candidate retains that containing worktree, including ignored,
-detached and nonmatching task-root names. This uses every row of the complete
+detached and nonmatching task-root names. This uses every row of discovery's complete
 reciprocal census, at admission and the final checks before remove, repair and
 retry; siblings such as TASK-10 do not retain TASK-1. Other ignored contents
 inside an admitted worktree remain disposable. Git removal
 is nonforce, with at most one fully refreshed contained repair/retry. Dry run
-never chmods/removes/prunes. Before trusting Git exit0, a complete no-follow
-linked-admin census reconciles entries, metadata pointers and worktree backlinks
+never chmods/removes/prunes. At discovery, before trusting Git exit0, a complete
+no-follow linked-admin census reconciles entries, metadata pointers and worktree backlinks
 with Git output and literal task roots. Founder THR307seq235 approving234 permits
 ordinary local index/HEAD/auxiliary read/change errors to retain exactly their
 proven registration, with its metadata path/native cause, while independently
-validated same-repository peers progress. Complete literal names, fresh identities,
-canonical unique reciprocal mappings and containment must first be proven BEFORE
-Git. Missing mapping/enumeration/entry, alias/hardlink/special metadata, conflict,
-unknown descendant location or unexplained output discrepancies retain the shared
+validated same-repository peers progress. At discovery, complete literal names,
+fresh identities, canonical unique reciprocal mappings and containment must first
+be proven BEFORE Git. Missing mapping/enumeration/entry, alias/hardlink/special
+metadata, conflict, unknown descendant location or unexplained output discrepancies retain the shared
 repository scope. All proven paths, including locally uncertain ignored/detached/
 non-task descendants, protect containing trees. Local retention is latched for the
 attempt, never clearance; lost attribution widens refusal. Fresh topology/pointers,
 containment and own metadata govern every admission and final remove/repair/retry/
 confirmation; ordinary sibling auxiliary churn does not poison own admission.
-Local discovery remains partial with exact scoped causes, known-only counts and
-null uncertain allocation/physical freed space. Earlier effects remain honest:
+Local unknowns observed at discovery keep discovery partial with exact scoped causes,
+known-only counts and null uncertain allocation/physical freed space. Earlier effects remain honest:
 confirmed root/admin/registration absence permits credit despite a sibling-local
 error; shared confirmation uncertainty preserves effects without unverified credit.
 A genuinely absent admin
