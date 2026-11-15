@@ -735,8 +735,9 @@ is no optional sentinel envelope or legacy profile fallback. Before launch the
 daemon requires founder approval and an exact profile bind, verifies the
 approved executable SHA-256, and resolves eligibility server-authoritatively.
 Direct-connect uses the same approved bind/hash/eligibility contract.
-Recovery is explicit: repair or re-register a valid approved adapter, or
-reassign the agent to a built-in executor. Built-in executor transport is
+Recovery is explicit: use Reconnect for direct-connect artifact changes (see
+Upgrade/reconnect below), repair or re-register a valid approved legacy adapter,
+or reassign the agent to a built-in executor. Built-in executor transport is
 unchanged and does not use ``AdapterOutput``.
 
 THR-200 PR 1/3 keeps this contract at version 1 while adding dormant optional
@@ -949,7 +950,8 @@ path type (exists, regular file, executable) and SHA-256 immediately before
 EACH ``Popen``. The check is inside the per-attempt launch closure, so a
 throttle retry after a rate-limited response re-verifies the artifact.
 Hash mismatch, removal, non-regular, or non-executable → launch fails closed
-with actionable re-registration/approval error.
+with an actionable error: Reconnect guidance for direct-connect adapters (see
+Upgrade/reconnect above), re-registration/approval wording for legacy adapters.
 
 **Mandatory v1 AdapterOutput:** custom-adapter profiles require a valid v1
 ``AdapterOutput`` JSON object. Rejected: missing, malformed, non-object,
