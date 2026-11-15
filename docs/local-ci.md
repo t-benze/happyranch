@@ -10,6 +10,9 @@ These standalone no-launch checks exercise the real store and prompt renderer
 on temporary workspaces: UTF-8 byte limits, deterministic whole-line topic and
 directive truncation, retained commands and later Codex instructions, stale or
 missing index independence, bootstrap index repair and legacy flat-file bounds.
+Historical null, nonstring, malformed and missing IDs beside a valid neighbor
+exercise public adapter rendering/bootstrap with existing and missing indexes;
+entry files remain unchanged and only valid IDs receive digest attribution.
 No daemon, provider or live workspace is written. This venue is outside retired
 Python units and adds no required check or E2E trigger.
 

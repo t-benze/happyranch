@@ -1404,9 +1404,10 @@ def _memory_bootstrap_section(workspace: Path) -> list[str]:
         counts: dict[str, int] = {}
         for summary in summaries:
             counts[summary.topic] = counts.get(summary.topic, 0) + 1
+        # Historical reads may contain non-string IDs; keep a total sort key.
         directives = [
             f"- `{s.id}` — {' '.join(s.title.split())}"
-            for s in sorted(summaries, key=lambda s: (s.id, s.slug))
+            for s in sorted(summaries, key=lambda s: (str(s.id), str(s.slug)))
             if s.provenance == "directive"
         ]
         topics = [f"- {' '.join(topic.split())} ({counts[topic]})" for topic in sorted(counts)]
@@ -1422,6 +1423,7 @@ def _memory_bootstrap_section(workspace: Path) -> list[str]:
         topic_heading = ["Topics (entry counts):"]
         commands = [
             "\nSearch, fetch, add, or update memory (file payload: slug/title/topic/tags/body):",
+            "Quote YAML values containing ' #' or use a JSON payload.",
             "```",
             'happyranch memory search --org <slug> --agent <you> "<terms>"',
             "happyranch memory get --org <slug> --agent <you> <MEM-NNN-or-slug>",

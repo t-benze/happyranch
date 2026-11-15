@@ -93,6 +93,43 @@ def test_bootstrap_repairs_stale_index(tmp_path: Path) -> None:
     assert "`MEM-002`" in index
 
 
+@pytest.mark.parametrize("id_line", ["id: null\n", "id: 7\n", "id: malformed\n", ""],
+                         ids=["null", "nonstring", "malformed", "missing"])
+@pytest.mark.parametrize("existing_index", [False, True], ids=["missing-index", "existing-index"])
+@pytest.mark.parametrize("operation", ["render", "bootstrap"])
+def test_historical_memory_ids_at_public_workspace_boundaries(
+    tmp_path: Path, id_line: str, existing_index: bool, operation: str,
+) -> None:
+    store = MemoryStore(tmp_path / "memory")
+    add(store, 1, topic="historical", title="Historical row")
+    add(store, 2, topic="historical", title="Valid neighbor", provenance="directive")
+    if existing_index:
+        store.regenerate_index()
+    # Replay an accepted historical file, not input to the strict current writer.
+    historical = store.path_for("MEM-001", "memory-1")
+    historical.write_text(historical.read_text().replace("id: MEM-001\n", id_line, 1))
+    entries_before = {p.name: p.read_bytes() for p in store.root.glob("MEM-*.md")}
+    digest = store.render_memory_digest("historical neighbor", budget=4096)
+    assert "Historical row" in digest.text
+    assert digest.digest_ids == ("MEM-002",)
+
+    adapter = CodexWorkspaceAdapter(Settings(), OrgPaths(tmp_path), slug="synthetic")
+    if operation == "render":
+        prompt = adapter.render_agents_md(tmp_path, "synthetic", "Synthetic role.")
+    else:
+        adapter.ensure_workspace_ready(tmp_path, "synthetic", "Synthetic role.")
+        prompt = (tmp_path / "AGENTS.md").read_text()
+        index = (store.root / "_index.md").read_text()
+        assert "## historical (2)" in index
+        assert "Historical row" in index
+        assert index.index("Valid neighbor") < index.index("Historical row")
+        assert (tmp_path / "CLAUDE.md").resolve() == tmp_path / "AGENTS.md"
+    assert "- historical (2)" in prompt
+    assert "- `MEM-002` — Valid neighbor" in prompt
+    assert "## Workflow" in prompt
+    assert {p.name: p.read_bytes() for p in store.root.glob("MEM-*.md")} == entries_before
+
+
 def test_legacy_flat_memory_is_bounded_without_changing_file(tmp_path: Path) -> None:
     flat = tmp_path / "learnings.md"
     original = "Legacy memory 界\n" * 10000

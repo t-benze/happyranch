@@ -665,6 +665,8 @@ logs/screenshots/review packets to Shared Artifacts as an ownership workaround.
 
    **Migrated workspaces (per-entry memory, `memory/` dir exists):** write a YAML payload to `/tmp/mem-<slug>.yaml` (`slug`, `title`, `topic`, optional `tags`, `related_to`, `body`) and call:
 
+   For memory add/update, quote YAML values containing ' #' or use a JSON payload.
+
    ```bash
    happyranch memory add --org {ORG_SLUG} --agent <your_agent_id> --from-file /tmp/mem-<slug>.yaml
    ```

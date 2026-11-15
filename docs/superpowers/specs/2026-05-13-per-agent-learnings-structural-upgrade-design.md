@@ -220,6 +220,8 @@ opc learning reindex --org <slug> --agent <name>
 
 ### 4.1 `add` — payload (file-based, multi-line via --from-file)
 
+Quote YAML values containing ' #' or use a JSON payload.
+
 ```yaml
 slug: cross-team-dispatch-forbidden
 title: Cross-team dispatch forbidden even under founder verbal authorization
@@ -238,8 +240,10 @@ Daemon allocates `LRN-NNN`, stamps `authored_*`/`updated_*`, validates, writes `
 
 ### 4.2 `update` — payload
 
+Quote YAML values containing ' #' or use a JSON payload.
+
 ```yaml
-slug: cross-team-dispatch-forbidden                # may rename slug; ID stays
+slug: cross-team-dispatch-forbidden
 title: Cross-team dispatch forbidden ...
 topic: workflow-guardrail
 tags: [cross-team, dispatch, founder-authority]
@@ -314,7 +318,9 @@ This lets us land the new code path without breaking unmigrated workspaces; each
 >
 > At workspace bootstrap, `PersistentWorkspaceSetup.ensure` regenerates even a
 > present index, repairing stale entry metadata through the existing atomic
-> writer and declared bootstrap rollback target. It does not refresh prompt
+> writer and declared bootstrap rollback target. Historical malformed IDs remain
+> readable: prompt sorting uses string keys, and index ordering puts them after
+> valid numeric IDs without rewriting entry files. It does not refresh prompt
 > files at spawn: launch still verifies the existing canonical instruction pair
 > and readiness marker without repair. Topic counts can age until the next
 > prompt rewrite, but no growing list of experiential titles can crowd out the
