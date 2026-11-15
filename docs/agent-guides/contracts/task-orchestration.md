@@ -5,6 +5,21 @@
 > extends an earlier one, the later section controls; sections marked
 > "Historical" are retained evidence, not current instructions.
 
+## Task memory digest (THR-366 change set A)
+
+Per-task memory uses the brief with memory search's shared tokenizer and term
+weights, minus the digest-only `_DIGEST_STOP_WORDS` English function words.
+Within the existing directive/full-body and pointer groups, term score wins,
+then newest `updated_at`, then title/ID; zero-match entries fill by recency.
+Salience and lineage boosts no longer rank candidates. Directive-first rendering
+and pointer fallback remain; lines keep provenance without a salience label.
+The character budget stays 1,500 by default and configured 0 disables injection.
+Stored salience and `_index.md` rendering do not change. The impression payload
+keys/types remain identical, and `digest_ids` remains actual full-body IDs then
+pointer IDs in render order, with unique/disjoint exposure lists. See the
+[orchestrator contract](../orchestrator-contracts.md) for session binding and
+single-pass render accounting.
+
 ## Founder cancellation and delegated parent wake
 
 After the founder task-cancel route commits, it calls the existing parent-wake
