@@ -3269,3 +3269,18 @@ verification uses the new field. Run the OpenAPI operator with `--write` then
 Swift gate/decoder checks remain manager-owned on macOS:
 `swift test --package-path app/mac --filter 'UpdateGateTests|UpdateConfigurationTests'`.
 Retired Python/Web unit lanes are not restored by these focused checks.
+
+
+## Focused founder initial-name coverage (THR-368)
+
+`uv run --frozen --python 3.14 python scripts/test_founder_agent_name.py` reuses
+the existing standalone ASGI/synthetic-org retirement fixture, with real SQLite,
+naming and authority stores, without daemon lifespan, listeners or providers.
+It observes initial chosen-name enrollment, case-insensitive current/former
+conflicts, reserved/invalid names, generated-ID suffixes and terminated-ID
+retention, legacy calls, and file/claim failure compensation for workers and
+managers. Independent SQLite reads during insertion prove that neither the
+owner nor claim is committed separately. The OpenAPI snapshot and TS mirror
+remain maintained; the retired Web OpenAPI-coverage Vitest is not restored.
+General integration stays SKIPPED24342; retired Python/Web unit lanes and
+Product E2E are not invoked. Dialog screenshots remain independent scoped QA.
