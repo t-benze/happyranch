@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 import time
 from pathlib import Path
@@ -31,6 +32,20 @@ def cmd_init(args: argparse.Namespace) -> None:
         sys.exit(1)
     print(f"runtime: {r.json()['runtime']}")
 
+
+
+def cmd_disk_sweep_manual_backlog(args: argparse.Namespace) -> None:
+    """Submit once to the daemon; transport loss never authorizes a retry."""
+    import httpx
+    try:
+        client = OpcClient.from_env()
+        response = client.post('/api/v1/runtime/disk-sweep/manual-backlog', timeout=7320.0)
+    except (DaemonNotRunning, DaemonStateInconsistent, httpx.HTTPError) as exc:
+        print(f'Manual backlog result unavailable: {exc}. Inspect daemon disk-sweep reports; do not retry automatically.')
+        sys.exit(1)
+    print(json.dumps(response.json(), indent=2))
+    if response.status_code != 200:
+        sys.exit(1)
 
 
 def cmd_runtime(args: argparse.Namespace) -> None:
@@ -405,6 +420,11 @@ def cmd_adapters_remove(args: argparse.Namespace) -> None:
 
 
 def register(sub) -> None:
+    p_sweep = sub.add_parser('disk-sweep', help='operator disk sweeper controls')
+    sweep_sub = p_sweep.add_subparsers(dest='disk_sweep_cmd', required=True)
+    p_backlog = sweep_sub.add_parser('manual-backlog', help='run deletion once in the daemon with a 7200-second budget')
+    p_backlog.set_defaults(func=cmd_disk_sweep_manual_backlog)
+
     p_init_runtime = sub.add_parser(
         "init", help="create + register a multi-org runtime container",
     )
