@@ -21,7 +21,7 @@
  * built-ins (THR-107 seq155). No PATH-based fallback is used.
  */
 import { useState } from 'react';
-import { CheckCircle2, Terminal, Trash2, XCircle } from 'lucide-react';
+import { CheckCircle2, RefreshCw, Terminal, Trash2, XCircle } from 'lucide-react';
 import { Button } from '@/design-system/primitives/Button';
 import { ApiError } from '@/lib/api';
 import { useAdapters, type AdapterEntry } from '@/hooks/adapters';
@@ -74,6 +74,16 @@ function findAdapter(
   return id ? adapters.find((a) => a.id === id) : undefined;
 }
 
+/** True when the adapter was written by direct connect (projection or retry),
+ *  per the existing `registered_by` field. Only those profiles are reconnected
+ *  through the direct ConnectFlow (#701). */
+function isDirectConnect(adapter: AdapterEntry | undefined): boolean {
+  return (
+    adapter?.registered_by === 'direct-connect' ||
+    adapter?.registered_by === 'direct-connect-retry'
+  );
+}
+
 /** Present/path health pill — mirrors ExecutorBinariesSection's ValidityPill.
  *  `present`/`path` derive from the machine-local binary registry
  *  (executors.json) keyed by the profile name — the same gating as
@@ -101,9 +111,11 @@ function HealthPill({ present }: { present: boolean }): JSX.Element {
 function ProfileRow({
   profile,
   adapters,
+  onReconnect,
 }: {
   profile: RuntimeProfileEntry;
   adapters: AdapterEntry[];
+  onReconnect?: (name: string) => void;
 }): JSX.Element {
   const { t, render } = useTranslation();
   const [confirming, setConfirming] = useState(false);
@@ -207,15 +219,28 @@ function ProfileRow({
             </Button>
           </>
         ) : (
-          <Button
-            type="button"
-            variant="secondary"
-            onClick={() => setConfirming(true)}
-            data-testid={`profile-remove-${profile.name}`}
-          >
-            <Trash2 aria-hidden="true" size={14} />
-            {t('settings.executors.profiles.remove')}
-          </Button>
+          <>
+            {onReconnect && isDirectConnect(adapter) && (
+              <Button
+                type="button"
+                variant="secondary"
+                onClick={() => onReconnect(profile.name)}
+                data-testid={`profile-reconnect-${profile.name}`}
+              >
+                <RefreshCw aria-hidden="true" size={14} />
+                {t('settings.executors.profiles.reconnect')}
+              </Button>
+            )}
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={() => setConfirming(true)}
+              data-testid={`profile-remove-${profile.name}`}
+            >
+              <Trash2 aria-hidden="true" size={14} />
+              {t('settings.executors.profiles.remove')}
+            </Button>
+          </>
         )}
       </div>
 
@@ -233,7 +258,12 @@ function ProfileRow({
   );
 }
 
-export function CustomProfilesSection(): JSX.Element {
+export function CustomProfilesSection({
+  onReconnect,
+}: {
+  /** Reopen the shared ConnectFlow for this existing profile name (#701). */
+  onReconnect?: (name: string) => void;
+} = {}): JSX.Element {
   const { t, render } = useTranslation();
   const query = useRuntimeProfiles();
   const profiles = query.data?.profiles ?? [];
@@ -283,7 +313,12 @@ export function CustomProfilesSection(): JSX.Element {
         ) : (
           <div className="space-y-3" data-testid="custom-profile-rows">
             {profiles.map((profile) => (
-              <ProfileRow key={profile.name} profile={profile} adapters={adapters} />
+              <ProfileRow
+                key={profile.name}
+                profile={profile}
+                adapters={adapters}
+                onReconnect={onReconnect}
+              />
             ))}
           </div>
         ))}

@@ -735,8 +735,9 @@ is no optional sentinel envelope or legacy profile fallback. Before launch the
 daemon requires founder approval and an exact profile bind, verifies the
 approved executable SHA-256, and resolves eligibility server-authoritatively.
 Direct-connect uses the same approved bind/hash/eligibility contract.
-Recovery is explicit: repair or re-register a valid approved adapter, or
-reassign the agent to a built-in executor. Built-in executor transport is
+Recovery is explicit: use Reconnect for direct-connect artifact changes (see
+Upgrade/reconnect below), repair or re-register a valid approved legacy adapter,
+or reassign the agent to a built-in executor. Built-in executor transport is
 unchanged and does not use ``AdapterOutput``.
 
 THR-200 PR 1/3 keeps this contract at version 1 while adding dormant optional
@@ -861,7 +862,13 @@ dependency lists, adapter/operation IDs and `via=direct_connect` or
 existing binding audit transaction and profile compensation. Probe or binding
 failure preserves the prior adapter and profile binding. Launch hash checks
 continue to refuse changed artifacts until reconnect succeeds; retry only
-validates the failed receipt's stored snapshot. See the
+validates the failed receipt's stored snapshot. For direct-connect adapters
+(`registered_by` `direct-connect`/`direct-connect-retry`) that refusal says
+`Reconnect <profile> in Settings -> Executors (mint a fresh connect token and
+re-run connect).`; legacy adapters keep the re-submit/approval wording.
+This includes a changed wrapper refused during executor construction or profile
+binding validation, its resolver warning, and the checks just before launch.
+Settings -> Executors -> Custom CLIs has a matching **Reconnect** action. See the
 [upgrade lifecycle](../superpowers/specs/2026-07-19-custom-cli-adapter-envelope-design.md#direct-connect-upgrade-and-reconnect-lifecycle-701)
 for audit fields and ordering.
 
@@ -943,7 +950,8 @@ path type (exists, regular file, executable) and SHA-256 immediately before
 EACH ``Popen``. The check is inside the per-attempt launch closure, so a
 throttle retry after a rate-limited response re-verifies the artifact.
 Hash mismatch, removal, non-regular, or non-executable → launch fails closed
-with actionable re-registration/approval error.
+with an actionable error: Reconnect guidance for direct-connect adapters (see
+Upgrade/reconnect above), re-registration/approval wording for legacy adapters.
 
 **Mandatory v1 AdapterOutput:** custom-adapter profiles require a valid v1
 ``AdapterOutput`` JSON object. Rejected: missing, malformed, non-object,

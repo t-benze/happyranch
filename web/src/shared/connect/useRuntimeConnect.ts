@@ -441,6 +441,10 @@ export function useDirectConnect({
       return { ...resp, wrapperDestination: status.wrapper_destination };
     },
     onSuccess: (resp, name) => {
+      // A fresh token starts a new lifecycle for this name. Drop any cached
+      // status from an earlier connect/reconnect of the SAME name (#701) so the
+      // observer cannot read that old `connected` state as this one's result.
+      queryClient.removeQueries({ queryKey: ['direct-connect', 'status', name] });
       originalTokenRef.current = resp.token;
       setExpiresAt(resp.expires_at);
       setState({

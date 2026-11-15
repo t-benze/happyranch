@@ -1013,6 +1013,9 @@ export const zhCN: Record<MessageKey, MessageValue> = {
   'settings.executors.back': '返回执行器',
   'settings.executors.connectCli': '连接 CLI',
   'settings.executors.done': '完成',
+  'settings.executors.reconnect.heading': '重新连接 {name}',
+  'settings.executors.reconnect.body':
+    '升级 CLI 后请使用此操作。生成新的连接令牌，然后在 CLI 中重新运行连接。重新连接完成前，启动会继续拒绝已更改的文件。',
   'settings.executors.assignment.title': '按智能体分配执行器',
   'settings.executors.assignment.body':
     '请在{link}中为各个智能体分配执行器。每个智能体的执行器（claude、codex、opencode、pi）在入职时设定，无法在设置中更改。',
@@ -1032,6 +1035,7 @@ export const zhCN: Record<MessageKey, MessageValue> = {
   'settings.executors.profiles.removing': '正在移除…',
   'settings.executors.profiles.confirmRemove': '确认移除',
   'settings.executors.profiles.remove': '移除',
+  'settings.executors.profiles.reconnect': '重新连接',
   'settings.executors.profiles.removeFailed': '无法移除此配置。',
   'settings.executors.binaries.intro':
     '每个内置执行器 CLI 二进制文件在本机上的位置。路径保存在本机运行时配置中，并在下一次启动智能体时生效。使用下方的{connect}注册，或在某一行展开{advanced}自行输入绝对路径——系统不会自动扫描。',

@@ -537,6 +537,18 @@ the normal launch hash checks continue refusing changed wrappers or children.
 Retry validates a failed receipt's exact persisted snapshot; it does not approve
 new artifact bytes on its own.
 
+Settings -> Executors -> Custom CLIs offers a **Reconnect** action on each
+profile whose adapter was written by direct connect. It reruns the same
+ConnectFlow with that profile name fixed. For those adapters the launch
+refusal (wrapper hash mismatch, or a declared dependency that is missing, not a
+regular file, not executable or hash-mismatched) names this remediation:
+`Reconnect <profile> in Settings -> Executors (mint a fresh connect token and
+re-run connect).` Legacy-submitted adapters keep the original re-register /
+re-submit guidance. Only the text differs; the fail-closed checks are unchanged.
+The same remediation covers a changed wrapper rejected during executor
+construction or profile binding validation and the resolver's hash-mismatch
+warning, using the existing persisted adapter origin and intended profile name.
+
 After conformance succeeds, projection and retry use one shared binding helper.
 Under the existing profile lease and adapter-store lock it replaces an existing
 entry when the wrapper `executable_hash`, the set of dependency

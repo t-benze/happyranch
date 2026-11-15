@@ -1073,6 +1073,9 @@ export const en = {
   'settings.executors.back': 'Back to executors',
   'settings.executors.connectCli': 'Connect a CLI',
   'settings.executors.done': 'Done',
+  'settings.executors.reconnect.heading': 'Reconnect {name}',
+  'settings.executors.reconnect.body':
+    'Use this after upgrading the CLI. Generate a fresh connect token, then re-run connect from the CLI. Until the reconnect finishes, launches keep refusing the changed files.',
   'settings.executors.assignment.title': 'Per-agent executor assignment',
   'settings.executors.assignment.body':
     "Assign executors to individual agents from the {link}. Each agent's executor (claude, codex, opencode, pi) is set during enrollment and cannot be changed from Settings.",
@@ -1094,6 +1097,7 @@ export const en = {
   'settings.executors.profiles.removing': 'Removing…',
   'settings.executors.profiles.confirmRemove': 'Confirm remove',
   'settings.executors.profiles.remove': 'Remove',
+  'settings.executors.profiles.reconnect': 'Reconnect',
   'settings.executors.profiles.removeFailed': 'Could not remove this profile.',
   'settings.executors.binaries.intro':
     'Where each built-in executor CLI binary lives on this machine. Paths are stored in machine-local runtime config and take effect on the next agent spawn. Register one with {connect} below, or expand {advanced} on a row to type the absolute path yourself — there is no automatic scan.',
