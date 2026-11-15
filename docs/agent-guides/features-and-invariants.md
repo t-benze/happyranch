@@ -234,7 +234,7 @@ THR-308 seq403 removes generic audit_log coding scanning and its process-local
 watermark/collectors, including charges to the shared budget. Unrecognised coding
 shapes and ordinary audit decoding/UTF8/depth/size/digit failures are no longer
 detected by that scan. Direct audit-backed readers, non-audit coding checks,
-structural/integrity/FK checks and budget limits remain unchanged; supported
+structural/full FK checks and budget limits remain unchanged; supported
 histories can gain remaining allowance without changing authority content.
 
 PR1165's prerequisite merged at fee7aa7222dbc80e16492258c15f8fa3214fabad,
@@ -1865,7 +1865,7 @@ No live migration is authorized.
 `runtime/workflows/cutover.py` owns the existing version-1 lifecycle marker and
 its contiguous org-bound event chain. Founder bearer requests commit the
 request/admission fence before verification or drain; recovery checks the full
-canonical layout/history, SQLite integrity/FKs and real work closure under each
+canonical layout/history, whole SQLite FKs and real work closure under each
 short writer reservation. GET and downgrade preflight never advance. Historical
 request replay reconstructs the original action/CAS before obsolete gates and
 returns its identity separately from current pending/enabled/draining state.

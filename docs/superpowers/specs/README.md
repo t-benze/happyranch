@@ -147,3 +147,5 @@ New specs should include a short status block near the top:
 I1b adds the independent daily read-only advisory owner to
 [`2026-11-14-automatic-workflow-setup.md`](2026-11-14-automatic-workflow-setup.md#i1b-daily-read-only-advisory-report).
 It reuses the future 03:00 wake; business/load validation remains unchanged until I2.
+
+I2 (2026-11-16) supersedes historical every-load physical integrity wording across workflow/native/cutover designs; [current physical-check venue policy](2026-11-14-automatic-workflow-setup.md#i2-load-and-revalidation-policy) retains whole FKs, parts 2–7 and all original limits.

@@ -1852,6 +1852,9 @@ SHA256 preimages (fixed Founder request facts and verifier policy plus previous
 digest), marker pointer/time/reason and valid UTC timestamps without monotonic
 wall-clock assumptions. Initial event ID/digest remain shipped bytes; progressed
 histories require actual expected_org_slug, while initial-only release references
+
+> Supersession — 2026-11-16: I2 / Founder THR-336 msg194 replaces historical every-load physical integrity checking with explicit install-time checks and daily advisory reporting. Whole FKs and parts 2–7 remain on complete reads, including cutover/native paths, with unchanged limits. See [current I2 policy](2026-11-14-automatic-workflow-setup.md#i2-load-and-revalidation-policy).
+
 still validate without it. SQLite integrity/FKs and contradictory activation,
 instance, dispatch or recovery-owned work block compatibility before each enable
 transition; inert template/authority/profile foundations are permitted. Failed

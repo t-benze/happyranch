@@ -491,8 +491,8 @@ For a genuine executable team manager's OWN source callback, sequential start us
 THR-308 seq403 removes generic audit_log coding scanning and its watermark.
 Complete coding validation no longer detects arbitrary unrecognised coding audit
 rows or ordinary audit decoding/depth/size/digit failures through that scan.
-Direct audit-backed history readers, non-audit coding checks and structural/FK/
-integrity checks remain; budget limits are unchanged and scan charges disappear.
+Direct audit-backed history readers, non-audit coding checks and structural/full FK
+checks remain; budget limits are unchanged and scan charges disappear.
 
 The ROOT13015 start@2/Explicit fresh-start composition is historical and
 superseded by U9; retain it only for authenticated admitted-run replay and

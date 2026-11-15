@@ -8,15 +8,15 @@ unchanged targets borrow a pinned zero-write result. Changed/unknown snapshots,
 write rollback or observation failure force fresh reads; replaced files refuse.
 Retained charges import once into each compatible caller's original cumulative
 ledger. Public cutover reads/changed targets, later loads and nondefault policies
-remain fresh. Native constructor/caller order, full physical/FK checks, limits,
+remain fresh. Native constructor/caller order, full FK/domain checks, limits,
 install/admission authority and live acceptance gates remain unchanged.
 
 A0b's finite SQL component changes expression evaluation only: shared singleton
 shape/size is measured once, and ownership's exceptional-text scan follows its
 complete type/size prerequisite in the same snapshot. Payload withholding,
-logical charges, physical/FK checks and runtime/operator budgets remain exact.
+logical charges, full FK/domain checks and runtime/operator budgets remain exact.
 The SQL reductions add no setup/cutover caller. Automatic setup still requires
-complete owner acceptance/sizing and subsequent reviewed stages. A0b-2 retains
+complete owner acceptance/sizing and subsequent reviewed stages. Historically, A0b-2 retained
 part1 and records installed happyranch's fail-closed default FIRST/attempted NEXT
 as **EXPECTED REFUSAL - part 1 retained until I2**, with zero changes/certificate/
 observer leaks and an original-base comparison of the same private image.

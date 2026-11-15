@@ -172,3 +172,35 @@ corresponding original-owned evidence; A3 never manufactures it. Multiple
 attempts or unrecognized phase/reason evidence remain unknown pending explicit
 owner reconciliation, and safe path metadata is not independent backup-content
 verification. The status reader opens neither the backup nor the org database.
+
+## I2 load and revalidation policy
+
+Founder THR-336 msg194 removes only physical `PRAGMA integrity_check` from
+the shared complete checker, every cutover blocker branch and the load-reachable
+native attempt constructor helper. No load/revalidation executes `quick_check`
+or a replacement physical scan. This includes recovery and its error fallback,
+projection, request/replay, public get, downgrade preflight, old-native source,
+rebuilt target, post-COMMIT observation and fresh native construction.
+
+Full `foreign_key_check` stays at every original site. Task/mark type, size,
+exception and binding guards; Pause rows and ancestry; schema/reference/workflow/
+native checks; ownership inventory/equality; both result decision scans; all
+cutover state/history/work-closure predicates and blocker identities remain.
+L stays 32M SQL steps, A/B/C retain separate 2M allowances, logical charges remain,
+and every complete read retains its original 5s deadline. Callers, transaction
+ownership and load-certificate invalidation remain unchanged. No skip flag,
+caller context, daily-cache substitution or test-only production seam is added.
+
+I1a install gates and I1b daily advisory full checks remain unchanged. Physical
+corruption detectable only by the native full check can survive a logical load
+until independent detection; install still refuses it before COMMIT. Daily
+results grant no certificate or admission. Native old/T2 literals, parent/child
+values and rowids, schema/journaling/cleanup/commit uncertainty remain exact.
+
+The historical A0b-2 primary EXPECTED REFUSAL is retained as evidence. I2 owns
+fresh private captures and actual DEFAULT writable FIRST/genuine NEXT on Python
+3.12/3.14 for happyranch, danze, family and genuine fresh creation. Acceptance is
+L≤32M, every complete read <5s and all three orgs plus profile reconciliation
+and eight selectors ≤6s. A primary refusal/limit breach stops implementation
+without enlarging any budget or weakening a check. No live installation or
+operating qualification follows private-copy evidence.

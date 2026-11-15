@@ -443,7 +443,7 @@ table). It observes ten same-load reads, all three production target owners, rea
 retained charges/exhaustion, native acquisition/exit races, repeated restored
 main/TEMP DDL, configuration changes, public/policy/execution/lifetime exclusions,
 observer failure, deadline/BaseException cleanup and replaced-file refusal.
-Assertions compare real native physical/FK statements, original counters and
+Assertions compare real native whole-FK statements, original counters and
 public-reader refusal categories. No success-stub validator or fabricated epoch.
 These focused cases do not replace the entire v3 corruption/fault matrix or
 current-data writable sizing. Run full schema-load3.12/3.14 plus local_ci all as
@@ -466,7 +466,7 @@ must retain the original allowance and limit-plus-1000-step attribution, exactly
 match the public complete-reader refusal, clear the certificate and preserve
 native transaction ownership. Full, reuse and fault selections include them.
 The deadline table additionally advances a deterministic test clock at native
-entry, full integrity work and snapshot release, on first reads, primed sources
+entry, full FK work and snapshot release, on first reads, primed sources
 and changed targets. It requires the public reader's exact refusal chain and
 original causal deadline allowance, with no expired certificate or owned
 transaction left behind. Release races commit real WAL corruption immediately

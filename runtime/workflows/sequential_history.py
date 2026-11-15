@@ -796,6 +796,8 @@ def read_sequential_history(conn: sqlite3.Connection, *, expected_org_slug: str,
     An explicit task_id adds the inert U6a native/ownership closure after that
     oracle, under the same snapshot, original data allowance and deadline.
     Default callers retain the original result type and validation path.
+    Complete reads retain full FKs and parts 2–7. Physical integrity checking
+    belongs to explicit installation and the independent daily advisory monitor.
     The explicit offline Coding and installer operators may size SQL-only ordinary-history
     guards up to 640M steps. Every predicate and acquired workflow-data allowance
     remains unchanged; default/runtime/venue callers retain the original 32M limit.

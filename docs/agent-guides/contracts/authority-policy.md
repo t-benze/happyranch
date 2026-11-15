@@ -160,7 +160,7 @@ original table name recreated directly (no ALTER rename). All parent values,
 SQLite types/rowids, both child relations, other schema and historical audit/
 canonical bytes survive. The two indexes and three triggers are recreated from
 literal definitions; finalization remains terminal, including inert_closed.
-Integrity and whole FK checks run before and after the rebuild. Fresh creation
+Whole FK checks run before and after the rebuild. Fresh creation
 uses the same T2 literals and validates the result. Exact T2 reopen validates
 layout without DDL, markers or a new full history/integrity scan. Drift/remnants,
 unusable journaling, failed cleanup or an unacknowledged schema COMMIT refuse

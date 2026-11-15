@@ -17,7 +17,7 @@ or failure invalidates reuse. Require FK ON/deferred FK OFF. A fresh compatible
 caller imports the original retained charges once per fact, while changed targets
 charge their actual work to that same cumulative budget. No reset or widening;
 all associations end with the unpublished load, including BaseException exits.
-Full physical/FK checks and original L/A/B/C and logical limits remain unchanged.
+Full FK and parts 2–7 checks and original L/A/B/C and logical limits remain unchanged.
 This source does not authorize setup, installation, admission or live operation.
 
 Founder THR-336 message 85 approved TASK-14461 plan revision 3 under manager
@@ -1944,8 +1944,7 @@ original offline 900s operation, separate from all logical/ownership/inventory
 budgets. Non-ok and unavailable results refuse with sanitized stage/cause;
 owned rollback, close and independent original-inventory equality are required
 for `not_installed`, otherwise disposition is `unknown`. There is no new
-post-COMMIT physical veto or restore. Inline load checks remain unchanged until
-I2; the daily advisory report is I1b, and automatic bootstrap is A4. See the
+post-COMMIT physical veto or restore. I2 removes inline physical checks; the daily advisory report is I1b, and automatic bootstrap is A4. See the
 [I1a contract](../../superpowers/specs/2026-11-14-automatic-workflow-setup.md).
 
 

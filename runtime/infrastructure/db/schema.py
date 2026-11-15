@@ -94,8 +94,6 @@ def _v2_attempt_schema_kind(conn: sqlite3.Connection) -> str:
 
 
 def _v2_attempt_integrity(conn: sqlite3.Connection) -> None:
-    if [tuple(row) for row in conn.execute("PRAGMA integrity_check")] != [("ok",)]:
-        raise ValueError("v2 attempt retrofit database integrity failure")
     if conn.execute("PRAGMA foreign_key_check").fetchone() is not None:
         raise ValueError("v2 attempt retrofit database FK failure")
 

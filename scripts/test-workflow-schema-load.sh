@@ -3600,7 +3600,7 @@ if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--seque
             ('physical surplus index entry', lambda conn: corrupt_physical_index(conn, surplus=True)),
         )
         physical_names = {name for name, _ in physical_corruptions}
-        refusal_codes.update({name: 'workflow_source_data_corrupt' for name in physical_names})
+        refusal_codes.update({name: 'install_integrity_failed' for name in physical_names})
         if sys.argv[1:] == ['--physical-corruption']:
             corruptions = physical_corruptions
         elif sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-corruption']):
@@ -3676,37 +3676,52 @@ if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--seque
                             assert db._conn.total_changes == before, 'external fixture changed local counter'
                         expected = sequential_outcome(lambda: read_sequential_history(
                             db._conn, expected_org_slug='scratch').retained)
-                        assert expected[0] == 'refused', name + ' fixture was accepted by complete reader'
-                        assert all(category[0] is not ReadExhaustion for category in expected[1]), name + ' hidden by exhaustion'
-                        if name in retained_names:
-                            from runtime.infrastructure.team_move_store import TeamMoveError
-                            error_type = (PauseControlError if name.startswith('Pause ') else
-                                          names.NamingError if name.startswith('name ') else TeamMoveError)
-                        elif name == 'document compiler pin':
-                            from runtime.workflows.templates import WorkflowTemplateError
-                            error_type = WorkflowTemplateError
-                        elif name in coding_history_names:
-                            from runtime.workflows.coding_mapping_history import CodingMappingHistoryError
-                            error_type = coding_source_refusals[name][0] if name in coding_source_names else CodingMappingHistoryError
-                        elif name in coding_setup_names:
-                            from runtime.workflows.coding_authority_history import CodingAuthorityHistoryError
-                            error_type = CodingAuthorityHistoryError
-                        elif name in family_populators and refusal_codes[name] == 'workflow_document_revision_invalid_request':
-                            from runtime.workflows.activation import WorkflowActivationError
-                            error_type = WorkflowActivationError
+                        if name in physical_names:
+                            # I2 moves physical-only detection to the real I1 checker.
+                            # Keep both corruptions and all four timing phases.
+                            from runtime.infrastructure.workflow_integrity import check_full_integrity, IntegrityLedger
+                            assert expected[0] == 'returned', name + ' logical read unexpectedly refused'
+                            actual = sequential_outcome(lambda: seq_read(db))
+                            assert actual == expected, name + ' changed logical load outcome'
+                            result = check_full_integrity(db._conn, IntegrityLedger(time.monotonic()+5))
+                            assert result.outcome == 'failed' and result.cause == 'full_integrity_not_ok', (name, result)
+                            assert db._conn.in_transaction == (phase == 'between uncommitted'), name + ' physical checker stole snapshot'
+                            if phase == 'between uncommitted':
+                                db._conn.rollback()
+                                db._conn.execute('PRAGMA foreign_keys=ON')
+                                seq_read(db)
                         else:
-                            error_type = ValueError
-                        assert expected[1][0] == (error_type, refusal_codes[name]), name + ' missed its semantic boundary: ' + repr(expected)
-                        actual = sequential_outcome(lambda: seq_read(db))
-                        assert actual == expected, name + ' corruption changed complete refusal'
-                        assert owner.hits == hits and owner.sequential_saved is None, name + ' corruption retained a certificate'
-                        assert db._conn.in_transaction == (phase == 'between uncommitted'), name + ' corruption changed snapshot ownership'
-                        if phase == 'between uncommitted':
-                            db._conn.rollback()
-                            db._conn.execute('PRAGMA foreign_keys=ON')
-                            full = owner.full_runs
-                            seq_read(db)
-                            assert owner.full_runs == full + 1 and owner.hits == hits, name + ' rollback resurrected a certificate'
+                            assert expected[0] == 'refused', name + ' fixture was accepted by complete reader'
+                            assert all(category[0] is not ReadExhaustion for category in expected[1]), name + ' hidden by exhaustion'
+                            if name in retained_names:
+                                from runtime.infrastructure.team_move_store import TeamMoveError
+                                error_type = (PauseControlError if name.startswith('Pause ') else
+                                              names.NamingError if name.startswith('name ') else TeamMoveError)
+                            elif name == 'document compiler pin':
+                                from runtime.workflows.templates import WorkflowTemplateError
+                                error_type = WorkflowTemplateError
+                            elif name in coding_history_names:
+                                from runtime.workflows.coding_mapping_history import CodingMappingHistoryError
+                                error_type = coding_source_refusals[name][0] if name in coding_source_names else CodingMappingHistoryError
+                            elif name in coding_setup_names:
+                                from runtime.workflows.coding_authority_history import CodingAuthorityHistoryError
+                                error_type = CodingAuthorityHistoryError
+                            elif name in family_populators and refusal_codes[name] == 'workflow_document_revision_invalid_request':
+                                from runtime.workflows.activation import WorkflowActivationError
+                                error_type = WorkflowActivationError
+                            else:
+                                error_type = ValueError
+                            assert expected[1][0] == (error_type, refusal_codes[name]), name + ' missed its semantic boundary: ' + repr(expected)
+                            actual = sequential_outcome(lambda: seq_read(db))
+                            assert actual == expected, name + ' corruption changed complete refusal'
+                            assert owner.hits == hits and owner.sequential_saved is None, name + ' corruption retained a certificate'
+                            assert db._conn.in_transaction == (phase == 'between uncommitted'), name + ' corruption changed snapshot ownership'
+                            if phase == 'between uncommitted':
+                                db._conn.rollback()
+                                db._conn.execute('PRAGMA foreign_keys=ON')
+                                full = owner.full_runs
+                                seq_read(db)
+                                assert owner.full_runs == full + 1 and owner.hits == hits, name + ' rollback resurrected a certificate'
                     print('PASS A0b sequential corruption matrix:', name, phase, refusal_codes[name], flush=True)
                 except AssertionError as exc:
                     corruption_failures.append((name, phase, str(exc)))
@@ -3825,9 +3840,9 @@ if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--seque
                             assert not db._conn.in_transaction, name + ' denial leaked owned snapshot'
                     finally:
                         db._conn.set_authorizer(None)
-                    full = sql.count('PRAGMA integrity_check')
+                    full = sql.count('PRAGMA foreign_key_check')
                     seq_read(db)
-                    assert sql.count('PRAGMA integrity_check') == full + 1 and owner.hits == hits, name + ' restoration resurrected a fact'
+                    assert sql.count('PRAGMA foreign_key_check') == full + 1 and owner.hits == hits, name + ' restoration resurrected a fact'
                     assert not db._conn.in_transaction, name + ' restoration leaked owned snapshot'
                 print('PASS A0b sequential metadata denial:', phase, pragma)
 
@@ -3847,9 +3862,9 @@ if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--seque
                             assert not db._conn.in_transaction, 'initial native limit denial leaked snapshot'
                         db._conn.setlimit(limit, previous)
                         db._conn.set_authorizer(None)
-                        full = sql.count('PRAGMA integrity_check')
+                        full = sql.count('PRAGMA foreign_key_check')
                         seq_read(db)
-                        assert sql.count('PRAGMA integrity_check') == full + 1 and owner.hits == 0, 'initial native limit restoration resurrected a fact'
+                        assert sql.count('PRAGMA foreign_key_check') == full + 1 and owner.hits == 0, 'initial native limit restoration resurrected a fact'
                         assert not db._conn.in_transaction, 'initial native limit restoration leaked snapshot'
                 finally:
                     db._conn.setlimit(limit, previous)
@@ -3880,9 +3895,9 @@ if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--seque
                     db._conn.execute(f'PRAGMA {pragma}={previous}')
                     assert load_guard._bookend(db._conn) == before, pragma + ' fixture failed to restore metadata'
                     hits = owner.hits
-                    full = sql.count('PRAGMA integrity_check')
+                    full = sql.count('PRAGMA foreign_key_check')
                     actual = sequential_outcome(lambda: seq_read(db))
-                    assert owner.hits == hits and sql.count('PRAGMA integrity_check') == full + 1, pragma + ' restored configuration returned a hit'
+                    assert owner.hits == hits and sql.count('PRAGMA foreign_key_check') == full + 1, pragma + ' restored configuration returned a hit'
                     expected = sequential_outcome(lambda: read_sequential_history(
                         db._conn, expected_org_slug='scratch').retained)
                     assert actual == expected and actual[0] == 'returned', pragma + ' restoration changed complete outcome'
@@ -3940,9 +3955,9 @@ if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--seque
                     finally:
                         restore()
                     # The restored configuration cannot resurrect its old fact.
-                    before = sql.count('PRAGMA integrity_check')
+                    before = sql.count('PRAGMA foreign_key_check')
                     seq_read(db)
-                    assert sql.count('PRAGMA integrity_check') == before + 1, config + ' restoration resurrected a sequential fact'
+                    assert sql.count('PRAGMA foreign_key_check') == before + 1, config + ' restoration resurrected a sequential fact'
                 print('PASS A0b sequential config identity:', config)
 
         for autocommit in (True, False):
@@ -3969,9 +3984,9 @@ if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--seque
                     finally:
                         conn.autocommit = sqlite3.LEGACY_TRANSACTION_CONTROL
                         conn.rollback()
-                    before = sql.count('PRAGMA integrity_check')
+                    before = sql.count('PRAGMA foreign_key_check')
                     seq_read(db)
-                    assert sql.count('PRAGMA integrity_check') == before + 1, 'autocommit restoration resurrected a fact'
+                    assert sql.count('PRAGMA foreign_key_check') == before + 1, 'autocommit restoration resurrected a fact'
                 print('PASS A0b sequential autocommit identity:', autocommit)
 
         for attachment in ('additional database', 'restored ATTACH/DETACH', 'missing main', 'dangling main'):
@@ -3990,7 +4005,7 @@ if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--seque
                             conn.execute('DETACH DATABASE extra')
                             assert load_guard._bookend(conn) == before, 'ATTACH/DETACH failed to restore native metadata'
                         try:
-                            full = sql.count('PRAGMA integrity_check')
+                            full = sql.count('PRAGMA foreign_key_check')
                             actual = sequential_outcome(lambda: seq_read(db))
                             assert owner.hits == hits, attachment + ' returned a sequential hit'
                             if attachment == 'additional database':
@@ -3998,7 +4013,7 @@ if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--seque
                                     conn, expected_org_slug='scratch').retained)
                                 assert actual == expected and owner.sequential_saved is None, 'attached database changed complete outcome or certified'
                             else:
-                                assert actual[0] == 'returned' and sql.count('PRAGMA integrity_check') == full + 1, 'restored ATTACH/DETACH skipped complete validation'
+                                assert actual[0] == 'returned' and sql.count('PRAGMA foreign_key_check') == full + 1, 'restored ATTACH/DETACH skipped complete validation'
                         finally:
                             if attachment == 'additional database':
                                 conn.execute('DETACH DATABASE extra')
@@ -4017,10 +4032,10 @@ if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--seque
                             if original.is_symlink():
                                 original.unlink()
                             held.rename(original)
-                    full = sql.count('PRAGMA integrity_check')
+                    full = sql.count('PRAGMA foreign_key_check')
                     seq_read(db)
                     if attachment != 'restored ATTACH/DETACH':
-                        assert sql.count('PRAGMA integrity_check') == full + 1, attachment + ' restoration resurrected a fact'
+                        assert sql.count('PRAGMA foreign_key_check') == full + 1, attachment + ' restoration resurrected a fact'
                 print('PASS A0b sequential attachment identity:', attachment)
 
         for limit, value in ((sqlite3.SQLITE_LIMIT_SQL_LENGTH, 64), (sqlite3.SQLITE_LIMIT_COLUMN, 1)):
@@ -4104,11 +4119,11 @@ if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--seque
                     seq_read(db)
                     owner = load_guard._current.get()
                     hits = owner.hits
-                    before = other_sql.count('PRAGMA integrity_check')
+                    before = other_sql.count('PRAGMA foreign_key_check')
                     actual = seq_read(other)
                     assert actual == read_sequential_history(other._conn, expected_org_slug='scratch').retained
                     assert owner.hits == hits and owner.sequential_saved is None, 'wrong connection borrowed a sequential certificate'
-                    assert other_sql.count('PRAGMA integrity_check') == before + 2
+                    assert other_sql.count('PRAGMA foreign_key_check') == before + 2
                 print('PASS A0b sequential ownership exclusion: wrong connection')
 
         # Transactions that predate observation have unknown ownership, even
@@ -4126,21 +4141,21 @@ if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--seque
                         owner = load_guard._current.get()
                         assert owner.transaction_mode is None, name + ' fixture observed preexisting transaction'
                         for repeat in range(2):
-                            full = sql.count('PRAGMA integrity_check')
+                            full = sql.count('PRAGMA foreign_key_check')
                             operation = (lambda: load_guard.read_workflow_schema_target_for_org_load(
                                 conn, expected_org_slug='scratch', legacy=lambda: validate_workflow_schema(
                                     conn, expected_org_slug='scratch'))) if target else (
                                 lambda: seq_read(db, writer_source=True))
                             actual = sequential_outcome(operation)
-                            assert sql.count('PRAGMA integrity_check') == full + 1, name + ' bypassed complete fallback'
+                            assert sql.count('PRAGMA foreign_key_check') == full + 1, name + ' bypassed complete fallback'
                             expected = sequential_outcome(lambda: read_sequential_history(
                                 conn, expected_org_slug='scratch').retained)
                             assert actual == expected and actual[0] == 'returned', name + ' changed complete outcome'
                             assert conn.in_transaction and owner.hits == 0 and owner.sequential_saved is None, name + ' stole ownership or certified unknown interval'
                         conn.rollback()  # Only the original caller releases it.
-                        full = sql.count('PRAGMA integrity_check')
+                        full = sql.count('PRAGMA foreign_key_check')
                         seq_read(db)
-                        assert sql.count('PRAGMA integrity_check') == full + 1 and owner.sequential_saved is not None, name + ' exit did not start a fresh complete fact'
+                        assert sql.count('PRAGMA foreign_key_check') == full + 1 and owner.sequential_saved is not None, name + ' exit did not start a fresh complete fact'
                 finally:
                     conn.rollback()
                 print('PASS A0b sequential unknown transaction ownership:', name)
@@ -4154,9 +4169,9 @@ if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--seque
                     owner = load_guard._current.get()
                     assert owner.attachment is None, 'initial attachment fixture retained identity'
                     for repeat in range(2):
-                        full = sql.count('PRAGMA integrity_check')
+                        full = sql.count('PRAGMA foreign_key_check')
                         actual = sequential_outcome(lambda: seq_read(db))
-                        assert sql.count('PRAGMA integrity_check') == full + 1, 'unknown initial attachment skipped complete read'
+                        assert sql.count('PRAGMA foreign_key_check') == full + 1, 'unknown initial attachment skipped complete read'
                         expected = sequential_outcome(lambda: read_sequential_history(
                             db._conn, expected_org_slug='scratch').retained)
                         assert actual == expected and owner.hits == 0 and owner.sequential_saved is None, 'unknown initial attachment certified reuse'
@@ -4171,10 +4186,10 @@ if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--seque
                                 original.rename(detached)
                                 replacement.rename(original)
                             for repeat in range(2):
-                                full = sql.count('PRAGMA integrity_check')
+                                full = sql.count('PRAGMA foreign_key_check')
                                 foreign = sql.count('PRAGMA foreign_key_check')
                                 actual = sequential_outcome(lambda: seq_read(db))
-                                assert sql.count('PRAGMA integrity_check') == full + 1, phase + ' initial attachment skipped complete read'
+                                assert sql.count('PRAGMA foreign_key_check') == full + 1, phase + ' initial attachment skipped complete read'
                                 assert sql.count('PRAGMA foreign_key_check') == foreign + 1, phase + ' initial attachment skipped FK read'
                                 expected = sequential_outcome(lambda: read_sequential_history(
                                     db._conn, expected_org_slug='scratch').retained)
@@ -4305,7 +4320,7 @@ if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--seque
                         deadline = real_clock() + 5.0
                         def expire(statement):
                             if not reached and (boundary == 'entry' or
-                                    (boundary == 'integrity' and statement == 'PRAGMA integrity_check') or
+                                    (boundary == 'integrity' and statement == 'PRAGMA foreign_key_check') or
                                     (boundary == 'release' and statement == 'ROLLBACK')):
                                 reached.append(statement)
                                 offset[0] = 6.0
@@ -4415,7 +4430,7 @@ if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--seque
                 for _ in range(9):
                     assert seq_read(db) is first, 'same-load sequential tuple was not reused'
                 assert owner.full_runs == 1 and owner.hits == 9, 'sequential selection bypass repeated complete reads'
-                assert sql.count('PRAGMA integrity_check') == 1 and 'PRAGMA foreign_key_check' in sql
+                assert sql.count('PRAGMA foreign_key_check') == 1 and not any('integrity_check' in statement.lower() or 'quick_check' in statement.lower() for statement in sql)
                 original = owner.sequential_saved[3]
                 assert all(value > 0 for value in original), 'complete source did not retain original charges'
                 caller = _Budget()
@@ -4450,14 +4465,14 @@ if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--seque
                     reconcile_namespace(org, Namespace((), ()), install=True)
                 with org_load_validation(db, org_slug='scratch'):
                     seq_read(db)
-                    before = sql.count('PRAGMA integrity_check')
+                    before = sql.count('PRAGMA foreign_key_check')
                     if site == 'cutover':
                         WorkflowCutoverStore(db, org_slug='scratch').recover_authorized()
                     elif site == 'ownership':
                         install_task_ownership(db, org_slug='scratch')
                     else:
                         reconcile_namespace(org, Namespace((), ()), install=True, compare_only=True)
-                    assert sql.count('PRAGMA integrity_check') == before, site + ' sequential unchanged target read fresh'
+                    assert sql.count('PRAGMA foreign_key_check') == before, site + ' sequential unchanged target read fresh'
                     if site == 'cutover':
                         begin = max(i for i, statement in enumerate(sql) if statement == 'BEGIN')
                         assert sql[begin + 1] == 'SELECT rootpage FROM main.sqlite_schema LIMIT 1', 'cutover target lost fresh explicit main snapshot pin'
@@ -4468,7 +4483,7 @@ if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--seque
                 try:
                     with org_load_validation(db, org_slug='scratch'):
                         seq_read(db)
-                        before = sql.count('PRAGMA integrity_check')
+                        before = sql.count('PRAGMA foreign_key_check')
                         moved = []
                         def move(statement):
                             if statement == boundary and not moved:
@@ -4477,7 +4492,7 @@ if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--seque
                                 other.commit()
                         with db.observe_trace(move):
                             seq_read(db)
-                        assert moved and sql.count('PRAGMA integrity_check') == before + 1, boundary + ' race returned speculative reuse'
+                        assert moved and sql.count('PRAGMA foreign_key_check') == before + 1, boundary + ' race returned speculative reuse'
                         assert not db._conn.in_transaction, 'owned snapshot leaked after race'
                 finally:
                     other.close()
@@ -4578,17 +4593,17 @@ if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--seque
                         writer.commit()
                     assert db._conn.execute('PRAGMA main.data_version').fetchone()[0] != changed
                     assert db._conn.total_changes == local
-                    full = sql.count('PRAGMA integrity_check')
+                    full = sql.count('PRAGMA foreign_key_check')
                     restored = seq_read(db)
                     assert restored == read_sequential_history(db._conn, expected_org_slug='scratch').retained
-                    assert sql.count('PRAGMA integrity_check') == full + 2 and owner.hits == hits, 'external restoration reused a certificate'
+                    assert sql.count('PRAGMA foreign_key_check') == full + 2 and owner.hits == hits, 'external restoration reused a certificate'
                     assert not db._conn.in_transaction
                 print('PASS A0b sequential external restore:', variant, 'data_version changed, local counter fixed, fresh complete read')
 
             for exclusion in ('arbitrary snapshot', 'public', 'nondefault budget', 'unaccounted budget', 'validator policy'):
                 with org_load_validation(db, org_slug='scratch'):
                     seq_read(db)
-                    before = sql.count('PRAGMA integrity_check')
+                    before = sql.count('PRAGMA foreign_key_check')
                     if exclusion == 'arbitrary snapshot':
                         db._conn.execute('BEGIN')
                         db._conn.execute('SELECT rootpage FROM sqlite_schema LIMIT 1').fetchone()
@@ -4615,7 +4630,7 @@ if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--seque
                         with patch.object(seq_history, 'read_sequential_history', wraps=read_sequential_history):
                             seq_read(db)
                     if exclusion != 'nondefault budget':
-                        assert sql.count('PRAGMA integrity_check') == before + 1, exclusion + ' escaped reuse policy'
+                        assert sql.count('PRAGMA foreign_key_check') == before + 1, exclusion + ' escaped reuse policy'
                     else:
                         assert load_guard._current.get().sequential_saved is None, 'nondefault budget retained reuse'
                 print('PASS A0b sequential exclusion:', exclusion)
@@ -4653,7 +4668,7 @@ if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--seque
                 with org_load_validation(db, org_slug='scratch'):
                     seq_read(db)
                     context = copy_context()
-                    count = sql.count('PRAGMA integrity_check')
+                    count = sql.count('PRAGMA foreign_key_check')
                     errors = []
                     def foreign():
                         try:
@@ -4669,18 +4684,18 @@ if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--seque
                         async def foreign_task():
                             foreign()
                         asyncio.run(foreign_task())
-                    assert not errors and sql.count('PRAGMA integrity_check') == count + 1, 'sequential certificate crossed ' + execution
+                    assert not errors and sql.count('PRAGMA foreign_key_check') == count + 1, 'sequential certificate crossed ' + execution
                 print('PASS A0b sequential exclusion: foreign', execution)
 
             with org_load_validation(db, org_slug='scratch'):
                 seq_read(db)
                 inherited = copy_context()
-            before = sql.count('PRAGMA integrity_check')
+            before = sql.count('PRAGMA foreign_key_check')
             inherited.run(seq_read, db)
             with org_load_validation(db, org_slug='scratch'):
                 seq_read(db)
             seq_read(db)
-            assert sql.count('PRAGMA integrity_check') == before + 3, 'sequential certificate escaped load lifetime'
+            assert sql.count('PRAGMA foreign_key_check') == before + 3, 'sequential certificate escaped load lifetime'
             print('PASS A0b sequential exclusion: inherited inactive context, fresh load and outside scope')
 
             with org_load_validation(db, org_slug='scratch'):
@@ -4789,7 +4804,8 @@ if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--seque
                 statements = []
                 with database.observe_trace(statements.append):
                     yield
-                observed_loads.append((owner.full_runs, owner.hits, statements.count('PRAGMA integrity_check')))
+                observed_loads.append((owner.full_runs, owner.hits, statements.count('PRAGMA foreign_key_check')))
+                assert not any('integrity_check' in sql.lower() or 'quick_check' in sql.lower() for sql in statements), 'I2-load physical SQL inside load'
         with patch.dict(os.environ, {'HAPPYRANCH_DAEMON_HOME': str(root.parent.parent)}), patch.object(org_state_module, 'org_load_validation', capture_load):
             # Establish original settings/namespace once, then retain a genuine
             # prepared ordinary journal for the measured first/next pair.
@@ -4804,9 +4820,9 @@ if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--seque
                 state = OrgState.load(slug='scratch', root=root, settings=Settings())
                 assert state.naming_readiness == 'ready'
                 state.close()
-            assert control_sql.count('PRAGMA integrity_check') == 10, 'uncached whole-load control did not execute ten complete reads'
+            assert not any('integrity_check' in sql.lower() or 'quick_check' in sql.lower() for sql in control_sql), 'I2-load uncached physical SQL'
             assert control_sql.count('PRAGMA foreign_key_check') == 10, 'uncached whole-load control omitted FK checks'
-            print('PASS A0b actual sequential OrgState.load: uncached control ten full integrity/FK reads')
+            print('PASS A0b actual sequential OrgState.load: uncached control ten whole-FK/domain reads')
             store = TaskPauseStore(db, 'scratch')
             fingerprint = dict(status='pending', block_kind=None, count=0,
                 session_id=None, agent=None, fanout=None, jobs=None, parent=None, brief_digest='0' * 64)
@@ -4829,7 +4845,7 @@ if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--seque
                 full, hits, physical = observed_loads[-1]
                 assert full + hits == 10, phase + ' did not exercise all ten sequential discriminators: ' + str(observed_loads[-1])
                 assert full == (2 if phase == 'first' else 1), phase + ' lost write-sensitive whole-load validation count: ' + str(observed_loads[-1])
-                assert physical == full, phase + ' lost full physical checks on misses'
+                assert physical == full, phase + ' lost full FK checks on misses'
                 print('PASS A0b actual sequential OrgState.load:', phase, 'full', full, 'hits', hits)
 
 if sys.argv[1:] in (['--sequential-reuse'], ['--sequential-load']):
@@ -5695,9 +5711,9 @@ for site in ('cutover', 'ownership', 'naming'):
                     return result
                 original_advance = cutover._advance
                 def advance(conn, marker, events, **kwargs):
-                    before = sum(sql == 'PRAGMA integrity_check' for sql in statements)
+                    before = sum(sql == 'PRAGMA foreign_key_check' for sql in statements)
                     original_advance(conn, marker, events, **kwargs)
-                    assert sum(sql == 'PRAGMA integrity_check' for sql in statements) == before + 1, 'recovery mutation lost its full target check before COMMIT'
+                    assert sum(sql == 'PRAGMA foreign_key_check' for sql in statements) == before + 1, 'recovery mutation lost its full target check before COMMIT'
                 def source(conn, **kwargs):
                     global injected
                     result = original_source(conn, **kwargs)
@@ -5716,7 +5732,7 @@ for site in ('cutover', 'ownership', 'naming'):
                     owner = load_guard._current.get()
                     before_full, before_hits = owner.full_runs, owner.hits
                     changes = db._conn.total_changes
-                    before_checks = sum(sql == 'PRAGMA integrity_check' for sql in statements)
+                    before_checks = sum(sql == 'PRAGMA foreign_key_check' for sql in statements)
                     with (patch.object(load_guard, 'read_workflow_schema_for_org_load', side_effect=source),
                           patch.object(load_guard, 'read_workflow_schema_target_for_org_load', side_effect=target, create=True),
                           patch.object(cutover, '_advance', side_effect=advance)):
@@ -5740,14 +5756,14 @@ for site in ('cutover', 'ownership', 'naming'):
                     if scenario == 'zero-write':
                         good = (owner.full_runs == before_full and owner.hits == before_hits + 2
                                 and db._conn.total_changes == changes
-                                and sum(sql == 'PRAGMA integrity_check' for sql in statements) == before_checks)
+                                and sum(sql == 'PRAGMA foreign_key_check' for sql in statements) == before_checks)
                         # Reuse returns the exact complete tuple, without reconstruction.
                         if target_results:
                             assert len(target_results) == 1 and target_results[0] is cached
                         assert owner.saved[1] is cached
-                        assert 'PRAGMA integrity_check' in statements
+                        assert 'PRAGMA foreign_key_check' in statements
                     else:
-                        good = sum(sql == 'PRAGMA integrity_check' for sql in statements) > before_checks
+                        good = sum(sql == 'PRAGMA foreign_key_check' for sql in statements) > before_checks
                         if scenario in ('owner-write', 'unrelated-write'):
                             assert db._conn.total_changes > changes, (site, scenario, 'no actual write')
                     if not good:
@@ -5758,9 +5774,9 @@ for site in ('cutover', 'ownership', 'naming'):
                     # The public read keeps its original full path even IN a load scope.
                     with org_load_validation(db, org_slug='scratch'):
                         original_source(db._conn, expected_org_slug='scratch')
-                        before = sum(sql == 'PRAGMA integrity_check' for sql in statements)
+                        before = sum(sql == 'PRAGMA foreign_key_check' for sql in statements)
                         cutover.get()
-                        assert sum(sql == 'PRAGMA integrity_check' for sql in statements) == before + 1, 'public cutover get reused within load scope'
+                        assert sum(sql == 'PRAGMA foreign_key_check' for sql in statements) == before + 1, 'public cutover get reused within load scope'
             finally:
                 db._conn.set_authorizer(None)
                 trace_observers.close()
@@ -5836,18 +5852,18 @@ with tempfile.TemporaryDirectory(prefix='workflow-load-') as scratch:
         trace_observers.enter_context(db.observe_trace(statements.append))
 
         def checks():
-            return sum(s == 'PRAGMA integrity_check' for s in statements)
+            return sum(s == 'PRAGMA foreign_key_check' for s in statements)
 
         def read(**kwargs):
             return read_workflow_schema_for_org_load(db._conn, expected_org_slug='scratch', **kwargs)
 
         with org_load_validation(db, org_slug='scratch'):
             first = read()
-            assert checks() == 1, 'first validation lost integrity_check'
+            assert checks() == 1, 'first validation lost foreign_key_check'
             assert 'PRAGMA foreign_key_check' in statements, 'first full validation lost FK check'
             assert read() == first
             assert checks() == 1, 'unchanged load repeated the full traversal'
-        print('PASS unchanged reuse and first-run integrity/FK')
+        print('PASS unchanged reuse and first-run whole-FK/domain')
 
         failures = []
 

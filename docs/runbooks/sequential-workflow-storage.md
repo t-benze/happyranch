@@ -11,7 +11,7 @@ After writer acquisition, `not_installed` requires owned rollback, writer close
 and independent RO original-inventory equality; uncertain proof is `unknown`
 (exit 4). There is no new post-COMMIT physical veto or automatic restore.
 The existing offline backup remains operator-created and untouched; A4 owns
-automatic bootstrap/phase publication. Inline load checks remain until I2;
+automatic bootstrap/phase publication. I2 removes inline physical checks;
 the daily read-only report is I1b. See the
 [I1a contract](../superpowers/specs/2026-11-14-automatic-workflow-setup.md).
 
@@ -23,7 +23,7 @@ identity and a pinned zero-write snapshot. Writes/write rollback, schema/config
 execution or failed observation invalidate it; replaced files refuse. Retained
 charges import once per compatible caller and changed targets debit original
 cumulative counters. Public/unknown snapshots and later loads validate fresh.
-Every miss retains full physical/FK checks and original finite limits. A0b-2
+Every miss retains full FK/domain checks and original finite limits. Historically, A0b-2
 capacity acceptance requires actual default writable installed danze, family and
 genuine fresh-org FIRST/NEXT returns on Python3.12/3.14. Installed happyranch's
 FIRST and attempted NEXT must refuse with zero DB changes, no partial certificate
@@ -43,7 +43,7 @@ shape/size once and specialize equivalent ownership type predicates. The private
 exceptional-text scan still follows a complete whole-table type/size proof in
 the same snapshot, with bounded acquisition and original logical charges.
 This component adds no installer/startup caller or new reuse and retains full
-physical/FK checks and every existing runtime/operator allowance below.
+full FK/domain checks and every existing runtime/operator allowance below.
 
 **SOURCE ONLY; isolated-copy installer evidence, no live acceptance.** TASK-14597 adds
 `scripts/install_workflow_sequential_schema.py` and the explicit installer in
