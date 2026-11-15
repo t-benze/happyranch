@@ -209,8 +209,17 @@ only; unknown job status or active-job ancestry still holds the whole org.
 A uniquely recorded missing worktree folder is retained locally only after the
 full existing no-follow census/pointer/ancestor proof; its recorded location
 protects containing candidates and it is never repaired. Unknown-location admin
-residue ALWAYS prevents a complete night. Located inspected keeps and proven
-listed TASK arrivals can satisfy coverage; unknown discovery/shared holds,
+residue ALWAYS prevents a complete night. Founder THR307 seq355 approving
+seq354 item 2 also permits a located, item-scoped `dirty_unknown_owner` keep
+when only an unknown guard/branch owner or final guard-file ENOENT holds a
+worktree and one read-only existing Git status proves dirty/untracked work.
+The original registration/location proofs still precede status, within the
+same deadline and with the existing guard ignore. Every report lists the
+original owner reason and absolute path; the worktree is never deleted or
+repaired. Clean/error/uncertain observations remain blocking unknowns; timeout
+still interrupts. Clean unknown-owner worktrees and empty unknown-owner scratch
+folders are unchanged. Located inspected keeps and proven listed TASK arrivals
+can satisfy coverage; unknown discovery/shared holds,
 unreached/in-flight/partial effects, operational errors or an unpublished report
 cannot. Positively classified ordinary non-clone folders are listed exclusions;
 a configured clone with missing `.git` or unsafe/unavailable evidence stays unknown.

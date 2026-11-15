@@ -76,6 +76,7 @@ _CLASSIFICATION = {
     'org_unavailable': ('org', False),
     'run_error': ('run', False),
     'preservation': ('item', True),
+    'dirty_unknown_owner': ('item', True),
     'item_unknown': ('item', False),
 }
 _PRESERVATION_REASONS = {
@@ -101,6 +102,7 @@ def _classification(reason: str, finding: str | None = None) -> dict:
         finding = ('job_lineage_unknown' if code in _ORG_REASONS else
                    'missing_folder' if code == 'missing_worktree_folder' else
                    'unregistered_task' if code == 'unknown_unregistered_task_worktree' else
+                   'dirty_unknown_owner' if code == 'dirty_unknown_owner' else
                    'preservation' if code in _PRESERVATION_REASONS else 'item_unknown')
     hold, located = _CLASSIFICATION[finding]
     return dict(finding=finding, hold=hold, located_inspected=located)
@@ -1450,6 +1452,35 @@ def worktree_inventory(candidate: dict, topology: dict, deadline: float) -> Exce
     return None
 
 
+def _dirty_unknown_owner(candidate: dict, topology: dict, deadline: float, refusal: Exception) -> Exception:
+    """Observe an owner-unknown keep only; never supply admission clearance."""
+    path = Path(candidate['path'])
+    if not (isinstance(refusal, Retain) and str(refusal) in (
+            'unknown_worktree_owner', 'unknown_worktree_branch_owner')
+            or isinstance(refusal, FileNotFoundError) and refusal.filename == str(path / '.worktree-guard.json')):
+        return refusal
+    try:
+        rows = topology[candidate['repo']]
+        try:
+            rows.require(path, deadline)
+        except Retain as exc:
+            if str(exc) != 'unknown_worktree_branch_owner':
+                raise
+        _worktree_location(path, Path(candidate['repo']), rows, deadline)
+        # Same status semantics as inventory/admission, including the existing
+        # guard ignore. One observation on this final keep, in the same budget.
+        candidate['reason'] = str(refusal)
+        dirty = git(path, deadline, 'status', '--porcelain=v1', '-z', '--untracked-files=all')
+        if dirty:
+            candidate['dirty_paths'] = dirty.split('\0')
+            return Retain(f'dirty_unknown_owner:{refusal}:{path}')
+    except Expired:
+        raise
+    except Exception:
+        pass  # Clean or unavailable evidence preserves the original unknown.
+    return refusal
+
+
 def _worktree_gate(candidate: dict, deadline: float, retained: dict | None = None, inventory: _Registrations | None = None) -> tuple:
     path = Path(candidate['path'])
     task_id = path.name
@@ -1886,6 +1917,8 @@ def sweep_org(org: Path, deadline: float, *, mode: str, checkpoint=lambda: None,
                 observe('item', 'interrupted', candidate=candidate, reason=str(exc))
                 raise
             except Exception as exc:
+                if not mutation_started and candidate['phase'] == 'worktree':
+                    exc = _dirty_unknown_owner(candidate, topology, deadline, exc)
                 classification = _classification(str(exc), 'registration_unknown' if isinstance(exc, _RegistrationUnknown) else
                                                  exc.finding if isinstance(exc, _LineageUnknown) else
                                                  'org_unavailable' if isinstance(exc, sqlite3.Error) else None)

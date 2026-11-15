@@ -553,7 +553,7 @@ def basic(app, **selection):
             or info.get('SUAutomaticallyUpdate') is not enabled):
         fail('APP_SPARKLE_SETTINGS_INVALID', 'feed or key-gated update settings')
     for key in ('CFBundleVersion', 'CFBundleShortVersionString'):
-        if not re.fullmatch(r'(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)', str(info.get(key, ''))):
+        if not re.fullmatch(sparkle['VERSION_PATTERN'], str(info.get(key, ''))):
             fail('APP_PLIST_MISMATCH', key)
     for key in ('GitCommitSHA', 'GitTreeSHA'):
         if not re.fullmatch('[0-9a-f]{40}', str(info.get(key, ''))):
@@ -636,7 +636,7 @@ if a.mode == 'native':
 try:
     if a.mode == 'preflight':
         for key in ('version', 'build'):
-            if not re.fullmatch(r'(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)', getattr(a, key)):
+            if not re.fullmatch(sparkle['VERSION_PATTERN'], getattr(a, key)):
                 fail('RELEASE_' + key.upper() + '_INVALID', getattr(a, key))
         if a.arch != 'arm64':
             fail('RELEASE_ARCH_UNSUPPORTED', a.arch)

@@ -6176,6 +6176,88 @@ def c48() -> dict[str, object]:
                 limits='Disposable clones only; no real-clone rollout, daemon restart, mount or Darwin execution')
 
 
+def c49() -> dict[str, object]:
+    """Dirty unknown-owner keeps are listed and covered; uncertainty still blocks."""
+    observations, failures = [], []
+    for owner in ('null_task', 'absent_task', 'mismatched_task', 'missing_guard', 'branch'):
+        for content in ('tracked', 'untracked', 'clean', 'status_error', 'status_timeout', 'locked'):
+            label = owner + '/' + content
+            try:
+                with fixture() as f:
+                    repo, path = f.worktree('TASK-1')
+                    guard = path / '.worktree-guard.json'
+                    if owner == 'missing_guard':
+                        guard.unlink()
+                    elif owner == 'branch':
+                        f.git(repo, 'branch', 'other', 'HEAD')
+                        f.git(path, 'symbolic-ref', 'HEAD', 'refs/heads/other')
+                    else:
+                        value = json.loads(guard.read_text())
+                        if owner == 'absent_task': value.pop('task_id')
+                        else: value['task_id'] = None if owner == 'null_task' else 'TASK-99'
+                        guard.write_text(json.dumps(value))
+                    if content == 'untracked': (path / 'new-file').write_text('uncommitted\n')
+                    elif content != 'clean': (path / 'source').write_text('uncommitted\n')
+                    if content == 'locked': f.git(repo, 'worktree', 'lock', str(path))
+                    before, refs = candidate_contents(path), f.git(repo, 'show-ref')
+                    calls, effects = [], []
+                    realgit = ds.git
+                    def git(root: Path, deadline: float, *args: str) -> str:
+                        if args[:2] in (('worktree', 'remove'), ('worktree', 'prune')):
+                            effects.append(args)
+                            raise AssertionError(('unexpected Git mutation', args))
+                        if root == path and args[0] == 'status':
+                            calls.append(args)
+                            if content == 'status_error': raise ds.Retain('git_failed:synthetic status failure')
+                            if content == 'status_timeout': raise ds.Expired('git subprocess deadline; descendant state unknown')
+                        return realgit(root, deadline, *args)
+                    def mutate(*args: object, **kwargs: object) -> None:
+                        effects.append('mutate')
+                        raise AssertionError('unexpected filesystem mutation')
+                    with patch.object(ds, 'git', git), patch.object(ds, 'mutate', mutate):
+                        report, summary = policy_sweep(f)
+                    item = report['orgs'][0]
+                    target = row(item, path)
+                    dirty_unknown = content in ('tracked', 'untracked')
+                    covered = dirty_unknown or content == 'locked' and owner == 'branch'
+                    assert not effects and candidate_contents(path) == before, (label, effects)
+                    assert f.git(repo, 'show-ref') == refs, label
+                    assert str(path) in f.git(repo, 'worktree', 'list', '--porcelain'), label
+                    assert item['coverage']['complete'] is covered, (label, target, item['coverage'])
+                    assert report['outcome'] == ('complete' if covered else 'incomplete'), (label, report)
+                    assert len(calls) == (0 if content == 'locked' else 1), (label, calls, target)
+                    if calls:
+                        assert calls[0] == ('status', '--porcelain=v1', '-z', '--untracked-files=all'), calls
+                    if content == 'status_timeout':
+                        assert target['state'] == 'inspecting' and report['stop_cause'] == 'git_timeout', (label, target, report)
+                    else:
+                        assert target['state'] == 'retained', (label, target)
+                        expected = ('git_unregistered_locked_or_prunable' if content == 'locked' and owner == 'branch' else
+                                    'unknown_worktree_branch_owner' if owner == 'branch' else
+                                    '[Errno 2]' if owner == 'missing_guard' else 'unknown_worktree_owner')
+                        assert expected in target['reason'], (label, target)
+                        if dirty_unknown:
+                            assert target['reason'].startswith('dirty_unknown_owner:') and str(path) in target['reason'], (label, target)
+                            assert ds._classification(target['reason']) == dict(finding='dirty_unknown_owner', hold='item', located_inspected=True)
+                        else:
+                            assert not target['reason'].startswith('dirty_unknown_owner:'), (label, target)
+                    # Real persisted JSON/audit projection includes the exact retained path.
+                    ds._manual_audit(report, [str(f.org)], summary)
+                    saved = json.loads(f.db.execute("SELECT payload FROM audit_log WHERE action='disk_sweep_summary'").fetchone()[0])
+                    assert row(saved['org'], path) == target and json.loads(summary.read_text()) == report, label
+                    assert report['night']['complete'] is False, 'worker must not fabricate supervisor proof'
+                    report.update(worker_group_stop='fixture observed closure', worker_returncode=0)
+                    ds._finalize_night(report)
+                    assert report['night']['complete'] is covered, (label, report['night'])
+                    observations.append(dict(variant=label, state=target['state'], reason=target.get('reason'),
+                                             status_calls=len(calls), coverage_complete=covered, night_complete=report['night']['complete']))
+            except AssertionError as exc:
+                failures.append(dict(variant=label, error=str(exc)[:2000]))
+    for failure in failures: print(json.dumps(dict(regression=failure)), flush=True)
+    assert not failures, failures
+    return dict(variants=observations, limits='Disposable real Git/status and report/audit seam; supervisor closure supplied only to exercise the unchanged night predicate')
+
+
 def candidate_baseline(revision: str):
     """Load exact unmodified production source for attributable before evidence."""
     commit = subprocess.check_output(['git', 'rev-parse', '--verify', revision + '^{commit}'], text=True).strip()
@@ -6185,7 +6267,7 @@ def candidate_baseline(revision: str):
     return module
 
 
-def c49():
+def c50():
     """Successful deletes use discovery's three censuses and no later census."""
     with fixture() as f:
         ownership_indexes(f)
@@ -6207,7 +6289,7 @@ def c49():
         return dict(shared_observations=len(calls), counters=counts, deletes=2, censuses=counts['censuses'], topology_reads=counts['topology_reads'])
 
 
-def c50():
+def c51():
     """Replacements after fresh admission never reach the remove effect."""
     observations = []
     for variant in ('entry', 'pointer', 'folder', 'commondir', 'head', 'missing_row', 'duplicate_row'):
@@ -6252,7 +6334,7 @@ def c50():
     return dict(variants=observations)
 
 
-def c51():
+def c52():
     """A real unrelated Git add during admission progresses; overlap retains."""
     observations = []
     for location in ('unrelated', 'unrelated_non_task', 'nested'):
@@ -6298,7 +6380,7 @@ def c51():
     return dict(variants=observations, concurrency='Real separate Git subprocess completed at a deterministic admission boundary')
 
 
-def c52():
+def c53():
     """Expired after an attempted Git effect stays unknown without repair/retry."""
     observations = []
     for effect in ('no_effect', 'remove_completed_response_lost'):
@@ -6335,7 +6417,7 @@ def c52():
     return dict(variants=observations, kill_coverage='C12 owns real supervised worker termination; this case owns Expired at Git remove')
 
 
-def c53():
+def c54():
     """SIGKILL after real worktree removal leaves the published intent unknown."""
     with fixture() as f:
         ownership_indexes(f)
@@ -6418,7 +6500,7 @@ if __name__=='__main__':
     selection=parser.add_mutually_exclusive_group()
     selection.add_argument('--corrections-only', action='store_true', help='THR307seq117/134: C1-C7, S1-S5 (8-12) and per-org settlement (13); no historical/isolation cases')
     selection.add_argument('--correction-cases', type=int, nargs='+', choices=range(1, 14), help='select finite cases within the corrections lane')
-    selection.add_argument('--cases',type=int,nargs='+',choices=range(1,54))
+    selection.add_argument('--cases',type=int,nargs='+',choices=range(1,55))
     selection.add_argument('--candidate-benchmark', action='store_true')
     parser.add_argument('--candidate-baseline', help='run selected cases against exact production commit')
     parser.add_argument('--benchmark-baseline', default='53391d91b0812a2ef6bd2e7126ea87c9d6991e7d')
@@ -6465,10 +6547,11 @@ if __name__=='__main__':
             purposes += ('Fresh topology after eligible inventory and healed-refusal latch', 'Mount arrival through production detection seam after inventory',)
             purposes += ('Dynamic base equivalence for final-census TASK arrivals and local churn',)
             purposes += ('Runtime guard local exclude and unchanged non-force removal',)
+            purposes += ('Dirty unknown-owner coverage and blocking clean/error/timeout keeps',)
             purposes += ('No per-candidate whole-repository census', 'Own entry pointer folder and row replacements before remove',
                          'Concurrent unrelated and nested Git arrivals', 'Interrupted Git remove has no repair or retry',
                          'Killed worker after real Git remove preserves unknown intent')
-            for number,(fn,purpose) in enumerate(zip((c1,c2,c3,c4,c5,c6,c7,c8,c9,c10,c11,c12,c13,c14,c15,c16,c17,c18,c19,c20,c21,c22,c23,c24,c25,c26,c27,c28,c29,c30,c31,c32,c33,c34,c35,c36,c37,c38,c39,c40,c41,c42,c43,c44,c45,c46,c47,c48,c49,c50,c51,c52,c53),purposes),1):
+            for number,(fn,purpose) in enumerate(zip((c1,c2,c3,c4,c5,c6,c7,c8,c9,c10,c11,c12,c13,c14,c15,c16,c17,c18,c19,c20,c21,c22,c23,c24,c25,c26,c27,c28,c29,c30,c31,c32,c33,c34,c35,c36,c37,c38,c39,c40,c41,c42,c43,c44,c45,c46,c47,c48,c49,c50,c51,c52,c53,c54),purposes),1):
                 if args.cases is None or number in args.cases:
                     if number in (3, 4):
                         RESULTS.append(dict(case=number, purpose=purpose, result='SUPERSEDED', reason='THR307 seq117 removed OS-process eligibility; historical source not executed'))

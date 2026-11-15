@@ -585,7 +585,24 @@ narrows destructive registration proofs as described above. Step 4 guard ignore 
 | Unknown job status or active-job lineage | Whole org | Not complete |
 | DB/native-writer failure, Git timeout | Org/run | Not complete |
 | Known dirty/active/recent/hardlink/mount/nested/descendant keep | Item | Located inspected keep |
+| Dirty worktree held only by unknown guard/branch owner (`dirty_unknown_owner`) | Item, never deleted or repaired | Located inspected keep, listed by path |
 | Other unclassified observation | Existing conservative retention | Not complete |
+
+Founder THR-307 seq355 approving seq354 item 2 applies only to dirty
+unknown-owner worktrees. After `unknown_worktree_owner`, final guard-file
+ENOENT, or `unknown_worktree_branch_owner`, a read-only observation first
+requires the existing registration and unchanged no-follow location proof
+(allowing only the unknown branch-owner refusal), then uses the existing
+`git status --porcelain=v1 -z --untracked-files=all` semantics, including the
+existing guard ignore. At most one such status runs per kept item, within the
+original deadline. Positive dirty/untracked evidence produces the item-scoped
+`dirty_unknown_owner` finding; its reason includes the original owner refusal
+and absolute path in each report and matching audit. This is a final keep,
+never admission, deletion or repair authority. Clean status, observation errors
+or other uncertainty preserve the blocking unknown; timeout still interrupts
+within the existing deadline and prevents completeness. Clean unknown-owner
+worktrees, empty unknown-owner scratch folders and every other classification
+and shared/org hold are unchanged.
 
 A missing folder qualifies only for final-name ENOENT through a readable literal
 parent, with canonical unique recorded `gitdir`, valid `commondir`, safe remaining

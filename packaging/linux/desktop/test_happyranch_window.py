@@ -354,12 +354,14 @@ class ServiceTests(unittest.TestCase):
         self.publish()
         self.net()
         self.state = {"MainPID": "42", "FragmentPath": window.ServiceMode.fragment,
-                      "DropInPaths": "", "ActiveState": "active", "Result": "success"}
+                      "DropInPaths": "", "ActiveState": "active", "Result": "success",
+                      "UnitFileState": "disabled", "NeedDaemonReload": "no"}
         self.calls = []
         self.probes = []
         self.manager = (0, "running\n")
         self.environment = "PATH=/usr/bin\n"
         self.failed_command = None
+        self.linger = "no"
         self.healthy = True
         self.service = window.ServiceMode(self.home, user_home=self.user_home,
                                           proc=self.proc, runner=self.run_command,
@@ -382,6 +384,15 @@ class ServiceTests(unittest.TestCase):
             rc = 1
         elif argv[:3] == ["systemctl", "--user", "is-system-running"]:
             rc, output = self.manager
+        elif argv[0] == "loginctl":
+            output = self.linger + "\n"
+        elif argv[0] == "busctl":
+            self.assertEqual(argv, ["busctl", "--user", "get-property", "org.freedesktop.systemd1",
+                                   "/org/freedesktop/systemd1/unit/happyranch_2ddaemon_2eservice",
+                                   "org.freedesktop.systemd1.Service", "ExecMainStartTimestamp"])
+            output = "t " + self.state.get("ExecMainStartTimestamp", "1") + "\n"
+        elif argv[2] in {"enable", "disable"}:
+            self.state["UnitFileState"] = "enabled" if argv[2] == "enable" else "disabled"
         elif argv[0] == "journalctl":
             output = "\n".join(f"synthetic journal {i}" for i in range(25))
         elif argv[2] == "show-environment":
@@ -407,6 +418,489 @@ class ServiceTests(unittest.TestCase):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text)
         return path
+
+    def test_lifetime_state_is_derived_for_every_combination(self) -> None:
+        for enabled, linger, expected in ((False, False, "off"), (True, True, "on"),
+                                          (True, False, "partial"), (False, True, "partial")):
+            with self.subTest(enabled=enabled, linger=linger):
+                self.state["UnitFileState"] = "enabled" if enabled else "disabled"
+                self.linger = "yes" if linger else "no"
+                self.service.save_linger(not linger)  # Provenance must not set UI state.
+                self.assertEqual(self.service.lifetime_state(), expected)
+        self.failed_command = str(os.getuid())
+        with self.assertRaisesRegex(window.LaunchError, "inspect login linger"):
+            self.service.lifetime_state()
+
+    def test_linger_dbus_uses_self_uid_interactive_and_plain_denial(self) -> None:
+        calls = []
+        class Bus:
+            def call_sync(self, *args: object) -> None:
+                calls.append(args)
+        repository = ModuleType("gi.repository")
+        class Error(Exception):
+            pass
+        repository.Gio = SimpleNamespace(BusType=SimpleNamespace(SYSTEM="system"),
+            bus_get_sync=lambda kind, cancel: Bus(),
+            DBusCallFlags=SimpleNamespace(ALLOW_INTERACTIVE_AUTHORIZATION="interactive"))
+        repository.GLib = SimpleNamespace(Variant=lambda signature, value: (signature, value), Error=Error)
+        with patch.dict(sys.modules, {"gi.repository": repository}):
+            self.service.set_linger(True)
+            self.service.set_linger(False)
+            self.assertEqual([call[4] for call in calls],
+                             [("(ubb)", (os.getuid(), True, True)), ("(ubb)", (os.getuid(), False, True))])
+            self.assertTrue(all(call[:4] == ("org.freedesktop.login1", "/org/freedesktop/login1",
+                "org.freedesktop.login1.Manager", "SetUserLinger") for call in calls))
+            self.assertTrue(all(call[6:] == ("interactive", 10000, None) for call in calls))
+            repository.Gio.bus_get_sync = lambda *_args: (_ for _ in ()).throw(Error("org.freedesktop.DBus.Error.AccessDenied"))
+            with self.assertRaisesRegex(window.LaunchError, "local polkit rule denied"):
+                self.service.set_keep_running(True)
+            self.assertEqual(self.service.lifetime_state(), "off")
+            self.assertNotIn("enable", self.verbs())
+            self.assertFalse(self.service.desktop_config.exists())
+
+    def test_enable_persists_atomic_provenance_and_disable_preserves_external_linger(self) -> None:
+        for previously_on in (False, True):
+            with self.subTest(previously_on=previously_on):
+                self.linger = "yes" if previously_on else "no"
+                self.service.desktop_config.unlink(missing_ok=True)
+                events = []
+                runner = self.service.runner
+                def run(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess:
+                    events.append(argv[2])
+                    return runner(argv, **kwargs)
+                def linger(enabled: bool) -> None:
+                    events.append(("linger", enabled))
+                    self.linger = "yes" if enabled else "no"
+                with patch.object(self.service, "set_linger", side_effect=linger), \
+                        patch.object(self.service, "runner", side_effect=run), \
+                        patch.object(window.os, "replace", wraps=os.replace) as replace:
+                    self.service.set_keep_running(True)
+                    self.assertLess(events.index(("linger", True)), events.index("enable"))
+                    self.assertEqual(self.service.app_set_linger(), not previously_on)
+                    self.assertEqual(self.service.lifetime_state(), "on")
+                    self.assertEqual(replace.call_count, 1)
+                    self.assertEqual(Path(replace.call_args.args[0]).parent, self.service.desktop_config.parent)
+                    self.assertEqual(replace.call_args.args[1], self.service.desktop_config)
+                    # Repeated ON/repair must retain the app's original undo obligation.
+                    self.service.set_keep_running(True)
+                    self.assertEqual(self.service.app_set_linger(), not previously_on)
+                    self.service.set_keep_running(False)
+                self.assertFalse(self.service.app_set_linger())
+                self.assertEqual(self.linger, "yes" if previously_on else "no")
+                self.assertEqual(events.count(("linger", False)), 0 if previously_on else 1)
+                self.assertNotIn("stop", events)
+                self.assertEqual(list(self.service.desktop_config.parent.glob(".desktop-*")), [])
+
+    def test_enable_failure_rolls_back_only_linger_changed_by_app(self) -> None:
+        self.failed_command = "enable"
+        for prior in ("no", "yes"):
+            with self.subTest(prior=prior):
+                self.linger = prior
+                def linger(enabled: bool) -> None:
+                    self.linger = "yes" if enabled else "no"
+                with patch.object(self.service, "set_linger", side_effect=linger) as change:
+                    with self.assertRaisesRegex(window.LaunchError, "enable"):
+                        self.service.set_keep_running(True)
+                    self.assertEqual(change.call_args_list, [unittest.mock.call(True)] +
+                                     ([unittest.mock.call(False)] if prior == "no" else []))
+                self.assertEqual(self.linger, prior)
+                self.assertFalse(self.service.desktop_config.exists())
+
+    def test_missing_malformed_config_never_disables_external_linger(self) -> None:
+        self.service.desktop_config.parent.mkdir(parents=True)
+        for raw in (None, b"{", b"\xff", b"[]", b'{"linger_set_by_app":"true"}', b'{"linger_set_by_app":1}'):
+            with self.subTest(raw=raw):
+                self.service.desktop_config.unlink(missing_ok=True)
+                if raw is not None:
+                    self.service.desktop_config.write_bytes(raw)
+                self.linger = "yes"
+                with patch.object(self.service, "set_linger") as change:
+                    self.service.set_keep_running(False)
+                change.assert_not_called()
+                self.assertEqual(self.linger, "yes")
+                self.assertNotIn("stop", self.verbs())
+
+    def test_close_window_rechecks_lifetime_and_retains_failed_stop_custody(self) -> None:
+        for enabled, linger in (("enabled", "yes"), ("disabled", "no"),
+                                ("enabled", "no"), ("disabled", "yes")):
+            with self.subTest(enabled=enabled, linger=linger):
+                self.calls.clear()
+                self.start()
+                self.state["UnitFileState"], self.linger = enabled, linger
+                self.service.close_window()
+                self.assertEqual(self.verbs().count("stop"), 0 if (enabled, linger) == ("enabled", "yes") else 1)
+                self.assertFalse(self.service.shutdown_pending)
+        self.start()
+        self.state["UnitFileState"], self.linger = "disabled", "no"
+        self.failed_command = "stop"
+        with self.assertRaisesRegex(window.LaunchError, "shutdown failed"):
+            self.service.close_window()
+        self.assertTrue(self.service.shutdown_pending)
+        self.failed_command = None
+        self.service.close_window()
+        self.assertFalse(self.service.shutdown_pending)
+
+    def test_update_signal_is_install_ctime_or_reload_and_fails_quiet(self) -> None:
+        prefix = self.user_home / "payload"
+        prefix.mkdir()
+        info = prefix / "build-info.json"
+        info.write_text('{}')
+        installed = info.stat().st_ctime
+        with patch.object(window.time, "time", return_value=installed + 100), \
+                patch.object(window.time, "monotonic", return_value=200):
+            for elapsed, reload, expected in ((101, "no", True), (99, "no", False), (99, "yes", True)):
+                with self.subTest(elapsed=elapsed, reload=reload):
+                    self.state.update(ExecMainStartTimestamp=str(int((installed+100-elapsed)*1_000_000)),
+                                      ExecMainStartTimestampMonotonic=str((200-elapsed)*1_000_000),
+                                      NeedDaemonReload=reload)
+                    self.assertFalse(self.service.update_installed(prefix))  # Not owned yet.
+                    self.start()
+                    self.assertEqual(self.service.update_installed(prefix), expected)
+                    self.service.close()
+            self.start()
+            self.state.update(ExecMainStartTimestamp=str(int((installed-60)*1_000_000)),
+                              ExecMainStartTimestampMonotonic="100000000", NeedDaemonReload="no")
+            # CLOCK_MONOTONIC pauses during suspend; recorded realtime does not move.
+            for suspended in (0, 3600):
+                with self.subTest(suspended=suspended), \
+                        patch.object(window.time, "time", return_value=installed+60+suspended), \
+                        patch.object(window.time, "monotonic", return_value=220):
+                    self.assertTrue(self.service.update_installed(prefix))
+            for raw in ("", "n/a", "0", "-1", "１２", "18446744073709551615", "9" * 4000):
+                self.state["ExecMainStartTimestamp"] = raw
+                with self.assertLogs(window.__name__, level="WARNING"):
+                    self.assertFalse(self.service.update_installed(prefix))
+            self.state["ExecMainStartTimestamp"] = "1000000"
+            self.failed_command = "get-property"
+            with self.assertLogs(window.__name__, level="WARNING"):
+                self.assertFalse(self.service.update_installed(prefix))
+            self.failed_command = None
+            runner = self.service.runner
+            for error in (subprocess.TimeoutExpired(["busctl"], 10), FileNotFoundError()):
+                def unavailable(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess:
+                    if argv[0] == "busctl":
+                        raise error
+                    return runner(argv, **kwargs)
+                with patch.object(self.service, "runner", side_effect=unavailable):
+                    with self.assertLogs(window.__name__, level="WARNING"):
+                        self.assertFalse(self.service.update_installed(prefix))
+            info.unlink()
+            with self.assertLogs(window.__name__, level="WARNING"):
+                self.assertFalse(self.service.update_installed(prefix))
+            with patch.object(Path, "open", side_effect=PermissionError):
+                with self.assertLogs(window.__name__, level="WARNING"):
+                    self.assertFalse(self.service.update_installed(prefix))
+
+    def test_restart_reloads_then_reproves_async_markers_and_custody(self) -> None:
+        self.start()
+        self.state["NeedDaemonReload"] = "yes"
+        runner = self.service.runner
+        polls = 0
+        def restart(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess:
+            nonlocal polls
+            result = runner(argv, **kwargs)
+            if argv[2] == "restart" and result.returncode == 0:
+                self.state["MainPID"] = "43"
+                (self.proc / "43/fd").mkdir(parents=True)
+                (self.proc / "43/fd/3").symlink_to("socket:[555]")
+                (self.home / "daemon.pid").write_bytes(b"\xff")
+                (self.home / "daemon.port").write_text("")
+                self.assertFalse(self.service.attached)
+            if argv[2] == "show" and self.state["MainPID"] == "43":
+                polls += 1
+                if polls == 2:
+                    self.assertEqual(len(self.probes), 2)  # Only original + pre-restart proofs.
+                    self.publish(pid="43")
+            return result
+        self.service.runner = restart
+        self.assertEqual(self.service.restart(threading.Event(), timeout=1), "http://127.0.0.1:8766/")
+        self.assertTrue(self.service.attached)
+        self.assertTrue(self.service.shutdown_pending)
+        self.assertGreaterEqual(polls, 3)  # Includes post-health state observation.
+        self.assertLess(self.verbs().index("daemon-reload"), self.verbs().index("restart"))
+        self.assertEqual(len(self.probes), 3)
+        self.state["NeedDaemonReload"] = "no"
+        self.failed_command = "restart"
+        with self.assertRaisesRegex(window.LaunchError, "restart"):
+            self.service.restart(threading.Event(), timeout=0)
+        self.assertFalse(self.service.attached)
+        self.assertTrue(self.service.shutdown_pending)
+        self.failed_command = "stop"
+        with self.assertRaisesRegex(window.LaunchError, "shutdown failed"):
+            self.service.close_window()
+        self.assertTrue(self.service.shutdown_pending)
+        self.failed_command = None
+        self.service.close_window()
+        self.assertFalse(self.service.shutdown_pending)
+
+        # A previously attached, fully-ON service still owes a successful stop
+        # after any restart error, including errors before restart is invoked.
+        self.service.runner = runner
+        for verb in ("start", "daemon-reload", "restart"):
+            for timed_out in (False, True):
+                with self.subTest(verb=verb, timed_out=timed_out):
+                    self.start()
+                    self.state.update(UnitFileState="enabled", NeedDaemonReload="yes")
+                    self.linger = "yes"
+                    self.assertTrue(self.service.attached)
+                    self.assertEqual(self.service.lifetime_state(), "on")
+                    def fail(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess:
+                        result = runner(argv, **kwargs)
+                        if argv[2] == verb:
+                            if timed_out:
+                                raise subprocess.TimeoutExpired(argv, 10)
+                            result.returncode = 1
+                        return result
+                    with patch.object(self.service, "runner", side_effect=fail):
+                        with self.assertRaises(window.LaunchError):
+                            self.service.restart(threading.Event(), timeout=0)
+                    self.assertFalse(self.service.attached)
+                    self.assertTrue(self.service.shutdown_pending)
+                    stops = self.verbs().count("stop")
+                    self.failed_command = "stop"
+                    with self.assertRaisesRegex(window.LaunchError, "shutdown failed"):
+                        self.service.close_window()
+                    self.assertTrue(self.service.shutdown_pending)
+                    self.assertEqual(self.verbs().count("stop"), stops+1)
+                    self.failed_command = None
+                    self.service.close_window()
+                    self.assertFalse(self.service.shutdown_pending)
+                    self.assertEqual(self.verbs().count("stop"), stops+2)
+
+    def test_gui_switch_partial_actions_fallback_and_restart(self) -> None:
+        for scenario in ("off", "on", "partial-repair", "partial-off", "denied", "fallback", "restart",
+                         "reload-error", "reload-timeout", "restart-error", "restart-timeout"):
+            with self.subTest(scenario=scenario):
+                restart_error = scenario in {"reload-error", "reload-timeout", "restart-error", "restart-timeout"}
+                callbacks = queue.Queue()
+                widgets = []
+                urls = []
+                self.calls.clear()
+                self.probes.clear()
+                self.service.attached = self.service.shutdown_pending = False
+                self.service.desktop_config.unlink(missing_ok=True)
+                self.state.update(UnitFileState="enabled" if restart_error or scenario in {"on", "partial-repair", "partial-off"} else "disabled",
+                                  NeedDaemonReload="yes" if restart_error or scenario == "restart" else "no",
+                                  ExecMainStartTimestamp="1")
+                self.linger = "yes" if restart_error or scenario == "on" else "no"
+                self.manager = (1, "offline") if scenario == "fallback" else (0, "running")
+                prefix = self.user_home / "payload"
+                prefix.mkdir(exist_ok=True)
+                (prefix / "build-info.json").write_text('{}')
+
+                class Widget:
+                    def __init__(self, **kwargs: object) -> None:
+                        self.children, self.signals = [], {}
+                        self.label = kwargs.get("label")
+                        self.active, self.sensitive = False, True
+                        widgets.append(self)
+                    def connect(self, name: str, callback: object) -> None:
+                        self.signals[name] = callback
+                    def get_children(self) -> list:
+                        return self.children[:]
+                    def add(self, child: object) -> None:
+                        self.children.append(child)
+                    def pack_start(self, child: object, *_args: object) -> None:
+                        self.add(child)
+                    def remove(self, child: object) -> None:
+                        self.children.remove(child)
+                    def set_active(self, active: bool) -> None:
+                        self.active = active
+                    def set_sensitive(self, sensitive: bool) -> None:
+                        self.sensitive = sensitive
+                    def load_uri(self, url: str) -> None:
+                        urls.append(url)
+                    def __getattr__(self, _name: str) -> object:
+                        return lambda *_args: None
+
+                class Switch(Widget):
+                    pass
+                shell, app = Widget(), Widget()
+                app.quit_called = False
+                def quit_app() -> None:
+                    app.quit_called = True
+                def pump(predicate: Callable[[], bool]) -> None:
+                    for _ in range(80):
+                        if predicate():
+                            return
+                        try:
+                            callback, args = callbacks.get(timeout=0.1)
+                        except queue.Empty:
+                            continue
+                        callback(*args)
+                    self.fail("GUI did not reach expected state")
+                def current() -> list:
+                    root = shell.get_children()
+                    return root[0].children[0].children if root and root[0].children else []
+                def switch() -> Switch | None:
+                    return next((w for w in current() if isinstance(w, Switch)), None)
+                def click(label: str) -> None:
+                    button = next(w for w in current() if w.label == label)
+                    button.signals["clicked"](button)
+                def linger(enabled: bool) -> None:
+                    if scenario == "denied":
+                        raise window.LaunchError("A local polkit rule denied keeping HappyRanch running while logged out.")
+                    self.linger = "yes" if enabled else "no"
+                runner = self.service.runner
+                fail_stop = restart_error
+                def run(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess:
+                    result = runner(argv, **kwargs)
+                    failure = "daemon-reload" if scenario.startswith("reload-") else "restart"
+                    if restart_error and argv[2] == failure:
+                        if scenario.endswith("timeout"):
+                            raise subprocess.TimeoutExpired(argv, 10)
+                        result.returncode = 1
+                    if argv[2] == "stop" and fail_stop:
+                        result.returncode = 1
+                    if argv[2] == "daemon-reload":
+                        self.state["NeedDaemonReload"] = "no"
+                    if argv[2] == "restart":
+                        self.state["ExecMainStartTimestamp"] = str(int((window.time.time()+1)*1_000_000))
+                    return result
+                def run_app(_args: list) -> int:
+                    nonlocal fail_stop
+                    app.signals["activate"](app)
+                    try:
+                        pump(lambda: switch() is not None)
+                        self.assertTrue(any(w.label == "Keep HappyRanch running when I'm logged out" for w in current()))
+                        self.assertEqual(switch().active, restart_error or scenario == "on")
+                        if scenario == "fallback":
+                            self.assertFalse(switch().sensitive)
+                            self.assertTrue(any(w.label and "no systemd user manager" in w.label for w in current()))
+                        elif scenario.startswith("partial"):
+                            self.assertTrue(any(w.label == "Partly on - click to repair/turn off" for w in current()))
+                            self.assertTrue(any(w.label == "Repair" for w in current()))
+                            self.assertTrue(any(w.label == "Turn off" for w in current()))
+                            click("Repair" if scenario == "partial-repair" else "Turn off")
+                            pump(lambda: switch() is not None and switch().active == (scenario == "partial-repair")
+                                 and not any(w.label == "Partly on - click to repair/turn off" for w in current()))
+                        elif scenario == "denied":
+                            switch().signals["state-set"](switch(), True)
+                            pump(lambda: any(w.label and "local polkit rule denied" in w.label for w in current()))
+                            self.assertFalse(switch().active)
+                            self.assertNotIn("enable", self.verbs())
+                        elif restart_error:
+                            pump(lambda: any(w.label == "Update installed - restart HappyRanch" for w in current()))
+                            self.assertTrue(self.service.attached)
+                            click("Restart HappyRanch")
+                            pump(lambda: any(w.label and "shutdown failed" in w.label for w in widgets))
+                            self.assertTrue(self.service.shutdown_pending)
+                            self.assertFalse(app.quit_called)
+                            self.assertIsNone(window.acquire_lock(self.home))
+                            self.assertTrue(any(t.name == "desktop-daemon" and t.is_alive()
+                                                for t in threading.enumerate()))
+                            self.assertEqual(self.verbs().count("stop"), 1)
+                            self.assertEqual(len(urls), 1)
+                            fail_stop = False
+                        elif scenario == "restart":
+                            pump(lambda: any(w.label == "Update installed - restart HappyRanch" for w in current()))
+                            click("Restart HappyRanch")
+                            pump(lambda: len(urls) == 2 and switch() is not None)
+                            self.assertEqual(urls, ["http://127.0.0.1:8766/"] * 2)
+                            self.assertIn("daemon-reload", self.verbs())
+                            self.assertIn("restart", self.verbs())
+                        elif scenario == "on":
+                            # Change the external state after rendering, before close.
+                            self.state["UnitFileState"], self.linger = "disabled", "no"
+                        shell.signals["delete-event"]()
+                        pump(lambda: app.quit_called)
+                        self.assertEqual(self.verbs().count("stop"), 2 if restart_error else
+                                         0 if scenario in {"partial-repair", "fallback"} else 1)
+                        self.assertFalse(self.service.shutdown_pending)
+                        return 0
+                    finally:
+                        fail_stop = False
+                        shell.signals["delete-event"]()
+                        pump(lambda: app.quit_called)
+                app.run, app.quit = run_app, quit_app
+                gi, repository = ModuleType("gi"), ModuleType("gi.repository")
+                gi.require_version = lambda *_args: None
+                repository.Gio = SimpleNamespace(ApplicationFlags=SimpleNamespace(FLAGS_NONE=0),
+                    SimpleAction=SimpleNamespace(new=lambda *_args: Widget()))
+                repository.GLib = SimpleNamespace(set_prgname=lambda *_args: None, PRIORITY_DEFAULT=0,
+                    unix_signal_add=lambda *_args: None,
+                    idle_add=lambda callback, *args: callbacks.put((callback, args)))
+                repository.Gtk = SimpleNamespace(Application=lambda **_kwargs: app,
+                    ApplicationWindow=lambda **_kwargs: shell, Box=Widget, Label=Widget, Button=Widget,
+                    Switch=Switch, Orientation=SimpleNamespace(VERTICAL=0))
+                repository.WebKit2 = SimpleNamespace(WebView=Widget)
+                child = SimpleNamespace(poll=lambda: None)
+                with patch.dict(sys.modules, {"gi": gi, "gi.repository": repository}), \
+                        patch.dict(os.environ, {"LANG": "en_US.UTF-8"}), \
+                        patch.object(window, "ServiceMode", return_value=self.service), \
+                        patch.object(self.service, "set_linger", side_effect=linger), \
+                        patch.object(self.service, "runner", side_effect=run), \
+                        patch.object(window, "prepare_home"), \
+                        patch.object(subprocess, "Popen", return_value=child) as popen, \
+                        patch.object(window, "wait_for_health", return_value="http://127.0.0.1:12345/"), \
+                        patch.object(window, "stop_child") as stop_child:
+                    self.assertEqual(window.run_gui(prefix, self.home), 0)
+                    self.assertEqual(popen.call_count, 1 if scenario == "fallback" else 0)
+                    self.assertEqual(stop_child.call_count, 1 if scenario == "fallback" else 0)
+                lock = window.acquire_lock(self.home)
+                self.assertIsNotNone(lock)
+                lock.close()
+
+    def test_config_write_failure_restores_lifetime_and_original_bytes(self) -> None:
+        self.service.desktop_config.parent.mkdir(parents=True)
+        original = b'{"linger_set_by_app":false}'
+        self.service.desktop_config.write_bytes(original)
+        def linger(enabled: bool) -> None:
+            self.linger = "yes" if enabled else "no"
+        with patch.object(self.service, "set_linger", side_effect=linger), \
+                patch.object(window.os, "replace", side_effect=OSError("synthetic disk failure")):
+            with self.assertRaisesRegex(OSError, "synthetic disk failure"):
+                self.service.set_keep_running(True)
+        self.assertEqual(self.service.desktop_config.read_bytes(), original)
+        self.assertEqual(self.service.lifetime_state(), "off")
+        self.assertEqual(self.verbs().count("disable"), 1)
+        self.assertEqual(list(self.service.desktop_config.parent.glob(".desktop-*")), [])
+
+    def test_restart_refuses_lost_ownership_and_keeps_shutdown_obligation(self) -> None:
+        runner = self.service.runner
+        for failure in ("listener", "health", "unit"):
+            with self.subTest(failure=failure):
+                self.net()
+                self.healthy = True
+                self.state["DropInPaths"] = ""
+                self.service.attached = False
+                self.calls.clear()
+                self.probes.clear()
+                def run(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess:
+                    result = runner(argv, **kwargs)
+                    if argv[2] == "restart":
+                        if failure == "listener":
+                            self.net(inode="999")
+                        elif failure == "health":
+                            self.healthy = False
+                        else:
+                            self.state["DropInPaths"] = "/synthetic/override.conf"
+                    return result
+                with patch.object(self.service, "runner", side_effect=run):
+                    with self.assertRaises(window.LaunchError):
+                        self.service.restart(threading.Event(), timeout=0)
+                self.assertIn("restart", self.verbs())
+                self.assertFalse(self.service.attached)
+                self.assertTrue(self.service.shutdown_pending)
+                if failure == "unit":
+                    with self.assertRaisesRegex(window.LaunchError, "shutdown failed"):
+                        self.service.close_window()
+                    self.assertTrue(self.service.shutdown_pending)
+                self.state["DropInPaths"] = ""
+                self.service.close_window()
+                self.assertFalse(self.service.shutdown_pending)
+
+    def test_no_manager_refuses_lifetime_changes_without_mutations(self) -> None:
+        self.manager = (1, "offline")
+        for enabled in (True, False):
+            with self.subTest(enabled=enabled):
+                with patch.object(self.service, "set_linger") as change:
+                    with self.assertRaisesRegex(window.LaunchError, "no user manager"):
+                        self.service.set_keep_running(enabled)
+                change.assert_not_called()
+                self.assertNotIn("enable", self.verbs())
+                self.assertNotIn("disable", self.verbs())
+                self.assertFalse(self.service.desktop_config.exists())
 
     def test_service_positive_and_stop_on_close(self) -> None:
         self.state["MainPID"] = "0"

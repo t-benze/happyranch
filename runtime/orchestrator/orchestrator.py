@@ -565,7 +565,7 @@ class Orchestrator:
         # codex, opencode, pi) receive the local wall-clock + zone on every
         # spawn and wake.
         current_time = self._current_time_line(now)
-        # THR-032 Phase 2: PUSH memory digest — salience-ranked, pointer-only,
+        # THR-032 Phase 2: PUSH memory digest — task-relevant, directive bodies/pointers,
         # budgeted block injected after brief/role_guidance on every agent
         # spawn/wake. Harness-agnostic by construction: emitted as plain text
         # in the one literal prompt string shared by every executor.
@@ -1148,8 +1148,8 @@ class Orchestrator:
         # Brief is injected here:
         brief = task.brief if task else ""
         # THR-032 Phase 2: build the per-task memory digest from the agent's
-        # MemoryStore. Ancestor task ids boost memories authored in the same
-        # task lineage. Budget is org-configurable; 0 disables the digest.
+        # MemoryStore. Ranking uses brief term matches, then recency; lineage
+        # context remains an accepted input. Budget is configurable; 0 disables.
         memory_digest: str | None = None
         memory_render = None
         memory_directory_present = None
@@ -1161,7 +1161,7 @@ class Orchestrator:
             if memory_directory_present:
                 from runtime.infrastructure.learnings_store import MemoryStore
                 store = MemoryStore(memory_dir)
-                # Walk ancestor chain for source_task boost.
+                # Retain legacy lineage input; digest ranking no longer boosts it.
                 try:
                     ancestors = self._db.walk_ancestors(task_id)
                 except Exception:

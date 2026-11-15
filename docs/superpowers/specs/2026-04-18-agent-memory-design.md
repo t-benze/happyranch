@@ -1,5 +1,22 @@
 # Agent Memory — Design
 
+> **Current digest ranking (THR-366 change set A, item 2).** This supersedes
+> the historical salience ranking below. The digest shares memory search's
+> whitespace tokenizer (terms of at least three characters, whole-query fallback
+> for short queries) and title/tag/topic/body term scoring: +12 per title term,
+> +8 per tag/topic term, +4 per body term capped at +16. After tokenization,
+> `_DIGEST_STOP_WORDS` removes a small fixed English function-word set from digest
+> queries only. Each rendering group sorts by term score descending, then
+> `updated_at` newest first (UTC instants; missing/invalid dates last), then title
+> and ID. Zero-match entries fill remaining space by recency. Salience, age decay,
+> provenance boosts and lineage boosts do not rank candidates. The existing
+> in-scope directive-first full-body lane and pointer fallback remain. Pointer
+> and directive headings show provenance without a salience label; stored salience
+> and `_index.md` rendering stay unchanged. The character budget (default 1,500),
+> org-configured zero-disable behavior and impression payload keys/types stay
+> unchanged. `digest_ids` still records actual full-body IDs then pointer IDs in
+> rendered order, with unique/disjoint mode lists; no query or text is audited.
+
 > **Task-start activation guidance (THR-091 seq633).** Current canonical guidance
 > is `runtime/skills/bundled/start-task/SKILL.md` step 2: before the first
 > substantive decision, select/read up to two task-relevant memories and apply
