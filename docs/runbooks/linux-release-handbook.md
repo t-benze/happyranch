@@ -37,6 +37,15 @@ HappyRanch wheel as real `.py` files. It builds production `web/dist` with
 Its private Go module cache uses `-modcacherw` so build cleanup can remove it.
 Existing version/architecture outputs are refused; use a fresh destination.
 
+The Go notice collector and `licenses/go-modules.json` exclude only the exact
+first-party `happyranch/tsnethealth => ../../shared/tsnethealth` local replacement
+when both Go module directories resolve to `app/shared/tsnethealth` inside the
+exported repository. This matches Mac notice handling and the sidecar's retained
+third-party inventories; the module is covered by `HappyRanch-LICENSE`.
+All other non-main modules still require their original notices. The focused
+native packaging checks below also cover this exclusion, inventory output and
+refusal of unlicensed near-miss or escaping replacements.
+
 The extracted payload contains `python/`, `web/dist/`, `licenses/`,
 `build-info.json`, and `bin/{happyranch,happyranch-daemon,happyranch-tsnet-sidecar}`.
 The two POSIX launchers resolve their prefix from their own `bin/` location,
@@ -410,12 +419,13 @@ does it install Xvfb, Openbox, xdotool, scrot, desktop-file-utils and dbus-x11
 
 It validates `/usr/share/applications/happyranch.desktop` and executes its
 installed Exec command as the normal user, with Xvfb, a window manager, private
-D-Bus and isolated HOME/XDG directories. **The existing manual smoke still
-expects the earlier XDG data-home path and needs adaptation to the release home
-before its next authorized run; it is not service-mode acceptance.** In its
-original child-mode flow it discovers the port from
-the app home's `daemon.pid`/`daemon.port`, verifies the daemon is the app's child,
-checks HTTP200/status `ok` at `/api/v1/health`, and compares `/` byte for byte
+D-Bus and isolated HOME/XDG directories. It first requires that the private bus
+has no systemd user manager, then exercises the existing child-daemon fallback
+with the release home at the isolated `HOME/.happyranch-release`. This is not
+service-mode acceptance: it neither starts nor enables a user service. It
+discovers the port from the app home's `daemon.pid`/`daemon.port`, verifies the
+daemon is the app's child, checks HTTP200/status `ok` at `/api/v1/health`, and
+compares `/` byte for byte
 with the installed built `web/dist/index.html`. It captures the actual focused
 window in `window.png`; a reviewer must view the PNG to assess rendered content.
 Ctrl+Q must exit the app with status0, leave no daemon process and remove both

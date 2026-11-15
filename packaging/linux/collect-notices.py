@@ -22,6 +22,20 @@ def copy_notices(source: Path, destination: Path) -> None:
                 shutil.copytree(path, destination / path.name)
 
 
+def first_party_go(module: dict, source: Path) -> bool:
+    """Match the Mac collector's exact repository-local health replacement."""
+    replacement = module.get("Replace") or {}
+    if (module.get("Path") != "happyranch/tsnethealth"
+            or replacement.get("Path") != "../../shared/tsnethealth"
+            or replacement.get("Version")):
+        return False
+    target = source / "app/shared/tsnethealth"
+    return (source.is_absolute() and target.resolve() == target
+            and target.is_relative_to(source.resolve())
+            and all(value and Path(value).is_absolute() and Path(value).resolve() == target
+                    for value in (module.get("Dir"), replacement.get("Dir"))))
+
+
 def main() -> None:
     source, payload = map(Path, sys.argv[1:])
     notices = payload / "licenses"
@@ -61,7 +75,9 @@ def main() -> None:
             continue
         package, position = decoder.raw_decode(raw, position)
         module = package.get("Module", {})
-        if module and not module.get("Main"):
+        # Both notices and go-modules.json describe third-party inputs. The
+        # exact local health module is covered by HappyRanch-LICENSE instead.
+        if module and not module.get("Main") and not first_party_go(module, source):
             modules[module["Path"]] = module
     for name, module in sorted(modules.items()):
         target = notices / "go" / (name + "@" + module["Version"])

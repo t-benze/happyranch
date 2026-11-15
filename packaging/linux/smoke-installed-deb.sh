@@ -206,9 +206,19 @@ try:
     wm = start(['openbox', '--sm-disable'], 'openbox', env)
     time.sleep(1)
     require(wm.poll() is None, 'window manager exited')
+    # This private bus exercises the desktop's no-user-manager child fallback.
+    manager = subprocess.run(['systemctl', '--user', 'is-system-running'], env=env,
+                             capture_output=True, text=True, timeout=10)
+    manager_state = manager.stdout.strip()
+    result['user_manager_probe'] = {'exit_code': manager.returncode, 'state': manager_state}
+    require(not (manager.returncode in (0, 1) and manager_state in
+                 {'running', 'degraded', 'starting', 'initializing', 'maintenance'}),
+            'private D-Bus unexpectedly exposes a systemd user manager')
+    result['runtime_mode'] = 'no-user-manager-child'
+    check('private D-Bus has no systemd user manager')
     result['stage'] = 'app-launch'
     app = start(command, 'app', env)
-    home = private / 'data/happyranch'
+    home = private / 'home/.happyranch-release'
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     daemon = {}
 

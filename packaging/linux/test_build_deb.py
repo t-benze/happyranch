@@ -6,13 +6,105 @@ import io
 import json
 import os
 from pathlib import Path
+import runpy
+import shutil
 import subprocess
+import sys
 import tarfile
 import tempfile
 import unittest
+from unittest.mock import patch
 
 BUILDER = Path(__file__).with_name('build-deb.sh')
 UNIT = BUILDER.parent / 'systemd/happyranch-daemon.service'
+
+
+class NoticeCollectionTests(unittest.TestCase):
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory(prefix='notice-test-', dir='/tmp')
+        self.addCleanup(temporary.cleanup)
+        self.work = Path(temporary.name)
+        self.source = self.work / 'source'
+        self.shared = self.source / 'app/shared/tsnethealth'
+        self.shared.mkdir(parents=True)
+        self.outside = self.work / 'outside'
+        self.outside.mkdir()
+        repo = BUILDER.parents[2]
+        for name in ('LICENSE', 'packaging/linux/python-build-standalone-LICENSE.txt',
+                     'packaging/linux/THIRD_PARTY_NOTICES.md', 'packaging/notice-data/radix-LICENSE'):
+            target = self.source / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(repo / name, target)
+        (self.source / 'uv.lock').write_text('version = 1\n')
+        (self.source / 'web').mkdir()
+        (self.source / 'web/package-lock.json').write_text('{"packages": {}}')
+        sidecar = self.source / 'app/linux/tsnet-sidecar'
+        (sidecar / 'third_party').mkdir(parents=True)
+        (sidecar / 'go.sum').write_text('')
+        self.original = (repo / 'packaging/fixtures/manifest-notices/google-uuid-LICENSE').read_bytes()
+        vendor = self.source / 'vendor'
+        vendor.mkdir()
+        (vendor / 'LICENSE').write_bytes(self.original)
+        self.vendor = dict(Path='example.com/vendor', Version='v1.0.0', Sum='h1:synthetic', Dir=str(vendor),
+                           Replace=dict(Path='../vendor', Dir=str(vendor)))
+        self.local = dict(Path='happyranch/tsnethealth', Version='v0.0.0', Dir=str(self.shared),
+                          Replace=dict(Path='../../shared/tsnethealth', Dir=str(self.shared)))
+        self.collector = runpy.run_path(str(BUILDER.with_name('collect-notices.py')))
+        self.count = 0
+
+    def collect(self, modules: list[dict]) -> Path:
+        self.count += 1
+        payload = self.work / f'payload-{self.count}'
+        (payload / 'licenses').mkdir(parents=True)
+        python = payload / 'python/lib/python3.12'
+        python.mkdir(parents=True)
+        (python / 'LICENSE.txt').write_text('synthetic interpreter notice\n')
+        goroot = self.work / 'goroot'
+        goroot.mkdir(exist_ok=True)
+        (goroot / 'LICENSE').write_text('synthetic Go notice\n')
+        raw = '\n'.join(json.dumps(dict(Module=module)) for module in modules)
+        with patch.object(sys, 'argv', ['collect-notices.py', str(self.source), str(payload)]), \
+                patch('importlib.metadata.distributions', return_value=[]), \
+                patch('subprocess.check_output', side_effect=[raw, str(goroot)]):
+            self.collector['main']()
+        return payload / 'licenses'
+
+    def test_local_health_excluded_and_external_original_retained(self) -> None:
+        for version in ('v0.0.0', None):
+            with self.subTest(version=version):
+                local = dict(self.local)
+                if version is None:
+                    local.pop('Version')
+                notices = self.collect([dict(Path='happyranch/linux-tsnet-sidecar', Main=True),
+                                        {}, local, self.vendor, self.vendor])
+                self.assertEqual(json.loads((notices / 'go-modules.json').read_text()),
+                                 [{key: self.vendor[key] for key in ('Path', 'Version', 'Sum')}])
+                self.assertEqual((notices / 'go/example.com/vendor@v1.0.0/LICENSE').read_bytes(),
+                                 self.original)
+                self.assertFalse((notices / 'go/happyranch').exists())
+                self.assertEqual((notices / 'HappyRanch-LICENSE').read_bytes(),
+                                 (self.source / 'LICENSE').read_bytes())
+
+    def test_unlicensed_near_miss_replacements_still_refused(self) -> None:
+        for label, change in (
+            ('third-party path', dict(Path='example.com/tsnethealth')),
+            ('other first-party path', dict(Path='happyranch/other')),
+            ('different replace', dict(Replace=dict(self.local['Replace'], Path='../tsnethealth'))),
+            ('versioned replace', dict(Replace=dict(self.local['Replace'], Version='v1.0.0'))),
+            ('outside source', dict(Dir=str(self.outside),
+                                    Replace=dict(self.local['Replace'], Dir=str(self.outside)))),
+            ('different replacement dir', dict(Replace=dict(self.local['Replace'], Dir=str(self.outside)))),
+            ('no replacement', dict(Replace={})),
+        ):
+            with self.subTest(case=label):
+                module = dict(self.local, **change)
+                with self.assertRaisesRegex(RuntimeError, 'Go module original notice missing: ' + module['Path']):
+                    self.collect([module])
+        self.shared.rmdir()
+        self.shared.symlink_to(self.outside, target_is_directory=True)
+        with self.subTest(case='symlink escape'), self.assertRaisesRegex(
+                RuntimeError, 'Go module original notice missing: happyranch/tsnethealth'):
+            self.collect([self.local])
 
 
 class DebPackageTests(unittest.TestCase):
