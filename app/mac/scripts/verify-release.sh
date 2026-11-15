@@ -544,13 +544,14 @@ def basic(app, **selection):
     for key, value in expected.items():
         if info.get(key) != value:
             fail('APP_PLIST_MISMATCH', key)
-    if (info.get('SUFeedURL') != sparkle['FEED'] or info.get('SUEnableAutomaticChecks') is not False
-            or info.get('SUAutomaticallyUpdate') is not False):
-        fail('APP_SPARKLE_NOT_INERT', 'feed or update settings')
-    if 'SUPublicEDKey' in info:
+    enabled = 'SUPublicEDKey' in info
+    if enabled:
         if not isinstance(info['SUPublicEDKey'], str) or not info['SUPublicEDKey']:
             fail('APP_SPARKLE_KEY_INVALID', 'empty or non-string public key')
         sparkle['public_key'](info['SUPublicEDKey'])
+    if (info.get('SUFeedURL') != sparkle['FEED'] or info.get('SUEnableAutomaticChecks') is not enabled
+            or info.get('SUAutomaticallyUpdate') is not enabled):
+        fail('APP_SPARKLE_SETTINGS_INVALID', 'feed or key-gated update settings')
     for key in ('CFBundleVersion', 'CFBundleShortVersionString'):
         if not re.fullmatch(r'(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)', str(info.get(key, ''))):
             fail('APP_PLIST_MISMATCH', key)

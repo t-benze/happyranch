@@ -21,6 +21,7 @@ public final class DiagnosticsCollector: @unchecked Sendable {
     public private(set) var daemonPort: UInt16?
     public private(set) var daemonBindHost: String?
     public private(set) var daemonStateValue: String?
+    public private(set) var updaterLogContent: String?
     public private(set) var launchLogContent: String?
     public private(set) var daemonLogTailContent: String?
     public private(set) var daemonStderrContent: String?
@@ -59,6 +60,13 @@ public final class DiagnosticsCollector: @unchecked Sendable {
         daemonPort = port
         daemonBindHost = bindHost
         daemonStateValue = state
+    }
+
+    /// Keep a bounded, redacted history; daemon launch logging cannot overwrite it.
+    public func recordUpdaterEvent(_ message: String) {
+        let line = "[\(ISO8601DateFormatter().string(from: Date()))] \(DiagnosticsRedactor.redact(message))"
+        let history = (updaterLogContent.map { $0 + "\n" } ?? "") + line
+        updaterLogContent = String(history.suffix(16_384))
     }
 
     public func recordLaunchLog(_ log: String) {
@@ -169,6 +177,7 @@ public final class DiagnosticsCollector: @unchecked Sendable {
         if let host = daemonBindHost { bundle["daemon_bind_host"] = DiagnosticsRedactor.redact(host) }
         if let st = daemonStateValue { bundle["daemon_state"] = DiagnosticsRedactor.redact(st) }
 
+        if let log = updaterLogContent { bundle["updater_log"] = DiagnosticsRedactor.redact(log) }
         if let log = launchLogContent { bundle["launcher_log"] = DiagnosticsRedactor.redact(log) }
         if let log = daemonLogTailContent { bundle["daemon_log_tail"] = DiagnosticsRedactor.redact(log) }
         if let stderr = daemonStderrContent { bundle["daemon_stderr"] = DiagnosticsRedactor.redact(stderr) }

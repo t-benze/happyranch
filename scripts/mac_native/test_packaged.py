@@ -85,7 +85,7 @@ class SparklePackagingTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 2, result.stderr)
                 self.assertIn(error, result.stderr)
 
-    def test_sparkle_plist_omits_absent_key_and_keeps_updates_inert(self) -> None:
+    def test_sparkle_plist_enables_updates_only_with_public_key(self) -> None:
         import base64
         script = Path(__file__).resolve().parents[2] / 'app/mac/scripts/sparkle_bundle.py'
         key = base64.b64encode(bytes(range(32))).decode()
@@ -99,8 +99,8 @@ class SparklePackagingTests(unittest.TestCase):
                     self.assertEqual(result.returncode, 0, result.stderr)
                     data = plistlib.loads(path.read_bytes())
                     self.assertEqual(data['SUFeedURL'], 'https://app.happyranch.ai/mac/appcast.xml')
-                    self.assertIs(data['SUEnableAutomaticChecks'], False)
-                    self.assertIs(data['SUAutomaticallyUpdate'], False)
+                    self.assertIs(data['SUEnableAutomaticChecks'], bool(value))
+                    self.assertIs(data['SUAutomaticallyUpdate'], bool(value))
                     self.assertEqual(data['CFBundleExecutable'], 'HappyRanch')
                     if value:
                         self.assertEqual(data['SUPublicEDKey'], value)

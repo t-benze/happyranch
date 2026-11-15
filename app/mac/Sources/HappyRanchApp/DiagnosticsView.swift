@@ -54,6 +54,15 @@ struct DiagnosticsView: View {
                         }
                     }
 
+                    if let log = bundle["updater_log"] as? String {
+                        GroupBox("Updates") {
+                            Text(log)
+                                .font(.system(.caption, design: .monospaced))
+                                .textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    }
+
                     GroupBox("Daemon") {
                         infoRow("State", supervisor.state.description)
                         if let pid = bundle["daemon_pid"] {

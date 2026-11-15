@@ -5,12 +5,19 @@ import HappyRanchSupervisor
 
 /// Application delegate — owns the daemon supervisor and app-level state.
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
+final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, SPUUpdaterDelegate {
 
     let supervisor = DaemonSupervisor()
-    // PR2 adds the install gate. Never start this updater before that gate exists.
-    private let updaterController = SPUStandardUpdaterController(
-        startingUpdater: false, updaterDelegate: nil, userDriverDelegate: nil)
+    private lazy var updaterController = SPUStandardUpdaterController(
+        startingUpdater: false, updaterDelegate: self, userDriverDelegate: nil)
+    private var updaterObservation: AnyCancellable?
+    @Published private(set) var canCheckForUpdates = false
+    @Published private(set) var hasPendingUpdate = false
+    private var pendingUpdateInstall: (() -> Void)?
+    private var updateRequestID = UUID()
+    private var updateTask: Task<Void, Never>?
+    private var updateStopping = false
+    private var terminating = false
     let diagnostics = DiagnosticsCollector(homeDir: daemonHome())
 
     /// Transport for constructing daemon URLs. Only LocalLoopbackTransport is wired.
@@ -151,9 +158,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
 
         // Check for existing daemon
         discoverExistingDaemon()
+        configureUpdater()
+        showMoveToApplicationsNoticeIfNeeded()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        terminating = true
+        updateTask?.cancel()
+        pendingUpdateInstall = nil
+        hasPendingUpdate = false
+        // Sparkle's install-on-quit helper waits for this existing exit path.
         // Quit cancels Restart before teardown pumps the exit callbacks.
         pendingRestart = false
         // Retry bounded teardown for any live owned child, including .stopping
@@ -170,6 +184,182 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         settleManagedProcessExit(
             exitCode: status,
             signal: handle.terminationReason == .uncaughtSignal ? status : nil)
+    }
+
+    // MARK: - Updates
+
+    private func configureUpdater() {
+        guard UpdateConfiguration.hasValidPublicKey(Bundle.main.object(forInfoDictionaryKey: "SUPublicEDKey")) else {
+            diagnostics.recordUpdaterEvent("Disabled: SUPublicEDKey absent or invalid")
+            return
+        }
+        updaterObservation = updaterController.updater.publisher(for: \.canCheckForUpdates)
+            .sink { [weak self] enabled in
+                // Sparkle's updater and its KVO notifications are main-thread APIs.
+                MainActor.assumeIsolated { self?.canCheckForUpdates = enabled }
+            }
+        // Use the throwing core API so startup errors stay in Diagnostics.
+        do {
+            try updaterController.updater.start()
+            diagnostics.recordUpdaterEvent("Started: public key valid")
+        } catch {
+            canCheckForUpdates = false
+            diagnostics.recordUpdaterEvent("Start failed: \(error.localizedDescription)")
+        }
+    }
+
+    func checkForUpdates() {
+        guard canCheckForUpdates, !hasPendingUpdate else { return }
+        updaterController.checkForUpdates(nil)
+    }
+
+    func updater(_ updater: SPUUpdater, shouldPostponeRelaunchForUpdate item: SUAppcastItem,
+                 untilInvokingBlock installHandler: @escaping () -> Void) -> Bool {
+        postponeUpdateRelaunch(installHandler)
+        return true
+    }
+
+    /// Shared by every Sparkle relaunch, including scheduled/impatient prompts.
+    func postponeUpdateRelaunch(_ installHandler: @escaping () -> Void) {
+        updateTask?.cancel()
+        updateRequestID = UUID()
+        pendingUpdateInstall = installHandler
+        hasPendingUpdate = true
+        resumePendingUpdate()
+    }
+
+    func resumePendingUpdate() {
+        guard hasPendingUpdate, !updateStopping, !terminating else { return }
+        updateTask?.cancel()
+        updateRequestID = UUID()
+        let requestID = updateRequestID
+        updateTask = Task { [weak self] in
+            await self?.checkUpdateGate(requestID: requestID, choice: nil)
+        }
+    }
+
+    private func checkUpdateGate(requestID: UUID, choice: UpdateGate.Choice?) async {
+        guard !Task.isCancelled, !terminating, requestID == updateRequestID, hasPendingUpdate else { return }
+        let handle = currentHandle
+        let ownsDaemon = connectionRole == .home && supervisor.isManagedBySelf
+        let count: Int?
+        if ownsDaemon && handle?.isRunning == true {
+            count = await UpdateSessionProbe.count(homeDir: supervisor.homeDir ?? daemonHome())
+        } else {
+            count = nil
+        }
+        guard !Task.isCancelled, !terminating, requestID == updateRequestID, hasPendingUpdate else { return }
+        // An observation of the old daemon never authorizes stopping its replacement.
+        guard currentHandle === handle,
+              ownsDaemon == (connectionRole == .home && supervisor.isManagedBySelf) else {
+            scheduleUpdateRecheck(requestID: requestID, choice: nil)
+            return
+        }
+        applyUpdateGate(runningSessions: count, choice: choice)
+    }
+
+    /// Applies the pure policy to the current owned-process observation.
+    func applyUpdateGate(runningSessions: Int?, choice: UpdateGate.Choice?) {
+        guard hasPendingUpdate, !updateStopping, !terminating else { return }
+        let action = UpdateGate.action(
+            ownsDaemon: connectionRole == .home && supervisor.isManagedBySelf,
+            processRunning: currentHandle?.isRunning, runningSessions: runningSessions, choice: choice)
+        switch action {
+        case .release:
+            releaseUpdate()
+        case .stopDaemon:
+            guard let handle = currentHandle else { return }
+            let requestID = updateRequestID
+            updateStopping = true
+            pendingRestart = false
+            terminateManagedProcess()
+            // ManagedProcessStop pumps the run loop. Revalidate identity and exit.
+            guard !terminating, requestID == updateRequestID, UpdateGate.canReleaseAfterStop(
+                sameProcess: currentHandle === handle, processRunning: handle.isRunning) else {
+                updateStopping = false
+                diagnostics.recordUpdaterEvent("Install held: Stop incomplete or process changed")
+                return
+            }
+            settleManagedProcessExit(exitCode: handle.terminationStatus,
+                signal: handle.terminationReason == .uncaughtSignal ? handle.terminationStatus : nil)
+            releaseUpdate()
+        case .wait:
+            diagnostics.recordUpdaterEvent(runningSessions == nil
+                ? "Install held: session count unavailable (BUSY)" : "Waiting for sessions to finish")
+            scheduleUpdateRecheck(requestID: updateRequestID, choice: .whenIdle)
+        case .later:
+            updateTask?.cancel()
+            diagnostics.recordUpdaterEvent("Install postponed by user")
+        case .prompt(let count):
+            let alert = NSAlert()
+            alert.messageText = count.map { "\($0) sessions are running" } ?? "Session status is unavailable"
+            alert.informativeText = "HappyRanch must stop its daemon before updating. You can also update when you quit."
+            alert.addButton(withTitle: "Update when they finish")
+            alert.addButton(withTitle: "Update now and stop them")
+            alert.addButton(withTitle: "Later")
+            alert.buttons[1].isEnabled = count != nil
+            let requestID = updateRequestID
+            let response = alert.runModal()
+            guard !terminating, requestID == updateRequestID, hasPendingUpdate else { return }
+            let choice: UpdateGate.Choice = response == .alertFirstButtonReturn ? .whenIdle
+                : (response == .alertSecondButtonReturn ? .now : .later)
+            // Re-read status after the modal rather than using an old idle/busy answer.
+            if choice == .later {
+                applyUpdateGate(runningSessions: nil, choice: .later)
+            } else {
+                updateTask = Task { [weak self] in
+                    await self?.checkUpdateGate(requestID: requestID, choice: choice)
+                }
+            }
+        }
+    }
+
+    private func scheduleUpdateRecheck(requestID: UUID, choice: UpdateGate.Choice?) {
+        updateTask = Task { [weak self] in
+            do { try await Task.sleep(nanoseconds: 5_000_000_000) } catch { return }
+            await self?.checkUpdateGate(requestID: requestID, choice: choice)
+        }
+    }
+
+    private func releaseUpdate() {
+        guard !terminating, let install = pendingUpdateInstall else { return }
+        updateStopping = true
+        refreshDerivedState()
+        pendingUpdateInstall = nil
+        hasPendingUpdate = false
+        updateTask?.cancel()
+        diagnostics.recordUpdaterEvent("Daemon exit confirmed or not owned; releasing install")
+        install()
+    }
+
+    func updater(_ updater: SPUUpdater, didAbortWithError error: Error) {
+        updateRequestID = UUID()
+        updateTask?.cancel()
+        pendingUpdateInstall = nil
+        hasPendingUpdate = false
+        updateStopping = false
+        if supervisor.state != .stopping { refreshDerivedState() }
+        diagnostics.recordUpdaterEvent("Aborted: \(error.localizedDescription)")
+    }
+
+    func updater(_ updater: SPUUpdater, failedToDownloadUpdate item: SUAppcastItem, error: Error) {
+        diagnostics.recordUpdaterEvent("Download failed: \(error.localizedDescription)")
+    }
+
+    private func showMoveToApplicationsNoticeIfNeeded() {
+        let key = "UpdaterMoveToApplicationsNoticeShown"
+        guard !UserDefaults.standard.bool(forKey: key),
+              UpdateConfiguration.needsMoveNotice(bundleURL: Bundle.main.bundleURL,
+                homeURL: URL(fileURLWithPath: NSHomeDirectory()),
+                readOnlyVolume: (try? Bundle.main.bundleURL.resourceValues(forKeys: [.volumeIsReadOnlyKey]))?
+                    .volumeIsReadOnly == true) else { return }
+        UserDefaults.standard.set(true, forKey: key)
+        diagnostics.recordUpdaterEvent("Move to Applications notice shown")
+        let alert = NSAlert()
+        alert.messageText = "Move HappyRanch to Applications"
+        alert.informativeText = "Move HappyRanch to your Applications folder and reopen it there so automatic updates can be installed."
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
     }
 
     // MARK: - Daemon home
@@ -309,12 +499,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     /// canStart check after stopDaemon() was always false because the
     /// supervisor was still .stopping.
     func restartDaemon() {
+        guard !updateStopping, !terminating else { return }
         guard supervisor.isManagedBySelf, canStop else { return }
         pendingRestart = true
         stopDaemon(confirmed: true)
     }
 
     func startDaemon() {
+        guard !updateStopping, !terminating else { return }
         // Always clear the restart flag — a direct start supersedes any
         // pending restart (safety net; the termination handler clears it
         // before issuing the follow-on start, but an unrelated start while
@@ -696,6 +888,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     /// - CLIENT: resets the supervisor to `.notConfigured` and stops any
     ///   active home connector.
     func setRolePreference(_ preference: ConnectionRolePreference) {
+        guard !updateStopping, !terminating else { return }
         connectionRolePreference = preference
 
         switch preference {
@@ -751,6 +944,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     /// No-op when the target role equals the current effective role.
     /// This method is safe to call from tests (no UI dependency).
     func switchConnectionRole(to preference: ConnectionRolePreference) {
+        guard !updateStopping, !terminating else { return }
         let currentRole = connectionRole
         let targetRole = ConnectionRole.detect(supervisor: supervisor, preference: preference)
 
@@ -1075,9 +1269,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         stateText = supervisor.state.description
         let s = supervisor.state
         canStart = (s == .stopped || s == .crashed || s == .stalePid || s == .failed)
-            && currentHandle?.isRunning != true
+            && currentHandle?.isRunning != true && !updateStopping && !terminating
         canStop = s.canStop
-        canRestart = canStop && supervisor.isManagedBySelf
+        canRestart = canStop && supervisor.isManagedBySelf && !updateStopping && !terminating
     }
 
     /// Dismiss the diagnostics sheet when the daemon recovers to a healthy state.

@@ -1,4 +1,4 @@
-"""Pinned Sparkle bundle layout and inert updater build inputs."""
+"""Pinned Sparkle bundle layout and key-gated updater build inputs."""
 from __future__ import annotations
 
 import argparse
@@ -54,9 +54,10 @@ def validate_framework(app: Path) -> None:
 
 
 def configure_plist(data: dict, key: str) -> dict:
-    data.update(SUFeedURL=FEED, SUEnableAutomaticChecks=False, SUAutomaticallyUpdate=False)
+    enabled = bool(public_key(key))
+    data.update(SUFeedURL=FEED, SUEnableAutomaticChecks=enabled, SUAutomaticallyUpdate=enabled)
     data.pop('SUPublicEDKey', None)
-    if public_key(key):
+    if enabled:
         data['SUPublicEDKey'] = key
     return data
 
