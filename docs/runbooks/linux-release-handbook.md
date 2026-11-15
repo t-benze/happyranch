@@ -272,12 +272,14 @@ After ownership proof, the app shows **Update installed - restart HappyRanch**
 when `/opt/happyranch-desktop/build-info.json` has `st_ctime` newer than the
 unit's process start, or the unit reports `NeedDaemonReload=yes`. The Debian
 builder moves the payload under `/opt/happyranch-desktop`; dpkg replacement by
-rename makes the installed file's ctime the install-time signal. The app uses
-`ExecMainStartTimestampMonotonic` in microseconds and converts it to realtime
-seconds using the current `time.time() - time.monotonic()` offset. This assumes
-that offset held since process start; wall-clock adjustments can affect this
-best-effort signal. Missing/unreadable metadata or invalid/unrepresentable start
-timestamps suppress the banner and log a warning, without refusing attachment.
+rename makes the installed file's ctime the install-time signal. The app reads
+the unit's recorded realtime `ExecMainStartTimestamp` in microseconds through
+`busctl --user get-property` and compares it directly with the file's realtime
+ctime. Suspend does not shift that recorded start; no current realtime-minus-
+monotonic offset is reconstructed. Wall-clock adjustments between service start
+and installation can still affect this best-effort signal. Missing/unreadable
+metadata or invalid/unrepresentable start timestamps suppress the banner and log
+a warning, without refusing attachment.
 
 This is the authorized substitute for design 2.4's comparison against the
 running daemon's reported version: the daemon currently reports no build
@@ -289,8 +291,10 @@ build identity is a possible later improvement.
 `NeedDaemonReload=yes`, and restarts `happyranch-daemon`. It then repeats the full
 B2a ownership proof, including the bounded asynchronous PID/port publication
 wait, listener inode, health and post-health rechecks, before reattaching the
-web view. Failed restart or proof enters the existing shutdown path; a failed
-stop retains worker/window/lock custody and subsequent-close retry.
+web view. Every restart error, including reload failure or timeout, revokes
+leave-running eligibility and enters the existing shutdown path. A failed stop
+retains worker/window/lock custody and subsequent-close retry until a packaged-unit
+stop succeeds, even if the switch is ON and the old daemon was attached.
 
 If `systemctl --user is-system-running` is unavailable or reports no running
 manager, the window shows a fallback explanation and retains its child-process

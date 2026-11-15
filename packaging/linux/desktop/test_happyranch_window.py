@@ -386,6 +386,11 @@ class ServiceTests(unittest.TestCase):
             rc, output = self.manager
         elif argv[0] == "loginctl":
             output = self.linger + "\n"
+        elif argv[0] == "busctl":
+            self.assertEqual(argv, ["busctl", "--user", "get-property", "org.freedesktop.systemd1",
+                                   "/org/freedesktop/systemd1/unit/happyranch_2ddaemon_2eservice",
+                                   "org.freedesktop.systemd1.Service", "ExecMainStartTimestamp"])
+            output = "t " + self.state.get("ExecMainStartTimestamp", "1") + "\n"
         elif argv[2] in {"enable", "disable"}:
             self.state["UnitFileState"] = "enabled" if argv[2] == "enable" else "disabled"
         elif argv[0] == "journalctl":
@@ -545,17 +550,40 @@ class ServiceTests(unittest.TestCase):
                 patch.object(window.time, "monotonic", return_value=200):
             for elapsed, reload, expected in ((101, "no", True), (99, "no", False), (99, "yes", True)):
                 with self.subTest(elapsed=elapsed, reload=reload):
-                    self.state.update(ExecMainStartTimestampMonotonic=str((200-elapsed)*1_000_000), NeedDaemonReload=reload)
+                    self.state.update(ExecMainStartTimestamp=str(int((installed+100-elapsed)*1_000_000)),
+                                      ExecMainStartTimestampMonotonic=str((200-elapsed)*1_000_000),
+                                      NeedDaemonReload=reload)
                     self.assertFalse(self.service.update_installed(prefix))  # Not owned yet.
                     self.start()
                     self.assertEqual(self.service.update_installed(prefix), expected)
                     self.service.close()
             self.start()
-            for raw in ("", "n/a", "0", "-1", "１２", "9" * 4000):
-                self.state["ExecMainStartTimestampMonotonic"] = raw
+            self.state.update(ExecMainStartTimestamp=str(int((installed-60)*1_000_000)),
+                              ExecMainStartTimestampMonotonic="100000000", NeedDaemonReload="no")
+            # CLOCK_MONOTONIC pauses during suspend; recorded realtime does not move.
+            for suspended in (0, 3600):
+                with self.subTest(suspended=suspended), \
+                        patch.object(window.time, "time", return_value=installed+60+suspended), \
+                        patch.object(window.time, "monotonic", return_value=220):
+                    self.assertTrue(self.service.update_installed(prefix))
+            for raw in ("", "n/a", "0", "-1", "１２", "18446744073709551615", "9" * 4000):
+                self.state["ExecMainStartTimestamp"] = raw
                 with self.assertLogs(window.__name__, level="WARNING"):
                     self.assertFalse(self.service.update_installed(prefix))
-            self.state["ExecMainStartTimestampMonotonic"] = "1000000"
+            self.state["ExecMainStartTimestamp"] = "1000000"
+            self.failed_command = "get-property"
+            with self.assertLogs(window.__name__, level="WARNING"):
+                self.assertFalse(self.service.update_installed(prefix))
+            self.failed_command = None
+            runner = self.service.runner
+            for error in (subprocess.TimeoutExpired(["busctl"], 10), FileNotFoundError()):
+                def unavailable(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess:
+                    if argv[0] == "busctl":
+                        raise error
+                    return runner(argv, **kwargs)
+                with patch.object(self.service, "runner", side_effect=unavailable):
+                    with self.assertLogs(window.__name__, level="WARNING"):
+                        self.assertFalse(self.service.update_installed(prefix))
             info.unlink()
             with self.assertLogs(window.__name__, level="WARNING"):
                 self.assertFalse(self.service.update_installed(prefix))
@@ -605,9 +633,45 @@ class ServiceTests(unittest.TestCase):
         self.service.close_window()
         self.assertFalse(self.service.shutdown_pending)
 
+        # A previously attached, fully-ON service still owes a successful stop
+        # after any restart error, including errors before restart is invoked.
+        self.service.runner = runner
+        for verb in ("start", "daemon-reload", "restart"):
+            for timed_out in (False, True):
+                with self.subTest(verb=verb, timed_out=timed_out):
+                    self.start()
+                    self.state.update(UnitFileState="enabled", NeedDaemonReload="yes")
+                    self.linger = "yes"
+                    self.assertTrue(self.service.attached)
+                    self.assertEqual(self.service.lifetime_state(), "on")
+                    def fail(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess:
+                        result = runner(argv, **kwargs)
+                        if argv[2] == verb:
+                            if timed_out:
+                                raise subprocess.TimeoutExpired(argv, 10)
+                            result.returncode = 1
+                        return result
+                    with patch.object(self.service, "runner", side_effect=fail):
+                        with self.assertRaises(window.LaunchError):
+                            self.service.restart(threading.Event(), timeout=0)
+                    self.assertFalse(self.service.attached)
+                    self.assertTrue(self.service.shutdown_pending)
+                    stops = self.verbs().count("stop")
+                    self.failed_command = "stop"
+                    with self.assertRaisesRegex(window.LaunchError, "shutdown failed"):
+                        self.service.close_window()
+                    self.assertTrue(self.service.shutdown_pending)
+                    self.assertEqual(self.verbs().count("stop"), stops+1)
+                    self.failed_command = None
+                    self.service.close_window()
+                    self.assertFalse(self.service.shutdown_pending)
+                    self.assertEqual(self.verbs().count("stop"), stops+2)
+
     def test_gui_switch_partial_actions_fallback_and_restart(self) -> None:
-        for scenario in ("off", "on", "partial-repair", "partial-off", "denied", "fallback", "restart"):
+        for scenario in ("off", "on", "partial-repair", "partial-off", "denied", "fallback", "restart",
+                         "reload-error", "reload-timeout", "restart-error", "restart-timeout"):
             with self.subTest(scenario=scenario):
+                restart_error = scenario in {"reload-error", "reload-timeout", "restart-error", "restart-timeout"}
                 callbacks = queue.Queue()
                 widgets = []
                 urls = []
@@ -615,10 +679,10 @@ class ServiceTests(unittest.TestCase):
                 self.probes.clear()
                 self.service.attached = self.service.shutdown_pending = False
                 self.service.desktop_config.unlink(missing_ok=True)
-                self.state.update(UnitFileState="enabled" if scenario in {"on", "partial-repair", "partial-off"} else "disabled",
-                                  NeedDaemonReload="yes" if scenario == "restart" else "no",
-                                  ExecMainStartTimestampMonotonic="1")
-                self.linger = "yes" if scenario == "on" else "no"
+                self.state.update(UnitFileState="enabled" if restart_error or scenario in {"on", "partial-repair", "partial-off"} else "disabled",
+                                  NeedDaemonReload="yes" if restart_error or scenario == "restart" else "no",
+                                  ExecMainStartTimestamp="1")
+                self.linger = "yes" if restart_error or scenario == "on" else "no"
                 self.manager = (1, "offline") if scenario == "fallback" else (0, "running")
                 prefix = self.user_home / "payload"
                 prefix.mkdir(exist_ok=True)
@@ -678,19 +742,28 @@ class ServiceTests(unittest.TestCase):
                         raise window.LaunchError("A local polkit rule denied keeping HappyRanch running while logged out.")
                     self.linger = "yes" if enabled else "no"
                 runner = self.service.runner
+                fail_stop = restart_error
                 def run(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess:
                     result = runner(argv, **kwargs)
+                    failure = "daemon-reload" if scenario.startswith("reload-") else "restart"
+                    if restart_error and argv[2] == failure:
+                        if scenario.endswith("timeout"):
+                            raise subprocess.TimeoutExpired(argv, 10)
+                        result.returncode = 1
+                    if argv[2] == "stop" and fail_stop:
+                        result.returncode = 1
                     if argv[2] == "daemon-reload":
                         self.state["NeedDaemonReload"] = "no"
                     if argv[2] == "restart":
-                        self.state["ExecMainStartTimestampMonotonic"] = str(int((window.time.monotonic()+1)*1_000_000))
+                        self.state["ExecMainStartTimestamp"] = str(int((window.time.time()+1)*1_000_000))
                     return result
                 def run_app(_args: list) -> int:
+                    nonlocal fail_stop
                     app.signals["activate"](app)
                     try:
                         pump(lambda: switch() is not None)
                         self.assertTrue(any(w.label == "Keep HappyRanch running when I'm logged out" for w in current()))
-                        self.assertEqual(switch().active, scenario == "on")
+                        self.assertEqual(switch().active, restart_error or scenario == "on")
                         if scenario == "fallback":
                             self.assertFalse(switch().sensitive)
                             self.assertTrue(any(w.label and "no systemd user manager" in w.label for w in current()))
@@ -706,6 +779,19 @@ class ServiceTests(unittest.TestCase):
                             pump(lambda: any(w.label and "local polkit rule denied" in w.label for w in current()))
                             self.assertFalse(switch().active)
                             self.assertNotIn("enable", self.verbs())
+                        elif restart_error:
+                            pump(lambda: any(w.label == "Update installed - restart HappyRanch" for w in current()))
+                            self.assertTrue(self.service.attached)
+                            click("Restart HappyRanch")
+                            pump(lambda: any(w.label and "shutdown failed" in w.label for w in widgets))
+                            self.assertTrue(self.service.shutdown_pending)
+                            self.assertFalse(app.quit_called)
+                            self.assertIsNone(window.acquire_lock(self.home))
+                            self.assertTrue(any(t.name == "desktop-daemon" and t.is_alive()
+                                                for t in threading.enumerate()))
+                            self.assertEqual(self.verbs().count("stop"), 1)
+                            self.assertEqual(len(urls), 1)
+                            fail_stop = False
                         elif scenario == "restart":
                             pump(lambda: any(w.label == "Update installed - restart HappyRanch" for w in current()))
                             click("Restart HappyRanch")
@@ -718,9 +804,12 @@ class ServiceTests(unittest.TestCase):
                             self.state["UnitFileState"], self.linger = "disabled", "no"
                         shell.signals["delete-event"]()
                         pump(lambda: app.quit_called)
-                        self.assertEqual(self.verbs().count("stop"), 0 if scenario in {"partial-repair", "fallback"} else 1)
+                        self.assertEqual(self.verbs().count("stop"), 2 if restart_error else
+                                         0 if scenario in {"partial-repair", "fallback"} else 1)
+                        self.assertFalse(self.service.shutdown_pending)
                         return 0
                     finally:
+                        fail_stop = False
                         shell.signals["delete-event"]()
                         pump(lambda: app.quit_called)
                 app.run, app.quit = run_app, quit_app

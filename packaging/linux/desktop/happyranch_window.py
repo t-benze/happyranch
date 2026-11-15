@@ -327,28 +327,35 @@ class ServiceMode:
             with (prefix / "build-info.json").open("rb") as stream:
                 stream.read(1)  # Require readable metadata, without consuming build fields.
                 installed = os.fstat(stream.fileno()).st_ctime
-            raw = state.get("ExecMainStartTimestampMonotonic", "")
-            if not raw.isascii() or not raw.isdecimal() or int(raw) <= 0:
+            result = self.command("busctl", "--user", "get-property", "org.freedesktop.systemd1",
+                                  "/org/freedesktop/systemd1/unit/happyranch_2ddaemon_2eservice",
+                                  "org.freedesktop.systemd1.Service", "ExecMainStartTimestamp")
+            raw = re.fullmatch(r"t ([0-9]+)", result.stdout.strip())
+            if result.returncode or raw is None or not 0 < int(raw[1]) < 2**64 - 1:
                 raise ValueError("invalid service start timestamp")
-            # systemd reports CLOCK_MONOTONIC microseconds; st_ctime is realtime.
-            # Assume the current realtime-minus-monotonic offset also held at start.
-            started = time.time() - time.monotonic() + int(raw) / 1_000_000
+            # Recorded CLOCK_REALTIME microseconds, unaffected by later suspend.
+            started = int(raw[1]) / 1_000_000
             return state.get("NeedDaemonReload") == "yes" or installed > started
         except (OSError, ValueError, OverflowError, LaunchError):
             logging.getLogger(__name__).warning("Could not compare HappyRanch install and service start times.")
             return False
 
     def restart(self, cancel: threading.Event, *, timeout: float = 60) -> str:
-        # Revalidate the complete current ownership proof before restart as well.
-        if self.start(cancel, timeout=timeout) is None:
-            raise LaunchError("The user manager is unavailable; restart HappyRanch manually.")
-        if self.state().get("NeedDaemonReload") == "yes":
-            if self.command("systemctl", "--user", "daemon-reload").returncode:
-                raise LaunchError("Could not reload the user manager.")
-        self.state()
-        self.attached = False
-        self.control("restart")
-        return self.wait_for_attachment(cancel, timeout=timeout)
+        try:
+            # Revalidate the complete current ownership proof before restart as well.
+            if self.start(cancel, timeout=timeout) is None:
+                raise LaunchError("The user manager is unavailable; restart HappyRanch manually.")
+            if self.state().get("NeedDaemonReload") == "yes":
+                if self.command("systemctl", "--user", "daemon-reload").returncode:
+                    raise LaunchError("Could not reload the user manager.")
+            self.state()
+            self.attached = False
+            self.control("restart")
+            return self.wait_for_attachment(cancel, timeout=timeout)
+        except (OSError, LaunchError):
+            # Prior attachment cannot discharge a failed restart's stop obligation.
+            self.attached = False
+            raise
 
     def close_window(self) -> None:
         if self.attached and self.lifetime_state() == "on":
