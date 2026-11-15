@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Repackage a PR1/PR2 payload; no root, downloads, payload execution or services.
 set -euo pipefail
-exec /usr/bin/python3 -I - "$@" <<'PY'
+exec /usr/bin/python3 -I - "$0" "$@" <<'PY'
 from __future__ import annotations
 
 import argparse
@@ -16,6 +16,7 @@ import posixpath
 import re
 import shutil
 import subprocess
+import sys
 import tarfile
 import tempfile
 
@@ -23,7 +24,8 @@ parser = argparse.ArgumentParser(description='Build a desktop .deb from a Linux 
 parser.add_argument('payload', type=Path)
 parser.add_argument('--dist-dir', type=Path, help='literal absolute output directory (default: beside payload)')
 parser.add_argument('--debian-revision', default='1', help='positive integer packaging revision (default: 1)')
-args = parser.parse_args()
+args = parser.parse_args(sys.argv[2:])
+packaging = Path(sys.argv[1]).resolve().parent
 if re.fullmatch(r'[1-9][0-9]*', args.debian_revision) is None:
     parser.error('--debian-revision must be a positive integer without leading zeros')
 if not shutil.which('dpkg-deb'):
@@ -132,6 +134,10 @@ with tempfile.TemporaryDirectory(prefix='happyranch-deb-', dir='/tmp') as tempor
         # from $0 and cannot be invoked through a /usr/bin symlink.
         wrapper.write_text(f'#!/bin/sh\nexec /opt/happyranch-desktop/bin/{launcher} "$@"\n')
         wrapper.chmod(0o755)
+    unit = stage / 'usr/lib/systemd/user/happyranch-daemon.service'
+    unit.parent.mkdir(parents=True)
+    shutil.copyfile(packaging / 'systemd/happyranch-daemon.service', unit)
+    unit.chmod(0o644)
     applications = stage / 'usr/share/applications'
     applications.mkdir(parents=True)
     template = (prefix / 'share/applications/happyranch.desktop.in').read_text()

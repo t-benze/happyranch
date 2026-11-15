@@ -12,6 +12,7 @@ import tempfile
 import unittest
 
 BUILDER = Path(__file__).with_name('build-deb.sh')
+UNIT = BUILDER.parent / 'systemd/happyranch-daemon.service'
 
 
 class DebPackageTests(unittest.TestCase):
@@ -59,6 +60,29 @@ class DebPackageTests(unittest.TestCase):
         return subprocess.run(['bash', BUILDER, archive, '--dist-dir', self.work / 'dist'],
                               text=True, capture_output=True, umask=0o077)
 
+    def test_packaged_user_unit_directives(self) -> None:
+        self.assertEqual(UNIT.read_text().splitlines(), [
+            '[Unit]',
+            'Description=HappyRanch release daemon',
+            'StartLimitIntervalSec=300',
+            'StartLimitBurst=5',
+            '',
+            '[Service]',
+            'Type=simple',
+            'ExecStart=/opt/happyranch-desktop/bin/happyranch-daemon',
+            'Environment=HAPPYRANCH_DAEMON_HOME=%h/.happyranch-release',
+            'Environment=HAPPYRANCH_DAEMON_PORT=8766',
+            'Environment=HAPPYRANCH_DAEMON_BIND_HOST=127.0.0.1',
+            'Environment=HAPPYRANCH_BUNDLED_BIN=/opt/happyranch-desktop/bin',
+            'Environment=PATH=/opt/happyranch-desktop/bin:/usr/local/bin:/usr/bin:/bin',
+            'EnvironmentFile=-%h/.config/happyranch/daemon.env',
+            'Restart=on-failure',
+            'RestartSec=5',
+            '',
+            '[Install]',
+            'WantedBy=default.target',
+        ])
+
     def test_installed_contract_and_architecture(self) -> None:
         for payload_arch, debarch in (('x86_64', 'amd64'), ('aarch64', 'arm64')):
             with self.subTest(arch=payload_arch):
@@ -82,7 +106,17 @@ class DebPackageTests(unittest.TestCase):
                 subprocess.run(['md5sum', '--quiet', '-c', control / 'md5sums'], cwd=installed, check=True)
                 self.assertFalse((installed / 'opt/happyranch').exists())
                 self.assertFalse((installed / 'etc').exists())
-                self.assertFalse((installed / 'usr/lib/systemd').exists())
+                data = subprocess.check_output(['dpkg-deb', '--fsys-tarfile', deb])
+                with tarfile.open(fileobj=io.BytesIO(data)) as archive:
+                    units = [member for member in archive.getmembers()
+                             if member.name.removeprefix('./') ==
+                             'usr/lib/systemd/user/happyranch-daemon.service']
+                    self.assertEqual(len(units), 1, 'packaged user unit must exist at its exact path')
+                    unit = units[0]
+                    self.assertTrue(unit.isfile())
+                    self.assertEqual((unit.uname, unit.gname, unit.uid, unit.gid), ('root', 'root', 0, 0))
+                    self.assertEqual(unit.mode, 0o644)
+                    self.assertEqual(archive.extractfile(unit).read(), UNIT.read_bytes())
                 self.assertEqual({p.name for p in (installed / 'opt').iterdir()}, {'happyranch-desktop'})
                 for launcher in ('happyranch', 'happyranch-app'):
                     wrapper = installed / 'usr/bin' / launcher
