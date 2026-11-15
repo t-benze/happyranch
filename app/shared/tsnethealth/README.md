@@ -1,8 +1,8 @@
 # Shared tsnet health measurements
 
-Partial A2a boundary: this local module implements the map-only STUN prober and
-refresh guards. The closed v1 record builder and its privacy/bounds tests remain
-pending a manager scope/size decision. No consumer is wired yet.
+The manager accepted this measurement-only split (A2a-i): the map-only STUN
+prober and refresh guards. Record types, builders, and sentinel/bounds tests
+follow separately in A2a-ii. No consumer is wired yet.
 
 The future consumers can require `happyranch/tsnethealth` with a local
 `replace happyranch/tsnethealth => ../../shared/tsnethealth`. Both Linux payload
@@ -22,6 +22,10 @@ No mapped address survives the probe. Empty measurements must become
 port mapper is contacted. Home DERP must come from Status.Self.Relay. Captive
 detection is omitted. The running tsnet backend's own magicsock netcheck is
 unchanged. DNS uses the host in the supplied map when neither IP is valid.
+Replies are received and validated while subsequent map hosts resolve and send;
+each RTT starts at its own send. Partial measurements survive the overall
+five-second deadline and enter the runner cache. Tests supply a synthetic
+`net.DefaultResolver` transport and restore it afterward, without real DNS.
 
 Run from this module with Go 1.23.12, `GOWORK=off`, `CGO_ENABLED=0`, and
 `GOFLAGS=-mod=readonly`: `go vet ./...` and `go test ./...`. All probes in tests

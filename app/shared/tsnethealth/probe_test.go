@@ -3,6 +3,7 @@ package tsnethealth
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/netip"
@@ -67,8 +68,12 @@ func TestProbeMapOnly(t *testing.T) {
 				counts[id] = count
 				dm.Regions[id] = &tailcfg.DERPRegion{RegionID: id, Nodes: []*tailcfg.DERPNode{nil, &disabled, node, decoy}}
 			}
-			_, unmappedCount := responder(t, "", false)
+			unmapped, unmappedCount := responder(t, "198.51.100.1:1234", true)
+			assertObserverControl(t, unmapped, unmappedCount)
 			got := Probe(context.Background(), dm)
+			if unmappedCount.Load() != 1 {
+				t.Fatal("off-map observer received a packet")
+			}
 			if len(got.DERPMillis) != 8 || !got.UDP || got.NATVaries != varies {
 				t.Fatalf("measurements: %+v; want 8 regions, UDP, NAT varies=%v", got, varies)
 			}
@@ -78,7 +83,7 @@ func TestProbeMapOnly(t *testing.T) {
 					t.Errorf("region %d: measured=%v packets=%d", id, measured, count.Load())
 				}
 			}
-			if decoyCount.Load() != 0 || unmappedCount.Load() != 0 {
+			if decoyCount.Load() != 0 {
 				t.Fatal("sent to disabled, non-first or unmapped node")
 			}
 			data, err := json.Marshal(got)
@@ -90,11 +95,13 @@ func TestProbeMapOnly(t *testing.T) {
 }
 
 func TestProbeEmpty(t *testing.T) {
-	node, count := responder(t, "", false)
+	observer, count := responder(t, "198.51.100.1:1234", true)
+	assertObserverControl(t, observer, count)
+	node := *observer
 	node.STUNPort = -1
-	for _, dm := range []*tailcfg.DERPMap{nil, {}, {Regions: map[int]*tailcfg.DERPRegion{1: {RegionID: 1, Nodes: []*tailcfg.DERPNode{node}}}}} {
+	for _, dm := range []*tailcfg.DERPMap{nil, {}, {Regions: map[int]*tailcfg.DERPRegion{1: {RegionID: 1, Nodes: []*tailcfg.DERPNode{&node}}}}} {
 		got := Probe(context.Background(), dm)
-		if got.DERPMillis == nil || len(got.DERPMillis) != 0 || got.UDP || got.NATVaries || count.Load() != 0 {
+		if got.DERPMillis == nil || len(got.DERPMillis) != 0 || got.UDP || got.NATVaries || count.Load() != 1 {
 			t.Fatalf("empty/disabled map must send nothing: %+v packets=%d", got, count.Load())
 		}
 	}
@@ -132,5 +139,60 @@ func TestProbeDeadline(t *testing.T) {
 	Probe(ctx, dm)
 	if time.Since(start) > time.Second || count.Load() != 1 {
 		t.Fatal("cancelled probe sent traffic or failed to return promptly")
+	}
+}
+
+// The same independent UDP observer must catch a request when its endpoint is
+// in the map, before asserting that the main scenario sends it nothing more.
+func assertObserverControl(t *testing.T, node *tailcfg.DERPNode, count *atomic.Int32) {
+	t.Helper()
+	dm := &tailcfg.DERPMap{Regions: map[int]*tailcfg.DERPRegion{1: {RegionID: 1, Nodes: []*tailcfg.DERPNode{node}}}}
+	got := Probe(context.Background(), dm)
+	if !got.UDP || count.Load() != 1 {
+		t.Fatalf("observer positive control: result=%+v packets=%d", got, count.Load())
+	}
+}
+
+func TestRefreshPreservesReplyDuringDNS(t *testing.T) {
+	for _, untilDeadline := range []bool{true, false} {
+		t.Run(fmt.Sprint(untilDeadline), func(t *testing.T) {
+			node, count := responder(t, "198.51.100.1:1234", true)
+			original := net.DefaultResolver
+			t.Cleanup(func() { net.DefaultResolver = original })
+			// No DNS transport: the existing production resolver boundary is supplied
+			// with a synthetic failure. No tests in this package run in parallel.
+			net.DefaultResolver = &net.Resolver{PreferGo: true, Dial: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				if untilDeadline {
+					<-ctx.Done()
+					return nil, ctx.Err()
+				}
+				select {
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				case <-time.After(time.Second):
+					return nil, errors.New("synthetic DNS failure")
+				}
+			}}
+			dm := &tailcfg.DERPMap{Regions: map[int]*tailcfg.DERPRegion{
+				1: {RegionID: 1, Nodes: []*tailcfg.DERPNode{node}},
+				2: {RegionID: 2, Nodes: []*tailcfg.DERPNode{{HostName: "slow.invalid"}}},
+			}}
+			now := time.Time{}
+			r := NewRunner(func() time.Time { return now })
+			got, _, available := r.Refresh(context.Background(), dm, false)
+			rtt, measured := got.DERPMillis[1]
+			if !available || !got.UDP || !measured || len(got.DERPMillis) != 1 || count.Load() != 1 {
+				t.Fatalf("lost reply during DNS: result=%+v available=%v packets=%d", got, available, count.Load())
+			}
+			if rtt < 0 || rtt >= 750 {
+				t.Fatalf("RTT includes unrelated DNS stall: %dms", rtt)
+			}
+			now = now.Add(time.Minute)
+			cached, age, available := r.Refresh(context.Background(), nil, false)
+			cachedRTT, measured := cached.DERPMillis[1]
+			if !available || !cached.UDP || !measured || cachedRTT != rtt || age != time.Minute || count.Load() != 1 {
+				t.Fatalf("successful reply missing from cache: result=%+v age=%v available=%v packets=%d", cached, age, available, count.Load())
+			}
+		})
 	}
 }

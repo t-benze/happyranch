@@ -5,6 +5,7 @@ import (
 	"context"
 	"net"
 	"net/netip"
+	"sync"
 	"time"
 
 	"tailscale.com/net/stun"
@@ -71,39 +72,66 @@ func Probe(ctx context.Context, dm *tailcfg.DERPMap) ProbeResult {
 		addr   netip.AddrPort
 		sent   time.Time
 	}
+	// The receiver must keep draining replies while later map hosts resolve.
+	// Only pending and sending are shared; measurements stay receiver-owned.
+	var mu sync.Mutex
 	pending := map[stun.TxID]pendingProbe{}
-	for _, target := range targets {
-		addr, err := nodeAddress(ctx, target.node)
-		if err != nil || ctx.Err() != nil {
-			continue
+	sending := true
+	sentDone := make(chan struct{})
+	go func() {
+		defer close(sentDone)
+		for _, target := range targets {
+			addr, err := nodeAddress(ctx, target.node)
+			if err != nil || ctx.Err() != nil {
+				continue
+			}
+			tx := stun.NewTxID()
+			mu.Lock()
+			pending[tx] = pendingProbe{target.region, addr, time.Now()}
+			if _, err := conn.WriteTo(stun.Request(tx), net.UDPAddrFromAddrPort(addr)); err != nil {
+				delete(pending, tx)
+			}
+			mu.Unlock()
 		}
-		tx := stun.NewTxID()
-		sent := time.Now()
-		if _, err := conn.WriteTo(stun.Request(tx), net.UDPAddrFromAddrPort(addr)); err == nil {
-			pending[tx] = pendingProbe{target.region, addr, sent}
+		mu.Lock()
+		sending = false
+		if len(pending) == 0 {
+			// Wake a receiver waiting after the final reply or failed send.
+			conn.SetReadDeadline(time.Now())
 		}
-	}
+		mu.Unlock()
+	}()
 	var firstMapped netip.AddrPort
 	buffer := make([]byte, 2048)
-	for len(pending) > 0 {
+	for {
 		n, source, err := conn.ReadFrom(buffer)
 		if err != nil {
 			break
 		}
+		received := time.Now()
 		tx, mapped, err := stun.ParseResponse(buffer[:n])
+		mu.Lock()
 		probe, ok := pending[tx]
 		from, isUDP := source.(*net.UDPAddr)
 		if err != nil || !mapped.IsValid() || !ok || !isUDP || from.AddrPort().Addr().Unmap() != probe.addr.Addr() || from.Port != int(probe.addr.Port()) {
+			mu.Unlock()
 			continue
 		}
 		delete(pending, tx)
-		result.DERPMillis[probe.region] = int(time.Since(probe.sent).Milliseconds())
+		finished := !sending && len(pending) == 0
+		mu.Unlock()
+		result.DERPMillis[probe.region] = int(received.Sub(probe.sent).Milliseconds())
 		result.UDP = true
 		if firstMapped.IsValid() && firstMapped != mapped {
 			result.NATVaries = true
 		}
 		firstMapped = mapped
+		if finished {
+			break
+		}
 	}
+	cancel()
+	<-sentDone
 	return result
 }
 
