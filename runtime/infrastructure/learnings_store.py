@@ -227,7 +227,10 @@ def _lrn_numeric_suffix(s: "LearningSummary") -> int:
     """Extract the integer suffix of an LRN-NNN id for numeric ordering.
 
     String sort breaks at LRN-1000+ ('LRN-999' > 'LRN-1000' lexicographically).
+    Keep permissively read historical IDs in the index, after valid IDs.
     """
+    if not isinstance(s.id, str) or ID_RE.fullmatch(s.id) is None:
+        return -1
     return int(s.id.split("-", 1)[1])
 
 
