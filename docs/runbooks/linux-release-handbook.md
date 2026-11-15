@@ -60,6 +60,8 @@ refuses provisioning/install before configuration or unit publication, naming
 the path and missing permission. Fresh-host provisioning rechecks after account
 creation.
 
+The embedded-tailnet sidecar disables new Tailscale log uploads, clears historical `tailscaled.log1.txt`/`tailscaled.log2.txt` spool files before each start so queued records are not uploaded, and keeps raw backend logs out of the journal; symlinked or nonregular spool paths fail startup without being followed, while durable state and log configuration are preserved.
+
 Managed remote access also enforces the cross-config port contract before
 provisioning publishes files or install starts services: sidecar `ConnectorAddr`
 must be exactly `127.0.0.1:<managed.bind_port>`, and ingress must differ from
