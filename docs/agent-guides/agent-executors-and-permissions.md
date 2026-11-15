@@ -681,6 +681,16 @@ skill computes the workspace root as 5 parents above the task worktree
 exists. It is a narrow, non-permission tool with no DB, API, schema, audit,
 auth, notification, or sandbox footprint.
 
+Setup requires a nonempty owning `--task-id`, equal to the canonical worktree
+folder basename, with branch exactly `task/<task_id>`. Missing IDs, mismatches,
+detached HEAD and unavailable branch identity refuse before any snapshot,
+exclude or stale-hook config write. Continuations retain the original folder's
+owner and baseline, check those identities and use verify; a retry/PR branch
+does not transfer ownership. New task folders need matching task branches.
+Never omit the ID, substitute a predecessor branch ID, or use `-final` paths to
+bypass this contract. Existing mismatched guards require a manager handoff,
+not automatic repair or re-snapshotting.
+
 At setup the same writer best-effort ensures the exact root-only rule
 `/.worktree-guard.json` in the clone's shared common-dir `info/exclude`, preserving
 existing content and a final newline without duplicate rules on re-setup.

@@ -7,7 +7,7 @@ script into ``runtime/skills/bundled/make-worktree/worktree_guard.py`` for
 agent workspace injection. Keep both copies byte-identical.
 
 Commands:
-    python worktree_guard.py setup --worktree-root ... --primary-root ... [--task-id ...]
+    python worktree_guard.py setup --worktree-root ... --primary-root ... --task-id ...
     python worktree_guard.py verify --worktree-root ...
 
 It does NOT alter the permission model, daemon lifecycle, DB schema,
@@ -284,7 +284,7 @@ def _baseline_primary(primary: Path) -> dict:
 def cmd_setup(
     worktree_root: str,
     primary_root: str,
-    task_id: str | None = None,
+    task_id: str,
 ) -> None:
     """Record canonical roots and snapshot primary checkout baseline.
 
@@ -294,8 +294,11 @@ def cmd_setup(
     Args:
         worktree_root: path to the task worktree
         primary_root: path to the primary/main checkout
-        task_id: optional task identifier for diagnostics
+        task_id: owning task identifier, matching the folder and branch
     """
+    if not task_id or not task_id.strip():
+        print("ERROR: setup requires --task-id for the owning task", file=sys.stderr)
+        sys.exit(2)
     wt = _canonical(worktree_root)
     pr = _canonical(primary_root)
 
@@ -345,16 +348,20 @@ def cmd_setup(
         print(f"    cd {pr} && git worktree add {wt} -b task/<task_id>", file=sys.stderr)
         sys.exit(1)
 
-    # ── Validate task-worktree identity (branch name) ──────────────
-    if task_id:
-        expected_branch = f"task/{task_id}"
-        actual_branch = _worktree_branch_name(wt)
-        if actual_branch and actual_branch != expected_branch:
-            print(f"ERROR: Worktree branch name does not match task ID", file=sys.stderr)
-            print(f"  Expected branch:  {expected_branch}", file=sys.stderr)
-            print(f"  Actual branch:    {actual_branch}", file=sys.stderr)
-            print(f"  Worktree root:    {wt}", file=sys.stderr)
-            sys.exit(1)
+    # ── Bind ownership before any config, exclude or snapshot write ──
+    if wt.name != task_id:
+        print("ERROR: Worktree folder name does not match owning task ID", file=sys.stderr)
+        print(f"  Owning task ID:  {task_id}", file=sys.stderr)
+        print(f"  Worktree root:   {wt}", file=sys.stderr)
+        sys.exit(1)
+    expected_branch = f"task/{task_id}"
+    actual_branch = _worktree_branch_name(wt)
+    if actual_branch != expected_branch:
+        print("ERROR: Worktree branch name does not match owning task ID", file=sys.stderr)
+        print(f"  Expected branch:  {expected_branch}", file=sys.stderr)
+        print(f"  Actual branch:    {actual_branch or '(detached or unavailable)'}", file=sys.stderr)
+        print(f"  Worktree root:    {wt}", file=sys.stderr)
+        sys.exit(1)
 
     # ── Remove stale pre-PR #607 HappyRanch hook configuration ─────
     _clear_stale_worktree_hook(wt)
@@ -622,7 +629,7 @@ def main() -> None:
     args = sys.argv[2:]
 
     if cmd == "setup":
-        kwargs: dict[str, str | None] = {"task_id": None}
+        kwargs: dict[str, str] = {}
         i = 0
         while i < len(args):
             if args[i] == "--worktree-root" and i + 1 < len(args):
@@ -637,6 +644,9 @@ def main() -> None:
             else:
                 print(f"Unknown arg: {args[i]}", file=sys.stderr)
                 sys.exit(2)
+        if "task_id" not in kwargs:
+            print("setup requires --task-id for the owning task", file=sys.stderr)
+            sys.exit(2)
         if "worktree_root" not in kwargs or "primary_root" not in kwargs:
             print("setup requires --worktree-root and --primary-root", file=sys.stderr)
             sys.exit(2)

@@ -1,5 +1,19 @@
 # Local CI
 
+## Focused worktree guard ownership
+
+```sh
+python -B -m unittest scripts.test_worktree_guard -v
+```
+
+These standalone stdlib checks execute both guard copies against synthetic Git
+repositories beneath the task's effective `TMPDIR` (use workspace-owned task
+scratch, not `/tmp`). They observe missing/empty IDs, folder/branch disagreement,
+detached HEAD and renamed/final paths refusing without snapshot/config/exclude
+writes; matching ownership records canonical roots and retains primary-edit
+detection through continuation verification. No existing worktrees, daemon,
+retired Python units, general integration or Product E2E are exercised.
+
 ## Focused workspace memory bootstrap coverage (THR-366 PR-A)
 
 ```sh
