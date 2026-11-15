@@ -519,8 +519,11 @@ required result for `swift test --package-path app/mac --filter
 toolchain discovery, scratch environment, Swift command, bounded command runner
 and named-results helpers; the supervisor suite/filter is unchanged. Verbose
 Swift Testing output identifies the actual types behind their display names.
-PASS requires exit0, a nonzero completed test run and passed terminal results
-for both types. Missing tooling/results, either absent type, timeout or output
+PASS requires exit0, a nonzero completed test run and at least one
+executed-and-passed child in each type, with passed suite terminals. The command
+uses `--verbose --no-parallel` so Swift Testing suite start/end lines establish
+child ownership. Swift Testing and XCTest skipped, cancelled or failed test/suite
+results FAIL acceptance. Missing tooling/results, either absent type, timeout or output
 overflow FAIL the packaged suite while preserving numbered/build evidence.
 The command has at most 600s within a shared 4800s suite deadline and 1 MiB combined
 output; the existing 90-minute / 256 MiB-file job envelope is unchanged. The report

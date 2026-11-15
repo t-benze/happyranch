@@ -29,11 +29,23 @@ from scripts.mac_native import suite_supervisor as supervisor
 
 class PackagedUpdateTests(unittest.TestCase):
     OUTPUT = (
+        '◇ Suite "Update gate" (aka \'UpdateGateTests\') started.\n'
         '✔ Test "idle update" passed after 0.001 seconds.\n'
         '✔ Suite "Update gate" (aka \'UpdateGateTests\') passed after 0.002 seconds.\n'
+        '◇ Suite "Update inputs" (aka \'UpdateConfigurationTests\') started.\n'
         '✔ Test "key validation" passed after 0.001 seconds.\n'
         '✔ Suite "Update inputs" (aka \'UpdateConfigurationTests\') passed after 0.002 seconds.\n'
         '✔ Test run with 2 tests in 2 suites passed after 0.003 seconds.\n'
+    ).encode()
+
+    XCTEST_OUTPUT = (
+        "Test Suite 'UpdateGateTests' started at 2026-11-15 01:00:00.000.\n"
+        "Test Case '-[HappyRanchAppTests.UpdateGateTests testIdle]' passed (0.001 seconds).\n"
+        "Test Suite 'UpdateGateTests' passed at 2026-11-15 01:00:00.001.\n"
+        "Test Suite 'UpdateConfigurationTests' started at 2026-11-15 01:00:00.002.\n"
+        "Test Case '-[HappyRanchSupervisorTests.UpdateConfigurationTests testKeys]' passed (0.001 seconds).\n"
+        "Test Suite 'UpdateConfigurationTests' passed at 2026-11-15 01:00:00.003.\n"
+        "Executed 2 tests, with 0 failures (0 unexpected) in 0.003 seconds\n"
     ).encode()
 
     def run_case(self, result: tuple[int, bytes] | Exception = (0, OUTPUT), *,
@@ -144,12 +156,13 @@ class PackagedUpdateTests(unittest.TestCase):
         self.assertEqual(row['exit_code'], 0)
         self.assertEqual(row['output_bytes'], len(self.OUTPUT))
         self.assertEqual(row['sha256'], hashlib.sha256(self.OUTPUT).hexdigest())
-        self.assertEqual(row['test_results']['lines'], self.OUTPUT.decode().splitlines())
+        self.assertEqual(row['test_results']['lines'], [line for line in self.OUTPUT.decode().splitlines() if ' started.' not in line])
         self.assertLessEqual(len(row['tail'].encode()), 2048)
         argv, env, cwd, deadline, kwargs = calls[0]
         self.assertEqual(row['command'], argv)
         self.assertEqual(argv[argv.index('--filter') + 1], 'UpdateGateTests|UpdateConfigurationTests')
         self.assertIn('--verbose', argv)
+        self.assertIn('--no-parallel', argv)
         self.assertEqual(kwargs['output_cap'], 1024 * 1024)
         self.assertLessEqual(deadline - suite.time.monotonic(), 600)
         for key in ('HOME', 'CFFIXED_USER_HOME', 'TMPDIR', 'XDG_CACHE_HOME', 'CLANG_MODULE_CACHE_PATH',
@@ -161,6 +174,10 @@ class PackagedUpdateTests(unittest.TestCase):
         report, _, error = self.run_case((0, self.OUTPUT + b'Test run with 0 tests passed after 0.001 seconds.\n'))
         self.assertIsNone(error)
         self.assertEqual(report['packaged']['update_tests']['status'], 'PASS')
+        report, _, error = self.run_case((0, self.XCTEST_OUTPUT))
+        self.assertIsNone(error)
+        self.assertEqual(report['packaged']['update_tests']['executed_classes'],
+                         ['UpdateGateTests', 'UpdateConfigurationTests'])
 
     def test_packaged_update_tests_fail_nonzero(self) -> None:
         report, _, error = self.run_case((1, self.OUTPUT))
@@ -169,16 +186,57 @@ class PackagedUpdateTests(unittest.TestCase):
         self.assertEqual(report['packaged']['update_tests']['exit_code'], 1)
 
     def test_packaged_update_tests_fail_zero_or_missing_class(self) -> None:
-        for output in (b'Build complete!\nTest run with 0 tests passed after 0.001 seconds.\n',
+        reviewer_output = b'\n'.join(line for line in self.OUTPUT.split(b'\n') if b' started.' not in line)
+        for output in (reviewer_output.replace(b'Test "idle update" passed after 0.001 seconds.',
+                                              b'Test "idle update" skipped: "disabled"'),
+                       reviewer_output.replace(b'Test "key validation" passed after 0.001 seconds.',
+                                               b'Test "key validation" skipped: "disabled"'),
+                       b'Build complete!\nTest run with 0 tests passed after 0.001 seconds.\n',
                        self.OUTPUT.replace(b'UpdateGateTests', b'OtherTests'),
                        self.OUTPUT.replace(b'UpdateConfigurationTests', b'OtherTests'),
                        self.OUTPUT.replace(b'with 2 tests', b'with 0 tests'),
                        self.OUTPUT.replace(b' passed after', b' skipped after'),
-                       b'Compiling UpdateGateTests UpdateConfigurationTests\n'):
+                       b'Compiling UpdateGateTests UpdateConfigurationTests\n',
+                       # The same skipped children with real suite-start lines.
+                       self.OUTPUT.replace(b'Test "idle update" passed after 0.001 seconds.',
+                                           b'Test "idle update" skipped: "disabled"'),
+                       self.OUTPUT.replace(b'Test "key validation" passed after 0.001 seconds.',
+                                           b'Test "key validation" skipped: "disabled"'),
+                       self.OUTPUT.replace(b'Test "idle update" passed after',
+                                           b'Test "idle update" was cancelled after'),
+                       self.OUTPUT.replace(b'Test "key validation" passed after',
+                                           b'Test "key validation" was cancelled after'),
+                       self.OUTPUT.replace(b'Test "idle update" passed after',
+                                           b'Test "idle update" failed after'),
+                       self.OUTPUT.replace(b'Test "key validation" passed after',
+                                           b'Test "key validation" failed after'),
+                       self.OUTPUT.replace('✔ Test "idle update" passed after 0.001 seconds.\n'.encode(), b''),
+                       self.OUTPUT.replace('✔ Test "key validation" passed after 0.001 seconds.\n'.encode(), b''),
+                       self.OUTPUT.replace(
+                           b"(aka 'UpdateGateTests') started.", b"(aka 'OtherTests') started.")):
             with self.subTest(output=output):
                 report, _, error = self.run_case((0, output))
                 self.assertIsNotNone(error, 'packaged suite accepted absent executed results')
                 self.assertEqual(report['packaged']['update_tests']['status'], 'FAIL')
+
+        # Keep passed children in BOTH classes: negative terminals must veto
+        # even when each class also has positive executed-child evidence.
+        for name, child in (('UpdateGateTests', 'testIdle'), ('UpdateConfigurationTests', 'testKeys')):
+            for status in ('skipped', 'was cancelled', 'failed'):
+                for output in (
+                    self.XCTEST_OUTPUT + f"Test Case '-[Tests.{name} {child}]' {status} (0.001 seconds).\n".encode(),
+                    self.XCTEST_OUTPUT.replace(f"Test Suite '{name}' passed at".encode(),
+                                               f"Test Suite '{name}' {status} at".encode()),
+                    self.OUTPUT + (f"Suite {name} started.\n"
+                                   f'Test "extra child" {status} after 0.001 seconds.\n'
+                                   f"Suite {name} passed after 0.002 seconds.\n").encode(),
+                    self.OUTPUT.replace(f"(aka '{name}') passed after".encode(),
+                                        f"(aka '{name}') {status} after".encode()),
+                ):
+                    with self.subTest(name=name, status=status, output=output):
+                        report, _, error = self.run_case((0, output))
+                        self.assertIsNotNone(error, 'packaged suite accepted a negative target result')
+                        self.assertEqual(report['packaged']['update_tests']['status'], 'FAIL')
 
     def test_packaged_update_tests_fail_timeout_or_output_cap(self) -> None:
         for error_kind in (TimeoutError('synthetic deadline'), subprocess.TimeoutExpired('swift', 600),

@@ -1038,23 +1038,61 @@ def run(report: dict[str, Any]) -> None:
         # Swift Testing uses @Suite display names by default. Verbose output
         # adds the actual type as (aka 'UpdateGateTests'), independently of
         # compiler filenames or the filter echoed in build diagnostics.
-        argv += ['--filter', 'UpdateGateTests|UpdateConfigurationTests', '--verbose']
+        argv += ['--filter', 'UpdateGateTests|UpdateConfigurationTests', '--verbose', '--no-parallel']
         update['command'] = argv
         code, raw = _command(argv, test_env, test_scratch, test_deadline, output_cap=1024 * 1024)
         output = raw.decode('utf-8', errors='replace')
         results = _test_results(output)
         classes = ['UpdateGateTests', 'UpdateConfigurationTests']
-        executed = [name for name in classes if any(
-            re.fullmatch(r".*\bSuite .+ \(aka '" + name + r"'\) passed after .+", line)
-            for line in results['lines'])]
+        # Child names in Swift Testing are unqualified, even with --verbose.
+        # --no-parallel makes suite start/end boundaries authoritative. Never
+        # infer execution from a passed suite or the run total (which counts skips).
+        children: dict[str, int] = {name: 0 for name in classes}
+        completed: set[str] = set()
+        active_suites: list[str] = []
+        invalid = False
+        # Validate the full bounded output: the named-results report may truncate
+        # and its shared helper does not retain cancellation-only lines.
+        for line in output.splitlines():
+            swift = re.search(r"\b(Test|Suite) (.+) (started\.|passed after|failed after|skipped\b|(?:was )?cancelled\b)", line)
+            xctest = re.search(r"\bTest (Suite|Case) '([^']+)' (started|passed|failed|skipped|(?:was )?cancelled)\b", line)
+            if xctest:
+                kind, identity, status = xctest.groups()
+                if status not in ('started', 'passed'):
+                    invalid = True
+                if kind == 'Case' and status == 'passed':
+                    for name in classes:
+                        if re.search(r"(?:^|[.\[ /])" + name + r"(?:[. /])", identity):
+                            children[name] += 1
+                elif kind == 'Suite' and status == 'passed':
+                    name = identity.rsplit('.', 1)[-1]
+                    if name in classes and children[name] > 0:
+                        completed.add(name)
+            elif swift:
+                kind, identity, status = swift.groups()
+                if status not in ('started.', 'passed after'):
+                    invalid = True
+                if kind == 'Suite':
+                    alias = re.fullmatch(r".+ \(aka '([^']+)'\)", identity)
+                    name = alias[1] if alias else identity
+                    if status == 'started.':
+                        active_suites.append(name)
+                    elif not active_suites or active_suites.pop() != name:
+                        invalid = True
+                    elif status == 'passed after' and name in classes and children[name] > 0:
+                        completed.add(name)
+                elif (status == 'passed after' and not identity.startswith('run ')
+                      and active_suites and active_suites[-1] in classes):
+                    children[active_suites[-1]] += 1
+        executed = [name for name in classes if name in completed]
         runs = re.findall(r'\bTest run with ([0-9]+) tests?(?: in [0-9]+ suites?)? passed after ', output)
+        runs += re.findall(r'\bExecuted ([0-9]+) tests?, with 0 failures', output)
         passed = (code == 0 and executed == classes and bool(runs) and sum(map(int, runs)) > 0
-                  and any(re.search(r'\bTest (?!run\b).+ passed after ', line) for line in results['lines'])
-                  and not any(re.search(r'\b(?:Test|Suite) .+ failed\b', line) for line in results['lines']))
+                  and not invalid and not active_suites)
         update.update(exit_code=code, output_bytes=len(raw), sha256=hashlib.sha256(raw).hexdigest(),
                       tail=raw[-2048:].decode('utf-8', errors='ignore'), test_results=results, executed_classes=executed)
         if not passed:
-            raise RuntimeError('exit must be 0 with nonzero executed tests and both update classes passed')
+            raise RuntimeError('exit must be 0 with passed children in both update classes and no skipped, cancelled or failed results')
         update['status'] = 'PASS'
     except Exception as exc:
         update.update(status='FAIL', error=f'{type(exc).__name__}: {exc}'[:1024])

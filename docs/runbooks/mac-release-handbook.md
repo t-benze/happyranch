@@ -58,9 +58,11 @@ build/packaged evidence on a test failure. Tests have at most 600 seconds within
 the shared 4800-second suite deadline and 1 MiB output, under the existing
 90-minute / 256 MiB-file job envelope. The report retains argv, exit, byte count,
 SHA-256, a 2 KiB tail and bounded per-test results. Exit 0, a nonzero test run and
-passed results for both suite types are required; timeout, overflow, absent
-results and missing toolchain fail the suite. Its `supervisor` filter and Jenkins
-configuration remain unchanged. Linux portable harness checks do not execute Swift.
+at least one executed-and-passed child in each suite type are required. The
+command uses `--verbose --no-parallel` to preserve Swift Testing child ownership;
+Swift Testing and XCTest skipped, cancelled or failed test/suite results fail
+acceptance. Timeout, overflow, absent results and missing toolchain fail the suite.
+Its `supervisor` filter and Jenkins configuration remain unchanged. Linux portable harness checks do not execute Swift.
 Signed N→N+1, daemon data continuity, install on quit, scheduled prompts and
 signature refusal still require the founder's signed builds and manager's
 budgeted native venue. Build numbers must strictly increase for every published

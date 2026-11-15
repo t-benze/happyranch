@@ -208,9 +208,11 @@ outer EXIT receipt stay unchanged. A test failure preserves packaged step and
 build evidence but makes the suite fail. The test command has at most 600 seconds
 within a shared 4800-second suite deadline, 1 MiB combined output, a 2 KiB tail,
 SHA-256/byte count and bounded named test results. It requires exit 0, a nonzero
-test run and passed results for both actual suite types (`--verbose` exposes
-their identities). Timeout, output overflow, missing results or unavailable
-tooling fail; interrupted output is explicitly unavailable, never a test pass.
+test run and at least one executed-and-passed child in each actual suite type
+(`--verbose` exposes their identities; `--no-parallel` preserves child ownership
+between suite start/end lines). Skipped, cancelled or failed test/suite results
+fail acceptance, for Swift Testing and XCTest alike. Timeout, output overflow,
+missing results or unavailable tooling fail; interrupted output is explicitly unavailable, never a test pass.
 HOME, temporary files, SwiftPM paths and compiler caches stay under job scratch;
 the job's existing 90-minute / 256 MiB-file envelope is unchanged. Its separate
 `supervisor` suite retains its existing filter. No job configuration is changed.
