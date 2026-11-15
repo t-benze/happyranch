@@ -47,7 +47,9 @@ export const getCleanupActivity = (slug: string, agentName: string): Promise<{ a
   request(`/orgs/${slug}/agents/${agentName}/cleanup-activity`);
 
 export interface CreateAgentBody {
-  name: string;
+  /** Legacy explicit permanent ID. Supply display_name instead for server generation. */
+  name?: string;
+  display_name?: string;
   role: 'worker' | 'manager';
   team?: string;
   new_team?: string;
@@ -62,7 +64,7 @@ export interface CreateAgentBody {
 export const createAgent = (
   slug: string,
   body: CreateAgentBody,
-): Promise<{ name: string; team: string; role: 'worker' | 'manager' }> =>
+): Promise<{ name: string; canonical_id: string; addressable_name: string; team: string; role: 'worker' | 'manager' }> =>
   request(`/orgs/${slug}/agents`, { method: 'POST', body });
 
 export const initAgents = (

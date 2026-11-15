@@ -429,6 +429,66 @@ def require_new_id(org, name, *, writer=None):
             raise NamingError('identity_name_unavailable')
 
 
+MAX_INITIAL_AGENT_IDS = 1000
+
+
+def prepare_initial_agent_name(org: Any, label: str) -> str:
+    """Read-only proposal; the founder writer rechecks before canonical changes."""
+    from runtime.orchestrator import prompt_loader
+    from runtime.orchestrator._paths import OrgPaths
+
+    editable_label(label)
+    base = label.lower().replace('-', '_')
+    if not ('a' <= base[0] <= 'z'):
+        raise NamingError('invalid_identity_label')
+    if org.naming_readiness != 'ready':
+        raise NamingError('naming_unavailable')
+    namespace = capture_namespace(org.root, org.teams)
+    with org.db.coherent_read_view() as conn:
+        validate_names(conn, org_slug=org.slug)
+        owners, claims = validate_rows(*read_rows(conn), namespace)
+    claimed = claims.get(label.lower())
+    if claimed is not None:
+        raise NamingError('identity_name_reserved' if claimed[3] else 'identity_name_unavailable')
+    paths = OrgPaths(org.root)
+    for index in range(1, MAX_INITIAL_AGENT_IDS + 1):
+        suffix = '' if index == 1 else f'_{index}'
+        candidate = base[:64 - len(suffix)] + suffix
+        if (candidate not in claims and ('agent', candidate) not in owners
+                and not prompt_loader.is_name_unavailable(paths, candidate)):
+            return candidate
+    raise NamingError('agent_id_exhausted')
+
+
+def create_initial_agent_name(org: Any, canonical_id: str, label: str) -> None:
+    """Insert the initial chosen owner and claims in ONE naming transaction.
+
+    Caller owns the founder enrollment writer and teams lock, has validated the
+    proposal, and compensates canonical files/teams on failure. Capture remains
+    outside the canonical/profile leases and SQL transaction. Reconciliation and
+    other lifecycle writers retain their existing default-label semantics.
+    """
+    editable_label(label)
+    namespace = capture_namespace(org.root, org.teams)
+    if dict(namespace.subjects).get(canonical_id) != 'active':
+        raise NamingError('identity_owner_absent')
+    token = label.lower()
+    with transaction(org.db) as conn:
+        validate_names(conn, org_slug=org.slug)
+        owners, claims = validate_rows(*read_rows(conn))
+        if (('agent', canonical_id) in owners or canonical_id in claims or token in claims):
+            raise NamingError('identity_name_unavailable')
+        conn.execute('INSERT INTO identity_name_owners VALUES (?,?,?,?,?)',
+                     ('agent', canonical_id, 'active', label, 1))
+        conn.execute('INSERT INTO identity_name_claims VALUES (?,?,?,?,?)',
+                     (canonical_id, 'agent', canonical_id, 1, int(token == canonical_id)))
+        if token != canonical_id:
+            conn.execute('INSERT INTO identity_name_claims VALUES (?,?,?,?,?)',
+                         (token, 'agent', canonical_id, 0, 1))
+        validate_names(conn, org_slug=org.slug)
+        validate_rows(*read_rows(conn), namespace)
+
+
 @asynccontextmanager
 async def naming_writer(org, interval):
     """Inside the existing gate, outside its short canonical/profile leases."""
