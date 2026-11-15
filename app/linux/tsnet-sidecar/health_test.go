@@ -161,8 +161,13 @@ func TestHealthJournalPrivacyAndMissingPeer(t *testing.T) {
 	for _, expected := range []string{"expected-mac", "missing-mac"} {
 		t.Run(expected, func(t *testing.T) {
 			f := &fakeHealth{status: healthStatus(true, "198.51.100.7:443", "Running")}
+			runtimeDir := t.TempDir()
+			t.Setenv("RUNTIME_DIRECTORY", runtimeDir)
+			if expected == "missing-mac" {
+				t.Setenv("RUNTIME_DIRECTORY", "")
+			}
 			var out bytes.Buffer
-			m := healthMonitor{client: f, expected: expected, out: &out, at: time.Now()}
+			m := healthMonitor{client: f, expected: expected, dir: os.Getenv("RUNTIME_DIRECTORY"), out: &out, at: time.Now()}
 			m.runner = tsnethealth.NewRunner(func() time.Time { return m.at })
 			m.sample(context.Background(), "join")
 			line := out.String()
@@ -183,6 +188,13 @@ func TestHealthJournalPrivacyAndMissingPeer(t *testing.T) {
 				if strings.Contains(line, s) {
 					t.Fatalf("leaked sentinel %s", s)
 				}
+			}
+			file, err := os.ReadFile(filepath.Join(runtimeDir, "health.json"))
+			if expected == "expected-mac" && (err != nil || string(file) != raw) {
+				t.Fatal("file does not match journal record")
+			}
+			if expected == "missing-mac" && !os.IsNotExist(err) {
+				t.Fatal("unset runtime directory created a file")
 			}
 			peer := record["peer"].(map[string]any)
 			if expected == "missing-mac" && (peer["name"] != "" || peer["online"] != false || peer["path"] != "none" || f.pings != 0) {
