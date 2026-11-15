@@ -779,9 +779,6 @@ def _registration_metadata(repo: Path, deadline: float, *, metadata_path: Path |
         # locally, and only with a still ordinary or genuinely missing leaf.
         for path, entry in result.linked.items():
             observed_files = result.metadata[path] = {}
-            # Retain the already captured own-entry stat for later local proof.
-            # This adds no discovery observation or registration authority.
-            observed_files[str(entry)] = signature(tree[entry.name])
             local_tree = by_entry.get(entry.name, {})
             local_tree.setdefault('HEAD', None)
             for relative, observed in local_tree.items():
@@ -1059,6 +1056,7 @@ def _candidate_registration(repo: Path, path: Path, deadline: float, *, inventor
     Unrelated arrivals cannot change the candidate's identity baseline.
     """
     common, admin = repo / '.git', repo / '.git/worktrees'
+    local_error = None
     if inventory is not None and not removed:
         inventory.require(path, deadline)
     try:
@@ -1073,6 +1071,7 @@ def _candidate_registration(repo: Path, path: Path, deadline: float, *, inventor
             raise Retain(f'conflicting_worktree_backlink:{path / ".git"}')
 
         def own_metadata() -> tuple[dict, dict, str | None]:
+            nonlocal local_error
             topology, metadata = {}, {}
             # Pin every literal ancestor of OUR pointers, including common and
             # admin ancestors. Directory mtime is deliberately not a peer census.
@@ -1112,6 +1111,8 @@ def _candidate_registration(repo: Path, path: Path, deadline: float, *, inventor
                 return topology, metadata, None
             tree = snapshot(entry, deadline)
             for relative, observed_stat in tree.items():
+                if not relative:
+                    continue  # Entry identity is pinned above, as in discovery.
                 target = entry / relative
                 if not (stat.S_ISDIR(observed_stat.st_mode) or stat.S_ISREG(observed_stat.st_mode)) or (
                         stat.S_ISREG(observed_stat.st_mode) and observed_stat.st_nlink != 1):
@@ -1136,7 +1137,24 @@ def _candidate_registration(repo: Path, path: Path, deadline: float, *, inventor
                     if Path(target).name in ('HEAD', 'index'):
                         raise Retain(f'nonregular_registration_metadata:{target}')
                     continue
-                seen, text = _metadata_file(Path(target), deadline, text=target == str(entry / 'HEAD'))
+                try:
+                    seen, text = _metadata_file(Path(target), deadline, text=target == str(entry / 'HEAD'))
+                except _MetadataFileError as exc:
+                    # As at discovery, a proven ordinary own leaf's read error
+                    # is local. Pointer/ancestor/unsafe type uncertainty is not.
+                    if Path(target).name in ('gitdir', 'commondir'):
+                        raise
+                    with directory(Path(target).parent, deadline) as fd:
+                        try: current = os.stat(Path(target).name, dir_fd=fd, follow_symlinks=False)
+                        except FileNotFoundError: current = None
+                    cause = exc.__cause__
+                    if (current is not None and (not stat.S_ISREG(current.st_mode) or current.st_nlink != 1)
+                            or not (isinstance(cause, OSError) and cause.errno in (
+                                errno.EACCES, errno.EPERM, errno.ENOENT, errno.EIO, errno.ESTALE)
+                                or str(cause) == 'metadata_changed_during_read')):
+                        raise
+                    local_error = exc
+                    raise
                 if seen != expected:
                     raise Retain(f'metadata_changed:{target}' + _signature_change('snapshot_to_read', expected, seen))
                 if target == str(entry / 'HEAD'):
@@ -1192,6 +1210,10 @@ def _candidate_registration(repo: Path, path: Path, deadline: float, *, inventor
     except Expired:
         raise
     except Exception as exc:
+        if exc is local_error:
+            if retained is not None and inventory is not None:
+                retained.setdefault(str(repo), {}).setdefault(str(path), (str(exc), inventory.owner(str(path)), 'mapped_metadata'))
+            raise
         # Own mapping/pointer loss and un-attributable list output remain shared.
         if isinstance(exc, Retain) and str(exc).startswith(('possible_nested_worktree:', 'linked_descendant:')):
             raise
@@ -1203,13 +1225,6 @@ def _candidate_registration(repo: Path, path: Path, deadline: float, *, inventor
     rows.linked[str(path)] = entry
     rows.topology, metadata, head = after
     rows.metadata[str(path)] = metadata
-    expected = inventory.metadata[str(path)] if inventory is not None else metadata
-    if metadata != expected:
-        target = next(key for key in sorted(metadata.keys() | expected.keys()) if metadata.get(key) != expected.get(key))
-        error = f'metadata_changed:{target}'
-        if retained is not None and inventory is not None:
-            retained.setdefault(str(repo), {}).setdefault(str(path), (error, inventory.owner(str(path)), 'mapped_metadata'))
-        raise Retain(error)
     row = matches[0]
     if not re.fullmatch(r'(?:[0-9a-f]{40}|[0-9a-f]{64})', row.get('HEAD', '')) or set(row['HEAD']) == {'0'}:
         raise _RegistrationUnknown(f'unknown_git_registration_head:{entry}')
@@ -1218,6 +1233,13 @@ def _candidate_registration(repo: Path, path: Path, deadline: float, *, inventor
     if inventory is not None and (row.get('HEAD'), row.get('branch')) != (inventory[str(path)].get('HEAD'), inventory[str(path)].get('branch')):
         raise Retain('git_identity_changed_since_inventory')
     rows.require(path, deadline)
+    expected = inventory.metadata[str(path)] if inventory is not None else metadata
+    if metadata != expected:
+        target = next(key for key in sorted(metadata.keys() | expected.keys()) if metadata.get(key) != expected.get(key))
+        error = f'metadata_changed:{target}'
+        if retained is not None and inventory is not None:
+            retained.setdefault(str(repo), {}).setdefault(str(path), (error, inventory.owner(str(path)), 'mapped_metadata'))
+        raise Retain(error)
     return rows
 
 

@@ -1784,9 +1784,9 @@ registration scope as below. There is no two-pass ordering without real-night da
 Founder THR307 seq361 approving seq359 item 2 narrows the fresh worktree
 registration proof. Discovery still performs its complete once-per-clone proof:
 three literal no-follow admin censuses, full Git-list reconciliation, residue and
-arrival classification, and every recorded path/ancestor identity. It also saves
-the own admin entry's stat signature from that existing snapshot. No discovery
-census, classification or discovery-time unsafe-peer hold is removed.
+arrival classification, and every recorded path/ancestor identity. The own
+admin entry identity already recorded there pins later checks. No discovery
+census, metadata shape, classification or discovery-time unsafe-peer hold changes.
 
 Each candidate admission gate, pre-remove check, permission-repair/retry check and
 post-removal confirmation re-observes only that candidate's admin entry, metadata,
@@ -1830,7 +1830,9 @@ snapshots keep the unconditional PR1231 rule4-prime `possible_nested_worktree`
 check. Unrelated agent worktree additions no longer veto this candidate or become
 new deletion authority. Arrivals observed during discovery retain its existing
 classification; later TASK-named arrivals are deferred outside the fixed candidate
-inventory. A new unrelated non-TASK admin name holds the clone.
+inventory. A new unrelated non-TASK admin name holds the clone. The shallow
+observation does not enumerate unrelated conventional worktree folders: a newly
+created unregistered peer folder is outside this observation and stays untouched.
 
 After each local registration proof, the fresh recursive tree snapshot must still
 equal the admitted tree before the existing current ownership/native-writer/hold
