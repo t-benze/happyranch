@@ -106,6 +106,13 @@ struct DiagnosticsView: View {
                         }
                     }
 
+                    GroupBox("Managed Connection Health (latest cached record)") {
+                        Text(bundle["tsnet_health"] as? String ?? "unavailable")
+                            .font(.system(.caption, design: .monospaced))
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+
                     GroupBox("Health Probe") {
                         if let success = bundle["last_health_probe_success"] as? Bool {
                             HStack {

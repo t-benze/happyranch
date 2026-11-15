@@ -41,6 +41,13 @@ public final class DiagnosticsCollector: @unchecked Sendable {
 
     /// Lock guarding ``connectPathLogLines``.
     private let logLinesLock = NSLock()
+    private let tsnetHealthLock = NSLock()
+    private var tsnetHealthJSON: String?
+
+    /// Cache the full known v1 record. Export never starts a background probe.
+    func recordTsnetHealth(_ record: TsnetHealthRecord) {
+        tsnetHealthLock.withLock { tsnetHealthJSON = record.diagnosticJSON }
+    }
 
     public init(homeDir: String, registerAsShared: Bool = true) {
         self.homeDir = homeDir
@@ -148,6 +155,9 @@ public final class DiagnosticsCollector: @unchecked Sendable {
     /// export share ONE redaction guarantee.
     public func collect() -> [String: Any] {
         var bundle: [String: Any] = [:]
+        bundle["tsnet_health"] = tsnetHealthLock.withLock {
+            DiagnosticsRedactor.redact(tsnetHealthJSON ?? "unavailable")
+        }
 
         bundle["app_version"] = DiagnosticsRedactor.redact(
             Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.1.0")

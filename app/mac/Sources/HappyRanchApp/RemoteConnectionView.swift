@@ -277,6 +277,9 @@ private struct RemoteClientForm: View {
         Text(model.phase.message)
             .font(.callout)
             .accessibilityIdentifier("managed-join-status")
+        if let bridge = model.bridge {
+            ManagedConnectionHealthView(bridge: bridge).id(ObjectIdentifier(bridge))
+        }
         if model.busy { ProgressView().controlSize(.small) }
         if model.bridge == nil, !model.busy {
             Text("1 · Join managed network").font(.headline)

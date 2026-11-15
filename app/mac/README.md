@@ -1366,6 +1366,18 @@ lock is released before LocalAPI/probe/ping I/O, so dial/cancel/close can procee
 The module uses `happyranch/tsnethealth => ../../shared/tsnethealth`; the full-tree
 export in `scripts/build-app.sh` preserves this path. Notice collection exempts
 only this exact first-party replacement and retains all third-party obligations.
-Swift does not call this export yet. A3b will supply visible-window 60-second
-cadence, the button and the record in the Diagnostics bundle; no background
-health timer is added here. Native archive/app linkage remains a Mac build check.
+Swift calls this export off the main actor with a 10-second bound. The managed
+connection form shows one privacy-safe line (direct kind or relay region, RTT,
+and UDP-blocked warning), hidden when unavailable. **Check connection** refreshes
+on demand and is disabled while a request is in flight. Refresh also runs every
+60 seconds while that form's hosting NSWindow is visible, unoccluded and not
+minimized, and its SwiftUI scene is active. Disappearance or loss of eligibility
+cancels the cadence; an already-running bounded call may finish. No background
+refresh runs. The Go export still labels cadence calls `on_demand` after `join`.
+
+Diagnostics displays and exports `tsnet_health`: the full latest successful
+cached v1 record as a JSON string, passed through DiagnosticsRedactor, or the
+explicit string `unavailable`. Export never waits for a network probe. The cache
+can be older than the current connection; use its `at` timestamp. Native
+archive/app linkage remains a Mac build check. Focused macOS tests:
+`swift test --package-path app/mac --filter TsnetHealthRecordTests`.

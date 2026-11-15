@@ -295,6 +295,37 @@ public final class ClientBridge: @unchecked Sendable {
         return handle
     }
 
+    /// Health I/O has its own worker; it never occupies engineQueue or holds
+    /// tsnetLock over the C call. The existing teardown group prevents a new
+    /// owner from configuring the global engine until this request has settled.
+    public func healthRecord(timeoutMs: Int32 = 10_000) async -> TsnetHealthRecord? {
+        guard lane == .managed else { return nil }
+        return await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .utility).async {
+                let attempt: UUID? = Self.tsnetLock.withLock {
+                    guard self.nativeConfigured, self.managedReady,
+                          let attempt = self.managedAttempt,
+                          Self.managedOwner == attempt else { return nil }
+                    self.managedDials.enter()
+                    return attempt
+                }
+                guard let attempt else { continuation.resume(returning: nil); return }
+                defer { self.managedDials.leave() }
+                guard let pointer = tsnet_health_json(min(max(timeoutMs, 1), 10_000)) else {
+                    continuation.resume(returning: nil)
+                    return
+                }
+                defer { tsnet_free_string(pointer) }
+                let record = TsnetHealthRecord.decode(String(cString: pointer))
+                let accepted = Self.tsnetLock.withLock {
+                    self.managedReady && self.managedAttempt == attempt && Self.managedOwner == attempt
+                }
+                if accepted, let record { DiagnosticsCollector.shared?.recordTsnetHealth(record) }
+                continuation.resume(returning: accepted ? record : nil)
+            }
+        }
+    }
+
     private func closeManagedHandle(_ handle: Int32) {
         Self.tsnetLock.withLock { _ = managedHandles.remove(handle) }
         tsnet_conn_close(handle)
