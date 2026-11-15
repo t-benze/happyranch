@@ -7,7 +7,7 @@ import type { ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import { Button } from '@/design-system/primitives/Button';
 import { useTranslation } from '@/hooks/i18n';
-import { useSequentialDefinition, useSequentialRun, useTaskSequentialWorkflow } from '@/hooks/workflows';
+import { useSequentialDefinition, useSequentialRun, useTaskSequentialWorkflow, useWorkflowSetupStatus } from '@/hooks/workflows';
 import type { MessageKey } from '@/lib/i18n';
 import { deriveRun, parseDefinition } from '@/lib/workflowSequentialView';
 import { RunHeadlineText, RunStateBadge } from './SequentialRunPresentation';
@@ -26,10 +26,45 @@ export function SequentialTaskBanner({ slug, taskId }: { slug: string; taskId: s
   if (link.isError && status === 404 && (link.error as { code?: string } | null)?.code === 'task_not_found') return null;
   if (link.isError) return <BannerShell>{isAccessRefusal(link.error) ? <Denied /> :
     <div className="flex flex-wrap items-center gap-2" role="alert"><span>{t('seqwf.banner.error')}</span>
-      <Button size="sm" variant="outline" onClick={() => void link.refetch()}>{t('workflows.refresh')}</Button></div>}</BannerShell>;
+      <Button size="sm" variant="outline" onClick={() => void link.refetch()}>{t('workflows.refresh')}</Button></div>}{!isAccessRefusal(link.error) && <WorkflowSetupStatusCard />}</BannerShell>;
   const runId = link.data?.run?.id;
   if (!runId) return null;
   return <LinkedRun key={JSON.stringify([slug, taskId, runId])} slug={slug} taskId={taskId} runId={runId} linkStale={!!link.refreshFailed} refreshLink={link.refetch} />;
+}
+
+/** Advisory evidence remains visible alongside a failed workflow read. */
+export function WorkflowSetupStatusCard(): JSX.Element {
+  const { t } = useTranslation();
+  const q = useWorkflowSetupStatus();
+  const data = q.data;
+  const report = data?.integrity_report;
+  const states: Record<string, MessageKey> = {
+    unknown: 'seqwf.setupStatus.unknown', not_installed: 'seqwf.setupStatus.notInstalled',
+    installed_unverified: 'seqwf.setupStatus.unverified', installed_verified: 'seqwf.setupStatus.verified',
+  };
+  const outcomes: Record<string, MessageKey> = {
+    ok: 'seqwf.setupStatus.ok', failed: 'seqwf.setupStatus.failed', unavailable: 'seqwf.setupStatus.unavailable',
+  };
+  return <section aria-label={t('seqwf.setupStatus.title')} className="border-border-default bg-bg-raised my-3 rounded-md border p-3 text-sm wrap-anywhere">
+    <div className="flex flex-wrap items-center justify-between gap-2"><h2 className="font-medium">{t('seqwf.setupStatus.title')}</h2>
+      <Button size="sm" variant="outline" onClick={() => void q.refetch()}>{t('workflows.refresh')}</Button></div>
+    {q.isError ? <p role="alert">{t('seqwf.setupStatus.error')}</p> : !data ? <p role="status">{t('seqwf.loading')}</p> : <>
+      <p>{t(states[data.state])}</p>
+      <p className="text-text-muted">{t('seqwf.setupStatus.reason', { reason: data.reason })}</p>
+      {data.attempt_time && <p>{t('seqwf.setupStatus.attempt', { date: data.attempt_time })}</p>}
+      {data.backup_path && <p className="font-mono text-xs">{t('seqwf.setupStatus.backup', { path: data.backup_path })}</p>}
+      <div className="border-border-default mt-2 border-t pt-2"><h3 className="font-medium">{t('seqwf.setupStatus.daily')}</h3>
+        {report ? <>
+          <p>{t(outcomes[report.outcome])}</p>
+          <p>{t('seqwf.setupStatus.reason', { reason: report.reason })}</p>
+          <p>{t('seqwf.setupStatus.scheduled', { date: report.scheduled_date ?? t('seqwf.setupStatus.noDate') })}</p>
+          <p>{t('seqwf.setupStatus.checked', { date: report.checked_at ?? t('seqwf.setupStatus.noDate') })}</p>
+          <p className="text-text-muted">{t('seqwf.setupStatus.reporting', { external: report.reporting.external, audit: report.reporting.audit })}</p>
+        </> : <p>{t('seqwf.setupStatus.noReport')}</p>}
+      </div>
+    </>}
+    <p className="text-text-muted mt-2 text-xs">{t('seqwf.setupStatus.advisory')}</p>
+  </section>;
 }
 
 function BannerShell({ children }: { children: ReactNode }): JSX.Element {

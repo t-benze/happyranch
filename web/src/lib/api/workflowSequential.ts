@@ -1,6 +1,10 @@
 /** Sequential Founder reads/settings mirror; existing bearer, no start. */
 import { request } from './client';
 import { getToken } from '../auth';
+import type { WorkflowSetupStatus } from './types';
+
+export const getWorkflowSetupStatus = (slug: string, signal?: AbortSignal): Promise<WorkflowSetupStatus> =>
+  request(`/runtime/workflow-setup/orgs/${encodeURIComponent(slug)}`, { signal });
 
 export interface DefinitionPin {
   identity: string; version: number; definition_digest: string; source_digest: string;

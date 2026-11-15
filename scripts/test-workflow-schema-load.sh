@@ -44,7 +44,202 @@ from runtime.identities import registry as names
 from runtime.orchestrator import producer_move
 from runtime.orchestrator.agent_def import AgentDef, render_agent_text
 
-assert sys.argv[1:] in ([], ['--daily-integrity'], ['--install-integrity'], ['--bounded-acquisition'], ['--trace-custody'], ['--sequential-reuse'], ['--sequential-load'], ['--sequential-faults'], ['--sequential-sql-exhaustion'], ['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--coding-authority-corruption'], ['--document-native-corruption'], ['--author-handoff-corruption'], ['--document-revision-corruption'], ['--coding-history-corruption'], ['--physical-corruption'], ['--sequential-uncommitted']), 'unknown schema-load selection'
+assert sys.argv[1:] in ([], ['--setup-status'], ['--daily-integrity'], ['--install-integrity'], ['--bounded-acquisition'], ['--trace-custody'], ['--sequential-reuse'], ['--sequential-load'], ['--sequential-faults'], ['--sequential-sql-exhaustion'], ['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--coding-authority-corruption'], ['--document-native-corruption'], ['--author-handoff-corruption'], ['--document-revision-corruption'], ['--coding-history-corruption'], ['--physical-corruption'], ['--sequential-uncommitted']), 'unknown schema-load selection'
+
+
+# A3 mounted ASGI routes, private native storage, no lifespan/listener/runner.
+if sys.argv[1:] in ([], ['--setup-status']):
+    import asyncio
+    import httpx
+    from runtime.daemon.app import create_app
+    from runtime.daemon.state import DaemonState
+    from runtime.daemon.routes.orgs import _seed_skeleton
+    from runtime.daemon import org_integrity_monitor as monitor
+    from runtime.runtime import RuntimeDir
+    from runtime.infrastructure.workflow_schema import (
+        initialize_complete_org_schema, install_sequential_schema,
+        sequential_storage_inventory, _coding_org_identity, _schema_snapshot,
+    )
+
+    async def setup_route_cases():
+        with tempfile.TemporaryDirectory(prefix='workflow-setup-routes-') as scratch:
+            home = Path(scratch)
+            runtime = RuntimeDir.init(home / 'runtime')
+            root = runtime.orgs_dir / 'scratch'
+            _seed_skeleton(root, from_example=None)
+            (root / 'org/config.yaml').write_text('reviewer_agents: []\n')
+            # Explicit supported private foundation, unchanged normal loader.
+            db = Database(OrgPaths(root).db_path)
+            initialize_complete_org_schema(db, expected_org_slug='scratch', layout='J')
+            from runtime.orchestrator.org_config import initialize_fresh_reviewer_agents
+            initialize_fresh_reviewer_agents(OrgPaths(root), db)
+            db.close()
+            with patch.dict(os.environ, {'HAPPYRANCH_DAEMON_HOME': str(home)}):
+                # Synthetic token file exercises the existing auth dependency.
+                (home / 'daemon.token').write_text('synthetic-a3-founder')
+                org = OrgState.load(slug='scratch', root=root, settings=Settings())
+                state = DaemonState(runtime=runtime, settings=Settings(), orgs={'scratch': org},
+                    broken_orgs={'broken': 'PRIVATE DB DIAGNOSTIC'})
+                from runtime.workflows.profile_coordinator import ProfileCoordinator
+                state.profile_coordinator = ProfileCoordinator(daemon_home=home, orgs=state.orgs)
+                org._profile_coordinator = state.profile_coordinator
+                org.workflow_authority._profile_coordinator = state.profile_coordinator
+                state.profile_coordinator.reconcile_startup()
+                broken = runtime.orgs_dir / 'broken'
+                _seed_skeleton(broken, from_example=None)
+                (broken / 'happyranch.db').write_bytes(b'not a database')
+                unattached = runtime.orgs_dir / 'unattached'
+                _seed_skeleton(unattached, from_example=None)
+                app = create_app(state)
+                auth = {'Authorization': 'Bearer synthetic-a3-founder'}
+                path = '/api/v1/runtime/workflow-setup/orgs/'
+                async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://asgi') as client:
+                    for headers in ({}, {'Authorization': 'Bearer synthetic-wrong'}, {'X-HappyRanch-Surface': 'cli'}):
+                        response = await client.get(path + 'broken', headers=headers)
+                        assert response.status_code == 401, ('A3 wrong auth', response.status_code)
+                    print('PASS A3 auth: missing/wrong/task-surface bearer refused', flush=True)
+                    response = await client.get(path + 'missing', headers=auth)
+                    assert response.status_code == 404 and response.json() == {'detail': {'code': 'unknown_org'}}, ('A3 unknown slug closed 404', response.text)
+                    print('PASS A3 unknown slug: closed 404 no inventory', flush=True)
+                    for suffix in ('?extra=1', '?extra=1&extra=2'):
+                        assert (await client.get(path + 'broken' + suffix, headers=auth)).status_code == 422
+                    assert (await client.request('GET', path + 'broken', headers=auth, content=b'x')).status_code == 422
+                    for slug in ('broken', 'unattached'):
+                        before = (broken / 'happyranch.db').read_bytes()
+                        response = await client.get(path + slug, headers=auth)
+                        assert response.status_code == 200 and response.headers['cache-control'] == 'no-store', ('A3 known unattached must be visible', response.text)
+                        assert response.json()['state'] == 'unknown' and 'PRIVATE' not in response.text
+                        assert (broken / 'happyranch.db').read_bytes() == before
+                    print('PASS A3 known broken DB and unattached: independent no-store status', flush=True)
+                    key = monitor.runtime_key(runtime.root)
+                    namespace = home / 'backups/workflow-sequential' / key / 'broken'
+                    namespace.mkdir(parents=True)
+                    (namespace / 'malformed').write_text('PRIVATE MALFORMED EVIDENCE')
+                    response = await client.get(path + 'broken', headers=auth)
+                    assert response.json()['state'] == 'unknown' and response.json()['reason'] == 'evidence_unavailable'
+                    assert 'PRIVATE' not in response.text
+                    print('PASS A3 malformed attempt evidence: unknown sanitized status', flush=True)
+                    report_dir = home / 'workflow-integrity' / key / 'broken'
+                    report_dir.mkdir(parents=True, mode=0o700)
+                    latest = report_dir / 'latest.json'
+                    date = '2001-01-01'
+                    report = dict(format=monitor.FORMAT, runtime_key=key, org='broken', scheduled_date=date,
+                        finished_at='2001-01-01T01:00:00+00:00',
+                        report_id=hashlib.sha256(monitor._json([key, 'broken', date])).hexdigest(),
+                        **monitor._observation('full_integrity_ok', 'integrity'), reporting=dict(external='persisted', audit='unavailable'),
+                        private_diagnostic='PRIVATE RAW INTEGRITY TEXT')
+                    for reason, outcome in (('full_integrity_ok', 'ok'), ('full_integrity_not_ok', 'failed'), ('busy', 'unavailable')):
+                        report.update(monitor._observation(reason, 'integrity'))
+                        latest.write_bytes(monitor._json(report)); latest.chmod(0o600)
+                        value = (await client.get(path + 'broken', headers=auth)).json()['integrity_report']
+                        assert value == dict(outcome=outcome, reason=reason, checked_at=report['finished_at'],
+                            scheduled_date=date, reporting=report['reporting']), ('A3 daily projection', value)
+                        print('PASS A3 daily report:', reason, 'original stale date, closed projection', flush=True)
+                    latest.write_text('{"outcome":"ok"}'); latest.chmod(0o600)
+                    value = (await client.get(path + 'broken', headers=auth)).json()['integrity_report']
+                    assert value['outcome'] == 'unavailable' and value['reason'] == 'report_unavailable' and value['scheduled_date'] is None
+                    latest.unlink(); latest.symlink_to(broken / 'happyranch.db')
+                    assert (await client.get(path + 'broken', headers=auth)).json()['integrity_report']['outcome'] == 'unavailable'
+                    print('PASS A3 malformed/unsafe daily: unavailable; bad attempt does not hide daily', flush=True)
+                    org.db.insert_task(TaskRecord(id='TASK-A3', brief='Synthetic ordinary task'))
+                    task_path = '/api/v1/orgs/scratch/tasks/TASK-A3/sequential-workflow'
+                    value = await client.get(task_path, headers=auth)
+                    assert value.status_code == 200 and value.json()['run'] is None, ('A3 validated absent layout must be empty', value.status_code, value.text)
+                    print('PASS A3 ordinary absent layout: real task/authority/full history then null', flush=True)
+                    # Supported installer, no admission/settings/runs, full history unchanged.
+                    with _schema_snapshot(org.db._conn):
+                        identity = _coding_org_identity(org.db._conn, expected_org_slug='scratch', expected_path=str(org.db.db_path))
+                        inventory = sequential_storage_inventory(org.db._conn)
+                    def offline():
+                        assert _coding_org_identity(org.db._conn, expected_org_slug='scratch', expected_path=str(org.db.db_path)) == identity
+                    assert install_sequential_schema(org.db._conn, expected_org_slug='scratch', expected_path=str(org.db.db_path),
+                        source_identity=identity, source_inventory=inventory, offline_check=offline) == 'installed'
+                    value = await client.get(task_path, headers=auth)
+                    assert value.status_code == 200 and value.json()['run'] is None, value.text
+                    print('PASS A3 ordinary installed: no workflow banner', flush=True)
+                    # Complete private append-only evidence, independent of the DB.
+                    attempt = home / 'backups/workflow-sequential' / key / 'scratch' / 'synthetic-attempt'
+                    attempt.mkdir(parents=True, mode=0o700)
+                    backup = attempt / 'before.db'
+                    backup.write_bytes(b'Synthetic backup path observation only')
+                    backup.chmod(0o600)
+                    prior = None
+                    states = [('intent', 'unknown', 'install_incomplete'),
+                        ('backup_verified', 'unknown', 'install_incomplete'),
+                        ('pre_commit', 'unknown', 'commit_uncertain'),
+                        ('committed', 'installed_unverified', 'installation_unverified'),
+                        ('verified', 'installed_unverified', 'installation_unverified'),
+                        ('registered', 'installed_verified', 'registered')]
+                    for seq, (phase, status, reason) in enumerate(states):
+                        event = dict(format='workflow-setup-event@1', runtime_key=key, org_slug='scratch',
+                            attempt_id=attempt.name, sequence=seq, previous_digest=prior, phase=phase,
+                            state=status, reason=reason, attempt_time='2001-01-01T00:00:00+00:00', backup_path=str(backup),
+                            db_identity=dict(path=str(org.db.db_path), device=org.db.db_path.stat().st_dev, inode=org.db.db_path.stat().st_ino),
+                            source_inventory_digest='a'*64, backup_sha256=hashlib.sha256(backup.read_bytes()).hexdigest(), target_version=1)
+                        raw = json.dumps(event, sort_keys=True, separators=(',', ':')).encode()
+                        record = attempt / f'{seq:02}.json'
+                        record.write_bytes(raw); record.chmod(0o600)
+                        prior = hashlib.sha256(raw).hexdigest()
+                    status = await client.get(path + 'scratch', headers=auth)
+                    assert status.json()['state'] == 'installed_verified', status.text
+                    print('PASS A3 complete setup chain: independent installed evidence', flush=True)
+                    original_records = {item.name: item.read_bytes() for item in attempt.glob('*.json')}
+                    for length in (1, 2, 3):
+                        for item in attempt.glob('*.json'):
+                            item.unlink()
+                        for filename, body in original_records.items():
+                            if int(filename[:2]) < length:
+                                target = attempt / filename
+                                target.write_bytes(body); target.chmod(0o600)
+                        prefix_status = (await client.get(path + 'scratch', headers=auth)).json()
+                        assert prefix_status['state'] == 'unknown', prefix_status
+                        terminal = dict(json.loads(original_records['00.json']), sequence=length,
+                            previous_digest=hashlib.sha256(original_records[f'{length-1:02}.json']).hexdigest(),
+                            phase='not_installed', state='not_installed', reason='not_installed')
+                        target = attempt / f'{length:02}.json'
+                        target.write_text(json.dumps(terminal)); target.chmod(0o600)
+                        assert (await client.get(path + 'scratch', headers=auth)).json()['state'] == 'not_installed'
+                        print('PASS A3 recorded pre-COMMIT refusal:', states[length-1][0], 'positive terminal only', flush=True)
+                    for item in attempt.glob('*.json'):
+                        item.unlink()
+                    for filename, body in original_records.items():
+                        target = attempt / filename
+                        target.write_bytes(body); target.chmod(0o600)
+                    saved_event = record.read_bytes()
+                    parsed_event = json.loads(saved_event)
+                    for case, damaged in (
+                        ('malformed JSON', b'{'),
+                        ('digest mismatch', json.dumps(dict(parsed_event, previous_digest='b'*64)).encode()),
+                        ('path escape', json.dumps(dict(parsed_event, backup_path=str(home / 'outside'))).encode()),
+                        ('raw reason', json.dumps(dict(parsed_event, reason='PRIVATE RAW ERROR')).encode()),
+                        ('record cap', b'x'*65537)):
+                        record.write_bytes(damaged)
+                        value = (await client.get(path + 'scratch', headers=auth)).json()
+                        assert value['state'] == 'unknown' and value['backup_path'] is None and 'PRIVATE' not in json.dumps(value), (case, value)
+                        record.write_bytes(saved_event)
+                        assert record.read_bytes() == saved_event
+                        print('PASS A3 attempt refusal:', case, 'unknown; exact fixture restore', flush=True)
+                    assert (await client.get(path + 'scratch', headers=auth)).json()['state'] == 'installed_verified'
+                    # Native corrupt history, not a mocked reader or setup permission.
+                    org.db._conn.execute('DELETE FROM workflow_task_ownership WHERE task_id=?', ('TASK-A3',))
+                    org.db._conn.commit()
+                    value = await client.get(task_path, headers=auth)
+                    assert value.status_code == 409, ('A3 corrupt history must remain error', value.status_code, value.text)
+                    assert (await client.get(path + 'scratch', headers=auth)).json()['state'] == 'installed_verified'
+                    assert (await client.get('/api/v1/orgs/scratch/tasks/TASK-missing/sequential-workflow', headers=auth)).status_code == 404
+                    print('PASS A3 corrupt history: real 409; absent native task 404', flush=True)
+                    # Inject a negative existing role-authority refusal, never a successful grant.
+                    from runtime.workflows import sequential_views
+                    from runtime.workflows.sequential_engine import SequentialRefusal
+                    with patch.object(sequential_views, '_current_authority', side_effect=SequentialRefusal('role_ineligible')):
+                        assert (await client.get(task_path, headers=auth)).status_code == 403
+                    print('PASS A3 injected role authority denial: 403 preserved', flush=True)
+                org.close()
+                state.metrics_store.close()
+                state.direct_connect_authority_store.close()
+    asyncio.run(setup_route_cases())
+    if sys.argv[1:]:
+        raise SystemExit(0)
 
 # I1b uses the same private venue; it never starts a daemon or listener.
 if sys.argv[1:] in ([], ['--daily-integrity']):

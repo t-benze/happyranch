@@ -1966,3 +1966,30 @@ private external date/latest reports carry sanitized closed results; A3 owns
 later setup-status visibility. See [observability](observability.md#daily-workflow-physical-integrity-advisory-i1b).
 I2 still owns removal of inline load-time integrity; all current parts 2–7,
 FK, L32M, A/B/C2M, logical caps and five-second readers remain unchanged.
+
+
+## Independent workflow setup status (A3)
+
+Founder-bearer GET `/api/v1/runtime/workflow-setup/orgs/{slug}` reads private
+setup evidence and the bounded I1b latest report independently of OrgDep,
+OrgState attachment and org database availability. Unknown slugs return a
+closed 404 without an org inventory. Unexpected query/body is 422; idle is 409;
+success uses no-store. Missing, malformed, unsafe or ambiguous attempt evidence
+is `unknown/evidence_unavailable`, never inferred installation success.
+The read-only setup event namespace is bounded to 64 attempts, 16 records each,
+64 KiB per record, 4 MiB and one second per acquisition. A4 owns publication
+and automatic setup; this slice performs neither.
+
+The existing Workflows surface shows status independently of failed
+definition/settings reads. The task banner returns empty only after a real
+task, current authority and complete history prove sequential absence.
+Corrupt, partial, denied or exhausted reads retain their original errors,
+including when installation evidence reports success. No integrity reader,
+load-time physical check, FK check, logical/SQL cap or five-second policy changes.
+
+The card exposes only `integrity_report` outcome, closed reason, original
+checked_at/scheduled_date and external/audit reporting. Stale results retain
+their original date; missing or unavailable evidence never means today's
+success. No raw integrity diagnostics cross the route. Setup/report evidence
+grants no workflow permission. English and Simplified Chinese share this
+behavior. No page, Audit UI, notification or required check is added.

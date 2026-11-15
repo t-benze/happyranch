@@ -25,7 +25,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from runtime.daemon._disk_sweep_fs import directory, identity, signature
+from runtime.daemon._disk_sweep_fs import Expired, directory, identity, signature
 from runtime.infrastructure.workflow_integrity import IntegrityLedger, check_full_integrity
 
 LOG = logging.getLogger(__name__)
@@ -155,6 +155,50 @@ def _safe_read(parent: int, name: str, limit: int) -> dict:
     if type(result) is not dict:
         raise ValueError('invalid_report')
     return result
+
+
+def latest_report(home: Path, runtime_root: Path, slug: str) -> dict | None:
+    """Read only the bounded latest projection; never open an org database.
+
+    Missing means no recorded report. Unsafe/malformed evidence is explicitly
+    unavailable. A stale valid report keeps its original date and outcome.
+    """
+    key = runtime_key(runtime_root)
+    unavailable = dict(outcome='unavailable', reason='report_unavailable', checked_at=None,
+                       scheduled_date=None, reporting=dict(external='unavailable', audit='unavailable'))
+    if not _SLUG.fullmatch(slug):
+        return unavailable
+    deadline = time.monotonic() + 1
+    try:
+        with directory(home / 'workflow-integrity' / key / slug, deadline) as parent:
+            value = _safe_read(parent, 'latest.json', 32 * 1024)
+        date = value['scheduled_date']
+        if (value['format'] != FORMAT or value['runtime_key'] != key or value['org'] != slug
+                or type(date) is not str or not _DATE.fullmatch(date)
+                or datetime.fromisoformat(date).date().isoformat() != date
+                or value['report_id'] != hashlib.sha256(_json([key, slug, date])).hexdigest()
+                or not _valid_observation({name: value[name] for name in
+                    ('outcome', 'reason', 'stage', 'steps', 'snapshot_identity')})):
+            raise ValueError('invalid_report')
+        checked = value['finished_at']
+        if checked is None:
+            raise ValueError('unfinished_report')
+        if type(checked) is not str or len(checked) > 40:
+            raise ValueError('invalid_report_time')
+        stamp = datetime.fromisoformat(checked.replace('Z', '+00:00'))
+        if stamp.tzinfo is None or stamp.utcoffset() != timezone.utc.utcoffset(stamp):
+            raise ValueError('invalid_report_time')
+        reporting = value['reporting']
+        if (type(reporting) is not dict or set(reporting) != {'external', 'audit'}
+                or any(type(item) is not str or item not in ('persisted', 'unavailable', 'pending')
+                       for item in reporting.values()) or time.monotonic() >= deadline):
+            raise ValueError('invalid_reporting')
+        return dict(outcome=value['outcome'], reason=value['reason'], checked_at=checked,
+                    scheduled_date=date, reporting=reporting)
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError, TypeError, KeyError, TimeoutError, Expired, RecursionError):
+        return unavailable
 
 
 def _exclusive(parent: int, name: str, value: dict) -> None:

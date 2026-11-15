@@ -8,6 +8,22 @@
  * attribute name (e.g. ``ThreadRecord.id`` is serialized as ``thread_id``).
  */
 
+export interface WorkflowSetupStatus {
+  format: 'workflow-setup-status@1';
+  org_slug: string;
+  state: 'not_installed' | 'installed_unverified' | 'installed_verified' | 'unknown';
+  reason: 'evidence_unavailable' | 'registered' | 'not_installed' | 'install_incomplete' | 'commit_uncertain' | 'installation_unverified';
+  attempt_time: string | null;
+  backup_path: string | null;
+  integrity_report: {
+    outcome: 'ok' | 'failed' | 'unavailable';
+    reason: 'full_integrity_ok' | 'full_integrity_not_ok' | 'database_corrupt' | 'busy' | 'deadline' | 'sql_budget' | 'open_failed' | 'io' | 'identity_changed' | 'unattached_unreadable' | 'interrupted' | 'in_flight_reader' | 'report_unavailable';
+    checked_at: string | null;
+    scheduled_date: string | null;
+    reporting: { external: 'persisted' | 'unavailable' | 'pending'; audit: 'persisted' | 'unavailable' | 'pending' };
+  } | null;
+}
+
 // ---------------------------------------------------------------------------
 // Enums
 // ---------------------------------------------------------------------------

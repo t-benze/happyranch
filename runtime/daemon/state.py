@@ -41,6 +41,8 @@ class DaemonState:
     # Surfaced via GET /orgs so the founder isn't left guessing why an
     # org went missing after a restart.
     broken_orgs: dict[str, str] = field(default_factory=dict)
+    # Independent discovery only: never attaches an org or grants workflow access.
+    workflow_setup_roots: dict[str, Path] = field(default_factory=dict)
     queue: TaskQueue = field(default_factory=TaskQueue)
     registration_token_store: RegistrationTokenStore = field(
         default_factory=RegistrationTokenStore
@@ -95,6 +97,32 @@ class DaemonState:
         with self._org_map_lock:
             return {slug: org for slug, org in self.orgs.items()
                     if id(org) not in self._retiring_orgs and not self._attachment_swap_failed}
+
+    def workflow_setup_root(self, slug: str) -> Path | None:
+        """Known root lookup without OrgDep, authority, or database access."""
+        import re
+        import time
+        if self.runtime is None or not re.fullmatch(r'[a-z0-9-]{1,40}', slug):
+            return None
+        expected = self.runtime.root / 'orgs' / slug
+        with self._org_map_lock:
+            known = slug in self.orgs or slug in self.broken_orgs
+            recorded = self.workflow_setup_roots.get(slug)
+        if known or recorded == expected:
+            return expected
+        # Discover newly registered/unattached roots outside the runnable map.
+        # Retained roots never depend on a successful repeat filesystem scan.
+        deadline = time.monotonic() + 1
+        try:
+            for index, (name, root) in enumerate(self.runtime.iter_org_roots()):
+                if index >= 4096 or time.monotonic() >= deadline:
+                    return None
+                if name == slug:
+                    self.workflow_setup_roots[slug] = root
+                    return root
+        except OSError:
+            return None
+        return None
 
     def _all_orgs_snapshot(self) -> dict[str, OrgState]:
         """Custody inventory, including nonrunnable startup attachments."""
@@ -417,6 +445,7 @@ class DaemonState:
                         )
 
             for slug, root in runtime.iter_org_roots():
+                state.workflow_setup_roots[slug] = root
                 if slug in state.broken_orgs:
                     continue
                 owner = {"slug": slug, "root": root, "org": None, "published": False}

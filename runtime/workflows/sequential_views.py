@@ -168,6 +168,10 @@ def _project(conn: sqlite3.Connection, org: Any, kind: str, selected: str | None
     if kind == 'task' and conn.execute('SELECT 1 FROM tasks WHERE id=?', (selected,)).fetchone() is None:
         raise ProjectionRefusal('task_not_found', 404)
     if not history.layout.sequential:
+        if kind == 'task':
+            # The caller already proved native existence, current authority and
+            # complete compatible history. Only this positive absence is empty.
+            return TaskWorkflowView(task_id=selected, run=None)
         if kind == 'definitions':
             return DefinitionList(storage=history.status, definitions=())
         if kind == 'runs':

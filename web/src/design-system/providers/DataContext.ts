@@ -21,6 +21,7 @@
 import { createContext, useContext } from 'react';
 import type * as Sequential from '@/lib/api/workflowSequential';
 import type {
+  WorkflowSetupStatus,
   HealthResponse,
   OrgsListResponse,
   SettingsSnapshot,
@@ -752,6 +753,7 @@ export interface SequentialSettingsActions {
 }
 
 export interface WorkflowsApi {
+  useWorkflowSetupStatus: () => WorkflowQuery<WorkflowSetupStatus>;
   useSequentialSettingsActions: () => SequentialSettingsActions;
   useSequentialSettingsFence: () => SequentialSettingsFence | null;
   useSequentialDefinitions: () => WorkflowQuery<Sequential.SequentialDefinitions>;
