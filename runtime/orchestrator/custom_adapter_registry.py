@@ -1388,6 +1388,8 @@ def _perform_adapter_profile_binding(
     adapter_id: str,
     profile_name: str,
     workspace_adapter: str,
+    *,
+    adapter_update: dict | None = None,
 ) -> dict:
     """Bind a named custom profile to an APPROVED adapter (THR-107 seq237).
 
@@ -1403,7 +1405,7 @@ def _perform_adapter_profile_binding(
     5. Snapshot pre-bind state for compensating rollback
     6. Write durable runtime profile
     7. Replace in-memory registry
-    8. Audit the binding
+    8. Audit the binding and any direct-connect adapter replacement together
 
     On any post-durable-write failure, restores pre-request state and
     raises ``ValueError`` so the caller can roll back approval.
@@ -1508,6 +1510,13 @@ def _perform_adapter_profile_binding(
                     "bound_via": "approve_and_bind",
                 },
             )
+            if adapter_update is not None:
+                db.insert_audit_log_uncommitted(
+                    task_id=f"executor:{profile_name}",
+                    agent="founder",
+                    action="executor_adapter_updated",
+                    payload=adapter_update,
+                )
             db.commit()
         finally:
             db.close()

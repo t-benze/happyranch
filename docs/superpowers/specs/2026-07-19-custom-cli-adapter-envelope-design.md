@@ -528,6 +528,41 @@ only wired into `GenericCliExecutor.run` (`:920`).
 
 ---
 
+## Direct-connect upgrade and reconnect lifecycle (#701)
+
+For an existing connected custom CLI, mint a fresh founder connect token and
+rerun Connect for the same profile. Minting that fresh token and reconnecting
+is the founder's approval of the upgraded artifacts. Until reconnect succeeds,
+the normal launch hash checks continue refusing changed wrappers or children.
+Retry validates a failed receipt's exact persisted snapshot; it does not approve
+new artifact bytes on its own.
+
+After conformance succeeds, projection and retry use one shared binding helper.
+Under the existing profile lease and adapter-store lock it replaces an existing
+entry when the wrapper `executable_hash`, the set of dependency
+`{executable, sha256}` pairs, or `dependency_manifest_version` differs. Dependency
+ordering alone does not replace the entry. Probe failure leaves the prior setup
+untouched; binding failure restores the prior adapter entry and both durable
+and in-memory profile binding.
+
+An actual replacement that binds successfully adds exactly one
+`executor_adapter_updated` row in `daemon_home()/runtime-audit.db`, scoped to
+`task_id="executor:<profile_name>"`, `agent="founder"`. Its payload contains
+`adapter_id`, `operation_id`, `before_wrapper_sha256`, `after_wrapper_sha256`,
+`before_dependencies` and `after_dependencies` (lists of `{executable, sha256}`),
+and `via` (`direct_connect` or `direct_connect_retry`). It contains no tokens,
+probe output or paths beyond the manifest's executable paths. First connect,
+unchanged-identity reconnect and committed-operation replay add no update row.
+
+Ordering follows the existing binding implementation: write the durable profile,
+replace its in-memory registry entry, then insert the existing
+`executor_registered` row and the additive update row in the same audit
+transaction and commit. The existing registration row shape is unchanged.
+Audit failure uses the existing compensating profile rollback, followed by
+adapter restoration in the shared helper. The direct-connect terminal receipt
+is recorded afterward; no new cross-store transaction or recovery mechanism is
+introduced.
+
 ## 6. Session Continuity
 
 ### 6.1 Mechanism
