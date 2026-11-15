@@ -4605,9 +4605,17 @@ through prompt construction. `build_memory_digest` remains a string/None
 wrapper. Selection/rendering occurs once; only appended item blocks contribute
 exposure. Fit directives are full bodies, fallback directives are pointers;
 body/title/header/nudge mentions and nonrendered candidates are not item IDs.
-Ranking, character budget, ordering and nudge placement stay unchanged;
-intro/nudge copy carries the task-start cue above. Actual shown sets can differ
-when wording length changes; exposure comes from this render, not rank alone.
+THR-366 change set A ranks each rendering group by search term score against
+its task brief, then newest `updated_at`, then title/ID. The shared search
+tokenizer/term weights apply after digest-only `_DIGEST_STOP_WORDS` filtering;
+zero-match entries fill remaining space by recency. Salience and lineage boosts
+no longer rank the digest. The existing directive-first full-body lane, pointer
+fallback, character budget (default 1,500; configured 0 disables) and nudge
+placement remain. Lines keep provenance and omit the salience label; stored
+salience and `_index.md` rendering stay unchanged. Actual shown sets can differ
+with ranking and copy length; exposure comes from this render, not rank alone.
+Impression keys/types and `digest_ids` ordering semantics (full bodies then
+pointers, each in actual render order) remain unchanged.
 
 Only appended items with string IDs satisfying the existing `ID_RE.fullmatch` contribute identity metadata. Null, missing, nonstring or malformed IDs remain rendered byte-for-byte under the existing permissive parser, but contribute no identity or ID fragments from their representation, title or body. A malformed-only digest still launches normally and emits no impression; valid neighbors retain exact modes/counts. Strict writer validation still rejects malformed caller-supplied metadata before insertion.
 

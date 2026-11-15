@@ -16,6 +16,8 @@ LINKS = {'Versions/Current': 'B', **{
         'Sparkle', 'Resources', 'Headers', 'PrivateHeaders', 'Modules', 'Autoupdate', 'Updater.app')
 }}
 FEED = 'https://app.happyranch.ai/mac/appcast.xml'
+# Existing verify-release.sh / per-build signing-pin grammar, unchanged.
+VERSION_PATTERN = r'(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)'
 
 
 def public_key(value: str) -> str:
