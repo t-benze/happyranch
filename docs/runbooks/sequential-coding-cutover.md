@@ -335,3 +335,17 @@ commands/exits and NOT RUN evidence. Real loaded cutover, operator installation/
 reopen/backout, native/genuine V3/V5/M4 and access/merge acceptance remain NOT RUN
 by this source unit. V3 ends 2026-11-23T08:48:38Z; nothing here extends it or
 authorizes live changes. Independent review/QA/guarded merge remain source gates.
+
+## I1a sequential storage prerequisite
+
+The offline sequential storage installer now requires native full integrity on
+the coherent source, RO/query-only backup, writer-source snapshot and writable
+target, all before COMMIT, sharing one cumulative 640M integrity ledger and the
+original 900s operation deadline. No ownership/inventory allowance is widened.
+Sanitized refusal is `install_integrity_failed` with its stage, or
+`install_integrity_unavailable` with its stage/cause. Only independently proved
+pre-COMMIT preservation is `not_installed`; rollback/close/equality uncertainty
+is `unknown`. No post-COMMIT physical veto or restore is added. This changes no
+Coding setup/admission authority. Inline load checks remain until I2, and the
+daily report belongs to I1b. See the
+[I1a contract](../superpowers/specs/2026-11-14-automatic-workflow-setup.md).

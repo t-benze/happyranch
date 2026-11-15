@@ -21,8 +21,12 @@ from scripts.migrate_workflow_submission_schema import (  # noqa: E402
     _lifecycle_snapshot, resolve_org_database,
 )
 from runtime.infrastructure.workflow_schema import (  # noqa: E402
-    _coding_org_identity, SequentialCommitUncertain, SequentialInstallAllowance, inspect_sequential_install,
+    _coding_org_identity, SequentialInstallUncertain,
+    SequentialInstallAllowance, inspect_sequential_install,
     install_sequential_schema, sequential_storage_inventory,
+)
+from runtime.infrastructure.workflow_integrity import (  # noqa: E402
+    InstallIntegrityError, IntegrityLedger, require_install_integrity,
 )
 
 _OPERATION_SECONDS = 900.0
@@ -56,7 +60,8 @@ def _checkpoint_observation(path: Path) -> tuple:
     return tuple(observed)
 
 
-def _readonly_inventory(path: Path, org: str, allowance: SequentialInstallAllowance) -> tuple:
+def _readonly_inventory(path: Path, org: str, allowance: SequentialInstallAllowance,
+                        integrity: IntegrityLedger, stage: str) -> tuple:
     allowance.check()
     before = _checkpoint_observation(path)
     conn = sqlite3.connect(path.as_uri() + '?mode=ro&immutable=1', uri=True, timeout=1.0)
@@ -65,17 +70,24 @@ def _readonly_inventory(path: Path, org: str, allowance: SequentialInstallAllowa
         conn.execute('PRAGMA query_only=ON')
         conn.execute('PRAGMA foreign_keys=ON')
         conn.execute('BEGIN')
+        require_install_integrity(conn, integrity, stage)
         layout = inspect_sequential_install(conn, expected_org_slug=org, allowance=allowance)
         inventory = sequential_storage_inventory(conn, allowance=allowance)
         if _checkpoint_observation(path) != before:
             raise ValueError('workflow_seq_readonly_source_changed')
         return layout, inventory, before
     finally:
-        conn.close()
+        prior = sys.exception()
+        try:
+            conn.close()
+        except BaseException:
+            reason = str(prior) + '; ' if isinstance(prior, InstallIntegrityError) else ''
+            raise SequentialInstallUncertain(reason + 'workflow_seq_readonly_close_failed') from None
 
 
 def _backup_observation(backup: Path, source: Path, digest: str, org: str,
-                        source_inventory: tuple, allowance: SequentialInstallAllowance) -> tuple:
+                        source_inventory: tuple, allowance: SequentialInstallAllowance,
+                        integrity: IntegrityLedger) -> tuple:
     allowance.check()
     before = _file_observation(backup)
     if before[1:3] == _file_observation(source)[1:3]:
@@ -97,10 +109,32 @@ def _backup_observation(backup: Path, source: Path, digest: str, org: str,
                 raise ValueError('workflow_seq_backup_bytes_exhausted')
             checksum.update(chunk)
     actual = checksum.hexdigest()
-    _, inventory, observation = _readonly_inventory(backup, org, allowance)
+    _, inventory, observation = _readonly_inventory(backup, org, allowance, integrity, 'backup')
     if actual != digest or observation[0] != before or inventory != source_inventory:
         raise ValueError('workflow_seq_backup_inventory_or_digest_mismatch')
     return observation
+
+
+def _prove_original_inventory(path: Path, original: tuple, inventory: tuple,
+                              allowance: SequentialInstallAllowance) -> None:
+    """Independent RO reopen after owned rollback AND writer close.
+
+    A failed physical observation cannot certify health. This proves only exact
+    original SQL/typed-cell/rowid equality, without repeating a physical check.
+    """
+    allowance.check()
+    before = _checkpoint_observation(path)
+    if before[0][:4] != original[0][:4]:
+        raise ValueError('workflow_seq_original_identity_unproved')
+    conn = sqlite3.connect(path.as_uri() + '?mode=ro&immutable=1', uri=True, timeout=1.0)
+    try:
+        conn.execute('PRAGMA query_only=ON')
+        conn.execute('BEGIN')
+        if (sequential_storage_inventory(conn, allowance=allowance) != inventory
+                or _checkpoint_observation(path) != before):
+            raise ValueError('workflow_seq_original_inventory_unproved')
+    finally:
+        conn.close()
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -120,9 +154,10 @@ def main(argv: list[str] | None = None) -> int:
     outcome = None
     result = 1
     allowance = SequentialInstallAllowance(deadline=time.monotonic() + _OPERATION_SECONDS)
+    integrity = IntegrityLedger(deadline=allowance.deadline)
     try:
         path = resolve_org_database(args.runtime_root, args.org)
-        layout, inventory, original = _readonly_inventory(path, args.org, allowance)
+        layout, inventory, original = _readonly_inventory(path, args.org, allowance, integrity, 'source')
         if (resolve_org_database(args.runtime_root, args.org) != path
                 or _checkpoint_observation(path) != original):
             raise ValueError('workflow_seq_source_identity_changed')
@@ -141,7 +176,7 @@ def main(argv: list[str] | None = None) -> int:
             if (any(item[1] is not None for item in offline if item[0] in ('daemon.pid', 'daemon.port'))
                     or not any(item[0] == 'runtimes.yaml' and item[1] is not None for item in offline)):
                 raise ValueError('workflow_seq_documented_daemon_stop_unproven')
-            backup = _backup_observation(args.backup, path, args.backup_sha256, args.org, inventory, allowance)
+            backup = _backup_observation(args.backup, path, args.backup_sha256, args.org, inventory, allowance, integrity)
             if _checkpoint_observation(path) != original:
                 raise ValueError('workflow_seq_source_identity_changed')
             identity = original[0][:4]
@@ -161,12 +196,25 @@ def main(argv: list[str] | None = None) -> int:
             installed = install_sequential_schema(
                 conn, expected_org_slug=args.org, expected_path=str(path),
                 source_identity=identity, source_inventory=inventory, offline_check=offline_check,
-                allowance=allowance)
+                allowance=allowance, integrity=integrity)
             outcome = f'{installed}: org {args.org}; compatible reader required, engine unavailable'
             result = 0
-    except SequentialCommitUncertain as exc:
-        print(f'uncertain: {exc}; preserve original evidence; reconcile before any explicit retry', file=sys.stderr)
+    except SequentialInstallUncertain as exc:
+        print(f'uncertain: unknown; {exc}; preserve original evidence; reconcile before any explicit retry', file=sys.stderr)
         result = 4
+    except InstallIntegrityError as exc:
+        # The primitive owns rollback. A returned rollback alone is insufficient:
+        # close that exact writer and prove equality on an independent RO reopen.
+        result = 1
+        if conn is not None:
+            try:
+                conn.close()
+                conn = None
+                _prove_original_inventory(path, original, inventory, allowance)
+            except BaseException:
+                result = 4
+        disposition = 'not_installed' if result == 1 else 'unknown'
+        print(f'refused: {disposition}; {exc}', file=sys.stderr)
     except Exception as exc:
         print(f'refused: {exc}; reconcile original org/source/host owner before explicit retry', file=sys.stderr)
         result = 1
@@ -174,8 +222,8 @@ def main(argv: list[str] | None = None) -> int:
         if conn is not None:
             try:
                 conn.close()
-            except Exception as exc:
-                print(f'uncertain: workflow_seq_connection_close_failed: {exc}; '
+            except BaseException:
+                print('uncertain: unknown; workflow_seq_connection_close_failed; '
                       f'prior_outcome={outcome!r}', file=sys.stderr)
                 result = 4
     # Success publication follows observed COMMIT and close, never a delivery flag.

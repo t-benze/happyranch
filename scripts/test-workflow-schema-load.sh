@@ -16,6 +16,9 @@ import tempfile
 import time
 from types import SimpleNamespace
 from unittest.mock import patch
+from contextlib import redirect_stdout, redirect_stderr
+import hashlib
+import io
 
 from runtime.infrastructure.database import Database
 from runtime.infrastructure.workflow_schema import install_or_recover, validate_workflow_schema, migrate_draft_schema
@@ -41,7 +44,237 @@ from runtime.identities import registry as names
 from runtime.orchestrator import producer_move
 from runtime.orchestrator.agent_def import AgentDef, render_agent_text
 
-assert sys.argv[1:] in ([], ['--bounded-acquisition'], ['--trace-custody'], ['--sequential-reuse'], ['--sequential-load'], ['--sequential-faults'], ['--sequential-sql-exhaustion'], ['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--coding-authority-corruption'], ['--document-native-corruption'], ['--author-handoff-corruption'], ['--document-revision-corruption'], ['--coding-history-corruption'], ['--physical-corruption'], ['--sequential-uncommitted']), 'unknown schema-load selection'
+assert sys.argv[1:] in ([], ['--install-integrity'], ['--bounded-acquisition'], ['--trace-custody'], ['--sequential-reuse'], ['--sequential-load'], ['--sequential-faults'], ['--sequential-sql-exhaustion'], ['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--coding-authority-corruption'], ['--document-native-corruption'], ['--author-handoff-corruption'], ['--document-revision-corruption'], ['--coding-history-corruption'], ['--physical-corruption'], ['--sequential-uncommitted']), 'unknown schema-load selection'
+
+# I1a extends this existing disposable venue, with no new execution lane.
+if sys.argv[1:] in ([], ['--install-integrity']):
+    from scripts import install_workflow_sequential_schema as installer
+    from runtime.infrastructure import workflow_schema as schema
+    from runtime.infrastructure import workflow_integrity as physical
+
+    @contextmanager
+    def install_integrity_fixture():
+        with tempfile.TemporaryDirectory(prefix='workflow-install-integrity-') as scratch:
+            root = Path(scratch)
+            runtime = root / 'runtime'
+            org = runtime / 'orgs/scratch'
+            (org / 'org').mkdir(parents=True)
+            (runtime / 'happyranch.yaml').write_text('schema_version: 2\ntype: multi-org-runtime\n')
+            (org / 'org/teams.yaml').write_text('teams: {}\n')
+            home = root / 'daemon-home'
+            home.mkdir()
+            (home / 'runtimes.yaml').write_text(json.dumps({'active': str(runtime), 'registered': [str(runtime)]}))
+            path = org / 'happyranch.db'
+            db = Database(path)
+            try:
+                schema.initialize_complete_org_schema(db, expected_org_slug='scratch', layout='J')
+                install_pause_schema(db, org_slug='scratch')
+                install_task_ownership(db, org_slug='scratch')
+                db.insert_task(TaskRecord(id='TASK-integrity', brief='private preservation sentinel'))
+            finally:
+                db.close()
+            backup = root / 'verified-backup.db'
+            # Genuine SQLite backup, checkpointed and closed before the CLI.
+            with sqlite3.connect(path) as source, sqlite3.connect(backup) as target:
+                source.backup(target)
+            source.close()
+            target.close()
+            before = hashlib.sha256(path.read_bytes()).hexdigest()
+            backup_hash = hashlib.sha256(backup.read_bytes()).hexdigest()
+            def inventory():
+                with sqlite3.connect(path.as_uri() + '?mode=ro&immutable=1', uri=True) as conn:
+                    conn.execute('PRAGMA query_only=ON')
+                    conn.execute('BEGIN')
+                    result = schema.sequential_storage_inventory(conn)
+                conn.close()
+                return result
+            original = inventory()
+            with patch.dict(os.environ, {'HAPPYRANCH_DAEMON_HOME': str(home)}):
+                yield (path, inventory, original, before, backup, backup_hash,
+                       ['--runtime-root', str(runtime), '--org', 'scratch',
+                        '--confirm-cooperative-offline', '--backup', str(backup),
+                        '--backup-sha256', backup_hash])
+
+    with tempfile.TemporaryDirectory(prefix='workflow-bad-integrity-') as scratch:
+        bad_path = Path(scratch) / 'bad.db'
+        diagnostic = 'raw_private_diagnostic_never_emit'
+        bad = sqlite3.connect(bad_path)
+        # A genuine native non-ok result, never a successful validator stub.
+        bad.execute('CREATE TABLE probe(id INTEGER PRIMARY KEY,value TEXT)')
+        bad.execute('CREATE INDEX ' + diagnostic + ' ON probe(value)')
+        bad.execute("INSERT INTO probe VALUES(1,'original')")
+        entry = tuple(bad.execute('SELECT rowid,type,name,tbl_name,rootpage,sql FROM sqlite_schema '
+                                 'WHERE name=?', (diagnostic,)).fetchone())
+        cookie = bad.execute('PRAGMA schema_version').fetchone()[0]
+        bad.execute('PRAGMA writable_schema=ON')
+        bad.execute('DELETE FROM sqlite_schema WHERE rowid=?', (entry[0],))
+        bad.execute('PRAGMA schema_version=' + str(cookie+1))
+        bad.execute('PRAGMA writable_schema=RESET')
+        bad.execute("UPDATE probe SET value='unindexed change' WHERE id=1")
+        bad.execute('PRAGMA writable_schema=ON')
+        bad.execute('INSERT INTO sqlite_schema(rowid,type,name,tbl_name,rootpage,sql) VALUES(?,?,?,?,?,?)', entry)
+        bad.execute('PRAGMA schema_version=' + str(cookie+2))
+        bad.execute('PRAGMA writable_schema=RESET')
+        assert tuple(bad.execute('SELECT rowid,type,name,tbl_name,rootpage,sql FROM sqlite_schema '
+                                'WHERE name=?', (diagnostic,)).fetchone()) == entry
+        bad.commit()
+        bad.close()
+        bad = sqlite3.connect(bad_path.as_uri() + '?mode=ro', uri=True)
+        bad.execute('PRAGMA query_only=ON')
+        try:
+            assert physical.check_full_integrity(bad, physical.IntegrityLedger(time.monotonic()+10)).outcome == 'failed'
+            stages = ('source', 'backup', 'writer_source', 'target')
+            # Every failure is reached at its own gate; preceding checks remain
+            # genuine. The selected gate checks the known-bad private snapshot.
+            for failed_stage, uncertainty in [(s, None) for s in stages] + [
+                    ('target', 'rollback'), ('target', 'equality'),
+                    ('target', 'sql_budget'), ('target', 'deadline'), (None, None)]:
+                with install_integrity_fixture() as fixture:
+                    path, inventory, original, before, backup, backup_hash, argv = fixture
+                    seen, statements = [], []
+                    native_connect = sqlite3.connect
+                    def connect(*args, **kwargs):
+                        conn = native_connect(*args, **kwargs)
+                        if conn.execute('PRAGMA database_list').fetchone()[2] == str(path):
+                            conn.set_trace_callback(statements.append)
+                        return conn
+                    def gate(conn, ledger, stage):
+                        assert type(conn) is sqlite3.Connection
+                        assert conn.in_transaction, stage + ' outside snapshot'
+                        assert conn.execute('PRAGMA query_only').fetchone()[0] == (stage in ('source', 'backup'))
+                        if stage == 'backup':
+                            assert Path(conn.execute('PRAGMA database_list').fetchone()[2]) == backup
+                        if stage == 'target':
+                            assert conn.execute('SELECT version FROM workflow_seq_schema_versions').fetchone()[0] == 1
+                        start = ledger.consumed
+                        if stage == failed_stage and uncertainty == 'rollback':
+                            conn.set_authorizer(lambda op, one, two, db, trigger:
+                                sqlite3.SQLITE_DENY if op == sqlite3.SQLITE_TRANSACTION and one == 'ROLLBACK'
+                                else sqlite3.SQLITE_OK)
+                        if stage == failed_stage and uncertainty == 'sql_budget':
+                            ledger.sql_limit = ledger.consumed
+                        if stage == failed_stage and uncertainty == 'deadline':
+                            ledger.deadline = time.monotonic()-1
+                        try:
+                            physical.require_install_integrity(bad if stage == failed_stage else conn, ledger, stage)
+                        finally:
+                            seen.append((stage, id(ledger), start, ledger.consumed))
+                    stdout, stderr = io.StringIO(), io.StringIO()
+                    with ExitStack() as stack:
+                        stack.enter_context(patch.object(installer.sqlite3, 'connect', connect))
+                        stack.enter_context(patch.object(installer, 'require_install_integrity', gate))
+                        stack.enter_context(patch.object(schema, 'require_install_integrity', gate))
+                        if uncertainty == 'equality':
+                            stack.enter_context(patch.object(installer, '_prove_original_inventory',
+                                side_effect=OSError(diagnostic)))
+                        stack.enter_context(redirect_stdout(stdout))
+                        stack.enter_context(redirect_stderr(stderr))
+                        result = installer.main(argv)
+                    output = stdout.getvalue() + stderr.getvalue()
+                    unknown = uncertainty in ('rollback', 'equality')
+                    expected_result = (4 if unknown else 1) if failed_stage else 0
+                    assert result == expected_result, (failed_stage, uncertainty, result, output)
+                    expected = list(stages[:stages.index(failed_stage)+1]) if failed_stage else list(stages)
+                    assert [s[0] for s in seen] == expected, (failed_stage, output, seen)
+                    assert len({s[1] for s in seen}) == 1 and all(s[3] >= s[2] for s in seen)
+                    assert all(s[3] > s[2] for s in seen if s[0] != failed_stage or uncertainty not in ('sql_budget', 'deadline'))
+                    assert all(right[2] == left[3] for left, right in zip(seen, seen[1:])), 'integrity ledger replenished'
+                    assert diagnostic not in output and 'CHECK constraint failed' not in output, 'raw diagnostic leaked'
+                    assert not any('INSERT INTO audit_log' in sql for sql in statements), 'integrity diagnostic written to audit'
+                    if failed_stage:
+                        category = 'install_integrity_unavailable' if uncertainty in ('sql_budget', 'deadline') else 'install_integrity_failed'
+                        assert category + ' stage=' + failed_stage in output, output
+                        if category == 'install_integrity_unavailable':
+                            assert 'cause=' + uncertainty in output, output
+                        assert ('unknown' if unknown else 'not_installed') in output
+                        assert inventory() == original, failed_stage + ' changed original inventory'
+                        assert hashlib.sha256(path.read_bytes()).hexdigest() == before, failed_stage + ' changed original hash'
+                        assert 'COMMIT' not in statements, failed_stage + ' attempted COMMIT'
+                        writes = [sql for sql in statements if sql.startswith(('INSERT ', 'UPDATE ', 'DELETE ', 'CREATE ', 'DROP '))]
+                        if failed_stage != 'target':
+                            assert not writes, failed_stage + ' performed install DML/DDL'
+                        else:
+                            assert any('INSERT INTO workflow_seq_schema_versions' in sql for sql in writes)
+                            if uncertainty != 'rollback':
+                                assert 'ROLLBACK' in statements, 'target failure lacked owned rollback'
+                        print('PASS I1a gate:', failed_stage, uncertainty or 'not_installed', 'original inventory/hash equal')
+                    else:
+                        assert result == 0 and stdout.getvalue().startswith('installed:'), output
+                        assert installer.main(argv[:4] + ['--check']) == 0, 'clean install did not reopen'
+                        print('PASS I1a clean install: four gates, one cumulative ledger, actual commit/reopen')
+                    assert hashlib.sha256(backup.read_bytes()).hexdigest() == backup_hash, 'backup changed'
+        finally:
+            bad.close()
+
+    # Deliberately malformed or interrupted native-result delivery, not healthy
+    # validation stubs. Even an ok prefix cannot certify normal cursor EOF.
+    class ResultCursor:
+        def __init__(self, rows):
+            self.rows = iter(rows)
+        def execute(self, sql):
+            assert sql == 'PRAGMA integrity_check'
+        def fetchone(self):
+            row = next(self.rows, None)
+            if isinstance(row, BaseException):
+                raise row
+            return row
+        def close(self):
+            pass
+    class ResultConnection:
+        def __init__(self, rows):
+            self.rows = rows
+            self.handler = None
+        def cursor(self):
+            return ResultCursor(self.rows)
+        def set_progress_handler(self, handler, steps):
+            self.handler = handler
+    for label, rows in (
+            ('empty', []), ('malformed', [('ok', 'extra')]), ('wrong type', [(b'ok',)]),
+            ('extra row', [('ok',), ('ok',)]),
+            ('interrupted EOF', [('ok',), sqlite3.OperationalError('raw_private_interrupt')]),
+            ('interrupted execute', [KeyboardInterrupt('raw_private_interrupt')])):
+        conn = ResultConnection(rows)
+        result = physical.check_full_integrity(conn, physical.IntegrityLedger(time.monotonic()+10))
+        assert result == physical.IntegrityResult('unavailable', 'invalid_result'), (label, result)
+        assert conn.handler is None, label + ' leaked progress handler'
+        print('PASS I1a unavailable:', label)
+    for code, expected in ((sqlite3.SQLITE_BUSY, 'busy'), (sqlite3.SQLITE_IOERR, 'io')):
+        error = sqlite3.OperationalError('raw_private_native_error')
+        error.sqlite_errorcode = code
+        result = physical.check_full_integrity(ResultConnection([error]), physical.IntegrityLedger(time.monotonic()+10))
+        assert result == physical.IntegrityResult('unavailable', expected)
+        print('PASS I1a unavailable:', expected)
+
+    with tempfile.TemporaryDirectory(prefix='workflow-integrity-ledger-') as scratch:
+        path = Path(scratch) / 'clean.db'
+        conn = sqlite3.connect(path)
+        conn.execute('CREATE TABLE sentinel(value)')
+        conn.executemany('INSERT INTO sentinel VALUES(?)', ((i,) for i in range(2000)))
+        conn.commit()
+        conn.close()
+        conn = sqlite3.connect(path.as_uri()+'?mode=ro', uri=True)
+        conn.execute('PRAGMA query_only=ON')
+        try:
+            measured = physical.IntegrityLedger(time.monotonic()+10)
+            assert physical.check_full_integrity(conn, measured).outcome == 'ok'
+            ledger = physical.IntegrityLedger(time.monotonic()+10, sql_limit=measured.consumed*2)
+            assert physical.check_full_integrity(conn, ledger).outcome == 'ok'
+            first_cost = ledger.consumed
+            assert physical.check_full_integrity(conn, ledger) == physical.IntegrityResult('unavailable', 'sql_budget')
+            assert first_cost < ledger.consumed <= ledger.sql_limit
+            assert physical.check_full_integrity(conn, ledger).outcome == 'unavailable'
+            print('PASS I1a cumulative budget: second full check exhausts shared ledger, no replenishment')
+            assert physical.check_full_integrity(conn, physical.IntegrityLedger(time.monotonic()-1)) == physical.IntegrityResult('unavailable', 'deadline')
+            ledger = physical.IntegrityLedger(1.0)
+            with patch.object(physical.time, 'monotonic', side_effect=lambda: 0.0 if ledger.consumed < 2000 else 2.0):
+                assert physical.check_full_integrity(conn, ledger) == physical.IntegrityResult('unavailable', 'deadline')
+            assert conn.total_changes == 0 and conn.execute('PRAGMA query_only').fetchone()[0] == 1
+            assert conn.execute('SELECT count(*) FROM sentinel').fetchone()[0] == 2000
+            print('PASS I1a deadline: before/during native full check, RO/query_only zero changes')
+        finally:
+            conn.close()
+    if sys.argv[1:]:
+        raise SystemExit(0)
 
 # A0b-2 custody extends this existing real-SQLite venue. No native connection
 # subclass, fake epoch, successful validator stub or production test seam.
