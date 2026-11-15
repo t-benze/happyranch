@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"tailscale.com/logtail"
@@ -28,6 +30,9 @@ func (e *TSNetEngine) Start(ctx context.Context, c EngineConfig, credential []by
 		}
 	}
 	e.server = newTSNetServer(c, credential)
+	if err := clearTSNetLogSpool(c.StateDir); err != nil {
+		return RedemptionReceipt{}, err
+	}
 	if err := e.server.Start(); err != nil {
 		return RedemptionReceipt{}, ErrEngine
 	}
@@ -59,6 +64,30 @@ func newTSNetServer(c EngineConfig, credential []byte) *tsnet.Server {
 		AuthKey: string(credential), Ephemeral: false,
 		Logf: func(string, ...any) {}, UserLogf: func(string, ...any) {},
 	}
+}
+
+func clearTSNetLogSpool(stateDir string) error {
+	// Disable blocks new writes, but pinned logtail still uploads old filch
+	// records. Remove only these disposable buffers before tsnet can open them.
+	for _, name := range []string{"tailscaled.log1.txt", "tailscaled.log2.txt"} {
+		path := filepath.Join(stateDir, name)
+		info, err := os.Lstat(path)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("%w: inspect log spool %s: %w", ErrEngine, name, err)
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("%w: log spool %s must be a regular file (symlinks forbidden)", ErrEngine, name)
+		}
+		// Unlink never follows a replaced symlink or removes a directory, and
+		// leaves other hard links' contents (including identity state) intact.
+		if err := syscall.Unlink(path); err != nil {
+			return fmt.Errorf("%w: remove log spool %s: %w", ErrEngine, name, err)
+		}
+	}
+	return nil
 }
 
 func (e *TSNetEngine) Listen(addr string) (net.Listener, error) {
