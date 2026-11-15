@@ -1,5 +1,20 @@
 # Sequential workflow storage — operator draft
 
+I1a adds mandatory explicit full physical checks at the coherent source,
+RO/query-only verified backup, writer source after `BEGIN IMMEDIATE`, and actual
+writable target before any COMMIT attempt. One cumulative integrity ledger
+(at most 640M VM steps, original 900s offline ceiling) covers all four; it grants
+no ownership/inventory allowance. Failures use sanitized
+`install_integrity_failed stage=source|backup|writer_source|target` or
+`install_integrity_unavailable stage=... cause=sql_budget|deadline|busy|io|invalid_result`.
+After writer acquisition, `not_installed` requires owned rollback, writer close
+and independent RO original-inventory equality; uncertain proof is `unknown`
+(exit 4). There is no new post-COMMIT physical veto or automatic restore.
+The existing offline backup remains operator-created and untouched; A4 owns
+automatic bootstrap/phase publication. Inline load checks remain until I2;
+the daily read-only report is I1b. See the
+[I1a contract](../superpowers/specs/2026-11-14-automatic-workflow-setup.md).
+
 Database owns composed native trace registration through `observe_trace`; native
 connection type, constructor and independent authorizer/progress slots stay exact.
 The unpublished load now borrows complete sequential validation only in audited

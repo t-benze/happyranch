@@ -22,6 +22,10 @@ from datetime import datetime, timezone
 from functools import lru_cache
 from typing import TYPE_CHECKING, Literal
 
+from runtime.infrastructure.workflow_integrity import (
+    InstallIntegrityError, IntegrityLedger, require_install_integrity,
+)
+
 if TYPE_CHECKING:
     from runtime.infrastructure.database import Database
     from runtime.infrastructure.workflow_coding_schema import _CodingInventory
@@ -2499,8 +2503,16 @@ def migrate_coding_schema(conn: sqlite3.Connection, *, expected_org_slug: str,
         raise
 
 
-class SequentialCommitUncertain(RuntimeError):
+class SequentialInstallUncertain(RuntimeError):
+    """Original install effects or connection closure could not be proved."""
+
+
+class SequentialCommitUncertain(SequentialInstallUncertain):
     """COMMIT was attempted; preserve its cause and reconcile before retry."""
+
+
+class SequentialRollbackUncertain(SequentialInstallUncertain):
+    """Original pre-COMMIT rollback could not be proved."""
 
 
 @dataclass(frozen=True)
@@ -2666,11 +2678,14 @@ def inspect_sequential_install(conn: sqlite3.Connection, *, expected_org_slug: s
 def install_sequential_schema(conn: sqlite3.Connection, *, expected_org_slug: str,
                               expected_path: str, source_identity: tuple,
                               source_inventory: tuple, offline_check: Callable[[], None],
-                              allowance: SequentialInstallAllowance | None = None) -> str:
+                              allowance: SequentialInstallAllowance | None = None,
+                              integrity: IntegrityLedger | None = None) -> str:
     """One explicit owning writer; no startup, adoption, backfill or live caller.
 
     The original RO inventory/identity remain authoritative across RW reopen.
     A failed COMMIT is uncertain even if SQLite subsequently permits rollback.
+    Physical checks share the caller's operation ledger; an omitted ledger
+    creates only a physical allowance, never an ownership/inventory extension.
     """
 
     from runtime.infrastructure.workflow_sequential_schema import CANONICAL_WORKFLOW_SEQUENTIAL_DDL, SEQUENTIAL_TABLES
@@ -2683,6 +2698,11 @@ def install_sequential_schema(conn: sqlite3.Connection, *, expected_org_slug: st
             or conn.execute('PRAGMA defer_foreign_keys').fetchone()[0] != 0):
         raise ValueError('workflow_seq_install_requires_idle_native_foreign_keys')
     committing = False
+    operation_deadline = time.monotonic() + 900.0 if allowance is None else allowance.deadline
+    if integrity is None:
+        integrity = IntegrityLedger(deadline=operation_deadline)
+    else:
+        integrity.deadline = min(integrity.deadline, operation_deadline)
     try:
         if allowance is not None:
             allowance.check()
@@ -2694,6 +2714,7 @@ def install_sequential_schema(conn: sqlite3.Connection, *, expected_org_slug: st
         if _coding_org_identity(conn, expected_org_slug=expected_org_slug,
                                 expected_path=expected_path) != source_identity:
             raise ValueError('workflow_seq_install_source_identity_changed')
+        require_install_integrity(conn, integrity, 'writer_source')
         layout = inspect_sequential_install(conn, expected_org_slug=expected_org_slug, allowance=allowance)
         if sequential_storage_inventory(conn, allowance=allowance) != source_inventory:
             raise ValueError('workflow_seq_install_source_inventory_changed')
@@ -2740,6 +2761,7 @@ def install_sequential_schema(conn: sqlite3.Connection, *, expected_org_slug: st
                 or conn.execute('PRAGMA defer_foreign_keys').fetchone()[0] != 0
                 or conn.execute('PRAGMA foreign_key_check').fetchone() is not None):
             raise ValueError('workflow_seq_install_foreign_key_mismatch')
+        require_install_integrity(conn, integrity, 'target')
         offline_check()
         if allowance is not None:
             allowance.check()
@@ -2759,5 +2781,8 @@ def install_sequential_schema(conn: sqlite3.Connection, *, expected_org_slug: st
             raise SequentialCommitUncertain(
                 f'workflow_seq_commit_uncertain: {exc}; rollback_error={rollback_error!r}') from exc
         if rollback_error is not None:
+            if isinstance(exc, InstallIntegrityError):
+                raise SequentialRollbackUncertain(
+                    str(exc) + '; workflow_seq_rollback_failed') from None
             raise RuntimeError(f'{exc}; workflow_seq_rollback_failed: {rollback_error}') from exc
         raise

@@ -3235,3 +3235,23 @@ team change at the lease boundary. This is not pytest, retired
 units, general integration or Product E2E. Real daemon/CLI/UI acceptance remains
 a separate independent QA gate. Web `openapi-coverage.test.ts` was retired under
 THR-343; preserve the OpenAPI snapshot and TS client mirror, with Web static CI.
+
+## I1a install integrity cases
+
+`WORKFLOW_SCHEMA_PYTHON=3.12 bash scripts/test-workflow-schema-load.sh --install-integrity`
+and the same command with 3.14 select the existing venue's four pre-COMMIT
+install gates. Genuine corrupt-index results refuse at source, backup,
+writer-source and target with original inventory/hash equality, no pre-write
+install DML or proved rollback, and no COMMIT. Cases also observe uncertain
+rollback/equality, malformed/interrupted results, busy/I/O, cumulative budget and
+deadline exhaustion, sanitized output/audit, and clean install/reopen. The
+read-only helper makes zero changes. No success validator stub or production
+test seam is added. Gate-removal proof requires exit1, byte-exact restoration
+and exit0 on both runtimes in scratch.
+
+Run the full existing `WORKFLOW_SCHEMA_PYTHON=3.12 bash scripts/test-workflow-schema-load.sh`,
+the same with 3.14, and `scripts/local_ci.sh all` as one own-task persistent job
+at the final clean head; authenticate actual terminal `jobs show`/`jobs output`
+before claiming a pass. This adds no CI lane, required check or Product E2E run.
+Inline load checks remain until I2; the daily report is I1b. See the
+[I1a contract](superpowers/specs/2026-11-14-automatic-workflow-setup.md).

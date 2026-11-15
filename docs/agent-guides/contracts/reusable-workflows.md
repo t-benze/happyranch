@@ -1934,3 +1934,16 @@ Only positive subject COMMIT releases editing; failed COMMIT releases nothing.
 U7c1 GET `repository-preflight` remains a read of the already-bound subject.
 No selected-context, observer, schema, credential, permission generation,
 network/effect, historical evidence or live deployment change follows.
+
+## I1a offline installation integrity
+
+The explicit sequential installer checks full native integrity on source,
+RO/query-only backup, writer source and actual writable target before any
+COMMIT. One cumulative integrity ledger is capped at 640M VM steps over the
+original offline 900s operation, separate from all logical/ownership/inventory
+budgets. Non-ok and unavailable results refuse with sanitized stage/cause;
+owned rollback, close and independent original-inventory equality are required
+for `not_installed`, otherwise disposition is `unknown`. There is no new
+post-COMMIT physical veto or restore. Inline load checks remain unchanged until
+I2; the daily advisory report is I1b, and automatic bootstrap is A4. See the
+[I1a contract](../../superpowers/specs/2026-11-14-automatic-workflow-setup.md).
