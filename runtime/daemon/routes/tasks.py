@@ -1956,12 +1956,6 @@ async def resolve_escalation_in_process(
                             thread_invocation_id=thread_invocation.id if thread_invocation is not None else None,
                             uncommitted=True,
                         )
-                        # Best-effort: consume any open notification rows not already
-                        # consumed by _supersede_predecessor_locked inside the helper.
-                        for nrow in org.db.list_open_notifications_for_task(task_id):
-                            org.db.consume_escalation_notification(
-                                nrow["feishu_message_id"], consumed_by="superseded", uncommitted=True,
-                            )
             try:
                 _enqueue_pending_thread_successor(org, state, successor_id)
             finally:
@@ -1995,12 +1989,6 @@ async def resolve_escalation_in_process(
                     task_id=task_id, decision=decision, rationale=rationale,
                     actor=actor, thread_id=thread_id, resolution_path=resolution_path,
                 )
-                # Best-effort: mark any open notification rows for this task
-                # consumed, so they don't dangle.
-                for nrow in org.db.list_open_notifications_for_task(task_id):
-                    org.db.consume_escalation_notification(
-                        nrow["feishu_message_id"], consumed_by="cli-fallback",
-                    )
         # Re-enqueue self. The manager's next step sees the rationale via the
         # escalation-resolved prompt header.
         if state.queue is not None:
@@ -2223,12 +2211,6 @@ def _supersede_predecessor_locked(
         founder_note=note_suffix,
         thread_id=thread_id, uncommitted=uncommitted,
     )
-    # An escalated/delegated predecessor may carry an open notification;
-    # the continuation resolves it, so consume any open rows.
-    for nrow in org.db.list_open_notifications_for_task(predecessor_id):
-        org.db.consume_escalation_notification(
-            nrow["feishu_message_id"], consumed_by="superseded", uncommitted=uncommitted,
-        )
 
 
 def _close_predecessor_family_and_run_tail(
@@ -2540,15 +2522,6 @@ async def revisit_from_notification(
                             root_transitions=root_transitions,
                         )
                         family_closed.append(family_task.id)
-                # When the founder revisits via CLI, any open failure notification row
-                # for this task is implicitly resolved — consume it with cli-fallback
-                # so it doesn't dangle. Mirrors resolve_escalation_in_process's behavior.
-                if actor == "cli":
-                    for nrow in org.db.list_open_notifications_for_task(task_id):
-                        if nrow.get("kind") == "failure":
-                            org.db.consume_escalation_notification(
-                                nrow["feishu_message_id"], consumed_by="cli-fallback",
-                            )
 
         enqueue_task(state, org.slug, new_id)
 
