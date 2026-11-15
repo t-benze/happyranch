@@ -127,10 +127,12 @@ export const realAgentsApi: AgentsApi = {
     return useMutation({
       mutationFn: (body: CreateAgentArgs): Promise<CreateAgentResult> =>
         agentsApi.createAgent(slug, body),
-      onSuccess: () => {
+      onSuccess: async () => {
+        await qc.cancelQueries({ queryKey: ['identities', slug] }, { revert: false });
         qc.invalidateQueries({ queryKey: ['agents', slug] });
         qc.invalidateQueries({ queryKey: ['agent-enrollments', slug] });
         qc.invalidateQueries({ queryKey: ['teams', slug] });
+        await qc.invalidateQueries({ queryKey: ['identities', slug] });
       },
     });
   },

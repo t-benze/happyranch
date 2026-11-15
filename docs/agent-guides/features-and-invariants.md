@@ -2357,6 +2357,23 @@ See [Web/CLI contracts](web-and-cli.md#retired-knowledge-read-api-s1) and the
 
 ## Per-Agent Learnings
 
+Workspace prompt bootstrap (THR-366 change set A) keeps the full
+`memory/_index.md` on disk. The shared renderer caps the entire Persistent Files
+and Your Memory block at `MEMORY_BOOTSTRAP_MAX_BYTES = 4096` UTF-8 bytes, including
+commands and newlines. Current non-evicted store metadata supplies topic counts
+and `provenance: directive` ID/title pointers. Complete directive lines (ID/slug
+order) take priority, followed by topic lines (name order); omitted rows get
+explicit `... N more directives/topics; run memory search` notices. Search,
+get, add, update and promote examples retain `--org` and `--agent` within the
+budget. Full bodies remain in memory get and the separate task digest. Flat
+legacy `learnings.md` is also referenced on disk instead of inlined.
+Bootstrap regenerates a present index as well as a missing one. Historical
+malformed IDs remain readable: prompt sorting uses string keys, and index
+ordering puts them after valid numeric IDs without rewriting entry files.
+Prompt files are still rewritten by management/bootstrap, not per spawn; launch's read-only
+instruction-pair/readiness checks remain. Stale counts can persist until rewrite,
+but experiential title growth cannot displace later prompt instructions.
+
 Task-start consultation (THR-091 seq633) is defined by
 `runtime/skills/bundled/start-task/SKILL.md` step 2: before the first substantive
 decision, select and read up to two memories pertinent to the actual task and
@@ -2371,9 +2388,9 @@ metadata rather than assuming identical shown sets.
 
 ### Memory telemetry guard (THR-091, TASK-7767)
 
-Task bootstrap retains text and item IDs from one actual `MemoryStore.render_memory_digest` pass; `build_memory_digest` remains a compatible string/None wrapper. Only appended full blocks or pointer lines contribute IDs. Directive fit is full-body exposure; budget fallback is pointer exposure. IDs merely mentioned in bodies, titles, header, or nudge are not item exposure. Scoring, ordering, salience, character budgets and nudge placement remain unchanged; the task-start cue above changes intro/nudge wording only. A header/nudge-only result has no items and emits no impression. Only appended items with string IDs satisfying the existing `ID_RE.fullmatch` contribute identity metadata. Null, missing, nonstring or malformed IDs remain rendered byte-for-byte under the existing permissive parser, but contribute no identity or ID fragments from their representation, title or body. A malformed-only digest still launches normally and emits no impression; valid neighbors retain exact modes/counts. Strict writer validation still rejects malformed caller-supplied metadata before insertion.
+Task bootstrap retains text and item IDs from one actual `MemoryStore.render_memory_digest` pass; `build_memory_digest` remains a compatible string/None wrapper. Only appended full blocks or pointer lines contribute IDs. Directive fit is full-body exposure; budget fallback is pointer exposure. IDs merely mentioned in bodies, titles, header, or nudge are not item exposure. Within each lane (in-scope directive full bodies first, then pointers including directive fallbacks), digest ranking uses tokenised term relevance with digest stop-words, then recency for ties and zero matches; equal timestamps use title and ID for deterministic order. Salience labels and salience/lineage boosts are removed from the digest. Character budgets and nudge placement remain unchanged; the task-start cue above changes intro/nudge wording only. A header/nudge-only result has no items and emits no impression. Only appended items with string IDs satisfying the existing `ID_RE.fullmatch` contribute identity metadata. Null, missing, nonstring or malformed IDs remain rendered byte-for-byte under the existing permissive parser, but contribute no identity or ID fragments from their representation, title or body. A malformed-only digest still launches normally and emits no impression; valid neighbors retain exact modes/counts. Strict writer validation still rejects malformed caller-supplied metadata before insertion.
 
-After trusted task/session binding and before launch/session_start, one existing `memory_digest_impression` stores accurate `digest_ids`/`digest_count` with exactly three new keys: `memory_telemetry_version=1`, `pointer_ids`, `full_body_ids`. Lists are unique and disjoint, with union equal to the digest IDs/count. If duplicate files render one ID in both forms, the observed full body owns that ID; no duplicate opportunity is recorded. No prompt, title, body, query or brief is logged. Optional metadata rejects inconsistent types/version/duplicates/overlap/union before insertion. Logger calls without metadata retain the byte-equivalent old unversioned payload; no history is inferred, upgraded or backfilled. Existing audit action and actual task row scope stay unchanged.
+The impression audit payload shape and full-body-then-pointer `digest_ids` order are unchanged by digest ranking. After trusted task/session binding and before launch/session_start, one existing `memory_digest_impression` stores accurate `digest_ids`/`digest_count` with exactly three new keys: `memory_telemetry_version=1`, `pointer_ids`, `full_body_ids`. Lists are unique and disjoint, with union equal to the digest IDs/count. If duplicate files render one ID in both forms, the observed full body owns that ID; no duplicate opportunity is recorded. No prompt, title, body, query or brief is logged. Optional metadata rejects inconsistent types/version/duplicates/overlap/union before insertion. Logger calls without metadata retain the byte-equivalent old unversioned payload; no history is inferred, upgraded or backfilled. Existing audit action and actual task row scope stay unchanged.
 
 The unchanged source resolver checks accurate digest IDs before validated search results, so a body-mentioned but nonrendered `MEM-999` can receive search attribution after an actual search, while the shown item stays digest-sourced. Read/search writers, SessionTracker validation, task/session identity and eligibility are unchanged. Recovery/unattributed rows gain no task eligibility from a version field. Exposure metadata alone leaves both report consumers fail-closed. G1's independent role/job/probe and current-serving census validation is described below; actual installed canary acceptance remains a separate operational gate. `session_start` records intended invocation, not a complete process-launch census. No canary is accepted, clean epoch started or collection enabled by this metadata.
 
