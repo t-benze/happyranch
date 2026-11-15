@@ -260,6 +260,23 @@ runpy.run_module('runtime.daemon',run_name='__main__')
             await owner.close()
             await repeat.close()
 
+            daily_case('runtime switch keeps equal slug/date attempts independent')
+            other_runtime = private / 'other-runtime'
+            other_alpha = other_runtime / 'orgs/alpha'
+            (other_alpha / 'org').mkdir(parents=True)
+            (other_alpha / 'org/teams.yaml').write_text('teams: {}\n')
+            other_db = Database(other_alpha / 'happyranch.db')
+            other_db.close()
+            switched = monitor.OrgIntegrityMonitor(state)
+            await switched.run_pass(due)
+            state.runtime = RuntimeDir(other_runtime)
+            try:
+                await switched.run_pass(due)
+                assert (home / 'workflow-integrity' / monitor.runtime_key(other_runtime) / 'alpha' / (due.date().isoformat()+'.json')).is_file(), 'new runtime inherited another runtime attempt'
+            finally:
+                state.runtime = RuntimeDir(rt)
+                await switched.close()
+
             daily_case('future 03:00 + outage/no startup catchup + stop/skip/exception/slow sweep independence')
             stop = home / 'disk-sweep'
             stop.mkdir()
@@ -280,6 +297,7 @@ runpy.run_module('runtime.daemon',run_name='__main__')
             async def sleep(delay):
                 sleeps.append(delay)
                 if len(sleeps) > 1:
+                    assert (base / 'alpha' / (wake_date.date().isoformat()+'.json')).is_file(), 'daily integrity report missing under sweep stop'
                     raise asyncio.CancelledError
                 assert not nightly.tasks and not (base / 'alpha' / (wake_date.date().isoformat()+'.json')).exists(), 'startup catch-up'
                 await sleeper(0)
@@ -326,7 +344,9 @@ runpy.run_module('runtime.daemon',run_name='__main__')
                         assert not pending
                         for task in done:
                             task.result()
-                    assert json.loads((base / 'alpha' / (wake_date.date().isoformat()+'.json')).read_text())['outcome'] == 'ok'
+                    report_path = base / 'alpha' / (wake_date.date().isoformat()+'.json')
+                    assert report_path.is_file(), 'independent report missing after ' + variant
+                    assert json.loads(report_path.read_text())['outcome'] == 'ok'
                     raise asyncio.CancelledError
                 async def unavailable_sweep(*args):
                     sweep_calls.append(variant)

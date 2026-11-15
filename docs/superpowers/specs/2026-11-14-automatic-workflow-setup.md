@@ -128,3 +128,6 @@ Independent review/QA and manager guarded merge remain. No daily result gates
 loads/tasks/workflows/admission. Inline integrity, complete FK/parts 2–7,
 L32M/A-B-C/logical caps/five-second readers remain until I2. A3 status visibility
 and A4 bootstrap are separate deliveries; no live install, restart or deploy.
+
+Attempt identity includes runtime key as well as slug/date, so an in-process
+runtime switch cannot consume another runtime's same-day attempt.

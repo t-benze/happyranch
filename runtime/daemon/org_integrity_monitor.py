@@ -307,7 +307,7 @@ class OrgIntegrityMonitor:
         self.state = state
         self.tasks: set[asyncio.Task] = set()
         self.in_flight: set[_Invocation] = set()
-        self.attempted: set[tuple[str, str]] = set()
+        self.attempted: set[tuple[str, str, str]] = set()
         self.closed = False
 
     def launch(self, due: datetime) -> None:
@@ -425,9 +425,9 @@ class OrgIntegrityMonitor:
             if not _SLUG.fullmatch(slug):
                 continue
             date = due.date().isoformat()
-            if (slug, date) in self.attempted:
+            if (key, slug, date) in self.attempted:
                 continue
-            self.attempted.add((slug, date))
+            self.attempted.add((key, slug, date))
             report = dict(format=FORMAT, runtime_key=key, org=slug,
                           scheduled_date=date, timezone=due.tzname(), timezone_offset=due.strftime('%z'),
                           started_at=_utc(), finished_at=None, elapsed_seconds=0.0,

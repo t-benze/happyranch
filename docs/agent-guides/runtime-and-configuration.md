@@ -4375,3 +4375,6 @@ for the durable audit/external report and reporting failure semantics. The resul
 is advisory and never modifies business admission. Inline load integrity,
 complete logical/FK validation, L32M, A/B/C2M and five-second readers remain until
 I2. No live install, daemon restart or repair is authorized by source delivery.
+
+Attempt identity includes runtime key as well as slug/date, so an in-process
+runtime switch cannot consume another runtime's same-day attempt.
