@@ -1,5 +1,18 @@
 # Local CI
 
+## Focused memory digest ranking and audit shape (THR-366 item 2)
+
+```sh
+python -B -m unittest scripts.test_memory_digest -v
+```
+
+These standalone checks drive the file-backed memory renderer/search and real
+SQLite audit writer with synthetic temporary data. They cover relevance before
+recency/salience/lineage, stop words, timestamp ties, directive ordering/fallback,
+unchanged search scoring, budgets/filters, read-only rendering and exact impression
+JSON keys/types/bytes/ID order. They stay outside the retired Python suite and
+required CI; no daemon, provider, integration or E2E run is involved.
+
 ## Focused missing thread callback coverage (#395 / #219)
 
 ```sh

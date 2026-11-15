@@ -726,13 +726,9 @@ class MemoryStore:
 
     # ── THR-032 Phase 2: PUSH memory digest (mechanism A) ──
 
-    # Scoring constants — read-time only, never written back.
+    # Age constants also serve compaction; digest ranking does not use salience.
     _AGE_DECAY_PER_DAY = 2         # lose 2 salience points per day
     _AGE_DECAY_CAP = 30             # max age penalty
-    _BRIEF_TITLE_BOOST = 10        # brief substring in title
-    _BRIEF_TAG_TOPIC_BOOST = 5     # brief substring in tag or topic
-    _ANCESTOR_BOOST = 20           # source_task is ancestor of current task
-    _DIRECTIVE_BOOST = 10          # provenance == directive
     _DEFAULT_BUDGET = 1500
 
     _ALLOWED_TRANSITIONS: dict[str, set[str]] = {
@@ -749,85 +745,29 @@ class MemoryStore:
     _DIGEST_NUDGE = (
         'Missing recall? `happyranch memory search "<terms>"`.'
     )
-    _DIGEST_LINE_FMT = "- `{id}` — {title}  ({provenance}, salience {salience})"
+    _DIGEST_LINE_FMT = "- `{id}` — {title}  ({provenance})"
 
-    def _effective_salience(
-        self,
-        entry: MemoryItem,
-        brief_lower: str,
-        ancestor_ids: set[str] | None,
-        now_dt: datetime,
-        *,
-        scope: str = "agent",
-    ) -> int:
-        """Compute effective salience at digest time (read-only).
+    # Digest-only English function words: task boilerplate is not relevance.
+    # Search keeps its existing terms, including its short-query fallback.
+    _DIGEST_STOP_WORDS = frozenset({
+        "a", "an", "and", "are", "as", "at", "be", "been", "but", "by",
+        "for", "from", "has", "have", "in", "is", "it", "its", "of", "on",
+        "or", "that", "the", "their", "this", "to", "was", "were", "will",
+        "with", "you", "your",
+    })
 
-        effective = base_salience - age_decay + relevance_boost
-                    + ancestor_boost + directive_boost
-
-        Age decay is computed from ``updated_at``; if unset, no decay.
-        All boosts are additive and computed at read time — nothing is
-        written back.
-        """
-        effective = entry.salience
-
-        # Age decay
-        if entry.updated_at:
+    @staticmethod
+    def _digest_updated_at(entry: MemoryItem) -> datetime:
+        """Compare actual UTC instants; missing/invalid dates sort last."""
+        if isinstance(entry.updated_at, str):
             try:
-                # updated_at is ISO-8601 with optional tz suffix
-                ts = entry.updated_at
-                if ts.endswith("Z"):
-                    ts = ts[:-1] + "+00:00"
-                updated = datetime.fromisoformat(ts)
+                updated = datetime.fromisoformat(entry.updated_at.replace("Z", "+00:00"))
                 if updated.tzinfo is None:
                     updated = updated.replace(tzinfo=timezone.utc)
-                delta = now_dt - updated
-                age_days = max(0, delta.days)
-                age_penalty = min(age_days * self._AGE_DECAY_PER_DAY,
-                                  self._AGE_DECAY_CAP)
-                effective -= age_penalty
-            except (ValueError, TypeError):
-                pass  # unparseable timestamp → no decay
-
-        # Brief relevance boost (cheap substring family, same as search())
-        if brief_lower:
-            if brief_lower in entry.title.lower():
-                effective += self._BRIEF_TITLE_BOOST
-            elif brief_lower in entry.body.lower():
-                # body match is weaker — just the tag/topic level
-                effective += self._BRIEF_TAG_TOPIC_BOOST
-            elif any(brief_lower in t.lower() for t in entry.tags):
-                effective += self._BRIEF_TAG_TOPIC_BOOST
-            elif brief_lower in entry.topic.lower():
-                effective += self._BRIEF_TAG_TOPIC_BOOST
-            else:
-                # Multi-word brief: check individual words
-                words = brief_lower.split()
-                if len(words) > 1:
-                    for w in words:
-                        if len(w) >= 3 and w in entry.title.lower():
-                            effective += self._BRIEF_TAG_TOPIC_BOOST
-                            break
-                        elif len(w) >= 3 and (
-                            any(w in t.lower() for t in entry.tags)
-                            or w in entry.topic.lower()
-                        ):
-                            effective += max(1, self._BRIEF_TAG_TOPIC_BOOST // 2)
-                            break
-
-        # Ancestor boost
-        if ancestor_ids and entry.source_task:
-            if entry.source_task in ancestor_ids:
-                effective += self._ANCESTOR_BOOST
-
-        # Directive provenance boost — only for matching scope.
-        # Per-agent MemoryStore digests boost agent-scope directives;
-        # team/org-scoped directives do not boost in per-agent digests.
-        # (Team/org scoped memory store is later/founder-gated per §11.5.)
-        if entry.provenance == "directive" and entry.scope == scope:
-            effective += self._DIRECTIVE_BOOST
-
-        return effective
+                return updated.astimezone(timezone.utc)
+            except (ValueError, OverflowError):
+                pass
+        return datetime.min.replace(tzinfo=timezone.utc)
 
     def build_memory_digest(
         self,
@@ -850,15 +790,18 @@ class MemoryStore:
         ancestor_task_ids: set[str] | None = None,
         scope: str = "agent",
     ) -> MemoryDigestRender:
-        """Build a salience-ranked, budgeted push digest.
+        """Build a task-relevant, budgeted push digest.
 
         Returns the ``=== MEMORY-DIGEST (system) ===`` text with exact item
         exposure from this pass. Text is ``None`` when no candidate memories
         exist or the budget is too small to fit any valid digest content.
 
         Candidate set: ``lifecycle == valid`` AND ``promoted_to is None``.
-        Ranking: effective salience (base - age decay + boosts) descending,
-                 then title alphabetically for deterministic tie-breaking.
+        Ranking within each rendering group: search term score descending,
+        then updated_at newest first, title and ID for deterministic ties.
+        Digest-only stop words are removed after the shared search tokenizer.
+        Zero-match entries fill remaining space by recency. Salience and lineage
+        do not affect ranking; ancestor_task_ids remains an API-compatible input.
         Budget: char-capped (default ~1500); includes header + nudge when
                 the candidate set overflows. For budgets too small to fit
                 even the header + intro, returns None cleanly.
@@ -867,7 +810,7 @@ class MemoryStore:
         directive's full body doesn't fit the remaining budget, it falls
         back to a normal pointer line (no body truncation, no silent drop).
         All other entries (experiential, reflective, out-of-scope directives)
-        remain pointer-only: id, title, provenance, effective salience.
+        remain pointer-only: id, title, provenance.
         Exposure captures only string IDs satisfying ID_RE.fullmatch at actual
         append sites. Permissively parsed malformed IDs keep their rendered text
         but contribute no identity; writer metadata validation remains strict.
@@ -878,11 +821,12 @@ class MemoryStore:
         if budget is None:
             budget = self._DEFAULT_BUDGET
 
-        now_dt = datetime.now(timezone.utc)
-        brief_lower = brief.lower().strip() if brief else ""
+        terms = self._search_terms(
+            brief.lower().strip() if brief else "", stop_words=self._DIGEST_STOP_WORDS,
+        )
 
-        candidates: list[tuple[int, str, MemoryItem]] = []
-        # (effective_salience, title_lower, MemoryItem) for sorting
+        candidates: list[tuple[int, datetime, MemoryItem]] = []
+        # (term score, updated_at instant, MemoryItem) for sorting
 
         for path in self._entry_paths():
             try:
@@ -895,17 +839,16 @@ class MemoryStore:
             if entry.promoted_to is not None:
                 continue
 
-            score = self._effective_salience(
-                entry, brief_lower, ancestor_task_ids, now_dt, scope=scope,
-            )
-            candidates.append((score, entry.title.lower(), entry))
+            score = self._term_match_score(entry, terms)
+            candidates.append((score, self._digest_updated_at(entry), entry))
 
         if not candidates:
             return MemoryDigestRender(None)
 
-        # Sort: effective salience descending, then title ascending for
-        # deterministic tie-breaking.
-        candidates.sort(key=lambda c: (-c[0], c[2].title))
+        # Stable sorts from least to most significant: relevance always wins.
+        candidates.sort(key=lambda c: (c[2].title, str(c[2].id)))
+        candidates.sort(key=lambda c: c[1], reverse=True)
+        candidates.sort(key=lambda c: c[0], reverse=True)
 
         # Fixed header block — always emitted first when any output is produced.
         header = f"{self._DIGEST_HEADER}\n{self._DIGEST_INTRO}\n\n"
@@ -920,13 +863,13 @@ class MemoryStore:
 
         # Split candidates: in-scope directives first (full body), then
         # everything else (pointer lines).
-        directives: list[tuple[int, str, MemoryItem]] = []
-        others: list[tuple[int, str, MemoryItem]] = []
-        for score, title_lower, entry in candidates:
+        directives: list[tuple[int, datetime, MemoryItem]] = []
+        others: list[tuple[int, datetime, MemoryItem]] = []
+        for score, updated_at, entry in candidates:
             if entry.provenance == "directive" and entry.scope == scope:
-                directives.append((score, title_lower, entry))
+                directives.append((score, updated_at, entry))
             else:
-                others.append((score, title_lower, entry))
+                others.append((score, updated_at, entry))
 
         # Build the digest: directive full-body blocks first, then pointer
         # lines, then nudge. Track exact length.
@@ -937,10 +880,10 @@ class MemoryStore:
         nudged = False
 
         # Phase 1: render in-scope directives as full body.
-        for score, _title_lower, entry in directives:
+        for score, updated_at, entry in directives:
             full_block = (
                 f"**Directive:** `{entry.id}` — {entry.title}"
-                f"  ({entry.provenance}, salience {score})\n"
+                f"  ({entry.provenance})\n"
                 f"{entry.body}\n\n"
             )
             full_len = len(full_block)
@@ -954,19 +897,19 @@ class MemoryStore:
                 used += full_len
             else:
                 # Full body doesn't fit — fall back to pointer line.
-                others.append((score, _title_lower, entry))
+                others.append((score, updated_at, entry))
 
-        # Re-sort others (including fallen-back directives) by salience
-        # descending, then title ascending.
-        others.sort(key=lambda c: (-c[0], c[2].title))
+        # Apply the same ordering to pointers, including directive fallbacks.
+        others.sort(key=lambda c: (c[2].title, str(c[2].id)))
+        others.sort(key=lambda c: c[1], reverse=True)
+        others.sort(key=lambda c: c[0], reverse=True)
 
         # Phase 2: pointer lines for all non-directive entries (existing logic).
-        for i, (score, _title_lower, entry) in enumerate(others):
+        for i, (_score, _updated_at, entry) in enumerate(others):
             line = self._DIGEST_LINE_FMT.format(
                 id=entry.id,
                 title=entry.title,
                 provenance=entry.provenance,
-                salience=score,
             ) + "\n"
             line_len = len(line)
             remaining = len(others) - i - 1
@@ -1354,6 +1297,34 @@ class MemoryStore:
     _SEARCH_SALIENCE_DIVISOR = 10
     _SEARCH_SALIENCE_MAX = 10
 
+    @staticmethod
+    def _search_terms(query: str, *, stop_words: frozenset[str] = frozenset()) -> list[str]:
+        """Shared whitespace tokenizer; search keeps its short-query fallback."""
+        words = query.split()
+        if stop_words:
+            words = [word for word in words if word not in stop_words]
+            query = " ".join(words)
+        terms = [word for word in words if len(word) >= 3]
+        return terms or ([query] if query else [])
+
+    @classmethod
+    def _term_match_score(cls, entry: MemoryItem, terms: list[str]) -> int:
+        """Search's title/tag/topic/body term weights, without metadata boosts."""
+        title = entry.title.lower()
+        topic = entry.topic.lower()
+        tags = [tag.lower() for tag in entry.tags]
+        body = entry.body.lower()
+        score = 0
+        body_points = 0
+        for term in terms:
+            if term in title:
+                score += cls._SEARCH_TITLE_TERM
+            if term in topic or any(term in tag for tag in tags):
+                score += cls._SEARCH_TAG_TOPIC_TERM
+            if term in body:
+                body_points += cls._SEARCH_BODY_TERM
+        return score + min(body_points, cls._SEARCH_BODY_CAP)
+
     def search(
         self,
         query: str,
@@ -1381,12 +1352,7 @@ class MemoryStore:
         if not q:
             return []
 
-        # Normalize: split on whitespace, drop terms shorter than 3
-        # unless the whole query is short
-        terms = [t for t in q.split() if len(t) >= 3]
-        if not terms:
-            # query is only short words — use the whole query as a single term
-            terms = [q]
+        terms = self._search_terms(q)
 
         hits: list[tuple[int, LearningSearchHit]] = []
 
@@ -1404,40 +1370,12 @@ class MemoryStore:
             if entry.lifecycle == "superseded" and not include_superseded:
                 continue
 
-            score = 0
-            matched = False
-            title_l = entry.title.lower()
-            topic_l = entry.topic.lower()
-            tags_l = [t.lower() for t in entry.tags]
-            body_l = entry.body.lower()
-
-            # Title exact match
-            if q in title_l:
+            score = self._term_match_score(entry, terms)
+            if q in entry.title.lower():
                 score += self._SEARCH_TITLE_EXACT
-                matched = True
 
-            # Term-level scoring
-            for term in terms:
-                if term in title_l:
-                    score += self._SEARCH_TITLE_TERM
-                    matched = True
-                if term in topic_l or any(term in t for t in tags_l):
-                    score += self._SEARCH_TAG_TOPIC_TERM
-                    matched = True
-
-            # Body term match (capped)
-            body_points = 0
-            for term in terms:
-                if term in body_l:
-                    body_points += self._SEARCH_BODY_TERM
-                    matched = True
-            body_points = min(body_points, self._SEARCH_BODY_CAP)
-            score += body_points
-
-            # Only include entries with at least one actual query-term match.
-            # Provenance, salience, and lifecycle modifiers only rank matched
-            # entries — they never cause an unrelated entry to appear.
-            if not matched:
+            # Metadata modifiers rank actual matches only.
+            if not score:
                 continue
 
             # Provenance boost
