@@ -11,6 +11,7 @@ import { useTranslation } from '@/hooks/i18n';
 import { useSequentialDefinition, useSequentialDefinitions, useSequentialRuns } from '@/hooks/workflows';
 import { parseDefinition, taskLinks, type DefEdge, type DefView } from '@/lib/workflowSequentialView';
 import { RunStateBadge } from '@/shared/workflows/SequentialRunPresentation';
+import { WorkflowSetupStatusCard } from '@/shared/workflows/SequentialTaskBanner';
 import { SequentialRunDetail } from './SequentialRunDetail';
 import { SequentialSetup } from './SequentialSetup';
 import { ReadOnlyNote, ReadState, TaskRef } from './SequentialCommon';
@@ -20,6 +21,7 @@ export function SequentialWorkflowsPage({ view }: { view: 'definitions' | 'setup
   const { t } = useTranslation();
   const base = `/orgs/${slug}/workflows`;
   return <ContentWrap>
+    <WorkflowSetupStatusCard key={slug} />
     <nav aria-label={t('seqwf.breadcrumb')} className="text-text-muted mb-3 flex flex-wrap items-center gap-1 text-xs">
       <Link className="hover:underline" to={base}>{t('seqwf.title')}</Link>
       {view !== 'definitions' && <><span aria-hidden="true">›</span>

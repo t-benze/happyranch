@@ -529,6 +529,8 @@ def create_app(state: DaemonState) -> FastAPI:
     app.include_router(workflow_coding_roles.router, prefix="/api/v1/orgs/{slug}", tags=["workflows"])
     from runtime.daemon.routes import workflow_sequential
     app.include_router(workflow_sequential.router, prefix="/api/v1/orgs/{slug}", tags=["workflow-sequential"])
+    from runtime.daemon.routes import workflow_setup
+    app.include_router(workflow_setup.router, prefix="/api/v1", tags=["workflow-setup"])
     from runtime.daemon.routes import workflow_sequential_tasks
     app.include_router(workflow_sequential_tasks.router, prefix="/api/v1/orgs/{slug}", tags=["workflow-sequential-tasks"])
     app.include_router(workflow_submissions.router, prefix="/api/v1/orgs/{slug}", tags=["workflow-submissions"])

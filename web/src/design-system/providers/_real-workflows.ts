@@ -140,7 +140,15 @@ const sequentialReads = {
   useSequentialRun: (id: string) => useSequentialRead('run', id, (slug, signal) => workflowSequential.getSequentialRun(slug, id, signal)),
   useTaskSequentialWorkflow: (id: string) => useSequentialRead('task', id, (slug, signal) => workflowSequential.getTaskSequentialWorkflow(slug, id, signal)),
 };
-export const realWorkflowsApi: WorkflowsApi = { useSequentialSettingsActions, useSequentialSettingsFence, ...sequentialReads };
+/** Setup evidence has its own query and never participates in access admission. */
+function useWorkflowSetupStatus() {
+  const { slug = '' } = useParams();
+  const q = useQuery({ queryKey: ['workflow-setup-status', slug],
+    queryFn: ({ signal }) => workflowSequential.getWorkflowSetupStatus(slug, signal),
+    enabled: !!slug, retry: false, refetchOnWindowFocus: false });
+  return { ...q, data: q.isError ? undefined : q.data };
+}
+export const realWorkflowsApi: WorkflowsApi = { useWorkflowSetupStatus, useSequentialSettingsActions, useSequentialSettingsFence, ...sequentialReads };
 
 
 interface SequentialSendStore {

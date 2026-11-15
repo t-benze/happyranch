@@ -5804,6 +5804,27 @@
           "422"
         ]
       }
+    },
+    "/api/v1/runtime/workflow-setup/orgs/{slug}": {
+      "GET": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "401",
+          "404",
+          "409",
+          "422"
+        ]
+      }
     }
   }
 }

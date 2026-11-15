@@ -131,3 +131,44 @@ and A4 bootstrap are separate deliveries; no live install, restart or deploy.
 
 Attempt identity includes runtime key as well as slug/date, so an in-process
 runtime switch cannot consume another runtime's same-day attempt.
+
+
+## Independent workflow setup status (A3)
+
+Founder-bearer GET `/api/v1/runtime/workflow-setup/orgs/{slug}` reads private
+setup evidence and the bounded I1b latest report independently of OrgDep,
+OrgState attachment and org database availability. Unknown slugs return a
+closed 404 without an org inventory. Unexpected query/body is 422; idle is 409;
+success uses no-store. Missing, malformed, unsafe or ambiguous attempt evidence
+is `unknown/evidence_unavailable`, never inferred installation success.
+The read-only setup event namespace is bounded to 64 attempts, 16 records each,
+64 KiB per record, 4 MiB and one second per acquisition. A4 owns publication
+and automatic setup; this slice performs neither.
+
+The existing Workflows surface shows status independently of failed
+definition/settings reads. The task banner returns empty only after a real
+task, current authority and complete history prove sequential absence.
+Corrupt, partial, denied or exhausted reads retain their original errors,
+including when installation evidence reports success. No integrity reader,
+load-time physical check, FK check, logical/SQL cap or five-second policy changes.
+
+The card exposes only `integrity_report` outcome, closed reason, original
+checked_at/scheduled_date and external/audit reporting. Stale results retain
+their original date; missing or unavailable evidence never means today's
+success. No raw integrity diagnostics cross the route. Setup/report evidence
+grants no workflow permission. English and Simplified Chinese share this
+behavior. No page, Audit UI, notification or required check is added.
+
+The reader recognizes `workflow-setup-event@1` records named `00.json` onward
+under the private runtime-key/org/attempt backup namespace. The closed record
+contains runtime_key, org_slug, attempt_id, sequence, previous_digest (SHA-256
+of the previous exact record bytes, null initially), phase, state, reason,
+attempt_time (one UTC attempt identity), backup_path, db_identity
+(path/device/inode), source_inventory_digest, backup_sha256 and target_version=1.
+The ordered phases are intent → backup_verified → pre_commit → committed →
+verified → registered. A positively recorded not_installed may terminate strictly
+before any COMMIT attempt; a last pre_commit alone remains unknown. A4 must publish the
+corresponding original-owned evidence; A3 never manufactures it. Multiple
+attempts or unrecognized phase/reason evidence remain unknown pending explicit
+owner reconciliation, and safe path metadata is not independent backup-content
+verification. The status reader opens neither the backup nor the org database.
