@@ -29,6 +29,13 @@ The existing collector `app/mac/scripts/manifest_notices.py` owns direct inputs:
   Python distribution are conservatively included. Unselected marker/platform,
   build-only npm and Go modules without target dependencies have explicit reasons.
   No supplied component subset controls inventory membership.
+  The sole Go replacement exemption is first-party `happyranch/tsnethealth`
+  replaced by unversioned `../../shared/tsnethealth`, with both go-list Dir
+  values resolving exactly to the exported `app/shared/tsnethealth` directory
+  under the source root. It produces no third-party owner row. Versioned or
+  near-miss replacements, symlink escapes and every other cache-escaping module
+  remain refused. The inventory retains the source root for independent owner
+  rederivation; no third-party notice obligation changes.
 - The Swift owner family reads the exact Sparkle binary-target URL/version and
   checksum from `app/mac/Package.swift`. SwiftPM authenticates the official ZIP;
   the collector includes `swift:Sparkle` and the complete 2.10.1 release LICENSE

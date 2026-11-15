@@ -182,6 +182,22 @@ def owner(family, key, name, version, source, selection):
                 source=source, selection=selection)
 
 
+def first_party_go(module, source):
+    """Only the unversioned, exported shared health module has no vendor notice."""
+    replacement = module.get('Replace') or {}
+    if (module.get('Path') != 'happyranch/tsnethealth'
+            or replacement.get('Path') != '../../shared/tsnethealth'
+            or replacement.get('Version') or not source):
+        return False
+    root = Path(source)
+    target = root / 'app/shared/tsnethealth'
+    # Check both go-list directories; resolving an alias cannot escape the export.
+    return (root.is_absolute() and target.resolve() == target
+            and target.is_relative_to(root.resolve())
+            and all(value and Path(value).is_absolute() and Path(value).resolve() == target
+                    for value in (module.get('Dir'), replacement.get('Dir'))))
+
+
 def expected(e):
     """Derive all owners, including explicit exclusions, without reading notices."""
     require(e.get('schema') == SCHEMA, 'inventory', 'unsupported schema')
@@ -214,6 +230,8 @@ def expected(e):
         if mod and not mod.get('Main'):
             require(mod.get('Version') == modules[mod['Path']].get('Version'), mod['Path'], 'go dependency version differs from resolved module')
     for name, module in sorted(modules.items()):
+        if first_party_go(module, e.get('source_root')):
+            continue
         require(not module.get('Replace'), name, 'Go replacement requires explicit original association')
         rows.append(owner('go', name, name, module['Version'], 'go.mod/go.sum:' + name,
                           'included: target go list dependency' if name in used else 'excluded: module has no target dependency packages'))
@@ -390,6 +408,8 @@ def snapshot(source, output, mapping):
         require(not any(not r.get('Module') and '/src/vendor/' in r.get('Dir', '') for r in go_deps), 'Go vendor', 'toolchain vendor manifest missing')
     go_modules = stream_json(read(output / 'diagnostics/go-modules.json', output, MAX_JSON).decode())
     for module in go_modules:
+        if first_party_go(module, str(source)):
+            continue
         if not module.get('Main') and module.get('Dir'):
             require(Path(module['Dir']).is_relative_to(output / 'scratch/go-modules'), module['Path'], 'Go module root escapes invocation cache')
     # The separately linked sidecar has its own target-specific, reviewed
@@ -403,7 +423,7 @@ def snapshot(source, output, mapping):
     sidecar_runtime = dict(key='Go-sidecar-Darwin-arm64', name='HappyRanch Darwin tsnet sidecar',
         version=sha(sidecar_inventory), source=str(sidecar_root),
         originals=[str(sidecar_root / name) for name in ('THIRD_PARTY_NOTICES.md', 'dependency-inventory.json')])
-    return dict(schema=SCHEMA, target='darwin-arm64', source_tree=mapping['source_tree'],
+    return dict(schema=SCHEMA, target='darwin-arm64', source_tree=mapping['source_tree'], source_root=str(source),
                 swift_packages=swift_snapshot(source),
                 npm_lock=lock, npm_installed=installed, npm_emitted=sorted(emitted),
                 go_modules=go_modules,

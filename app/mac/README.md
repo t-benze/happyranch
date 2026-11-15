@@ -1344,3 +1344,28 @@ online at read-only inspection. No Jenkins app-build job is installed, signing
 remains disabled. A later
 owner decision is required for any native run. PR3 retains release pins, source/
 resource hashes and the existing owner-run signing route.
+
+### Managed Go health export (THR-327 A3a)
+
+`tsnet_health_json(timeoutMs)` returns one compact, allow-listed v1 JSON record
+(≤2 KiB), or NULL with fixed `Managed health unavailable`. Free successful
+results with `tsnet_free_string`. It requires a running managed engine; legacy
+and uninitialized engines cannot export it. Positive timeouts are capped at
+10 seconds; nonpositive values use 10 seconds, including waiting for another
+health call. Cancellation/close invalidates outstanding results.
+
+Each successful up creates a fresh shared `tsnethealth.Runner`. The first
+successful export is `join`, later exports are `on_demand`; failed calls retain
+the probe's ten-minute cap. Probes use only the current DERP map (5 seconds,
+one in flight), and each call makes at most one disco ping (3 seconds). Only
+the pinned home peer is selected; before the first managed dial the peer is an
+empty placeholder. Keys, addresses, AuthURL, other peers and raw health text
+are excluded. Health serialization uses a separate cancellable gate; the engine
+lock is released before LocalAPI/probe/ping I/O, so dial/cancel/close can proceed.
+
+The module uses `happyranch/tsnethealth => ../../shared/tsnethealth`; the full-tree
+export in `scripts/build-app.sh` preserves this path. Notice collection exempts
+only this exact first-party replacement and retains all third-party obligations.
+Swift does not call this export yet. A3b will supply visible-window 60-second
+cadence, the button and the record in the Diagnostics bundle; no background
+health timer is added here. Native archive/app linkage remains a Mac build check.
