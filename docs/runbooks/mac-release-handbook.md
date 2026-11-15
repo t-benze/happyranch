@@ -777,6 +777,24 @@ smaller timeout wins; nonpositive uses the cap), including serialized-call waiti
 One Runner per successful up caches DERP-map-only probes for ten minutes; one
 3-second disco ping may run at a time. First successful export is `join`, later
 ones are `on_demand`. Engine cancellation/close rejects outstanding results.
-Swift UI cadence/button and inclusion in the Diagnostics bundle follow in A3b.
+The Swift cadence/button and Diagnostics entry are described in A3b below.
 The existing fifteen-export release inspector does not yet assert this new symbol;
 A3b's native build/linkage proof must include it. This slice does not build the app.
+
+### Managed connection health display (THR-327 A3b)
+
+The managed connection form supplements the existing state with a line such as
+“Connected · direct (LAN) · 12 ms” or “Connected · relayed via hk · 84 ms · UDP
+blocked”. Missing/invalid/unsupported records hide the line. **Check connection**
+runs an on-demand refresh and stays disabled during the request. Automatic
+refresh runs every 60 seconds only while the form's hosting NSWindow is visible,
+unoccluded, non-minimized and its SwiftUI scene is active. Disappearance or loss
+of eligibility cancels the cadence; a bounded request already in flight may
+finish. There is no background probe. Calls run off the main actor, bounded to
+10 seconds, and preserve the Go export's `join` then `on_demand` trigger contract.
+
+Diagnostics shows and bundles `tsnet_health`, the full latest successful cached
+v1 JSON record as a redacted string, or explicit `unavailable`. No probe is
+started during export. Check the record's `at` timestamp for cache age, including
+after disconnect. Native visual/cadence acceptance and Swift tests require a
+macOS venue; the unsigned build workflow compiles but does not run Swift tests.
