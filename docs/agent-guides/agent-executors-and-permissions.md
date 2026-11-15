@@ -865,6 +865,8 @@ validates the failed receipt's stored snapshot. For direct-connect adapters
 (`registered_by` `direct-connect`/`direct-connect-retry`) that refusal says
 `Reconnect <profile> in Settings -> Executors (mint a fresh connect token and
 re-run connect).`; legacy adapters keep the re-submit/approval wording.
+This includes a changed wrapper refused during executor construction or profile
+binding validation, its resolver warning, and the checks just before launch.
 Settings -> Executors -> Custom CLIs has a matching **Reconnect** action. See the
 [upgrade lifecycle](../superpowers/specs/2026-07-19-custom-cli-adapter-envelope-design.md#direct-connect-upgrade-and-reconnect-lifecycle-701)
 for audit fields and ordering.

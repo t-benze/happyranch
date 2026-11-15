@@ -545,6 +545,9 @@ regular file, not executable or hash-mismatched) names this remediation:
 `Reconnect <profile> in Settings -> Executors (mint a fresh connect token and
 re-run connect).` Legacy-submitted adapters keep the original re-register /
 re-submit guidance. Only the text differs; the fail-closed checks are unchanged.
+The same remediation covers a changed wrapper rejected during executor
+construction or profile binding validation and the resolver's hash-mismatch
+warning, using the existing persisted adapter origin and intended profile name.
 
 After conformance succeeds, projection and retry use one shared binding helper.
 Under the existing profile lease and adapter-store lock it replaces an existing

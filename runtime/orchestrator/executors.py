@@ -2147,19 +2147,12 @@ class CustomAdapterExecutor:
             "task_id": task_id,
         }
 
-    def _is_direct_connect(self) -> bool:
-        """True for adapters written by the direct-connect projection/retry
-        paths (``registered_by`` ``direct-connect`` / ``direct-connect-retry``)."""
-        return self._adapter_registered_by in ("direct-connect", "direct-connect-retry")
+    def _upgrade_remediation(self, legacy: str) -> str:
+        from runtime.orchestrator.custom_adapter_registry import adapter_upgrade_remediation
 
-    def _direct_connect_remediation(self) -> str:
-        return (
-            f"Reconnect {self._profile_name} in Settings -> Executors "
-            f"(mint a fresh connect token and re-run connect)."
+        return adapter_upgrade_remediation(
+            self._adapter_registered_by, self._profile_name, legacy,
         )
-
-    def _dependency_remediation(self, legacy: str) -> str:
-        return self._direct_connect_remediation() if self._is_direct_connect() else legacy
 
     def verify_launch_ready(self) -> str | None:
         """Verify the approved adapter artifact + every declared dependency
@@ -2201,10 +2194,8 @@ class CustomAdapterExecutor:
                 f"Custom adapter {self._adapter_entry_id!r} hash mismatch: "
                 f"expected {self._adapter_hash[:12]}..., "
                 f"got {current_launch_hash[:12]}... "
-                + (
-                    self._direct_connect_remediation()
-                    if self._is_direct_connect()
-                    else "Re-register and re-approve the adapter."
+                + self._upgrade_remediation(
+                    "Re-register and re-approve the adapter."
                 )
             )
         # THR-107 seq244: revalidate every declared dependency (path type /
@@ -2217,7 +2208,7 @@ class CustomAdapterExecutor:
                 if not dep_path.exists():
                     return (
                         f"Declared dependency {dep_exe!r} no longer exists. "
-                        + self._dependency_remediation(
+                        + self._upgrade_remediation(
                             "Re-submit the adapter with a valid dependency and "
                             "obtain founder approval."
                         )
@@ -2225,7 +2216,7 @@ class CustomAdapterExecutor:
                 if not dep_path.is_file():
                     return (
                         f"Declared dependency {dep_exe!r} is not a regular file. "
-                        + self._dependency_remediation(
+                        + self._upgrade_remediation(
                             "Re-submit the adapter with a valid dependency and "
                             "obtain founder approval."
                         )
@@ -2233,7 +2224,7 @@ class CustomAdapterExecutor:
                 if not os.access(dep_path, os.X_OK):
                     return (
                         f"Declared dependency {dep_exe!r} is not executable. "
-                        + self._dependency_remediation(
+                        + self._upgrade_remediation(
                             "Re-submit the adapter with a valid dependency and "
                             "obtain founder approval."
                         )
@@ -2244,7 +2235,7 @@ class CustomAdapterExecutor:
                         f"Declared dependency {dep_exe!r} hash mismatch: "
                         f"expected {dep_hash[:12]}..., got {current_dep_hash[:12]}... "
                         f"The dependency has been modified since approval. "
-                        + self._dependency_remediation(
+                        + self._upgrade_remediation(
                             "Re-submit the adapter with the updated dependency "
                             "and obtain founder approval."
                         )

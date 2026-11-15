@@ -45,6 +45,19 @@ from runtime.orchestrator.adapter_store import (
 
 logger = logging.getLogger(__name__)
 
+
+def adapter_upgrade_remediation(
+    registered_by: str, profile_name: str | None, legacy: str,
+) -> str:
+    """Choose upgrade guidance from persisted origin, without changing eligibility."""
+    if registered_by in ("direct-connect", "direct-connect-retry"):
+        return (
+            f"Reconnect {profile_name or 'the CLI'} in Settings -> Executors "
+            "(mint a fresh connect token and re-run connect)."
+        )
+    return legacy
+
+
 # ---------------------------------------------------------------------------
 # Traversal detection helper (shared with routes/adapters.py)
 # ---------------------------------------------------------------------------
@@ -1899,10 +1912,14 @@ def resolve_adapter(adapter_id: str) -> AdapterEntry | None:
             "resolve_adapter: approved adapter %r hash mismatch — "
             "stored=%s, current=%s. "
             "The executable has been modified since approval. "
-            "Re-register to update the hash and re-approve.",
+            "%s",
             adapter_id,
             entry.executable_hash[:12],
             current_hash[:12],
+            adapter_upgrade_remediation(
+                entry.registered_by, entry.intended_profile_name,
+                "Re-register to update the hash and re-approve.",
+            ),
         )
         return None
 

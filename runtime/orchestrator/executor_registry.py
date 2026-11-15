@@ -353,7 +353,10 @@ class ExecutorRegistry:
           - adapter executable no longer exists / not regular file / not executable
           - adapter hash doesn't match (tampered)
         """
-        from runtime.orchestrator.custom_adapter_registry import resolve_adapter
+        from runtime.orchestrator.custom_adapter_registry import (
+            adapter_upgrade_remediation,
+            resolve_adapter,
+        )
         entry = resolve_adapter(adapter_id)
         if entry is None:
             # Check if it exists but isn't approved/hash-verified
@@ -373,7 +376,11 @@ class ExecutorRegistry:
             raise ValueError(
                 f"Adapter {adapter_id!r} is approved but the on-disk "
                 f"executable is missing, not a regular file, not executable, "
-                f"or has a hash mismatch. Re-register the adapter."
+                f"or has a hash mismatch. "
+                + adapter_upgrade_remediation(
+                    existing.registered_by, existing.intended_profile_name,
+                    "Re-register the adapter.",
+                )
             )
         return {
             "executable": entry.executable,
@@ -614,10 +621,20 @@ def build_executor(
         binding = ExecutorRegistry._resolve_custom_adapter_eligibility(profile)
         if binding is None:
             adapter_id = cmd_adapter[len("custom-adapter:"):]
+            from runtime.orchestrator.adapter_store import get_adapter
+            from runtime.orchestrator.custom_adapter_registry import adapter_upgrade_remediation
+
+            # Origin is read from the persisted entry even when its wrapper
+            # no longer resolves. It selects guidance only, never eligibility.
+            existing = get_adapter(adapter_id)
+            remediation = adapter_upgrade_remediation(
+                existing.registered_by if existing is not None else "", name,
+                "Register, approve, and bind the adapter first.",
+            )
             raise ValueError(
                 f"Custom adapter {adapter_id!r} for profile {name!r} is not "
                 f"launchable: adapter is pending, tampered, missing, or not "
-                f"approved. Register, approve, and bind the adapter first."
+                f"approved. {remediation}"
             )
         from runtime.orchestrator.executors import CustomAdapterExecutor
         executor = CustomAdapterExecutor(
