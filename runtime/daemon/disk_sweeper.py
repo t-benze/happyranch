@@ -571,8 +571,8 @@ class _Registrations(dict):
         if not result.topology['entries']:
             # Git can remove its now-empty admin container with the last entry.
             # There are no surviving original entries in this container. Bind
-            # its post-effect observation; the full confirmation must still
-            # validate every newly present entry, never remove or infer one.
+            # its post-effect observation; confirmation must still validate
+            # shared entry names/types, never remove or infer an arrival.
             try:
                 result.topology[str(entry.parent)] = identity(os.lstat(entry.parent))
             except FileNotFoundError:
@@ -777,6 +777,9 @@ def _registration_metadata(repo: Path, deadline: float, *, metadata_path: Path |
         # locally, and only with a still ordinary or genuinely missing leaf.
         for path, entry in result.linked.items():
             observed_files = result.metadata[path] = {}
+            # Retain the already captured own-entry stat for later local proof.
+            # This adds no discovery observation or registration authority.
+            observed_files[str(entry)] = signature(tree[entry.name])
             local_tree = by_entry.get(entry.name, {})
             local_tree.setdefault('HEAD', None)
             for relative, observed in local_tree.items():
@@ -995,6 +998,225 @@ def registrations(repo: Path, deadline: float, *, retained: dict | None = None, 
     final.arrivals = additions
     final.errors = errors | final.missing_folders
     return final
+
+
+@observed('shared_registration')
+def _shared_registration(repo: Path, path: Path, deadline: float, *, inventory: _Registrations | None,
+                         retained: dict | None, removed: bool) -> None:
+    """One shallow no-follow observation; never enter a peer's admin entry."""
+    common, admin = repo / '.git', repo / '.git/worktrees'
+    with directory(repo, deadline) as fd:
+        common_stat = os.stat('.git', dir_fd=fd, follow_symlinks=False)
+        observe('entry')
+        if (not stat.S_ISDIR(common_stat.st_mode) or common_stat.st_dev != os.fstat(fd).st_dev
+                or inventory is not None and identity(common_stat) != inventory.topology[str(common)]):
+            raise Retain(f'changed_registration_entry:{common}')
+    with directory(common, deadline) as fd:
+        if identity(os.fstat(fd)) != identity(common_stat):
+            raise Retain(f'changed_registration_entry:{common}')
+        observe('entry')
+        try:
+            admin_stat = os.stat('worktrees', dir_fd=fd, follow_symlinks=False)
+        except FileNotFoundError:
+            # Non-force Git removes the container after its last entry. No
+            # surviving original peer may be hidden by that expected absence.
+            if removed and inventory is not None and inventory.topology['entries'] == (inventory.linked[str(path)].name,):
+                return
+            raise
+        if (not stat.S_ISDIR(admin_stat.st_mode) or admin_stat.st_dev != common_stat.st_dev
+                or inventory is not None and identity(admin_stat) != inventory.topology[str(admin)]):
+            raise Retain(f'changed_registration_entry:{admin}')
+    with directory(admin, deadline) as fd:
+        if identity(os.fstat(fd)) != identity(admin_stat):
+            raise Retain(f'changed_registration_entry:{admin}')
+        original_names = set(inventory.topology['entries']) if inventory is not None else set()
+        for name in names(fd, deadline):
+            check(deadline)
+            entry_stat = os.stat(name, dir_fd=fd, follow_symlinks=False)
+            observe('entry')
+            if not stat.S_ISDIR(entry_stat.st_mode) or entry_stat.st_dev != common_stat.st_dev:
+                raise Retain(f'aliased_or_special_metadata:{admin / name}')
+            if inventory is not None and name not in original_names:
+                if not TASK.fullmatch(name):
+                    raise Retain(f'unknown_registration_arrival:{admin / name}')
+                if retained is not None:
+                    # Report the observed admin location, never infer its
+                    # worktree path from a name without reading its pointers.
+                    location = str(admin / name)
+                    retained.setdefault(str(repo), {}).setdefault(location, (
+                        f'deferred_registration_arrival:{location}',
+                        (location, identity(entry_stat), None), 'arrival'))
+
+
+def _candidate_registration(repo: Path, path: Path, deadline: float, *, inventory: _Registrations | None,
+                            retained: dict | None = None, removed: bool = False) -> _Registrations:
+    """Fresh own-entry proof; never enumerate a peer's admin metadata.
+
+    Discovery remains the exhaustive shared proof. Its known descendants veto
+    deletion, and Git's current literal paths veto new overlapping registrations.
+    Unrelated arrivals cannot change the candidate's identity baseline.
+    """
+    common, admin = repo / '.git', repo / '.git/worktrees'
+    if inventory is not None and not removed:
+        inventory.require(path, deadline)
+    try:
+        if inventory is not None:
+            entry = inventory.linked[str(path)]
+        else:
+            # Direct admit() callers have no discovery inventory. Establish only
+            # their own mapping; sweep_org always supplies its original inventory.
+            _, pointer = _metadata_file(path / '.git', deadline, text=True)
+            entry = Path(pointer.removeprefix('gitdir: ').removesuffix('\n'))
+        if entry.parent != admin or str(entry) != os.path.abspath(entry):
+            raise Retain(f'conflicting_worktree_backlink:{path / ".git"}')
+
+        def own_metadata() -> tuple[dict, dict, str | None]:
+            topology, metadata = {}, {}
+            # Pin every literal ancestor of OUR pointers, including common and
+            # admin ancestors. Directory mtime is deliberately not a peer census.
+            parents = set(repo.parents) | set(path.parents) | {repo, common}
+            if not removed:
+                parents.update((admin, entry, path))
+            else:
+                parents.add(path.parent)
+            for parent in sorted(parents, key=str):
+                with directory(parent, deadline) as fd:
+                    seen = identity(os.fstat(fd))
+                if inventory is not None and seen != inventory.topology.get(str(parent)):
+                    raise Retain(f'changed_registration_entry:{parent}')
+                topology[str(parent)] = seen
+            for leaf in ('commondir', 'gitdir'):
+                if os.path.lexists(common / leaf):
+                    raise Retain(f'unexpected_primary_pointer:{common / leaf}')
+            if removed:
+                # Only final ENOENT through a verified literal parent is absence.
+                for target in (path, entry):
+                    if target == entry:
+                        with directory(common, deadline) as fd:
+                            try:
+                                os.stat('worktrees', dir_fd=fd, follow_symlinks=False)
+                            except FileNotFoundError:
+                                if inventory is not None and inventory.topology['entries'] != (entry.name,):
+                                    raise Retain(f'changed_registration_entry:{admin}')
+                                continue
+                    with directory(target.parent, deadline) as fd:
+                        if target == entry and inventory is not None and identity(os.fstat(fd)) != inventory.topology[str(admin)]:
+                            raise Retain(f'changed_registration_entry:{admin}')
+                        try:
+                            os.stat(target.name, dir_fd=fd, follow_symlinks=False)
+                        except FileNotFoundError:
+                            continue
+                    raise Retain(f'registration_remains_after_remove:{target}')
+                return topology, metadata, None
+            tree = snapshot(entry, deadline)
+            for relative, observed_stat in tree.items():
+                target = entry / relative
+                if not (stat.S_ISDIR(observed_stat.st_mode) or stat.S_ISREG(observed_stat.st_mode)) or (
+                        stat.S_ISREG(observed_stat.st_mode) and observed_stat.st_nlink != 1):
+                    raise Retain(f'aliased_or_special_metadata:{target}')
+                metadata[str(target)] = signature(observed_stat)
+            for target, expected in ((entry / 'gitdir', str(path / '.git') + '\n'),
+                                     (entry / 'commondir', None),
+                                     (path / '.git', 'gitdir: ' + str(entry) + '\n')):
+                seen, text = _metadata_file(target, deadline, text=True)
+                if expected is not None and text != expected or target.name == 'commondir' and text not in ('../..\n', str(common) + '\n'):
+                    raise Retain(f'conflicting_registration_pointer:{target}')
+                if inventory is not None and seen != inventory.topology.get(str(target)):
+                    raise Retain(f'metadata_changed:{target}')
+                if target.parent == entry and seen != metadata.get(str(target)):
+                    raise Retain(f'metadata_changed:{target}')
+                topology[str(target)] = seen
+            # Read ordinary own metadata too; no changed file can become a new
+            # successful baseline between admission and removal.
+            head = None
+            for target, expected in metadata.items():
+                if stat.S_ISDIR(expected[3]):
+                    if Path(target).name in ('HEAD', 'index'):
+                        raise Retain(f'nonregular_registration_metadata:{target}')
+                    continue
+                seen, text = _metadata_file(Path(target), deadline, text=target == str(entry / 'HEAD'))
+                if seen != expected:
+                    raise Retain(f'metadata_changed:{target}' + _signature_change('snapshot_to_read', expected, seen))
+                if target == str(entry / 'HEAD'):
+                    head = text
+            if not head or not (re.fullmatch(r'(?:[0-9a-f]{40}|[0-9a-f]{64})\n', head)
+                                or re.fullmatch(r'ref: refs/[^\s]+\n', head)):
+                raise Retain(f'malformed_head:{entry / "HEAD"}')
+            return topology, metadata, head
+
+        _shared_registration(repo, path, deadline, inventory=inventory, retained=retained, removed=removed)
+        before = own_metadata()
+        raw = git(repo, deadline, 'worktree', 'list', '--porcelain', '-z')
+        matches = []
+        for block in raw.strip('\0').split('\0\0'):
+            check(deadline)
+            fields = block.split('\0')
+            locations = [field.removeprefix('worktree ') for field in fields if field.startswith('worktree ')]
+            if len(locations) != 1 or locations[0] != os.path.abspath(locations[0]):
+                raise Retain(f'unknown_git_registration:{repo}')
+            location = Path(locations[0])
+            if location == path:
+                row = {}
+                for field in fields:
+                    key, _, value = field.partition(' ')
+                    if key in row:
+                        raise Retain(f'duplicate_git_registration_field:{path}')
+                    row[key] = value
+                matches.append(row)
+            elif path in location.parents:
+                # A newly listed descendant can have an absent/ignored pointer;
+                # retain even if it cannot appear in the recursive snapshot.
+                try:
+                    with directory(location, deadline) as fd:
+                        os.stat('.git', dir_fd=fd, follow_symlinks=False)
+                except Expired:
+                    raise
+                except (OSError, Retain):
+                    pass
+                else:
+                    raise Retain(f'possible_nested_worktree:{location / ".git"}')
+                raise Retain(f'linked_descendant:{location}')
+            elif location != repo and location in path.parents:
+                if inventory is None or str(location) not in inventory:
+                    raise Retain(f'new_ancestor_registration:{location}')
+        after = own_metadata()
+        if before != after:
+            raise Retain(f'candidate_registration_changed:{path}')
+        if removed:
+            if matches:
+                raise Retain(f'registration_remains_after_remove:{path}')
+        elif len(matches) != 1:
+            raise Retain(f'unknown_git_registration:{path}')
+    except Expired:
+        raise
+    except Exception as exc:
+        # Own mapping/pointer loss and un-attributable list output remain shared.
+        if isinstance(exc, Retain) and str(exc).startswith(('possible_nested_worktree:', 'linked_descendant:')):
+            raise
+        raise _RegistrationUnknown(f'unknown_git_registrations:{admin}: {exc}') from exc
+    rows = _Registrations()
+    if removed:
+        return rows
+    rows[str(path)] = matches[0]
+    rows.linked[str(path)] = entry
+    rows.topology, metadata, head = after
+    rows.metadata[str(path)] = metadata
+    expected = inventory.metadata[str(path)] if inventory is not None else metadata
+    if metadata != expected:
+        target = next(key for key in sorted(metadata.keys() | expected.keys()) if metadata.get(key) != expected.get(key))
+        error = f'metadata_changed:{target}'
+        if retained is not None and inventory is not None:
+            retained.setdefault(str(repo), {}).setdefault(str(path), (error, inventory.owner(str(path)), 'mapped_metadata'))
+        raise Retain(error)
+    row = matches[0]
+    if not re.fullmatch(r'(?:[0-9a-f]{40}|[0-9a-f]{64})', row.get('HEAD', '')) or set(row['HEAD']) == {'0'}:
+        raise _RegistrationUnknown(f'unknown_git_registration_head:{entry}')
+    if head.startswith('ref: ') and row.get('branch') != head[5:].strip() or not head.startswith('ref: ') and row.get('HEAD') != head.strip():
+        raise _RegistrationUnknown(f'unknown_git_registration_head:{entry}')
+    if inventory is not None and (row.get('HEAD'), row.get('branch')) != (inventory[str(path)].get('HEAD'), inventory[str(path)].get('branch')):
+        raise Retain('git_identity_changed_since_inventory')
+    rows.require(path, deadline)
+    return rows
 
 
 def read_json(path: Path, deadline: float, limit: int = 65536):
@@ -1233,7 +1455,7 @@ def _worktree_gate(candidate: dict, deadline: float, retained: dict | None = Non
     task_id = path.name
     _worktree_guard(candidate, deadline)
     repo = Path(candidate['repo'])
-    rows = registrations(repo, deadline, retained=retained, metadata_path=path, metadata_inventory=inventory)
+    rows = _candidate_registration(repo, path, deadline, retained=retained, inventory=inventory)
     rows.require(path, deadline)
     row = rows.get(str(path))
     if row is None or 'locked' in row or 'prunable' in row:
@@ -1242,7 +1464,7 @@ def _worktree_gate(candidate: dict, deadline: float, retained: dict | None = Non
     if branch is not None and branch != f'refs/heads/task/{task_id}':
         raise Retain('unknown_worktree_branch_owner')
     common = git(path, deadline, 'rev-parse', '--path-format=absolute', '--git-common-dir').strip()
-    # The complete literal census above already proved this primary .git and
+    # Discovery and the fresh own-pointer proof established primary .git and
     # rejected redirected primary pointers. Resolve the candidate afresh, but
     # do not ask Git to rediscover the same primary common directory each gate.
     if common != str(repo / '.git') or git(path, deadline, 'rev-parse', '--show-toplevel').strip() != str(path):
@@ -1607,9 +1829,10 @@ def sweep_org(org: Path, deadline: float, *, mode: str, checkpoint=lambda: None,
                     repo, path = Path(candidate['repo']), Path(candidate['path'])
                     # Last local metadata check after fresh tree comparisons;
                     # Git must never consume a known redirected registration.
-                    rows = registrations(repo, deadline, retained=retained, metadata_path=path, metadata_inventory=topology[str(repo)])
+                    rows = _candidate_registration(repo, path, deadline, retained=retained, inventory=topology[str(repo)])
                     rows.require(path, deadline)
                     admitted_branch = rows[str(path)].get('branch')
+                    admitted_head = rows[str(path)].get('HEAD')
                     # Topology enumeration can be slow and mount evidence may
                     # arrive during it. Refresh the recursive tree afterwards,
                     # then ownership, before each actual effect boundary.
@@ -1626,21 +1849,20 @@ def sweep_org(org: Path, deadline: float, *, mode: str, checkpoint=lambda: None,
                         # permission/partial changes count as recent and may
                         # conservatively refuse that retry.
                         retry_tree = admit(candidate, evidence, deadline, now=now, retained=retained, topology=topology)
-                        registrations(repo, deadline, retained=retained, metadata_path=path, metadata_inventory=topology[str(repo)]).require(path, deadline)
+                        _candidate_registration(repo, path, deadline, retained=retained, inventory=topology[str(repo)]).require(path, deadline)
                         if not trees_equal(retry_tree, snapshot(path, deadline), deadline):
                             raise Retain('tree_changed_before_mutation')
                         evidence.ownership(path, Path(candidate['workspace']), path.name)
                         repairs = mutate(path, retry_tree, deadline, remove=False)
                         retry_tree = admit(candidate, evidence, deadline, now=now, repairs=repairs, retained=retained, topology=topology)
-                        registrations(repo, deadline, retained=retained, metadata_path=path, metadata_inventory=topology[str(repo)]).require(path, deadline)
+                        _candidate_registration(repo, path, deadline, retained=retained, inventory=topology[str(repo)]).require(path, deadline)
                         if not trees_equal(retry_tree, snapshot(path, deadline), deadline):
                             raise Retain('tree_changed_before_mutation')
                         evidence.ownership(path, Path(candidate['workspace']), path.name)
                         candidate['retry_count'] = 1
                         git(repo, deadline, 'worktree', 'remove', str(path))
                     remaining_inventory = topology[str(repo)].after_removal(path)
-                    if str(path) in registrations(repo, deadline, retained=retained, metadata_path=path, metadata_inventory=remaining_inventory):
-                        raise Retain('registration_remains_after_remove')
+                    _candidate_registration(repo, path, deadline, retained=retained, inventory=topology[str(repo)], removed=True)
                 try:
                     os.lstat(candidate['path'])
                 except FileNotFoundError:
@@ -1651,7 +1873,8 @@ def sweep_org(org: Path, deadline: float, *, mode: str, checkpoint=lambda: None,
                     # Removing a worktree must preserve its named branch. A
                     # missing/refused resolution is an unconfirmed effect,
                     # even when the folder and registration are already gone.
-                    git(repo, deadline, 'rev-parse', '--verify', admitted_branch + '^{commit}')
+                    if git(repo, deadline, 'rev-parse', '--verify', admitted_branch + '^{commit}').strip() != admitted_head:
+                        raise Retain('git_branch_changed_after_remove')
                 if candidate['phase'] == 'worktree':
                     topology[str(repo)] = remaining_inventory
                 _, attributable = allocated(fresh, removed_inodes)

@@ -116,70 +116,82 @@ known mapping/lock/branch and dirty-status refusals are final for the night, eve
 after healing. Own directory identities and reciprocal pointer signatures are
 revalidated no-follow before status; unsafe changed locations hold the clone. A clean
 status or successful mapping check is discarded. Kept items perform no later
-admission; deletion still repeats every existing fresh topology, ownership and
-tree gate. There is no schema, index or classification change. Every original destructive
-admission census pass remains in this slice. There is no two-pass
-ordering without real-night step 1 data.
+admission; deletion still repeats fresh candidate registration, ownership and
+tree gates. There is no schema, index or classification change. The seq361
+registration scope is described below. There is no two-pass ordering without
+real-night step 1 data.
 
-The fresh census also compares recorded shared-directory, reciprocal-pointer and
-pointer-parent identities and literal membership with discovery through the existing
-additive-TASK comparison. A stable replacement between admissions cannot become a
-new baseline. A proven descendant still forces its existing KEEP reason before
-that comparison can matter. Newly proven TASK arrivals remain deferred and locally
-latched. After a successful Git removal, confirmation compares against a copy of
-the original inventory excluding only that candidate's exact root/admin/pointer
-keys and literal names. If no original entries remain, the final admin container
-observation is bound for the fresh confirmation; newly present entries must still
-pass the complete existing proof. A newly observed safe gitdir-gone residue across
-admissions keeps its existing local unknown-location classification and latch,
-never deletion authority; within one three-census proof the TASK-only addition
-rule is unchanged. The reduced inventory is adopted only after fresh unregistration,
-folder absence and named-branch resolution all succeed. Every other original
-HEAD/branch and topology identity stays pinned. Any failed confirmation remains
-partial/unknown. This adds no repair, retry, housekeeping or clearance authority.
+Founder THR307 seq361 approving seq359 item 2 narrows the fresh worktree
+registration proof. Discovery still performs its complete once-per-clone proof:
+three literal no-follow admin censuses, full Git-list reconciliation, residue and
+arrival classification, and every recorded path/ancestor identity. It also saves
+the own admin entry's stat signature from that existing snapshot. No discovery
+census, classification or discovery-time unsafe-peer hold is removed.
 
-The census records every literal ancestor of reciprocal worktree pointers,
-including ancestors above the immediate parent. A replacement that preserves
-its descendant directory inodes still vetoes admission against inventory.
-After the final topology census at remove, permission-repair and retry boundaries,
-a fresh recursive tree snapshot must equal the admitted tree before the existing
-final ownership transaction and effect. New mount evidence or any changed tree
-therefore retains; after a prior attempted effect it remains partial/unknown.
-No original census pass, fresh gate or refusal latch is removed. These remain
-sampled observations, not a racing-rename fence.
+Each candidate admission gate, pre-remove check, permission-repair/retry check and
+post-removal confirmation re-observes only that candidate's admin entry, metadata,
+reciprocal `.git` pointer and folder. Literal own pointer ancestors, primary common
+directory, admin container and own entry/folder identities stay bound to discovery.
+Own metadata is checked no-follow for unsafe types, hardlinks, changed signatures,
+valid gitdir/commondir/HEAD and exact reciprocal mapping. A single fresh
+`git worktree list --porcelain -z` per check must contain exactly one own row with
+unchanged HEAD/branch and no lock/prunable flag. A missing/duplicated own row or
+lost/redirected own mapping still holds the clone. Ordinary attributed own metadata
+changes retain the candidate; discovery's local/shared refusal latches remain.
+Successful discovery answers never authorize a delete.
 
-Each full worktree admission also revalidates its own directory/pointer identities
-against discovery and compares freshly read HEAD/branch with that inventory.
-The saved identity is a veto on drift, never a successful deletion answer; every
-current topology, ownership, preservation and recursive-tree check still runs.
-After non-force removal, the folder must be absent, the registration gone, and
-the admitted named branch must freshly resolve as a commit. Detached worktrees
-have no named branch to resolve. Failed post-effect resolution keeps the effect
-partial/unknown and coverage incomplete under the existing error classification.
-The exhaustive literal census proves the primary common directory as repo/.git.
-Each gate still resolves the candidate's current common directory and top-level
-through Git and checks the literal directory no-follow; it omits only the
-redundant Git lookup of that primary common directory. No census is omitted.
+At each of these boundaries exactly one additional shallow shared observation
+lstats the primary `.git` and `.git/worktrees` no-follow, pins their discovery
+identities, real-directory types and device, and enumerates only the container's
+entry names with no-follow lstat. Symlink/special/non-directory entries, changed
+shared identities/types/devices, or a new non-TASK entry name hold the clone.
+New TASK-named entries are retained as deferred arrivals at their observed admin
+locations; their names grant no worktree location or deletion authority. There
+are no peer content reads or recursion in this observation. Its duration is
+charged to existing `durations_seconds.shared_registration` and its lstat work
+to `entries_walked`, at org and clone scope. Existing census/topology counters
+continue to count full discovery only.
 
-Ownership is read again after each admission's last recursive snapshot and Git
-gate. The final tree comparison or complete registration census is followed by
-another current ownership/native-writer/hold transaction immediately before
-scratch removal, Git removal, permission repair and retry. Inventory clearance
-never crosses those slow observations. Refusal before an attempted effect retains;
-a refusal after an attempted Git removal remains partial/unknown under the
-existing classification, and no later repair or retry proceeds that night.
-These are sampled observations, not a lock against later same-user writes.
+The manager's TASK-16422 ruling on seq361 removes the post-discovery unrelated
+peer-internal veto: a symlink or unreadable auxiliary object inside a peer's
+previously registered admin directory no longer holds this candidate. That peer
+remains subject to its own ownership, registration and recursive safety gates.
+An unsafe peer already present at discovery still holds the clone. Unrelated
+peer pointer-ancestor changes and omitted peer Git rows likewise do not replace
+the candidate's own proof; fresh literal overlap and nested-worktree vetoes stay.
 
-During candidate admission, final removal/repair/retry checks and post-removal
-confirmation, the census skips repeated reads of a disjoint sibling's ordinary
-index/auxiliary file only when its current full stat signature equals discovery.
-Changed or arriving files are fully read. Discovery reads them all. Every census
-still stats every admin object, checks unsafe types/hardlinks, reads all HEADs
-and reciprocal pointers, validates unique locations/ancestry and literal roots,
-and reconciles Git's complete list. Candidate/overlapping registration metadata
-and unknown-location residue validation remain fully read; siblings' stat signatures
-still latch observed changes to their owner. No successful inventory answer is
-reused, and no census, containment or fresh admission boundary is removed.
+Git's listed literal paths are also compared for overlap with the candidate. This
+cheap peer-level check is necessary to catch a new registration at a literal
+ancestor or descendant; only the shallow shared observation enumerates peer names. A newly
+listed ancestor holds the clone; descendants retain their containing tree,
+including a listed path whose pointer is now absent. Discovery's complete linked
+and residue paths still protect containing trees. Both recursive admission
+snapshots keep the unconditional PR1231 rule4-prime `possible_nested_worktree`
+check. Unrelated agent worktree additions no longer veto this candidate or become
+new deletion authority. Arrivals observed during discovery retain its existing
+classification; later TASK-named arrivals are deferred outside the fixed candidate
+inventory. A new unrelated non-TASK admin name holds the clone.
+
+After each local registration proof, the fresh recursive tree snapshot must still
+equal the admitted tree before the existing current ownership/native-writer/hold
+transaction and effect. Task and structural root must be ended, no active job may
+remain, Git status must be clean, and HEAD commits must be reachable from a kept
+branch/remote. Recursive age, no-follow/link/special-object and same-filesystem/
+mount checks remain. There is still only non-force Git removal and the single
+existing permission repair/retry; branches are never deleted. Expired/killed
+removal is not retried and its published in-flight intent remains an unknown
+partial effect, with no removal credit.
+
+Post-removal proof requires the own folder and admin entry absent and the own Git
+row gone. A named branch must resolve to its admitted commit; detached worktrees
+have no named branch to resolve. Git may remove the empty admin container only
+when discovery's remaining entry set was this candidate alone. The inventory is
+reduced by only this candidate after all confirmations succeed; peers' saved
+identities remain pinned for their own later checks. Failed confirmation remains
+partial/unknown. These are sampled observations, not a racing-rename fence.
+There is no repair/prune/housekeeping authority, new classification, timer/budget,
+stop-file, report or audit-key change. Existing `censuses`/`topology_reads` count
+full discovery proofs only; own/shared checks appear in existing Git/entry/duration counters.
 
 Worker report publication batches up to 32 nonmutating checkpoint requests.
 The initial report, first initialized org state, outer run boundaries, every org
@@ -202,7 +214,7 @@ listed TASK arrivals can satisfy coverage; unknown discovery/shared holds,
 unreached/in-flight/partial effects, operational errors or an unpublished report
 cannot. Positively classified ordinary non-clone folders are listed exclusions;
 a configured clone with missing `.git` or unsafe/unavailable evidence stays unknown.
-The empty-scope Git prune is removed; admission/census frequency is unchanged.
+The empty-scope Git prune is removed; seq361 narrows registration proof as above.
 JSON and matching org audits carry `coverage`, `night`, policy, inventory windows,
 exclusions and deferred arrivals. Worker-only JSON is unproven until the parent
 records stop/reap and a successful worker return code within the original budget;
@@ -296,7 +308,7 @@ Additive TASK roots and new canonical reciprocal TASK-folder/admin-entry pairs
 across censuses or Git listing retain only the arriving task with that same reason;
 existing identities/pointers stay exact and new admin names are TASK names.
 These paths protect containing trees and latch partial discovery; only proven, listed arrivals satisfy coverage.
-Other missing or changed mapping/enumeration/entry, non-TASK additions, unsafe
+At discovery, other missing or changed mapping/enumeration/entry, non-TASK additions, unsafe
 alias/hardlink/special objects, conflict or unknown descendant location retains
 the shared scope.
 All proven paths, including locally uncertain non-task descendants, protect
