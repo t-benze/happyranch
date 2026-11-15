@@ -2,7 +2,12 @@ module happyranch/linux-tsnet-sidecar
 
 go 1.23.1
 
-require tailscale.com v1.78.0
+require (
+	happyranch/tsnethealth v0.0.0
+	tailscale.com v1.78.0
+)
+
+replace happyranch/tsnethealth => ../../shared/tsnethealth
 
 require (
 	filippo.io/edwards25519 v1.1.0 // indirect

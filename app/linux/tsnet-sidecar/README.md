@@ -16,6 +16,14 @@ install/start and drift verification. Raw TCP must reach the connector ingress,
 where pairing and policy are enforced, before the connector forwards to the
 daemon. A direct daemon hop could expose loopback `/auth/bootstrap`.
 
+Linux health uses the single-source local `happyranch/tsnethealth` module. After
+successful startup it emits `tsnet-health ` plus one compact JSON record on
+stderr at join, every five minutes, and on rate-limited status changes.
+If `RUNTIME_DIRECTORY` is set, the latest record is atomically published as
+`health.json` with explicit mode 0644; otherwise only the journal is used.
+The expected Mac hostname is included. See the Linux release handbook for
+fields, cadence, cached path semantics and runtime-directory preservation.
+
 Linux uses the existing `NOTIFY_SOCKET` READY/WATCHDOG/STOPPING protocol and
 `WATCHDOG_USEC`/`WATCHDOG_PID` cadence. systemd owns restart and the injected
 read-only credential copy. The new readiness flags are refused on Linux.
@@ -84,11 +92,13 @@ Darwin has a separate inventory and notices under `third_party/darwin-arm64/`.
 Darwin reconciles the executable command graph, existing sums and source
 licenses; C6-loss includes the already-pinned command import
 `github.com/mdlayher/sdnotify@v1.0.0` and its MIT notice. Linux retains its
-historical library inventory byte-for-byte. Darwin adds
+historical library inventory byte-for-byte. The exact first-party local health
+module replacement is excluded from third-party notices; external modules
+remain checksum and license verified. Darwin adds
 `github.com/google/uuid@v1.6.0` and
 `github.com/prometheus-community/pro-bing@v0.4.0` to its build inventory relative
-to Linux; both already exist in go.mod/go.sum. No new required module or sum is
-authorized. Distribution must include the matching notices; this slice makes
+to Linux; both already exist in go.mod/go.sum. External module pins and sums
+are unchanged. Distribution must include the matching notices; this slice makes
 no binary-distribution claim. Python sidecar handoff/launchd installation is delivered by C6b: Darwin
 `python -m runtime.remote_access.installer install` takes explicit
 `--sidecar-binary`, `--sidecar-config` and first-use `--enrollment-key-file` inputs.

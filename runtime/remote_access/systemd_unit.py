@@ -185,6 +185,7 @@ def render_sidecar_unit(spec: SidecarUnitSpec) -> str:
         "StateDirectory=happyranch-tsnet-sidecar",
         "StateDirectoryMode=0700",
         "RuntimeDirectory=happyranch-tsnet-sidecar",
+        "RuntimeDirectoryPreserve=yes",
         "LogsDirectory=happyranch-tsnet-sidecar",
         "",
         "[Install]",

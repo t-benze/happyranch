@@ -62,6 +62,42 @@ creation.
 
 The embedded-tailnet sidecar disables new Tailscale log uploads, clears historical `tailscaled.log1.txt`/`tailscaled.log2.txt` spool files before each start so queued records are not uploaded, and keeps raw backend logs out of the journal; symlinked or nonregular spool paths fail startup without being followed, while durable state and log configuration are preserved.
 
+The Linux sidecar writes one compact `tsnet-health ` JSON line to stderr (the
+service journal) after successful join and every five minutes. One-second local
+status polling emits backend/peer-online/path changes at most once per 30 seconds.
+Only join and five-minute samples send one disco ping (three-second timeout);
+STUN refresh shares the ten-minute cap and cached age. A changed peer identity,
+online state or address/relay hint invalidates the cached verified path to `none`
+until the next scheduled ping; hints never establish a direct path.
+
+The record fields are `v`, `at`, `trigger`, `backend`, `control`, `health`, `udp`,
+`nat_varies`, `portmap`, `derp_home`, `derp_ms`, and `peer` (`name`, `online`,
+`path`, `relay`, `rtt_ms`, `handshake_age_s`, `direct_kind`). `at` reflects the
+cached probe's measurement age; `portmap` is `unknown` in v1. Records are bounded
+to 2 KiB and eight DERP regions. **The expected Mac peer's hostname is disclosed**;
+other peers, keys, addresses, AuthURL and raw health/error text are excluded.
+Missing/ambiguous peers use an empty-name/offline/none placeholder.
+
+When systemd supplies `RUNTIME_DIRECTORY`, the same JSON is atomically written
+to `/run/happyranch-tsnet-sidecar/health.json` using a same-directory temporary
+file, explicit fchmod 0644 despite UMask 0077, fsync and rename. Existing symlink
+or nonregular targets are refused. Without that variable, only the journal is
+used. A file-publication failure leaves the journal as fallback. Health work is
+cancelled at shutdown without delaying transport teardown or sd_notify.
+`RuntimeDirectoryPreserve=yes` retains the file after stop (not reboot).
+[systemd.exec](https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html#RuntimeDirectoryMode=)
+documents the directory mode default of 0755, so the desktop user can traverse
+the directory and read this 0644 file without privilege. Existing units are not
+automatically upgraded: `ManagedInstaller._preflight` compares their bytes with
+the newly rendered units and refuses any difference before install or uninstall.
+An operator must inspect and explicitly reconcile the installed units with the
+new rendering, including `RuntimeDirectoryPreserve=yes`, and reload systemd to
+apply changed unit files. Rerunning install alone does not replace an old unit;
+uninstall with the new renderer also refuses the old bytes. This documents the
+existing drift refusal, not an automatic upgrade procedure. Source publication
+performs no live unit action. Sidecar on-demand refresh remains the five-minute
+periodic cadence in v1.
+
 Managed remote access also enforces the cross-config port contract before
 provisioning publishes files or install starts services: sidecar `ConnectorAddr`
 must be exactly `127.0.0.1:<managed.bind_port>`, and ingress must differ from

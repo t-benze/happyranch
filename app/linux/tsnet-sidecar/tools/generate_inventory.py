@@ -59,6 +59,8 @@ def main() -> None:
     for pkg in packages:
         mod=pkg.get("Module")
         if not isinstance(mod,dict) or mod.get("Main"): continue
+        # This exact replacement is first-party source, not a third-party input.
+        if mod["Path"] == "happyranch/tsnethealth" and mod.get("Replace", {}).get("Path") == "../../shared/tsnethealth": continue
         if isinstance(mod.get("Replace"),dict): mod=mod["Replace"]
         key=(str(mod["Path"]),str(mod["Version"]))
         modules[key]={"module":key[0],"version":key[1],"sum":str(mod.get("Sum", "")),"dir":str(mod["Dir"])}
