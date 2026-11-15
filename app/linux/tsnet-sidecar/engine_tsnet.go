@@ -102,3 +102,7 @@ func (e *TSNetEngine) Close() error {
 	}
 	return e.server.Close()
 }
+
+func (e *TSNetEngine) healthClient() (healthClient, error) {
+	return e.server.LocalClient()
+}

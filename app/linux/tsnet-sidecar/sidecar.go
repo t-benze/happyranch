@@ -87,6 +87,7 @@ type Sidecar struct {
 	starting        bool
 	startDone       chan struct{}
 	stopping        bool
+	healthCancel    context.CancelFunc
 	stopOnce        sync.Once
 	engineCloseOnce sync.Once
 	acceptWG        sync.WaitGroup
@@ -156,6 +157,9 @@ func (s *Sidecar) Start(ctx context.Context) error {
 		return ErrListener
 	}
 	s.listener = l
+	if runtime.GOOS == "linux" {
+		s.startHealth(ctx)
+	}
 	s.acceptWG.Add(1)
 	s.mu.Unlock()
 	go s.acceptLoop(ctx, l)
@@ -425,6 +429,9 @@ func (s *Sidecar) shutdown(cause error, acceptCaller bool) {
 		s.mu.Lock()
 		l := s.listener
 		s.listener = nil
+		if s.healthCancel != nil {
+			s.healthCancel()
+		}
 		s.mu.Unlock()
 		var teardownFailed bool
 		if l != nil {
