@@ -3325,8 +3325,10 @@ Status, active_runtime and optional host_sessions keep their meanings.
 The host snapshot is read first. The async route then performs a synchronous,
 no-await read of loop-owned task queue/native-owner sets, runner lifetimes,
 thread/dream/wake/schedule queue ownership and durable job registrations
-(including retained unfinished tails). Those owners precede admission and
-outlive attempt release/backoff. Task session bindings are read after host
+(including retained unfinished tails). Existing task preparation, thread
+control and native producer/writer registries also count after an async runner
+returns; their ownership is only observed, never changed. Those owners precede
+admission and outlive attempt release/backoff. Task session bindings are read after host
 admission, so a lease granted between active/queue reads cannot erase its
 logical owner. Retained pending/running jobs, pending thread invocations,
 running dreams/work hours and firing schedules are counted through existing

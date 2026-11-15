@@ -129,6 +129,14 @@ async def check(legacy_signal: bool) -> int:
                         await observe("unwired-host", True, True)
                     with patch.object(host, "health_snapshot", side_effect=OSError("synthetic")):
                         await observe("raising-host", True, True)
+                    move = org.db._team_move_coordinator
+                    for name, registry in (
+                            ("retained-task-preparation", move._reservations),
+                            ("retained-thread-control", move.threads.controls),
+                            ("retained-producer-owner", move.producers.live),
+                            ("retained-native-writer", move.producers.writers)):
+                        with patch.dict(registry, {"synthetic": object()}):
+                            await observe(name, True)
                     # Existing status-index readers cover durable producer
                     # records even without a current runner registration.
                     seed_future(org)

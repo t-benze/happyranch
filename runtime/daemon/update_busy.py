@@ -108,6 +108,13 @@ def compose_update_busy(state: DaemonState, host: dict | None) -> UpdateBusy:
                 if remaining <= 0 or not db._lock.acquire(timeout=remaining):
                     raise ValueError("producer read bound")
                 try:
+                    # Existing native owners can survive the async runner's
+                    # return (unknown preparation, worker or output teardown).
+                    # Count their registries without interpreting/clearing them.
+                    move = db._team_move_coordinator
+                    invocations += (len(db._task_pause_store._live) + len(move._reservations)
+                                    + len(move.threads.live) + len(move.threads.controls)
+                                    + len(move.producers.live) + len(move.producers.writers))
                     # Pending jobs can already own preparation; retained running
                     # rows count even when there is no current native registration.
                     jobs += _count(db._conn, "jobs", "jobs_status_idx", "pending")
