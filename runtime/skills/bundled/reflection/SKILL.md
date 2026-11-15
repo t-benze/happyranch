@@ -56,6 +56,13 @@ When the founder indicates the reflection is done:
      <markdown body>
    ```
 
+   Quote YAML strings containing ` #`, for example
+   `title: "Fix PR #123 regression"`. Top-level unquoted single-line string
+   fields with trailing comments (including `topic: ci  # note`) are rejected;
+   remove the comment or quote the entire value to preserve its text. Multiline
+   bodies retain normal YAML behavior. A JSON object is also accepted, detected
+   by a `.json` suffix or a leading `{` after whitespace.
+
    Then call:
 
    ```bash
