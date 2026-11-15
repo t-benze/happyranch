@@ -1,6 +1,6 @@
 # Feishu Notifications for Script Requests — Implementation Plan
 
-**Status: REMOVED in TASK-302 (THR-022).** Web UI + threads are sole control surface. DB tables dormant.
+**Status: REMOVED in TASK-302 (THR-022).** Web UI + threads are sole control surface. Correlation tables dropped by database-open migration (THR-365, PR #1525).
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 

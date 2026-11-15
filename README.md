@@ -457,6 +457,8 @@ A missing file or `null` value at any layer falls through to the next layer. Val
 
 Feishu was removed in TASK-302 (THR-022). The web UI and threads are the sole control path for dispatch / revisit / resolve-escalation. Legacy `feishu_notifications` config blocks are tolerated on load but ignored. The CLI `happyranch resolve-escalation` and `happyranch revisit` remain the authoritative founder surfaces.
 
+Legacy `escalation_notifications` / `processed_event_ids` tables are dropped automatically on the next database open after upgrade (no operator action; their rows are discarded), and a leftover `feishu_notifications` block in org config can be deleted at any time but is harmless.
+
 ### Nightly dreaming
 
 Dreaming lets each agent run a private nightly reflection on a per-org schedule. It is **opt-in and inert until configured**: with no `dreaming` block (or `enabled: false`), no agent is ever dreamed and behavior is unchanged. Add a `dreaming` block to `<runtime>/orgs/<slug>/org/config.yaml` to turn it on:
