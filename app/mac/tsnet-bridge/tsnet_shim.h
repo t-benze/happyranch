@@ -86,6 +86,11 @@ void tsnet_conn_close(int connID);
 // Caller must free with tsnet_free_string.  Returns NULL on failure.
 char *tsnet_local_addr(void);
 
+// Managed-only compact v1 health JSON; NULL + fixed last_error on failure.
+// Whole call: min(positive timeoutMs, 10000ms); nonpositive uses 10000ms.
+// One cached probe per 10min, one 3s ping in flight; caller frees the string.
+char *tsnet_health_json(int timeoutMs);
+
 // tsnet_last_error returns a human-readable description of the last error.
 // Caller must free with tsnet_free_string.
 char *tsnet_last_error(void);

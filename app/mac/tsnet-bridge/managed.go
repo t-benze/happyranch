@@ -53,6 +53,7 @@ type managedEngine struct {
 	engine                                 wgengine.Engine
 	dialTCP                                func(context.Context, netip.AddrPort) (net.Conn, error)
 	pinned                                 key.NodePublic
+	health                                 *managedHealth
 }
 
 type managedConnection struct {
@@ -241,11 +242,16 @@ func managedUp(timeoutMs int) int {
 	if err := m.profile.commitConsumed(); err != nil {
 		return fail(managedStateError)
 	}
+	lc, err := m.server.LocalClient()
+	if err != nil || lc == nil {
+		return fail(managedUnavailable)
+	}
 	srvMu.Lock()
 	if ctx.Err() != nil || engineGeneration != m.generation {
 		srvMu.Unlock()
 		return fail(contextResult(ctx, managedCanceled))
 	}
+	m.health = newManagedHealth(lc)
 	m.engine = eng
 	m.dialTCP = d.NetstackDialTCP
 	m.ready = true

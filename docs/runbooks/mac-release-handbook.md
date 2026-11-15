@@ -766,3 +766,17 @@ Darwin dependency inventory/notices. This target is not bundled by the app yet.
 Python launchd handoff/installation is C6b; frozen entry/bundling and native
 packaged-app acceptance remain pending. No Swift HomeConnector change, signing,
 Jenkins change or native execution is part of C6a.
+
+### Managed bridge health record (THR-327 A3a)
+
+The Go-only `tsnet_health_json(timeoutMs)` export returns compact v1 JSON for a
+running managed engine, selecting only its pinned home peer (empty placeholder
+until a managed dial pins it). Free it with `tsnet_free_string`; NULL means fixed
+`Managed health unavailable`. The whole call is capped at 10 seconds (a positive
+smaller timeout wins; nonpositive uses the cap), including serialized-call waiting.
+One Runner per successful up caches DERP-map-only probes for ten minutes; one
+3-second disco ping may run at a time. First successful export is `join`, later
+ones are `on_demand`. Engine cancellation/close rejects outstanding results.
+Swift UI cadence/button and inclusion in the Diagnostics bundle follow in A3b.
+The existing fifteen-export release inspector does not yet assert this new symbol;
+A3b's native build/linkage proof must include it. This slice does not build the app.

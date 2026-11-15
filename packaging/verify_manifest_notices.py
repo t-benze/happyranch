@@ -305,6 +305,51 @@ def run(scratch, stdlib=None):
         else:
             raise AssertionError('inconsistent freezer selection accepted')
         assert not (refused_output / 'python-distributions.json').exists()
+    # Exact first-party replacement traverses the real snapshot AND owner gates.
+    shared = source / 'app/shared/tsnethealth'
+    shared.mkdir(parents=True)
+    module_path = output / 'diagnostics/go-modules.json'
+    deps_path = output / 'diagnostics/go-deps.json'
+    original_modules, original_deps = module_path.read_bytes(), deps_path.read_bytes()
+    replacement = dict(Path='happyranch/tsnethealth', Version='v0.0.0', Dir=str(shared),
+                       Replace=dict(Path='../../shared/tsnethealth', Dir=str(shared)))
+    def replacement_case(label, module, accepted):
+        write(module_path, module)
+        write(deps_path, dict(ImportPath=module['Path'], Module=module))
+        try:
+            inventory = H['snapshot'](source, output, mapping)
+            rows = H['expected'](inventory)
+        except ValueError as exc:
+            assert not accepted and 'MANIFEST_NOTICE_REFUSED' in str(exc), (label, str(exc))
+        else:
+            assert accepted, label + ' unexpectedly accepted'
+            assert not any(r['family'] == 'go' and r['component'] == module['Path'] for r in rows)
+        REPORT.append(dict(label='first-party replacement: ' + label, exit=0))
+    replacement_case('exact accepted', replacement, True)
+    for label, change in (
+        ('different module refused', {'Path': 'example.com/tsnethealth'}),
+        ('different replace refused', {'Replace': dict(replacement['Replace'], Path='../tsnethealth')}),
+        ('outside source refused', {'Dir': str(scratch / 'outside-shared')}),
+        ('versioned replacement refused', {'Replace': dict(replacement['Replace'], Version='v1.0.0')}),
+        ('replacement directory differs refused', {'Replace': dict(replacement['Replace'], Dir=str(scratch / 'outside-shared'))}),
+    ):
+        replacement_case(label, dict(replacement, **change), False)
+    # Reach the separate owner/Replace refusal with an otherwise cache-contained Dir.
+    cache = output / 'scratch/go-modules/near-miss'
+    cache.mkdir()
+    for label, change in (
+        ('cached different module refused', {'Path': 'example.com/tsnethealth'}),
+        ('cached different replace refused', {'Replace': dict(replacement['Replace'], Path='../tsnethealth')}),
+        ('cached versioned replace refused', {'Replace': dict(replacement['Replace'], Version='v1.0.0')}),
+    ):
+        replacement_case(label, dict(replacement, Dir=str(cache), **change), False)
+    # A lexically correct path must not resolve through a link outside the export.
+    shared.rmdir()
+    outside_shared = scratch / 'outside-shared'; outside_shared.mkdir()
+    shared.symlink_to(outside_shared, target_is_directory=True)
+    replacement_case('symlink escape refused', replacement, False)
+    shared.unlink(); shared.mkdir()
+    module_path.write_bytes(original_modules); deps_path.write_bytes(original_deps)
     cli = [sys.executable, str(SOURCE / 'app/mac/scripts/manifest_notices.py')]
     collect = cli + ['collect', '--source', str(source), '--app', str(app), '--output', str(output), '--mapping', str(output / 'diagnostics/license-mapping.json')]
     py_snapshot = json.loads((output / 'scratch/freeze-work/python-distributions.json').read_text())

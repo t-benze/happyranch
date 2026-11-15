@@ -59,3 +59,6 @@ __attribute__((weak))
 void tsnet_cancel(void) {}
 __attribute__((weak))
 int tsnet_conn_dial_managed(const char *host, int port, int timeoutMs) { return -15; }
+
+__attribute__((weak))
+char *tsnet_health_json(int timeoutMs) { return 0; }

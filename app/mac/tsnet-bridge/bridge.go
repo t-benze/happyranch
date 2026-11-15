@@ -431,6 +431,21 @@ func tsnet_conn_dial_managed(host *C.char, port, timeoutMs C.int) C.int {
 
 func setLastError(message string) { errorMu.Lock(); lastError = message; errorMu.Unlock() }
 
+// tsnet_health_json returns a compact managed-only v1 health record.
+// Positive timeouts are capped at 10s; nonpositive values use that cap.
+// Caller owns the C allocation and releases it with tsnet_free_string.
+//
+//export tsnet_health_json
+func tsnet_health_json(timeoutMs C.int) *C.char {
+	data, err := managedHealthJSON(int(timeoutMs))
+	if err != nil {
+		setLastError("Managed health unavailable")
+		return nil
+	}
+	setLastError("")
+	return C.CString(string(data))
+}
+
 //export tsnet_last_error
 func tsnet_last_error() *C.char {
 	errorMu.Lock()
