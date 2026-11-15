@@ -16,3 +16,36 @@ metrics and readiness use current state; history permits an empty store.
 - **Metrics persistence** (THR-066): daemon-global `metrics.db` at `<runtime_root>/metrics.db` (NOT per-org). Append-only snapshots every ~60s, 30-day retention. The store is `runtime/daemon/metrics_store.py`; its cross-thread SQLite connection is serialized by one reentrant lock across initialization, reads/fetches, writes/commits, health, offline maintenance and close; the periodic writer piggybacks `work_hours_scheduler_loop`. **Routes**: `GET /api/v1/metrics` (live snapshot + pull-gauges), `GET /api/v1/metrics/history` (persisted rows, newest-first, bearer-authed, `?since=&until=&limit=` query params). HTTP latency is labelled by the matched FastAPI **route template** (e.g. `POST /api/v1/orgs/{slug}/tasks/{task_id}/completion`), never the literal `request.url.path`; an unmatched request records `METHOD __unmatched__` and a handler exception records `METHOD __error__` (elapsed time still recorded, exception re-raised). Snapshots carry an additive `format_version` marker (`2` = template labels; a stored row without it is legacy raw-path format and stays readable). Each persist cycle logs non-sensitive storage telemetry (route-label cardinality, serialized bytes, row/prune counts, oldest/newest capture, DB/WAL bytes, page/free-list counts). Never delete `metrics.db`, `-wal`, or `-shm` manually. **Offline maintenance (startup-only, TASK-5443 replacement):** `python -m runtime.daemon --maintenance` (or `scripts/daemon.sh maintenance`) is an explicit one-shot that runs BEFORE the daemon binds an HTTP listener or starts its lifespan/schedulers/workers and then exits — it never serves traffic and never coexists with a running daemon. It runs the ordered MetricsStore sequence (strict-before prune at the unchanged 30-day cutoff → WAL checkpoint → `PRAGMA integrity_check` must be exactly `ok` → controlled `VACUUM` → post-VACUUM WAL checkpoint → post-vacuum integrity evidence), logs bounded before/after telemetry (DB/WAL bytes, rows, cutoff, page/free-list counts, duration, pre-/post-vacuum checkpoint and integrity outcomes, prune count, snapshot-size and route-label cardinality — never raw IDs/labels/content), and returns 0 on success / nonzero on fail-closed failure with a bounded, redacted classification (stable code or `operational-error`) plus fixed recovery guidance — never raw exception text, tracebacks, filesystem paths, or injected content — and no automatic retry (a fresh explicit invocation is required). Run it only while the daemon is stopped; it refuses when a daemon pid is alive and SQLite fail-closes (checkpoint busy / VACUUM locked) if a live holder exists. There is deliberately no live maintenance route, gate, or scheduler.
 
 **Failure diagnostics (THR-220).** Failed thread-invocation audits retain capped raw stdout/stderr tails as additive payload keys. Task, thread, and dream reports select one bounded human cause from complete stderr before tailing; exact known benign launcher/trust lines do not win, while meaningful stderr (including lookalikes) does. The proven API-error/session-limit envelope separately retains its bounded reset notice on those existing surfaces. This is not a comprehensive redaction guarantee and does not alter raw classifier, rate-limit, exact-eviction, retry-owner, or breaker inputs. Claude's session-limit notice is terminal but is not a short-backoff rate-limit retry signal.
+
+
+## Daily workflow physical integrity advisory (I1b)
+
+The existing machine-local future 03:00 disk-sweeper wake independently launches
+`org_integrity_monitor` before sweep admission, stop-file, markers or native
+writer reservation. It checks known roots, including broken/unattached orgs,
+serially. A missing wake is missed; startup does not catch up. Advisory results
+never gate loads, tasks, workflows or admission and trigger no repair,
+notification, restore, hold or cancellation.
+
+The existing Audit filter `action=workflow_integrity_check` exposes the closed
+`workflow-integrity-report@1` payload in the unchanged empty-task/daemon envelope.
+It carries org/runtime key, local date/timezone, UTC start/finish, outcome,
+reason/stage, elapsed/steps, snapshot identity digest, report id and reporting.
+Native corruption text, SQL, paths from cells, credentials and row data never
+cross this boundary. `ok/full_integrity_ok` requires one literal native `ok`
+and normal EOF. Native non-ok or CORRUPT/NOTADB is failed; unavailable is never
+success or proof of no corruption.
+
+Under `<daemon_home>/workflow-integrity/<runtime-key>/<slug>/`, exclusive date
+reservation/final files retain each attempt; private 0700 directories and 0600
+files use literal no-follow, single-link, dir-fd writes and fsync. An interrupted
+reservation is unavailable, never success. Date observations remain immutable;
+`latest.json` carries separately observed external/audit reporting status after
+audit mirroring. A pending audit state in the immutable date record does not
+claim audit persistence. Latest reads are bounded to 32 KiB and a cooperative
+one-second deadline; late publication refuses and preserves uncertainty.
+Audit mirroring uses a separate bounded writer after the checker closes.
+If both sinks fail, the sanitized log is
+`workflow_integrity_report_unavailable`; no persistence is claimed. Stale latest
+retains its date. Reports have no automatic retention cleanup. A3 owns the later
+independent setup-status projection; this change adds no Audit UI.

@@ -249,3 +249,19 @@ into C on success or refusal. Success checks enforce C without replenishment;
 retained refusals propagate. Acquisition uses retained per-call caps plus L and
 the original deadline, not pre-reservation against C's 64 MiB cap. Unbudgeted
 retained document/ownership query bytes are not included in C's byte counter.
+
+
+## I1b advisory daily observation
+
+At the existing future-local 03:00 daemon wake, an independent read-only worker
+checks each known org snapshot without setup or repair authority. Sweep stop,
+reservation failure and slow sweep work do not gate that launch. Down at wake
+means missed; no same-date retry or startup catch-up occurs. Per-date receipt
+and final report plus latest live under
+`<daemon_home>/workflow-integrity/<runtime-key>/<slug>/`; do not remove them to
+retry. An unfinished receipt, stale date or unavailable result is not success.
+The existing Audit filter `action=workflow_integrity_check` exposes loaded-org
+reports; unattached audit failure is retained in external reporting metadata.
+See [report semantics](../agent-guides/contracts/observability.md#daily-workflow-physical-integrity-advisory-i1b).
+These records authorize no restore, hold, cancellation, installation or admission
+change. All existing load validation remains until I2.

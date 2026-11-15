@@ -4347,3 +4347,34 @@ No post-COMMIT physical veto or automatic restore is added. Inline load checks
 remain until I2; daily read-only reporting is I1b and bootstrap calling is A4.
 No daemon scheduling, startup or activation changes land here. See the
 [I1a contract](../superpowers/specs/2026-11-14-automatic-workflow-setup.md).
+
+
+## I1b daily read-only workflow integrity
+
+The daemon lifespan owns an `OrgIntegrityMonitor`. The existing future-local
+03:00 sweep wake launches it independently before sweep-specific work. Known
+org roots are snapshotted once; broken/unattached orgs remain visible and
+reserved/uninitialized folders are skipped. Exclusive per-org/date receipts
+prevent repeated attempts after clock rollback or restart. There is no startup
+catch-up, new Schedule, agent task or configuration switch.
+
+The fixed pre-start `--workflow-integrity-helper read` branch in source and
+frozen daemon argv opens only the literal live DB with `mode=ro` and
+`query_only=ON`; no immutable flag or Database constructor. The separate daily
+ledger permits at most 640M VM steps and 60 seconds per original org, progress
+every 1000 steps, one MiB values and at most 0.5 seconds cumulative busy wait.
+A1's cooperating SH interval is not implemented here (R-I1b-1). No lock protocol
+is invented. Deadline/cancellation sends terminate, then kill with at most two
+additional seconds of supervision. An unobserved original worker stays in
+custody; no replacement reader starts and later orgs report in_flight_reader.
+Shutdown does not indefinitely join it. Discovery/publication have separate
+bounded subprocess custody, without event-loop fsync or SQLite waits.
+
+See [observability](contracts/observability.md#daily-workflow-physical-integrity-advisory-i1b)
+for the durable audit/external report and reporting failure semantics. The result
+is advisory and never modifies business admission. Inline load integrity,
+complete logical/FK validation, L32M, A/B/C2M and five-second readers remain until
+I2. No live install, daemon restart or repair is authorized by source delivery.
+
+Attempt identity includes runtime key as well as slug/date, so an in-process
+runtime switch cannot consume another runtime's same-day attempt.

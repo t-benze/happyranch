@@ -2149,7 +2149,7 @@ def _record_previous_night(state, date: str) -> None:
             LOG.exception('Disk sweep night record unavailable org=%s date=%s', slug, date)
 
 
-async def disk_sweeper_loop(state) -> None:
+async def disk_sweeper_loop(state, integrity_monitor=None) -> None:
     from runtime.runtime import daemon_home
     now = datetime.now().astimezone()
     previous = now.date() - timedelta(days=now.hour < 3)
@@ -2160,6 +2160,11 @@ async def disk_sweeper_loop(state) -> None:
     while True:
         due = next_night(datetime.now().astimezone())
         await asyncio.sleep(max(0, due.timestamp() - time.time()))
+        # Independent advisory pass, before ANY sweep admission/reporting work.
+        # launch never waits for this pass; a slow/failed/suspended sweep cannot
+        # suppress its read worker or consume its separate daily allowance.
+        if integrity_monitor is not None:
+            integrity_monitor.launch(due)
         if state.runtime is None:
             continue
         try:

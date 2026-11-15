@@ -32,6 +32,10 @@ from typing import Iterator
 
 # Frozen repository children must reach their resource limits/Git exec before
 # importing the daemon. This is the existing fixed helper dispatch, not serve.
+if __name__ == '__main__' and sys.argv[1:2] == ['--workflow-integrity-helper']:
+    from runtime.daemon.org_integrity_monitor import helper_main as integrity_helper_main
+    raise SystemExit(integrity_helper_main(sys.argv[2:]))
+
 if __name__ == '__main__' and sys.argv[1:2] == ['--cleanup-helper']:
     from runtime.daemon.cleanup_helpers import main as helper_main
     raise SystemExit(helper_main(sys.argv[2:]))
@@ -1024,6 +1028,10 @@ class _DiagnosticServer(uvicorn.Server):
 
 
 def main(argv: list[str] | None = None) -> int:
+    arguments = sys.argv[1:] if argv is None else argv
+    if arguments[:1] == ['--workflow-integrity-helper']:
+        from runtime.daemon.org_integrity_monitor import helper_main as integrity_helper_main
+        return integrity_helper_main(arguments[1:])
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",

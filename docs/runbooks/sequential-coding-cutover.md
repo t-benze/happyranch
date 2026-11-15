@@ -349,3 +349,17 @@ is `unknown`. No post-COMMIT physical veto or restore is added. This changes no
 Coding setup/admission authority. Inline load checks remain until I2, and the
 daily report belongs to I1b. See the
 [I1a contract](../superpowers/specs/2026-11-14-automatic-workflow-setup.md).
+
+
+## I1b daily integrity is advisory
+
+The existing machine-local future 03:00 sweep wake independently launches the
+known-org RO/query-only full physical check, including unattached roots. It has
+its own finite daily budget and durable org/date receipt. Sweep suspension does
+not suspend integrity, and daemon downtime creates no catch-up. Audit action
+`workflow_integrity_check` and private external date/latest reports expose
+sanitized outcomes. Missing, failed, stale or unavailable reports never grant
+or revoke Coding admission and cause no repair/restore/hold/cancellation.
+See [report semantics](../agent-guides/contracts/observability.md#daily-workflow-physical-integrity-advisory-i1b).
+Inline integrity and complete logical/native checks remain unchanged until I2;
+A3's setup-status projection and A4's automatic setup remain separately owned.

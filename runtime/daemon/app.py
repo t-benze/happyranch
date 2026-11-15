@@ -345,7 +345,9 @@ async def _lifespan(app: FastAPI):
         from runtime.daemon.zombie_reaper import zombie_reaper_loop
         zombie_reaper_task = asyncio.create_task(zombie_reaper_loop(state))
         from runtime.daemon.disk_sweeper import disk_sweeper_loop
-        disk_sweeper_task = asyncio.create_task(disk_sweeper_loop(state))
+        from runtime.daemon.org_integrity_monitor import OrgIntegrityMonitor
+        integrity_monitor = OrgIntegrityMonitor(state)
+        disk_sweeper_task = asyncio.create_task(disk_sweeper_loop(state, integrity_monitor))
         from runtime.daemon.exchange_reaper import exchange_reaper_loop
         exchange_reaper_task = asyncio.create_task(exchange_reaper_loop(state))
         from runtime.daemon.direct_connect_projection_sweep import direct_connect_projection_sweep_loop
@@ -432,6 +434,7 @@ async def _lifespan(app: FastAPI):
             if isinstance(outcome, BaseException) and not isinstance(outcome, asyncio.CancelledError):
                 logger.error("Native runner shutdown failed: %r", outcome)
         disk_sweeper_task.cancel()
+        await integrity_monitor.close()
         await asyncio.gather(disk_sweeper_task, return_exceptions=True)
         zombie_reaper_task.cancel()
         direct_connect_projection_sweep_task.cancel()
