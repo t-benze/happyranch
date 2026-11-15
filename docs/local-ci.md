@@ -3236,6 +3236,24 @@ units, general integration or Product E2E. Real daemon/CLI/UI acceptance remains
 a separate independent QA gate. Web `openapi-coverage.test.ts` was retired under
 THR-343; preserve the OpenAPI snapshot and TS client mirror, with Web static CI.
 
+## I1b daily integrity cases
+
+`WORKFLOW_SCHEMA_PYTHON=3.12 bash scripts/test-workflow-schema-load.sh --daily-integrity`
+and the same selection with `3.14` extend the existing disposable shell venue.
+The full selection includes these cases. Private synthetic SQLite fixtures
+exercise actual RO/query-only zero changes, native corrupt index/NOTADB, missing
+and busy roots, deadlines/SQL budgets, independent future 03:00 launch with sweep
+stop, two dates/two orgs and repeat receipts, audit route payloads, publication
+faults, source/frozen pre-start dispatch, cancellation and unreaped-reader
+custody. Clocks, transport faults and observers stay test-side.
+
+The full shell runs on both versions and `scripts/local_ci.sh all` require a
+persistent own-task job and authenticated terminal show/output receipts. Intended
+sweep-stop coupling, non-ok acceptance and RW-open mutations must each fail,
+restore byte-exactly by SHA256, and pass on both runtimes. These are authoring
+proof, not a new CI lane or required check. Python/Web units remain retired;
+general integration is SKIPPED THR-243 seq42 and Product E2E stays daily only.
+
 ## I1a install integrity cases
 
 `WORKFLOW_SCHEMA_PYTHON=3.12 bash scripts/test-workflow-schema-load.sh --install-integrity`
@@ -3255,22 +3273,3 @@ at the final clean head; authenticate actual terminal `jobs show`/`jobs output`
 before claiming a pass. This adds no CI lane, required check or Product E2E run.
 Inline load checks remain until I2; the daily report is I1b. See the
 [I1a contract](superpowers/specs/2026-11-14-automatic-workflow-setup.md).
-
-
-## I1b daily integrity cases
-
-`WORKFLOW_SCHEMA_PYTHON=3.12 bash scripts/test-workflow-schema-load.sh --daily-integrity`
-and the same selection with `3.14` extend the existing disposable shell venue.
-The full selection includes these cases. Private synthetic SQLite fixtures
-exercise actual RO/query-only zero changes, native corrupt index/NOTADB, missing
-and busy roots, deadlines/SQL budgets, independent future 03:00 launch with sweep
-stop, two dates/two orgs and repeat receipts, audit route payloads, publication
-faults, source/frozen pre-start dispatch, cancellation and unreaped-reader
-custody. Clocks, transport faults and observers stay test-side.
-
-The full shell runs on both versions and `scripts/local_ci.sh all` require a
-persistent own-task job and authenticated terminal show/output receipts. Intended
-sweep-stop coupling, non-ok acceptance and RW-open mutations must each fail,
-restore byte-exactly by SHA256, and pass on both runtimes. These are authoring
-proof, not a new CI lane or required check. Python/Web units remain retired;
-general integration is SKIPPED THR-243 seq42 and Product E2E stays daily only.
