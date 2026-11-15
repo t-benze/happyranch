@@ -135,10 +135,10 @@ func (m *healthMonitor) sample(ctx context.Context, trigger string) {
 		}
 		m.verified = path
 	}
-	ping := m.ping
 	if path != m.verified || !path.online {
-		ping = nil
+		m.ping = nil
 	}
+	ping := m.ping
 	record, err := tsnethealth.BuildRecord(m.at, trigger, status, selected, ping, m.dm, m.probe, m.age+m.at.Sub(m.measured))
 	if err != nil || serviceCtx.Err() != nil {
 		return

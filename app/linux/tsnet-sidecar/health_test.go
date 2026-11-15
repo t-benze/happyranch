@@ -113,7 +113,7 @@ func TestHealthCadenceAndChanges(t *testing.T) {
 	}
 	backend := rerouted
 	backend.BackendState = "Stopped"
-	f := &fakeHealth{status: &backend, statuses: []*ipnstate.Status{up, up, &down, up, up, &rerouted, &backend, &backend, &backend}}
+	f := &fakeHealth{status: &backend, statuses: []*ipnstate.Status{up, &rerouted, &down, &down, &down, up, &backend, &backend, &backend}}
 	lines := make(healthLines, 16)
 	ticks := make(chan time.Time)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -125,11 +125,11 @@ func TestHealthCadenceAndChanges(t *testing.T) {
 	go func() { m.run(ctx, ticks); close(done) }()
 	takeHealth(t, lines, "join", "direct")
 	ticks <- at.Add(time.Second)
-	ticks <- at.Add(2 * time.Second)
 	takeHealth(t, lines, "change", "none")
+	ticks <- at.Add(2 * time.Second)
 	ticks <- at.Add(3 * time.Second)
 	ticks <- at.Add(32 * time.Second)
-	takeHealth(t, lines, "change", "direct")
+	takeHealth(t, lines, "change", "none")
 	ticks <- at.Add(62 * time.Second)
 	takeHealth(t, lines, "change", "none")
 	ticks <- at.Add(92 * time.Second)
@@ -143,7 +143,7 @@ func TestHealthCadenceAndChanges(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("loop did not stop")
 	}
-	wantTimes := []time.Duration{0, 2 * time.Second, 32 * time.Second, 62 * time.Second, 92 * time.Second, 5 * time.Minute}
+	wantTimes := []time.Duration{0, time.Second, 32 * time.Second, 62 * time.Second, 92 * time.Second, 5 * time.Minute}
 	if len(writer.times) != len(wantTimes) {
 		t.Fatalf("emissions=%v", writer.times)
 	}
