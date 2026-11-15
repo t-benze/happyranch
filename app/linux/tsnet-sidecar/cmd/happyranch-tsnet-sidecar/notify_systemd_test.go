@@ -3,7 +3,6 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	sidecar "happyranch/linux-tsnet-sidecar"
@@ -178,31 +177,24 @@ func TestMainSIGTERMDuringStartup(t *testing.T) {
 	}
 	cmd := exec.Command(os.Args[0], "-test.run=^TestMainSIGTERMDuringStartup$")
 	cmd.Env = append(os.Environ(), "SIDECAR_SIGNAL_CONFIG="+path)
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		t.Fatal(err)
-	}
+	cmd.Stderr = os.Stderr
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
 	defer cmd.Process.Kill()
-	started := make(chan struct{})
-	readDone := make(chan struct{})
+	// Observe the real backend's control connection instead of raw tsnet logs,
+	// which the production engine intentionally suppresses.
+	started := make(chan net.Conn, 1)
 	go func() {
-		defer close(readDone)
-		scanner := bufio.NewScanner(stderr)
-		for scanner.Scan() {
-			if strings.Contains(scanner.Text(), "LocalBackend state is NeedsLogin") {
-				select {
-				case <-started:
-				default:
-					close(started)
-				}
-			}
-		}
+		c, _ := control.Accept()
+		started <- c
 	}()
 	select {
-	case <-started:
+	case c := <-started:
+		if c == nil {
+			t.Fatal("local control endpoint failed before engine startup")
+		}
+		defer c.Close()
 	case <-time.After(5 * time.Second):
 		cmd.Process.Kill()
 		cmd.Wait()
@@ -212,7 +204,7 @@ func TestMainSIGTERMDuringStartup(t *testing.T) {
 		t.Fatal(err)
 	}
 	finished := make(chan error, 1)
-	go func() { <-readDone; finished <- cmd.Wait() }()
+	go func() { finished <- cmd.Wait() }()
 	select {
 	case err := <-finished:
 		if err != nil {

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"tailscale.com/logtail"
 	"tailscale.com/tsnet"
 )
 
@@ -26,7 +27,7 @@ func (e *TSNetEngine) Start(ctx context.Context, c EngineConfig, credential []by
 			return RedemptionReceipt{}, fmt.Errorf("sidecar: unset %s; ambient tsnet authentication is forbidden", name)
 		}
 	}
-	e.server = &tsnet.Server{Dir: c.StateDir, Hostname: c.RoleIdentity, ControlURL: c.ControlURL, AuthKey: string(credential), Ephemeral: false}
+	e.server = newTSNetServer(c, credential)
 	if err := e.server.Start(); err != nil {
 		return RedemptionReceipt{}, ErrEngine
 	}
@@ -48,6 +49,18 @@ func (e *TSNetEngine) Start(ctx context.Context, c EngineConfig, credential []by
 	}
 	return RedemptionReceipt{Redeemed: true, Durable: true, ExpectedPeerVisible: visible}, nil
 }
+
+func newTSNetServer(c EngineConfig, credential []byte) *tsnet.Server {
+	// Disable upload independently of the local log callbacks, on every start.
+	// Match the Mac bridge: suppress new backend records and local log output.
+	logtail.Disable()
+	return &tsnet.Server{
+		Dir: c.StateDir, Hostname: c.RoleIdentity, ControlURL: c.ControlURL,
+		AuthKey: string(credential), Ephemeral: false,
+		Logf: func(string, ...any) {}, UserLogf: func(string, ...any) {},
+	}
+}
+
 func (e *TSNetEngine) Listen(addr string) (net.Listener, error) {
 	if e.server == nil {
 		return nil, ErrEngine

@@ -3,13 +3,104 @@ package sidecar
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"tailscale.com/logtail"
 )
+
+func TestTSNetStartDisablesLogging(t *testing.T) {
+	// Disable is irreversible and other engine tests start tsnet, so each mode
+	// needs a fresh process to prove that Start itself disables uploads.
+	const child = "HAPPYRANCH_TEST_TSNET_LOGGING"
+	mode := os.Getenv(child)
+	if mode == "" {
+		for _, mode := range []string{"enrollment", "restart"} {
+			t.Run(mode, func(t *testing.T) {
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestTSNetStartDisablesLogging$")
+				cmd.Env = append(os.Environ(), child+"="+mode)
+				out, err := cmd.CombinedOutput()
+				if err != nil {
+					t.Fatalf("isolated Start logging check: %v\n%s", err, out)
+				}
+				if strings.Contains(string(out), "synthetic-private-endpoint") {
+					t.Fatal("tsnet logging callbacks emitted raw backend text")
+				}
+			})
+		}
+		return
+	}
+	unsetAmbientAuthentication(t)
+	var credential []byte
+	if mode == "enrollment" {
+		credential = []byte("synthetic-explicit-input")
+	}
+	// Reach the production constructor through Start, then fail MkdirAll before
+	// any backend/network initialization, as the existing ambient-auth tests do.
+	state := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(state, []byte("state-path-blocker"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	engine := NewTSNetEngine()
+	defer engine.Close()
+	_, err := engine.Start(context.Background(), EngineConfig{StateDir: state}, credential)
+	if !errors.Is(err, ErrEngine) || engine.server == nil {
+		t.Fatalf("Start did not reach tsnet state-path failure: %v", err)
+	}
+	for name, logf := range map[string]func(string, ...any){"Logf": engine.server.Logf, "UserLogf": engine.server.UserLogf} {
+		if logf == nil {
+			t.Errorf("tsnet %s must be an explicit no-op", name)
+			continue
+		}
+		logf("backend: %s", "synthetic-private-endpoint")
+	}
+
+	var uploads atomic.Int32
+	upload := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		uploads.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upload.Close()
+	buffer := &observedLogtailBuffer{Buffer: logtail.NewMemoryBuffer(16)}
+	// Unlike tsnet.startLogger (which skips Go tests), the real logtail logger
+	// exercises v1.78.0's process-wide Disable gate before buffer.Write.
+	logger := logtail.NewLogger(logtail.Config{
+		BaseURL: upload.URL, HTTPC: upload.Client(), Stderr: io.Discard,
+		Buffer: buffer, FlushDelayFn: func() time.Duration { return 0 },
+	}, func(string, ...any) {})
+	logger.Logf("synthetic-private-endpoint")
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := logger.Shutdown(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := buffer.writes.Load(); got != 0 {
+		t.Errorf("logtail queued %d records for upload after Start, want 0", got)
+	}
+	if got := uploads.Load(); got != 0 {
+		t.Errorf("logtail made %d HTTP uploads after Start, want 0", got)
+	}
+}
+
+type observedLogtailBuffer struct {
+	logtail.Buffer
+	writes atomic.Int32
+}
+
+func (b *observedLogtailBuffer) Write(p []byte) (int, error) {
+	b.writes.Add(1)
+	return b.Buffer.Write(p)
+}
 
 func TestTSNetStartWaitsForUpUntilContextDeadline(t *testing.T) {
 	unsetAmbientAuthentication(t)
