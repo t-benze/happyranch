@@ -224,8 +224,15 @@ layout, source commit/tree and `SUPublicEDKey`). Both versions retain the curren
 builder’s three-component format. It signs Autoupdate → Updater.app → framework
 before the app, with Hardened Runtime, timestamps and no entitlements, retaining
 exactly the eight known framework links. See the [per-build signing procedure](../../docs/runbooks/mac-release-handbook.md#step-3--sign-locally-one-separate-stage-at-a-time).
-N+1 must have a strictly higher three-component build; automated monotonic checks,
-publishing and EdDSA/appcast signing remain PR4. No private EdDSA key is read here.
+N+1 must have a strictly higher three-component build. The offline
+[`appcast_entry.py`](scripts/appcast_entry.py) checks every existing feed item,
+ZIP length/plist/public pins and signature shape, then writes a new feed without
+changing existing items. It performs no Ed25519 verification or publishing;
+the founder must verify with Sparkle 2.10.1 `sign_update --verify` before publishing.
+`--channel internal` is invisible to shipped builds because none opts into
+`allowedChannels`; promotion reruns without that flag against the pre-staging
+feed. See the [archive-signing and feed procedure](../../docs/runbooks/mac-release-handbook.md#step-4--sign-the-final-archive-and-prepare-the-feed-founder-only).
+No private EdDSA key is read here.
 After review and QA, the separately authorized native packaged run must observe
 the embedded framework, all eight links resolving, no XPCServices, successful app
 launch with the updater inert when no key is supplied, every packaged step passing, and the archive notice

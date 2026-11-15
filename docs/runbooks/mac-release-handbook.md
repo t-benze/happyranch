@@ -4,7 +4,8 @@ Use this from a checkout of `t-benze/happyranch` on the founder's Mac mini.
 CI builds an **unsigned inner app ZIP and build receipt**. The local agent signs
 a copy, submits it once to Apple, then staples and verifies another copy. That
 produces a **different signed/notarized/stapled ZIP with a new SHA256**.
-Signing is not publication. Never create a public release or upload here.
+Signing is not publication. Only the founder performs the publication steps below;
+the local agent never uploads or publishes.
 
 The app embeds pinned **Sparkle 2.10.1**. The updater starts only when the
 bundle's `SUPublicEDKey` is canonical base64 of exactly 32 bytes. Optional build
@@ -74,8 +75,9 @@ Sparkle-bearing artifact from the current build path. Both the short version and
 `(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)` (three numeric components,
 no leading zeros). N+1 must carry a strictly higher three-component build than N;
 Sparkle uses its standard version comparator for dotted numeric versions.
-The automated monotonic N→N+1 check, publishing and appcast/EdDSA archive signing
-belong to PR4. PR3 signs neither an appcast nor an update archive with EdDSA.
+The offline [feed-entry tool](#step-4--sign-the-final-archive-and-prepare-the-feed-founder-only)
+enforces that monotonic check. The signing package signs neither an appcast nor
+an update archive with EdDSA; the founder uses Sparkle's tools on the final ZIP.
 The unsigned build embeds `Contents/Frameworks/Sparkle.framework`, preserves
 its eight known relative links, and removes both XPC services and their alias.
 `@executable_path/../Frameworks` resolves from `Contents/MacOS/HappyRanch` to
@@ -432,12 +434,16 @@ After retaining all N receipts and its final ZIP, select N+1’s separately revi
 receipt/inner ZIP and trusted public key. Set `RUN` to a new `build-N-plus-1`
 directory and `PINS` to a new `build-N-plus-1.pins`, then repeat pin preparation,
 preflight, sign, submit, status, full-log review, finalize and test with the same
-PKG. N+1’s `BUILD` must be strictly higher than N’s three-component build; PR4
-will automate that check. PR3 deliberately performs no cross-run comparison.
+PKG. N+1’s `BUILD` must be strictly higher than N’s three-component build;
+the feed-entry tool enforces this against every item, across all channels.
+The signing script deliberately performs no cross-run comparison.
 Each final ZIP is under its own RUN/final directory, with its own size/hash and
 Apple association. Founder-only certificate/notarization custody stays unchanged;
 the EdDSA private key remains founder-only and is never read by these scripts.
-Publishing, appcast generation and EdDSA signing remain PR4 work.
+For each final ZIP, continue with founder-only archive signing and feed preparation
+below. Complete the first signing/notarization/stapling round for N before the
+separate N+1 round. Keep both final ZIPs, public pins and receipts. The native
+done-test needs both signed builds; no portable tooling test proves N→N+1.
 
 ### Submit ONCE, then observe status
 
@@ -532,6 +538,152 @@ and retained extracted app **without launching it**. Any failure remains failed.
 | Accepted, full log reviewed, no `final/` | Finalize with that log's hash. |
 | `final/` exists without `complete` | Stop; no rerun or manual stapling over partial output. |
 | `final/complete` exists | Test may be repeated; no re-sign/submit/finalize. |
+
+## Step 4 — Sign the final archive and prepare the feed (founder only)
+
+The order for every release is **codesign → notarize → staple → final ZIP →
+sign_update → feed-entry tool → upload that ZIP to GitHub Releases → publish
+appcast.xml**. Never sign the unsigned or notarization-submission ZIP for Sparkle.
+Never change or re-ZIP the final artifact after signing it. A re-spin gets a new,
+strictly higher build; never reuse a published build number, including one from
+an internal entry. Keep the complete feed history; deleting old items or using
+bootstrap again would discard the evidence used by the monotonic check.
+
+### One-time EdDSA key custody
+
+The founder alone obtains the official **Sparkle 2.10.1** release tools, retains
+the selected release archive/provenance, and sets `SPARKLE_TOOLS` to its absolute
+`bin` directory. This is the same version pinned by `app/mac/Package.swift` and
+`Package.resolved`; do not silently substitute a newer tool. Run these commands
+in the founder's private Mac Terminal with tracing off, never in agent jobs:
+
+```sh
+set +x
+SPARKLE_TOOLS="/absolute/Sparkle-2.10.1/bin"
+"$SPARKLE_TOOLS/generate_keys" --account happyranch
+"$SPARKLE_TOOLS/generate_keys" --account happyranch -p
+```
+
+The private signing seed stays in the founder's login Keychain. Give agents only
+the printed **public** key for the build's `--sparkle-public-key` and public pin
+`SUPUBLIC_ED_KEY`. Do not regenerate a key for each release. Before shipping N,
+the founder exports an offline backup directly to a private encrypted removable
+volume (replace the path with a new file on that volume):
+
+```sh
+umask 077
+"$SPARKLE_TOOLS/generate_keys" --account happyranch -x /Volumes/PRIVATE_OFFLINE/happyranch-eddsa-backup
+```
+
+Disconnect and secure the backup offline. Never put it in a checkout, shared
+artifact, CI variable, log or chat; agents never inspect or handle it. Recovery
+is founder-only using `generate_keys --account happyranch -f PRIVATE_BACKUP_PATH`
+in a private Terminal; confirm the restored public key matches the shipped pin.
+The [pinned generate_keys source](https://github.com/sparkle-project/Sparkle/blob/2.10.1/generate_keys/main.swift)
+defines the account, public lookup and export/import options. Apple certificate
+and notarization credential custody also remain founder-only.
+
+### Sign, then independently verify with Sparkle
+
+Restore `RUN`, `VERSION`, `BUILD`, `SUPUBLIC_ED_KEY`, `REPO` and `SPARKLE_TOOLS`
+for the selected build. Require the preceding final/test stages to pass first:
+
+```sh
+FINAL_ZIP="$RUN/final/HappyRanch-$VERSION-$BUILD-arm64-signed-notarized-stapled.zip"
+"$SPARKLE_TOOLS/sign_update" --account happyranch "$FINAL_ZIP"
+```
+
+Copy the printed `sparkle:edSignature` and `length` into these **public** variables,
+then require exit0 from verification before feed publication:
+
+```sh
+ED_SIGNATURE='SIGNATURE_PRINTED_BY_SIGN_UPDATE'
+ED_LENGTH='LENGTH_PRINTED_BY_SIGN_UPDATE'
+"$SPARKLE_TOOLS/sign_update" --account happyranch --verify "$FINAL_ZIP" "$ED_SIGNATURE"
+```
+
+`--verify` **exists in 2.10.1**: the
+[pinned sign_update source](https://github.com/sparkle-project/Sparkle/blob/2.10.1/sign_update/main.swift)
+declares the flag, takes the archive followed by its signature, obtains the
+selected Keychain account's public key and calls `ed25519_verify`. Confirm that
+account's public key (the `generate_keys -p` output) matches `SUPUBLIC_ED_KEY`.
+Keychain access is confined to the founder's tools/session, including verification.
+
+**The Python feed-entry tool checks signature shape only, not Ed25519 authenticity.**
+It has no crypto dependency and cannot detect a same-length archive substitution
+or a canonical but wrong signature. Portable tests use random 64-byte placeholder
+signatures and synthetic ZIPs; they prove no signing or stapling. Sparkle's
+verification above is mandatory. The separately budgeted native done-test must
+also demonstrate that a tampered archive is refused before installation.
+
+### Create a new local feed
+
+Retain an exact local copy of the currently published complete UTF-8 RSS 2.0 feed,
+including internal entries. The tool does no network I/O, fetch, upload or publish.
+It checks the ZIP byte count and archived `HappyRanch.app/Contents/Info.plist`
+against the version/build arguments, fixed feed and public-key pin, then prepends
+one entry while preserving every existing byte and item order. Builds use the
+same three-component grammar as `verify-release.sh` and PR3 pins and compare
+numerically (`1.0.10 > 1.0.9`), against **every** existing item.
+
+Choose a new output filename in an owner-controlled directory. It must not
+already exist or refer to the input; publication never modifies that input.
+Malformed XML/version history, duplicate versions, reused/lower builds, invalid
+signature shape, length/plist/key mismatch or a non-GitHub-Releases HTTPS URL
+refuse with a named diagnostic and no new output. The successful write uses a
+temporary sibling and atomic rename. It does not prove notarization or native
+acceptance; those come from the retained signing receipts and native test.
+
+```sh
+BASE_FEED="/absolute/release/appcast-before-$BUILD.xml"
+NEW_FEED="/absolute/release/appcast-$BUILD.xml"
+DOWNLOAD_URL="https://github.com/t-benze/happyranch/releases/download/v$BUILD/$(basename "$FINAL_ZIP")"
+python3 -B "$REPO/app/mac/scripts/appcast_entry.py" \
+  --input "$BASE_FEED" --output "$NEW_FEED" --archive "$FINAL_ZIP" \
+  --version "$VERSION" --build "$BUILD" --public-key "$SUPUBLIC_ED_KEY" \
+  --signature "$ED_SIGNATURE" --length "$ED_LENGTH" --url "$DOWNLOAD_URL"
+```
+
+For the **very first feed only**, replace `--input "$BASE_FEED"` with `--bootstrap`;
+never bootstrap to bypass existing history. Retain that initial build as the
+baseline when preparing N+1. Generated items contain version, short version,
+minimum macOS `14.0.0`, hardware `arm64`, RFC2822 pubDate and the archive enclosure.
+
+### Internal staging and public promotion
+
+Add `--channel internal` to emit `<sparkle:channel>internal</sparkle:channel>`.
+**Shipped builds have no `allowedChannels` opt-in, so internal entries are
+invisible to every shipped build.** This is a safe staging slot, not an end-to-end
+update-test channel; no Swift changes or debug channel opt-in are introduced.
+
+To move the exact staged entry to public, rerun the same command **without
+`--channel`**, using the retained **pre-staging** `BASE_FEED` and a new output
+filename. Keep the identical ZIP, build, signature and length. Do not use the
+feed already containing that internal build: the tool correctly refuses reuse.
+This changes visibility of one archive, never assigns its build to new bytes.
+Do not discard any other published item; if the feed advanced after staging,
+reconcile the history and prepare a new higher build rather than overwriting
+newer releases with the old baseline.
+
+## Step 5 — Upload, then publish (founder only)
+
+After signature verification and the applicable reviewed/native acceptance,
+the founder uploads the exact `FINAL_ZIP` to the selected GitHub Release asset
+URL. Verify its downloaded bytes/length/SHA256 against the retained final ZIP;
+then publish the reviewed `NEW_FEED` at
+`https://app.happyranch.ai/mac/appcast.xml`. Publishing the public entry offers
+the update. Never publish the feed before its archive is available. Hosting,
+credentials, upload and feed deployment stay founder-owned; this tool implements
+no publishing command. Retain both feed snapshots, signing/verification exits,
+final ZIP hash/length, exact asset URL and publication evidence.
+
+For N/N+1 acceptance, establish the signed/keyed N baseline, then repeat the
+entire founder signing round for a separately reviewed, higher N+1. Build its
+entry against N's retained complete feed. The manager's authorized native venue
+must prove N→N+1 from the real feed, waiting while sessions run, explicit update,
+install on quit, restarted daemon/data continuity and tampered-archive refusal.
+These remain **NOT RUN** until actually observed; portable tooling and a valid
+signature do not substitute for them.
 
 ## Hard rules for the local agent
 
