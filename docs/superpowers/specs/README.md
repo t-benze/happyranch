@@ -142,3 +142,8 @@ New specs should include a short status block near the top:
 | [`2026-11-14-automatic-workflow-setup.md`](2026-11-14-automatic-workflow-setup.md) | I1a source | Mandatory offline install-time full integrity gates; inline load checks remain until I2. Daily read-only reporting is I1b; automatic bootstrap is A4. |
 
 - **current**: [Sequential Coding U4c](2026-11-12-sequential-coding-u4c.md) — own-current Developer resolve/bind transport; original service replay/Held semantics.
+
+
+I1b adds the independent daily read-only advisory owner to
+[`2026-11-14-automatic-workflow-setup.md`](2026-11-14-automatic-workflow-setup.md#i1b-daily-read-only-advisory-report).
+It reuses the future 03:00 wake; business/load validation remains unchanged until I2.

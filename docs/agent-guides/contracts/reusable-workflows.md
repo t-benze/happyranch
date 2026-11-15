@@ -1947,3 +1947,22 @@ for `not_installed`, otherwise disposition is `unknown`. There is no new
 post-COMMIT physical veto or restore. Inline load checks remain unchanged until
 I2; the daily advisory report is I1b, and automatic bootstrap is A4. See the
 [I1a contract](../../superpowers/specs/2026-11-14-automatic-workflow-setup.md).
+
+
+## I1b daily advisory physical report
+
+The existing future-local 03:00 sweep wake independently starts a serial
+known-org read-only pass. It reserves each org/date before checking, including
+broken/unattached roots; missed wakes have no catch-up. The I1a native full
+checker is reused unchanged on one live RO/query-only snapshot with a separate
+640M/60s daily allowance, 0.5s cumulative busy admission, one MiB values and
+bounded terminate/kill custody. The read helper has no installer, cleanup or
+native writer authority. Unreaped originals prevent replacement readers.
+
+Outcomes are advisory only: native physical ok is not logical/native-closure or
+authority proof. Failure/unavailable/reporting loss never gates workflow loads,
+tasks or admission. The existing Audit action `workflow_integrity_check` and
+private external date/latest reports carry sanitized closed results; A3 owns
+later setup-status visibility. See [observability](observability.md#daily-workflow-physical-integrity-advisory-i1b).
+I2 still owns removal of inline load-time integrity; all current parts 2–7,
+FK, L32M, A/B/C2M, logical caps and five-second readers remain unchanged.

@@ -1131,3 +1131,8 @@ authority or end-of-task deletion hook and changes no legacy/root-terminal proce
 gates, flags or seven nightly agent sessions. Missing mount/process-root execution
 remains SKIPPED/UNEXECUTED under seq62; the old process-retention assertion is
 superseded, not newly validated. Protected proof remains unauthorized.
+
+
+I1b cross-reference: the existing future-local 03:00 wake also launches the
+independent [daily read-only workflow integrity advisory](2026-11-14-automatic-workflow-setup.md#i1b-daily-read-only-advisory-report)
+before sweep stop/marker/reservation work, with separate custody and budgets.

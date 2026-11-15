@@ -44,7 +44,418 @@ from runtime.identities import registry as names
 from runtime.orchestrator import producer_move
 from runtime.orchestrator.agent_def import AgentDef, render_agent_text
 
-assert sys.argv[1:] in ([], ['--install-integrity'], ['--bounded-acquisition'], ['--trace-custody'], ['--sequential-reuse'], ['--sequential-load'], ['--sequential-faults'], ['--sequential-sql-exhaustion'], ['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--coding-authority-corruption'], ['--document-native-corruption'], ['--author-handoff-corruption'], ['--document-revision-corruption'], ['--coding-history-corruption'], ['--physical-corruption'], ['--sequential-uncommitted']), 'unknown schema-load selection'
+assert sys.argv[1:] in ([], ['--daily-integrity'], ['--install-integrity'], ['--bounded-acquisition'], ['--trace-custody'], ['--sequential-reuse'], ['--sequential-load'], ['--sequential-faults'], ['--sequential-sql-exhaustion'], ['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--coding-authority-corruption'], ['--document-native-corruption'], ['--author-handoff-corruption'], ['--document-revision-corruption'], ['--coding-history-corruption'], ['--physical-corruption'], ['--sequential-uncommitted']), 'unknown schema-load selection'
+
+# I1b uses the same private venue; it never starts a daemon or listener.
+if sys.argv[1:] in ([], ['--daily-integrity']):
+    import asyncio
+    import signal
+    import subprocess
+    from datetime import datetime, timedelta, timezone
+    from runtime.daemon import org_integrity_monitor as monitor
+    from runtime.daemon import disk_sweeper as sweeper
+    from runtime.runtime import RuntimeDir
+
+    def daily_case(name):
+        print('daily-integrity: ' + name, flush=True)
+
+    def corrupt_index(path):
+        # Keep an authentic stale native index; no successful checker stub.
+        conn = sqlite3.connect(path)
+        conn.execute('CREATE TABLE probe(id INTEGER PRIMARY KEY,value TEXT)')
+        conn.execute('CREATE INDEX private_corrupt_index ON probe(value)')
+        conn.execute("INSERT INTO probe VALUES(1,'original')")
+        entry = tuple(conn.execute("SELECT rowid,type,name,tbl_name,rootpage,sql FROM sqlite_schema WHERE name='private_corrupt_index'").fetchone())
+        cookie = conn.execute('PRAGMA schema_version').fetchone()[0]
+        conn.execute('PRAGMA writable_schema=ON')
+        conn.execute('DELETE FROM sqlite_schema WHERE rowid=?', (entry[0],))
+        conn.execute('PRAGMA schema_version=' + str(cookie + 1))
+        conn.execute('PRAGMA writable_schema=RESET')
+        conn.execute("UPDATE probe SET value='changed' WHERE id=1")
+        conn.execute('PRAGMA writable_schema=ON')
+        conn.execute('INSERT INTO sqlite_schema(rowid,type,name,tbl_name,rootpage,sql) VALUES(?,?,?,?,?,?)', entry)
+        conn.execute('PRAGMA schema_version=' + str(cookie + 2))
+        conn.execute('PRAGMA writable_schema=RESET')
+        conn.commit()
+        conn.close()
+
+    with tempfile.TemporaryDirectory(prefix='workflow-daily-integrity-') as scratch:
+        private = Path(scratch)
+        home = private / 'home'
+        home.mkdir()
+        rt = private / 'runtime'
+        (rt / 'orgs').mkdir(parents=True)
+        for slug in ('alpha', 'beta', 'corrupt', 'unattached', '_pending', '_archive', 'uninitialized'):
+            root = rt / 'orgs' / slug
+            (root / 'org').mkdir(parents=True)
+            if slug != 'uninitialized':
+                (root / 'org/teams.yaml').write_text('teams: {}\n')
+            if slug in ('alpha', 'beta', 'corrupt'):
+                db = Database(root / 'happyranch.db')
+                db.close()
+        alpha = rt / 'orgs/alpha'
+        alpha_db = alpha / 'happyranch.db'
+        corrupt_index(rt / 'orgs/corrupt/happyranch.db')
+        state = SimpleNamespace(runtime=RuntimeDir(rt), broken_orgs={'unattached': 'not loaded'},
+                                orgs_snapshot=lambda: {})
+        due = datetime(2031, 2, 3, 3).astimezone()
+
+        daily_case('actual RO + query_only + zero changes + full native success')
+        original_connect = sqlite3.connect
+        opened, connections, traces, value_limits = [], [], [], []
+        class ReadObserver(sqlite3.Connection):
+            def execute(self, sql, *args, **kwargs):
+                value = super().execute(sql, *args, **kwargs)
+                if sql == 'PRAGMA query_only=ON':
+                    assert super().execute('PRAGMA query_only').fetchone() == (1,)
+                    try:
+                        super().execute('CREATE TABLE forbidden_query_only(x)')
+                    except sqlite3.OperationalError as exc:
+                        assert exc.sqlite_errorcode & 255 == sqlite3.SQLITE_READONLY
+                    else:
+                        raise AssertionError('query_only allowed a write')
+                return value
+            def close(self):
+                assert self.total_changes == 0
+                value_limits.append(self.getlimit(sqlite3.SQLITE_LIMIT_LENGTH))
+                super().close()
+        def observe_connect(filename, **kwargs):
+            opened.append(filename)
+            # A real attempted write distinguishes RO from a RW URI even
+            # before query_only, without trusting the production pragma.
+            conn = original_connect(filename, factory=ReadObserver, **kwargs)
+            connections.append(conn)
+            try:
+                sqlite3.Connection.execute(conn, 'CREATE TABLE forbidden_rw_open(x)')
+            except sqlite3.OperationalError as exc:
+                assert exc.sqlite_errorcode & 255 == sqlite3.SQLITE_READONLY
+            else:
+                conn.close()
+                raise AssertionError('RW-open regression allowed an actual write')
+            conn.set_trace_callback(traces.append)
+            return conn
+        before = hashlib.sha256(alpha_db.read_bytes()).hexdigest()
+        with patch.object(monitor.sqlite3, 'connect', observe_connect):
+            observed = monitor.read_snapshot(alpha, time.monotonic() + 5)
+        assert observed['outcome'] == 'ok', observed
+        assert len(opened) == 1 and opened[0].endswith('?mode=ro') and 'immutable' not in opened[0], opened
+        assert traces.count('PRAGMA integrity_check') == 1 and not any('quick_check' in sql for sql in traces)
+        assert before == hashlib.sha256(alpha_db.read_bytes()).hexdigest()
+        assert value_limits == [1024 * 1024], value_limits
+        ledger_type = monitor.IntegrityLedger
+        with patch.object(monitor, 'IntegrityLedger', lambda deadline: ledger_type(deadline, sql_limit=1000)):
+            limited = monitor.read_snapshot(alpha, time.monotonic()+5)
+        assert limited['reason'] == 'sql_budget' and limited['outcome'] == 'unavailable', limited
+        daily_case('one pinned WAL snapshot while a private writer commits')
+        pinned_root = private / 'pinned'
+        pinned_root.mkdir()
+        db = Database(pinned_root / 'happyranch.db')
+        db.close()
+        with original_connect(pinned_root / 'happyranch.db') as writer:
+            writer.execute('CREATE TABLE snapshot_probe(value)')
+            writer.execute('INSERT INTO snapshot_probe VALUES(1)')
+        writer.close()
+        native_check = monitor.check_full_integrity
+        def concurrent_check(conn, ledger):
+            assert conn.in_transaction
+            assert conn.execute('SELECT count(*) FROM snapshot_probe').fetchone() == (1,)
+            with original_connect(pinned_root / 'happyranch.db') as writer:
+                writer.execute('INSERT INTO snapshot_probe VALUES(2)')
+            writer.close()
+            result = native_check(conn, ledger)
+            assert conn.execute('SELECT count(*) FROM snapshot_probe').fetchone() == (1,), 'read snapshot drifted'
+            return result
+        with patch.object(monitor, 'check_full_integrity', concurrent_check):
+            assert monitor.read_snapshot(pinned_root, time.monotonic()+5)['outcome'] == 'ok'
+        with original_connect(pinned_root / 'happyranch.db') as reader:
+            assert reader.execute('SELECT count(*) FROM snapshot_probe').fetchone() == (2,)
+        reader.close()
+
+        daily_case('genuine non-ok index + corrupt bytes + missing + busy + identity + deadline')
+        bad = monitor.read_snapshot(rt / 'orgs/corrupt', time.monotonic() + 5)
+        assert bad['outcome'] == 'failed' and bad['reason'] in ('database_corrupt', 'full_integrity_not_ok'), bad
+        missing = monitor.read_snapshot(rt / 'orgs/unattached', time.monotonic() + 5)
+        assert missing['outcome'] == 'unavailable' and not (rt / 'orgs/unattached/happyranch.db').exists(), missing
+        lock = original_connect(alpha_db)
+        # WAL readers correctly coexist with an exclusive writer; a private
+        # rollback-journal fixture exercises actual reader admission contention.
+        lock.execute('PRAGMA journal_mode=DELETE')
+        lock.execute('BEGIN EXCLUSIVE')
+        started = time.monotonic()
+        busy = monitor.read_snapshot(alpha, started + 5)
+        assert busy['reason'] == 'busy' and time.monotonic() - started < .8, busy
+        lock.rollback()
+        lock.close()
+        assert monitor.read_snapshot(alpha, time.monotonic() - 1)['reason'] == 'deadline'
+        alias = rt / 'orgs/alias'
+        alias.symlink_to(alpha, target_is_directory=True)
+        assert monitor.read_snapshot(alias, time.monotonic() + 5)['outcome'] == 'unavailable'
+        alias.unlink()
+        corrupt_bytes = private / 'notadb'
+        corrupt_bytes.mkdir()
+        (corrupt_bytes / 'happyranch.db').write_bytes(b'private synthetic not a database' * 30)
+        assert monitor.read_snapshot(corrupt_bytes, time.monotonic() + 5)['reason'] == 'database_corrupt'
+        assert 'private_corrupt_index' not in json.dumps(bad)
+
+        async def daily_integration():
+            daily_case('source and frozen helper dispatch: no daemon/listener')
+            owner = monitor.OrgIntegrityMonitor(state)
+            record = await owner.invoke('read', {'root': str(alpha)}, time.monotonic() + 5)
+            assert record is not None and record['outcome'] == 'ok', record
+            source_argv = monitor.helper_argv('read')
+            assert source_argv == [sys.executable, '-m', 'runtime.daemon', '--workflow-integrity-helper', 'read']
+            with patch.object(sys, 'frozen', True, create=True):
+                assert monitor.helper_argv('read') == [sys.executable, '--workflow-integrity-helper', 'read']
+            guard = """import sys,runpy,importlib.abc
+class RefuseStartup(importlib.abc.MetaPathFinder):
+ def find_spec(self, fullname, path=None, target=None):
+  if fullname in ('uvicorn','runtime.daemon.app','runtime.daemon.state','runtime.infrastructure.database'):
+   raise AssertionError('helper reached daemon startup: '+fullname)
+sys.meta_path.insert(0, RefuseStartup())
+sys.addaudithook(lambda event,args: (_ for _ in ()).throw(AssertionError('listener')) if event=='socket.bind' else None)
+sys.frozen=True
+sys.argv=['frozen-daemon','--workflow-integrity-helper','read']
+runpy.run_module('runtime.daemon',run_name='__main__')
+"""
+            child = await asyncio.create_subprocess_exec(sys.executable, '-c', guard,
+                stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+            out, err = await child.communicate(json.dumps({'root': str(alpha), 'deadline': time.monotonic()+5}).encode())
+            assert child.returncode == 0 and json.loads(out)['outcome'] == 'ok', (out, err)
+            assert not list(home.glob('daemon.*'))
+
+            daily_case('two dates/two orgs + unattached + durable report/audit + repeat date')
+            await owner.run_pass(due)
+            base = home / 'workflow-integrity' / monitor.runtime_key(rt)
+            assert {p.name for p in base.iterdir()} == {'alpha', 'beta', 'corrupt', 'unattached'}
+            first = json.loads((base / 'alpha' / (due.date().isoformat()+'.json')).read_text())
+            assert first['outcome'] == 'ok' and first['reason'] == 'full_integrity_ok'
+            assert first['format'] == 'workflow-integrity-report@1' and len(monitor._json(first)) <= 4096
+            assert json.loads((base / 'corrupt/latest.json').read_text())['outcome'] == 'failed'
+            unattached = json.loads((base / 'unattached/latest.json').read_text())
+            assert unattached['outcome'] == 'unavailable' and unattached['reporting']['audit'] == 'unavailable'
+            # No OrgState loader, complete workflow reader or admission checker
+            # is invoked by this pass, including for failed/unattached orgs.
+            from runtime.daemon.routes.audit import list_audit
+            db = Database(alpha_db)
+            route = list_audit('alpha', SimpleNamespace(db=db), action=monitor.ACTION,
+                              include_thread_origin=False)
+            entries = route['entries']
+            assert len(entries) == 1 and entries[0]['task_id'] == '' and entries[0]['agent'] == 'daemon'
+            assert entries[0]['payload'] == dict(first, reporting={'external': 'persisted', 'audit': 'pending'}), entries
+            db.close()
+            hashes = {str(p): hashlib.sha256(p.read_bytes()).hexdigest() for p in base.rglob('*.json')}
+            # New monitor simulates process restart/repeat wake; exclusive date
+            # receipts, rather than the process-local set, prevent duplicates.
+            repeat = monitor.OrgIntegrityMonitor(state)
+            await repeat.run_pass(due)
+            assert hashes == {str(p): hashlib.sha256(p.read_bytes()).hexdigest() for p in base.rglob('*.json')}
+            await repeat.run_pass(due + timedelta(days=1))
+            for slug in ('alpha', 'beta'):
+                assert len(list((base / slug).glob('*.reserved.json'))) == 2
+                latest = json.loads((base / slug / 'latest.json').read_text())
+                assert latest['scheduled_date'] == (due + timedelta(days=1)).date().isoformat()
+                assert latest['reporting'] == {'external': 'persisted', 'audit': 'persisted'}
+                assert (base / slug).stat().st_mode & 0o777 == 0o700
+                assert all(p.stat().st_mode & 0o777 == 0o600 for p in (base / slug).iterdir())
+            await owner.close()
+            await repeat.close()
+
+            daily_case('future 03:00 + outage/no startup catchup + stop/skip/exception/slow sweep independence')
+            stop = home / 'disk-sweep'
+            stop.mkdir()
+            (stop / 'stop.json').write_text('{"stop":true}')
+            wake_date = due + timedelta(days=3)
+            before_wake = wake_date.replace(hour=2, minute=59)
+            after_wake = wake_date.replace(hour=3, minute=1)
+            assert sweeper.next_night(before_wake) == wake_date
+            assert sweeper.next_night(wake_date).date() == wake_date.date() + timedelta(days=1)
+            assert sweeper.next_night(after_wake).date() == wake_date.date() + timedelta(days=1)
+            class Clock(datetime):
+                @classmethod
+                def now(cls, tz=None):
+                    return before_wake
+            sleeper = asyncio.sleep
+            nightly = monitor.OrgIntegrityMonitor(state)
+            sleeps, sweep_calls = [], []
+            async def sleep(delay):
+                sleeps.append(delay)
+                if len(sleeps) > 1:
+                    raise asyncio.CancelledError
+                assert not nightly.tasks and not (base / 'alpha' / (wake_date.date().isoformat()+'.json')).exists(), 'startup catch-up'
+                await sleeper(0)
+            native_sweep = sweeper._run_scheduled_worker
+            async def suspended_sweep(*args):
+                sweep_calls.append('entered')
+                assert nightly.tasks, 'integrity launch coupled to sweep stop'
+                # Wait for the real read/report pass while sweep work is still
+                # pending: no simulated successful integrity result.
+                done, pending = await asyncio.wait(nightly.tasks, timeout=12)
+                assert done and not pending, 'integrity waited on sweep'
+                for task in done:
+                    task.result()
+                report = json.loads((base / 'alpha' / (wake_date.date().isoformat()+'.json')).read_text())
+                assert report['outcome'] == 'ok', report
+                return await native_sweep(*args)
+            with patch.object(sweeper, 'datetime', Clock), patch.object(sweeper.asyncio, 'sleep', sleep), \
+                 patch.object(sweeper, '_record_previous_night', lambda *args: None), \
+                 patch.object(sweeper, '_run_scheduled_worker', suspended_sweep):
+                try:
+                    await sweeper.disk_sweeper_loop(state, nightly)
+                except asyncio.CancelledError:
+                    pass
+            assert len(sweep_calls) == 1 and len(sleeps) == 2
+            assert not (base / 'alpha' / ((due+timedelta(days=2)).date().isoformat()+'.json')).exists()
+            await nightly.close()
+
+            for variant, delta in (('sweep-exception', 6), ('sweep-marker-skip', 7)):
+                daily_case(variant + ' leaves independent report')
+                wake_date = due + timedelta(days=delta)
+                before_wake = wake_date.replace(hour=2, minute=59)
+                nightly = monitor.OrgIntegrityMonitor(state)
+                sleeps, sweep_calls = [], []
+                if variant == 'sweep-marker-skip':
+                    sweeper.atomic_json(stop / 'last-scheduled.json', {'scheduled_date': wake_date.date().isoformat()})
+                async def variant_sleep(delay):
+                    sleeps.append(delay)
+                    if len(sleeps) == 1:
+                        assert not nightly.tasks
+                        await sleeper(0)
+                        return
+                    if nightly.tasks:
+                        done, pending = await asyncio.wait(set(nightly.tasks), timeout=12)
+                        assert not pending
+                        for task in done:
+                            task.result()
+                    assert json.loads((base / 'alpha' / (wake_date.date().isoformat()+'.json')).read_text())['outcome'] == 'ok'
+                    raise asyncio.CancelledError
+                async def unavailable_sweep(*args):
+                    sweep_calls.append(variant)
+                    raise OSError('synthetic sweep exception')
+                with patch.object(sweeper, 'datetime', Clock), patch.object(sweeper.asyncio, 'sleep', variant_sleep), \
+                     patch.object(sweeper, '_record_previous_night', lambda *args: None), \
+                     patch.object(sweeper, '_run_scheduled_worker', unavailable_sweep):
+                    try:
+                        await sweeper.disk_sweeper_loop(state, nightly)
+                    except asyncio.CancelledError:
+                        pass
+                assert sweep_calls == ([] if variant == 'sweep-marker-skip' else [variant]), sweep_calls
+                await nightly.close()
+
+            daily_case('deadline terminate/kill/reap and cancellation')
+            timed = monitor.OrgIntegrityMonitor(state)
+            real_argv = monitor.helper_argv
+            def slow_argv(kind):
+                return [sys.executable, '-c', 'import signal,time; signal.signal(signal.SIGTERM,signal.SIG_IGN); time.sleep(9)'] if kind == 'read' else real_argv(kind)
+            started = time.monotonic()
+            with patch.object(monitor, 'helper_argv', slow_argv):
+                assert await timed.invoke('read', {}, started + .15) is None
+                assert time.monotonic() - started < 2.25 and not timed.in_flight
+                task = asyncio.create_task(timed.invoke('read', {}, time.monotonic()+5))
+                await sleeper(.1)
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+                else:
+                    raise AssertionError('worker cancellation swallowed')
+                assert not timed.in_flight
+            await timed.close()
+
+            daily_case('unreaped original retained; later org unavailable/in_flight_reader')
+            class Input:
+                def write(self, body): pass
+                async def drain(self): pass
+                def close(self): pass
+            class Stuck:
+                pid = 999999999
+                returncode = None
+                stdin = Input()
+                @property
+                def stdout(self): return self
+                async def read(self, n): await asyncio.Event().wait()
+            original_spawn, killpg = asyncio.create_subprocess_exec, os.killpg
+            stuck, launches, signals = Stuck(), [], []
+            async def spawn(*argv, **kwargs):
+                if argv[-1] == 'read':
+                    launches.append(argv)
+                    return stuck
+                return await original_spawn(*argv, **kwargs)
+            def signal_group(pid, sig):
+                if pid == stuck.pid: signals.append(sig)
+                else: killpg(pid, sig)
+            held = monitor.OrgIntegrityMonitor(state)
+            with patch.object(monitor.asyncio, 'create_subprocess_exec', spawn), \
+                 patch.object(monitor.os, 'killpg', signal_group), \
+                 patch.object(monitor, 'READ_SECONDS', .01), patch.object(monitor, 'CLEANUP_SECONDS', .02):
+                await held.run_pass(due + timedelta(days=5))
+                assert len(launches) == 1 and len(held.in_flight) == 1
+                later = json.loads((base / 'beta' / ((due+timedelta(days=5)).date().isoformat()+'.json')).read_text())
+                assert later['reason'] == 'in_flight_reader' and later['outcome'] == 'unavailable', later
+                started = time.monotonic()
+                await held.close()
+                assert time.monotonic() - started < .2 and held.in_flight
+                assert signal.SIGTERM in signals and signal.SIGKILL in signals
+                stuck.returncode = -signal.SIGKILL
+                held._reap_observed()
+                assert not held.in_flight
+                for task in asyncio.all_tasks():
+                    if task is not asyncio.current_task() and not task.done():
+                        # Only the test's synthetic forever-read transport.
+                        task.cancel()
+            return base, first
+
+        with patch.dict(os.environ, {'HAPPYRANCH_DAEMON_HOME': str(home)}):
+            base, first = asyncio.run(daily_integration())
+
+        daily_case('audit/disk publication faults; no overwrite/symlink/hardlink')
+        report = dict(first, scheduled_date='2031-03-01', report_id='f'*64)
+        request = dict(home=str(home), root=str(alpha), report=report, operation='reserve')
+        assert monitor._storage(request, time.monotonic()+2) == {'reserved': True}
+        with patch.object(monitor, '_audit', side_effect=OSError('private failure never emit')):
+            receipt = monitor._storage(dict(request, operation='publish'), time.monotonic()+2)
+        assert receipt['external'] == 'persisted' and receipt['audit'] == 'unavailable'
+        latest = json.loads((base / 'alpha/latest.json').read_text())
+        assert latest['outcome'] == 'ok' and latest['reporting']['audit'] == 'unavailable'
+        # Faults stay test-side; the real existing audit writer still runs.
+        blocked_home = private / 'blocked-home'
+        blocked_home.mkdir()
+        (blocked_home / 'workflow-integrity').symlink_to(home / 'workflow-integrity', target_is_directory=True)
+        receipt = monitor._storage(dict(request, home=str(blocked_home), operation='publish'), time.monotonic()+2)
+        assert receipt['external'] == 'unavailable' and receipt['audit'] == 'persisted'
+        with patch.object(monitor, '_audit', side_effect=OSError):
+            receipt = monitor._storage(dict(request, home=str(blocked_home), operation='publish'), time.monotonic()+2)
+        assert receipt['external'] == receipt['audit'] == 'unavailable'
+        assert 'private failure' not in json.dumps(receipt)
+        messages = io.StringIO()
+        handler = logging.StreamHandler(messages)
+        monitor.LOG.addHandler(handler)
+        async def unavailable_reporting():
+            owner = monitor.OrgIntegrityMonitor(state)
+            await owner.run_pass(due + timedelta(days=10))
+            await owner.close()
+        try:
+            with patch.dict(os.environ, {'HAPPYRANCH_DAEMON_HOME': str(blocked_home)}):
+                asyncio.run(unavailable_reporting())
+        finally:
+            monitor.LOG.removeHandler(handler)
+        assert 'workflow_integrity_report_unavailable reason=report_unavailable' in messages.getvalue()
+        assert 'private_corrupt_index' not in messages.getvalue() and str(private) not in messages.getvalue()
+        record_path = base / 'alpha/2031-03-01.json'
+        digest = hashlib.sha256(record_path.read_bytes()).hexdigest()
+        monitor._storage(dict(request, operation='publish'), time.monotonic()+2)
+        assert hashlib.sha256(record_path.read_bytes()).hexdigest() == digest
+        with monitor.directory(base / 'alpha', time.monotonic()+2) as parent:
+            os.link(record_path, base / 'alpha/hardlinked.json')
+            try:
+                monitor._safe_read(parent, 'hardlinked.json', 32768)
+            except ValueError:
+                pass
+            else:
+                raise AssertionError('hardlinked report accepted')
+        daily_case('PASS')
+    if sys.argv[1:]:
+        raise SystemExit(0)
 
 # I1a extends this existing disposable venue, with no new execution lane.
 if sys.argv[1:] in ([], ['--install-integrity']):

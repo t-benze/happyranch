@@ -82,3 +82,49 @@ The full existing shell venue on both runtimes and `scripts/local_ci.sh all`
 run as one durable own-task job at the final clean head. Actual terminal
 show/output receipts are required before claiming those checks pass. Required
 hosted checks remain exactly Source Boundary Lint and Web Lint (Node 24).
+
+
+## I1b: daily read-only advisory report
+
+This additive slice implements the daily owner described in TASK-16078 design
+v6, under TASK-16061 `i1b-dispatch-ruling.md`. R-I1b-1 uses at most 0.5 seconds
+cumulative SQLite admission/busy wait because A1's SH interval does not yet
+exist; it adds no lock protocol. R-I1b-2 excludes old PR1249 and its physical
+health implementation.
+
+The existing future-local 03:00 disk-sweeper wake independently launches the
+lifespan-owned monitor before sweep stop/marker/reservation work. A pass captures
+known org roots, including broken/unattached roots, and serves them serially.
+Reserved/uninitialized non-org folders are excluded. Each org/date is reserved
+before reading; restart/repeat/rollback cannot duplicate a reserved attempt.
+Daemon downtime misses the date; there is no startup catch-up or new Schedule.
+
+The dedicated source/frozen helper enters before normal daemon startup and
+opens one literal live `mode=ro`, `query_only=ON` snapshot, with no immutable flag
+or Database constructor. It reuses I1a's native full checker unchanged: exactly
+one literal `ok` plus normal EOF is the only success. A separate original daily
+60s/640M budget uses 1000-step callbacks and a one MiB value limit. At timeout
+or cancellation the parent terminates/kills and supervises for at most a further
+two seconds. Unobserved original workers stay in custody; no replacement reader
+starts and later orgs record unavailable/in_flight_reader. No indefinite
+shutdown join or sweep deletion/native-writer authority is introduced.
+
+Closed pipe records are at most 16 KiB; reports at most 4 KiB. The existing
+empty-task/daemon audit envelope uses `workflow_integrity_check` and format
+`workflow-integrity-report@1`. Org/runtime/date/timezone, UTC start/finish,
+outcome/reason/stage, elapsed/steps, snapshot identity digest, report id and
+reporting contain no raw DB diagnostics or cells. Private no-follow/single-link
+0700/0600 external org/date receipts/finals and a dir-fd latest pointer are
+fsynced. Date observations never overwrite; latest carries the separately
+observed audit reporting status after the closed read connection is released.
+Both sinks failing logs `workflow_integrity_report_unavailable` without a
+persistence claim. Reporting subprocess deadlines retain uncertain writes.
+See [observability](../../agent-guides/contracts/observability.md#daily-workflow-physical-integrity-advisory-i1b).
+
+The existing shell venue adds `--daily-integrity` private cases on 3.12/3.14;
+no new CI lane or test-only production seam. Actual full-suite persistent-job
+receipts and both exact-head hosted lints remain required before readiness.
+Independent review/QA and manager guarded merge remain. No daily result gates
+loads/tasks/workflows/admission. Inline integrity, complete FK/parts 2–7,
+L32M/A-B-C/logical caps/five-second readers remain until I2. A3 status visibility
+and A4 bootstrap are separate deliveries; no live install, restart or deploy.
