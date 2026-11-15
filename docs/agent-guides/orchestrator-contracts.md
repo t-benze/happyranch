@@ -1801,11 +1801,14 @@ changes retain the candidate; discovery's local/shared refusal latches remain.
 Successful discovery answers never authorize a delete. Discovery defines the
 fixed coverage window: damage to a candidate's own metadata after discovery
 retains that candidate with a blocking reason naming its exact metadata path
-and native cause, and keeps coverage incomplete naming that candidate, without
-retroactively marking discovery partial. This fixed window also covers post-removal
-confirmation: it does not re-scan peers or retroactively change discovery when a
-peer later fails its own check. Independently proven healthy peers can still
-progress; a refusal before any effect adds no partial/unknown effect.
+and native cause, and keeps coverage incomplete naming that candidate. Paths
+that add no retained discovery scope, including the C21 `git_failed` rows,
+leave discovery complete. A late ordinary own-leaf read error latched in
+`retained` can still add a discovery scope at the checkpoint and make discovery
+partial, as in C21 `self_final_to_remove`. Post-removal confirmation does not
+re-scan peers; a peer's later own check follows the same distinction.
+Independently proven healthy peers can still progress; a refusal before any
+effect adds no partial/unknown effect.
 
 At each of these boundaries exactly one additional shallow shared observation
 lstats the primary `.git` and `.git/worktrees` no-follow, pins their discovery
