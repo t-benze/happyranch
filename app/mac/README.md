@@ -25,6 +25,17 @@ SwiftPM release dead stripping. Retained native sources can inspect ABI exports;
 uses basic bundle checks. Native tests remain separate from automated lint/static
 merge checks.
 
+## Daemon child environment
+
+Both bundled and development launches use `EnvironmentSanitizer` to pass through
+only inherited `PATH`, `HOME`, `USER`, `LOGNAME`, and optional `HAPPYRANCH_WEB_DIST`,
+and to set `HAPPYRANCH_DAEMON_HOME` explicitly. Agent CLIs such as Claude need
+`USER`/`LOGNAME` for macOS Keychain credential lookup; absent values are never
+synthesized. Other inherited `HAPPYRANCH_*` overrides and arbitrary secrets are
+stripped. The bundled launcher explicitly sets its web distribution path and
+ephemeral daemon port after sanitization. See the
+[spawn-environment invariant](../../docs/agent-guides/agent-executors-and-permissions.md#spawn-environment-invariant-and-worktree-isolation).
+
 ## Managed daemon Stop and health
 
 Stop sends TERM to the app's current managed child, waits up to five seconds,

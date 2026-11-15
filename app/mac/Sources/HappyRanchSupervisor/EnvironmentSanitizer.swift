@@ -17,7 +17,9 @@ public struct EnvironmentSanitizer: Sendable {
     ///   - parentEnvironment: The ProcessInfo.processInfo.environment dict.
     ///
     /// - Returns: A dictionary suitable for Process.environment containing
-    ///   only the minimum OS/shell vars plus operational HAPPYRANCH vars.
+    ///   PATH, HOME, USER and LOGNAME when present, plus operational HAPPYRANCH vars.
+    ///   USER/LOGNAME are needed for agent CLI macOS Keychain credential lookup;
+    ///   neither is synthesized when absent from the parent environment.
     public static func buildChildEnvironment(
         daemonHome: String,
         parentEnvironment: [String: String]
@@ -31,6 +33,12 @@ public struct EnvironmentSanitizer: Sendable {
         }
         if let home = parentEnvironment["HOME"] {
             env["HOME"] = home
+        }
+        if let user = parentEnvironment["USER"] {
+            env["USER"] = user
+        }
+        if let logname = parentEnvironment["LOGNAME"] {
+            env["LOGNAME"] = logname
         }
 
         // Operational HAPPYRANCH vars (explicitly set, not inherited)
