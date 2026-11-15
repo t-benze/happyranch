@@ -689,6 +689,8 @@ def run(report: dict[str, Any]) -> None:
     from scripts.mac_native.toolchain import PINS, parse_pins, provision
 
     steps = report.setdefault('steps', initial_steps())
+    # Leave ten minutes for bootstrap/outer cleanup inside the 90-minute job.
+    deadline = time.monotonic() + 4800
     scratch = Path(os.environ.get('TMPDIR', '')).resolve().parent
     if (not os.environ.get('TMPDIR') or not scratch.is_dir() or
             not ROOT.is_relative_to(scratch)):
@@ -698,7 +700,8 @@ def run(report: dict[str, Any]) -> None:
     section: dict[str, Any] = {'source_sha': os.environ.get('SOURCE_SHA'),
         'real_executor_session': {'status': 'NOT_RUN', 'reason': 'not reached'},
         'gui_launch': 'NOT_RUN: bundled AppDelegate persists NSHomeDirectory/Library; GUI cannot guarantee private HOME isolation in this agent context',
-        'appkit_quit': 'NOT_RUN', 'commands': {}}
+        'appkit_quit': 'NOT_RUN', 'commands': {},
+        'update_tests': {'status': 'NOT_RUN', 'reason': 'packaged steps 1-7 must pass first'}}
     report['packaged'] = section
     daemon = None
     log = None
@@ -1011,3 +1014,59 @@ def run(report: dict[str, Any]) -> None:
             raise RuntimeError('packaged report exceeds 60000 bytes')
     if any(steps[str(i)]['status'] != 'PASS' for i in range(1, 8)):
         raise RuntimeError('packaged acceptance incomplete')
+
+    # A separate required result preserves all packaged step/build evidence.
+    # Run only after the owned daemon is stopped; outer EXIT still owns scratch.
+    from scripts.mac_native.suite_supervisor import (
+        _build_environment, _command, _discover_toolchain, _swift_test_command, _test_results,
+    )
+    update = section['update_tests']
+    update.clear()
+    update.update(status='FAIL', toolchain=[], command=None, exit_code=None,
+                  output_bytes=None, sha256=None, tail='', test_results={'lines': [], 'truncated': False, 'json_bytes': 0})
+    try:
+        test_scratch = area / 'update-tests'
+        test_scratch.mkdir(mode=0o700)
+        test_env = _build_environment(test_scratch)
+        test_deadline = min(deadline, time.monotonic() + 600)
+        def toolchain_row(name: str, status: str, expected: Any, actual: Any) -> None:
+            update['toolchain'].append(dict(name=name, status=status, expected=expected, actual=actual))
+        discovered = _discover_toolchain(test_env, test_scratch, test_deadline, toolchain_row)
+        if len(discovered) != 4 or any(row['status'] != 'AVAILABLE' for row in update['toolchain']):
+            raise RuntimeError('toolchain unavailable; no update tests ran')
+        argv = _swift_test_command(discovered['swift_path'], ROOT / 'app/mac', test_scratch, test_env)
+        # Swift Testing uses @Suite display names by default. Verbose output
+        # adds the actual type as (aka 'UpdateGateTests'), independently of
+        # compiler filenames or the filter echoed in build diagnostics.
+        argv += ['--filter', 'UpdateGateTests|UpdateConfigurationTests', '--verbose']
+        update['command'] = argv
+        code, raw = _command(argv, test_env, test_scratch, test_deadline, output_cap=1024 * 1024)
+        output = raw.decode('utf-8', errors='replace')
+        results = _test_results(output)
+        classes = ['UpdateGateTests', 'UpdateConfigurationTests']
+        executed = [name for name in classes if any(
+            re.fullmatch(r".*\bSuite .+ \(aka '" + name + r"'\) passed after .+", line)
+            for line in results['lines'])]
+        runs = re.findall(r'\bTest run with ([0-9]+) tests?(?: in [0-9]+ suites?)? passed after ', output)
+        passed = (code == 0 and executed == classes and bool(runs) and sum(map(int, runs)) > 0
+                  and any(re.search(r'\bTest (?!run\b).+ passed after ', line) for line in results['lines'])
+                  and not any(re.search(r'\b(?:Test|Suite) .+ failed\b', line) for line in results['lines']))
+        update.update(exit_code=code, output_bytes=len(raw), sha256=hashlib.sha256(raw).hexdigest(),
+                      tail=raw[-2048:].decode('utf-8', errors='ignore'), test_results=results, executed_classes=executed)
+        if not passed:
+            raise RuntimeError('exit must be 0 with nonzero executed tests and both update classes passed')
+        update['status'] = 'PASS'
+    except Exception as exc:
+        update.update(status='FAIL', error=f'{type(exc).__name__}: {exc}'[:1024])
+        raise RuntimeError('packaged update tests failed; inspect packaged.update_tests') from exc
+    finally:
+        # Preserve packaged evidence first; truncate only this command's text
+        # if JSON escaping would exceed the report/collector envelope.
+        while len(json.dumps(report).encode()) > REPORT_CAP - 2000 and update['test_results']['lines']:
+            update['test_results']['lines'].pop()
+            update['test_results']['truncated'] = True
+        update['test_results']['json_bytes'] = sum(
+            len(json.dumps(line).encode()) + 2 for line in update['test_results']['lines'])
+        if len(json.dumps(report).encode()) > REPORT_CAP:
+            update['status'] = 'FAIL'
+            raise RuntimeError('packaged update test report exceeds 60000 bytes')

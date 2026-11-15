@@ -200,10 +200,21 @@ swift test --package-path app/mac --filter 'UpdateGateTests|UpdateConfigurationT
 Linux has no Swift/macOS toolchain: those tests and their old-behavior RED proof
 are **NOT RUN** here. The existing `happyranch-mac-native-probe` `packaged` suite
 runs `build-app.sh` (which uses `swift build`), installs/launches/drives the app
-and collects process evidence; it does **not** run `swift test`. Its separate
-`supervisor` suite runs only the focused filters documented above, which do not
-include these updater tests. No probe job/filter is changed here. The manager
-owns the separately budgeted native test/build/run and signed update proof.
+and collects process evidence. After numbered steps 1–7 pass and the daemon has
+stopped, it also runs the command above, using the supervisor's existing
+toolchain discovery and private SwiftPM/cache/environment helpers. This required
+result lives at `probe.json.packaged.update_tests`; numbered steps 1–8 and the
+outer EXIT receipt stay unchanged. A test failure preserves packaged step and
+build evidence but makes the suite fail. The test command has at most 600 seconds
+within a shared 4800-second suite deadline, 1 MiB combined output, a 2 KiB tail,
+SHA-256/byte count and bounded named test results. It requires exit 0, a nonzero
+test run and passed results for both actual suite types (`--verbose` exposes
+their identities). Timeout, output overflow, missing results or unavailable
+tooling fail; interrupted output is explicitly unavailable, never a test pass.
+HOME, temporary files, SwiftPM paths and compiler caches stay under job scratch;
+the job's existing 90-minute / 256 MiB-file envelope is unchanged. Its separate
+`supervisor` suite retains its existing filter. No job configuration is changed.
+The manager owns the budgeted native run and signed update proof.
 
 The existing **1.0.1-pinned signing package cannot sign this Sparkle build**.
 Signing-script and code-inventory changes belong to PR3 and are not included here.

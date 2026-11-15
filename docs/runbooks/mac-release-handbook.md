@@ -50,9 +50,17 @@ See the [behavior matrix and native command](../../app/mac/README.md#internal-ca
 head, on the authorized Mac run
 `swift test --package-path app/mac --filter 'UpdateGateTests|UpdateConfigurationTests'`.
 The existing `happyranch-mac-native-probe` `packaged` suite builds the app via
-`build-app.sh`/`swift build`, installs and drives it; it does **not** run Swift
-unit tests. Its `supervisor` suite has its own existing focused filter that
-does not select the new updater tests. No job/config/filter is changed here.
+`build-app.sh`/`swift build`, installs and drives it. After steps 1–7 pass and
+the daemon stops, the required `packaged.update_tests` result runs that filtered
+Swift test command with the supervisor's existing toolchain and scratch helpers.
+The numbered steps and step-8 outer EXIT collector remain unchanged, preserving
+build/packaged evidence on a test failure. Tests have at most 600 seconds within
+the shared 4800-second suite deadline and 1 MiB output, under the existing
+90-minute / 256 MiB-file job envelope. The report retains argv, exit, byte count,
+SHA-256, a 2 KiB tail and bounded per-test results. Exit 0, a nonzero test run and
+passed results for both suite types are required; timeout, overflow, absent
+results and missing toolchain fail the suite. Its `supervisor` filter and Jenkins
+configuration remain unchanged. Linux portable harness checks do not execute Swift.
 Signed N→N+1, daemon data continuity, install on quit, scheduled prompts and
 signature refusal still require the founder's signed builds and manager's
 budgeted native venue. Build numbers must strictly increase for every published
