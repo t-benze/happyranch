@@ -48,7 +48,6 @@ For the planned release daemon, `connector.json` is:
   "tenant_id": "YOUR-STABLE-TENANT",
   "home_id": "YOUR-STABLE-HOME",
   "connector_id": "YOUR-STABLE-CONNECTOR",
-  "daemon_port": 8766,
   "daemon_token_path": "/etc/happyranch/daemon.token",
   "policy_path": "/etc/happyranch/policy.json",
   "state_path": "/var/lib/happyranch-connector/trust-state.json",
@@ -56,7 +55,7 @@ For the planned release daemon, `connector.json` is:
   "service_user": "happyranch",
   "service_group": "happyranch",
   "managed": {"bind_host": "127.0.0.1", "bind_port": 18443},
-  "excluded_daemon_ports": [8765, 8766]
+  "excluded_daemon_ports": [8765]
 }
 ```
 
@@ -73,7 +72,7 @@ paths, including private `/var/lib/happyranch-tsnet-sidecar`. `sidecar.json` is:
   "DERPPolicy": "private-only",
   "ListenAddr": ":443",
   "ConnectorAddr": "127.0.0.1:18443",
-  "ExcludedDaemonPorts": [8765, 8766]
+  "ExcludedDaemonPorts": [8765]
 }
 ```
 
@@ -94,9 +93,16 @@ process. Provisioning does not mint a new policy or relax its lifetime.
 After host-install authorization, stage inputs with the packaged interpreter:
 
 ```sh
-sudo /opt/happyranch-desktop/python/bin/python3 -I -m runtime.remote_access.installer provision --layout deb --connector-config /root/remote-access-inputs/connector.json --sidecar-config /root/remote-access-inputs/sidecar.json --policy-file /root/remote-access-inputs/policy.json --daemon-token-source /home/benze/.happyranch-release/daemon.token
+sudo /opt/happyranch-desktop/python/bin/python3 -I -m runtime.remote_access.installer provision --layout deb --connector-config /root/remote-access-inputs/connector.json --sidecar-config /root/remote-access-inputs/sidecar.json --policy-file /root/remote-access-inputs/policy.json --release-user benze --data-home /home/benze/.local/share/happyranch
 ```
 
+The installer records the resolved data home at provisioning time. Supply the
+actual `$XDG_DATA_HOME/happyranch` as `--data-home` when XDG is customized;
+sudo cannot read the login environment. Omission defaults to the passwd home
+plus `.local/share/happyranch`. The existing directory must belong to the release
+uid, have no symlink components or group/other write bits, and be outside
+`~/.happyranch`, `/etc` and `/var`. The token source defaults to
+`<data_home>/daemon.token`; `--daemon-token-source /absolute/path` can override it.
 Use the actual absolute token-source path as an input. It must be a literal,
 single-link regular 0600 file containing a nonempty UTF8 token. The installer
 copies it to `/etc/happyranch/daemon.token`, mode 0600, owned by
@@ -124,21 +130,66 @@ copy against the recorded hash. A later daemon-token rotation therefore fails
 drift even when the staged copy is unchanged. Reprovisioning/renewal requires
 explicit operator recovery; it does not overwrite existing files automatically.
 Use `uninstall --layout deb` (and optionally the existing `--purge`) to remove
-units/state. Configs, record, staged token, package, logs and account are retained.
+units/state. Configs, provisioning record, staged token, package, logs and account are retained.
+The release install record and verifier socket/service are removed.
 A missing package is not required for uninstall; unit safety checks still apply.
 
-The THR-327 B1b port contract requires `ConnectorAddr` to equal exactly
-`127.0.0.1:<managed.bind_port>`. Ingress must differ from `daemon_port`, DEV
-8765 and every explicit excluded port. Deb provisioning fills both lists with
-sorted unique `[8765, <daemon_port>]`, preserving additional exclusions from
-either input. Omitted input lists are allowed; staged deb lists are required,
-equal and revalidated at install/check-drift. Entries must be integers in
-1..65535; Booleans are invalid. The Go sidecar independently rejects listed
-ports and retains the literal-loopback and literal-8765 refusals. Existing
-source/Mac configs may omit the new list. Daemon bearer auth is insufficient
-because loopback `/auth/bootstrap` returns the token. These source changes do
-not authorize live installation, activation or Mac testing; those retain their
-separate approvals. The proxy/Headscale environment is unchanged.
+Managed Linux no longer takes a fixed `daemon_port`. The connector and sidecar
+exclusion lists remain sorted, equal and always include DEV 8765 plus operator
+exclusions. The ingress address is exactly `127.0.0.1:<managed.bind_port>`;
+ingress cannot use an excluded port. Every resolved daemon port is checked
+against those exclusions, so leave the random release port out of static config.
+The Go sidecar keeps its existing literal-loopback and excluded-port checks.
+macOS and existing DIY/lab fixed-target configurations retain their contracts.
+
+`/etc/happyranch/release-daemon.json` is root-owned 0644 and records exactly:
+`user`, `uid`, `data_home`, `unit=happyranch-daemon.service`, and
+`fragment_path=/usr/lib/systemd/user/happyranch-daemon.service`. Install/drift
+revalidate the target uid and data directory. The root verifier reads the port
+file no-follow (regular, correct uid, single link, at most 16 bytes, decimal
+1..65535), refuses DEV/excluded ports, and verifies the active user unit, exact
+packaged fragment and empty DropInPaths. **No drop-ins are tolerated.** It matches
+the loopback LISTEN inode to a MainPID fd, then separately proves the server fd
+of the connector's exact established connection before any HTTP/bearer bytes.
+The connector rereads this evidence per connection; refusals log a short machine
+reason and return HTTP 503, with no fixed-port fallback. DEV 8765 and
+`~/.happyranch` are never modified. Random startup and desktop changes are PR-D.
+
+The root-owned socket is `/run/happyranch-release-verifier/control.sock`, mode
+0660 root:happyranch, under a root-owned 0755 directory. Only the closed
+`resolve` / `confirm <local-port> <daemon-port>` protocol is accepted. It accepts
+no paths or usernames and reads no daemon token. The connector remains the
+unprivileged `happyranch` account with its existing empty capabilities.
+
+Verifier hardening (the separate root service only):
+
+| Setting | Reason |
+| --- | --- |
+| `User=root`, `Group=happyranch` | Read another uid's proc fd links and query that user's manager; socket access remains group-scoped. |
+| `ProtectSystem=strict` | No persistent filesystem writes. |
+| `ProtectHome=read-only` | Read the recorded port file while preventing home writes; hiding homes would break verification. |
+| `NoNewPrivileges=yes`, empty `AmbientCapabilities` | No exec-time privilege gains or ambient propagation. |
+| `CapabilityBoundingSet=CAP_DAC_READ_SEARCH CAP_SYS_PTRACE CAP_SETUID CAP_SETGID` | Read protected home/proc metadata and allow systemctl's local user-bus bridge to change uid/gid; no capabilities are added to the connector. |
+| `PrivateTmp=yes`, `PrivateDevices=yes` | Isolate temporary files and hide physical devices. |
+| `ProtectKernelTunables=yes`, `ProtectKernelModules=yes`, `ProtectKernelLogs=yes`, `ProtectControlGroups=yes` | Prevent kernel/control-plane modification and kernel log reads. |
+| `RestrictAddressFamilies=AF_UNIX` | Only local verifier/user-manager IPC; verifier does not dial TCP. |
+| Omit `PrivateNetwork`, `ProtectProc`, `ProcSubset`, `PrivateUsers` | Must observe host `/proc/net/tcp`, the target process fds, and host user manager with real uid authority. |
+| `RestrictSUIDSGID=yes`, `RestrictRealtime=yes`, `LockPersonality=yes` | Prevent set-id files, realtime scheduling and ABI switching. |
+| `MemoryDenyWriteExecute=yes`, `SystemCallArchitectures=native` | No executable writable mappings or foreign syscall ABI. |
+| `UMask=0077`, `TasksMax=16`, `MemoryMax=96M`, `LimitNOFILE=128` | Bound accidental file exposure, process count, memory and descriptors. |
+| `Type=simple`, `Restart=on-failure`, `RestartSec=1`, `TimeoutStopSec=5` | Socket activation and bounded stop/recovery; no false notify readiness. |
+
+Systemctl's local user-bus syntax is documented in the
+[systemctl manual](https://www.freedesktop.org/software/systemd/man/latest/systemctl.html).
+The service deliberately retains the host network namespace even though its
+only sockets are Unix sockets. Unit text and fixture checks do not prove that
+all hardening settings work together; hosted M1/M2 must supply that evidence.
+M1's synthetic server and M2's real daemon use the runner user manager and exact
+packaged FragmentPath, with a CI source-wheel ExecStart instead of the `.deb`
+binary. Neither allows a drop-in exception. M2 requires a squatter/non-MainPID
+port-file negative. M3/M4's legacy shared-driver assumptions require separate
+alignment before reuse. These source changes authorize no host installation,
+activation or Mac testing.
 
 ## Overview
 

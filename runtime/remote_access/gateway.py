@@ -20,9 +20,11 @@ from __future__ import annotations
 
 import http.client
 import uuid
+
 from dataclasses import dataclass
 from datetime import datetime
 
+from runtime.remote_access.release_verifier import VerificationRefused
 from runtime.remote_access.allowlist import template_matches
 from runtime.remote_access.audit import ALLOWED_DETAIL, detail_for, redact_exception
 from runtime.remote_access.authorization import AuthorizationVerifier, AuthorizationVerdict
@@ -65,6 +67,8 @@ def _forward_failure(exc: BaseException) -> DeniedOutcome:
     category; credential-shaped outbound material is its own category; any
     other failure is redacted to internal. Raw exception text never survives.
     """
+    if isinstance(exc, VerificationRefused):
+        return _deny("local_daemon", "daemon_unavailable", "release_verification_refused")
     if isinstance(exc, OutboundLeakError):
         return _deny("local_daemon", "local_daemon_denied", "credential_shaped")
     if isinstance(exc, (ConnectionError, TimeoutError, OSError, http.client.HTTPException)):

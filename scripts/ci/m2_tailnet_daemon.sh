@@ -8,7 +8,7 @@ MANAGED_DOWNLOADS=${MANAGED_DOWNLOADS:-${RUNNER_TEMP:-/tmp}/managed-downloads}
 python=/opt/happyranch/venv/bin/python
 services=(happyranch-connector.service happyranch-tsnet-sidecar.service)
 target=happyranch-managed.target
-fixtures=(happyranch-m2-headscale.service happyranch-m2-peer.service happyranch-m2-daemon.service)
+fixtures=(happyranch-m2-headscale.service happyranch-m2-peer.service)
 fail() { echo "M2: $*" >&2; exit 1; }
 absent() { [[ ! -e $1 && ! -L $1 ]] || fail "unexpected residue: $1"; }
 wait_for() {
@@ -32,7 +32,7 @@ policy = dict(schema_version=1, artifact_version=int(artifact['version']),
               issued_at=(datetime.now(timezone.utc) - timedelta(seconds=10)).isoformat(),
               max_age_seconds=3600, revision=1, state='active', artifact=artifact)
 connector = dict(tenant_id='tenant-ci', home_id='home-ci', connector_id='connector-ci',
-                 daemon_port=18765, daemon_token_path='/etc/happyranch/daemon.token',
+                 daemon_token_path='/etc/happyranch/daemon.token',
                  policy_path='/etc/happyranch/policy.json',
                  state_path='/var/lib/happyranch-connector/trust-state.json',
                  system=True, service_user='happyranch', service_group='happyranch',
@@ -43,6 +43,7 @@ sidecar = dict(StateDir='/var/lib/happyranch-tsnet-sidecar',
                ConnectorAddr='127.0.0.1:18443', DERPPolicy='private-only')
 for name, value in [('policy', policy), ('connector', connector), ('sidecar', sidecar)]:
     (dest / f'{name}.json').write_text(json.dumps(value))
+    (dest / f'{name}.json').chmod(0o600)
 (dest / 'fixture_daemon_probe.py').write_text("""# Local fixture setup uses the bearer only on loopback, never in the tailnet client.
 import json
 import sys
@@ -177,21 +178,80 @@ provision_payload() {
   sudo install -m 0755 "$M2_BUILD/happyranch-tsnet-sidecar" /opt/happyranch/bin/
   # Installer validates this exact account; precreate it to own the token input.
   sudo useradd --system --user-group --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin happyranch
-  for name in connector sidecar policy; do sudo install -m 0644 "$M2_BUILD/$name.json" "/etc/happyranch/$name.json"; done
-  printf '%s\n' synthetic-m2-daemon-token | sudo install -m 0600 -o happyranch -g happyranch /dev/stdin /etc/happyranch/daemon.token
   sudo install -d -m 0700 "$M2_WORK"
 }
 provision_daemon() {
-  # The installed product entrypoint auto-provisions its runtime in this test-owned home.
-  sudo install -d -m 0700 "$M2_WORK/daemon-home"
-  sudo install -m 0600 /etc/happyranch/daemon.token "$M2_WORK/daemon-home/daemon.token"
-  start_fixture "${fixtures[2]}" \
-    --setenv="HAPPYRANCH_DAEMON_HOME=$M2_WORK/daemon-home" \
-    --setenv=HAPPYRANCH_DAEMON_BIND_HOST=127.0.0.1 --setenv=HAPPYRANCH_DAEMON_PORT=18765 \
-    "$python" -m runtime.daemon
-  wait_for curl --silent --fail --connect-timeout 2 --max-time 3 --output /dev/null http://127.0.0.1:18765/api/v1/health
-  sudo "$python" "$M2_WORK/fixture_daemon_probe.py" 18765 /etc/happyranch/daemon.token
+  # A real daemon under the runner user's manager, never a root transient daemon.
+  release_home="$HOME/.local/share/happyranch-m2-ci"
+  absent "$release_home"
+  mkdir -p "$release_home"
+  chmod 0700 "$release_home"
+  printf '%s\n' synthetic-m2-daemon-token > "$release_home/daemon.token"
+  chmod 0600 "$release_home/daemon.token"
+  absent /usr/lib/systemd/user/happyranch-daemon.service
+  # CI equivalent: source-wheel interpreter, same root-owned packaged FragmentPath,
+  # runner MainPID, literal loopback and random port. No drop-in exception.
+  sudo tee /usr/lib/systemd/user/happyranch-daemon.service >/dev/null <<EOF
+[Unit]
+Description=HappyRanch M2 real release daemon (CI equivalent)
+[Service]
+ExecStart=$python -m runtime.daemon
+Environment=HAPPYRANCH_DAEMON_HOME=$release_home
+Environment=HAPPYRANCH_DAEMON_BIND_HOST=127.0.0.1
+Environment=HAPPYRANCH_DAEMON_PORT=0
+EOF
+  sudo loginctl enable-linger "$(id -un)"
+  sudo systemctl start "user@$(id -u).service"
+  export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+  export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"
+  systemctl --user daemon-reload
+  systemctl --user start happyranch-daemon.service
+  wait_for test -s "$release_home/daemon.port"
+  wait_for curl --silent --fail --connect-timeout 2 --max-time 3 --output /dev/null "http://127.0.0.1:$(cat "$release_home/daemon.port")/api/v1/health"
+  sudo "$python" -m runtime.remote_access.installer provision \
+    --connector-config "$M2_BUILD/connector.json" --sidecar-config "$M2_BUILD/sidecar.json" \
+    --policy-file "$M2_BUILD/policy.json" --release-user "$(id -un)" --data-home "$release_home"
+  sudo "$python" "$M2_WORK/fixture_daemon_probe.py" "$(cat "$release_home/daemon.port")" /etc/happyranch/daemon.token
 }
+negative_ownership() {
+  # Keep the genuine user service active; only the untrusted port file is changed.
+  local actual squatter_pid
+  actual=$(cat "$release_home/daemon.port")
+  /usr/bin/python3 -u - "$release_home/squatter.port" <<'PY_SQUAT' &
+import socket, sys
+from pathlib import Path
+with socket.socket() as listener:
+    listener.bind(('127.0.0.1', 0))
+    listener.listen()
+    Path(sys.argv[1]).write_text(str(listener.getsockname()[1]))
+    listener.settimeout(10)
+    try:
+        peer, _ = listener.accept()
+        with peer:
+            peer.settimeout(1)
+            assert not peer.recv(1024), 'squatter received request bytes'
+    except TimeoutError:
+        pass
+PY_SQUAT
+  squatter_pid=$!
+  wait_for test -s "$release_home/squatter.port"
+  cat "$release_home/squatter.port" > "$release_home/daemon.port"
+  sudo -u happyranch "$python" - <<'PY_REFUSE'
+from runtime.remote_access.release_verifier import VerificationRefused, VerifierClient
+try:
+    VerifierClient().resolve()
+except VerificationRefused as exc:
+    assert exc.reason == 'socket_not_owned', exc.reason
+    print('M2 negative: non-MainPID listener refused (socket_not_owned)')
+else:
+    raise AssertionError('verifier trusted squatter port file')
+PY_REFUSE
+  printf '%s' "$actual" > "$release_home/daemon.port"
+  kill "$squatter_pid"
+  wait "$squatter_pid" || [[ $? == 143 ]]
+  ready
+}
+
 installer() {
   local rc=0
   # The shell intentionally creates runner-owned artifact logs, not root files.
@@ -346,13 +406,13 @@ PY
 }
 residue() {
   local path unit
-  for unit in "${services[@]}" "$target"; do
+  for unit in "${services[@]}" "$target" happyranch-release-verifier.socket happyranch-release-verifier.service; do
     absent "/etc/systemd/system/$unit"
     [[ $(systemctl show "$unit" -p LoadState --value) == not-found ]] || fail "still loaded: $unit"
     ! systemctl is-active --quiet "$unit" || fail "still active: $unit"
   done
   for path in /etc/systemd/system/multi-user.target.wants/happyranch-managed.target \
-    /etc/credstore/happyranch-tsnet-enrollment /etc/happyranch/enrollment.key "$M2_WORK/enrollment.key" \
+    /etc/credstore/happyranch-tsnet-enrollment /etc/happyranch/enrollment.key /etc/happyranch/release-daemon.json /run/happyranch-release-verifier/control.sock "$M2_WORK/enrollment.key" \
     /var/lib/happyranch-{connector,tsnet-sidecar} /run/happyranch-{connector,tsnet-sidecar}; do
     if ! sudo test ! -e "$path" || ! sudo test ! -L "$path"; then fail "installer residue: $path"; fi
   done
@@ -361,7 +421,11 @@ residue() {
   echo 'Uninstall/purge removed units, enrollment and service state. Payload, config, logs and account are documented retained items.'
 }
 logs() {
+  export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+  export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"
   mkdir -p "$M2_LOGS"
+  sudo systemctl --user -M "$(id -un)@.host" show happyranch-daemon.service -p MainPID,ActiveState,FragmentPath,DropInPaths || true
+  journalctl --user --no-pager -u happyranch-daemon.service -n 80 || true
   runtime_directories 2>&1 | tee "$M2_LOGS/runtime-directories.txt"
   # M3 supplies a guest pass boundary; hosted M2 keeps its existing arguments.
   local journal_args=() status_args=()
@@ -375,7 +439,7 @@ logs() {
     > "$M2_LOGS/systemd-manager.journal.txt" 2>&1 || true
   cat "$M2_LOGS/systemd-manager.journal.txt"
   local unit
-  for unit in "${services[@]}" "$target" "${fixtures[@]}"; do
+  for unit in "${services[@]}" "$target" happyranch-release-verifier.socket happyranch-release-verifier.service "${fixtures[@]}"; do
     # These redirects intentionally create runner-owned artifact logs.
     # shellcheck disable=SC2024
     sudo journalctl --no-pager -o short-precise "${journal_args[@]}" -u "$unit" > "$M2_LOGS/$unit.journal.txt" 2>&1 || true
@@ -393,6 +457,11 @@ logs() {
   echo 'M2 step 7: plain diagnostics captured, including daemon stderr, tailscaled and connector readiness'
 }
 teardown() {
+  export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+  export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"
+  systemctl --user stop happyranch-daemon.service || true
+  sudo rm -f /usr/lib/systemd/user/happyranch-daemon.service
+  systemctl --user daemon-reload || true
   sudo rm -f "$M2_WORK/peer.key" "$M2_WORK/enrollment.key"
   # Preserve product residue for diagnosis; runner disposal removes retained data.
   local rc=0
@@ -410,6 +479,8 @@ case ${1:-} in
     installer install --enrollment-key-file "$M2_WORK/enrollment.key"
     ready
     echo 'M2 step 1: product install, both notify-READY services and check-drift passed'
+    request
+    negative_ownership
     request
     M2_LOGS="$M2_LOGS/before-uninstall" logs
     installer uninstall --purge

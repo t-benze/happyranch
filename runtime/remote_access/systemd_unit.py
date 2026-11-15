@@ -15,8 +15,8 @@ Renders connector/sidecar units and their target. systemd owns recovery:
 - ``Type=notify`` + ``WatchdogSec=`` (the supervisor reports READY/WATCHDOG
   through sd_notify) and ``Restart=on-failure`` for crash recovery.
 
-Rendering is pure and deterministic. This is packaging surface only: no
-daemon, gateway, auth, schema, permission-model, or dependency change.
+Rendering is pure and deterministic. The managed Linux verifier is a separate
+root evidence reader; its capabilities never extend the connector account.
 """
 from __future__ import annotations
 
@@ -84,6 +84,7 @@ class ConnectorUnitSpec:
         "run",
     )
     system: bool = True
+    release_verifier: bool = False
     user: str | None = None
     group: str | None = None
     daemon_token_path: str = ""
@@ -116,6 +117,9 @@ def render_connector_unit(spec: ConnectorUnitSpec) -> str:
     lines.extend(_START_LIMIT)
     lines.append(f"PartOf={_MANAGED_TARGET}")
     if spec.system:
+        if spec.release_verifier:
+            lines.append("Requires=happyranch-release-verifier.socket")
+            lines.append("After=happyranch-release-verifier.socket")
         # Re-pull the BindsTo sidecar when the connector recovers (systemd >= 249).
         lines.append("Upholds=happyranch-tsnet-sidecar.service")
     lines.append("")
@@ -198,9 +202,44 @@ def render_managed_target() -> str:
     return "\n".join([
         "[Unit]",
         "Description=HappyRanch managed remote access",
-        "Wants=happyranch-connector.service happyranch-tsnet-sidecar.service",
+        "Wants=happyranch-release-verifier.socket happyranch-connector.service happyranch-tsnet-sidecar.service",
         "",
         "[Install]",
         "WantedBy=multi-user.target",
         "",
+    ])
+
+
+def render_verifier_socket() -> str:
+    """Root-owned listener; group access does not grant path replacement."""
+    return '\n'.join([
+        '[Unit]', 'Description=HappyRanch release verifier socket',
+        f'PartOf={_MANAGED_TARGET}', '', '[Socket]',
+        'ListenStream=/run/happyranch-release-verifier/control.sock',
+        'SocketUser=root', 'SocketGroup=happyranch', 'SocketMode=0660',
+        'DirectoryMode=0755', 'RemoveOnStop=yes', '', '[Install]',
+        f'WantedBy={_MANAGED_TARGET}', '',
+    ])
+
+
+def render_verifier_unit(python: tuple[str, ...]) -> str:
+    """Privileged evidence reader, never the network-facing connector."""
+    return '\n'.join([
+        '[Unit]', 'Description=HappyRanch release socket ownership verifier',
+        f'PartOf={_MANAGED_TARGET}', 'Requires=happyranch-release-verifier.socket',
+        'After=happyranch-release-verifier.socket', '', '[Service]',
+        'Type=simple', 'User=root', 'Group=happyranch',
+        'ExecStart=' + ' '.join(_quote_systemd_arg(arg) for arg in
+                              (*python, '-m', 'runtime.remote_access.release_verifier')),
+        'Restart=on-failure', 'RestartSec=1', 'NoNewPrivileges=yes',
+        'ProtectSystem=strict', 'ProtectHome=read-only', 'PrivateTmp=yes',
+        'PrivateDevices=yes', 'ProtectKernelTunables=yes',
+        'ProtectKernelModules=yes', 'ProtectKernelLogs=yes',
+        'ProtectControlGroups=yes', 'RestrictSUIDSGID=yes',
+        'RestrictRealtime=yes', 'LockPersonality=yes',
+        'MemoryDenyWriteExecute=yes', 'SystemCallArchitectures=native',
+        'RestrictAddressFamilies=AF_UNIX', 'UMask=0077',
+        'CapabilityBoundingSet=CAP_DAC_READ_SEARCH CAP_SYS_PTRACE CAP_SETUID CAP_SETGID',
+        'AmbientCapabilities=', 'TasksMax=16', 'MemoryMax=96M',
+        'LimitNOFILE=128', 'TimeoutStopSec=5', '',
     ])

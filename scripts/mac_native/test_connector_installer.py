@@ -6,6 +6,7 @@ import hashlib
 import time
 import json
 import os
+import pwd
 import plistlib
 import stat
 import subprocess
@@ -838,7 +839,7 @@ class ManagedLinuxDebInstaller(unittest.TestCase):
 
     @contextmanager
     def host(self):
-        with tempfile.TemporaryDirectory() as folder:
+        with tempfile.TemporaryDirectory(dir='/tmp') as folder:
             root = Path(folder).resolve()
             prefix = root / 'opt/happyranch-desktop'
             for name in ('bin/happyranch-tsnet-sidecar', 'python/bin/python3.12'):
@@ -854,7 +855,7 @@ class ManagedLinuxDebInstaller(unittest.TestCase):
             private(operator / 'daemon.token', TOKEN)
             private(operator / 'enrollment.key', KEY)
             connector = dict(tenant_id='tenant-B1a', home_id='home-B1a', connector_id='connector-B1a',
-                daemon_port=8766, daemon_token_path='/etc/happyranch/daemon.token',
+                daemon_token_path='/etc/happyranch/daemon.token',
                 policy_path='/etc/happyranch/policy.json', state_path='/var/lib/happyranch-connector/trust-state.json',
                 system=True, service_user='happyranch', service_group='happyranch', managed=dict(bind_port=18443))
             sidecar = dict(StateDir='/var/lib/happyranch-tsnet-sidecar', ControlURL='https://control.example.invalid:8443',
@@ -871,23 +872,31 @@ class ManagedLinuxDebInstaller(unittest.TestCase):
             owner = (os.geteuid(), os.getegid())
             user = SimpleNamespace(pw_uid=owner[0], pw_gid=owner[1], pw_shell='/usr/sbin/nologin', pw_dir='/nonexistent')
             options = dict(root=root, root_owner=owner, manager=manager, layout='deb',
-                lookup_user=lambda _: user, lookup_group=lambda _: SimpleNamespace(gr_gid=owner[1]))
+                lookup_user=lambda name: user if name == 'happyranch' else pwd.getpwuid(os.getuid()), lookup_group=lambda _: SimpleNamespace(gr_gid=owner[1]))
             instance = installer.ManagedInstaller(**options)
             inputs = dict(connector_config=operator / 'connector.json', sidecar_config=operator / 'sidecar.json',
-                policy_file=operator / 'policy.json', daemon_token_source=operator / 'daemon.token')
+                policy_file=operator / 'policy.json', daemon_token_source=operator / 'daemon.token',
+                release_user=pwd.getpwuid(os.getuid()).pw_name, data_home=operator)
             yield root, instance, inputs, manager, options
 
     def test_linux_unit_layout_bytes(self):
-        # Source digests captured at base 10dbfaf20; deb changes only ExecStart.
+        # Published unit bytes are an independent installer drift contract.
         expected = {
-            'source': ('417e9b7ed1476778c57c28393b1968ab4933649b085b56b7536800a59013a6f5',
-                       '39b1590d41608b9c2f6bbbff5225d5fa4a2af0ba7761812dc68540b5da9be931'),
-            'deb': ('8722f992e0c31b8fe58ed886a973d17d3bf373822445ae46355fa2b0bd09955b',
-                    '005c001b6ed75959782bee9d5ca08746e504db62371994a46745b1905d528aae')}
+            'source': ('39fd3759ce2b433fb2bf6a22bb483f32aeec066ab908b73ea721f312bb1908cb',
+                       '39b1590d41608b9c2f6bbbff5225d5fa4a2af0ba7761812dc68540b5da9be931',
+                       'af7c83b16489a907a8b58f7a56f5153b3203aab8791df8290af847344375982f',
+                       '8db88c53f4a00581009acc58e15cf70c00aabd07f707305242e2494c5d9b1351',
+                       '6c837e4f6282fec002645e0e79503721ef098685c3d64611e0fb4bbfedcb7f13'),
+            'deb': ('099d87da872b3c2ca41b441788e5f47df35188d614e8d2a73ec7dc726ae39f30',
+                    '005c001b6ed75959782bee9d5ca08746e504db62371994a46745b1905d528aae',
+                    'af7c83b16489a907a8b58f7a56f5153b3203aab8791df8290af847344375982f',
+                    '8db88c53f4a00581009acc58e15cf70c00aabd07f707305242e2494c5d9b1351',
+                    '3d4ac2db496b321baea22e019b07e1b7194113ed0a77f02594f962688252106a')}
         for layout, hashes in expected.items():
             with self.subTest(layout=layout):
                 units = installer.managed_units(layout)
-                for name, digest in zip(installer.UNITS, (*hashes, '6db43ed94332e3c23b1ae71fef4272aad19c2c90f72360cd8493dc9934e114ca')):
+                self.assertEqual(len(units), len(hashes))
+                for name, digest in zip(installer.UNITS, hashes):
                     self.assertEqual(hashlib.sha256(units[name].encode()).hexdigest(), digest)
         self.assertEqual(installer.managed_units(), installer.managed_units('source'))
         from runtime.remote_access.systemd_unit import SidecarUnitSpec, render_sidecar_unit
@@ -912,7 +921,7 @@ class ManagedLinuxDebInstaller(unittest.TestCase):
                 path = config_dir / f'{name}.json'
                 expected = json.loads((root / 'operator' / path.name).read_bytes())
                 if name != 'policy':
-                    expected['excluded_daemon_ports' if name == 'connector' else 'ExcludedDaemonPorts'] = [8765, 8766]
+                    expected['excluded_daemon_ports' if name == 'connector' else 'ExcludedDaemonPorts'] = [8765]
                 self.assertEqual(json.loads(path.read_bytes()), expected)
                 self.assertEqual((path.stat().st_uid, path.stat().st_gid, stat.S_IMODE(path.stat().st_mode)), (*options['root_owner'], 0o640))
             self.assertEqual((config_dir / 'daemon.token').read_bytes(), TOKEN)
@@ -992,7 +1001,9 @@ class ManagedLinuxDebInstaller(unittest.TestCase):
                 user = SimpleNamespace(pw_uid=uid, pw_gid=gid, pw_shell='/usr/sbin/nologin', pw_dir='/nonexistent')
                 created = case != 'account-created-0744'
                 account_commands = []
-                def lookup_user(_):
+                def lookup_user(name):
+                    if name != 'happyranch':
+                        return pwd.getpwuid(os.getuid())
                     if not created:
                         raise KeyError('happyranch')
                     return user
@@ -1092,7 +1103,7 @@ class ManagedLinuxDebInstaller(unittest.TestCase):
 
         cases = [({}, True), ({'excluded_daemon_ports': [1, 65535, 8765, 8766]}, True),
                  ({'managed': {'bind_port': 8765}}, False),
-                 ({'managed': {'bind_port': 8766}}, False),
+                 ({'managed': {'bind_port': 8766}}, True),
                  ({'daemon_port': 18443}, False),
                  ({'excluded_daemon_ports': [18443]}, False)]
         cases += [({'excluded_daemon_ports': value}, False) for value in
@@ -1122,12 +1133,12 @@ class ManagedLinuxDebInstaller(unittest.TestCase):
                 value = json.loads(path.read_text())
                 value[field] = ports
                 private(path, json.dumps(value).encode())
-            before = {path: path.read_bytes() for path in inputs.values()}
+            before = {path: path.read_bytes() for path in inputs.values() if isinstance(path, Path) and path.is_file()}
             instance.provision(**inputs)
             for name, field in (('connector', 'excluded_daemon_ports'), ('sidecar', 'ExcludedDaemonPorts')):
                 self.assertEqual(json.loads((root / f'etc/happyranch/{name}.json').read_text())[field],
-                                 [8765, 8766, 18765, 18766])
-            self.assertEqual({path: path.read_bytes() for path in inputs.values()}, before)
+                                 [8765, 18765, 18766])
+            self.assertEqual({path: path.read_bytes() for path in inputs.values() if isinstance(path, Path) and path.is_file()}, before)
 
     def test_linux_deb_start_requires_provision(self):
         for case in ('missing-record', 'missing-config', 'invalid-config', 'invalid-record', 'wrong-layout'):
@@ -1163,7 +1174,7 @@ class ManagedLinuxDebInstaller(unittest.TestCase):
 
     def test_linux_deb_token_and_unit_drift(self):
         for case in ('source-rotation', 'staged-rotation', 'both-rotated', 'source-missing', 'unit-drift',
-                     'port-mismatch', 'port-daemon', 'missing-exclusions', 'missing-dev', 'missing-daemon',
+                     'port-mismatch', 'port-daemon', 'missing-exclusions', 'missing-dev', 'added-fixed-daemon',
                      'unequal-exclusions', 'invalid-exclusions'):
             with self.subTest(case=case), self.host() as (root, instance, inputs, manager, options):
                 instance.provision(**inputs)
@@ -1177,7 +1188,7 @@ class ManagedLinuxDebInstaller(unittest.TestCase):
                 if case == 'unit-drift':
                     (root / 'etc/systemd/system' / installer.UNITS[1]).write_text('[Service]\nExecStart=/bin/true\n')
                 config_cases = ('port-mismatch', 'port-daemon', 'missing-exclusions', 'missing-dev',
-                                'missing-daemon', 'unequal-exclusions', 'invalid-exclusions')
+                                'added-fixed-daemon', 'unequal-exclusions', 'invalid-exclusions')
                 if case in config_cases:
                     directory = root / 'etc/happyranch'
                     connector = json.loads((directory / 'connector.json').read_text())
@@ -1185,14 +1196,14 @@ class ManagedLinuxDebInstaller(unittest.TestCase):
                     if case == 'port-mismatch':
                         sidecar['ConnectorAddr'] = '127.0.0.1:9443'
                     elif case == 'port-daemon':
-                        connector['managed']['bind_port'] = 8766
-                        sidecar['ConnectorAddr'] = '127.0.0.1:8766'
+                        connector['daemon_port'] = 8766
                     elif case == 'missing-exclusions':
                         connector.pop('excluded_daemon_ports')
                         sidecar.pop('ExcludedDaemonPorts')
-                    elif case in ('missing-dev', 'missing-daemon'):
-                        ports = [8766] if case == 'missing-dev' else [8765]
-                        connector['excluded_daemon_ports'] = sidecar['ExcludedDaemonPorts'] = ports
+                    elif case == 'missing-dev':
+                        connector['excluded_daemon_ports'] = sidecar['ExcludedDaemonPorts'] = []
+                    elif case == 'added-fixed-daemon':
+                        connector['daemon_port'] = 18766
                     elif case == 'unequal-exclusions':
                         sidecar['ExcludedDaemonPorts'] = [8765, 8766, 18765]
                     else:

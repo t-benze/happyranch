@@ -340,7 +340,7 @@ the OS cause of a particular bootstrap failure; native lifecycle proof is requir
 
   After both notify services are READY and the existing drift checks succeed, the installer unlinks the fixed source and credstore link and fsyncs both directories. Any failure after staging also attempts this cleanup, including reload/enable/start/drift and stop failures; start/drift failure still requests target stop. Cleanup refusal is an explicit installation error naming the two fixed paths and requiring operator revocation/inspection. Stale enrollment residue refuses reinstall before commands; uninstall removes safe source/link residue before stopping services, with or without `--purge`. A crash or unsafe replaced entry may leave residue requiring explicit operator care; there is no journal or racing-root-writer fence. Retry requires a freshly issued key. The temporary source is the bounded single-use enrollment handoff, not persistent configuration storage. M1 below exercised the initial systemd credential handoff; consumed-state restart and reboot acceptance remain **UNEXECUTED** and outside M1.
 
-- **Managed remote access N0/N1/N2 amendment (THR-097 seq360/seq374/seq379/seq392).** The managed transport value is `embedded`: packaged macOS tsnet/userspace WireGuard is designed to connect to the Linux sidecar in `app/linux/tsnet-sidecar/`, which proxies raw TCP only to the N2 Python connector's explicit `managed` listener on literal `127.0.0.1`. `runtime/remote_access/managed_provider.py` reuses the existing pairing and locked gateway pipeline; the connector alone owns application identity, credentials, epoch, allow-list/route policy and revocation and injects the daemon bearer only on the final `127.0.0.1:<daemon_port>` hop. The N1 core fail-closes credential redemption/listener startup and removes external admission before active connections and engine state; persisted N2 revocation likewise stops the listener first, then seals/closes active flows, then performs downstream runtime cleanup, retaining failed cleanup handles for idempotent retry. Supervisor provider start, READY publication, persisted-revocation reconciliation, and shutdown share one re-entrant lifecycle boundary: either provider start completes first and stop follows it, or stop/revocation completes first and late start is refused/idempotent; partial start is cleaned without retained provider/registry state. Shutdown observably stops the listener, closes registered active flows, and drops cached registry/pairing runtime state exactly once, so repeated shutdown leaves no listener, active flow, or runtime residue. N2 adds no address selector or fallback and exposes readiness only after the existing connector gates pass and the loopback listener binds. The checksum-pinned N1 dependency/license artifacts are unchanged. The original N1/N2 slices defined the core/ingress boundary; the later THR-327 managed Linux command, composite supervision, installer and enrollment handoff are now shipped. M1 below passed the bounded initial systemd lifecycle. Tailnet transport (M2), full-daemon acceptance, restart/reboot recovery and deployment remain **UNEXECUTED** and outside M1; broader provisioning/distribution and N3–N6 obligations remain open. Neither endpoint requires system Tailscale; wildcard, LAN/plaintext, public-Tailscale, and public-DERP fallbacks remain forbidden. TASK-6298/TASK-6289 remains unchanged Supported-DIY, and Unit 4B-2 remains independent.
+- **Managed remote access N0/N1/N2 amendment (THR-097 seq360/seq374/seq379/seq392).** The managed transport value is `embedded`: packaged macOS tsnet/userspace WireGuard is designed to connect to the Linux sidecar in `app/linux/tsnet-sidecar/`, which proxies raw TCP only to the N2 Python connector's explicit `managed` listener on literal `127.0.0.1`. `runtime/remote_access/managed_provider.py` reuses the existing pairing and locked gateway pipeline; the connector alone owns application identity, credentials, epoch, allow-list/route policy and revocation and injects the daemon bearer only on the final `127.0.0.1:<resolved-port>` hop. The N1 core fail-closes credential redemption/listener startup and removes external admission before active connections and engine state; persisted N2 revocation likewise stops the listener first, then seals/closes active flows, then performs downstream runtime cleanup, retaining failed cleanup handles for idempotent retry. Supervisor provider start, READY publication, persisted-revocation reconciliation, and shutdown share one re-entrant lifecycle boundary: either provider start completes first and stop follows it, or stop/revocation completes first and late start is refused/idempotent; partial start is cleaned without retained provider/registry state. Shutdown observably stops the listener, closes registered active flows, and drops cached registry/pairing runtime state exactly once, so repeated shutdown leaves no listener, active flow, or runtime residue. N2 adds no address selector or fallback and exposes readiness only after the existing connector gates pass and the loopback listener binds. The checksum-pinned N1 dependency/license artifacts are unchanged. The original N1/N2 slices defined the core/ingress boundary; the later THR-327 managed Linux command, composite supervision, installer and enrollment handoff are now shipped. M1 below passed the bounded initial systemd lifecycle. Tailnet transport (M2), full-daemon acceptance, restart/reboot recovery and deployment remain **UNEXECUTED** and outside M1; broader provisioning/distribution and N3–N6 obligations remain open. Neither endpoint requires system Tailscale; wildcard, LAN/plaintext, public-Tailscale, and public-DERP fallbacks remain forbidden. TASK-6298/TASK-6289 remains unchanged Supported-DIY, and Unit 4B-2 remains independent.
 - **Manual managed M1 (THR-327 seq187): PASSED.** [Hosted run 42978877282](https://github.com/t-benze/happyranch/actions/runs/42978877282) completed successfully on 2026-11-11 at main `455c9c5b689fa25f625e2df8cae1b551c2a1de86` (short `455c9c5b`), through install, both READY services, paired HTTP 200, product uninstall/purge and every residue assertion. This receipt belongs to that source head; later heads are not claimed rerun. `.github/workflows/managed-m1.yml` runs only on `workflow_dispatch` on a disposable Ubuntu 24.04 hosted runner. Its short Bash driver, `scripts/ci/m1_install_ready_uninstall.sh`, provisions the rendered units' binaries/config, a disposable Headscale cell and expected peer, and a synthetic loopback HTTP backend; it invokes the product installer with a fresh single-use ten-minute file key, observes both notify services active/running, checks drift, makes a paired connector-loopback request, then uninstalls with `--purge` and checks documented residue. Payload, configuration, service logs and account are retained as the installer documents; runner disposal removes the fixture. Before the request and in always-run diagnostics, the script records runtime-directory owner/mode/type and loaded runtime directives; diagnostics also include manager reload timestamps alongside plain unit journals/status/cat and installer streams before stopping fixtures and uploading logs. This is separate from required lint/static checks and daily Product E2E. The passing run removed unit files/target enablement, enrollment source/link/operator input, persistent service state and both runtime directories. **M2 tailnet transport, full-daemon acceptance, restart/reboot recovery and deployment remain UNEXECUTED and outside M1.** The HTTP request enters the connector on loopback and uses a synthetic backend; it does not traverse the tailnet data path or run the full daemon, and initial startup/uninstall does not prove restart/reboot recovery.
 
 - **Manual managed M3 same-boot recovery (THR-327): UNEXECUTED.** Acceptance is defined by `.github/workflows/managed-m3.yml` and `scripts/ci/m3_recovery.sh` and remains unexecuted until the main-only manual workflow passes. The harness reuses M2 provisioning, READY, paired real-daemon tailnet request, logs, teardown and purge residue checks. It tests connector SIGKILL, sidecar SIGKILL with the same Headscale node ID/IP/count and consumed enrollment (no new preauthkey), connector SIGSTOP/watchdog, intentional stop/start, shipped start-limit exhaustion/reset/start, daemon-fixture restart without reinstall, then uninstall/purge. Each recovery requires both notify services active/running and a paired tailnet HTTP 200, with per-step MainPID, NRestarts, Result and journal evidence. Step 5 crashes the running (READY) connector exactly five times and proves start-limit refusal from the connector journal. Only steps 4 and 5 explicitly start product services after a fault; `BindsTo=` leaving the sidecar stopped is a failure. Both units’ rate accounting is reset at the start of steps 1–4 and 6 to isolate faults. Reboot is outside M3 and remains **UNEXECUTED**.
@@ -785,7 +785,7 @@ CI trigger or required lint/static check changes are included.
 ### Linux desktop-package provisioning and port contract (THR-327 B1a/B1b)
 
 `ManagedInstaller` and its CLI retain the source layout by default, with
-byte-identical source systemd units. `--layout deb` selects the packaged private
+the source interpreter and payload paths. `--layout deb` selects the packaged private
 Python (`/opt/happyranch-desktop/python/bin/python3 -I -m`) and packaged sidecar;
 `SidecarUnitSpec.binary_path` supplies its ExecStart. Dpkg-owned directories are
 only validated: root ownership, no group/world write, literal safe parents and
@@ -798,8 +798,9 @@ GID matches, otherwise other bits. Missing access raises a path/permission
 diagnostic before config/unit publication or start. Fresh-host provisioning
 rechecks after creating the account; dpkg paths remain read-only.
 
-The new `provision` command accepts connector/sidecar/current-policy JSON and an
-absolute daemon-token source. It validates before effects, creates only the
+The `provision` command accepts connector/sidecar/current-policy JSON, explicit
+`--release-user`, optional validated `--data-home`, and an optional absolute
+daemon-token source (default `<data_home>/daemon.token`). It validates before effects, creates only the
 existing installer-owned account/config/state layout, and stages root-owned
 0640 root:happyranch configs, a 0600 happyranch:happyranch token, and root-owned
 0600 layout/config/token provenance. Stable IDs come from the operator;
@@ -810,7 +811,8 @@ refuse; partial failure has no automatic rollback or overwrite recovery.
 
 Deb install refuses incomplete/unsafe/changed provisioning before unit writes
 or service start. Source installs without a provisioning record retain their
-existing independently provisioned behavior. Check-drift derives the layout
+independently provisioned configs, but also require the root-owned release install
+record described below. Check-drift derives the layout
 from the protected record when present, retains exact-unit/loaded-file checks,
 revalidates configs/current policy, and compares both the freshly reread token
 source and staged copy with the recorded hash. Rotation/missing sources fail
@@ -819,16 +821,87 @@ expired provisioning; config/provenance/token files remain retained.
 
 [Desktop package host](../../../deploy/remote-access/RUNBOOK.md#desktop-package-host)
 has input fields, commands and deployment holds. Managed ingress must differ
-from `daemon_port`, permanent DEV port 8765, and every connector
-`excluded_daemon_ports` entry. This optional list defaults to empty for existing
-source configs; when supplied it must be a list of integers in 1..65535
-(Booleans are invalid). Supervisor staging preserves it. Linux provisioning
-requires sidecar `ConnectorAddr` to equal exactly `127.0.0.1:<managed.bind_port>`.
-Deb provisioning stages matching sorted unique `excluded_daemon_ports` and
-sidecar `ExcludedDaemonPorts`: 8765, the configured daemon port, and any
-additional operator exclusions from either input. It refuses collisions before
-publication; install and drift revalidate the exact address and both lists,
-including required exclusions even if the provenance hashes match.
+from permanent DEV port 8765 and every `excluded_daemon_ports` entry. Lists
+contain only integers in 1..65535 (Booleans are invalid). Source and deb
+provisioning stage equal sorted unique connector/sidecar exclusions, always
+including 8765. `ConnectorAddr` equals `127.0.0.1:<managed.bind_port>`.
+The release daemon's dynamically resolved port must also pass those exclusions.
+A managed Linux system configuration must omit the old `daemon_port` field;
+other platforms and the existing DIY/lab providers retain their fixed targets.
+
+#### Linux release ownership verification (THR-327 seq425/428, PR-C)
+
+Release data belongs in `$XDG_DATA_HOME/happyranch` (default
+`~/.local/share/happyranch`). The installer cannot infer a login environment
+through sudo: `--data-home` is the already-resolved absolute directory,
+defaulting to `<passwd-home>/.local/share/happyranch`. It must already exist,
+belong to the target uid, have no symlink components or group/other write bits,
+and be outside the DEV home `~/.happyranch`, `/etc` and `/var`. No shell
+expansion or login-environment lookup occurs. Provisioning writes root-owned
+0644 `/etc/happyranch/release-daemon.json` with exactly `user`, `uid`,
+`data_home`, `unit` (`happyranch-daemon.service`) and `fragment_path`
+(`/usr/lib/systemd/user/happyranch-daemon.service`). The recorded uid must still
+match passwd at install/drift. Neither DEV data nor port 8765 is changed.
+Daemon random-port startup and the desktop shell are delivered separately by
+PR-D; PR-C never modifies the packaged daemon unit.
+
+The network-facing connector stays `happyranch:happyranch` with an empty
+capability set. A separate root system service, `happyranch-release-verifier`,
+is socket-activated at `/run/happyranch-release-verifier/control.sock`:
+root:happyranch, mode 0660; its root-owned 0755 parent grants traversal only.
+The closed ASCII line protocol accepts only `resolve\n` and
+`confirm <connector-local-port> <daemon-port>\n` (decimal ports 1..65535).
+No request chooses paths, users, units, flags or commands. Replies are
+`port <port>\n`, `ok\n`, or `refused <machine_reason>\n`.
+
+For **every** new upstream TCP connection, including readiness probes:
+
+1. Resolve reads the recorded `<data_home>/daemon.port` using no-follow directory
+   descriptors and `O_NOFOLLOW|O_NONBLOCK`; require a single-link regular file,
+   recorded uid, at most 16 bytes, decimal 1..65535 with optional final newline,
+   stable metadata, and no excluded port (8765 is unconditional).
+2. Query the recorded user's local user manager with
+   `systemctl --user -M <user>@.host show happyranch-daemon.service -p MainPID,ActiveState,FragmentPath,DropInPaths`.
+   Require active, positive MainPID, the exact packaged FragmentPath, and **zero
+   drop-ins**, including administrator drop-ins. No exception is tolerated.
+   Require process uid and stable MainPID/start-time identity across the proof.
+3. Resolve requires the literal `127.0.0.1:<port>` LISTEN inode in `/proc/net/tcp`
+   to be an fd of MainPID. The connector connects to that literal address,
+   disables automatic reconnection, and asks confirm for its actual local port
+   plus resolved daemon port. Confirm rereads port/exclusions/unit and requires
+   the server-side ESTABLISHED four-tuple's inode to be an fd of MainPID.
+4. Only after confirmation may the connector send the bearer or any HTTP bytes.
+   A positive result never survives into another connection. Refusal closes the
+   socket, logs a machine reason, and maps to remote HTTP 503 (`daemon_unavailable`).
+   No fixed-port fallback exists. Readiness loss still removes admission.
+
+The root verifier reads no token. The copied `/etc/happyranch/daemon.token` and
+connector `LoadCredential` handling remain unchanged. File/PID hints alone are
+never authority. Bounds: request 64 bytes, response 80 bytes, one client at a
+time with one-second read timeout, two-second manager-query timeout (each),
+8192-byte manager output, 4096 process fds, 16384 TCP rows, 512 bytes per row.
+Confirm permits up to 250 ms for accept to publish the server fd, rechecking
+current evidence; exhaustion refuses. This is sampled ownership evidence, not
+an atomic kernel attestation. Root-only hardening settings and their reasons
+are documented in the runbook. No new privilege is granted to the connector.
+
+Install enables the verifier socket alongside the managed target; the verifier
+service starts on demand. Uninstall stops/removes both units, socket enablement,
+socket endpoint, and `release-daemon.json`; config/provenance/token files remain
+retained. Install has no automatic partial-failure recovery.
+
+M1 uses a synthetic backend and M2 the actual daemon under the hosted runner's
+user manager. Their CI-equivalent root-owned unit occupies the exact packaged
+FragmentPath, uses the source-wheel interpreter instead of the packaged binary,
+and has no drop-ins. Both bind a random loopback port in test-owned data homes.
+M2 additionally points the port file at a non-MainPID listener and requires
+`socket_not_owned`. These are manual acceptance workflows, separate from the
+required lints. Earlier M1/M2 receipts above attest only their recorded heads.
+Shared M3/M4 drivers retain legacy fixture assumptions and need separate
+alignment/requalification before reuse; their old receipts do not prove this model.
+
+Standalone fixture checks: `uv run --frozen pytest scripts/test_release_verifier.py -v`.
+These do not collect the retired Python unit suite or run installed services.
 
 The shared Go sidecar accepts optional `ExcludedDaemonPorts` (integers in
 1..65535) and refuses any matching connector port. Its literal-loopback and
