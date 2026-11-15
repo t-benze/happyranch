@@ -2365,6 +2365,8 @@ single-line string loses text to a YAML comment, the CLI exits nonzero and names
 the field. This includes intentional comments such as `topic: ci  # note`:
 remove the comment, or quote the entire value to preserve its text. Quoted
 strings and multiline YAML bodies retain normal YAML behavior.
+Comment-free plain strings retain significant trailing Unicode whitespace,
+including U+00A0 (nonbreaking space) and U+3000 (ideographic space).
 
 Task-start consultation (THR-091 seq633) is defined by
 `runtime/skills/bundled/start-task/SKILL.md` step 2: before the first substantive

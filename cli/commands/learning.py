@@ -63,10 +63,10 @@ def _read_yaml_payload(path: str) -> dict:
                     or value.start_mark.line != value.end_mark.line
                 ):
                     continue
-                # The scalar node excludes its comment. Include the raw tail
-                # when comparing, without treating anchors/tags as content.
-                raw_value = value.value + lines[value.end_mark.line][value.end_mark.column:]
-                if value.value != raw_value.rstrip():
+                # Inspect only the raw tail for a comment; the parsed scalar
+                # may contain significant trailing Unicode whitespace.
+                raw_tail = lines[value.end_mark.line][value.end_mark.column:]
+                if raw_tail.lstrip(" \t").startswith("#"):
                     print(
                         f"error: unquoted YAML field '{key.value}' loses content to a comment; "
                         "quote the value or remove the trailing comment",

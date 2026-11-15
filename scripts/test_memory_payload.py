@@ -70,6 +70,8 @@ class MemoryPayloadTests(unittest.TestCase):
             ("title: 'Fix PR #123 regression' # note\n", {"title": "Fix PR #123 regression"}),
             ("topic: ci#note\n", {"topic": "ci#note"}),
             ("title: Ordinary title   \n", {"title": "Ordinary title"}),
+            ("title: Keep\u00a0\n", {"title": "Keep\u00a0"}),
+            ("title: Keep\u3000\n", {"title": "Keep\u3000"}),
             ("body: |\n  title: Fix PR #123 regression\n", {"body": "title: Fix PR #123 regression\n"}),
             ("body: >\n  Fix PR #123\n  regression\n", {"body": "Fix PR #123 regression\n"}),
             ("title: Fix PR\n  regression\n", {"title": "Fix PR regression"}),

@@ -3289,5 +3289,6 @@ Run `uv run --frozen python -B -m unittest scripts.test_memory_payload -v`.
 This script exercises the production memory/learning add/update parsers and
 handlers with a captured HTTP client; it makes no live memory writes. It covers
 rejection of comment-truncated unquoted YAML strings (including intentional
-trailing comments), intact quoted/multiline YAML, and JSON payload files.
+trailing comments), intact quoted/multiline YAML, comment-free plain strings
+ending in U+00A0/U+3000, and JSON payload files.
 This focused script adds no required CI check or retired-suite execution.
