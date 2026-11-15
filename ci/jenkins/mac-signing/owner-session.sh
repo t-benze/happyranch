@@ -233,7 +233,8 @@ sub fresh_controller {
         my $u=$params{ORIGINAL_ZIP};
         if ($grant->{action} eq 'preflight') {
             need(ref($u) eq 'HASH'&&$u->{_class} eq 'hudson.model.FileParameterValue'&&$u->{name} eq 'ORIGINAL_ZIP','actual build FileParameterValue');
-            $grant->{upload}={type=>'hudson.model.FileParameterValue',name=>'ORIGINAL_ZIP',filename=>'original.zip',size=>49089611,sha256=>'85b96655a1d072328872fa8797e16ad0087e0e05aa30b8dda2a8bc78b60ac243',build=>$grant->{build}};
+            my $expected=$grant->{upload}; closed($expected,qw(type name filename size sha256 build));
+            need($expected->{type} eq 'hudson.model.FileParameterValue' && $expected->{name} eq 'ORIGINAL_ZIP' && $expected->{filename} eq 'original.zip' && $expected->{size}=~/\A[1-9][0-9]{0,11}\z/ && $expected->{sha256}=~/\A[0-9a-f]{64}\z/ && $expected->{build}==$grant->{build},'original per-build upload pins');
         } else {need(!defined($u),'later build upload refused');$grant->{upload}=undef}
         $grant->{queue}=0+$b->{queueId};
     }
@@ -496,6 +497,10 @@ if (($mode//'') eq 'inspect'&&@args==0) {
             $review=read_control("$dir/$request.review.json");closed($review,qw(sha256 submission_id inspected_complete warnings_disposition safe_to_publish));
         }
         $g->{permission}={version=>'happyranch-signing-permission@2',delivery_root=>'TASK-14158',root=>$root,task=>$root,session=>$sid,source=>$source,action=>$action,request=>$request,run=>$run eq '-'?'':$run,job=>$job,build=>$build eq '-'?undef:0+$build,queue=>undef,issued=>int(time()),expires=>$until,log_review=>$review,upload=>undef};
+        if ($action eq 'preflight') {
+            my $bp=build_pins("$dir/$request.build.pins");
+            $g->{permission}{upload}={type=>'hudson.model.FileParameterValue',name=>'ORIGINAL_ZIP',filename=>'original.zip',size=>0+$bp->{INPUT_SIZE},sha256=>$bp->{INPUT_SHA},build=>0+$build};
+        }
     } else {need($action eq '-'&&$run eq '-'&&$build eq '-','session grant has no stage')}
     # Explicit genuine manager invocation is the authorization producer. It is
     # not usable on the source maker's SID, nor does source approval permit it.

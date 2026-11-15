@@ -6,6 +6,45 @@ signing job stays disabled; no Jenkins app-build job is installed. The following
 attended setup, grants and commands are preserved historical source notes and
 must not be followed as current release instructions.
 
+## PR3 source correspondence and per-build pins
+
+The owner script at `app/mac/scripts/mac-sign.sh` and this directory’s
+`mac-sign.sh` share identical pin/plist/member/Mach-O/inventory/manifest logic.
+The Jenkins copy retains its existing stage admission, environment cleanup,
+bounded capture, live console/Keychain checks, parent-owned completion, durable
+attempt sealing and Apple recovery association. Never interchange the copies.
+The six release-source files remain literally hash-pinned by the existing
+renderer and installed-source checks; `package.sha256` still binds script and
+inventory across native stages. No config template, trigger or job is changed.
+
+The historical fixed-1.0.1 instructions below describe the old source only.
+Current source uses the handbook’s exact eight-line public `build.pins` format.
+For any separately authorized future attended run, the founder supplies that
+private, owner-owned file at `HappyRanchSigning/build.pins` on the Mac. Before
+issuing the original preflight controller grant, the manager places the same
+public pins in the existing private controller control directory as
+`<REQUEST_UUID>.build.pins`. `controller-grant` parses it through the release’s
+real `mac-sign.sh pins` reader and seals its ZIP size/hash into the original
+upload proof. Live observations still require the actual current build’s core
+FileParameterValue and current consent; the Mac compares the actual uploaded
+bytes against those expected pins before extraction or Keychain access.
+
+Successful admission retains `inputs/build.pins`, `inputs/pins.sha256` and
+`inputs/original.zip`; every later stage rechecks the retained pins and bytes.
+Signing also retains the per-run pin copy/hash. Output names include both
+version and build, and the command journal admits the additional three Sparkle
+rows plus the optional sidecar. Existing input64MiB, output128MiB and workload
+time/capture limits remain unchanged. If a future build exceeds those limits,
+stop rather than lifting a limit here.
+
+For N+1 the existing singleton input admission must be empty again: under a
+separately authorized attended window, preserve N’s entire inputs directory and
+receipts privately, prepare a new mode0700 inputs directory and new public pin
+file, then admit N+1. Never overwrite prior original.zip, pins, successful
+markers, run directories or locks. This is an owner procedure, not automatic
+cleanup or permission to operate the currently disabled job. No live procedure,
+signing or Apple interaction was executed by PR3.
+
 <details>
 <summary>Historical attended signing source — superseded, not operational instructions</summary>
 

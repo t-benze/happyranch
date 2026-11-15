@@ -4,13 +4,122 @@ set +x
 set -euo pipefail
 export PATH=/usr/bin:/bin:/usr/sbin:/sbin LC_ALL=C
 umask 077
-INPUT_SHA=85b96655a1d072328872fa8797e16ad0087e0e05aa30b8dda2a8bc78b60ac243
-INPUT_SIZE=49089611
-LAYOUT_SHA=75ae7de3fb835fc88112f8cf188340dcc7ca54a6094eacede5fa4232e648064a
 BUNDLE=ai.happyranch.HappyRanchApp
-SOURCE=21c63d8c1ec520764945d7b0bafb4bfe668ab81d
-SOURCE_TREE=b2af3a4c8e0cb1c6b58796030085dfb31680b374
 fail() { printf 'STOP: %s\n' "$*" >&2; exit 1; }
+# Public per-build data only. Never source/eval a pin file or accept ambient pins.
+load_build_pins() {
+    local parsed line key value
+    parsed=$(/usr/bin/perl -MMIME::Base64=decode_base64,encode_base64 -e '
+        use strict; use warnings; use Fcntl qw(:mode);
+        sub refuse { die "STOP: Invalid build pins: $_[0]\n" }
+        my $p=shift; defined($p) && $p =~ m{\A/[^\x00-\x1f\x7f]*\z} && $p !~ m{//|/(?:\.|\.\.)(?:/|$)|/$} or refuse("plain absolute path");
+        my $q=""; for my $part (split "/",substr($p,1)) {
+            $q.="/$part"; my @s=lstat($q); @s && !S_ISLNK($s[2]) or refuse("missing or symlink path");
+        }
+        my @s=lstat($p);
+        S_ISREG($s[2]) && $s[3]==1 && $s[4]==$< && !($s[2]&0077) && $s[7]<=4096 or refuse("private owned single-link file <=4096 bytes");
+        open(my $f,"<",$p) or refuse("read"); local $/; my $raw=<$f>; close($f) or refuse("close");
+        my @keys=qw(VERSION BUILD INPUT_SIZE INPUT_SHA LAYOUT_SHA SOURCE SOURCE_TREE SUPUBLIC_ED_KEY);
+        my @lines=split /\n/,$raw,-1; @lines==9 && pop(@lines) eq "" or refuse("exactly eight LF-terminated lines");
+        for my $i (0..$#keys) {
+            $lines[$i] =~ /\A\Q$keys[$i]\E=([^\s\x00-\x1f\x7f]+)\z/ or refuse("field/order/whitespace");
+            my $v=$1;
+            if ($i<2) { $v =~ /\A(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)\z/ or refuse("three-component version/build"); }
+            elsif ($i==2) { $v =~ /\A[1-9][0-9]{0,11}\z/ or refuse("ZIP size"); }
+            elsif ($i<5) { $v =~ /\A[0-9a-f]{64}\z/ or refuse("SHA256"); }
+            elsif ($i<7) { $v =~ /\A[0-9a-f]{40}\z/ or refuse("git SHA"); }
+            else { length(decode_base64($v))==32 && encode_base64(decode_base64($v),"") eq $v or refuse("canonical 32-byte public key"); }
+        }
+        print $raw;
+    ' "$1") || fail 'Build pin validation failed.'
+    while IFS= read -r line; do
+        key=${line%%=*}; value=${line#*=}
+        case "$key" in
+            VERSION) VERSION=$value ;; BUILD) BUILD=$value ;;
+            INPUT_SIZE) INPUT_SIZE=$value ;; INPUT_SHA) INPUT_SHA=$value ;;
+            LAYOUT_SHA) LAYOUT_SHA=$value ;; SOURCE) SOURCE=$value ;;
+            SOURCE_TREE) SOURCE_TREE=$value ;; SUPUBLIC_ED_KEY) SUPUBLIC_ED_KEY=$value ;;
+        esac
+    done <<< "$parsed"
+    BUILD_PINS=$1
+}
+# Mirror sparkle_bundle.py LINKS exactly, for both ZIP and filesystem members.
+# ZIP metadata is read before extraction; link contents come from stock unzip.
+check_members() {
+    /usr/bin/perl -e '
+        use strict; use warnings; use Fcntl qw(:mode); use File::Find; use Cwd qw(abs_path);
+        sub refuse { die "STOP: Bundle members refused: $_[0]\n" }
+        my ($mode,$path)=@ARGV;
+        my $fw="Contents/Frameworks/Sparkle.framework";
+        my %links=("$fw/Versions/Current"=>"B",map {("$fw/$_"=>"Versions/Current/$_")} qw(Sparkle Resources Headers PrivateHeaders Modules Autoupdate Updater.app));
+        my (%seen,%names);
+        sub member {
+            my ($rel,$typ,$target)=@_;
+            $rel !~ /[\x00-\x1f\x7f\\]/ && $rel !~ m{\A/|(?:\A|/)(?:\.|\.\.)(?:/|\z)|//} or refuse("unsafe member path");
+            !$names{$rel}++ or refuse("duplicate member");
+            for my $link (keys %links) { index($rel,"$link/")!=0 or refuse("member below symlink"); }
+            $rel !~ m{(?:\A|/)(?:XPCServices|[^/]*\.xpc|Installer|Downloader)(?:/|\z)} or refuse("XPC/Installer/Downloader present");
+            if ($typ==0120000) {
+                exists($links{$rel}) && $links{$rel} eq $target or refuse("symlink $rel");
+                $seen{$rel}=1;
+            } else {
+                !exists($links{$rel}) or refuse("required link replaced by regular member: $rel");
+                $typ==0040000 || $typ==0100000 or refuse("special member");
+            }
+        }
+        if ($mode eq "tree") {
+            -d $path && !-l $path or refuse("app root");
+            find({no_chdir=>1,wanted=>sub {
+                return if $File::Find::name eq $path;
+                my $rel=substr($File::Find::name,length($path)+1);
+                my @s=lstat($File::Find::name); @s or refuse("lstat");
+                my $typ=$s[2]&0170000; my $target=$typ==0120000 ? readlink($File::Find::name) : "";
+                member($rel,$typ,$target);
+                if ($typ==0120000) {
+                    my $resolved=abs_path($File::Find::name); my $root=abs_path("$path/$fw");
+                    defined($resolved) && defined($root) && index($resolved,"$root/")==0 or refuse("escaping/dangling symlink");
+                }
+            }},$path);
+        } elsif ($mode eq "zip") {
+            open(my $f,"<",$path) or refuse("open ZIP"); binmode($f);
+            my $size=-s $f; my $tail=$size<65557 ? $size : 65557;
+            seek($f,-$tail,2) or refuse("ZIP seek"); read($f,my $end,$tail)==$tail or refuse("ZIP tail");
+            my $at=rindex($end,"PK\x05\x06"); $at>=0 or refuse("ZIP end record");
+            my ($disk,$cd_disk,$n_disk,$n,$bytes,$offset,$comment)=unpack("vvvvVVv",substr($end,$at+4,18));
+            !$disk && !$cd_disk && $n_disk==$n && $n<65535 && $at+22+$comment==$tail && $offset+$bytes==$size-$tail+$at or refuse("ZIP directory bounds/ZIP64");
+            seek($f,$offset,0) or refuse("ZIP directory seek");
+            for (1..$n) {
+                my $h; read($f,$h,46)==46 && substr($h,0,4) eq "PK\x01\x02" or refuse("ZIP header");
+                my ($flags,$len,$extra,$comm,$external)= (unpack("v",substr($h,8,2)),unpack("vvv",substr($h,28,6)),unpack("V",substr($h,38,4)));
+                !($flags&1) && $len>0 or refuse("encrypted/empty member");
+                read($f,my $name,$len)==$len or refuse("ZIP name"); seek($f,$extra+$comm,1) or refuse("ZIP extra");
+                my $typ=($external>>16)&0170000; $name =~ s{/$}{};
+                my $rel;
+                if ($name eq "HappyRanch.app") { $typ==0040000 or refuse("ZIP app root"); next; }
+                elsif ($name =~ s{\AHappyRanch\.app/}{}) { $rel=$name; }
+                elsif ($name eq "__MACOSX" || $name =~ m{\A__MACOSX/}) { $rel=$name; }
+                else { refuse("ZIP outside app/resources"); }
+                my $target="";
+                if ($typ==0120000) {
+                    # Only exact allowlisted names are passed to unzip (no glob).
+                    exists($links{$rel}) or refuse("extra ZIP symlink");
+                    open(my $u,"-|","/usr/bin/unzip","-p",$path,"HappyRanch.app/$rel") or refuse("read ZIP link");
+                    local $/; $target=<$u>; close($u) or refuse("ZIP link read failed");
+                }
+                member($rel,$typ,$target);
+            }
+            tell($f)==$offset+$bytes or refuse("ZIP directory length"); close($f) or refuse("ZIP close");
+        } else { refuse("check mode"); }
+        keys(%seen)==keys(%links) or refuse("exact eight-link set required");
+    ' "$1" "$2" || fail 'Bundle member validation failed.'
+}
+executable_rel() {
+    case "$1" in
+        bundle) printf '%s/Contents/MacOS/Updater\n' "$2" ;;
+        framework) printf '%s/Versions/B/Sparkle\n' "$2" ;;
+        *) printf '%s\n' "$2" ;;
+    esac
+}
 # File-only configuration: ambient signing values never override this file.
 # Keep this loader identical in the local and Jenkins signing scripts.
 load_signing_config() {
@@ -64,8 +173,9 @@ load_signing_config() {
 usage() {
     cat <<'EOF'
 Owner-run commands (absolute paths; run stages separately):
-  /bin/bash mac-sign.sh preflight ORIGINAL.zip
-  /bin/bash mac-sign.sh sign ORIGINAL.zip NEW_PRIVATE_RUN_DIRECTORY
+  /bin/bash mac-sign.sh pins BUILD.pins
+  /bin/bash mac-sign.sh preflight BUILD.pins ORIGINAL.zip
+  /bin/bash mac-sign.sh sign BUILD.pins ORIGINAL.zip NEW_PRIVATE_RUN_DIRECTORY
   /bin/bash mac-sign.sh submit RUN_DIRECTORY
   /bin/bash mac-sign.sh status RUN_DIRECTORY [--recover-id ACTUAL_APPLE_UUID]
   /bin/bash mac-sign.sh finalize RUN_DIRECTORY --log-reviewed LOG_SHA256
@@ -80,12 +190,14 @@ EOF
 STAGE=$1; shift
 case "$STAGE" in
     help|--help|-h) [ "$#" -eq 0 ] || exit 2; usage; exit 0 ;;
-    preflight|submit|test) [ "$#" -eq 1 ] || { usage >&2; exit 2; } ;;
-    sign) [ "$#" -eq 2 ] || { usage >&2; exit 2; } ;;
+    pins|submit|test) [ "$#" -eq 1 ] || { usage >&2; exit 2; } ;;
+    preflight) [ "$#" -eq 2 ] || { usage >&2; exit 2; } ;;
+    sign) [ "$#" -eq 3 ] || { usage >&2; exit 2; } ;;
     status) [ "$#" -eq 1 ] || { [ "$#" -eq 3 ] && [ "$2" = --recover-id ]; } || { usage >&2; exit 2; } ;;
     finalize) [ "$#" -eq 3 ] && [ "$2" = --log-reviewed ] || { usage >&2; exit 2; } ;;
     *) usage >&2; exit 2 ;;
 esac
+[ "$STAGE" != pins ] || { load_build_pins "$1"; printf 'VERSION=%s\nBUILD=%s\nINPUT_SIZE=%s\nINPUT_SHA=%s\nLAYOUT_SHA=%s\nSOURCE=%s\nSOURCE_TREE=%s\nSUPUBLIC_ED_KEY=%s\n' "$VERSION" "$BUILD" "$INPUT_SIZE" "$INPUT_SHA" "$LAYOUT_SHA" "$SOURCE" "$SOURCE_TREE" "$SUPUBLIC_ED_KEY"; exit 0; }
 load_signing_config
 [ "$(uname -s)" = Darwin ] || fail 'macOS required; no work performed.'
 [ "$(uname -m)" = arm64 ] || fail 'Native arm64 shell required; do not run through Rosetta.'
@@ -94,7 +206,7 @@ KEYCHAIN="$HOME/Library/Keychains/login.keychain-db"
 HERE=$(cd "$(dirname "$0")" && pwd -P)
 INVENTORY="$HERE/code-inventory.tsv"
 sha() { /usr/bin/shasum -a 256 "$1" | /usr/bin/awk '{print $1}'; }
-[ "$(sha "$INVENTORY")" = 16ee1fd168286ca9bbfe0ed7ea683ed98df0d8470b7916ad57de7b0907538af3 ] || fail 'Package inventory mismatch.'
+[ "$(sha "$INVENTORY")" = ccd3473987f0f425fe1e13261f8feb71fd43651f275221a04613c2aa59415d11 ] || fail 'Package inventory mismatch.'
 # No aliases, dot components, hardlinked input/state files or writable shared run.
 plain_path() {
     local p=$1 part
@@ -116,6 +228,14 @@ private_dir() {
     [ -d "$1" ] && [ "$(stat -f '%u:%Lp' "$1")" = "$(id -u):700" ] || fail "Need an existing owner-only mode0700 directory: $1"
 }
 plist_value() { /usr/bin/plutil -extract "$2" raw -o - "$1"; }
+# Compare the whole raw stream, including exactly plutil's one formatter LF.
+# Never let shell command substitution strip LF bytes belonging to the value.
+plist_equals() {
+    plist_value "$1" "$2" | /usr/bin/perl -e '
+        local $/; my $raw=<STDIN>;
+        exit !(defined($raw) && $raw eq "$ARGV[0]\n");
+    ' "$3"
+}
 uuid_ok() { [[ $1 =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]; }
 lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
 check_plist() {
@@ -123,17 +243,47 @@ check_plist() {
     [ "$(plist_value "$f" CFBundleIdentifier)" = "$BUNDLE" ]
     [ "$(plist_value "$f" CFBundleExecutable)" = HappyRanch ]
     [ "$(plist_value "$f" CFBundlePackageType)" = APPL ]
-    [ "$(plist_value "$f" CFBundleShortVersionString)" = 1.0.1 ]
-    [ "$(plist_value "$f" CFBundleVersion)" = 1.0.1 ]
+    [ "$(plist_value "$f" CFBundleShortVersionString)" = "$VERSION" ]
+    [ "$(plist_value "$f" CFBundleVersion)" = "$BUILD" ]
     [ "$(plist_value "$f" LSMinimumSystemVersion)" = 14.0 ]
     [ "$(plist_value "$f" GitCommitSHA)" = "$SOURCE" ]
     [ "$(plist_value "$f" GitTreeSHA)" = "$SOURCE_TREE" ]
     [ "$(plist_value "$f" ReleaseArchitecture)" = arm64 ]
+    # The pin reader already requires a canonical 32-byte public key.
+    plist_equals "$f" SUPublicEDKey "$SUPUBLIC_ED_KEY" || fail "Invalid/mismatched SUPublicEDKey."
+    plist_equals "$f" SUFeedURL https://app.happyranch.ai/mac/appcast.xml || fail "Wrong Sparkle feed."
 }
-header() { /usr/bin/od -An -v -tx1 | /usr/bin/awk 'NR==1 {gsub(/ /, ""); print}'; }
-check_header() {
-    local got=$1 typ=$2
-    [ "$got" = "cffaedfe0c000001000000000${typ}000000" ] || fail 'Mach-O architecture/type mismatch.'
+# Read every byte (also preserving upstream unzip/pipefail errors), retaining
+# only the header and arm64 slice header. Sparkle ships universal Mach-O files.
+check_macho() {
+    /usr/bin/perl -e '
+        use strict; use warnings;
+        sub refuse { die "STOP: Mach-O architecture/type mismatch.\n" }
+        sub take { my $n=shift; my $v=""; while(length($v)<$n) { my $r=read(STDIN,my $b,$n-length($v)); defined($r) && $r>0 or refuse(); $v.=$b; } return $v; }
+        my ($typ,$kind)=@ARGV; my $head=take(4); my ($offset,$pos)=(0,4);
+        if ($head eq "\xcf\xfa\xed\xfe") { $head.=take(12); $pos=16; }
+        elsif (($kind eq "bundle" || $kind eq "framework" || $kind eq "sparkle") && ($head eq "\xca\xfe\xba\xbe" || $head eq "\xca\xfe\xba\xbf")) {
+            my $wide=$head eq "\xca\xfe\xba\xbf"; my $n=unpack("N",take(4)); $n>0 && $n<=32 or refuse();
+            my $table=take($n*($wide?32:20)); $pos=8+length($table); my @arm;
+            for my $i (0..$n-1) {
+                my $r=substr($table,$i*($wide?32:20),$wide?32:20);
+                next unless unpack("N",$r)==0x100000c;
+                my $off=$wide ? unpack("Q>",substr($r,8,8)) : unpack("N",substr($r,8,4));
+                my $size=$wide ? unpack("Q>",substr($r,16,8)) : unpack("N",substr($r,12,4));
+                $off>=$pos && $size>=32 or refuse(); push @arm,$off;
+            }
+            @arm==1 or refuse(); $offset=$arm[0]; $head="";
+        } else { refuse(); }
+        while (1) {
+            my $n=read(STDIN,my $b,65536); defined($n) or refuse(); last unless $n;
+            if (length($head)<16 && $pos+$n>$offset) {
+                my $start=$offset>$pos ? $offset-$pos : 0;
+                $head.=substr($b,$start,16-length($head));
+            }
+            $pos+=$n;
+        }
+        length($head)==16 && $head eq pack("V4",0xfeedfacf,0x100000c,0,$typ) or refuse();
+    ' "$1" "$2" || fail 'Bundle member validation failed.'
 }
 preflight() {
     local zip=$1 kind typ ident rel got
@@ -143,23 +293,23 @@ preflight() {
     /usr/bin/unzip -tq "$zip"
     got=$(/usr/bin/unzip -Z1 "$zip" | /usr/bin/shasum -a 256 | /usr/bin/awk '{print $1}')
     [ "$got" = "$LAYOUT_SHA" ] || fail 'Exact ZIP member layout mismatch.'
-    # Hash authenticates all members/modes, including no symlinks or extra code.
+    check_members zip "$zip"
+    # Hash authenticates all member bytes/modes; independently constrain links/code.
     while IFS=$'\t' read -r kind typ ident rel; do
-        got=$(/usr/bin/unzip -p "$zip" "HappyRanch.app/$rel" | header)
-        check_header "$got" "$typ"
+        /usr/bin/unzip -p "$zip" "HappyRanch.app/$(executable_rel "$kind" "$rel")" | check_macho "$typ" "$kind"
         printf '%s arm64 Mach-O type%s\n' "$rel" "$typ"
     done < "$INVENTORY"
     # plutil reads the original member on stdin; no extraction or temp file.
-    local key expected actual
-    for key in CFBundleIdentifier CFBundleExecutable CFBundlePackageType CFBundleShortVersionString CFBundleVersion LSMinimumSystemVersion GitCommitSHA GitTreeSHA ReleaseArchitecture; do
+    local key expected
+    for key in CFBundleIdentifier CFBundleExecutable CFBundlePackageType CFBundleShortVersionString CFBundleVersion LSMinimumSystemVersion GitCommitSHA GitTreeSHA ReleaseArchitecture SUPublicEDKey SUFeedURL; do
         case "$key" in
             CFBundleIdentifier) expected=$BUNDLE ;; CFBundleExecutable) expected=HappyRanch ;;
-            CFBundlePackageType) expected=APPL ;; CFBundleShortVersionString|CFBundleVersion) expected=1.0.1 ;;
+            CFBundlePackageType) expected=APPL ;; CFBundleShortVersionString) expected=$VERSION ;; CFBundleVersion) expected=$BUILD ;;
             LSMinimumSystemVersion) expected=14.0 ;; GitCommitSHA) expected=$SOURCE ;;
             GitTreeSHA) expected=$SOURCE_TREE ;; ReleaseArchitecture) expected=arm64 ;;
+            SUPublicEDKey) expected=$SUPUBLIC_ED_KEY ;; SUFeedURL) expected=https://app.happyranch.ai/mac/appcast.xml ;;
         esac
-        actual=$(/usr/bin/unzip -p "$zip" HappyRanch.app/Contents/Info.plist | /usr/bin/plutil -extract "$key" raw -o - -)
-        [ "$actual" = "$expected" ] || fail "Archived plist mismatch: $key"
+        /usr/bin/unzip -p "$zip" HappyRanch.app/Contents/Info.plist | plist_equals - "$key" "$expected" || fail "Archived plist mismatch: $key"
     done
     /usr/bin/sw_vers
     /usr/bin/xcodebuild -version
@@ -183,7 +333,7 @@ capture() {
     printf '%s exit=%s (details: %s)\n' "$label" "$rc" "$LOG"
     return "$rc"
 }
-# Keep the accepted artifact's fixed inventory/pins intact. New bundle copies
+# Keep the reviewed artifact's inventory/pins intact. New bundle copies
 # include the sidecar before outer signing, using the same exec branch/identity.
 # Membership comes from the retained baseline, so removal/addition cannot silently
 # change which bytes signing is allowed to transform.
@@ -201,14 +351,15 @@ code_inventory() {
 manifest() (
     cd "$1"
     local mode=${2:-all} p rel
-    [ -z "$(find . ! -type f ! -type d -print)" ] || fail 'Unexpected link/special file in app.'
+    check_members tree .
     find . -print | sort | while IFS= read -r p; do
         rel=${p#./}
         if [ "$mode" = data ]; then
-            case "$rel" in Contents/_CodeSignature|Contents/_CodeSignature/CodeResources|Contents/CodeResources) continue ;; esac
-            if /usr/bin/awk -F '\t' -v p="$rel" '$4==p {found=1} END {exit !found}' <(code_inventory); then continue; fi
+            case "$rel" in Contents/_CodeSignature|Contents/_CodeSignature/CodeResources|Contents/CodeResources|Contents/Frameworks/Sparkle.framework/Versions/B/_CodeSignature|Contents/Frameworks/Sparkle.framework/Versions/B/_CodeSignature/CodeResources|Contents/Frameworks/Sparkle.framework/Versions/B/Updater.app/Contents/_CodeSignature|Contents/Frameworks/Sparkle.framework/Versions/B/Updater.app/Contents/_CodeSignature/CodeResources) continue ;; esac
+            if /usr/bin/awk -F '\t' -v p="$rel" '$4==p || ($1=="bundle" && $4"/Contents/MacOS/Updater"==p) || ($1=="framework" && $4"/Versions/B/Sparkle"==p) {found=1} END {exit !found}' <(code_inventory); then continue; fi
         fi
-        if [ -d "$p" ]; then printf 'D %s %s\n' "$(stat -f %Lp "$p")" "$p"
+        if [ -L "$p" ]; then printf 'L %s %s\n' "$(readlink "$p")" "$p"
+        elif [ -d "$p" ]; then printf 'D %s %s\n' "$(stat -f %Lp "$p")" "$p"
         else printf 'F %s %s %s\n' "$(stat -f %Lp "$p")" "$(sha "$p")" "$p"; fi
     done
 )
@@ -220,12 +371,13 @@ verify_code() {
     local app=$1 verify_parent=$LOG kind typ ident rel target i=0 got
     local LOG
     LOG=$(mktemp -d "$verify_parent/verify.XXXXXX")
+    check_members tree "$app"
     check_plist "$app/Contents/Info.plist"
     while IFS=$'\t' read -r kind typ ident rel; do
-        i=$((i+1)); target="$app/$rel"
+        i=$((i+1)); target="$app/$(executable_rel "$kind" "$rel")"
         [ -f "$target" ] && [ -x "$target" ] || fail "Missing code: $rel"
-        got=$(header < "$target"); check_header "$got" "$typ"
-        [ "$kind" != main ] || target=$app
+        check_macho "$typ" "$kind" < "$target"
+        case "$kind" in main) target=$app ;; bundle|framework) target="$app/$rel" ;; esac
         capture "verify-$i" /usr/bin/codesign --verify --strict --verbose=2 "$target"
         capture "metadata-$i" /usr/bin/codesign -d --verbose=4 "$target"
         /usr/bin/grep -Fx "Identifier=$ident" "$LOG/metadata-$i.err"
@@ -244,6 +396,9 @@ load_run() {
     RUN=$1; private_dir "$RUN"
     owned_file "$RUN/package.sha256"
     [ "$(cat "$RUN/package.sha256")" = "$(sha "$HERE/mac-sign.sh") $(sha "$INVENTORY")" ] || fail 'Use the identical script and inventory that created this run.'
+    owned_file "$RUN/build.pins"; owned_file "$RUN/pins.sha256"
+    [ "$(sha "$RUN/build.pins")" = "$(cat "$RUN/pins.sha256")" ] || fail "Retained build pins changed."
+    load_build_pins "$RUN/build.pins"
     owned_file "$RUN/sign.complete"
     preflight_input="$RUN/original.zip"
     owned_file "$preflight_input"
@@ -258,7 +413,9 @@ check_signed() {
 check_submission() {
     owned_file "$RUN/submission/artifact-name.txt"
     ARTIFACT=$(cat "$RUN/submission/artifact-name.txt")
-    [[ $ARTIFACT =~ ^HappyRanch-1\.0\.1-submission-[0-9A-Fa-f-]{36}\.zip$ ]] || fail 'Bad submission artifact name.'
+    local prefix="HappyRanch-$VERSION-$BUILD-submission-" suffix
+    suffix=${ARTIFACT#"$prefix"}; suffix=${suffix%.zip}
+    [ "$ARTIFACT" = "$prefix$suffix.zip" ] && uuid_ok "$suffix" || fail 'Bad submission artifact name.'
     SUBZIP="$RUN/submission/$ARTIFACT"
     owned_file "$SUBZIP"
     SUBSHA=$(cat "$RUN/submission/artifact.sha256")
@@ -275,15 +432,19 @@ check_accepted() {
     [ "$(lower "$(plist_value "$snap/log.json" sha256)")" = "$SUBSHA" ] || fail 'Apple log does not match submitted ZIP hash.'
 }
 case "$STAGE" in
-preflight) preflight "$1" ;;
+preflight) load_build_pins "$1"; preflight "$2" ;;
 sign)
-    preflight "$1"
-    RUN=$2; plain_path "$RUN"; private_dir "$(dirname "$RUN")"
+    load_build_pins "$1"
+    preflight "$2"
+    RUN=$3; plain_path "$RUN"; private_dir "$(dirname "$RUN")"
     [ ! -e "$RUN" ] || fail 'Run directory already exists; preserve it, do not reuse.'
     mkdir "$RUN"
     LOG="$RUN/sign-logs"; mkdir "$LOG" "$RUN/baseline" "$RUN/work"
     printf '%s %s\n' "$(sha "$HERE/mac-sign.sh")" "$(sha "$INVENTORY")" > "$RUN/package.sha256"
-    capture retain-unsigned /bin/cp -p "$1" "$RUN/original.zip"
+    /bin/cp -p "$BUILD_PINS" "$RUN/build.pins"
+    sha "$RUN/build.pins" > "$RUN/pins.sha256"
+    load_build_pins "$RUN/build.pins"
+    capture retain-unsigned /bin/cp -p "$2" "$RUN/original.zip"
     [ "$(sha "$RUN/original.zip")" = "$INPUT_SHA" ]
     capture extract-baseline /usr/bin/ditto -x -k "$RUN/original.zip" "$RUN/baseline"
     manifest "$RUN/baseline/HappyRanch.app" | shasum -a 256 | awk '{print $1}' > "$RUN/baseline.sha256"
@@ -293,19 +454,23 @@ sign)
     manifest "$RUN/work/HappyRanch.app" > "$LOG/copy-files.txt"
     cmp "$LOG/baseline-files.txt" "$LOG/copy-files.txt"
     APP="$RUN/work/HappyRanch.app"; i=0
+    check_plist "$APP/Contents/Info.plist"
     while IFS=$'\t' read -r kind typ ident rel; do
         i=$((i+1)); target="$APP/$rel"
+        executable="$APP/$(executable_rel "$kind" "$rel")"
+        [ -f "$executable" ] && [ -x "$executable" ] || fail "Missing executable: $rel"
+        check_macho "$typ" "$kind" < "$executable"
         capture "original-metadata-$i" /usr/bin/codesign -d --verbose=4 "$target"
         capture "original-entitlements-$i" /usr/bin/codesign -d --entitlements :- "$target"
         if grep -q '<key>' "$LOG/original-entitlements-$i.out"; then fail 'Unexpected original entitlements; return for review.'; fi
-        capture "dependencies-$i" /usr/bin/otool -L "$target"
+        capture "dependencies-$i" /usr/bin/otool -L "$APP/$(executable_rel "$kind" "$rel")"
     done < <(code_inventory)
     i=0
     while IFS=$'\t' read -r kind typ ident rel; do
         i=$((i+1)); target="$APP/$rel"
         case "$kind" in
             lib) capture "sign-$i" /usr/bin/codesign --force --sign "$IDENTITY" --keychain "$KEYCHAIN" --timestamp --identifier "$ident" "$target" ;;
-            exec) capture "sign-$i" /usr/bin/codesign --force --sign "$IDENTITY" --keychain "$KEYCHAIN" --timestamp --options runtime --identifier "$ident" "$target" ;;
+            exec|sparkle|bundle|framework) capture "sign-$i" /usr/bin/codesign --force --sign "$IDENTITY" --keychain "$KEYCHAIN" --timestamp --options runtime --identifier "$ident" "$target" ;;
             main) capture "sign-$i" /usr/bin/codesign --force --sign "$IDENTITY" --keychain "$KEYCHAIN" --timestamp --options runtime "$APP" ;;
         esac
     done < <(code_inventory)
@@ -319,10 +484,11 @@ submit)
     # mkdir is also the durable one-attempt gate; never remove/reuse it.
     mkdir "$RUN/submission" || fail 'Submission already prepared/attempted. Use status/recovery; NEVER re-upload automatically.'
     LOG="$RUN/submission"; check_signed; verify_code "$APP"
-    ARTIFACT="HappyRanch-1.0.1-submission-$(/usr/bin/uuidgen).zip"
+    ARTIFACT="HappyRanch-$VERSION-$BUILD-submission-$(/usr/bin/uuidgen).zip"
     printf '%s\n' "$ARTIFACT" > "$LOG/artifact-name.txt"
     SUBZIP="$LOG/$ARTIFACT"
     capture archive /usr/bin/ditto -c -k --sequesterRsrc --keepParent "$APP" "$SUBZIP"
+    check_members zip "$SUBZIP"
     mkdir "$LOG/reextracted"
     capture archive-extract /usr/bin/ditto -x -k "$SUBZIP" "$LOG/reextracted"
     manifest "$LOG/reextracted/HappyRanch.app" > "$LOG/archive-files.txt"
@@ -383,8 +549,9 @@ finalize)
     awk '$NF != "./Contents/CodeResources"' "$LOG/before-staple.txt" > "$LOG/before-staple-nonticket.txt"
     cmp "$LOG/before-staple-nonticket.txt" "$LOG/after-staple-nonticket.txt" || fail 'Stapling changed bytes/modes beyond the app ticket.'
     verify_code "$LOG/HappyRanch.app"
-    FINALZIP="$LOG/HappyRanch-1.0.1-1.0.1-arm64-signed-notarized-stapled.zip"
+    FINALZIP="$LOG/HappyRanch-$VERSION-$BUILD-arm64-signed-notarized-stapled.zip"
     capture archive /usr/bin/ditto -c -k --sequesterRsrc --keepParent "$LOG/HappyRanch.app" "$FINALZIP"
+    check_members zip "$FINALZIP"
     mkdir "$LOG/reextracted"
     capture reextract /usr/bin/ditto -x -k "$FINALZIP" "$LOG/reextracted"
     verify_code "$LOG/reextracted/HappyRanch.app"
@@ -403,8 +570,9 @@ finalize)
 test)
     load_run "$1"
     owned_file "$RUN/final/complete"
-    FINALZIP="$RUN/final/HappyRanch-1.0.1-1.0.1-arm64-signed-notarized-stapled.zip"
+    FINALZIP="$RUN/final/HappyRanch-$VERSION-$BUILD-arm64-signed-notarized-stapled.zip"
     [ "$(sha "$FINALZIP")" = "$(cat "$RUN/final/final.sha256")" ] || fail 'Final ZIP changed.'
+    check_members zip "$FINALZIP"
     LOG=$(mktemp -d "$RUN/test.XXXXXX")
     manifest "$RUN/final/reextracted/HappyRanch.app" > "$LOG/final.actual"
     cmp "$RUN/final/final-files.txt" "$LOG/final.actual"
