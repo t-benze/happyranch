@@ -67,11 +67,16 @@ export const mockAgentsApi: AgentsApi = {
 
   useCreateAgent: () =>
     useMutation({
-      mutationFn: async (body: import('@/lib/api/agents').CreateAgentBody) => ({
-        name: body.name,
-        team: body.team ?? body.new_team ?? '',
-        role: body.role,
-      }),
+      mutationFn: async (body: import('@/lib/api/agents').CreateAgentBody) => {
+        const id = body.name ?? body.display_name?.toLowerCase().replaceAll('-', '_') ?? '';
+        return {
+          name: id,
+          canonical_id: id,
+          addressable_name: body.display_name ?? id,
+          team: body.team ?? body.new_team ?? '',
+          role: body.role,
+        };
+      },
     }),
 
   useApproveAgent: () =>

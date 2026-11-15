@@ -7,8 +7,8 @@
  * it through `t` on every render, so mapped copy re-translates in place on a
  * locale switch while daemon diagnostics stay byte-for-byte verbatim.
  *
- * The create-agent route returns three product codes the UI owns copy for
- * (`agent_exists`, `team_exists`, `unknown_team`); their templates take the
+ * The create-agent route returns product codes the UI owns copy for;
+ * their templates take the
  * submitted `name` / `newTeam` / `team` as params via `renderAgentError`.
  */
 import type { MessageKey, MessageParams } from '@/lib/i18n';
@@ -16,6 +16,11 @@ import type { MessageKey, MessageParams } from '@/lib/i18n';
 export type Translate = (key: MessageKey, params?: MessageParams) => string;
 
 const AGENT_ERROR_KEYS: Record<string, MessageKey> = {
+  identity_name_unavailable: 'agents.error.nameUnavailable',
+  identity_name_reserved: 'agents.error.nameReserved',
+  invalid_identity_label: 'agents.error.invalidName',
+  agent_id_exhausted: 'agents.error.idExhausted',
+  agent_name_source_required: 'agents.error.invalidName',
   agent_exists: 'agents.error.agentExists',
   team_exists: 'agents.error.teamExists',
   unknown_team: 'agents.error.unknownTeam',

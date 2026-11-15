@@ -1024,6 +1024,19 @@ source. Final independent full review/QA, applicable checks/hooks and guarded
 merge remain required. Source publication authorizes no deployment.
 See the [current naming contract](../superpowers/specs/2026-10-09-identity-names-core.md).
 
+## Founder New agent dialog
+
+New agent asks for a readable Name (1–64 ASCII letters, digits, underscores or
+hyphens, starting with a letter). It sends only `display_name` to founder
+`POST /agents`, alongside the existing role/team/executor/prompt fields. The
+server chooses the permanent ID and commits the initial name with enrollment.
+On success navigation uses returned `canonical_id`; agent detail displays
+Name · ID as read-only identity text. The dialog maps invalid, reserved, conflict
+and exhausted-ID errors to English and Simplified Chinese messages. The API's
+legacy `name` field still means an explicit ID; send exactly one name source.
+See the [naming contract](contracts/threads-and-naming.md) for derivation,
+transaction and rollback details. No manager-session enrollment contract changes.
+
 ## Naming v1 core, API and routing source
 
 Naming install alone uses N-SAC-1 transaction-time structural admission over the

@@ -22,6 +22,7 @@ from sse_starlette.sse import EventSourceResponse
 
 from runtime.identities.registry import (
     naming_writer, require_new_id, read_name_metadata, summary_name_metadata,
+    prepare_initial_agent_name, create_initial_agent_name,
 )
 from runtime.identities.schema import NamingError
 
@@ -308,7 +309,9 @@ class ManageAgentBody(BaseModel):
 
 
 class FounderCreateAgentBody(BaseModel):
-    name: str
+    # Legacy explicit ID; new clients supply display_name instead.
+    name: str | None = None
+    display_name: str | None = None
     role: Literal["worker", "manager"]
     team: str | None = None
     new_team: str | None = None
@@ -324,6 +327,15 @@ class FounderCreateAgentBody(BaseModel):
     @classmethod
     def _reject_unsafe_allow_rules(cls, v: list[str] | None) -> list[str] | None:
         return _validate_allow_rules(v)
+
+
+class FounderCreateAgentReceipt(BaseModel):
+    # name retains its legacy permanent-ID meaning.
+    name: str
+    canonical_id: str
+    addressable_name: str
+    team: str
+    role: Literal["worker", "manager"]
 
 
 _VALID_AGENT_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
@@ -1371,7 +1383,7 @@ async def retire_agent(slug: str, agent_name: str, org: OrgDep) -> RetireAgentRe
     )
 
 
-@router.post("/agents")
+@router.post("/agents", response_model=FounderCreateAgentReceipt)
 async def founder_create_agent(
     slug: str, body: FounderCreateAgentBody, org: OrgDep,
 ) -> dict:
@@ -1387,7 +1399,9 @@ async def founder_create_agent(
     paths = OrgPaths(root=org.root)
 
     # ---- validation ----
-    if not _VALID_AGENT_NAME.match(body.name):
+    if (body.name is None) == (body.display_name is None):
+        raise HTTPException(status_code=422, detail={"code": "agent_name_source_required"})
+    if body.name is not None and not _VALID_AGENT_NAME.fullmatch(body.name):
         raise HTTPException(
             status_code=422,
             detail={"code": "invalid_agent_name", "name": body.name},
@@ -1412,56 +1426,53 @@ async def founder_create_agent(
                 detail={"code": "role_team_mismatch"},
             )
 
-    # ---- team mutation + agent file write, under the same locks ----
-    async with _consumer_writer_interval(
-        org, publisher="founder_create_agent", consumer=body.name, executor=body.executor,
-        teams=(body.team or body.new_team,),
-    ) as authority_change:
-        async with org.teams_lock:
-            with authority_change.validation():
-                _require_naming_id(org, body.name, interval=authority_change)
-                # Duplicate check inside the lock to close TOCTOU between check + write.
-                # Terminated names are also unavailable to preserve historical identity.
-                if prompt_loader.is_name_unavailable(paths, body.name):
-                    detail = {"code": "agent_exists", "name": body.name}
-                    if prompt_loader.is_terminated(paths, body.name):
-                        detail["reason"] = "a terminated agent with this name exists"
-                    raise HTTPException(status_code=409, detail=detail)
+    # The profile/native writer must reserve the actual permanent ID. Propose
+    # outside its gate, then recheck under validation. A competing enrollment
+    # may take that proposal while this request awaits the writer lock.
+    for _ in range(8):
+        try:
+            agent_name = (prepare_initial_agent_name(org, body.display_name)
+                          if body.display_name is not None else body.name)
+        except NamingError as exc:
+            raise HTTPException(status_code=422 if exc.code == "invalid_identity_label" else 409,
+                                detail={"code": exc.code}) from None
+        assert agent_name is not None
+        async with _consumer_writer_interval(
+            org, publisher="founder_create_agent", consumer=agent_name, executor=body.executor,
+            teams=(body.team or body.new_team,),
+        ) as authority_change:
+            async with org.teams_lock:
+                with authority_change.validation():
+                    if body.display_name is not None:
+                        try:
+                            current = prepare_initial_agent_name(org, body.display_name)
+                        except NamingError as exc:
+                            raise HTTPException(status_code=409, detail={"code": exc.code}) from None
+                        if current != agent_name:
+                            continue
+                    _require_naming_id(org, agent_name, interval=authority_change)
+                    # Historical/terminated IDs remain unavailable for legacy callers too.
+                    if prompt_loader.is_name_unavailable(paths, agent_name):
+                        detail = {"code": "agent_exists", "name": agent_name}
+                        if prompt_loader.is_terminated(paths, agent_name):
+                            detail["reason"] = "a terminated agent with this name exists"
+                        raise HTTPException(status_code=409, detail=detail)
 
-                if body.role == "worker":
-                    assert body.team is not None
-                    if body.team not in org.teams.teams():
-                        raise HTTPException(
-                            status_code=404,
-                            detail={"code": "unknown_team", "team": body.team},
-                        )
-                    team_name = body.team
-                else:
-                    assert body.new_team is not None
-                    if body.new_team in org.teams.teams():
-                        raise HTTPException(
-                            status_code=409,
-                            detail={"code": "team_exists", "team": body.new_team},
-                        )
-                    team_name = body.new_team
-
-            with authority_change.canonical_change():
-                if body.role == "worker":
-                    org.teams.add_worker(team_name, body.name)
-                else:
-                    try:
-                        org.teams.add_team(team_name, manager=body.name)
-                    except ValueError:
-                        # Defense in depth — the in-lock check above should make this
-                        # unreachable, but if a future refactor drifts, surface as 409
-                        # rather than a bare 500.
-                        raise HTTPException(
-                            status_code=409,
-                            detail={"code": "team_exists", "team": body.new_team},
-                        )
+                    if body.role == "worker":
+                        assert body.team is not None
+                        if body.team not in org.teams.teams():
+                            raise HTTPException(status_code=404,
+                                                detail={"code": "unknown_team", "team": body.team})
+                        team_name = body.team
+                    else:
+                        assert body.new_team is not None
+                        if body.new_team in org.teams.teams():
+                            raise HTTPException(status_code=409,
+                                                detail={"code": "team_exists", "team": body.new_team})
+                        team_name = body.new_team
 
                 agent_def = AgentDef(
-                    name=body.name,
+                    name=agent_name,
                     team=team_name,
                     role=body.role,
                     executor=body.executor,
@@ -1475,90 +1486,82 @@ async def founder_create_agent(
                     model=body.model if body.model else None,
                     reasoning_effort=body.reasoning_effort,
                 )
-
-                # Atomic write directly into active agents/ (skip _pending/).
-                from runtime.orchestrator.agent_def import render_agent_text
-                paths.agents_dir.mkdir(parents=True, exist_ok=True)
-                active_path = paths.agents_dir / f"{body.name}.md"
-                fd, tmp = tempfile.mkstemp(
-                    prefix=f".{body.name}.", suffix=".md",
-                    dir=str(paths.agents_dir),
-                )
+                active_path = paths.agents_dir / f"{agent_name}.md"
                 active_landed = False
+                membership_attempted = False
+                tmp = None
                 try:
-                    with os.fdopen(fd, "w") as fh:
-                        fh.write(render_agent_text(agent_def))
-                    os.replace(tmp, active_path)
-                    active_landed = True
-                    if body.role == "manager":
-                        # The new team and its now-live eligible manager become
-                        # launchable in this SAME coordinator-owned canonical
-                        # mutation. Publication therefore observes the initialized
-                        # selector and advances exactly one authority generation.
-                        AuthorityPolicyStore(org.db).ensure_authority_selector(
-                            team_name,
+                    with authority_change.canonical_change():
+                        membership_attempted = True
+                        if body.role == "worker":
+                            org.teams.add_worker(team_name, agent_name)
+                        else:
+                            org.teams.add_team(team_name, manager=agent_name)
+
+                        from runtime.orchestrator.agent_def import render_agent_text
+                        paths.agents_dir.mkdir(parents=True, exist_ok=True)
+                        fd, tmp = tempfile.mkstemp(
+                            prefix=f".{agent_name}.", suffix=".md", dir=str(paths.agents_dir),
                         )
-                except Exception:
-                    try:
-                        os.unlink(tmp)
-                    except FileNotFoundError:
-                        pass
-                    if active_landed:
-                        try:
-                            active_path.unlink()
-                        except FileNotFoundError:
-                            pass
-                    # Roll back the registry mutation (add_worker or add_team)
-                    # so we don't leave a phantom team-membership entry without
-                    # the corresponding agent file. Without this rollback the
-                    # manager-branch case is unrecoverable on retry (returns
-                    # 409 team_exists even though no manager file ever landed).
-                    if body.role == "worker":
-                        org.teams.remove_worker(team_name, body.name)
-                    else:
-                        org.teams.remove_team(team_name)
+                        with os.fdopen(fd, "w") as fh:
+                            fh.write(render_agent_text(agent_def))
+                        os.replace(tmp, active_path)
+                        active_landed = True
+                        if body.role == "manager":
+                            AuthorityPolicyStore(org.db).ensure_authority_selector(team_name)
+                    if body.display_name is not None:
+                        # No default-label owner is published and no rename is called.
+                        # Both owner and chosen claim first appear at this commit.
+                        create_initial_agent_name(org, agent_name, body.display_name)
+                except BaseException:
+                    with authority_change.canonical_change():
+                        if tmp is not None:
+                            try:
+                                os.unlink(tmp)
+                            except FileNotFoundError:
+                                pass
+                        if active_landed:
+                            try:
+                                active_path.unlink()
+                            except FileNotFoundError:
+                                pass
+                        if membership_attempted:
+                            if body.role == "worker":
+                                org.teams.remove_worker(team_name, agent_name)
+                            else:
+                                org.teams.remove_team(team_name)
                     raise
-        async def finish_write() -> dict:
-            # ---- workspace bootstrap (THR-095: no agent.yaml writes) ----
-            workspace = paths.workspaces_dir / body.name
-            workspace.mkdir(parents=True, exist_ok=True)
 
-            # THR-095: agent.yaml is no longer the source for executor/repos.
-            # The .md frontmatter (AgentDef) is the single source of truth.
-            repos = agent_def.repos or {}
-            ctx = ContextBuilder(org.settings, paths, slug=org.slug)
-            for repo_name, url in repos.items():
-                cloned = await asyncio.to_thread(ctx.clone_repo, workspace, repo_name, url)
-                if not cloned:
-                    authority_change.native_disposition.uncertain = True
+            async def finish_write() -> dict:
+                # Workspace bootstrap retains the enrolled identity on failure,
+                # as before. Initial name enrollment has already committed.
+                workspace = paths.workspaces_dir / agent_name
+                workspace.mkdir(parents=True, exist_ok=True)
+                repos = agent_def.repos or {}
+                ctx = ContextBuilder(org.settings, paths, slug=org.slug)
+                for repo_name, url in repos.items():
+                    cloned = await asyncio.to_thread(ctx.clone_repo, workspace, repo_name, url)
+                    if not cloned:
+                        authority_change.native_disposition.uncertain = True
 
-            # Cloning yields to the event loop.  Bootstrap from the current active
-            # definition so an accepted update is not fed stale prompt/provider
-            # inputs, and never recreate a definition removed while cloning.  This
-            # fresh capture does not serialize workspace generation against arbitrary
-            # later writes.
-            fresh = prompt_loader.load_agent(paths, body.name)
-            if fresh is None:
-                raise HTTPException(status_code=404, detail=f"agent {body.name!r} not found")
-            await asyncio.to_thread(
-                ctx.ensure_workspace_ready,
-                workspace,
-                body.name,
-                fresh.system_prompt,
-                provider=fresh.executor,
-            )
-            await asyncio.to_thread(ctx.create_agent_dirs, workspace, body.name)
+                fresh = prompt_loader.load_agent(paths, agent_name)
+                if fresh is None:
+                    raise HTTPException(status_code=404, detail=f"agent {agent_name!r} not found")
+                await asyncio.to_thread(
+                    ctx.ensure_workspace_ready, workspace, agent_name,
+                    fresh.system_prompt, provider=fresh.executor,
+                )
+                await asyncio.to_thread(ctx.create_agent_dirs, workspace, agent_name)
+                AuditLogger(org.db).log_agent_managed(
+                    scope_id="founder", action="enroll", name=agent_name,
+                    source="founder", actor="founder",
+                )
+                return {"name": agent_name, "canonical_id": agent_name,
+                        "addressable_name": body.display_name if body.display_name is not None else agent_name,
+                        "team": team_name, "role": body.role}
 
-            AuditLogger(org.db).log_agent_managed(
-                scope_id="founder",
-                action="enroll",
-                name=body.name,
-                source="founder",
-                actor="founder",
-            )
-            return {"name": body.name, "team": team_name, "role": body.role}
-
-        return await _finish_consumer_write(finish_write())
+            return await _finish_consumer_write(finish_write())
+    raise HTTPException(status_code=409, detail={"code": "agent_id_exhausted"})
 
 # ---------------------------------------------------------------------------
 # Founder surface: switch an existing agent's executor end-to-end.
