@@ -1025,6 +1025,16 @@ This exception does not weaken any retained pytest/callback fence. See
 
 ## Spawn-Environment Invariant and Worktree Isolation
 
+Before Python starts, the Mac app's `EnvironmentSanitizer.buildChildEnvironment`
+filters the parent environment for both bundled and development daemon launches.
+It passes through `PATH`, `HOME`, `USER`, and `LOGNAME` only when present, sets
+`HAPPYRANCH_DAEMON_HOME` explicitly, and passes through `HAPPYRANCH_WEB_DIST` only
+when present. `USER`/`LOGNAME` are preserved because macOS Keychain credential
+lookup by agent CLIs such as Claude depends on them; neither is synthesized.
+Other inherited `HAPPYRANCH_*` overrides and arbitrary secrets, including
+`CLAUDE_CODE_OAUTH_TOKEN`, remain stripped. The bundled launcher then sets its
+own web distribution path and ephemeral daemon port explicitly.
+
 Every runtime-created child subprocess — agent executor sessions, custom-adapter
 launches, and job-script subprocesses — inherits a sanitized copy of the daemon's
 environment that **strips** ``VIRTUAL_ENV``, ``UV_PROJECT_ENVIRONMENT``,
