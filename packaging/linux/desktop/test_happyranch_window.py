@@ -432,6 +432,104 @@ class ServiceTests(unittest.TestCase):
         self.service.close()
         self.assertEqual(self.verbs().count("stop"), 1)
 
+    @contextlib.contextmanager
+    def publishing_marker(self, name: str, raw: bytes | None, *,
+                          complete: bool = True) -> Iterator[list[int]]:
+        """Hold publication across the first poll, then release a real writer."""
+        self.state["MainPID"] = "0"
+        for marker in ("daemon.pid", "daemon.port"):
+            (self.home / marker).unlink(missing_ok=True)
+        self.net(state="01")
+        self.calls.clear()
+        self.probes.clear()
+        runner = self.service.runner
+        release = threading.Event()
+        writer = None
+        publication = None
+        polls = [0]
+        started = False
+
+        def publish_later() -> None:
+            release.wait()
+            # Match the real daemon's port-then-PID publication order.
+            (self.home / "daemon.port").write_text("8766")
+            (self.home / "daemon.pid").write_text("42")
+
+        def run_command(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess:
+            nonlocal started, writer, publication
+            if argv[2] == "start":
+                self.state["MainPID"] = "42"
+                self.net()
+                if name == "daemon.pid":
+                    (self.home / "daemon.port").write_text("8766")
+                else:
+                    (self.home / "daemon.pid").write_text("42")
+                if raw is not None:
+                    writer = (self.home / name).open("wb")
+                    writer.write(raw)
+                    writer.flush()
+                if complete:
+                    publication = threading.Thread(target=publish_later)
+                    publication.start()
+                started = True
+            elif argv[2] == "show" and started:
+                polls[0] += 1
+                if polls[0] == 2 and complete:
+                    self.assertEqual(self.probes, [], "probed before complete publication")
+                    release.set()
+                    publication.join(1)
+                    self.assertFalse(publication.is_alive(), "publication writer did not finish")
+            return runner(argv, **kwargs)
+
+        self.service.runner = run_command
+        try:
+            yield polls
+        finally:
+            release.set()
+            if publication is not None:
+                publication.join(1)
+                self.assertFalse(publication.is_alive())
+            if writer is not None:
+                writer.close()
+            self.service.runner = runner
+
+    def test_start_waits_for_marker_publication_before_attaching(self) -> None:
+        for name in ("daemon.port", "daemon.pid"):
+            for raw in (None, b"", b"bad", b"\xff", b"4"):
+                with self.subTest(marker=name, raw=raw), self.publishing_marker(name, raw) as polls:
+                    try:
+                        url = self.service.start(threading.Event(), timeout=1)
+                    except window.LaunchError as exc:
+                        self.fail(f"Pending {name} refused before publication: {exc}")
+                    self.assertEqual(url, "http://127.0.0.1:8766/")
+                    self.assertGreaterEqual(polls[0], 2)
+                    self.assertEqual(self.probes, [(8766, 0.5)])
+                    self.assertTrue(self.service.attached)
+                    self.assertNotIn("stop", self.verbs())
+                    self.service.close()
+
+    def test_invalid_post_start_marker_waits_for_deadline_then_stops_once(self) -> None:
+        for name in ("daemon.port", "daemon.pid"):
+            for raw in (b"", b"bad", b"\xff"):
+                with self.subTest(marker=name, raw=raw), \
+                        self.publishing_marker(name, raw, complete=False) as polls:
+                    with self.assertRaises(window.LaunchError) as caught:
+                        self.service.start(threading.Event(), timeout=0.02)
+                    self.assertEqual(str(caught.exception),
+                                     "Release daemon ownership or health check failed; no web view was attached.")
+                    self.assertIsNone(caught.exception.action)
+                    self.assertGreaterEqual(polls[0], 2, "invalid marker refused before deadline")
+                    self.assertEqual(self.probes, [])
+                    self.assertFalse(self.service.attached)
+                    self.assertTrue(self.service.shutdown_pending)
+                    self.assertNotIn("stop", self.verbs())
+                    self.service.close()
+                    self.service.close()
+                    self.assertEqual([call for call in self.calls if call[2] == "stop"],
+                                     [["systemctl", "--user", "stop", "happyranch-daemon"]])
+                    self.assertFalse(self.service.shutdown_pending)
+                    self.assertEqual((self.home / name).read_bytes(), raw)
+
     def test_manager_fallback_and_degraded_manager(self) -> None:
         for rc, output in ((1, "offline"), (1, ""), (127, "")):
             with self.subTest(rc=rc, output=output):

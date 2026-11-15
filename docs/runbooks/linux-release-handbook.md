@@ -179,6 +179,13 @@ other processes of the same user.
 Existing PID and port markers must decode as UTF-8 positive decimal integers
 (port at most 65535). Invalid markers refuse with a plain message before any
 start, health probe or stop; their bytes are preserved for the user to review.
+After a successful admitted start, missing, empty, malformed or mismatched
+markers are pending publication within the existing 60-second startup deadline:
+the daemon writes the port marker, then the PID marker, with a truncate/write
+interval for each. No health probe or attachment proceeds until the complete
+PID/port pair and listener ownership match. If publication stays invalid until
+the deadline, the window shows the ownership/health refusal and enters the
+existing packaged-service shutdown path. It never repairs the markers.
 
 Before start, the window inspects `systemctl --user show-environment`. Any
 `HAPPYRANCH_*` variable refuses startup and the message lists names only.
@@ -206,8 +213,8 @@ Service failures remain in the window with a plain diagnostic:
 
 - Foreign listener: **Port 8766 is used by another program**. No attachment,
   start command or process signal follows a pre-start refusal.
-- A live release-home `daemon.pid` different from MainPID: stop the CLI-started
-  daemon yourself before opening the window. The app never signals it.
+- Before start, a live release-home `daemon.pid` different from MainPID: stop
+  the CLI-started daemon yourself before opening the window. The app never signals it.
 - Unexpected unit path/drop-ins: review user service overrides before starting.
 - `ActiveState=failed` and `Result=start-limit-hit`: show the last 20 journal
   lines from `journalctl --user -u happyranch-daemon -n 20`. **Retry** repeats

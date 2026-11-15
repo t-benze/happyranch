@@ -328,7 +328,9 @@ class ServiceMode:
             state = self.state()
             self.crash_error(state)
             pid = self.pid(state)
-            self.refuse_external(pid)
+            # After an admitted start, write_text can expose missing, empty or
+            # partial markers. The tolerant read below waits for the complete
+            # PID/port pair within this deadline; pre-start validation is strict.
             listeners = self.listeners()
             owns = self.owns_listener(pid, listeners)
             if listeners and not owns:
