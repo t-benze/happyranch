@@ -2089,9 +2089,14 @@ class CustomAdapterExecutor:
         provider: str,
         invocation_context: dict | None = None,
         input_options: dict | None = None,
+        adapter_registered_by: str = "",
     ) -> None:
         self._profile_name = profile_name
         self._adapter_entry_id = adapter_entry_id
+        # Issue #701: only the refusal TEXT depends on origin. A direct-connect
+        # adapter's remediation is a fresh founder-minted connect token +
+        # reconnect; the legacy re-submit route refuses direct-connect tokens.
+        self._adapter_registered_by = adapter_registered_by
         self._adapter_executable = adapter_executable
         self._adapter_hash = adapter_hash
         self._adapter_version = adapter_version
@@ -2142,6 +2147,20 @@ class CustomAdapterExecutor:
             "task_id": task_id,
         }
 
+    def _is_direct_connect(self) -> bool:
+        """True for adapters written by the direct-connect projection/retry
+        paths (``registered_by`` ``direct-connect`` / ``direct-connect-retry``)."""
+        return self._adapter_registered_by in ("direct-connect", "direct-connect-retry")
+
+    def _direct_connect_remediation(self) -> str:
+        return (
+            f"Reconnect {self._profile_name} in Settings -> Executors "
+            f"(mint a fresh connect token and re-run connect)."
+        )
+
+    def _dependency_remediation(self, legacy: str) -> str:
+        return self._direct_connect_remediation() if self._is_direct_connect() else legacy
+
     def verify_launch_ready(self) -> str | None:
         """Verify the approved adapter artifact + every declared dependency
         immediately before an actual launch attempt.
@@ -2182,7 +2201,11 @@ class CustomAdapterExecutor:
                 f"Custom adapter {self._adapter_entry_id!r} hash mismatch: "
                 f"expected {self._adapter_hash[:12]}..., "
                 f"got {current_launch_hash[:12]}... "
-                f"Re-register and re-approve the adapter."
+                + (
+                    self._direct_connect_remediation()
+                    if self._is_direct_connect()
+                    else "Re-register and re-approve the adapter."
+                )
             )
         # THR-107 seq244: revalidate every declared dependency (path type /
         # executability / hash) before EVERY launch attempt.
@@ -2194,20 +2217,26 @@ class CustomAdapterExecutor:
                 if not dep_path.exists():
                     return (
                         f"Declared dependency {dep_exe!r} no longer exists. "
-                        f"Re-submit the adapter with a valid dependency and "
-                        f"obtain founder approval."
+                        + self._dependency_remediation(
+                            "Re-submit the adapter with a valid dependency and "
+                            "obtain founder approval."
+                        )
                     )
                 if not dep_path.is_file():
                     return (
                         f"Declared dependency {dep_exe!r} is not a regular file. "
-                        f"Re-submit the adapter with a valid dependency and "
-                        f"obtain founder approval."
+                        + self._dependency_remediation(
+                            "Re-submit the adapter with a valid dependency and "
+                            "obtain founder approval."
+                        )
                     )
                 if not os.access(dep_path, os.X_OK):
                     return (
                         f"Declared dependency {dep_exe!r} is not executable. "
-                        f"Re-submit the adapter with a valid dependency and "
-                        f"obtain founder approval."
+                        + self._dependency_remediation(
+                            "Re-submit the adapter with a valid dependency and "
+                            "obtain founder approval."
+                        )
                     )
                 current_dep_hash = compute_sha256(dep_exe)
                 if current_dep_hash != dep_hash:
@@ -2215,8 +2244,10 @@ class CustomAdapterExecutor:
                         f"Declared dependency {dep_exe!r} hash mismatch: "
                         f"expected {dep_hash[:12]}..., got {current_dep_hash[:12]}... "
                         f"The dependency has been modified since approval. "
-                        f"Re-submit the adapter with the updated dependency "
-                        f"and obtain founder approval."
+                        + self._dependency_remediation(
+                            "Re-submit the adapter with the updated dependency "
+                            "and obtain founder approval."
+                        )
                     )
         return None
 

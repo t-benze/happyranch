@@ -55,6 +55,10 @@ interface ConnectFlowProps {
   /** Primary action rendered before "Connect another" on the connected card
    *  (onboarding: Continue → Step 2). Omit for none. */
   connectedPrimaryAction?: ReactNode;
+  /** Reconnect an EXISTING custom CLI (#701): open in custom mode with this
+   *  profile name fixed. Same mint route and same connect flow as a first
+   *  connect; only the name is pre-filled and read-only. */
+  reconnectName?: string;
 }
 
 export function ConnectFlow({
@@ -65,8 +69,9 @@ export function ConnectFlow({
   waitingSkipSlot,
   connectedSubtitle,
   connectedPrimaryAction,
+  reconnectName,
 }: ConnectFlowProps): JSX.Element {
-  const [mode, setMode] = useState<ConnectMode>('builtin');
+  const [mode, setMode] = useState<ConnectMode>(reconnectName ? 'custom' : 'builtin');
   const [connected, setConnected] = useState<Connected | null>(null);
 
   const switchToCustom = (): void => {
@@ -96,7 +101,8 @@ export function ConnectFlow({
           ) : (
             <AdapterConnect
               onConnected={setConnected}
-              onUseBuiltin={() => setMode('builtin')}
+              onUseBuiltin={reconnectName ? undefined : () => setMode('builtin')}
+              fixedName={reconnectName}
               skipSlot={formSkipSlot}
               waitingSkipSlot={waitingSkipSlot}
             />
@@ -214,14 +220,17 @@ export function AdapterConnect({
   onUseBuiltin,
   skipSlot,
   waitingSkipSlot,
+  fixedName,
 }: {
   onConnected: (c: Connected) => void;
   onUseBuiltin?: () => void;
   skipSlot?: ReactNode;
   waitingSkipSlot?: ReactNode;
+  /** Existing profile name for a reconnect; the name field is read-only. */
+  fixedName?: string;
 }): JSX.Element {
   const { t, render, locale } = useTranslation();
-  const [nameInput, setNameInput] = useState('');
+  const [nameInput, setNameInput] = useState(fixedName ?? '');
   const origin = typeof window !== 'undefined' ? window.location.origin : '';
 
   const flow = useDirectConnect({ onConnected });
@@ -358,7 +367,8 @@ export function AdapterConnect({
             flow.mint.reset();
           }}
           placeholder={t('onboarding.connect.adapter.namePlaceholder')}
-          autoFocus
+          readOnly={fixedName !== undefined}
+          autoFocus={fixedName === undefined}
           autoComplete="off"
           spellCheck={false}
           aria-invalid={nameInput && !nameValid && !flow.mint.isPending ? true : undefined}

@@ -51,7 +51,9 @@ function connectedSubtitleKey(
 
 export function ExecutorsSection(): JSX.Element {
   const { t, render } = useTranslation();
-  const [connecting, setConnecting] = useState(false);
+  // null = list; '' = new connect; a profile name = reconnect that existing
+  // custom CLI (#701) through the same ConnectFlow.
+  const [connecting, setConnecting] = useState<string | null>(null);
   const connectedSubtitle = (via: ConnectMode): string => t(connectedSubtitleKey(via));
   const qc = useQueryClient();
 
@@ -65,14 +67,16 @@ export function ExecutorsSection(): JSX.Element {
   const backToList = (): void => {
     void qc.invalidateQueries({ queryKey: ['executor-binaries'] });
     void qc.invalidateQueries({ queryKey: RUNTIME_PROFILES_KEY });
-    setConnecting(false);
+    setConnecting(null);
   };
 
   return (
     <section className="space-y-6" data-testid="executors-section">
-      {connecting ? (
+      {connecting !== null ? (
         <div data-testid="executors-connect">
         <ConnectFlow
+          key={connecting}
+          reconnectName={connecting === '' ? undefined : connecting}
           connectedSubtitle={connectedSubtitle}
           formHeading={
             <div className="mb-1">
@@ -85,8 +89,15 @@ export function ExecutorsSection(): JSX.Element {
                 {t('settings.executors.back')}
               </button>
               <h3 className="font-display text-text-primary mt-3 text-base font-semibold">
-                {t('settings.executors.connectCli')}
+                {connecting === ''
+                  ? t('settings.executors.connectCli')
+                  : t('settings.executors.reconnect.heading', { name: connecting })}
               </h3>
+              {connecting !== '' && (
+                <p className="text-text-secondary mt-1 text-sm">
+                  {t('settings.executors.reconnect.body')}
+                </p>
+              )}
             </div>
           }
           connectedPrimaryAction={
@@ -105,13 +116,13 @@ export function ExecutorsSection(): JSX.Element {
               (THR-107 S4b), consuming the S4a list/remove backend. Adapter-backed
               CLIs join the approved adapter executable here, and approved-unbound
               recovery affordances live in this area rather than a separate list. */}
-          <CustomProfilesSection />
+          <CustomProfilesSection onReconnect={(name) => setConnecting(name)} />
 
           {/* The single "Connect a CLI" entry into the shared connect flow. */}
           <Button
             type="button"
             variant="secondary"
-            onClick={() => setConnecting(true)}
+            onClick={() => setConnecting('')}
             data-testid="connect-a-cli"
           >
             <Plug aria-hidden="true" size={16} />

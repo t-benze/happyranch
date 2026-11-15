@@ -337,6 +337,7 @@ class ExecutorRegistry:
             "dependency_manifest_version": entry.dependency_manifest_version,
             "dependencies": entry.dependencies,
             "input_options": entry.input_options,
+            "registered_by": entry.registered_by,
         }
 
     @classmethod
@@ -628,6 +629,7 @@ def build_executor(
             adapter_contract_version=binding["contract_version"],
             provider=name,
             input_options=binding.get("input_options"),
+            adapter_registered_by=binding.get("registered_by", ""),
         )
         # THR-107 seq244: set dependency manifest on the executor
         executor.set_dependency_manifest(

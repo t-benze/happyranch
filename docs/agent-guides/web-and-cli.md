@@ -2909,7 +2909,15 @@ failed" card instead.
 
 Adapter-backed custom CLIs are surfaced inside **Settings → Executors →
 Custom CLIs**: their approved executable is joined to the profile row by the
-``command_adapter_id: custom-adapter:<id>`` reference. The authenticated
+``command_adapter_id: custom-adapter:<id>`` reference. A row whose adapter
+was written by direct connect (``registered_by`` ``direct-connect`` or
+``direct-connect-retry``, already on the existing ``GET /runtime/adapters``
+entry) also shows a **Reconnect** action (#701). It reopens the same shared
+ConnectFlow inline with the custom mode and that profile name pre-filled and
+read-only; the founder mints a fresh connect token through the existing mint
+route and the candidate CLI re-runs connect. No new route, field or response
+shape is involved; until that reconnect commits, launches keep refusing the
+changed wrapper or child. The authenticated
 ``DELETE /api/v1/runtime/adapters/{adapter_id}`` route remains available for
 API-level cleanup — removal only deletes the durable registration entry
 (never the on-disk executable) and writes an ``adapter_removed`` audit row

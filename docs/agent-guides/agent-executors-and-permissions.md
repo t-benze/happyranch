@@ -861,7 +861,11 @@ dependency lists, adapter/operation IDs and `via=direct_connect` or
 existing binding audit transaction and profile compensation. Probe or binding
 failure preserves the prior adapter and profile binding. Launch hash checks
 continue to refuse changed artifacts until reconnect succeeds; retry only
-validates the failed receipt's stored snapshot. See the
+validates the failed receipt's stored snapshot. For direct-connect adapters
+(`registered_by` `direct-connect`/`direct-connect-retry`) that refusal says
+`Reconnect <profile> in Settings -> Executors (mint a fresh connect token and
+re-run connect).`; legacy adapters keep the re-submit/approval wording.
+Settings -> Executors -> Custom CLIs has a matching **Reconnect** action. See the
 [upgrade lifecycle](../superpowers/specs/2026-07-19-custom-cli-adapter-envelope-design.md#direct-connect-upgrade-and-reconnect-lifecycle-701)
 for audit fields and ordering.
 
