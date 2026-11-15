@@ -121,6 +121,44 @@ tree gates. There is no schema, index or classification change. The seq361
 registration scope is described below. There is no two-pass ordering without
 real-night step 1 data.
 
+Founder THR307 seq361 approving seq359 item 1 adds the one-time operator
+backlog entry `happyranch disk-sweep manual-backlog`. It sends one founder-bearer
+POST to `/api/v1/runtime/disk-sweep/manual-backlog` and waits for the run inside
+the daemon. There is no new credential or agent authority. The daemon uses the
+same `native_writer(org.db, publisher='disk_sweep')` reservations,
+`DeferredTeamMove` handling, `sweep()` and `run_worker`, per-candidate gates,
+15-second Git limits, publication-before-effect and deadline SIGKILL/reap.
+`MANUAL_BACKLOG_BUDGET_SECONDS=7200` covers admission, all orgs and effects;
+`BUDGET_SECONDS=1800` and the existing machine-local 03:00 schedule are unchanged.
+
+Before any reservation or worker effect, the manual run refuses if its local
+interval `[now, now + 7200s + 120s margin]` intersects 03:00–03:30, including a
+start before 03:00 whose budget would cross it. It uses the same machine-local
+clock as `next_night` (Asia/Shanghai on the operator host). An in-process slot
+also refuses concurrent scheduled/manual deletion; at most one manual run can
+be in flight. These checks add no retry, catch-up, repair or eligibility rule.
+The same `_scheduled_admission` validator reads the daemon-global `stop.json`:
+only genuinely absent or exact Boolean false permits deletion; true, invalid,
+unreadable or unsafe control refuses. The initial report must publish before
+native reservations; missing/unsafe report parents refuse without deletion.
+Only the existing dry-run preview can create missing report parents.
+
+Reports use `<daemon_home>/disk-sweep/manual-backlog-<ns>.json`, carry
+`trigger=manual_backlog`, `scheduled_date=null` and `budget_seconds=7200` at
+initial publication, worker checkpoints and closure, and record refusal causes.
+Existing empty-task/daemon `disk_sweep_summary` audits carry the same manual
+trigger. These reports/audits never advance `last-scheduled.json`, satisfy a
+prior-night check, suppress a night notice or make `night.complete` true. A
+successful manual deletion can have `outcome=complete` while its scheduled-night
+record remains incomplete. Scheduled night completeness semantics are unchanged.
+The CLI submits once with a 7320-second transport timeout; lost transport is
+unknown, never automatic retry authority. The daemon keeps supervision in its
+request, including cancellation stop/reap. Inspect its report/audits after loss.
+The standalone `--dry-run --runtime-root` preview remains unchanged, including
+with true/invalid stop control. This entry grants no agent permission to run
+live deletion, deploy or restart; the approved one-time live run belongs to the
+operator after release.
+
 Founder THR307 seq361 approving seq359 item 2 narrows the fresh worktree
 registration proof. Discovery still performs its complete once-per-clone proof:
 three literal no-follow admin censuses, full Git-list reconciliation, residue and

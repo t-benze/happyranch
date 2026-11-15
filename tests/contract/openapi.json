@@ -5775,6 +5775,22 @@
         ]
       }
     },
+    "/api/v1/runtime/disk-sweep/manual-backlog": {
+      "POST": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ]
+        ],
+        "responses": [
+          "200",
+          "409",
+          "422",
+          "503"
+        ]
+      }
+    },
     "/api/v1/runtime/use": {
       "POST": {
         "params": [

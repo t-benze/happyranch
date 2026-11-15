@@ -65,7 +65,7 @@ recorded. Startup never catches up a missed occurrence. `last-scheduled.json` is
 reserved before launch; restart or interruption does not retry that date. Corrupt
 metadata refuses execution. This file contains no candidate cursor or rotation.
 
-One **1800-second monotonic deadline for the entire batch** includes source
+One scheduled **1800-second monotonic deadline for the entire batch** includes source
 identification, org/candidate discovery, all scans, Git and both deletion phases.
 It is never reset per org, candidate or retry. Candidates are phase1 then phase2,
 oldest root mtime first within each phase, with literal absolute path as stable
@@ -232,6 +232,55 @@ hold the clone. Positive
 mapping/clean-status observations are discarded; every deletion still performs
 all existing fresh admissions. Inventory cannot supply successful delete authority.
 Step 3 originally retained destructive census frequency; seq361 narrows it below.
+
+### One-time manual backlog entry (THR307 seq361 item 1)
+
+Founder THR307 seq361 approving seq359 item 1 adds the one-time operator
+backlog entry `happyranch disk-sweep manual-backlog`. It sends one founder-bearer
+POST to `/api/v1/runtime/disk-sweep/manual-backlog` and waits for the run inside
+the daemon. There is no new credential or agent authority. The daemon uses the
+same `native_writer(org.db, publisher='disk_sweep')` reservations,
+`DeferredTeamMove` handling, `sweep()` and `run_worker`, per-candidate gates,
+15-second Git limits, publication-before-effect and deadline SIGKILL/reap.
+`MANUAL_BACKLOG_BUDGET_SECONDS=7200` covers admission, all orgs and effects;
+`BUDGET_SECONDS=1800` and the existing machine-local 03:00 schedule are unchanged.
+
+Before any reservation or worker effect, the manual run refuses if its local
+interval `[now, now + 7200s + 120s margin]` intersects 03:00–03:30, including a
+start before 03:00 whose budget would cross it. It uses the same machine-local
+clock as `next_night` (Asia/Shanghai on the operator host). An in-process slot
+also refuses concurrent scheduled/manual deletion; at most one manual run can
+be in flight. These checks add no retry, catch-up, repair or eligibility rule.
+The same `_scheduled_admission` validator reads the daemon-global `stop.json`:
+only genuinely absent or exact Boolean false permits deletion; true, invalid,
+unreadable or unsafe control refuses. The initial report must publish before
+native reservations; missing/unsafe report parents refuse without deletion.
+Only the existing dry-run preview can create missing report parents.
+
+Reports use `<daemon_home>/disk-sweep/manual-backlog-<ns>.json`, carry
+`trigger=manual_backlog`, `scheduled_date=null` and `budget_seconds=7200` at
+initial publication, worker checkpoints and closure, and record refusal causes.
+Existing empty-task/daemon `disk_sweep_summary` audits carry the same manual
+trigger. These reports/audits never advance `last-scheduled.json`, satisfy a
+prior-night check, suppress a night notice or make `night.complete` true. A
+successful manual deletion can have `outcome=complete` while its scheduled-night
+record remains incomplete. Scheduled night completeness semantics are unchanged.
+The CLI submits once with a 7320-second transport timeout; lost transport is
+unknown, never automatic retry authority. The daemon keeps supervision in its
+request, including cancellation stop/reap. Inspect its report/audits after loss.
+The standalone `--dry-run --runtime-root` preview remains unchanged, including
+with true/invalid stop control. This entry grants no agent permission to run
+live deletion, deploy or restart; the approved one-time live run belongs to the
+operator after release.
+
+The existing disposable verifier cases C55–C61 cover window intersection, stop
+controls and publication refusal, mutual exclusion, deletion/keep parity and native
+deferral, actual worker budget propagation, prior-night/marker non-counting, and
+founder route/CLI transport. Run them with task-owned `TMPDIR` using
+`.venv/bin/python scripts/verify_disk_sweeper.py --cases 55 56 57 58 59 60 61`.
+Full adjacent verification and lint/static checks use durable jobs.
+
+### Candidate-scoped delete-time checks (THR307 seq361 item 2)
 
 Founder THR307 seq361 approving seq359 item 2 narrows the fresh worktree
 registration proof. Discovery still performs its complete once-per-clone proof:
@@ -845,7 +894,7 @@ percentage is context only. Below20% is flagged in the existing audit/JSON;
 there is no suitable standalone founder disk-alert interface to call, so no new
 notification routing/subsystem is introduced.
 
-Supported manual **dry run only** (no automatic fallback/activation):
+Supported standalone manual **dry run only** (no automatic fallback/activation):
 
 ```bash
 python -m runtime.daemon.disk_sweeper --dry-run --runtime-root /absolute/runtime

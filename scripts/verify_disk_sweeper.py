@@ -31,6 +31,7 @@ from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from unittest.mock import patch
+from typing import Any, Iterator
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from runtime.daemon import disk_sweeper as ds
@@ -6556,12 +6557,296 @@ def candidate_benchmark(baseline: str, worktrees: int, deletes: int) -> dict:
                 limits='Sequential equal-shaped fresh clones on the same host; candidate wall time excludes discovery and final keeps; no real-night estimate')
 
 
+def backlog_clock(hour: int = 12, minute: int = 0, second: int = 0) -> type:
+    from datetime import datetime
+    class LocalClock(datetime):
+        @classmethod
+        def now(cls, tz: Any = None) -> LocalClock:
+            return cls(2026, 11, 15, hour, minute, second).astimezone(tz)
+    return LocalClock
+
+
+def backlog_attempt(state: Any) -> dict:
+    with patch.object(ds, 'datetime', backlog_clock()):
+        return asyncio.run(ds.run_manual_backlog(state))
+
+
+def c55() -> list[dict]:
+    """Whole [start, start+7200+120] must clear the existing local night window."""
+    from runtime.orchestrator import producer_move
+    observations = []
+    for hour, minute, second in ((0, 58, 0), (1, 0, 0), (2, 59, 59), (3, 0, 0), (3, 29, 59)):
+        with scheduled_fixture() as (f, orgs, state, stop, summary, paths, refs):
+            before = candidate_contents(*paths)
+            with patch.object(ds, 'datetime', backlog_clock(hour, minute, second)), patch.object(producer_move, 'native_writer', side_effect=AssertionError('reservation after window refusal')), patch.object(ds, 'run_worker', side_effect=AssertionError('worker after window refusal')):
+                result = asyncio.run(ds.run_manual_backlog(state))
+            report = result['report']
+            assert report['manual_admission'] == dict(state='refused', reason='scheduled_window_overlap'), report
+            assert report['outcome'] == 'suspended' and report['orgs'] == [] and len(report['unreached_orgs']) == 3
+            assert json.loads(Path(result['summary_path']).read_text()) == report
+            assert candidate_contents(*paths) == before and not stop.with_name('last-scheduled.json').exists()
+            observations.append(dict(start=f'{hour:02}:{minute:02}:{second:02}', refusal=report['manual_admission']))
+    for hour, minute, second in ((0, 57, 59), (3, 30, 0), (23, 59, 59)):
+        with scheduled_fixture() as (f, orgs, state, stop, summary, paths, refs):
+            stop.write_text('{"stop":true}')
+            with patch.object(ds, 'datetime', backlog_clock(hour, minute, second)):
+                report = asyncio.run(ds.run_manual_backlog(state))['report']
+            assert report['manual_admission']['state'] == 'admitted', report
+            assert report['scheduled_admission']['reason'] == 'stop_true'
+    return observations
+
+
+def c56() -> list[dict]:
+    """Manual deletion observes the real stop validator and initial safe publication."""
+    from runtime.orchestrator import producer_move
+    observations = []
+    for control in ('true', 'invalid', 'symlink', 'publication'):
+        with scheduled_fixture() as (f, orgs, state, stop, summary, paths, refs):
+            if control == 'true': stop.write_text('{"stop":true}')
+            if control == 'invalid': stop.write_text('{"stop":false,"extra":false}')
+            if control == 'symlink': stop.symlink_to(stop.with_name('absent'))
+            before = candidate_contents(*paths)
+            with patch.object(producer_move, 'native_writer', side_effect=AssertionError('reservation before allowed publication')), patch.object(ds, 'run_worker', side_effect=AssertionError('worker before allowed publication')):
+                if control == 'publication':
+                    with patch.object(ds, 'atomic_json', side_effect=OSError('synthetic publication failure')):
+                        try: backlog_attempt(state)
+                        except OSError as exc: assert 'synthetic publication failure' in str(exc)
+                        else: raise AssertionError('publication failure must refuse')
+                else:
+                    result = backlog_attempt(state)
+                    report = result['report']
+                    assert report['scheduled_admission']['state'] == 'suspended', report
+                    assert report['scheduled_admission']['reason'] == ('stop_true' if control == 'true' else 'invalid_control')
+                    assert report['outcome'] == 'suspended' and report['orgs'] == []
+                    for g in orgs:
+                        saved = g.db.execute("SELECT task_id,agent,payload FROM audit_log WHERE action='disk_sweep_summary'").fetchall()
+                        assert len(saved) == 1 and saved[0][:2] == ('', 'daemon')
+                        payload = json.loads(saved[0][2])
+                        assert payload['trigger'] == 'manual_backlog' and payload['scheduled_date'] is None and payload['budget_seconds'] == 7200
+                        assert payload['scheduled_admission'] == report['scheduled_admission']
+            assert not getattr(state, '_disk_sweep_running', False)
+            assert candidate_contents(*paths) == before and not stop.with_name('last-scheduled.json').exists()
+            observations.append(dict(control=control, reservations=0, worker=0, filesystem_effects=0))
+    return observations
+
+
+def c57() -> list[dict]:
+    """Actual concurrent calls share one daemon slot until supervisor closure."""
+    async def scenario(state: Any, scheduled_first: bool) -> None:
+        entered, release = asyncio.Event(), asyncio.Event()
+        launches = []
+        async def worker(roots: list[str], summary: Path, **kwargs: Any) -> dict:
+            launches.append(kwargs)
+            assert len(launches) == 1, 'concurrent worker launched'
+            entered.set()
+            await release.wait()
+            return dict(format='disk-sweep@1', orgs=[], outcome='incomplete', unreached_orgs=roots,
+                        scheduled_date=kwargs['scheduled_date'])
+        summary = Path(os.environ['HAPPYRANCH_DAEMON_HOME']) / 'disk-sweep/fixture-night.json'
+        with patch.object(ds, 'run_worker', worker), patch.object(ds, 'datetime', backlog_clock()):
+            first = asyncio.create_task(ds._run_scheduled_worker(state, summary, 'fixture-date') if scheduled_first else ds.run_manual_backlog(state))
+            await entered.wait()
+            try:
+                refused = await asyncio.wait_for(ds.run_manual_backlog(state), 2)
+                assert refused['report']['manual_admission']['reason'] == 'sweep_already_running', refused
+                try: await asyncio.wait_for(ds._run_scheduled_worker(state, summary.with_name('concurrent.json'), 'fixture-date'), 2)
+                except ds.Retain as exc: assert str(exc) == 'sweep_already_running'
+                else: raise AssertionError('scheduled worker entered occupied slot')
+                assert len(launches) == 1 and state._disk_sweep_running
+            finally:
+                release.set()
+                await first
+            assert not state._disk_sweep_running
+    observations = []
+    for scheduled_first in (False, True):
+        with scheduled_fixture() as (f, orgs, state, stop, summary, paths, refs):
+            before = candidate_contents(*paths)
+            asyncio.run(scenario(state, scheduled_first))
+            assert candidate_contents(*paths) == before
+            observations.append(dict(first='scheduled' if scheduled_first else 'manual', concurrent_refused=True))
+    return observations
+
+
+def c58() -> list[dict]:
+    """Same real eligibility code deletes the same sentinels and retains the same keeps."""
+    from runtime.orchestrator import producer_move
+    observations = []
+    for manual in (False, True):
+        with scheduled_fixture() as (f, orgs, state, stop, summary, paths, refs):
+            keep_paths = []
+            for g, (repo, branches, _) in zip(orgs, refs):
+                keep_paths.append(g.scratch('TASK-3', status='in_progress'))
+                _, dirty = g.worktree('TASK-4'); (dirty / 'untracked').write_text('keep')
+                keep_paths.append(dirty)
+                ownership_indexes(g)
+            for g in orgs: g.db.row_factory = sqlite3.Row
+            calls, checkpoints = [], []
+            actual_writer, actual_write = producer_move.native_writer, ds.atomic_json
+            @contextmanager
+            def writer(db: Any, **kwargs: Any) -> Iterator[Any]:
+                assert kwargs == dict(publisher='disk_sweep')
+                initial = json.loads(next(stop.parent.glob('manual-backlog-*.json')).read_text()) if manual else json.loads(summary.read_text())
+                assert initial['outcome'] == 'incomplete' and initial['orgs'] == [] and len(initial['unreached_orgs']) == 3
+                calls.append('reservation')
+                with actual_writer(db, **kwargs) as disposition: yield disposition
+            def publish(path: Path, report: dict) -> None:
+                actual_write(path, report)
+                if manual:
+                    assert report['trigger'] == 'manual_backlog' and report['scheduled_date'] is None and report['budget_seconds'] == 7200, report
+                checkpoints.append(1)
+            async def worker(roots: list[str], target: Path, **kwargs: Any) -> dict:
+                calls.append('worker')
+                assert 7100 < kwargs['budget'] <= 7200 if manual else 1700 < kwargs['budget'] <= 1800
+                with patch.object(time, 'time', return_value=NOW):
+                    report = ds.sweep(roots, time.monotonic() + kwargs['budget'], target, dry_run=kwargs['dry_run'],
+                                      scheduled_date=kwargs['scheduled_date'], revision='manual-parity',
+                                      native_writers=kwargs['native_writers'], manual_backlog=kwargs.get('manual_backlog', False))
+                report.update(worker_group_stop='SIMULATED supervisor; actual disposable deletion', worker_returncode=0)
+                return report
+            with patch.object(producer_move, 'native_writer', writer), patch.object(ds, 'run_worker', worker), patch.object(ds, 'atomic_json', publish):
+                report = backlog_attempt(state)['report'] if manual else asyncio.run(ds._run_scheduled_worker(state, summary, 'fixture-date'))
+            assert report['outcome'] == 'complete', report
+            assert calls == ['reservation'] * 3 + ['worker'] and len(checkpoints) > 3
+            assert all(not paths[n].exists() and not paths[n+1].exists() for n in range(0, len(paths), 4))
+            assert all(paths[n+2].joinpath('keep').read_text() == 'durable' and paths[n+3].exists() for n in range(0, len(paths), 4))
+            assert all(path.exists() for path in keep_paths)
+            reasons = sorted((Path(c['path']).name, c['state'], c.get('reason', '').split(':')[0]) for org in report['orgs'] for c in org['candidates'])
+            assert reasons == sorted([('TASK-1', 'removed', ''), ('TASK-2', 'removed', ''), ('TASK-3', 'retained', 'task_or_root_not_terminal'), ('TASK-4', 'retained', 'dirty_or_untracked')] * 3), reasons
+            assert not stop.with_name('last-scheduled.json').exists()
+            observations.append(dict(trigger='manual_backlog' if manual else 'scheduled', candidates=reasons, budget=report['budget_seconds']))
+    assert observations[0]['candidates'] == observations[1]['candidates']
+    with scheduled_fixture() as (f, orgs, state, stop, summary, paths, refs):
+        # Real native writer refuses an installed but unowned optional layout.
+        orgs[0].db.execute('CREATE TABLE team_move_operations(active_slot INTEGER)'); orgs[0].db.commit()
+        result = backlog_attempt(state)
+        assert result['report']['outcome'] == 'incomplete' and 'off' in result['report']['move_deferred_orgs'], result
+        assert all(item['org'] != 'off' for item in result['report']['orgs']) and all(path.exists() for path in paths[:4])
+        observations.append(dict(real_native_deferral=result['report']['move_deferred_orgs']))
+    return observations
+
+
+def c59() -> list[dict]:
+    """Real child argv/checkpoints/final carry 7200; ordinary supervisor stays 1800."""
+    observations = []
+    for manual in (False, True):
+        with fixture() as f:
+            summary = f.base / 'daemon/disk-sweep/worker.json'
+            budget = ds.MANUAL_BACKLOG_BUDGET_SECONDS if manual else ds.BUDGET_SECONDS
+            argv = []
+            spawn = ds.asyncio.create_subprocess_exec
+            async def observed_spawn(*args: str, **kwargs: Any) -> asyncio.subprocess.Process:
+                argv.extend(args)
+                return await spawn(*args, **kwargs)
+            with patch.object(ds.asyncio, 'create_subprocess_exec', observed_spawn):
+                report = asyncio.run(ds.run_worker([], summary, dry_run=False, budget=budget, manual_backlog=manual))
+            assert report['budget_seconds'] == (7200 if manual else 1800), report
+            assert report['worker_returncode'] == 0 and report['worker_group_stop']
+            actual_budget = float(argv[argv.index('--deadline') + 1]) - float(argv[argv.index('--started-monotonic') + 1])
+            assert abs(actual_budget - (7200 if manual else 1800)) < .01, actual_budget
+            assert ('--manual-backlog' in argv) is manual
+            assert report.get('trigger') == ('manual_backlog' if manual else None)
+            assert json.loads(summary.read_text()) == report
+            assert ds.BUDGET_SECONDS == 1800 and ds.MANUAL_BACKLOG_BUDGET_SECONDS == 7200
+            assert ds.next_night(backlog_clock().now()).hour == 3
+            observations.append(dict(manual=manual, budget=report['budget_seconds'], worker_returncode=report['worker_returncode']))
+    return observations
+
+
+def c60() -> dict:
+    """A genuine manual summary/audit cannot satisfy or modify prior-night closure."""
+    with scheduled_fixture() as (f, orgs, state, stop, summary, paths, refs):
+        for g in orgs: g.db.row_factory = sqlite3.Row
+        marker = stop.with_name('last-scheduled.json')
+        marker.write_text('{"scheduled_date":"2026-11-14"}')
+        saved_marker = marker.read_bytes()
+        previous = stop.with_name('2026-11-14.json')
+        scheduled, _ = scheduled_attempt(state, previous)
+        scheduled['scheduled_date'] = '2026-11-14'
+        ds._finalize_night(scheduled)
+        assert scheduled['night']['complete'], scheduled
+        ds.atomic_json(previous, scheduled)
+        for slug, org in state.orgs_snapshot().items():
+            item = next(item for item in scheduled['orgs'] if item['org'] == slug)
+            org.db.insert_audit_log('', 'daemon', 'disk_sweep_summary', ds._audit_payload(scheduled, item, previous))
+        saved_previous = previous.read_bytes()
+        result = backlog_attempt(state)
+        manual = result['report']
+        assert manual['outcome'] == 'complete' and manual['worker_returncode'] == 0, manual
+        ds._record_previous_night(state, '2026-11-14')
+        assert previous.read_bytes() == saved_previous
+        for g in orgs:
+            assert g.db.execute("SELECT COUNT(*) FROM audit_log WHERE action='disk_sweep_night_notice'").fetchone()[0] == 0
+        assert manual['trigger'] == 'manual_backlog' and manual['scheduled_date'] is None
+        assert manual['night']['complete'] is False
+        assert Path(result['summary_path']).name.startswith('manual-backlog-')
+        ds._record_previous_night(state, '2026-11-15')
+        for g in orgs:
+            audits = g.db.execute("SELECT payload FROM audit_log WHERE action='disk_sweep_summary'").fetchall()
+            assert len(audits) == 2 and json.loads(audits[1][0])['trigger'] == 'manual_backlog'
+            notice = json.loads(g.db.execute("SELECT payload FROM audit_log WHERE action='disk_sweep_night_notice'").fetchone()[0])
+            assert notice['status'] == 'missing' and notice['scheduled_date'] == '2026-11-15', notice
+        assert marker.read_bytes() == saved_marker
+        # Even a misplaced manual report with a date cannot become a scheduled night.
+        manual['scheduled_date'] = '2026-11-16'
+        ds._finalize_night(manual)
+        misplaced = stop.with_name('2026-11-16.json')
+        ds.atomic_json(misplaced, manual)
+        for slug, org in state.orgs_snapshot().items():
+            item = next(item for item in manual['orgs'] if item['org'] == slug)
+            org.db.insert_audit_log('', 'daemon', 'disk_sweep_summary', ds._audit_payload(manual, item, misplaced))
+        ds._record_previous_night(state, '2026-11-16')
+        for g in orgs:
+            notice = json.loads(g.db.execute("SELECT payload FROM audit_log WHERE action='disk_sweep_night_notice' ORDER BY id DESC").fetchone()[0])
+            assert notice['status'] == 'incomplete' and 'manual_backlog_not_scheduled' in notice['reasons'], notice
+        assert marker.read_bytes() == saved_marker
+        return dict(manual_night_complete=False, previous='missing', misplaced_manual='incomplete', marker_unchanged=True)
+
+
+def c61() -> dict:
+    """Shipping ASGI and CLI use founder auth, one POST and the long request timeout."""
+    import httpx
+    from fastapi import FastAPI
+    from runtime.daemon.routes import runtime as routes
+    from cli import main as cli
+    from cli.commands import runtime as cli_runtime
+    async def route_checks(state: Any) -> None:
+        app = FastAPI(); app.state.daemon = state
+        app.include_router(routes.router, prefix='/api/v1')
+        endpoint = '/api/v1/runtime/disk-sweep/manual-backlog'
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://synthetic.test') as client:
+            for headers in ({}, {'Authorization': 'Bearer wrong-synthetic'}, {'X-HappyRanch-Session': 'synthetic-session'}):
+                response = await client.post(endpoint, headers=headers)
+                assert response.status_code == 401, response.text
+            assert not list((Path(os.environ['HAPPYRANCH_DAEMON_HOME']) / 'disk-sweep').glob('manual-backlog-*.json'))
+            response = await client.post(endpoint, headers={'Authorization': 'Bearer synthetic-founder'})
+            assert response.status_code == 409 and response.json()['detail']['report']['scheduled_admission']['reason'] == 'stop_true', response.text
+            (Path(os.environ['HAPPYRANCH_DAEMON_HOME']) / 'disk-sweep/stop.json').unlink()
+            response = await client.post(endpoint, headers={'Authorization': 'Bearer synthetic-founder'})
+            assert response.status_code == 200 and response.json()['report']['trigger'] == 'manual_backlog', response.text
+            assert response.json()['report']['worker_returncode'] == 0 and response.json()['report']['night']['complete'] is False
+    with scheduled_fixture() as (f, orgs, state, stop, summary, paths, refs):
+        stop.write_text('{"stop":true}')
+        (f.base / 'daemon/daemon.token').write_text('synthetic-founder')
+        with patch.object(ds, 'datetime', backlog_clock()): asyncio.run(route_checks(state))
+    calls = []
+    class Client:
+        def post(self, path: str, **kwargs: Any) -> httpx.Response:
+            calls.append((path, kwargs))
+            return httpx.Response(200, json={'summary_path': '/synthetic/manual-backlog.json', 'report': {'trigger': 'manual_backlog'}})
+    args = cli.build_parser().parse_args(['disk-sweep', 'manual-backlog'])
+    output = io.StringIO()
+    with patch.object(cli_runtime.OpcClient, 'from_env', return_value=Client()), patch('sys.stdout', output): args.func(args)
+    assert calls == [('/api/v1/runtime/disk-sweep/manual-backlog', {'timeout': 7320.0})], calls
+    assert json.loads(output.getvalue())['report']['trigger'] == 'manual_backlog'
+    return dict(auth_refusals=3, founder_refused_by_stop=True, cli_posts=len(calls), timeout=7320)
+
+
 if __name__=='__main__':
     parser=argparse.ArgumentParser(description=__doc__)
     selection=parser.add_mutually_exclusive_group()
     selection.add_argument('--corrections-only', action='store_true', help='THR307seq117/134: C1-C7, S1-S5 (8-12) and per-org settlement (13); no historical/isolation cases')
     selection.add_argument('--correction-cases', type=int, nargs='+', choices=range(1, 14), help='select finite cases within the corrections lane')
-    selection.add_argument('--cases',type=int,nargs='+',choices=range(1,55))
+    selection.add_argument('--cases',type=int,nargs='+',choices=range(1,62))
     selection.add_argument('--candidate-benchmark', action='store_true')
     parser.add_argument('--candidate-baseline', help='run selected cases against exact production commit')
     parser.add_argument('--benchmark-baseline', default='53391d91b0812a2ef6bd2e7126ea87c9d6991e7d')
@@ -6612,7 +6897,10 @@ if __name__=='__main__':
             purposes += ('No per-candidate whole-repository census', 'Own entry pointer folder and row replacements before remove',
                          'Concurrent unrelated and nested Git arrivals', 'Interrupted Git remove has no repair or retry',
                          'Killed worker after real Git remove preserves unknown intent')
-            for number,(fn,purpose) in enumerate(zip((c1,c2,c3,c4,c5,c6,c7,c8,c9,c10,c11,c12,c13,c14,c15,c16,c17,c18,c19,c20,c21,c22,c23,c24,c25,c26,c27,c28,c29,c30,c31,c32,c33,c34,c35,c36,c37,c38,c39,c40,c41,c42,c43,c44,c45,c46,c47,c48,c49,c50,c51,c52,c53,c54),purposes),1):
+            purposes += ('Manual full-window refusal', 'Manual global stop and publication refusal', 'Daemon mutual exclusion',
+                         'Manual scheduled eligibility parity', 'Manual real-worker budget propagation', 'Manual reports do not count as nights',
+                         'Manual founder route and CLI transport')
+            for number,(fn,purpose) in enumerate(zip((c1,c2,c3,c4,c5,c6,c7,c8,c9,c10,c11,c12,c13,c14,c15,c16,c17,c18,c19,c20,c21,c22,c23,c24,c25,c26,c27,c28,c29,c30,c31,c32,c33,c34,c35,c36,c37,c38,c39,c40,c41,c42,c43,c44,c45,c46,c47,c48,c49,c50,c51,c52,c53,c54,c55,c56,c57,c58,c59,c60,c61),purposes),1):
                 if args.cases is None or number in args.cases:
                     if number in (3, 4):
                         RESULTS.append(dict(case=number, purpose=purpose, result='SUPERSEDED', reason='THR307 seq117 removed OS-process eligibility; historical source not executed'))

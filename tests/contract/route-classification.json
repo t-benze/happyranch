@@ -8,6 +8,7 @@
     "GET /api/v1/runtime",
     "POST /api/v1/runtime",
     "POST /api/v1/runtime/use",
+    "POST /api/v1/runtime/disk-sweep/manual-backlog",
     "GET /api/v1/orgs",
     "POST /api/v1/orgs",
     "DELETE /api/v1/orgs/{slug}",

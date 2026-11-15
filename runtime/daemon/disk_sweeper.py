@@ -1,9 +1,9 @@
 """THR307 nightly disk sweep: 03:00 MACHINE-local, no startup catchup.
 
-A single 1800s monotonic window includes discovery, ALL sequential orgs, both
+A scheduled 1800s monotonic window includes discovery, ALL sequential orgs, both
 phases, checks, Git and removal. No cursor/count cap or fairness guarantee.
 All blocking work runs in an owned worker process group: cancellation of a
-Python thread would not stop deletion. Public manual entry is DRY RUN ONLY:
+Python thread would not stop deletion. Standalone manual entry is DRY RUN ONLY:
     python -m runtime.daemon.disk_sweeper --dry-run --runtime-root /absolute/runtime
 Scheduled deletion applies to every admitted org (THR307 seq134); obsolete org
 disk_sweep input is ignored. Explicit manual dry run remains nonmutating. No
@@ -48,6 +48,8 @@ from runtime.daemon._disk_sweep_fs import (
 
 LOG = logging.getLogger(__name__)
 BUDGET_SECONDS = 1800
+MANUAL_BACKLOG_BUDGET_SECONDS = 7200
+MANUAL_BACKLOG_MARGIN_SECONDS = 120
 PROCESS_SCOPE = 'not checked under THR307 seq117; ended task and structural root required; no process absence or authentication claim'
 # Worker-only exit after its final report was published with a non-complete
 # outcome. Distinct from 1 (uncaught exception) and 2 (argument error), so the
@@ -142,6 +144,7 @@ def _coverage(result: dict) -> dict:
 def _finalize_night(report: dict) -> None:
     """Coverage record, never deletion/recovery authority; legacy reports stay unproven."""
     reasons = []
+    if report.get('trigger') == 'manual_backlog': reasons.append('manual_backlog_not_scheduled')
     if report.get('scheduled_admission', {}).get('state') == 'suspended': reasons.append('scheduled_suspension')
     if report.get('outcome') != 'complete': reasons.append('outcome:' + str(report.get('outcome', 'unknown')))
     if not report.get('scheduled_date'): reasons.append('not_scheduled')
@@ -1983,7 +1986,7 @@ def sweep_org(org: Path, deadline: float, *, mode: str, checkpoint=lambda: None,
 
 
 @_measure_run
-def sweep(roots: list[str], deadline: float, summary: Path, *, dry_run: bool, scheduled_date: str | None, revision: str, started_monotonic: float | None = None, runtime_root: Path | None = None, native_writers: dict[str, str] | None = None) -> dict:
+def sweep(roots: list[str], deadline: float, summary: Path, *, dry_run: bool, scheduled_date: str | None, revision: str, started_monotonic: float | None = None, runtime_root: Path | None = None, native_writers: dict[str, str] | None = None, manual_backlog: bool = False) -> dict:
     from runtime.orchestrator.org_config import load_org_config
     from runtime.orchestrator._paths import OrgPaths
     report = dict(format='disk-sweep@1', revision=revision, source_revision=revision, scheduled_date=scheduled_date,
@@ -1996,6 +1999,8 @@ def sweep(roots: list[str], deadline: float, summary: Path, *, dry_run: bool, sc
                   policy='thr307-ended-root-one-hour-all-orgs',
                   previous_interrupted_removals=(_history.get() or {}).get('interrupted_removals', []),
                   measurement_history={k: v for k, v in (_history.get() or {}).items() if k not in ('paths', 'interrupted_removals')})
+    if manual_backlog:
+        report.update(trigger='manual_backlog', scheduled_date=None, budget_seconds=MANUAL_BACKLOG_BUDGET_SECONDS)
     pending_checkpoints = 0
     initialized_org = None
     def checkpoint(*, force: bool = False) -> None:
@@ -2068,7 +2073,7 @@ def sweep(roots: list[str], deadline: float, summary: Path, *, dry_run: bool, sc
     return report
 
 
-async def run_worker(roots: list[str], summary: Path, *, dry_run: bool, scheduled_date: str | None = None, budget: float = BUDGET_SECONDS, runtime_root: Path | None = None, native_writers: dict[str, str] | None = None) -> dict:
+async def run_worker(roots: list[str], summary: Path, *, dry_run: bool, scheduled_date: str | None = None, budget: float = BUDGET_SECONDS, runtime_root: Path | None = None, native_writers: dict[str, str] | None = None, manual_backlog: bool = False) -> dict:
     """Supervise entire process group, including Git, until stopped/reaped.
 
     SIGKILL at the shared deadline (no deletion grace/window extension).
@@ -2086,6 +2091,8 @@ async def run_worker(roots: list[str], summary: Path, *, dry_run: bool, schedule
         argv += ['--native-writer', root, writer_id]
     if runtime_root is not None:
         argv += ['--runtime-root', str(runtime_root)]
+    if manual_backlog:
+        argv.append('--manual-backlog')
     if dry_run:
         argv.append('--dry-run')
     if scheduled_date:
@@ -2096,6 +2103,8 @@ async def run_worker(roots: list[str], summary: Path, *, dry_run: bool, schedule
                    started_at=datetime.now().astimezone().isoformat(),
                    timezone=datetime.now().astimezone().tzname(),
                    timezone_offset=datetime.now().astimezone().strftime('%z'))
+    if manual_backlog:
+        initial.update(trigger='manual_backlog', scheduled_date=None, budget_seconds=MANUAL_BACKLOG_BUDGET_SECONDS)
     def preview_parents():
         # Public preview remains usable with no control directory. Creation is
         # manual-only and descriptor-relative; aliases still refuse before write.
@@ -2156,6 +2165,8 @@ async def run_worker(roots: list[str], summary: Path, *, dry_run: bool, schedule
             report['stop_cause'] = 'budget' if cause == 'deadline' else 'shutdown_signal' if cause == 'shutdown' else 'error'
             _interrupted_measurements(report, report['stop_cause'])
             report.update(outcome='incomplete', interruption=cause, partial_mutation='unknown', finished_at=datetime.now().astimezone().isoformat())
+        if manual_backlog:
+            report.update(trigger='manual_backlog', scheduled_date=None, budget_seconds=MANUAL_BACKLOG_BUDGET_SECONDS)
         report['elapsed_seconds'] = max(0, time.monotonic() - started_monotonic)
         _finalize_night(report)
         atomic_json(summary, report)
@@ -2223,29 +2234,64 @@ def _scheduled_admission(deadline: float) -> dict:
         return dict(admission, error=f'{type(exc).__name__}: {exc}')
 
 
-async def _run_scheduled_worker(state, summary: Path, date: str) -> dict:
+@contextmanager
+def _sweep_slot(state: Any) -> Iterator[None]:
+    """One deletion sweep in this daemon. All callers run on its event loop."""
+    if getattr(state, '_disk_sweep_running', False):
+        raise Retain('sweep_already_running')
+    # No await between test and set. The slot spans stop/reap/publication.
+    state._disk_sweep_running = True
+    try:
+        yield
+    finally:
+        state._disk_sweep_running = False
+
+
+def _manual_window_refusal(now: datetime) -> bool:
+    """Same machine-local clock as next_night; include the full budget + margin."""
+    local = now.astimezone()
+    end = local.timestamp() + MANUAL_BACKLOG_BUDGET_SECONDS + MANUAL_BACKLOG_MARGIN_SECONDS
+    for offset in (0, 1):
+        start = datetime.combine(local.date() + timedelta(days=offset), datetime.min.time()).replace(hour=3).astimezone()
+        if local.timestamp() < start.timestamp() + 1800 and end >= start.timestamp():
+            return True
+    return False
+
+
+async def _run_scheduled_worker(state: Any, summary: Path, date: str) -> dict:
+    with _sweep_slot(state):
+        return await _run_deletion_worker(state, summary, date)
+
+
+async def _run_deletion_worker(state: Any, summary: Path, date: str | None, *, manual_backlog: bool = False, refusal: str | None = None) -> dict:
     from runtime.orchestrator.producer_move import native_writer
     from runtime.orchestrator.team_move import DeferredTeamMove
     started = time.monotonic()
     started_at = datetime.now().astimezone().isoformat()
-    deadline = started + BUDGET_SECONDS
-    admission = await asyncio.to_thread(_scheduled_admission, deadline)
+    budget = MANUAL_BACKLOG_BUDGET_SECONDS if manual_backlog else BUDGET_SECONDS
+    deadline = started + budget
+    admission = await asyncio.to_thread(_scheduled_admission, deadline) if refusal is None else {}
     report = dict(format='disk-sweep@1', revision=_revision(), scheduled_date=date,
                   timezone=datetime.now().astimezone().tzname(), timezone_offset=datetime.now().astimezone().strftime('%z'),
-                  started_at=started_at, deadline_monotonic=deadline, budget_seconds=BUDGET_SECONDS,
+                  started_at=started_at, deadline_monotonic=deadline, budget_seconds=budget,
                   process_scope=PROCESS_SCOPE, outcome='incomplete', orgs=[],
                   unreached_orgs=[str(org.root) for _, org in sorted(state.orgs_snapshot().items())],
                   scheduled_admission=admission)
     report['source_revision'] = report['revision']
-    if admission['state'] == 'suspended':
-        report.update(outcome='suspended', stop_cause='stop_control', finished_at=datetime.now().astimezone().isoformat())
-        LOG.warning('Disk sweep globally suspended: %s', admission)
+    if manual_backlog:
+        report.update(trigger='manual_backlog', manual_admission=dict(state='refused' if refusal else 'admitted', reason=refusal))
+    if refusal is not None or admission['state'] == 'suspended':
+        report.update(outcome='suspended', stop_cause=refusal or 'stop_control', finished_at=datetime.now().astimezone().isoformat())
+        if manual_backlog:
+            LOG.warning('Manual disk sweep refused: %s', refusal or admission)
+        else:
+            LOG.warning('Disk sweep globally suspended: %s', admission)
     # Publish the actual initial summary before ANY durable native reservation.
     # An unsafe target/pending inode must refuse while all orgs are unstarted.
     # Worker checkpoints still publish independently; a later failure retains
     # genuine reservation uncertainty rather than claiming this check fences it.
     await asyncio.to_thread(atomic_json, summary, report)
-    if admission['state'] == 'suspended':
+    if refusal is not None or admission['state'] == 'suspended':
         _finalize_night(report)
         await asyncio.to_thread(atomic_json, summary, report)
         return report
@@ -2271,8 +2317,11 @@ async def _run_scheduled_worker(state, summary: Path, date: str) -> dict:
             disposition.uncertain = True
         check(deadline)
         report = await run_worker(roots, summary, dry_run=False, scheduled_date=date,
-                                  native_writers=writers, budget=deadline - time.monotonic())
+                                  native_writers=writers, budget=deadline - time.monotonic(),
+                                  **({'manual_backlog': True} if manual_backlog else {}))
         report['scheduled_admission'] = admission
+        if manual_backlog:
+            report.update(trigger='manual_backlog', scheduled_date=None, budget_seconds=budget, manual_admission=dict(state='admitted', reason=None))
         if deferred:
             report.update(outcome='incomplete', move_deferred_orgs=deferred)
         report['elapsed_seconds'] = max(0, time.monotonic() - started)
@@ -2282,6 +2331,47 @@ async def _run_scheduled_worker(state, summary: Path, date: str) -> dict:
             if _org_effects_known(report, slug):
                 disposition.uncertain = False
         return report
+
+
+async def run_manual_backlog(state: Any) -> dict:
+    """Founder-triggered daemon operation; never a scheduled night or retry."""
+    from runtime.runtime import daemon_home
+    summary = daemon_home() / 'disk-sweep' / f'manual-backlog-{time.time_ns()}.json'
+    refusal = ('scheduled_window_overlap' if _manual_window_refusal(datetime.now().astimezone()) else
+               'sweep_already_running' if getattr(state, '_disk_sweep_running', False) else
+               'runtime_unavailable' if state.runtime is None else None)
+    cancelled = None
+    async def attempt() -> dict:
+        nonlocal cancelled
+        try:
+            report = await _run_deletion_worker(state, summary, None, manual_backlog=True, refusal=refusal)
+        except asyncio.CancelledError as exc:
+            report = getattr(exc, 'disk_sweep_report', None)
+            if report is None:
+                raise
+            cancelled = exc
+        if state.broken_orgs:
+            report.update(unloaded_orgs_unknown=sorted(state.broken_orgs))
+            if report.get('outcome') != 'suspended':
+                report['outcome'] = 'incomplete'
+        _finalize_night(report)
+        await asyncio.to_thread(atomic_json, summary, report)
+        for slug, org in sorted(state.orgs_snapshot().items()):
+            item = next((r for r in report.get('orgs', []) if r['org'] == slug), None)
+            try:
+                await asyncio.to_thread(org.db.insert_audit_log, '', 'daemon', 'disk_sweep_summary', _audit_payload(report, item, summary))
+            except Exception as exc:
+                report.update(outcome='incomplete', error='summary_audit_failed:' + type(exc).__name__)
+                _finalize_night(report)
+                await asyncio.to_thread(atomic_json, summary, report)
+                raise
+        if cancelled is not None:
+            raise cancelled
+        return dict(summary_path=str(summary), report=report)
+    if refusal is not None:
+        return await attempt()
+    with _sweep_slot(state):
+        return await attempt()
 
 
 def _org_effects_known(report: dict, slug: str) -> bool:
@@ -2479,6 +2569,7 @@ async def disk_sweeper_loop(state, integrity_monitor=None) -> None:
 
 def _audit_payload(report: dict, item: dict | None, summary: Path) -> dict:
     return {
+        **({'trigger': 'manual_backlog', 'manual_admission': report.get('manual_admission')} if report.get('trigger') == 'manual_backlog' else {}),
         'summary_path': str(summary), 'revision': report.get('revision'),
         'night': report.get('night'), 'policy': report.get('policy'), 'elapsed_seconds': report.get('elapsed_seconds'),
         'worker_group_stop': report.get('worker_group_stop'), 'worker_returncode': report.get('worker_returncode'),
@@ -2531,13 +2622,14 @@ def main() -> int:
     parser.add_argument('--revision', help=argparse.SUPPRESS)
     parser.add_argument('--started-monotonic', type=float, help=argparse.SUPPRESS)
     parser.add_argument('--scheduled-date', help=argparse.SUPPRESS)
+    parser.add_argument('--manual-backlog', action='store_true', help=argparse.SUPPRESS)
     parser.add_argument('--native-writer', nargs=2, action='append', default=[], help=argparse.SUPPRESS)
     args = parser.parse_args()
     if args.worker:
         if args.summary is None or args.deadline is None:
             parser.error('worker requires deadline and summary')
         report = sweep(args.org_root, args.deadline, args.summary, dry_run=args.dry_run, scheduled_date=args.scheduled_date, revision=args.revision, started_monotonic=args.started_monotonic, runtime_root=args.runtime_root,
-                       native_writers=dict(args.native_writer))
+                       native_writers=dict(args.native_writer), manual_backlog=args.manual_backlog)
         return 0 if report.get('outcome') == 'complete' else WORKER_INCOMPLETE_EXIT
     else:
         if not args.dry_run or args.runtime_root is None:

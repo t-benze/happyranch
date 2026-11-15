@@ -1,13 +1,13 @@
-"""Singular runtime endpoints: get info, register, switch."""
+"""Runtime endpoints: info, registration, switching and operator disk sweep."""
 from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel
 
 from runtime.daemon import runtimes as reg
-from runtime.daemon.auth import require_token
+from runtime.daemon.auth import _require_human, require_token
 from runtime.daemon.org_state import _OrgBusyError
 from runtime.daemon.state import DaemonState
 from runtime.runtime import RuntimeDir
@@ -197,3 +197,16 @@ async def use_runtime(body: RuntimePath, request: Request) -> dict:
             daemon._finish_attachment_swap()
     ensure_workers_started(daemon)
     return {"runtime": str(path)}
+
+
+@router.post("/runtime/disk-sweep/manual-backlog", dependencies=[Depends(_require_human)],
+             responses={409: {"description": "Run refused or suspended"},
+                        503: {"description": "Run incomplete"}})
+async def manual_backlog(request: Request) -> dict:
+    """One operator run; await owned worker closure inside the serving daemon."""
+    from runtime.daemon.disk_sweeper import run_manual_backlog
+    result = await run_manual_backlog(request.app.state.daemon)
+    outcome = result['report'].get('outcome')
+    if outcome != 'complete':
+        raise HTTPException(status_code=409 if outcome == 'suspended' else 503, detail=result)
+    return result
