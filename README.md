@@ -196,7 +196,9 @@ happyranch memory promote  --org <slug> --agent <you> <MEM-NNN> --kb-slug <kb-sl
 happyranch memory reindex  --org <slug> --agent <you>
 ```
 
-`add`/`update` take a YAML payload with `slug`, `title`, `topic`, `body`, and optional `tags`/`source_task`/`related_to`/`supersedes`. Promotion is one-way: the body becomes a 2-line pointer stub and the entry locks against further edits — use `supersedes:` on a new entry to evolve a rule that has already been promoted. Workspaces that predate this layout still use a flat `learnings.md` (legacy `happyranch memory --agent X --text "..."` form); the founder dispatches a one-shot migration task per agent when ready.
+`add`/`update` take a YAML mapping or JSON object with `slug`, `title`, `topic`, `body`, and optional `tags`/`source_task`/`related_to`/`supersedes`. JSON is detected by a `.json` suffix or a leading `{` (ignoring whitespace). Quote YAML strings containing ` #`, for example `title: "Fix PR #123 regression"`. Unquoted single-line string fields with trailing comments, including `topic: ci  # note`, are rejected: quote the entire value to retain the comment text, or remove the comment. Quoted strings and multiline YAML bodies retain normal YAML behavior. The deprecated `learning` alias shares these rules.
+
+Promotion is one-way: the body becomes a 2-line pointer stub and the entry locks against further edits — use `supersedes:` on a new entry to evolve a rule that has already been promoted. Workspaces that predate this layout still use a flat `learnings.md` (legacy `happyranch memory --agent X --text "..."` form); the founder dispatches a one-shot migration task per agent when ready.
 
 ### Threads
 

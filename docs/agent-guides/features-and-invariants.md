@@ -2357,6 +2357,15 @@ See [Web/CLI contracts](web-and-cli.md#retired-knowledge-read-api-s1) and the
 
 ## Per-Agent Learnings
 
+`happyranch memory add/update --from-file` accepts a YAML mapping or JSON
+object, detected by a `.json` suffix or leading `{` after whitespace. The
+deprecated `learning` alias shares this reader. Quote YAML strings containing
+` #`, such as `title: "Fix PR #123 regression"`. If a top-level unquoted
+single-line string loses text to a YAML comment, the CLI exits nonzero and names
+the field. This includes intentional comments such as `topic: ci  # note`:
+remove the comment, or quote the entire value to preserve its text. Quoted
+strings and multiline YAML bodies retain normal YAML behavior.
+
 Task-start consultation (THR-091 seq633) is defined by
 `runtime/skills/bundled/start-task/SKILL.md` step 2: before the first substantive
 decision, select and read up to two memories pertinent to the actual task and

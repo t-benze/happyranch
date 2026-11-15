@@ -3269,3 +3269,12 @@ verification uses the new field. Run the OpenAPI operator with `--write` then
 Swift gate/decoder checks remain manager-owned on macOS:
 `swift test --package-path app/mac --filter 'UpdateGateTests|UpdateConfigurationTests'`.
 Retired Python/Web unit lanes are not restored by these focused checks.
+
+## Focused memory CLI payload checks
+
+Run `uv run --frozen python -B -m unittest scripts.test_memory_payload -v`.
+This script exercises the production memory/learning add/update parsers and
+handlers with a captured HTTP client; it makes no live memory writes. It covers
+rejection of comment-truncated unquoted YAML strings (including intentional
+trailing comments), intact quoted/multiline YAML, and JSON payload files.
+This focused script adds no required CI check or retired-suite execution.
