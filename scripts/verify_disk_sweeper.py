@@ -2601,8 +2601,15 @@ def residue_transitions():
                 if kind == 'replaced':
                     counted(report,1,1,m=1)
                     assert b.exists() and row(report,b)['state']=='retained'
+                elif kind == 'removed':
+                    # The peer residue vanished after discovery, then Git
+                    # removed the container with B. Shared absence stays unknown.
+                    counted(report,1,u=1)
+                    assert not b.exists() and row(report,b)['state']=='partial_or_unknown'
+                    assert not row(report,b).get('removed_attributable_bytes')
+                    assert report['scope_classifications'][str(repo)]['hold'] == 'clone', report
                 else:
-                    counted(report,1,m=1)
+                    counted(report,1)
                     assert not b.exists() and row(report,b)['state']=='removed'
                 assert any(v['path']==str(entry) and v['candidate_count']==0 for v in report['discovery_scopes'])
             assert refs==f.git(repo,'show-ref')
