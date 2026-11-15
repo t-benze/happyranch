@@ -37,6 +37,15 @@ HappyRanch wheel as real `.py` files. It builds production `web/dist` with
 Its private Go module cache uses `-modcacherw` so build cleanup can remove it.
 Existing version/architecture outputs are refused; use a fresh destination.
 
+The Go notice collector and `licenses/go-modules.json` exclude only the exact
+first-party `happyranch/tsnethealth => ../../shared/tsnethealth` local replacement
+when both Go module directories resolve to `app/shared/tsnethealth` inside the
+exported repository. This matches Mac notice handling and the sidecar's retained
+third-party inventories; the module is covered by `HappyRanch-LICENSE`.
+All other non-main modules still require their original notices. The focused
+native packaging checks below also cover this exclusion, inventory output and
+refusal of unlicensed near-miss or escaping replacements.
+
 The extracted payload contains `python/`, `web/dist/`, `licenses/`,
 `build-info.json`, and `bin/{happyranch,happyranch-daemon,happyranch-tsnet-sidecar}`.
 The two POSIX launchers resolve their prefix from their own `bin/` location,
