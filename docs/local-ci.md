@@ -1,5 +1,19 @@
 # Local CI
 
+## Focused worktree guard ownership
+
+```sh
+python -B -m unittest scripts.test_worktree_guard -v
+```
+
+These standalone stdlib checks execute both guard copies against synthetic Git
+repositories beneath the task's effective `TMPDIR` (use workspace-owned task
+scratch, not `/tmp`). They observe missing/empty IDs, folder/branch disagreement,
+detached HEAD and renamed/final paths refusing without snapshot/config/exclude
+writes; matching ownership records canonical roots and retains primary-edit
+detection through continuation verification. No existing worktrees, daemon,
+retired Python units, general integration or Product E2E are exercised.
+
 ## Focused workspace memory bootstrap coverage (THR-366 PR-A)
 
 ```sh
@@ -3313,3 +3327,13 @@ owner nor claim is committed separately. The OpenAPI snapshot and TS mirror
 remain maintained; the retired Web OpenAPI-coverage Vitest is not restored.
 General integration stays SKIPPED24342; retired Python/Web unit lanes and
 Product E2E are not invoked. Dialog screenshots remain independent scoped QA.
+
+## Focused memory CLI payload checks
+
+Run `uv run --frozen python -B -m unittest scripts.test_memory_payload -v`.
+This script exercises the production memory/learning add/update parsers and
+handlers with a captured HTTP client; it makes no live memory writes. It covers
+rejection of comment-truncated unquoted YAML strings (including intentional
+trailing comments), intact quoted/multiline YAML, comment-free plain strings
+ending in U+00A0/U+3000, and JSON payload files.
+This focused script adds no required CI check or retired-suite execution.

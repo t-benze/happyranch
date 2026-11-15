@@ -32,16 +32,47 @@ def cmd_learning(args: argparse.Namespace) -> None:
 
 def _read_yaml_payload(path: str) -> dict:
     import yaml
-    with open(path) as f:
-        data = yaml.safe_load(f)
+    with open(path, encoding="utf-8") as f:
+        raw = f.read()
+    is_json = os.path.splitext(path)[1].lower() == ".json" or raw.lstrip().startswith("{")
+    try:
+        data = json.loads(raw) if is_json else yaml.safe_load(raw)
+    except (json.JSONDecodeError, yaml.YAMLError):
+        print("error: payload file must contain valid YAML or JSON", file=sys.stderr)
+        sys.exit(1)
     if data is None:
         return {}
     if not isinstance(data, dict):
         print(
-            f"error: payload file must be a YAML mapping, got {type(data).__name__}",
+            f"error: payload file must be a YAML mapping or JSON object, got {type(data).__name__}",
             file=sys.stderr,
         )
         sys.exit(1)
+    if not is_json:
+        root = yaml.compose(raw)
+        lines = raw.splitlines()
+        # Node marks distinguish real top-level, single-line plain strings
+        # from nested fields, quoted strings, aliases and multiline bodies.
+        if isinstance(root, yaml.MappingNode) and not root.flow_style:
+            for key, value in root.value:
+                if (
+                    not isinstance(value, yaml.ScalarNode)
+                    or value.tag != "tag:yaml.org,2002:str"
+                    or value.style is not None
+                    or key.start_mark.line != value.start_mark.line
+                    or value.start_mark.line != value.end_mark.line
+                ):
+                    continue
+                # Inspect only the raw tail for a comment; the parsed scalar
+                # may contain significant trailing Unicode whitespace.
+                raw_tail = lines[value.end_mark.line][value.end_mark.column:]
+                if raw_tail.lstrip(" \t").startswith("#"):
+                    print(
+                        f"error: unquoted YAML field '{key.value}' loses content to a comment; "
+                        "quote the value or remove the trailing comment",
+                        file=sys.stderr,
+                    )
+                    sys.exit(1)
     return data
 
 
@@ -480,14 +511,22 @@ def _register_group(sub, name: str, *, deprecated: bool) -> None:
     pa = verb_sub.add_parser("add", help="Add a new memory item (file payload)")
     pa.add_argument("--org", required=False, default=argparse.SUPPRESS)
     pa.add_argument("--agent", required=True)
-    pa.add_argument("--from-file", required=True)
+    pa.add_argument(
+        "--from-file", required=True,
+        help="YAML mapping or JSON object (.json or leading '{'); quote YAML strings containing ' #'. "
+             "Trailing comments on unquoted single-line string fields are rejected.",
+    )
     pa.set_defaults(func=wrap(cmd_learning_add))
 
     pu = verb_sub.add_parser("update", help="Update an existing memory item by ID")
     pu.add_argument("--org", required=False, default=argparse.SUPPRESS)
     pu.add_argument("--agent", required=True)
     pu.add_argument("id")
-    pu.add_argument("--from-file", required=True)
+    pu.add_argument(
+        "--from-file", required=True,
+        help="YAML mapping or JSON object (.json or leading '{'); quote YAML strings containing ' #'. "
+             "Trailing comments on unquoted single-line string fields are rejected.",
+    )
     pu.set_defaults(func=wrap(cmd_learning_update))
 
     pp = verb_sub.add_parser("promote", help="Promote a memory item to a KB precedent")

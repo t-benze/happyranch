@@ -74,6 +74,25 @@ source of every known false-green verification incident. Use of the
 primary-checkout path that results in a guard failure on verify will be
 treated as a task defect.
 
+### Ownership on retries and continuations
+
+`setup` requires an explicit, nonempty `--task-id`. The canonical worktree
+folder basename must equal that owning task ID and the checked-out branch must
+be exactly `task/<task_id>`. Missing IDs, foreign folder/branch IDs, detached or
+unavailable branches, and `-final`/renamed paths that disagree fail before any
+snapshot, exclude or stale-hook config write. Never omit the ID or substitute
+the PR branch's task ID to bypass a mismatch.
+
+Ownership describes the resource's canonical task folder, not the current
+session, retry link or PR. A continuation using an existing worktree keeps its
+original owner and baseline: inspect the guard's task ID and canonical roots,
+folder and branch, then use `verify` without re-running `setup`. Do not
+re-snapshot a predecessor baseline to hide primary drift. If those identities
+disagree, stop and report the exact mismatch; do not repair existing guards or
+rename resources as a workaround. When a retry needs its own worktree, create
+its matching task folder/branch. Reusing a predecessor's PR branch in a new
+task folder does not satisfy setup; report that conflict to the manager.
+
 ## Verify (before test, commit, and report)
 
 Before running tests, committing, or reporting completion, verify that

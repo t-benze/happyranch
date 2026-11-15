@@ -539,6 +539,16 @@ survives ordinary worker interruption; report failure is never fabricated succes
 
 ### Runtime guard ignore (THR-307 seq337 package step 4)
 
+Guard ownership prevention (THR-307 seq355 item 3): both writer copies require
+an explicit nonempty task ID equal to the canonical worktree folder basename
+and branch exactly `task/<task_id>`. Missing IDs, folder/branch mismatches and
+detached/unavailable branches refuse before any writer effect. Retained
+continuations keep their original resource owner/baseline and verify; retry
+lineage and PR branch reuse do not transfer that owner. New worktrees need
+matching task folders/branches; renamed/`-final` mismatches must be reported.
+The sweeper continues to compare the folder ID and canonical roots with the
+guard. No existing guard repair, deletion or classification change follows.
+
 The guard writer, `runtime/tools/worktree_guard.py` and its byte-identical bundled
 make-worktree copy, ensures `/.worktree-guard.json` in the clone's common-dir
 `info/exclude` on setup. It creates missing `info/`, preserves existing bytes and
