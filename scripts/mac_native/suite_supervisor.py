@@ -14,6 +14,7 @@ import signal
 import subprocess
 import tempfile
 import time
+from collections.abc import Callable
 from contextlib import ExitStack
 from pathlib import Path
 from typing import Any
@@ -104,6 +105,76 @@ def _test_results(output: str) -> dict[str, Any]:
     return {"lines": lines, "truncated": truncated, "json_bytes": used}
 
 
+def _build_environment(scratch: Path) -> dict[str, str]:
+    """Keep SwiftPM, compiler caches and child state in the owned scratch."""
+    env = dict(os.environ)
+    for key, relative in {
+        "HOME": "home", "CFFIXED_USER_HOME": "home", "TMPDIR": "tmp",
+        "XDG_CACHE_HOME": "cache", "CLANG_MODULE_CACHE_PATH": "clang-modules",
+        "SWIFT_MODULECACHE_PATH": "swift-modules",
+        "SWIFTPM_MODULECACHE_OVERRIDE": "swift-modules",
+        "SDK_STAT_CACHE_DIR": "sdk-cache",
+    }.items():
+        path = scratch / relative
+        path.mkdir(exist_ok=True)
+        env[key] = str(path)
+    env["NO_COLOR"] = "1"
+    env["HAPPYRANCH_DAEMON_HOME"] = str(scratch / "daemon-home")
+    return env
+
+
+def _discover_toolchain(
+    env: dict[str, str], scratch: Path, deadline: float,
+    row: Callable[[str, str, Any, Any], None],
+) -> dict[str, str]:
+    """Observe the existing developer tools without provisioning anything."""
+    discovered: dict[str, str] = {}
+    for name, argv in (
+        ("developer_directory", ["/usr/bin/xcode-select", "-p"]),
+        ("macos_sdk", ["/usr/bin/xcrun", "--show-sdk-path"]),
+        ("swift_path", ["/usr/bin/xcrun", "--find", "swift"]),
+        ("swift_version", ["swift", "--version"]),
+    ):
+        if name == "swift_version":
+            argv = [discovered.get("swift_path", "swift"), "--version"]
+        try:
+            code, output = _command(argv, env, scratch, min(deadline, time.monotonic() + 15), output_cap=8192)
+        except (RuntimeError, TimeoutError, subprocess.TimeoutExpired) as exc:
+            code, output = 1, f"{type(exc).__name__}: {exc}".encode()
+        value = output.decode("utf-8", errors="replace").strip()
+        available = code == 0 and bool(value)
+        expected = "AVAILABLE: existing developer directory/SDK/compiler"
+        if name == "swift_version":
+            version = re.search(r"Swift version (\d+)\.", value)
+            available = available and version is not None and int(version[1]) >= 6
+            expected = "AVAILABLE: Swift >=6"
+        else:
+            available = available and Path(value).is_absolute() and Path(value).exists()
+        row(name, "AVAILABLE" if available else "UNAVAILABLE", expected,
+            {"command": argv, "exit_code": code, "value": value[:2048]})
+        if available:
+            discovered[name] = value
+    return discovered
+
+
+def _swift_test_command(
+    swift: str, package: Path, scratch: Path, env: dict[str, str],
+) -> list[str]:
+    """Existing release/no-debug-info test build with private SwiftPM paths."""
+    return [
+        swift, "test", "--package-path", str(package),
+        "--scratch-path", str(scratch / "build"),
+        "--cache-path", str(scratch / "swiftpm-cache"),
+        "--config-path", str(scratch / "swiftpm-config"),
+        "--security-path", str(scratch / "swiftpm-security"),
+        # Release with no debug info avoids unnecessary large debug products;
+        # the existing file limit still refuses any oversized native product.
+        "-c", "release", "-j", "2", "-Xswiftc", "-gnone",
+        "-Xswiftc", "-module-cache-path", "-Xswiftc", env["SWIFT_MODULECACHE_PATH"],
+        "-Xcc", "-fmodules-cache-path=" + env["CLANG_MODULE_CACHE_PATH"],
+    ]
+
+
 def supervisor(report: dict[str, Any]) -> None:
     """No installs, Jenkins operations, GUI launch, or daemon startup."""
     checks: list[dict[str, Any]] = []
@@ -142,53 +213,16 @@ def supervisor(report: dict[str, Any]) -> None:
         cleanup.callback(scratch_removed)
         folder = cleanup.enter_context(tempfile.TemporaryDirectory(prefix="supervisor-", dir=tmp))
         scratch = Path(folder).resolve(strict=True)
-        env = dict(os.environ)
         # Jenkins itself redirects HOME before this suite starts. Account data,
         # rather than the inherited scratch HOME, selects the read-only bookends.
         real_env = dict(os.environ)
         real_env["HOME"] = pwd.getpwuid(os.getuid()).pw_dir
         real_env.pop("CFFIXED_USER_HOME", None)
-        for key, relative in {
-            "HOME": "home", "CFFIXED_USER_HOME": "home", "TMPDIR": "tmp",
-            "XDG_CACHE_HOME": "cache", "CLANG_MODULE_CACHE_PATH": "clang-modules",
-            "SWIFT_MODULECACHE_PATH": "swift-modules",
-            "SWIFTPM_MODULECACHE_OVERRIDE": "swift-modules",
-            "SDK_STAT_CACHE_DIR": "sdk-cache",
-        }.items():
-            path = scratch / relative
-            path.mkdir(exist_ok=True)
-            env[key] = str(path)
-        env["NO_COLOR"] = "1"
-        env["HAPPYRANCH_DAEMON_HOME"] = str(scratch / "daemon-home")
+        env = _build_environment(scratch)
 
         # FIRST rows: actual, read-only toolchain observations. Always attempt
         # all four, but never build/test if any prerequisite is unavailable.
-        discovered: dict[str, str] = {}
-        for name, argv in (
-            ("developer_directory", ["/usr/bin/xcode-select", "-p"]),
-            ("macos_sdk", ["/usr/bin/xcrun", "--show-sdk-path"]),
-            ("swift_path", ["/usr/bin/xcrun", "--find", "swift"]),
-            ("swift_version", ["swift", "--version"]),
-        ):
-            if name == "swift_version":
-                argv = [discovered.get("swift_path", "swift"), "--version"]
-            try:
-                code, output = _command(argv, env, scratch, min(deadline, time.monotonic() + 15), output_cap=8192)
-            except (RuntimeError, TimeoutError, subprocess.TimeoutExpired) as exc:
-                code, output = 1, f"{type(exc).__name__}: {exc}".encode()
-            value = output.decode("utf-8", errors="replace").strip()
-            available = code == 0 and bool(value)
-            expected = "AVAILABLE: existing developer directory/SDK/compiler"
-            if name == "swift_version":
-                version = re.search(r"Swift version (\d+)\.", value)
-                available = available and version is not None and int(version[1]) >= 6
-                expected = "AVAILABLE: Swift >=6"
-            else:
-                available = available and Path(value).is_absolute() and Path(value).exists()
-            row(name, "AVAILABLE" if available else "UNAVAILABLE", expected,
-                {"command": argv, "exit_code": code, "value": value[:2048]})
-            if available:
-                discovered[name] = value
+        discovered = _discover_toolchain(env, scratch, deadline, row)
         if any(item["status"] == "UNAVAILABLE" for item in checks):
             section["result"] = "toolchain unavailable; no build or tests ran"
             raise RuntimeError("toolchain unavailable")
@@ -302,18 +336,7 @@ def supervisor(report: dict[str, Any]) -> None:
             instruction = b""
             secret = ""
         swift = discovered["swift_path"]
-        common = [
-            swift, "test", "--package-path", str(ROOT / "app/mac"),
-            "--scratch-path", str(scratch / "build"),
-            "--cache-path", str(scratch / "swiftpm-cache"),
-            "--config-path", str(scratch / "swiftpm-config"),
-            "--security-path", str(scratch / "swiftpm-security"),
-            # Release with no debug info avoids unnecessary large debug products;
-            # the existing file limit still refuses any oversized native product.
-            "-c", "release", "-j", "2", "-Xswiftc", "-gnone",
-            "-Xswiftc", "-module-cache-path", "-Xswiftc", env["SWIFT_MODULECACHE_PATH"],
-            "-Xcc", "-fmodules-cache-path=" + env["CLANG_MODULE_CACHE_PATH"],
-        ]
+        common = _swift_test_command(swift, ROOT / "app/mac", scratch, env)
         for name, extra in (
             ("swift_test", ["--filter", "AppDelegateStopHonestyTests|ManagedHealthPollingTests|ManagedClientBridgeTests|EnrollmentKeyStoreTests|ManagedJoinTests|ManagedMembershipRevocationTests"]),
             ("scripted_stop_escalation", ["--skip-build", "--filter",
