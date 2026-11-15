@@ -250,7 +250,12 @@ valid gitdir/commondir/HEAD and exact reciprocal mapping. A single fresh
 unchanged HEAD/branch and no lock/prunable flag. A missing/duplicated own row or
 lost/redirected own mapping still holds the clone. Ordinary attributed own metadata
 changes retain the candidate; discovery's local/shared refusal latches remain.
-Successful discovery answers never authorize a delete.
+Successful discovery answers never authorize a delete. Discovery defines the
+fixed coverage window: damage to a candidate's own metadata after discovery
+retains that candidate with a blocking reason naming its exact metadata path
+and native cause, and keeps coverage incomplete naming that candidate, without
+retroactively marking discovery partial. Independently proven healthy peers can
+still progress; a refusal before any effect adds no partial/unknown effect.
 
 At each of these boundaries exactly one additional shallow shared observation
 lstats the primary `.git` and `.git/worktrees` no-follow, pins their discovery

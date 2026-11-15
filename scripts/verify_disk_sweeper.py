@@ -2321,8 +2321,18 @@ def local_registration_transitions():
                     with refuse_mutations(): report = f.sweep('dry_run')
                 else: report = f.sweep()
             assert len(damage) == 1, report
-            assert report['discovery'] == ('complete' if when == 'during_B_census' else 'partial'), report
-            assert (report['unreached'] is None) == (when != 'during_B_census'), report
+            if when == 'after_discovery':
+                # Seq361 fixes the discovery window; later own damage blocks
+                # A and coverage without retroactively changing that window.
+                assert report['discovery'] == 'complete' and report['unreached'] == 0, report
+                assert not report['coverage']['complete'] and not report['coverage']['unknown_discovery'], report
+                assert any(str(a) in reason and str(entry / 'index') in reason
+                           for reason in report['coverage']['reasons']), report
+                assert row(report, a)['state'] == 'retained' and 'Permission denied' in row(report, a)['reason'], report
+                assert report['partial_unknown_count'] == 0 and not report['phases']['worktree']['attribution_unknown'], report
+            else:
+                assert report['discovery'] == ('complete' if when == 'during_B_census' else 'partial'), report
+                assert (report['unreached'] is None) == (when != 'during_B_census'), report
             assert a.exists() and not any(args[:2] == ('worktree', 'prune') for args in calls), calls
             if when == 'during_B_census':
                 assert events == ['A previously eligible in preview', 'only A damaged'], events
