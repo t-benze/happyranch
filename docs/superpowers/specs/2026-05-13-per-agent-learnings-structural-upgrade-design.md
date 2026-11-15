@@ -295,6 +295,37 @@ This lets us land the new code path without breaking unmigrated workspaces; each
 
 ## 6. Bootstrap integration
 
+> **Current bootstrap contract (THR-366 change set A, 2026-11-15).**
+> The historical inline-index design below is replaced by a bounded overview in
+> the shared workspace prompt renderer. `MEMORY_BOOTSTRAP_MAX_BYTES = 4096`
+> limits the whole Persistent Files + Your Memory block in UTF-8 bytes,
+> including headings, pointers, commands, separators and the trailing newline.
+> The full `memory/_index.md` stays on disk. Current non-evicted store entries
+> supply topic names/counts and `provenance: directive` ID/title pointers;
+> experiential titles are not inlined. Directive pointers sort by ID/slug and
+> take priority over topics sorted by name. Packing preserves complete lines
+> and reserves omission notices: `... N more directives; run memory search`
+> and `... N more topics; run memory search`. Search/get/add/update/promote
+> examples always retain `--org <slug> --agent <you>`, including
+> `happyranch memory search --org <slug> --agent <you> "<terms>"`.
+> Bodies remain available through `memory get` and the separate task digest.
+> Legacy flat `learnings.md` also stays on disk with a pointer rather than an
+> unbounded inline copy; its active-task/session `memory --text` append remains.
+>
+> At workspace bootstrap, `PersistentWorkspaceSetup.ensure` regenerates even a
+> present index, repairing stale entry metadata through the existing atomic
+> writer and declared bootstrap rollback target. It does not refresh prompt
+> files at spawn: launch still verifies the existing canonical instruction pair
+> and readiness marker without repair. Topic counts can age until the next
+> prompt rewrite, but no growing list of experiential titles can crowd out the
+> commands or later instructions. The overview reads store metadata directly,
+> so an independently stale index cannot affect a newly rendered overview.
+> The bundled start-task step 6 uses `memory/` and `happyranch memory add`;
+> `learning` remains a deprecated alias. The bare `memory --text` route is only
+> for flat workspaces and returns 410 if `memory/` or legacy `learnings/` exists.
+> Generated KB guidance uses `<runtime>/orgs/<slug>/kb/`, org-qualified commands,
+> required consultation and optional contribution, matching start-task.
+
 `ClaudeWorkspaceAdapter._build_sections` (and the Codex/opencode equivalents) currently says:
 
 ```

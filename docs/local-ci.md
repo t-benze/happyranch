@@ -1,5 +1,18 @@
 # Local CI
 
+## Focused workspace memory bootstrap coverage (THR-366 PR-A)
+
+```sh
+uv run --frozen pytest scripts/test_workspace_memory.py -v --tb=short
+```
+
+These standalone no-launch checks exercise the real store and prompt renderer
+on temporary workspaces: UTF-8 byte limits, deterministic whole-line topic and
+directive truncation, retained commands and later Codex instructions, stale or
+missing index independence, bootstrap index repair and legacy flat-file bounds.
+No daemon, provider or live workspace is written. This venue is outside retired
+Python units and adds no required check or E2E trigger.
+
 ## Focused missing thread callback coverage (#395 / #219)
 
 ```sh

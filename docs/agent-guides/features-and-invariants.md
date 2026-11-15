@@ -2357,6 +2357,21 @@ See [Web/CLI contracts](web-and-cli.md#retired-knowledge-read-api-s1) and the
 
 ## Per-Agent Learnings
 
+Workspace prompt bootstrap (THR-366 change set A) keeps the full
+`memory/_index.md` on disk. The shared renderer caps the entire Persistent Files
+and Your Memory block at `MEMORY_BOOTSTRAP_MAX_BYTES = 4096` UTF-8 bytes, including
+commands and newlines. Current non-evicted store metadata supplies topic counts
+and `provenance: directive` ID/title pointers. Complete directive lines (ID/slug
+order) take priority, followed by topic lines (name order); omitted rows get
+explicit `... N more directives/topics; run memory search` notices. Search,
+get, add, update and promote examples retain `--org` and `--agent` within the
+budget. Full bodies remain in memory get and the separate task digest. Flat
+legacy `learnings.md` is also referenced on disk instead of inlined.
+Bootstrap regenerates a present index as well as a missing one. Prompt files
+are still rewritten by management/bootstrap, not per spawn; launch's read-only
+instruction-pair/readiness checks remain. Stale counts can persist until rewrite,
+but experiential title growth cannot displace later prompt instructions.
+
 Task-start consultation (THR-091 seq633) is defined by
 `runtime/skills/bundled/start-task/SKILL.md` step 2: before the first substantive
 decision, select and read up to two memories pertinent to the actual task and
