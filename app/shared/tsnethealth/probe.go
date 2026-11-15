@@ -31,6 +31,8 @@ type destination struct {
 // Callers must not mutate dm during the call. Partial results survive timeout.
 func Probe(ctx context.Context, dm *tailcfg.DERPMap) ProbeResult {
 	result := ProbeResult{DERPMillis: map[int]int{}}
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
 	var targets []destination
 	if dm != nil {
 		for _, id := range dm.RegionIDs() {
@@ -49,11 +51,9 @@ func Probe(ctx context.Context, dm *tailcfg.DERPMap) ProbeResult {
 			}
 		}
 	}
-	if len(targets) == 0 {
+	if len(targets) == 0 || ctx.Err() != nil {
 		return result
 	}
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
 	var config net.ListenConfig
 	conn, err := config.ListenPacket(ctx, "udp", ":0")
 	if err != nil {
