@@ -1,6 +1,6 @@
 # Feishu-Driven Escalation Notifications
 
-**Status: REMOVED in TASK-302 (THR-022).** Web UI + threads are sole control surface. DB tables dormant.
+**Status: REMOVED in TASK-302 (THR-022).** Web UI + threads are sole control surface. Correlation tables dropped by database-open migration (THR-365, PR #1525).
 **Author:** Founder + Claude Opus
 **Date:** 2026-05-08
 **Supersedes:** —
