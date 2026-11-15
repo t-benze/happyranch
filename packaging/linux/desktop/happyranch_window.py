@@ -9,12 +9,13 @@ import http.client
 import json
 import os
 from pathlib import Path
+import re
 import signal
 import stat
 import subprocess
 import threading
 import time
-from typing import IO
+from typing import IO, Callable
 import urllib.error
 import urllib.request
 
@@ -22,16 +23,20 @@ import urllib.request
 class LaunchError(Exception):
     """A diagnostic safe to show inside the desktop window."""
 
+    def __init__(self, message: str, action: str | None = None) -> None:
+        super().__init__(message)
+        self.action = action
+
 
 def desktop_home() -> Path:
-    """Use an app-owned data home, separate from the CLI's ~/.happyranch."""
-    data = os.environ.get("XDG_DATA_HOME", "")
-    root = Path(data) if data and Path(data).is_absolute() else Path.home() / ".local/share"
-    return root / "happyranch"
+    """The packaged unit and window share only the release home."""
+    return Path.home() / ".happyranch-release"
 
 
 def acquire_lock(home: Path) -> IO[bytes] | None:
     """Keep the inode in place: unlinking a held flock creates a launch race."""
+    if home.resolve() == (Path.home() / ".happyranch").resolve():
+        raise LaunchError("The desktop window cannot use the development daemon home.")
     home.mkdir(parents=True, exist_ok=True, mode=0o700)
     lock = (home / "desktop.lock").open("ab")
     try:
@@ -83,6 +88,257 @@ def health_ok(port: int, timeout: float) -> bool:
         return False
     except (OSError, ValueError, urllib.error.URLError, http.client.HTTPException):
         return False
+
+
+class ServiceMode:
+    """Packaged user-service lifecycle, independent of GTK and child ownership."""
+
+    unit = "happyranch-daemon"
+    fragment = "/usr/lib/systemd/user/happyranch-daemon.service"
+    base_path = "/opt/happyranch-desktop/bin:/usr/local/bin:/usr/bin:/bin"
+    legacy_sha = "482dee228bce0f41354ea7a803341b1b6cdb4076a41c713467b10d348f4a2817"
+
+    def __init__(self, home: Path, *, user_home: Path | None = None,
+                 proc: Path = Path("/proc"), runner: Callable = subprocess.run,
+                 health: Callable = health_ok) -> None:
+        self.home = home
+        self.user_home = user_home if user_home is not None else Path.home()
+        self.proc = proc
+        self.runner = runner
+        self.health = health
+        self.attached = False
+
+    def command(self, *args: str) -> subprocess.CompletedProcess:
+        try:
+            return self.runner(list(args), capture_output=True, text=True, timeout=10)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            # Do not include command output or environment values in diagnostics.
+            raise LaunchError(f"Could not run {args[0]}.") from exc
+
+    def control(self, verb: str) -> None:
+        if self.command("systemctl", "--user", verb, self.unit).returncode:
+            raise LaunchError(f"Could not {verb} the HappyRanch user service.")
+
+    def manager_available(self) -> bool:
+        try:
+            result = self.command("systemctl", "--user", "is-system-running")
+        except LaunchError:
+            return False
+        # A degraded manager returns 1, but is still a working user manager.
+        return result.returncode in (0, 1) and result.stdout.strip() in {
+            "running", "degraded", "starting", "initializing", "maintenance"}
+
+    @property
+    def legacy_unit(self) -> Path:
+        return self.user_home / ".config/systemd/user/happyranch-release.service"
+
+    def legacy_snapshot(self) -> tuple[bytes, os.stat_result] | None:
+        path = self.legacy_unit
+        try:
+            metadata = path.lstat()
+        except FileNotFoundError:
+            return None
+        if not stat.S_ISREG(metadata.st_mode):
+            raise LaunchError("The hand-written happyranch-release.service is not a regular file; stop and review it.")
+        with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), "rb") as stream:
+            opened = os.fstat(stream.fileno())
+            if opened != metadata or not stat.S_ISREG(opened.st_mode):
+                raise LaunchError("The hand-written unit changed while being inspected; review it yourself.")
+            content = stream.read(65537)
+        if len(content) > 65536:
+            raise LaunchError("A different hand-written happyranch-release.service exists. Review it yourself before starting; HappyRanch will not change it.")
+        return content, metadata
+
+    @staticmethod
+    def unit_identity(metadata: os.stat_result) -> tuple:
+        # Reads can update atime; identity and modification times must remain.
+        return (metadata.st_dev, metadata.st_ino, metadata.st_mode, metadata.st_nlink,
+                metadata.st_size, metadata.st_mtime_ns, metadata.st_ctime_ns)
+
+    def check_legacy(self) -> None:
+        snapshot = self.legacy_snapshot()
+        if snapshot is None:
+            return
+        if hashlib.sha256(snapshot[0]).hexdigest() == self.legacy_sha:
+            raise LaunchError("An older hand-written happyranch-release.service must be removed before using the packaged service. Remove that exact file and reload the user manager?", "remove")
+        raise LaunchError("A different hand-written happyranch-release.service exists. Review it yourself before starting; HappyRanch will not change it.")
+
+    def remove_legacy(self) -> None:
+        """Called only by the explicit Remove button; recheck the exact file."""
+        snapshot = self.legacy_snapshot()
+        if snapshot is None:
+            raise LaunchError("The old unit is no longer present; retry opening HappyRanch.")
+        if hashlib.sha256(snapshot[0]).hexdigest() != self.legacy_sha:
+            raise LaunchError("A different hand-written happyranch-release.service exists. Review it yourself before starting; HappyRanch will not change it.")
+        if self.unit_identity(self.legacy_unit.lstat()) != self.unit_identity(snapshot[1]):
+            raise LaunchError("The hand-written unit changed before removal; review it yourself.")
+        self.legacy_unit.unlink()
+        if self.command("systemctl", "--user", "daemon-reload").returncode:
+            raise LaunchError("The old unit was removed, but the user manager could not reload.")
+
+    def validate_environment(self) -> None:
+        result = self.command("systemctl", "--user", "show-environment")
+        if result.returncode:
+            raise LaunchError("Could not inspect the user manager environment.")
+        polluted = sorted({line.partition("=")[0] for line in result.stdout.splitlines()
+                           if line.startswith("HAPPYRANCH_")})
+        if polluted:
+            raise LaunchError("Remove these variables from the user manager environment: " + ", ".join(polluted))
+        path = self.user_home / ".config/happyranch/daemon.env"
+        try:
+            metadata = path.lstat()
+        except FileNotFoundError:
+            return
+        if not stat.S_ISREG(metadata.st_mode):
+            raise LaunchError("daemon.env must be a regular file containing only PATH additions.")
+        rejected = set()
+        try:
+            content = path.read_text()
+        except UnicodeError as exc:
+            raise LaunchError("daemon.env is not valid UTF-8; only PATH additions are allowed.") from exc
+        for line in content.splitlines():
+            line = line.strip()
+            if not line or line.startswith(("#", ";")):
+                continue
+            key, separator, value = line.partition("=")
+            key = key.strip()
+            if not separator or re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]*", key) is None:
+                rejected.add("<invalid line>")
+                continue
+            if key != "PATH":
+                rejected.add(key)
+                continue
+            value = value.strip()
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+                value = value[1:-1]
+            parts = value.split(":")
+            base = self.base_path.split(":")
+            if (any(not part.startswith("/") or any(c in part for c in "$%\\\"' \t")
+                    for part in parts) or
+                    not any(parts[i:i + len(base)] == base for i in range(len(parts)))):
+                rejected.add("PATH")
+        if rejected:
+            raise LaunchError("Unsupported daemon.env keys (only literal PATH additions are allowed): " + ", ".join(sorted(rejected)))
+
+    def state(self) -> dict[str, str]:
+        result = self.command("systemctl", "--user", "show", self.unit,
+                              "-p", "MainPID", "-p", "FragmentPath", "-p", "DropInPaths",
+                              "-p", "ActiveState", "-p", "Result")
+        if result.returncode:
+            raise LaunchError("Could not inspect the HappyRanch user service.")
+        state = dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
+        if state.get("FragmentPath") != self.fragment or state.get("DropInPaths") != "":
+            raise LaunchError("HappyRanch requires the packaged user unit with no drop-ins. Review your user service overrides.")
+        return state
+
+    def pid(self, state: dict[str, str]) -> int:
+        raw = state.get("MainPID", "")
+        if not raw.isascii() or not raw.isdecimal():
+            raise LaunchError("The user service did not report a valid MainPID.")
+        return int(raw)
+
+    def refuse_external(self, pid: int) -> None:
+        try:
+            raw = (self.home / "daemon.pid").read_text().strip()
+        except FileNotFoundError:
+            return
+        if raw.isascii() and raw.isdecimal() and int(raw) > 0 and int(raw) != pid:
+            if (self.proc / str(int(raw))).exists():
+                raise LaunchError("A CLI-started daemon is running in the release home. Stop it yourself before opening HappyRanch.")
+
+    def listeners(self) -> set[str]:
+        inodes = set()
+        for name in ("tcp", "tcp6"):
+            try:
+                lines = (self.proc / "net" / name).read_text().splitlines()[1:]
+            except FileNotFoundError:
+                if name == "tcp6":
+                    continue
+                raise
+            for line in lines:
+                fields = line.split()
+                if len(fields) < 10:
+                    raise LaunchError("Could not inspect the release port listener.")
+                address, port = fields[1].split(":")
+                if port.upper() == "223E" and fields[3] == "0A" and address.upper() in {
+                        "0100007F", "00000000", "0" * 32, "0000000000000000FFFF00000100007F"}:
+                    inodes.add(fields[9])
+        return inodes
+
+    def owns_listener(self, pid: int, listeners: set[str]) -> bool:
+        if pid <= 0 or not listeners:
+            return False
+        sockets = set()
+        for fd in (self.proc / str(pid) / "fd").iterdir():
+            try:
+                target = os.readlink(fd)
+            except FileNotFoundError:
+                continue
+            if target.startswith("socket:[") and target.endswith("]"):
+                sockets.add(target[8:-1])
+        return listeners <= sockets
+
+    def crash_error(self, state: dict[str, str]) -> None:
+        if state.get("ActiveState") == "failed" and state.get("Result") == "start-limit-hit":
+            result = self.command("journalctl", "--user", "-u", self.unit, "-n", "20", "--no-pager")
+            detail = "\n".join(result.stdout.splitlines()[-20:]) if result.returncode == 0 else "Journal unavailable."
+            raise LaunchError("HappyRanch has reached its restart limit.\n" + detail, "retry")
+
+    def start(self, cancel: threading.Event, *, retry: bool = False,
+              timeout: float = 60) -> str | None:
+        if not self.manager_available():
+            return None
+        if self.home != self.user_home / ".happyranch-release":
+            raise LaunchError("The packaged service requires ~/.happyranch-release; remove --daemon-home.")
+        self.check_legacy()
+        self.validate_environment()
+        state = self.state()
+        pid = self.pid(state)
+        self.refuse_external(pid)
+        listeners = self.listeners()
+        if listeners and not self.owns_listener(pid, listeners):
+            raise LaunchError("Port 8766 is used by another program")
+        if retry:
+            self.control("reset-failed")
+        else:
+            self.crash_error(state)
+        # start can fail because the unit has just hit its start limit.
+        started = self.command("systemctl", "--user", "start", self.unit)
+        if started.returncode:
+            self.crash_error(self.state())
+            raise LaunchError("Could not start the HappyRanch user service.")
+        deadline = time.monotonic() + timeout
+        while True:
+            state = self.state()
+            self.crash_error(state)
+            pid = self.pid(state)
+            self.refuse_external(pid)
+            listeners = self.listeners()
+            owns = self.owns_listener(pid, listeners)
+            if listeners and not owns:
+                raise LaunchError("Port 8766 is used by another program")
+            if owns and read_owned_port(self.home, pid) == 8766:
+                if self.health(8766, 0.5):
+                    # Re-observe after HTTP before releasing the URL to GTK.
+                    if (self.state() == state and read_owned_port(self.home, pid) == 8766
+                            and self.owns_listener(pid, self.listeners())):
+                        self.attached = True
+                        return "http://127.0.0.1:8766/"
+            if cancel.is_set():
+                # Cancellation is a window close, not failed ownership. The
+                # current unit/proc checks above must still pass before stop.
+                self.control("stop")
+                raise LaunchError("Startup cancelled.")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise LaunchError("Release daemon ownership or health check failed; no web view was attached.")
+            cancel.wait(min(0.1, remaining))
+
+    def close(self, *, keep_running: bool = False) -> None:
+        if self.attached and not keep_running:
+            self.state()  # Refuse changed unit provenance before a stop.
+            self.control("stop")
+            self.attached = False
 
 
 def wait_for_health(child: subprocess.Popen, home: Path, cancel: threading.Event,
@@ -189,6 +445,7 @@ def run_gui(prefix: Path, home: Path) -> int:
     worker = None
     closing = False
     log_path = home / "logs/desktop-daemon.log"
+    service = ServiceMode(home)
 
     def message(title: str, detail: str = "") -> None:
         for widget in window.get_children():
@@ -205,9 +462,18 @@ def run_gui(prefix: Path, home: Path) -> int:
         window.add(box)
         window.show_all()
 
-    def show_error(detail: str) -> bool:
+    def show_error(detail: str | LaunchError) -> bool:
         message(tr("HappyRanch could not run", "HappyRanch 无法运行"),
-                detail + "\n\n" + tr("Daemon log: ", "守护进程日志：") + str(log_path))
+                str(detail) + "\n\n" + tr("Fallback daemon log: ", "回退守护进程日志：") + str(log_path))
+        action = getattr(detail, "action", None)
+        if action is not None and not closing:
+            label = {"remove": tr("Remove old unit", "移除旧服务单元"),
+                     "start": tr("Start HappyRanch", "启动 HappyRanch"),
+                     "retry": tr("Retry", "重试")}[action]
+            button = Gtk.Button(label=label)
+            button.connect("clicked", lambda _button: begin_action(action))
+            window.get_children()[0].pack_start(button, False, False, 0)
+            window.show_all()
         return False
 
     def show_web(url: str) -> bool:
@@ -225,7 +491,7 @@ def run_gui(prefix: Path, home: Path) -> int:
         window.show_all()
         return False
 
-    def finish(error: str | None) -> bool:
+    def finish(error: str | LaunchError | None) -> bool:
         nonlocal worker
         worker = None
         if error is not None:
@@ -235,10 +501,21 @@ def run_gui(prefix: Path, home: Path) -> int:
             app.quit()
         return False
 
-    def supervise() -> None:
+    def supervise(action: str | None = None) -> None:
         child = None
         error = None
         try:
+            if action == "remove":
+                service.remove_legacy()
+                error = LaunchError("The old unit was removed and the user manager reloaded. Start HappyRanch when ready.", "start")
+                return
+            url = service.start(cancel, retry=action == "retry")
+            if url is not None:
+                GLib.idle_add(show_web, url)
+                cancel.wait()
+                return
+            GLib.idle_add(message, tr("Starting HappyRanch without a user manager…",
+                                     "用户服务管理器不可用，正在启动 HappyRanch…"))
             prepare_home(home)
             log_path.parent.mkdir(parents=True, exist_ok=True)
             with log_path.open("ab", buffering=0) as log:
@@ -254,8 +531,18 @@ def run_gui(prefix: Path, home: Path) -> int:
                         raise LaunchError(f"Daemon exited (status {child.returncode}).")
         except (OSError, LaunchError) as exc:
             if not cancel.is_set():
-                error = str(exc)
+                error = exc if isinstance(exc, LaunchError) else str(exc)
         finally:
+            while service.attached:
+                try:
+                    service.close()
+                    if closing:
+                        error = None
+                except LaunchError as exc:
+                    error = exc
+                    cancel.clear()
+                    GLib.idle_add(show_error, exc)
+                    cancel.wait()
             while child is not None:
                 try:
                     stop_child(child, home, markers_absent_at_spawn=True)
@@ -272,6 +559,15 @@ def run_gui(prefix: Path, home: Path) -> int:
                     GLib.idle_add(show_error, error)
                     cancel.wait()
             GLib.idle_add(finish, error)
+
+    def begin_action(action: str | None = None) -> None:
+        nonlocal worker
+        if worker is not None or closing:
+            return
+        cancel.clear()
+        message(tr("Starting HappyRanch…", "正在启动 HappyRanch…"))
+        worker = threading.Thread(target=supervise, args=(action,), name="desktop-daemon")
+        worker.start()
 
     def request_close(*_args: object) -> bool:
         nonlocal closing
@@ -297,15 +593,14 @@ def run_gui(prefix: Path, home: Path) -> int:
         message(tr("Starting HappyRanch…", "正在启动 HappyRanch…"))
         try:
             lock = acquire_lock(home)
-        except OSError as exc:
+        except (OSError, LaunchError) as exc:
             show_error(str(exc))
             return
         if lock is None:
             # Without a session bus, flock still prevents a second daemon.
             app.quit()
             return
-        worker = threading.Thread(target=supervise, name="desktop-daemon")
-        worker.start()
+        begin_action()
 
     quit_action = Gio.SimpleAction.new("quit", None)
     quit_action.connect("activate", request_close)

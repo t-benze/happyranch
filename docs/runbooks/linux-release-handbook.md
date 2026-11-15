@@ -146,49 +146,104 @@ which continues to run bundled CPython 3.12.10.
 /usr/bin/python3 -B packaging/linux/desktop/test_happyranch_window.py -v
 ```
 
-Default runtime home is `$XDG_DATA_HOME/happyranch`, or
-`~/.local/share/happyranch` when XDG_DATA_HOME is empty, unset or relative.
-`--daemon-home` is an explicit override; inherited `HAPPYRANCH_DAEMON_HOME`
-is ignored. This mirrors the packaged Mac app's separate app-data home rather
-than reusing the CLI's `~/.happyranch`. The child receives a minimal OS environment,
-that home, loopback bind, port `0`, and the payload's `web/dist`; inherited
-HappyRanch settings are not passed through.
+Default runtime home is `~/.happyranch-release`, shared with the packaged
+`happyranch-daemon.service`, with `desktop.lock` in that home. Inherited
+`HAPPYRANCH_DAEMON_HOME` and `XDG_DATA_HOME` do not select the desktop home.
+The development daemon (`~/.happyranch`, port 8765) is never contacted or
+signaled; selecting its home explicitly is refused before taking a lock.
+`--daemon-home` remains useful for an isolated smoke run only when no user
+manager is available; service mode refuses a different home because the
+packaged unit fixes its runtime home.
 
-**External daemon rule:** the Mac app can discover an external daemon but never
-stops it. This window additionally refuses to attach: any existing `daemon.pid`
-or `daemon.port` (even stale/partial state) produces an error view, without
-launching or signaling a daemon or removing those files. Use a separate home;
-do not concurrently launch a CLI daemon into the desktop's private home. CLI
-launchers do not participate in the desktop lock.
+Opening the window first checks for a user manager. A degraded manager is
+available even though `is-system-running` exits 1. When available, the window
+validates the checks below, runs `systemctl --user start happyranch-daemon`,
+and waits up to 60 seconds for the release service. It never spawns a child in
+service mode. The web view attaches only when all observations agree:
 
-The first window keeps an advisory `desktop.lock` for its full lifetime. A
-second launch for the same canonical home activates/focuses that window through
-Gtk.Application's session bus. Without a session bus it exits cleanly when the
-lock is held; it never starts another daemon. The lock file remains after exit
-so future launches lock the same inode; the OS releases the lock automatically.
+- The loaded `FragmentPath` is exactly
+  `/usr/lib/systemd/user/happyranch-daemon.service`, and `DropInPaths` is empty.
+- The release home's `daemon.pid` equals the unit's positive `MainPID`, and
+  `daemon.port` equals 8766.
+- The listener for `127.0.0.1:8766` belongs to that MainPID: matching LISTEN
+  inodes from `/proc/net/tcp` and relevant wildcard/mapped `/proc/net/tcp6`
+  entries must appear in `/proc/<MainPID>/fd` socket links.
+- `GET http://127.0.0.1:8766/api/v1/health` returns HTTP 200 and `status: ok`.
+  Probes bypass inherited HTTP proxies. Unit, markers and listener ownership
+  are checked again after the response before releasing the web URL.
 
-The child publishes its actual ephemeral port in `daemon.port`. The window
-requires `daemon.pid` to match its Popen child and waits up to 60 seconds for
-`GET /api/v1/health` to return HTTP 200 and `status: ok` before loading `/`.
-Health probes bypass HTTP proxies. Startup/health/child-exit failures produce an
-in-window diagnostic with `<desktop-home>/logs/desktop-daemon.log`. Startup and
-stop work run off the GTK main thread. Native loading/error text is available
-in English and Simplified Chinese (desktop LANG); raw diagnostics stay verbatim.
+Missing or unreadable evidence refuses attachment. These are sampled
+same-user observations, not an atomic fence against later process/unit changes.
+The checks detect overrides; they do not protect user-owned configuration from
+other processes of the same user.
 
-Closing the window, Ctrl+Q, SIGTERM or SIGINT requests shutdown. The window
-sends SIGTERM only to its child, waits five seconds, then SIGKILL and a two-second
-wait if needed, and reaps it. After confirmed exit it removes remaining markers
-only with its empty-at-launch ownership fact and unchanged single-link regular
-marker inodes. That includes interrupted port/PID writes: an absent, empty or
-ASCII decimal-prefix PID is owned partial publication; a complete matching PID
-is also owned. Different/non-prefix PID contents, pre-existing markers and a
-replacement of either observed inode preserve the remaining state. A partial
-write may finish on its pinned inode during shutdown.
-A stop that cannot observe exit retains ownership and the lock, displays the
-failure, and allows a subsequent close to retry. There is no crash/SIGKILL
-recovery promise for the window itself, nor process-tree shutdown guarantee for
-arbitrary daemon-launched workloads. Independent QA must supply real Ubuntu
-22.04/Debian 12 GUI screenshots; lint and these focused tests do not prove that.
+Before start, the window inspects `systemctl --user show-environment`. Any
+`HAPPYRANCH_*` variable refuses startup and the message lists names only.
+It also validates `~/.config/happyranch/daemon.env` when present. Only `PATH`
+assignments, blank lines and full-line `#`/`;` comments are accepted. A PATH
+assignment must preserve the complete packaged base
+`/opt/happyranch-desktop/bin:/usr/local/bin:/usr/bin:/bin` in order, adding
+literal absolute directories before or after it. Shell expansions, `%h`,
+relative/empty entries and replacements are refused. Whole-value quotes are
+allowed. `LD_*`, `PYTHON*`, `HAPPYRANCH_DAEMON_*` and every other key refuse
+startup; the message names offending keys without values. The window never
+edits this file. Non-regular files and invalid UTF-8 refuse startup.
+
+The old hand-written `~/.config/systemd/user/happyranch-release.service` is
+checked before starting the packaged service. SHA-256
+`482dee228bce0f41354ea7a803341b1b6cdb4076a41c713467b10d348f4a2817`
+produces an explanation and a **Remove old unit** button. Only an explicit
+click, after another hash/identity check, removes that exact file and runs
+`systemctl --user daemon-reload`. A separate **Start HappyRanch** click then
+begins startup. Other content or
+non-regular files refuse startup and are never changed. There is no automatic
+migration or cleanup of any other user unit.
+
+Service failures remain in the window with a plain diagnostic:
+
+- Foreign listener: **Port 8766 is used by another program**. No attachment,
+  stop command or process signal follows the refusal.
+- A live release-home `daemon.pid` different from MainPID: stop the CLI-started
+  daemon yourself before opening the window. The app never signals it.
+- Unexpected unit path/drop-ins: review user service overrides before starting.
+- `ActiveState=failed` and `Result=start-limit-hit`: show the last 20 journal
+  lines from `journalctl --user -u happyranch-daemon -n 20`. **Retry** repeats
+  validation, then runs `reset-failed` followed by `start`.
+- Failed ownership or health: refuse to attach. The app does not try to kill a
+  process to recover the port or repair marker files.
+
+Closing the window, Ctrl+Q, SIGTERM or SIGINT stops an attached service with
+`systemctl --user stop happyranch-daemon`. Unit provenance is checked again
+before stop. Closing during startup also stops the service once current unit,
+PID and listener checks permit it; a refusal never triggers a stop. Failed
+stops keep the lock and offer another close attempt. B2a behaves as keep-running
+OFF: no lifetime switch, enable/disable, linger call or desktop state file is
+included yet.
+
+If `systemctl --user is-system-running` is unavailable or reports no running
+manager, the window shows a fallback explanation and retains its child-process
+mode. It requires an empty home (any existing `daemon.pid` or `daemon.port`,
+even stale/partial, refuses startup without changing it). The child receives a
+minimal OS environment, the selected home, loopback bind, random port `0`, and
+the payload's `web/dist`. The window waits for its own Popen PID and healthy
+published port, then attaches. Closing sends TERM only to that child, waits five
+seconds, then KILL and a two-second reap if necessary. Marker cleanup retains
+the existing empty-at-spawn and unchanged-inode checks. Child logs are at
+`<desktop-home>/logs/desktop-daemon.log`.
+
+A second launch for the same canonical home activates/focuses the first window
+through Gtk.Application's session bus. Without a bus, `desktop.lock` still
+excludes another window; the lock inode is never unlinked. Startup and stop run
+off the GTK main thread. Native headings/actions are available in English and
+Simplified Chinese; raw diagnostics remain verbatim.
+
+The focused command above runs both child lifecycle and service-mode doubles
+from the existing stdlib test file; no new CI selection is needed. Required PR
+checks remain lint/static only. Real user-manager operation and GTK screenshots
+on Ubuntu 22.04/Debian 12 remain acceptance work; these doubles and lint do not
+prove them. No real service, user file or linger state is changed by the tests.
+There is no crash/SIGKILL recovery or process-tree shutdown guarantee for the
+window itself or arbitrary daemon-launched workloads.
 
 ## Build the Debian package
 
@@ -241,7 +296,10 @@ does it install Xvfb, Openbox, xdotool, scrot, desktop-file-utils and dbus-x11
 
 It validates `/usr/share/applications/happyranch.desktop` and executes its
 installed Exec command as the normal user, with Xvfb, a window manager, private
-D-Bus and isolated HOME/XDG directories. Like PR2 QA it discovers the port from
+D-Bus and isolated HOME/XDG directories. **The existing manual smoke still
+expects the earlier XDG data-home path and needs adaptation to the release home
+before its next authorized run; it is not service-mode acceptance.** In its
+original child-mode flow it discovers the port from
 the app home's `daemon.pid`/`daemon.port`, verifies the daemon is the app's child,
 checks HTTP200/status `ok` at `/api/v1/health`, and compares `/` byte for byte
 with the installed built `web/dist/index.html`. It captures the actual focused
@@ -311,8 +369,9 @@ No maintainer scripts are needed. Ubuntu/Debian's `desktop-file-utils` and
 `hicolor-icon-theme` dpkg triggers refresh their caches when installed. Package
 removal deletes only package-owned files; it does not signal a running app or
 daemon. Quit the desktop app before upgrading/removing it. The default user
-home `~/.local/share/happyranch` (or `$XDG_DATA_HOME/happyranch`) is preserved,
-including on purge. The package never owns user data or `~/.happyranch`.
+home `~/.happyranch-release` is preserved, including on purge. Earlier
+`~/.local/share/happyranch` / `$XDG_DATA_HOME/happyranch` data is also left in
+place. The package never owns user data or `~/.happyranch`.
 
 ### Packaged release user unit (slice B1)
 
@@ -327,12 +386,10 @@ extras and can override `Environment=` assignments. `%h` expands to the user
 manager's home in both directives; see [systemd.unit specifiers](https://www.freedesktop.org/software/systemd/man/latest/systemd.unit.html#Specifiers)
 and [systemd.exec environment settings](https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html#Environment).
 
-This slice only ships the file. Installation does not enable or start the unit;
-the desktop window still uses its existing child-process mode. Slice B2 will
-make the window drive the packaged user service and validate environment-file
-overrides. B2 will also detect the hand-written
-`~/.config/systemd/user/happyranch-release.service` from the two-daemon plan;
-B1 leaves it untouched. The packaged user unit provides no sandboxing.
+Installation does not enable or start the unit. B2a starts/stops it through the
+desktop window, validates environment-file overrides and handles the old
+hand-written unit as described above. The later B2b lifetime switch is not
+included. The packaged user unit provides no sandboxing.
 
 ### Runtime dependencies
 
