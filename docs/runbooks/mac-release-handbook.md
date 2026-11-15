@@ -17,7 +17,7 @@ founder supplies the public key; no private key or generation is part of this bu
 
 Relaunch requests always enter the app's postpone gate, including Sparkle's
 scheduled/impatient prompt. The app consumes only the new read-only
-`GET /api/v1/health.update_busy` aggregate. The former host admission gauge
+`update_busy` aggregate on `GET /api/v1/health`. The former host admission gauge
 counts attempt capacity and misses durable jobs and invocation retry gaps.
 The new field covers logical/native owners, queues and indexed nonterminal
 producer rows, including retained running jobs with unknown native liveness.
