@@ -25,6 +25,89 @@ from unittest.mock import patch
 from scripts.mac_native import suite_packaged as suite
 
 
+class SparklePackagingTests(unittest.TestCase):
+    """Synthetic bundle trees at the shipping inventory/build CLI boundaries."""
+
+    def test_sparkle_exact_links_and_unapproved_links(self) -> None:
+        script = Path(__file__).resolve().parents[2] / 'app/mac/scripts/verify-release.sh'
+        with tempfile.TemporaryDirectory() as tmp:
+            app = Path(tmp) / 'HappyRanch.app'
+            framework = app / 'Contents/Frameworks/Sparkle.framework'
+            version = framework / 'Versions/B'
+            for name in ('Headers', 'PrivateHeaders', 'Resources', 'Modules', 'Updater.app'):
+                (version / name).mkdir(parents=True)
+            for name in ('Sparkle', 'Autoupdate'):
+                (version / name).write_bytes(b'synthetic executable')
+            links = {'Versions/Current': 'B'}
+            links.update({name: 'Versions/Current/' + name for name in (
+                'Sparkle', 'Autoupdate', 'Updater.app', 'Headers', 'PrivateHeaders', 'Modules', 'Resources')})
+            for name, target in links.items():
+                (framework / name).symlink_to(target)
+
+            def inspect() -> subprocess.CompletedProcess:
+                return subprocess.run(['bash', str(script), 'inventory', '--app', str(app)],
+                                      capture_output=True, text=True)
+
+            good = inspect()
+            self.assertEqual(good.returncode, 0, good.stderr)
+            actual = {r['path'].removeprefix('Contents/Frameworks/Sparkle.framework/'): r['target']
+                      for r in json.loads(good.stdout)['members'] if r['type'] == 'symlink'}
+            self.assertEqual(actual, links)
+            for name, target in (('extra', 'Versions/B/Resources'),
+                                 ('Resources', str(version / 'Resources')),
+                                 ('Resources', '../../../../outside')):
+                with self.subTest(name=name, target=target):
+                    link = framework / name
+                    if link.is_symlink():
+                        link.unlink()
+                    link.symlink_to(target)
+                    bad = inspect()
+                    self.assertNotEqual(bad.returncode, 0)
+                    self.assertIn('SPARKLE_SYMLINK_REFUSED', bad.stderr)
+                    link.unlink()
+                    if name in links:
+                        link.symlink_to(links[name])
+
+    def test_sparkle_public_key_build_input(self) -> None:
+        import base64
+        script = Path(__file__).resolve().parents[2] / 'app/mac/scripts/build-app.sh'
+        valid = base64.b64encode(bytes(range(32))).decode()
+        for key, error in ((valid, 'WEB_TOOL_ORIGINALS_REQUIRED'), ('', 'WEB_TOOL_ORIGINALS_REQUIRED'),
+                           ('!', 'SPARKLE_PUBLIC_KEY_INVALID'),
+                           ('--help', 'SPARKLE_PUBLIC_KEY_INVALID'),
+                           (base64.b64encode(bytes(31)).decode(), 'SPARKLE_PUBLIC_KEY_INVALID'),
+                           (base64.b64encode(bytes(33)).decode(), 'SPARKLE_PUBLIC_KEY_INVALID'),
+                           (valid + '\n', 'SPARKLE_PUBLIC_KEY_INVALID')):
+            with self.subTest(key=key):
+                env = {k: v for k, v in os.environ.items() if not k.startswith(('UV_', 'PYTHON')) and k != 'VIRTUAL_ENV'}
+                result = subprocess.run(['bash', str(script), '--sparkle-public-key', key],
+                                        capture_output=True, text=True, env=env)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn(error, result.stderr)
+
+    def test_sparkle_plist_omits_absent_key_and_keeps_updates_inert(self) -> None:
+        import base64
+        script = Path(__file__).resolve().parents[2] / 'app/mac/scripts/sparkle_bundle.py'
+        key = base64.b64encode(bytes(range(32))).decode()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'Info.plist'
+            for value in ('', key):
+                with self.subTest(key=value):
+                    path.write_bytes(plistlib.dumps({'CFBundleExecutable': 'HappyRanch', 'SUPublicEDKey': 'stale'}))
+                    result = subprocess.run([sys.executable, '-I', str(script), 'plist', str(path), value],
+                                            capture_output=True, text=True)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    data = plistlib.loads(path.read_bytes())
+                    self.assertEqual(data['SUFeedURL'], 'https://app.happyranch.ai/mac/appcast.xml')
+                    self.assertIs(data['SUEnableAutomaticChecks'], False)
+                    self.assertIs(data['SUAutomaticallyUpdate'], False)
+                    self.assertEqual(data['CFBundleExecutable'], 'HappyRanch')
+                    if value:
+                        self.assertEqual(data['SUPublicEDKey'], value)
+                    else:
+                        self.assertNotIn('SUPublicEDKey', data)
+
+
 class PackagedHarnessTests(unittest.TestCase):
     def test_libproc_load_does_not_need_discovery_module_or_relative_dyld_search(self) -> None:
         import builtins
@@ -566,13 +649,16 @@ class PackagedHarnessTests(unittest.TestCase):
             bindir.mkdir()
             ditto = bindir / 'ditto'
             ditto.write_text('#!' + sys.executable + '\n' +
-                'import pathlib,sys,zipfile\n' +
+                'import os,pathlib,sys,zipfile\n' +
                 'assert sys.argv[1:-2] == ["-c", "-k", "--norsrc", "--noextattr", "--noqtn", "--noacl", "--keepParent"]\n' +
                 'app=pathlib.Path(sys.argv[-2])\n' +
                 'with zipfile.ZipFile(sys.argv[-1], "x", zipfile.ZIP_DEFLATED) as z:\n' +
                 ' for p in sorted(app.rglob("*")):\n' +
                 '  name="HappyRanch.app/"+p.relative_to(app).as_posix()\n' +
-                '  if name not in ' + repr(absent) + ': z.write(p,name)\n' +
+                '  if name not in ' + repr(absent) + ':\n' +
+                '   if p.is_symlink():\n' +
+                '    info=zipfile.ZipInfo(name); info.create_system=3; info.external_attr=p.lstat().st_mode<<16; z.writestr(info,os.readlink(p))\n' +
+                '   else: z.write(p,name)\n' +
                 ' for name in ' + repr(extra) + ': z.writestr(name,b"injected extra")\n')
             ditto.chmod(0o755)
             build = (suite.ROOT / 'app/mac/scripts/build-app.sh').read_text()
@@ -636,11 +722,54 @@ class PackagedHarnessTests(unittest.TestCase):
             self.assertEqual(final['packaged']['build_failure_evidence'], kept)
             self.assertEqual(final['steps']['8']['status'], 'PASS')
 
+    def test_archive_refuses_file_type_substitutions_with_matching_payload_and_permissions(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder).resolve()
+            _output, app, _fixture = self.archive_fixture(root)
+            original = root / 'original.zip'
+            with zipfile.ZipFile(original, 'w', zipfile.ZIP_DEFLATED) as z:
+                for path in sorted(app.rglob('*')):
+                    name = 'HappyRanch.app/' + path.relative_to(app).as_posix()
+                    if path.is_symlink():
+                        info = zipfile.ZipInfo(name)
+                        info.create_system = 3
+                        info.external_attr = path.lstat().st_mode << 16
+                        z.writestr(info, os.readlink(path))
+                    else:
+                        z.write(path, name)
+            archive = root / 'candidate.zip'
+            cases = [
+                ('unchanged', None, None, None),
+                ('regular-to-symlink', 'Contents/Resources/web/dist/index.html',
+                 stat.S_IFLNK, 'SPARKLE_SYMLINK_REFUSED'),
+                ('allowlisted-symlink-to-regular', 'Contents/Frameworks/Sparkle.framework/Sparkle',
+                 stat.S_IFREG, 'ARCHIVE_IDENTITY_MISMATCH'),
+            ]
+            for case, relative, kind, error in cases:
+                with self.subTest(case=case):
+                    with zipfile.ZipFile(original) as source, zipfile.ZipFile(archive, 'w') as target:
+                        for info in source.infolist():
+                            payload = source.read(info)
+                            if info.filename == 'HappyRanch.app/' + str(relative):
+                                # Change only Unix type bits; retain permissions and payload.
+                                info.external_attr = (info.external_attr & ~(0o170000 << 16)) | (kind << 16)
+                            target.writestr(info, payload)
+                    result = subprocess.run(['bash', str(suite.ROOT / 'app/mac/scripts/verify-release.sh'),
+                        'archive', '--app', str(app), '--archive', str(archive), '--run-id', 'synthetic'],
+                        capture_output=True, text=True, timeout=15)
+                    if error is None:
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        self.assertEqual(json.loads(result.stdout)['role'], 'unsigned-inner-zip')
+                    else:
+                        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                        self.assertEqual(result.stdout, '', 'refused archive must not emit a receipt')
+                        self.assertIn(error, result.stderr)
+
     def test_archive_membership_diagnostics_cover_empty_classes_duplicates_and_bounds(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder).resolve()
             _output, app, _fixture = self.archive_fixture(root)
-            members = {'HappyRanch.app/' + p.relative_to(app).as_posix() + ('/' if p.is_dir() else ''): p
+            members = {'HappyRanch.app/' + p.relative_to(app).as_posix() + ('/' if p.is_dir() and not p.is_symlink() else ''): p
                        for p in sorted(app.rglob('*'))}
             archive = root / 'candidate.zip'
             ordinary = 'HappyRanch.app/Contents/Info.plist'
@@ -658,7 +787,13 @@ class PackagedHarnessTests(unittest.TestCase):
                     with zipfile.ZipFile(archive, 'w', zipfile.ZIP_DEFLATED) as z:
                         for name, path in members.items():
                             if name not in absent:
-                                z.write(path, name)
+                                if path.is_symlink():
+                                    info = zipfile.ZipInfo(name)
+                                    info.create_system = 3
+                                    info.external_attr = path.lstat().st_mode << 16
+                                    z.writestr(info, os.readlink(path))
+                                else:
+                                    z.write(path, name)
                         for name in extra:
                             z.writestr(name, b'injected extra')
                         if duplicate:

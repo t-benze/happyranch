@@ -798,7 +798,7 @@ def run(report: dict[str, Any]) -> None:
         if any(key in build_result for key in ('error', 'census_error', 'cleanup_error')):
             raise CommandFailure(build_result)
         steps['1'] = dict(name=STEP_NAMES[0], status='PASS', source_sha=source, source_tree=tree,
-                          signing='unsigned internal; no feed URL supplied or baked by suite')
+                          signing='unsigned internal; Sparkle feed baked in, updater never started')
         active = '2'
         installed = area / 'installed/HappyRanch.app'
         installed.parent.mkdir(mode=0o700)

@@ -15,7 +15,7 @@
         "required": ["id", "family", "component", "version", "source", "selection", "notices"],
         "properties": {
           "id": {"type": "string", "minLength": 1},
-          "family": {"enum": ["npm", "go", "python", "runtime", "asset", "project"]},
+          "family": {"enum": ["npm", "go", "python", "swift", "runtime", "asset", "project"]},
           "component": {"type": "string", "minLength": 1},
           "version": {"type": "string", "minLength": 1},
           "source": {"type": "string", "minLength": 1},

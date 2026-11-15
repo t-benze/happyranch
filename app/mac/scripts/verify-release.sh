@@ -18,6 +18,7 @@ from pathlib import Path
 # Only the private helper adjacent to this selected verifier is imported.
 NOTICE_HELPER = sys.argv.pop(1)
 notices = __import__('runpy').run_path(NOTICE_HELPER)
+sparkle = __import__('runpy').run_path(str(Path(NOTICE_HELPER).with_name('sparkle_bundle.py')))
 
 # Required paths and modes are fixed; content identity follows the committed source.
 BASELINE = [{'path': 'LICENSE', 'posix_mode': '0644'},
@@ -238,7 +239,8 @@ def inventory(app):
                'mode': f'{stat.S_IMODE(info.st_mode):04o}'}
         if path.is_symlink():
             row.update(type='symlink', target=os.readlink(path))
-            if not path.resolve().is_relative_to(app.resolve()):
+            sparkle['check_link'](row['path'], row['target'])
+            if not path.resolve(strict=True).is_relative_to((app / sparkle['FRAMEWORK']).resolve()):
                 fail('APP_SYMLINK_ESCAPE', row)
         elif path.is_file():
             row.update(type='file', size=info.st_size, sha256=digest(path))
@@ -274,6 +276,7 @@ def zip_inventory(archive):
             elif stat.S_ISLNK(mode):
                 target = z.read(entry).decode()
                 row.update(type='symlink', target=target)
+                sparkle['check_link'](relative, target)
                 if target.startswith('/'):
                     fail('ARCHIVE_IDENTITY_MISMATCH', name + ': absolute symlink')
                 parts = list(Path(relative).parent.parts)
@@ -532,6 +535,7 @@ def basic(app, **selection):
     import struct
     notices['safe_path'](app, app)
     resources(app, **selection)
+    sparkle['validate_framework'](app)
     info = plistlib.loads(notices['read'](app / 'Contents/Info.plist', app))
     expected = {'CFBundleExecutable': 'HappyRanch', 'CFBundlePackageType': 'APPL',
                 'CFBundleIdentifier': 'ai.happyranch.HappyRanchApp',
@@ -540,6 +544,13 @@ def basic(app, **selection):
     for key, value in expected.items():
         if info.get(key) != value:
             fail('APP_PLIST_MISMATCH', key)
+    if (info.get('SUFeedURL') != sparkle['FEED'] or info.get('SUEnableAutomaticChecks') is not False
+            or info.get('SUAutomaticallyUpdate') is not False):
+        fail('APP_SPARKLE_NOT_INERT', 'feed or update settings')
+    if 'SUPublicEDKey' in info:
+        if not isinstance(info['SUPublicEDKey'], str) or not info['SUPublicEDKey']:
+            fail('APP_SPARKLE_KEY_INVALID', 'empty or non-string public key')
+        sparkle['public_key'](info['SUPublicEDKey'])
     for key in ('CFBundleVersion', 'CFBundleShortVersionString'):
         if not re.fullmatch(r'(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)', str(info.get(key, ''))):
             fail('APP_PLIST_MISMATCH', key)
@@ -551,7 +562,10 @@ def basic(app, **selection):
     for name in required:
         notices['read'](app / name, app, notices['MAX_JSON'])
     binaries = ('Contents/MacOS/HappyRanch', 'Contents/Resources/daemon/happyranch-daemon',
-                'Contents/Resources/daemon/happyranch', 'Contents/Helpers/happyranch-tsnet-sidecar')
+                'Contents/Resources/daemon/happyranch', 'Contents/Helpers/happyranch-tsnet-sidecar',
+                'Contents/Frameworks/Sparkle.framework/Versions/B/Sparkle',
+                'Contents/Frameworks/Sparkle.framework/Versions/B/Autoupdate',
+                'Contents/Frameworks/Sparkle.framework/Versions/B/Updater.app/Contents/MacOS/Updater')
     architectures = {}
     for name in binaries:
         path = app / name
@@ -699,20 +713,12 @@ try:
                                    key + '_omitted': max(0, len(values) - 64),
                                    key + '_truncated_names': truncated})
                 fail('ARCHIVE_IDENTITY_MISMATCH', detail)
+        if zip_inventory(a.archive) != inv['inventory_sha256']:
+            fail('ARCHIVE_IDENTITY_MISMATCH', 'ZIP inventory differs from app inventory')
         notice_receipt = notices['validate'](a.app)
         if notices['validate_archive'](a.archive) != notice_receipt:
             fail('MANIFEST_NOTICE_ARCHIVE_MISMATCH', 'candidate and archive notice receipts differ')
         resources(a.app, a.archive, **selection)
-        with zipfile.ZipFile(a.archive) as z:
-            for row in inv['members']:
-                name = 'HappyRanch.app/' + row['path'] + ('/' if row['type'] == 'directory' else '')
-                entry = z.getinfo(name)
-                if (entry.external_attr >> 16) & 0o7777 != int(row['mode'], 8):
-                    fail('ARCHIVE_IDENTITY_MISMATCH', name + ': mode')
-                if row['type'] == 'file' and hashlib.sha256(z.read(entry)).hexdigest() != row['sha256']:
-                    fail('ARCHIVE_IDENTITY_MISMATCH', name + ': bytes')
-                if row['type'] == 'symlink' and z.read(entry).decode() != row['target']:
-                    fail('ARCHIVE_IDENTITY_MISMATCH', name + ': symlink')
         info = plistlib.loads((a.app / 'Contents/Info.plist').read_bytes())
         emit({'role': 'unsigned-inner-zip', 'filename': a.archive.name,
               'size': a.archive.stat().st_size, 'sha256': digest(a.archive),

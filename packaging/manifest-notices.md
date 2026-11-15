@@ -29,6 +29,12 @@ The existing collector `app/mac/scripts/manifest_notices.py` owns direct inputs:
   Python distribution are conservatively included. Unselected marker/platform,
   build-only npm and Go modules without target dependencies have explicit reasons.
   No supplied component subset controls inventory membership.
+- The Swift owner family reads the exact Sparkle binary-target URL/version and
+  checksum from `app/mac/Package.swift`. SwiftPM authenticates the official ZIP;
+  the collector includes `swift:Sparkle` and the complete 2.10.1 release LICENSE
+  retained at `app/mac/third_party/Sparkle/LICENSE`, including its four external
+  licences. Both source files enter the input digest inventory. This is a direct
+  binary target, so no git dependency or `Package.resolved` is involved.
 
 Every included owner needs its complete discovered original set. Multiple
 versions/locations remain separate identities. Installed texts are preferred;

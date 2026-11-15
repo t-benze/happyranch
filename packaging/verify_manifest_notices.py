@@ -79,6 +79,8 @@ def fixture(root, *, retained_resources=False):
     (output / 'diagnostics').mkdir(parents=True)
     app.mkdir()
     write(source / 'LICENSE', (SOURCE / 'LICENSE').read_bytes())
+    for name in ('app/mac/Package.swift', 'app/mac/third_party/Sparkle/LICENSE'):
+        write(source / name, (SOURCE / name).read_bytes())
     originals = SOURCE / 'web/vendor/react-remove-scroll-bar'
     locks = {'': {'name': 'fixture', 'version': '1.0.1'}}
     for location, version in [('node_modules/react-remove-scroll-bar', '2.3.7+upstream.8ca9ba5ea52d'),
@@ -143,11 +145,22 @@ def fixture(root, *, retained_resources=False):
         dest.chmod(int(row['posix_mode'], 8))
     plist = plistlib.loads((SOURCE / 'app/mac/scripts/Info.plist').read_bytes())
     plist.update(dict(CFBundleShortVersionString='1.0.1', CFBundleVersion='1.0.1', GitCommitSHA=SOURCE_SHA, GitTreeSHA=SOURCE_TREE, ReleaseArchitecture='arm64'))
+    plist.update(SUFeedURL='https://app.happyranch.ai/mac/appcast.xml',
+                 SUEnableAutomaticChecks=False, SUAutomaticallyUpdate=False)
     write(app / 'Contents/Info.plist', plistlib.dumps(plist))
     for name in ('Contents/MacOS/HappyRanch', 'Contents/Resources/daemon/happyranch-daemon',
-                 'Contents/Resources/daemon/happyranch', 'Contents/Helpers/happyranch-tsnet-sidecar'):
+                 'Contents/Resources/daemon/happyranch', 'Contents/Helpers/happyranch-tsnet-sidecar',
+                 'Contents/Frameworks/Sparkle.framework/Versions/B/Sparkle',
+                 'Contents/Frameworks/Sparkle.framework/Versions/B/Autoupdate',
+                 'Contents/Frameworks/Sparkle.framework/Versions/B/Updater.app/Contents/MacOS/Updater'):
         write(app / name, struct.pack('<IIIIIIII', 0xfeedfacf, 0x100000c, 0, 2, 0, 0, 0, 0))
         (app / name).chmod(0o755)
+    framework = app / 'Contents/Frameworks/Sparkle.framework'
+    for name in ('Headers', 'PrivateHeaders', 'Modules', 'Resources'):
+        (framework / 'Versions/B' / name).mkdir()
+    (framework / 'Versions/Current').symlink_to('B')
+    for name in ('Sparkle', 'Autoupdate', 'Updater.app', 'Headers', 'PrivateHeaders', 'Modules', 'Resources'):
+        (framework / name).symlink_to('Versions/Current/' + name)
     write(app / 'Contents/Resources/AppIcon.icns', b'preassembled icon fixture, not iconutil output')
     write(app / 'Contents/Resources/web/dist/index.html', b'<html>preassembled fixture</html>')
     return source, output, app, mapping
@@ -302,12 +315,17 @@ def run(scratch, stdlib=None):
     manifest_path = app / H['MANIFEST']
     manifest_raw = manifest_path.read_bytes()
     manifest = json.loads(manifest_raw)
+    sparkle_owner = next((r for r in manifest['components'] if r['id'] == 'swift:Sparkle'), None)
+    assert sparkle_owner is not None and sparkle_owner['version'] == '2.10.1', 'pinned Swift owner missing'
+    assert len(sparkle_owner['notices']) == 1
+    sparkle_notice = app / sparkle_owner['notices'][0]['destination']
+    assert hashlib.sha256(sparkle_notice.read_bytes()).hexdigest() == '816be66341dd11b22806862dffd8392b240babaced1cdf24da2ff413ef00c3fd'
     # Only the native compression executable is substituted. The shipping shell
     # and resource/archive/reconciliation readers below are unmodified.
     bindir = scratch / 'bin'
     bindir.mkdir()
     ditto = bindir / 'ditto'
-    ditto.write_text('#!' + sys.executable + '\nimport pathlib,sys,zipfile\napp=pathlib.Path(sys.argv[-2]); dest=pathlib.Path(sys.argv[-1])\nassert sys.argv[1:-2]==["-c","-k","--norsrc","--noextattr","--noqtn","--noacl","--keepParent"]\nwith zipfile.ZipFile(dest,"x",zipfile.ZIP_DEFLATED) as z:\n for p in sorted(app.rglob("*")): z.write(p,"HappyRanch.app/"+p.relative_to(app).as_posix())\n')
+    ditto.write_text('#!' + sys.executable + '\nimport os,pathlib,sys,zipfile\napp=pathlib.Path(sys.argv[-2]); dest=pathlib.Path(sys.argv[-1])\nassert sys.argv[1:-2]==["-c","-k","--norsrc","--noextattr","--noqtn","--noacl","--keepParent"]\nwith zipfile.ZipFile(dest,"x",zipfile.ZIP_DEFLATED) as z:\n for p in sorted(app.rglob("*")):\n  name="HappyRanch.app/"+p.relative_to(app).as_posix()\n  if p.is_symlink():\n   info=zipfile.ZipInfo(name); info.create_system=3; info.external_attr=p.lstat().st_mode<<16; z.writestr(info,os.readlink(p))\n  else: z.write(p,name)\n')
     ditto.chmod(0o755)
     env = dict(os.environ, PATH=str(bindir) + ':' + os.environ['PATH'])
     archive = ['bash', str(SOURCE / 'app/mac/scripts/archive-app.sh'), str(app), str(output), '1.0.1', '1.0.1', SOURCE_SHA, SOURCE_TREE, 'arm64', 'portable-fixture']
@@ -325,6 +343,36 @@ def run(scratch, stdlib=None):
     valid_zip = scratch / 'complete.zip'
     shutil.copyfile(candidate_zip, valid_zip)
     candidate_zip.unlink()  # exact fixture-owned generated archive, for refusal cases
+    # Both the live archive admission and independent ZIP inventory must refuse
+    # non-pinned links, even when a target happens to resolve inside the app.
+    framework = app / 'Contents/Frameworks/Sparkle.framework'
+    for index, (name, target) in enumerate((('extra', 'Versions/B/Resources'),
+            ('Resources', str(framework / 'Versions/B/Resources')),
+            ('Resources', '../../../../outside'))):
+        link = framework / name
+        if link.is_symlink():
+            link.unlink()
+        link.symlink_to(target)
+        refused = call('Sparkle live archive refuses link ' + str(index), archive, expected=1, env=env)
+        assert 'SPARKLE_SYMLINK_REFUSED' in refused.stderr and not candidate_zip.exists()
+        link.unlink()
+        if name == 'Resources':
+            link.symlink_to('Versions/Current/Resources')
+        tampered = scratch / ('sparkle-link-' + str(index) + '.zip')
+        with zipfile.ZipFile(valid_zip) as src, zipfile.ZipFile(tampered, 'x') as dest:
+            member = 'HappyRanch.app/Contents/Frameworks/Sparkle.framework/' + name
+            for entry in src.infolist():
+                dest.writestr(entry, target.encode() if entry.filename == member else src.read(entry))
+            if name == 'extra':
+                entry = zipfile.ZipInfo(member); entry.create_system = 3
+                entry.external_attr = 0o120777 << 16
+                dest.writestr(entry, target.encode())
+        refused = call('Sparkle independent ZIP refuses link ' + str(index),
+            ['bash', str(SOURCE / 'app/mac/scripts/verify-release.sh'), 'reconcile',
+             '--archive', str(tampered), '--receipt', str(output / 'diagnostics/inner-zip.json'),
+             '--version', '1.0.1', '--build', '1.0.1', '--source-sha', SOURCE_SHA,
+             '--source-tree', SOURCE_TREE, '--arch', 'arm64', '--run-id', 'portable-fixture'], expected=1)
+        assert 'SPARKLE_SYMLINK_REFUSED' in refused.stderr
     # Misleading basename and prefix membership must not inherit CPython terms.
     for index, name in enumerate(('lib/vendor/libpython3.12.dylib', 'vendor/Python')):
         bad_source, bad_output, bad_app, _ = fixture(scratch / ('r1-vendor-' + str(index)))
@@ -342,7 +390,7 @@ def run(scratch, stdlib=None):
         bad_archive[2:4] = [str(bad_app), str(bad_output)]
         call('R1 uncollected vendor candidate refuses before archive ' + name, bad_archive, expected=1, env=env)
         assert not (bad_output / candidate_zip.name).exists()
-    for family in ('npm', 'go', 'python', 'asset', 'runtime', 'font'):
+    for family in ('npm', 'go', 'python', 'swift', 'asset', 'runtime', 'font'):
         broken = copy.deepcopy(manifest)
         removed = next(r for r in broken['components'] if (r['family'] == family or (family == 'font' and r['family'] == 'asset' and 'Newsreader' in r['component'])) and r['selection'].startswith('included:'))
         broken['components'].remove(removed)
