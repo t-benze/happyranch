@@ -39,7 +39,9 @@ GREEN = (
 class EnvSanitizerTests(unittest.TestCase):
     def test_dispatcher_accepts_and_routes_suite(self) -> None:
         result = subprocess.run(
-            [sys.executable, "-B", str(Path(probe.__file__)), "--suite", "env-sanitizer"],
+            [sys.executable, "-B", "-c",
+             "from scripts.mac_native import probe; probe.sys.platform = 'linux'; raise SystemExit(probe.main())",
+             "--suite", "env-sanitizer"],
             capture_output=True, text=True, timeout=10,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -155,15 +157,16 @@ class EnvSanitizerTests(unittest.TestCase):
             (RED.replace(b'"USER and LOGNAME pass through only when present in parent"', b'otherTest()'), False),
             (RED + b'error: fatalError\n', False),
             (RED.replace(b'Test run with 7 tests', b'Test run with 0 tests'), False),
+            (RED + b'Test noExtraVariablesLeak() failed\n', True),
         )
         for output, expected in variants:
             with self.subTest(output=output):
-                self.assertEqual(suite._red_attributable(1, output.decode()), expected)
-        self.assertFalse(suite._red_attributable(-9, RED.decode()))
-        self.assertEqual(suite._named_results(RED.decode(), "recorded an issue|failed"),
-                         ["userAndLognameConditionalPassThrough"])
-        self.assertEqual(suite._named_results('Test noExtraVariablesLeak() failed', "failed"),
-                         ["noExtraVariablesLeak"])
+                report, _ = self.exercise((1, output), (0, GREEN), "PASS" if expected else "FAIL")
+                self.assertEqual(report["env_sanitizer"]["red"]["attributable"], expected)
+                if output.endswith(b'Test noExtraVariablesLeak() failed\n'):
+                    self.assertEqual(report["env_sanitizer"]["red"]["failed_tests"],
+                                     ["userAndLognameConditionalPassThrough", "noExtraVariablesLeak"])
+        self.exercise((-9, RED), (0, GREEN), "FAIL")
 
     def test_public_fetch_is_pinned_and_credential_free(self) -> None:
         _, calls = self.exercise((1, RED), (0, GREEN), "PASS")
