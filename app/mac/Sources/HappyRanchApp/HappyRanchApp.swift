@@ -16,6 +16,14 @@ struct HappyRanchApp: App {
         .commands {
             CommandGroup(replacing: .newItem) {}
 
+            CommandGroup(after: .appInfo) {
+                Button("Check for Updates…") { appDelegate.checkForUpdates() }
+                    .disabled(!appDelegate.canCheckForUpdates || appDelegate.hasPendingUpdate)
+                if appDelegate.hasPendingUpdate {
+                    Button("Install Downloaded Update…") { appDelegate.resumePendingUpdate() }
+                }
+            }
+
             CommandMenu("Daemon") {
                 Button("Start Daemon") {
                     appDelegate.startDaemon()

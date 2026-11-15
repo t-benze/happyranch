@@ -141,20 +141,88 @@ framework links are allowed: `Versions/Current -> B` and `Sparkle`, `Resources`,
 `Headers`, `PrivateHeaders`, `Modules`, `Autoupdate`, `Updater.app` each pointing
 to `Versions/Current/<name>`. Other app/archive links are refused.
 
-The app constructs an updater with `startingUpdater: false`. It never starts,
-checks, presents an update menu item, or installs. PR2 adds the install gate.
-The built plist contains `SUFeedURL=https://app.happyranch.ai/mac/appcast.xml`,
-`SUEnableAutomaticChecks=false` and `SUAutomaticallyUpdate=false`. Optional
-`--sparkle-public-key PUBLIC_KEY` accepts canonical base64 of exactly 32 bytes;
-without it `SUPublicEDKey` is omitted. This input is a public key only; the
-build does not generate or handle any private key. The notice manifest includes
+The app constructs an updater with `startingUpdater: false` and starts it only
+when the bundle has a canonical base64 `SUPublicEDKey` of exactly 32 bytes.
+Optional `--sparkle-public-key PUBLIC_KEY` is validated before building. With
+a key the build writes `SUEnableAutomaticChecks=true` and
+`SUAutomaticallyUpdate=true` for silent checks/downloads; without one the key
+is omitted and both settings stay false. The fixed feed is
+`https://app.happyranch.ai/mac/appcast.xml`. A missing/invalid key leaves
+Check for Updates disabled and records the reason in Diagnostics → Updates.
+No private key is generated or handled. The notice manifest includes
 `swift:Sparkle` and the release's complete LICENSE with all four external licences.
+
+Every Sparkle relaunch request, including its scheduled/impatient prompt,
+is postponed through `SPUUpdaterDelegate`. The pure `UpdateGate` policy lives
+in HappyRanchSupervisor. For a live owned daemon it reads the public loopback
+`GET /api/v1/health` field `update_busy` (see the [API contract](../../docs/agent-guides/web-and-cli.md#update-readiness-health-field)).
+The old `host_sessions.admission.active` gauge measures attempt capacity;
+it does not cover durable jobs or logical invocations during retry backoff.
+The new observation includes those producers and retained running job rows.
+Missing/invalid data, an older daemon without the field, HTTP failures,
+timeouts, unreadable port files or any unavailable producer mean BUSY.
+Requests stay on loopback; redirects are refused.
+
+| Condition or choice | Result |
+| --- | --- |
+| Owned daemon, idle snapshot | Ask “Restart HappyRanch to install the update?” with Restart now / Later; never stop automatically |
+| Owned daemon, busy | Update when they finish / Update now and stop them / Later |
+| Update when they finish | Re-read every five seconds; when idle, show the restart confirmation and wait for a new click |
+| Restart now | Fresh re-read immediately before stop; busy/unknown returns to the busy prompt |
+| Update now and stop them | Fresh known status; explicit consent permits stopping busy work |
+| Unknown work status | Hold; immediate update disabled; wait/retry or Later only |
+| Either authorized stop | Existing TERM/KILL stop; confirm the same child exited, then release Sparkle's block once |
+| Later | Hold without polling; Install Downloaded Update in the app menu resumes the gate |
+| Stop incomplete | Never release; retain old app and existing Stop incomplete state; manual resume may retry |
+| External daemon or CLIENT | Release directly; no signal sent to the daemon |
+| Plain Quit | Existing owned-daemon stop/exit path; Sparkle installs after app exit, without a relaunch-block call |
+
+The confirmation explicitly warns that work starting before the stop will be
+interrupted. The read-only observation is not an admission lock: a residual
+click-to-TERM window remains, covered by that explicit consent. No drain or
+admission-close route is added. Plain Quit still exits if its bounded stop
+fails; Sparkle may then install while the old daemon survives. On next launch
+existing discovery treats that daemon as external.
+
+Check for Updates is user-initiated. Pending relaunches disable that action;
+Install Downloaded Update lets the user revisit Later. Updater startup/abort and
+download errors are retained in a bounded, redacted Diagnostics → Updates log
+and its JSON export. Background errors produce no app-owned alert. The first
+launch from Downloads, `/Volumes`, a read-only volume or AppTranslocation shows
+one notice asking the user to move the app to Applications and reopen it.
+
+On an authorized Mac at the exact PR head, run:
+
+```sh
+swift test --package-path app/mac --filter 'UpdateGateTests|UpdateConfigurationTests'
+```
+
+Linux has no Swift/macOS toolchain: those tests and their old-behavior RED proof
+are **NOT RUN** here. The existing `happyranch-mac-native-probe` `packaged` suite
+runs `build-app.sh` (which uses `swift build`), installs/launches/drives the app
+and collects process evidence. After numbered steps 1–7 pass and the daemon has
+stopped, it also runs the command above, using the supervisor's existing
+toolchain discovery and private SwiftPM/cache/environment helpers. This required
+result lives at `probe.json.packaged.update_tests`; numbered steps 1–8 and the
+outer EXIT receipt stay unchanged. A test failure preserves packaged step and
+build evidence but makes the suite fail. The test command has at most 600 seconds
+within a shared 4800-second suite deadline, 1 MiB combined output, a 2 KiB tail,
+SHA-256/byte count and bounded named test results. It requires exit 0, a nonzero
+test run and at least one executed-and-passed child in each actual suite type
+(`--verbose` exposes their identities; `--no-parallel` preserves child ownership
+between suite start/end lines). Skipped, cancelled or failed test/suite results
+fail acceptance, for Swift Testing and XCTest alike. Timeout, output overflow,
+missing results or unavailable tooling fail; interrupted output is explicitly unavailable, never a test pass.
+HOME, temporary files, SwiftPM paths and compiler caches stay under job scratch;
+the job's existing 90-minute / 256 MiB-file envelope is unchanged. Its separate
+`supervisor` suite retains its existing filter. No job configuration is changed.
+The manager owns the budgeted native run and signed update proof.
 
 The existing **1.0.1-pinned signing package cannot sign this Sparkle build**.
 Signing-script and code-inventory changes belong to PR3 and are not included here.
 After review and QA, the separately authorized native packaged run must observe
 the embedded framework, all eight links resolving, no XPCServices, successful app
-launch with the updater inert, every packaged step passing, and the archive notice
+launch with the updater inert when no key is supplied, every packaged step passing, and the archive notice
 check passing. Linux script checks do not establish any of those native outcomes.
 
 The managed remote-access sidecar is built separately from

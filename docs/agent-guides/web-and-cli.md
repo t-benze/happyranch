@@ -3315,9 +3315,46 @@ merge, deployment or whole-feature completion.
 `uv run python scripts/generate_openapi_snapshot.py --check` (also the default)
 compares exact summary bytes without writing or starting a daemon lifespan.
 After review, `uv run python scripts/generate_openapi_snapshot.py --write`
-atomically replaces `tests/contract/openapi.json`. The summarizer preserves workflow input discriminators. The former Python
+atomically replaces `tests/contract/openapi.json`. The summarizer preserves workflow input discriminators and the health update field/count names. The former Python
 contract test is retired; Web/Swift still consume the snapshot and route
 classification. This operator does not run tests.
+
+
+### Update readiness health field
+
+Public `GET /api/v1/health` adds exactly one read-only field, `update_busy`:
+`{busy: boolean, unknown: boolean, counts: {host_active, host_queued,
+jobs_inflight, jobs_nonterminal, invocations_nonterminal}}`. Each count is
+an integer capped at 1000, or null when unavailable; counts may overlap and
+must not be presented as distinct sessions. `unknown=true` always implies
+`busy=true`. There are no IDs, paths, exception strings or per-row lists.
+Status, active_runtime and optional host_sessions keep their meanings.
+
+The host snapshot is read first. The async route then performs a synchronous,
+no-await read of loop-owned task queue/native-owner sets, runner lifetimes,
+thread/dream/wake/schedule queue ownership and durable job registrations
+(including retained unfinished tails). Existing task preparation, thread
+control and native producer/writer registries also count after an async runner
+returns; their ownership is only observed, never changed. Those owners precede
+admission and outlive attempt release/backoff. Task session bindings are read after host
+admission, so a lease granted between active/queue reads cannot erase its
+logical owner. Retained pending/running jobs, pending thread invocations,
+running dreams/work hours and firing schedules are counted through existing
+status indexes, with at most 1000 matches per lookup and 64 attached orgs.
+Only nonterminal indexed matches are read; terminal history is not scanned.
+The shared DB-lock waits use the remaining cumulative 250ms observation
+allowance; bound exhaustion, missing indexes, raising/unwired producers,
+retiring/held/broken org inventory, unhealthy host, shutdown or residue returns
+unknown/BUSY. This is a bounded observation, not a hard real-time guarantee
+for existing host, membership, tracker locks or SQLite I/O.
+
+The Mac app consumes only this field. Missing fields/old daemons and invalid
+or inconsistent counts are unknown/BUSY. Idle only prompts for explicit
+Restart now consent; wait-to-idle re-prompts. Immediately before TERM a fresh
+read must still be idle, unless the user chose Update now and stop them.
+The dialog warns that newly arriving work can be interrupted during the
+remaining click-to-TERM window. This snapshot supplies no drain, exclusion,
+write route, authentication change or automatic stop authority.
 
 
 ## Root task Pause and Resume (THR-292)

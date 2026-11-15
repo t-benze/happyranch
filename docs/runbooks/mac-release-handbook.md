@@ -6,17 +6,71 @@ a copy, submits it once to Apple, then staples and verifies another copy. That
 produces a **different signed/notarized/stapled ZIP with a new SHA256**.
 Signing is not publication. Never create a public release or upload here.
 
-The Sparkle PR1 build embeds pinned **Sparkle 2.10.1** and retains an updater
-controller with `startingUpdater: false`; there are no update checks, menu item,
-or installations. Its feed is `https://app.happyranch.ai/mac/appcast.xml`, with
-both `SUEnableAutomaticChecks` and `SUAutomaticallyUpdate` false. Optional build
-argument `--sparkle-public-key PUBLIC_KEY` requires canonical base64 of exactly
-32 bytes; omission leaves `SUPublicEDKey` absent. Only the founder supplies the
-public key; no private key or key generation is part of this build.
+The app embeds pinned **Sparkle 2.10.1**. The updater starts only when the
+bundle's `SUPublicEDKey` is canonical base64 of exactly 32 bytes. Optional build
+argument `--sparkle-public-key PUBLIC_KEY` retains strict validation. With a
+valid key the build writes `SUEnableAutomaticChecks=YES` and
+`SUAutomaticallyUpdate=YES` (silent check/download); without one it omits the
+key, writes both false, leaves the updater unstarted and disables Check for
+Updates. The feed stays `https://app.happyranch.ai/mac/appcast.xml`. Only the
+founder supplies the public key; no private key or generation is part of this build.
+
+Relaunch requests always enter the app's postpone gate, including Sparkle's
+scheduled/impatient prompt. The app consumes only the new read-only
+`update_busy` aggregate on `GET /api/v1/health`. The former host admission gauge
+counts attempt capacity and misses durable jobs and invocation retry gaps.
+The new field covers logical/native owners, queues and indexed nonterminal
+producer rows, including retained running jobs with unknown native liveness.
+An old daemon, missing/invalid data or an unavailable producer stays BUSY.
+See the [health contract](../agent-guides/web-and-cli.md#update-readiness-health-field).
+
+An idle snapshot only presents Restart now / Later, with an explicit warning
+that work starting before the stop will be interrupted. Update when they
+finish polls every five seconds and re-presents this confirmation at idle;
+it never auto-stops. Restart now performs a fresh read immediately before
+TERM and returns to the busy prompt if busy/unknown. Update now and stop them
+also re-reads and permits stopping known busy work by explicit consent.
+Unavailable status disables immediate update. Either authorized stop must
+confirm the same daemon exited before invoking the held Sparkle block.
+Stop incomplete keeps the old app alive and never releases it. External
+daemons and CLIENT role pass through without signaling a daemon.
+
+Install on quit keeps the existing Quit/stop path; Sparkle installs after app
+exit. A daemon surviving Quit's bounded TERM/KILL remains possible: the app
+still exits and next-launch discovery treats the survivor as external. The
+read-only observation is not an admission fence; the residual click-to-TERM
+window is covered by the user's explicit warning/consent. Native acceptance
+must cover that limitation and the prompt, wait, explicit-now and failed-stop
+paths. Startup/abort/download failures are logged in Diagnostics → Updates,
+without an app-owned alert for background checks. A one-time notice for
+Downloads/disk-image/translocated launches asks the user to move to Applications.
+See the [behavior matrix and native command](../../app/mac/README.md#internal-candidate-build).
+
+**Native verification is manager-owned and NOT RUN on Linux.** At the exact PR
+head, on the authorized Mac run
+`swift test --package-path app/mac --filter 'UpdateGateTests|UpdateConfigurationTests'`.
+The existing `happyranch-mac-native-probe` `packaged` suite builds the app via
+`build-app.sh`/`swift build`, installs and drives it. After steps 1–7 pass and
+the daemon stops, the required `packaged.update_tests` result runs that filtered
+Swift test command with the supervisor's existing toolchain and scratch helpers.
+The numbered steps and step-8 outer EXIT collector remain unchanged, preserving
+build/packaged evidence on a test failure. Tests have at most 600 seconds within
+the shared 4800-second suite deadline and 1 MiB output, under the existing
+90-minute / 256 MiB-file job envelope. The report retains argv, exit, byte count,
+SHA-256, a 2 KiB tail and bounded per-test results. Exit 0, a nonzero test run and
+at least one executed-and-passed child in each suite type are required. The
+command uses `--verbose --no-parallel` to preserve Swift Testing child ownership;
+Swift Testing and XCTest skipped, cancelled or failed test/suite results fail
+acceptance. Timeout, overflow, absent results and missing toolchain fail the suite.
+Its `supervisor` filter and Jenkins configuration remain unchanged. Linux portable harness checks do not execute Swift.
+Signed N→N+1, daemon data continuity, install on quit, scheduled prompts and
+signature refusal still require the founder's signed builds and manager's
+budgeted native venue. Build numbers must strictly increase for every published
+archive; skipped-version upgrades remain additive and manual downgrade is unsupported.
 
 **The 1.0.1-pinned signing package below cannot sign this Sparkle build yet.**
 Both signing scripts, signing inventory and Jenkins signing source remain
-unchanged in PR1; their Sparkle changes and new artifact pins belong to PR3.
+unchanged in PR1/PR2; their Sparkle changes and new artifact pins belong to PR3.
 Use the existing pinned procedure only for its original pinned artifact.
 The unsigned build embeds `Contents/Frameworks/Sparkle.framework`, preserves
 its eight known relative links, and removes both XPC services and their alias.
@@ -25,9 +79,9 @@ that directory. Sparkle's full release LICENSE, including bsdiff/bspatch,
 sais-lite, portable Ed25519 and SUSignatureVerifier terms, ships under the
 `swift:Sparkle` notice owner. See the [build details](../../app/mac/README.md#internal-candidate-build).
 
-PR1's native acceptance remains a separately budgeted packaged run after
+Native packaged acceptance remains a separately budgeted packaged run after
 independent review and QA: observe the framework in the bundle, all eight links
-resolving, XPCServices absent, successful app launch with the updater inert,
+resolving, XPCServices absent, successful app launch (updater inert without a public key),
 all packaged steps passing, and archive notices passing. Swift compilation,
 runtime loading and native launch cannot be verified by the Linux script tests.
 

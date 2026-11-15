@@ -26,6 +26,17 @@ def _summarize(schema: dict) -> dict:
                 "params": params,
                 "responses": responses,
             }
+            if path == '/api/v1/health' and method.upper() == 'GET':
+                # Pin the new read-only update contract as well as route shape.
+                components = schema['components']['schemas']
+                response = op['responses']['200']['content']['application/json']['schema']
+                model = components[response['$ref'].rsplit('/', 1)[1]]
+                busy = model['properties']['update_busy']
+                busy_model = components[busy['$ref'].rsplit('/', 1)[1]]
+                counts = busy_model['properties']['counts']
+                counts_model = components[counts['$ref'].rsplit('/', 1)[1]]
+                path_summary['GET']['update_busy_fields'] = sorted(busy_model['properties'])
+                path_summary['GET']['update_busy_counts'] = sorted(counts_model['properties'])
             if path == '/api/v1/orgs/{slug}/workflows/activations' and method.upper() == 'POST':
                 body = op['requestBody']['content']['application/json']['schema']
                 path_summary['POST']['input_discriminators'] = [branch['properties']['inputs']['items']['discriminator'] for branch in body['anyOf']]

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import base64
 import copy
 import hashlib
 import importlib.metadata
@@ -455,6 +456,23 @@ def run(scratch, stdlib=None):
     REPORT.append(dict(label='case4 multiple versions/shared authentic original/platform optional/build-only selections', exit=0, owners=len(manifest['components'])))
     plist_path = app / 'Contents/Info.plist'
     original_plist = plist_path.read_bytes()
+    basic_command = ['bash', str(SOURCE / 'app/mac/scripts/verify-release.sh'), 'basic', '--app', str(app)]
+    keyed = plistlib.loads(original_plist)
+    keyed.update(SUPublicEDKey=base64.b64encode(bytes(range(32))).decode(),
+                 SUEnableAutomaticChecks=True, SUAutomaticallyUpdate=True)
+    write(plist_path, plistlib.dumps(keyed))
+    call('case6 keyed updater settings accepted', basic_command)
+    for setting in ('SUEnableAutomaticChecks', 'SUAutomaticallyUpdate'):
+        changed = dict(keyed); changed[setting] = False
+        write(plist_path, plistlib.dumps(changed))
+        refused = call('case6 keyed updater rejects disabled ' + setting, basic_command, expected=1)
+        assert 'APP_SPARKLE_SETTINGS_INVALID' in refused.stderr
+    unkeyed = plistlib.loads(original_plist)
+    unkeyed['SUEnableAutomaticChecks'] = True
+    write(plist_path, plistlib.dumps(unkeyed))
+    refused = call('case6 unkeyed updater rejects enabled checks', basic_command, expected=1)
+    assert 'APP_SPARKLE_SETTINGS_INVALID' in refused.stderr
+    write(plist_path, original_plist)
     for key, value in [('CFBundleExecutable', 'Other'), ('CFBundlePackageType', 'BNDL'), ('CFBundleVersion', ''), ('LSMinimumSystemVersion', '13.0')]:
         changed = plistlib.loads(original_plist); changed[key] = value
         write(plist_path, plistlib.dumps(changed))

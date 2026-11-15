@@ -18,11 +18,245 @@ import sys
 import tempfile
 import threading
 from types import ModuleType
+from typing import Any
 import unittest
 import warnings
 from unittest.mock import patch
 
 from scripts.mac_native import suite_packaged as suite
+from scripts.mac_native import suite_supervisor as supervisor
+
+
+class PackagedUpdateTests(unittest.TestCase):
+    OUTPUT = (
+        '◇ Suite "Update gate" (aka \'UpdateGateTests\') started.\n'
+        '✔ Test "idle update" passed after 0.001 seconds.\n'
+        '✔ Suite "Update gate" (aka \'UpdateGateTests\') passed after 0.002 seconds.\n'
+        '◇ Suite "Update inputs" (aka \'UpdateConfigurationTests\') started.\n'
+        '✔ Test "key validation" passed after 0.001 seconds.\n'
+        '✔ Suite "Update inputs" (aka \'UpdateConfigurationTests\') passed after 0.002 seconds.\n'
+        '✔ Test run with 2 tests in 2 suites passed after 0.003 seconds.\n'
+    ).encode()
+
+    XCTEST_OUTPUT = (
+        "Test Suite 'UpdateGateTests' started at 2026-11-15 01:00:00.000.\n"
+        "Test Case '-[HappyRanchAppTests.UpdateGateTests testIdle]' passed (0.001 seconds).\n"
+        "Test Suite 'UpdateGateTests' passed at 2026-11-15 01:00:00.001.\n"
+        "Test Suite 'UpdateConfigurationTests' started at 2026-11-15 01:00:00.002.\n"
+        "Test Case '-[HappyRanchSupervisorTests.UpdateConfigurationTests testKeys]' passed (0.001 seconds).\n"
+        "Test Suite 'UpdateConfigurationTests' passed at 2026-11-15 01:00:00.003.\n"
+        "Executed 2 tests, with 0 failures (0 unexpected) in 0.003 seconds\n"
+    ).encode()
+
+    def run_case(self, result: tuple[int, bytes] | Exception = (0, OUTPUT), *,
+                 missing_toolchain: bool = False) -> tuple[dict[str, Any], list[Any], RuntimeError | None]:
+        """Drive real packaged orchestration; fake only unavailable Mac boundaries."""
+        from unittest.mock import Mock
+        report, calls = {}, []
+        with tempfile.TemporaryDirectory() as folder:
+            scratch = Path(folder).resolve()
+            source = scratch / 'source'
+            source.mkdir()
+            swift = scratch / 'swift'
+            swift.touch()
+            state = dict(launched=False, started=False, cancelled=False, stopped=False)
+            def census() -> list[dict[str, Any]]:
+                if not state['launched'] or state['stopped']:
+                    return []
+                rows = [dict(pid=999999, ppid=1, pgid=999999, state='S',
+                             start_identity='Sat Nov 14 05:00:00 2026', executable='/synthetic/daemon')]
+                if state['started'] and not state['cancelled']:
+                    rows += [dict(pid=pid, ppid=parent, pgid=900002, state='S',
+                                  start_identity='Sat Nov 14 05:00:00 2026', executable='/synthetic/session')
+                             for pid, parent in ((900002, 999999), (900004, 900002))]
+                return rows
+            def checked(argv: list[str], *_args: Any, **_kwargs: Any) -> dict[str, Any]:
+                if argv[0] == '/usr/bin/ditto':
+                    shutil.copytree(argv[1], argv[2])
+                return dict(exit_code=0, tail='a' * 40)
+            def command(argv: list[str], *_args: Any, **_kwargs: Any) -> dict[str, Any]:
+                if '--output-dir' in argv:
+                    app = Path(argv[argv.index('--output-dir') + 1]) / 'HappyRanch.app'
+                    for name in ('Contents/MacOS/HappyRanch', 'Contents/Resources/daemon/happyranch-daemon',
+                                 'Contents/Resources/daemon/happyranch'):
+                        path = app / name
+                        path.parent.mkdir(parents=True, exist_ok=True)
+                        path.write_bytes(b'SYNTHETIC; never executed')
+                return dict(exit_code=0, tail='a' * 40 + ' commit synthetic')
+            def launch(*_args: Any, **kwargs: Any) -> Mock:
+                home = kwargs['cwd']
+                (home / 'daemon.port').write_text('1234')
+                (home / 'daemon.token').write_text('synthetic-placeholder')
+                state['launched'] = True
+                proc = Mock(pid=999999, returncode=0)
+                proc.poll.return_value = None
+                proc.terminate.side_effect = lambda: state.update(stopped=True)
+                return proc
+            def api_json(_self: Any, path: str, *_args: Any, **_kwargs: Any) -> dict[str, Any]:
+                if path == '/api/v1/orgs/packaged/tasks':
+                    state['started'] = True
+                    marker = scratch / 'packaged/runtime/orgs/packaged/workspaces/packaged_agent/packaged-session.json'
+                    marker.parent.mkdir(parents=True)
+                    marker.write_text(json.dumps(dict(pid=900002, child=900004, pgid=900002, session_id='synthetic')))
+                    return dict(task_id='TASK-001')
+                if path.endswith('/cancel'):
+                    state['cancelled'] = True
+                if '/audit?' in path:
+                    return dict(entries=[dict(id=1, action='root_worktree_reconciliation_finished',
+                        payload=dict(outcomes=[dict(task_id='TASK-001')]))])
+                return {}
+            def swift_command(argv: list[str], env: dict[str, str], cwd: Path,
+                              deadline: float, **kwargs: Any) -> tuple[int, bytes]:
+                if 'test' in argv:
+                    calls.append((argv, env, cwd, deadline, kwargs))
+                    if isinstance(result, Exception):
+                        raise result
+                    return result
+                if missing_toolchain:
+                    return 127, b'missing synthetic toolchain'
+                if '--version' in argv:
+                    return 0, b'Apple Swift version 6.3.2'
+                return 0, str(swift if '--find' in argv else scratch).encode()
+            backend = dict(name='macos-process-group', healthy=True,
+                           capabilities={'kills_tree_best_effort': 'best_effort'})
+            with (patch.object(suite, 'ROOT', source),
+                  patch.dict(os.environ, {'TMPDIR': str(scratch / 'tmp'), 'SOURCE_SHA': 'a' * 40,
+                                          'WORKSPACE': str(scratch)}),
+                  patch.object(suite, 'census', side_effect=census),
+                  patch.object(suite, 'checked', side_effect=checked),
+                  patch.object(suite, 'command', side_effect=command),
+                  patch.object(suite, 'retain_product', return_value={'status': 'synthetic retained ZIP'}),
+                  patch.object(suite.subprocess, 'Popen', side_effect=launch),
+                  patch.object(suite, 'health_and_web', return_value=dict(name='health_and_web', status='PASS', backend=backend)),
+                  patch.object(suite.Api, 'json', api_json),
+                  patch('scripts.mac_native.suite_toolchain.executor_feasibility', return_value={
+                      'executors': {'codex': {'auth_status': 'CREDENTIALS_PRESENT_SESSION_UNTESTED'}}}),
+                  patch('scripts.mac_native.toolchain.provision', return_value=dict(os.environ)),
+                  patch.object(supervisor, '_command', side_effect=swift_command)):
+                error = None
+                try:
+                    suite.run(report)
+                except RuntimeError as exc:
+                    error = exc
+            self.assertTrue(all(report['steps'][str(i)]['status'] == 'PASS' for i in range(1, 8)), report)
+            self.assertEqual(report['steps']['8']['status'], 'NOT_RUN')
+            # Collector must retain the test verdict after outer scratch removal.
+            from scripts.mac_native.collect_packaged import join_exit_receipt
+            joined = join_exit_receipt(dict(report, suite='packaged', platform='darwin'),
+                'source_sha=' + 'a' * 40 + '\nsuite=packaged\nscratch_removed=true\n', 'a' * 40)
+            self.assertEqual(joined['packaged'], report['packaged'])
+            return report, calls, error
+
+    def test_packaged_update_tests_pass_with_both_classes(self) -> None:
+        report, calls, error = self.run_case()
+        self.assertIsNone(error)
+        row = report['packaged'].get('update_tests', {})
+        self.assertEqual(row.get('status'), 'PASS', row)
+        self.assertEqual(row['executed_classes'], ['UpdateGateTests', 'UpdateConfigurationTests'])
+        self.assertEqual(row['exit_code'], 0)
+        self.assertEqual(row['output_bytes'], len(self.OUTPUT))
+        self.assertEqual(row['sha256'], hashlib.sha256(self.OUTPUT).hexdigest())
+        self.assertEqual(row['test_results']['lines'], [line for line in self.OUTPUT.decode().splitlines() if ' started.' not in line])
+        self.assertLessEqual(len(row['tail'].encode()), 2048)
+        argv, env, cwd, deadline, kwargs = calls[0]
+        self.assertEqual(row['command'], argv)
+        self.assertEqual(argv[argv.index('--filter') + 1], 'UpdateGateTests|UpdateConfigurationTests')
+        self.assertIn('--verbose', argv)
+        self.assertIn('--no-parallel', argv)
+        self.assertEqual(kwargs['output_cap'], 1024 * 1024)
+        self.assertLessEqual(deadline - suite.time.monotonic(), 600)
+        for key in ('HOME', 'CFFIXED_USER_HOME', 'TMPDIR', 'XDG_CACHE_HOME', 'CLANG_MODULE_CACHE_PATH',
+                    'SWIFT_MODULECACHE_PATH', 'SWIFTPM_MODULECACHE_OVERRIDE', 'SDK_STAT_CACHE_DIR'):
+            self.assertTrue(Path(env[key]).is_relative_to(cwd), key)
+        for flag in ('--scratch-path', '--cache-path', '--config-path', '--security-path'):
+            self.assertTrue(Path(argv[argv.index(flag) + 1]).is_relative_to(cwd), flag)
+        # SwiftPM may emit separate summaries for multiple test products.
+        report, _, error = self.run_case((0, self.OUTPUT + b'Test run with 0 tests passed after 0.001 seconds.\n'))
+        self.assertIsNone(error)
+        self.assertEqual(report['packaged']['update_tests']['status'], 'PASS')
+        report, _, error = self.run_case((0, self.XCTEST_OUTPUT))
+        self.assertIsNone(error)
+        self.assertEqual(report['packaged']['update_tests']['executed_classes'],
+                         ['UpdateGateTests', 'UpdateConfigurationTests'])
+
+    def test_packaged_update_tests_fail_nonzero(self) -> None:
+        report, _, error = self.run_case((1, self.OUTPUT))
+        self.assertIsNotNone(error, 'packaged suite accepted failed Swift command')
+        self.assertEqual(report['packaged']['update_tests']['status'], 'FAIL')
+        self.assertEqual(report['packaged']['update_tests']['exit_code'], 1)
+
+    def test_packaged_update_tests_fail_zero_or_missing_class(self) -> None:
+        reviewer_output = b'\n'.join(line for line in self.OUTPUT.split(b'\n') if b' started.' not in line)
+        for output in (reviewer_output.replace(b'Test "idle update" passed after 0.001 seconds.',
+                                              b'Test "idle update" skipped: "disabled"'),
+                       reviewer_output.replace(b'Test "key validation" passed after 0.001 seconds.',
+                                               b'Test "key validation" skipped: "disabled"'),
+                       b'Build complete!\nTest run with 0 tests passed after 0.001 seconds.\n',
+                       self.OUTPUT.replace(b'UpdateGateTests', b'OtherTests'),
+                       self.OUTPUT.replace(b'UpdateConfigurationTests', b'OtherTests'),
+                       self.OUTPUT.replace(b'with 2 tests', b'with 0 tests'),
+                       self.OUTPUT.replace(b' passed after', b' skipped after'),
+                       b'Compiling UpdateGateTests UpdateConfigurationTests\n',
+                       # The same skipped children with real suite-start lines.
+                       self.OUTPUT.replace(b'Test "idle update" passed after 0.001 seconds.',
+                                           b'Test "idle update" skipped: "disabled"'),
+                       self.OUTPUT.replace(b'Test "key validation" passed after 0.001 seconds.',
+                                           b'Test "key validation" skipped: "disabled"'),
+                       self.OUTPUT.replace(b'Test "idle update" passed after',
+                                           b'Test "idle update" was cancelled after'),
+                       self.OUTPUT.replace(b'Test "key validation" passed after',
+                                           b'Test "key validation" was cancelled after'),
+                       self.OUTPUT.replace(b'Test "idle update" passed after',
+                                           b'Test "idle update" failed after'),
+                       self.OUTPUT.replace(b'Test "key validation" passed after',
+                                           b'Test "key validation" failed after'),
+                       self.OUTPUT.replace('✔ Test "idle update" passed after 0.001 seconds.\n'.encode(), b''),
+                       self.OUTPUT.replace('✔ Test "key validation" passed after 0.001 seconds.\n'.encode(), b''),
+                       self.OUTPUT.replace(
+                           b"(aka 'UpdateGateTests') started.", b"(aka 'OtherTests') started.")):
+            with self.subTest(output=output):
+                report, _, error = self.run_case((0, output))
+                self.assertIsNotNone(error, 'packaged suite accepted absent executed results')
+                self.assertEqual(report['packaged']['update_tests']['status'], 'FAIL')
+
+        # Keep passed children in BOTH classes: negative terminals must veto
+        # even when each class also has positive executed-child evidence.
+        for name, child in (('UpdateGateTests', 'testIdle'), ('UpdateConfigurationTests', 'testKeys')):
+            for status in ('skipped', 'was cancelled', 'failed'):
+                for output in (
+                    self.XCTEST_OUTPUT + f"Test Case '-[Tests.{name} {child}]' {status} (0.001 seconds).\n".encode(),
+                    self.XCTEST_OUTPUT.replace(f"Test Suite '{name}' passed at".encode(),
+                                               f"Test Suite '{name}' {status} at".encode()),
+                    self.OUTPUT + (f"Suite {name} started.\n"
+                                   f'Test "extra child" {status} after 0.001 seconds.\n'
+                                   f"Suite {name} passed after 0.002 seconds.\n").encode(),
+                    self.OUTPUT.replace(f"(aka '{name}') passed after".encode(),
+                                        f"(aka '{name}') {status} after".encode()),
+                ):
+                    with self.subTest(name=name, status=status, output=output):
+                        report, _, error = self.run_case((0, output))
+                        self.assertIsNotNone(error, 'packaged suite accepted a negative target result')
+                        self.assertEqual(report['packaged']['update_tests']['status'], 'FAIL')
+
+    def test_packaged_update_tests_fail_timeout_or_output_cap(self) -> None:
+        for error_kind in (TimeoutError('synthetic deadline'), subprocess.TimeoutExpired('swift', 600),
+                           RuntimeError('supervisor command output cap exceeded')):
+            with self.subTest(error=type(error_kind).__name__):
+                report, _, error = self.run_case(error_kind)
+                self.assertIsNotNone(error, 'packaged suite accepted incomplete Swift command')
+                row = report['packaged']['update_tests']
+                self.assertEqual(row['status'], 'FAIL')
+                self.assertIsNone(row['exit_code'])
+                self.assertIn(type(error_kind).__name__, row['error'])
+
+    def test_packaged_update_tests_fail_missing_toolchain(self) -> None:
+        report, calls, error = self.run_case(missing_toolchain=True)
+        self.assertIsNotNone(error, 'packaged suite accepted unavailable toolchain')
+        self.assertEqual(calls, [])
+        row = report['packaged']['update_tests']
+        self.assertEqual(row['status'], 'FAIL')
+        self.assertEqual(len(row['toolchain']), 4)
+        self.assertTrue(all(item['status'] == 'UNAVAILABLE' for item in row['toolchain']))
 
 
 class SparklePackagingTests(unittest.TestCase):
@@ -85,7 +319,7 @@ class SparklePackagingTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 2, result.stderr)
                 self.assertIn(error, result.stderr)
 
-    def test_sparkle_plist_omits_absent_key_and_keeps_updates_inert(self) -> None:
+    def test_sparkle_plist_enables_updates_only_with_public_key(self) -> None:
         import base64
         script = Path(__file__).resolve().parents[2] / 'app/mac/scripts/sparkle_bundle.py'
         key = base64.b64encode(bytes(range(32))).decode()
@@ -99,8 +333,8 @@ class SparklePackagingTests(unittest.TestCase):
                     self.assertEqual(result.returncode, 0, result.stderr)
                     data = plistlib.loads(path.read_bytes())
                     self.assertEqual(data['SUFeedURL'], 'https://app.happyranch.ai/mac/appcast.xml')
-                    self.assertIs(data['SUEnableAutomaticChecks'], False)
-                    self.assertIs(data['SUAutomaticallyUpdate'], False)
+                    self.assertIs(data['SUEnableAutomaticChecks'], bool(value))
+                    self.assertIs(data['SUAutomaticallyUpdate'], bool(value))
                     self.assertEqual(data['CFBundleExecutable'], 'HappyRanch')
                     if value:
                         self.assertEqual(data['SUPublicEDKey'], value)

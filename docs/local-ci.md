@@ -3255,3 +3255,17 @@ at the final clean head; authenticate actual terminal `jobs show`/`jobs output`
 before claiming a pass. This adds no CI lane, required check or Product E2E run.
 Inline load checks remain until I2; the daily report is I1b. See the
 [I1a contract](superpowers/specs/2026-11-14-automatic-workflow-setup.md).
+
+
+Focused update-readiness checks (TASK-16297 / THR-346): run
+`python -B scripts/check_update_busy.py`. This uses the existing standalone
+ASGI/synthetic-org pattern and real SQLite, host admission/retry and logical
+lifetime trackers without lifespan, listeners, providers or native processes.
+`python -B scripts/check_update_busy.py --legacy-signal` is the intentional
+RED comparison with the reviewed active/queue-only signal: retained/registered
+jobs and 429 backoff report idle and fail their busy assertions. Normal
+verification uses the new field. Run the OpenAPI operator with `--write` then
+`--check`; maintain the TS mirror and use Web lint/typecheck via local CI.
+Swift gate/decoder checks remain manager-owned on macOS:
+`swift test --package-path app/mac --filter 'UpdateGateTests|UpdateConfigurationTests'`.
+Retired Python/Web unit lanes are not restored by these focused checks.

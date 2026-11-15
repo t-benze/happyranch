@@ -513,6 +513,26 @@ launch; health + root HTML + one JS/CSS asset; a normal daemon task session and
 cancel with parent/child PID/PGID census; frozen cleanup; stop and final census;
 and outer EXIT cleanup. HTTP fetches prove serving, not browser rendering.
 
+After steps 1–7 pass and the daemon stops, `packaged.update_tests` is a separate
+required result for `swift test --package-path app/mac --filter
+'UpdateGateTests|UpdateConfigurationTests'`. It imports the existing supervisor
+toolchain discovery, scratch environment, Swift command, bounded command runner
+and named-results helpers; the supervisor suite/filter is unchanged. Verbose
+Swift Testing output identifies the actual types behind their display names.
+PASS requires exit0, a nonzero completed test run and at least one
+executed-and-passed child in each type, with passed suite terminals. The command
+uses `--verbose --no-parallel` so Swift Testing suite start/end lines establish
+child ownership. Swift Testing and XCTest skipped, cancelled or failed test/suite
+results FAIL acceptance. Missing tooling/results, either absent type, timeout or output
+overflow FAIL the packaged suite while preserving numbered/build evidence.
+The command has at most 600s within a shared 4800s suite deadline and 1 MiB combined
+output; the existing 90-minute / 256 MiB-file job envelope is unchanged. The report
+keeps argv, exit code, output bytes/SHA-256, a 2 KiB tail and bounded per-test results.
+On interruption, unavailable exit/output fields are null and the error is retained.
+All SwiftPM products/cache/config/security, compiler caches, HOME and temporary
+files remain in job scratch. Earlier packaged failure leaves tests NOT_RUN;
+step8 still needs its real outer EXIT receipt. No Jenkins configuration changes.
+
 Step4 requests JSON health at `/api/v1/health` and still requires `status ==
 'ok'`; `/health` is a SPA fallback, not the JSON API. HTTP failures retain
 method, path (without query), HTTP status, Content-Type and a JSON-safe body
