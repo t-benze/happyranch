@@ -5,12 +5,14 @@ import contextlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import os
 from pathlib import Path
+import queue
 import signal
 import subprocess
 import sys
 import tempfile
 import threading
-from typing import Iterator
+from types import ModuleType, SimpleNamespace
+from typing import Callable, Iterator
 import unittest
 from unittest.mock import patch
 
@@ -531,7 +533,8 @@ class ServiceTests(unittest.TestCase):
         for pid, port in (("999", "8766"), ("42", "8765"), ("42", "bad")):
             with self.subTest(pid=pid, port=port):
                 self.publish(pid, port)
-                with self.assertRaisesRegex(window.LaunchError, "ownership or health"):
+                expected = "Invalid daemon.port" if port == "bad" else "ownership or health"
+                with self.assertRaisesRegex(window.LaunchError, expected):
                     self.start()
         self.publish()
         self.net(state="01")
@@ -548,7 +551,8 @@ class ServiceTests(unittest.TestCase):
         with self.assertRaisesRegex(window.LaunchError, "ownership or health"):
             self.start()
         self.service.close()
-        self.assertNotIn("stop", self.verbs())
+        self.assertEqual(self.calls[-1], ["systemctl", "--user", "stop", "happyranch-daemon"])
+        self.assertEqual(self.verbs().count("stop"), 1)
 
     def test_missing_proc_evidence_refuses_without_stop(self) -> None:
         (self.proc / "net/tcp").unlink()
@@ -569,12 +573,153 @@ class ServiceTests(unittest.TestCase):
         self.healthy = False
         with self.assertRaisesRegex(window.LaunchError, "cancelled"):
             self.service.start(cancel, timeout=0)
+        self.service.close()
         self.assertEqual(self.calls[-1], ["systemctl", "--user", "stop", "happyranch-daemon"])
+        self.service.close()
+        self.assertEqual(self.verbs().count("stop"), 1)
         self.calls.clear()
         self.net(inode="999")
         with self.assertRaisesRegex(window.LaunchError, "Port 8766"):
             self.service.start(cancel, timeout=0)
         self.assertNotIn("stop", self.verbs())
+
+    def check_startup_cancel_stop_retry(self, *, timeout: bool) -> None:
+        """Drive run_gui's real worker/close/finish path with only GI doubles."""
+        callbacks = queue.Queue()
+        labels = []
+        started = threading.Event()
+        fail_stop = True
+        self.healthy = False
+        runner = self.service.runner
+
+        def run_command(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess:
+            result = runner(argv, **kwargs)
+            if argv[2] == "start":
+                started.set()
+            if argv[2] == "stop" and fail_stop:
+                if timeout:
+                    raise subprocess.TimeoutExpired(argv, 10)
+                result.returncode = 1
+            return result
+
+        self.service.runner = run_command
+
+        class Widget:
+            def __init__(self, **kwargs: object) -> None:
+                self.children = []
+                self.signals = {}
+                if "label" in kwargs:
+                    labels.append(kwargs["label"])
+
+            def connect(self, name: str, callback: object) -> None:
+                self.signals[name] = callback
+
+            def get_children(self) -> list:
+                return self.children[:]
+
+            def add(self, child: object) -> None:
+                self.children.append(child)
+
+            def pack_start(self, child: object, *_args: object) -> None:
+                self.add(child)
+
+            def remove(self, child: object) -> None:
+                self.children.remove(child)
+
+            def __getattr__(self, _name: str) -> object:
+                return lambda *_args: None
+
+        shell = Widget()
+        app = Widget()
+        app.quit_called = False
+
+        def quit_app() -> None:
+            app.quit_called = True
+
+        def pump_until(predicate: Callable[[], bool]) -> None:
+            # Bounded queue waits coordinate the real worker without sleeps.
+            for _ in range(30):
+                if predicate():
+                    return
+                try:
+                    callback, args = callbacks.get(timeout=0.1)
+                except queue.Empty:
+                    continue
+                callback(*args)
+            self.fail("GUI worker did not reach the expected state")
+
+        def run_app(_args: list) -> int:
+            nonlocal fail_stop
+            app.signals["activate"](app)
+            try:
+                self.assertTrue(started.wait(2))
+                shell.signals["delete-event"]()
+                pump_until(lambda: app.quit_called or any("shutdown failed" in label for label in labels))
+                self.assertFalse(app.quit_called, "failed startup stop released GUI custody")
+                self.assertFalse(self.service.attached)
+                self.assertTrue(any("Close the window again to retry" in label for label in labels))
+                self.assertTrue(any(thread.name == "desktop-daemon" and thread.is_alive()
+                                    for thread in threading.enumerate()))
+                second_lock = window.acquire_lock(self.home)
+                if second_lock is not None:
+                    second_lock.close()
+                self.assertIsNone(second_lock, "desktop.lock was released before shutdown")
+                stops = [call for call in self.calls if call[2] == "stop"]
+                self.assertEqual(stops, [["systemctl", "--user", "stop", "happyranch-daemon"]])
+                fail_stop = False
+                shell.signals["delete-event"]()
+                pump_until(lambda: app.quit_called)
+                self.assertEqual([call for call in self.calls if call[2] == "stop"], stops * 2)
+                self.assertEqual(self.verbs().count("start"), 1)
+                return 0
+            finally:
+                fail_stop = False
+                shell.signals["delete-event"]()
+                pump_until(lambda: app.quit_called)
+
+        app.run = run_app
+        app.quit = quit_app
+        gi = ModuleType("gi")
+        gi.require_version = lambda *_args: None
+        repository = ModuleType("gi.repository")
+        repository.Gio = SimpleNamespace(ApplicationFlags=SimpleNamespace(FLAGS_NONE=0),
+                                         SimpleAction=SimpleNamespace(new=lambda *_args: Widget()))
+        repository.GLib = SimpleNamespace(set_prgname=lambda *_args: None, PRIORITY_DEFAULT=0,
+                                          unix_signal_add=lambda *_args: None,
+                                          idle_add=lambda callback, *args: callbacks.put((callback, args)))
+        repository.Gtk = SimpleNamespace(Application=lambda **_kwargs: app,
+                                         ApplicationWindow=lambda **_kwargs: shell,
+                                         Box=Widget, Label=Widget, Button=Widget,
+                                         Orientation=SimpleNamespace(VERTICAL=0))
+        repository.WebKit2 = SimpleNamespace()
+        with patch.dict(sys.modules, {"gi": gi, "gi.repository": repository}), \
+                patch.object(window, "ServiceMode", return_value=self.service), \
+                patch.object(subprocess, "Popen", side_effect=AssertionError("no child launch")):
+            self.assertEqual(window.run_gui(Path("/synthetic-payload"), self.home), 0)
+        lock = window.acquire_lock(self.home)
+        self.assertIsNotNone(lock)
+        lock.close()
+
+    def test_startup_cancel_nonzero_stop_keeps_lock_and_retries_on_close(self) -> None:
+        self.check_startup_cancel_stop_retry(timeout=False)
+
+    def test_startup_cancel_timeout_stop_keeps_lock_and_retries_on_close(self) -> None:
+        self.check_startup_cancel_stop_retry(timeout=True)
+
+    def test_invalid_markers_refuse_before_start_health_or_stop(self) -> None:
+        for name in ("daemon.pid", "daemon.port"):
+            for raw in (b"\xff", b"", b"bad", b"-1", b"0", "１２".encode()):
+                with self.subTest(marker=name, raw=raw):
+                    self.publish()
+                    path = self.home / name
+                    path.write_bytes(raw)
+                    self.calls.clear()
+                    with self.assertRaisesRegex(window.LaunchError, name):
+                        self.start()
+                    self.service.close()
+                    self.assertEqual(path.read_bytes(), raw)
+                    self.assertEqual(self.probes, [])
+                    self.assertEqual(self.verbs(), ["is-system-running", "show-environment", "show"])
 
     def test_start_time_foreign_listener_and_crash_limit(self) -> None:
         runner = self.service.runner

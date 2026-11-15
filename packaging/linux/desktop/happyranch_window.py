@@ -107,6 +107,7 @@ class ServiceMode:
         self.runner = runner
         self.health = health
         self.attached = False
+        self.shutdown_pending = False
 
     def command(self, *args: str) -> subprocess.CompletedProcess:
         try:
@@ -237,14 +238,28 @@ class ServiceMode:
             raise LaunchError("The user service did not report a valid MainPID.")
         return int(raw)
 
-    def refuse_external(self, pid: int) -> None:
+    def read_marker(self, name: str) -> int | None:
         try:
-            raw = (self.home / "daemon.pid").read_text().strip()
+            raw = (self.home / name).read_text(encoding="utf-8").strip()
         except FileNotFoundError:
-            return
-        if raw.isascii() and raw.isdecimal() and int(raw) > 0 and int(raw) != pid:
-            if (self.proc / str(int(raw))).exists():
-                raise LaunchError("A CLI-started daemon is running in the release home. Stop it yourself before opening HappyRanch.")
+            return None
+        except (OSError, UnicodeError) as exc:
+            raise LaunchError(f"Could not read {name}; review the release-home marker before starting HappyRanch.") from exc
+        try:
+            if not raw.isascii() or not raw.isdecimal():
+                raise ValueError
+            value = int(raw)
+            if value <= 0 or (name == "daemon.port" and value > 65535):
+                raise ValueError
+        except ValueError as exc:
+            raise LaunchError(f"Invalid {name}; review the release-home marker before starting HappyRanch.") from exc
+        return value
+
+    def refuse_external(self, pid: int) -> None:
+        owner = self.read_marker("daemon.pid")
+        self.read_marker("daemon.port")
+        if owner is not None and owner != pid and (self.proc / str(owner)).exists():
+            raise LaunchError("A CLI-started daemon is running in the release home. Stop it yourself before opening HappyRanch.")
 
     def listeners(self) -> set[str]:
         inodes = set()
@@ -307,6 +322,7 @@ class ServiceMode:
         if started.returncode:
             self.crash_error(self.state())
             raise LaunchError("Could not start the HappyRanch user service.")
+        self.shutdown_pending = True
         deadline = time.monotonic() + timeout
         while True:
             state = self.state()
@@ -325,9 +341,8 @@ class ServiceMode:
                         self.attached = True
                         return "http://127.0.0.1:8766/"
             if cancel.is_set():
-                # Cancellation is a window close, not failed ownership. The
-                # current unit/proc checks above must still pass before stop.
-                self.control("stop")
+                # The supervisor owns shutdown, including cancellation before
+                # attachment. A failed stop must retain its worker and lock.
                 raise LaunchError("Startup cancelled.")
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -335,9 +350,13 @@ class ServiceMode:
             cancel.wait(min(0.1, remaining))
 
     def close(self, *, keep_running: bool = False) -> None:
-        if self.attached and not keep_running:
-            self.state()  # Refuse changed unit provenance before a stop.
-            self.control("stop")
+        if self.shutdown_pending and not keep_running:
+            try:
+                self.state()  # Refuse changed unit provenance before a stop.
+                self.control("stop")
+            except LaunchError as exc:
+                raise LaunchError("HappyRanch shutdown failed. Close the window again to retry.\n" + str(exc)) from exc
+            self.shutdown_pending = False
             self.attached = False
 
 
@@ -533,7 +552,7 @@ def run_gui(prefix: Path, home: Path) -> int:
             if not cancel.is_set():
                 error = exc if isinstance(exc, LaunchError) else str(exc)
         finally:
-            while service.attached:
+            while service.shutdown_pending:
                 try:
                     service.close()
                     if closing:

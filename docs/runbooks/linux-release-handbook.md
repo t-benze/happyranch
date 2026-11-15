@@ -176,6 +176,9 @@ Missing or unreadable evidence refuses attachment. These are sampled
 same-user observations, not an atomic fence against later process/unit changes.
 The checks detect overrides; they do not protect user-owned configuration from
 other processes of the same user.
+Existing PID and port markers must decode as UTF-8 positive decimal integers
+(port at most 65535). Invalid markers refuse with a plain message before any
+start, health probe or stop; their bytes are preserved for the user to review.
 
 Before start, the window inspects `systemctl --user show-environment`. Any
 `HAPPYRANCH_*` variable refuses startup and the message lists names only.
@@ -202,7 +205,7 @@ migration or cleanup of any other user unit.
 Service failures remain in the window with a plain diagnostic:
 
 - Foreign listener: **Port 8766 is used by another program**. No attachment,
-  stop command or process signal follows the refusal.
+  start command or process signal follows a pre-start refusal.
 - A live release-home `daemon.pid` different from MainPID: stop the CLI-started
   daemon yourself before opening the window. The app never signals it.
 - Unexpected unit path/drop-ins: review user service overrides before starting.
@@ -212,11 +215,16 @@ Service failures remain in the window with a plain diagnostic:
 - Failed ownership or health: refuse to attach. The app does not try to kill a
   process to recover the port or repair marker files.
 
-Closing the window, Ctrl+Q, SIGTERM or SIGINT stops an attached service with
-`systemctl --user stop happyranch-daemon`. Unit provenance is checked again
-before stop. Closing during startup also stops the service once current unit,
-PID and listener checks permit it; a refusal never triggers a stop. Failed
-stops keep the lock and offer another close attempt. B2a behaves as keep-running
+After the app successfully starts the validated packaged service, it retains
+the shutdown obligation independently of web attachment. Closing the window,
+Ctrl+Q, SIGTERM or SIGINT, including during startup, stops that service with
+`systemctl --user stop happyranch-daemon`. A startup failure after a successful
+start also enters shutdown. Unit provenance is checked again before stop;
+pre-start refusals create no shutdown obligation. A nonzero or timed-out stop
+shows a plain failure message and keeps the worker, window and desktop lock.
+Closing again requests one more bounded stop attempt; only successful shutdown
+permits exit and lock release. No process is signaled directly in service mode.
+B2a behaves as keep-running
 OFF: no lifetime switch, enable/disable, linger call or desktop state file is
 included yet.
 
