@@ -847,6 +847,67 @@ manager-owned leg: PR1 used1/3 (build14), PR2 receives execution2, one
 held diagnosed correction; source changes never replenish or submit that budget.
 
 
+## Environment sanitizer RED/GREEN (`SUITE=env-sanitizer`, THR-346)
+
+This reviewed source suite extends the Python dispatcher through the existing
+job's `SUITE` string parameter. Select an exact reviewed `SOURCE_SHA` containing
+both this suite and PR1521's production fix/regression tests. The harness PR
+alone does not include that fix. Native execution belongs to the manager's
+single Founder-approved run (THR-346 msg114); source delivery submits zero runs
+and grants no retry, Jenkins configuration change or app-bundle build.
+
+The suite reuses the supervisor's toolchain discovery (Swift >=6), private
+HOME/TMPDIR and Swift/Clang/SwiftPM cache environment, release/no-debug-info
+Swift test argv, 32MiB per-file limit and incrementally drained command runner.
+One 1200-second deadline covers discovery, fetch and both test builds; discovery
+commands allow <=15s, ordinary Git commands <=30s and fetch <=120s, all clipped
+to that original deadline. Each command has a 1MiB output cap and the existing
+group-kill/reap finally path (up to3s additional reap time per command).
+No toolchain is installed and no packaged app, daemon or Keychain operation runs.
+
+RED initializes a fresh scratch repository and fetches only the reviewed constant
+`1c9ac749b45b4a5cbfe82978659135b752c0cd42` from the same public HTTPS origin
+as the job, using `-c credential.helper= fetch --no-tags --depth 1`. Inherited
+`GIT_*` overrides are removed; system/global Git config and interactive/askpass
+credentials are disabled. It verifies detached HEAD, overlays only the exact
+SOURCE_SHA `EnvironmentSanitizerTests.swift`, then runs
+`swift test --package-path <scratch-repo>/app/mac --filter EnvironmentSanitizerTests`
+with private build/cache arguments. The original base test is restored and
+checked with Git even after a failed command.
+
+GREEN runs the same filter directly against the exact clean source checkout,
+with separate scratch build/cache paths. Tracked cleanliness and HEAD are checked
+before/after. Both named regression tests must report PASS with a nonempty
+passing test-run summary and exit0. RED must exit positively nonzero, report the
+specific `userAndLognameConditionalPassThrough` failure/issue, the USER or LOGNAME
+pass-through assertion message and a nonempty failed test-run summary. Both Swift
+function-name and display-label output formats are recognized; named outcomes
+for `noExtraVariablesLeak` are recorded too. Compiler/linker errors, unrelated
+failures, signals, zero selected tests and a passing RED cannot prove the bug.
+Only attributable RED plus passing GREEN plus successful scratch disposal yields
+`env_sanitizer.result=PASS` and dispatcher exit0.
+
+The existing archived `evidence/probe.json` contains `env_sanitizer`: pinned and
+observed base/source SHAs, Swift version/discovery, overlaid test SHA256, both
+exits and named outcomes, restoration/cleanup receipts, and command evidence
+with exact argv, output byte counts, full-output SHA256 and bounded excerpts
+(first512/last1536 bytes). Full outputs stay within the command's 1MiB cap and
+are discarded with scratch; incomplete commands record a null exit and bounded
+error rather than a fabricated digest. Successful evidence reserves48KiB for
+the dispatcher envelope. Cleanup is attempted on success, failure and catchable
+interruption; host loss/SIGKILL retains the existing job cleanup limitations.
+This proves source Swift test behavior only, not packaged-app login acceptance.
+
+Portable fake-command checks, outside the retired Python suite:
+
+```sh
+python -B -m unittest scripts.mac_native.test_env_sanitizer -v
+```
+
+They exercise dispatch, verdict/evidence/cleanup, named assertion attribution
+and credential-free pinned fetch argv. They do not execute Swift, fetch the
+public repository or consume a native run.
+
 ## Connector LaunchAgent lifecycle (`SUITE=connector-launchd`, THR-360 C1+C2)
 
 QA may select this source suite at the reviewed exact `SOURCE_SHA` using the
