@@ -464,10 +464,12 @@ extras and can override `Environment=` assignments. `%h` expands to the user
 manager's home in both directives; see [systemd.unit specifiers](https://www.freedesktop.org/software/systemd/man/latest/systemd.unit.html#Specifiers)
 and [systemd.exec environment settings](https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html#Environment).
 
-Installation does not enable or start the unit. B2a starts/stops it through the
-desktop window, validates environment-file overrides and handles the old
-hand-written unit as described above. The later B2b lifetime switch is not
-included. The packaged user unit provides no sandboxing.
+Installation does not enable or start the unit. The desktop window starts it,
+validates environment-file overrides and handles the old hand-written unit as
+described above. With **Keep HappyRanch running when I'm logged out** OFF (the
+default), closing the window stops the unit. Turning the switch ON enables the
+unit and sets linger; see the [B2b keep-running section](#keep-running-after-logout).
+The packaged user unit provides no sandboxing.
 
 ### Runtime dependencies
 
