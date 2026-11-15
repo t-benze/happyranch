@@ -7,12 +7,15 @@ import fcntl
 import hashlib
 import http.client
 import json
+import logging
 import os
 from pathlib import Path
+import queue
 import re
 import signal
 import stat
 import subprocess
+import tempfile
 import threading
 import time
 from typing import IO, Callable
@@ -224,13 +227,135 @@ class ServiceMode:
     def state(self) -> dict[str, str]:
         result = self.command("systemctl", "--user", "show", self.unit,
                               "-p", "MainPID", "-p", "FragmentPath", "-p", "DropInPaths",
-                              "-p", "ActiveState", "-p", "Result")
+                              "-p", "ActiveState", "-p", "Result", "-p", "UnitFileState",
+                              "-p", "NeedDaemonReload", "-p", "ExecMainStartTimestampMonotonic")
         if result.returncode:
             raise LaunchError("Could not inspect the HappyRanch user service.")
         state = dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
         if state.get("FragmentPath") != self.fragment or state.get("DropInPaths") != "":
             raise LaunchError("HappyRanch requires the packaged user unit with no drop-ins. Review your user service overrides.")
         return state
+
+    def lifetime_state(self) -> str:
+        """Always observe both controls; desktop.json never determines ON."""
+        enabled = self.state().get("UnitFileState") == "enabled"
+        linger = self.command("loginctl", "show-user", str(os.getuid()), "-p", "Linger", "--value")
+        if linger.returncode or linger.stdout.strip() not in {"yes", "no"}:
+            raise LaunchError("Could not inspect login linger; close again to retry.")
+        lingering = linger.stdout.strip() == "yes"
+        return "on" if enabled and lingering else "partial" if enabled != lingering else "off"
+
+    @property
+    def desktop_config(self) -> Path:
+        return self.user_home / ".config/happyranch/desktop.json"
+
+    def app_set_linger(self) -> bool:
+        try:
+            data = json.loads(self.desktop_config.read_text(encoding="utf-8"))
+            return isinstance(data, dict) and data.get("linger_set_by_app") is True
+        except (OSError, ValueError):
+            return False
+
+    def save_linger(self, owned: bool) -> None:
+        path = self.desktop_config
+        path.parent.mkdir(parents=True, exist_ok=True)
+        pending = None
+        try:
+            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent,
+                                             prefix=".desktop-", delete=False) as stream:
+                pending = Path(stream.name)
+                json.dump({"linger_set_by_app": owned}, stream)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(pending, path)
+        finally:
+            if pending is not None:
+                pending.unlink(missing_ok=True)
+
+    def set_linger(self, enabled: bool) -> None:
+        # Gio is already a system GTK dependency; no bundled Python/D-Bus package.
+        from gi.repository import Gio, GLib
+        try:
+            bus = Gio.bus_get_sync(Gio.BusType.SYSTEM, None)
+            bus.call_sync("org.freedesktop.login1", "/org/freedesktop/login1",
+                          "org.freedesktop.login1.Manager", "SetUserLinger",
+                          GLib.Variant("(ubb)", (os.getuid(), enabled, True)), None,
+                          Gio.DBusCallFlags.ALLOW_INTERACTIVE_AUTHORIZATION, 10000, None)
+        except GLib.Error as exc:
+            if "AccessDenied" in str(exc):
+                raise LaunchError("A local polkit rule denied keeping HappyRanch running while logged out.") from exc
+            raise LaunchError("Could not change login linger. Review the logind service.") from exc
+
+    def set_keep_running(self, enabled: bool) -> None:
+        if not self.manager_available():
+            raise LaunchError("Keep running is unavailable because there is no user manager.")
+        state = self.state()  # Validate packaged unit before enable/disable.
+        owned = self.app_set_linger()
+        if enabled:
+            linger = self.command("loginctl", "show-user", str(os.getuid()), "-p", "Linger", "--value")
+            if linger.returncode or linger.stdout.strip() not in {"yes", "no"}:
+                raise LaunchError("Could not inspect login linger.")
+            changed = linger.stdout.strip() == "no"
+            self.set_linger(True)
+            unit_enabled = False
+            try:
+                self.control("enable")
+                unit_enabled = True
+                self.save_linger(owned or changed)
+            except (LaunchError, OSError):
+                if changed:
+                    try:
+                        self.set_linger(False)
+                    except LaunchError:
+                        self.save_linger(True)  # Retain undo custody if rollback fails.
+                        raise
+                if unit_enabled and state.get("UnitFileState") != "enabled":
+                    self.control("disable")
+                raise
+        else:
+            self.control("disable")
+            if owned:
+                self.set_linger(False)
+            self.save_linger(False)
+
+    def update_installed(self, prefix: Path) -> bool:
+        """Best-effort install-time substitute for a running-build identity."""
+        if not self.attached:
+            return False
+        try:
+            state = self.state()
+            with (prefix / "build-info.json").open("rb") as stream:
+                stream.read(1)  # Require readable metadata, without consuming build fields.
+                installed = os.fstat(stream.fileno()).st_ctime
+            raw = state.get("ExecMainStartTimestampMonotonic", "")
+            if not raw.isascii() or not raw.isdecimal() or int(raw) <= 0:
+                raise ValueError("invalid service start timestamp")
+            # systemd reports CLOCK_MONOTONIC microseconds; st_ctime is realtime.
+            # Assume the current realtime-minus-monotonic offset also held at start.
+            started = time.time() - time.monotonic() + int(raw) / 1_000_000
+            return state.get("NeedDaemonReload") == "yes" or installed > started
+        except (OSError, ValueError, OverflowError, LaunchError):
+            logging.getLogger(__name__).warning("Could not compare HappyRanch install and service start times.")
+            return False
+
+    def restart(self, cancel: threading.Event, *, timeout: float = 60) -> str:
+        # Revalidate the complete current ownership proof before restart as well.
+        if self.start(cancel, timeout=timeout) is None:
+            raise LaunchError("The user manager is unavailable; restart HappyRanch manually.")
+        if self.state().get("NeedDaemonReload") == "yes":
+            if self.command("systemctl", "--user", "daemon-reload").returncode:
+                raise LaunchError("Could not reload the user manager.")
+        self.state()
+        self.attached = False
+        self.control("restart")
+        return self.wait_for_attachment(cancel, timeout=timeout)
+
+    def close_window(self) -> None:
+        if self.attached and self.lifetime_state() == "on":
+            self.shutdown_pending = False
+            self.attached = False
+            return
+        self.close()
 
     def pid(self, state: dict[str, str]) -> int:
         raw = state.get("MainPID", "")
@@ -323,6 +448,9 @@ class ServiceMode:
             self.crash_error(self.state())
             raise LaunchError("Could not start the HappyRanch user service.")
         self.shutdown_pending = True
+        return self.wait_for_attachment(cancel, timeout=timeout)
+
+    def wait_for_attachment(self, cancel: threading.Event, *, timeout: float = 60) -> str:
         deadline = time.monotonic() + timeout
         while True:
             state = self.state()
@@ -467,6 +595,8 @@ def run_gui(prefix: Path, home: Path) -> int:
     closing = False
     log_path = home / "logs/desktop-daemon.log"
     service = ServiceMode(home)
+    requests = queue.Queue()
+    controls = None
 
     def message(title: str, detail: str = "") -> None:
         for widget in window.get_children():
@@ -497,19 +627,73 @@ def run_gui(prefix: Path, home: Path) -> int:
             window.show_all()
         return False
 
-    def show_web(url: str) -> bool:
+    def render_controls(state: str, detail: str, update: bool, available: bool = True) -> bool:
+        if closing or controls is None:
+            return False
+        for widget in controls.get_children():
+            controls.remove(widget)
+        label = Gtk.Label(label=tr("Keep HappyRanch running when I'm logged out",
+                                   "退出登录后保持 HappyRanch 运行"))
+        controls.pack_start(label, False, False, 0)
+        switch = Gtk.Switch()
+        switch.set_active(state == "on")
+        switch.set_sensitive(available)
+        def toggled(_switch: object, active: bool) -> bool:
+            switch.set_sensitive(False)
+            requests.put("on" if active else "off")
+            return True  # Only fresh observations update the displayed switch.
+        switch.connect("state-set", toggled)
+        controls.pack_start(switch, False, False, 0)
+        if state == "partial":
+            controls.pack_start(Gtk.Label(label=tr("Partly on - click to repair/turn off",
+                                                   "部分开启 - 点击修复或关闭")), False, False, 0)
+            for text, zh, action in (("Repair", "修复", "on"), ("Turn off", "关闭", "off")):
+                button = Gtk.Button(label=tr(text, zh))
+                button.connect("clicked", lambda _button, action=action: requests.put(action))
+                controls.pack_start(button, False, False, 0)
+        if detail:
+            diagnostic = Gtk.Label(label=detail)
+            diagnostic.set_line_wrap(True)
+            controls.pack_start(diagnostic, False, False, 0)
+        if update:
+            controls.pack_start(Gtk.Label(label=tr("Update installed - restart HappyRanch",
+                                                   "更新已安装 - 请重启 HappyRanch")), False, False, 0)
+            button = Gtk.Button(label=tr("Restart HappyRanch", "重启 HappyRanch"))
+            button.connect("clicked", lambda _button: requests.put("restart"))
+            controls.pack_start(button, False, False, 0)
+        controls.show_all()
+        return False
+
+    def refresh_controls(detail: str = "") -> None:
+        try:
+            state = service.lifetime_state()
+            GLib.idle_add(render_controls, state, detail, service.update_installed(prefix))
+        except (OSError, LaunchError) as exc:
+            GLib.idle_add(render_controls, "off", str(exc), False, False)
+
+    def show_web(url: str, fallback: bool = False) -> bool:
+        nonlocal controls
         if closing:
             return False
         for widget in window.get_children():
             window.remove(widget)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        controls = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        box.pack_start(controls, False, False, 0)
         view = WebKit2.WebView()
         def load_failed(*_args: object) -> bool:
             show_error(tr("The web interface could not load.", "无法加载网页界面。"))
             return True
         view.connect("load-failed", load_failed)
-        window.add(view)
+        box.pack_start(view, True, True, 0)
+        window.add(box)
         view.load_uri(url)
         window.show_all()
+        if fallback:
+            render_controls("off", tr("Unavailable: no systemd user manager.",
+                                       "不可用：没有 systemd 用户服务管理器。"), False, False)
+        else:
+            requests.put("refresh")
         return False
 
     def finish(error: str | LaunchError | None) -> bool:
@@ -533,7 +717,28 @@ def run_gui(prefix: Path, home: Path) -> int:
             url = service.start(cancel, retry=action == "retry")
             if url is not None:
                 GLib.idle_add(show_web, url)
-                cancel.wait()
+                detail = ""
+                while not cancel.is_set():
+                    try:
+                        operation = requests.get(timeout=2)
+                    except queue.Empty:
+                        operation = "refresh"
+                    if cancel.is_set():
+                        break
+                    if operation != "refresh":
+                        detail = ""
+                    try:
+                        if operation in {"on", "off"}:
+                            service.set_keep_running(operation == "on")
+                        elif operation == "restart":
+                            GLib.idle_add(message, tr("Restarting HappyRanch…", "正在重启 HappyRanch…"))
+                            url = service.restart(cancel)
+                            GLib.idle_add(show_web, url)
+                    except (OSError, LaunchError) as exc:
+                        if operation == "restart":
+                            raise
+                        detail = str(exc)
+                    refresh_controls(detail)
                 return
             GLib.idle_add(message, tr("Starting HappyRanch without a user manager…",
                                      "用户服务管理器不可用，正在启动 HappyRanch…"))
@@ -546,7 +751,7 @@ def run_gui(prefix: Path, home: Path) -> int:
                     cwd=home, env=child_environment(prefix, home),
                     stdin=subprocess.DEVNULL, stdout=log, stderr=log)
                 url = wait_for_health(child, home, cancel)
-                GLib.idle_add(show_web, url)
+                GLib.idle_add(show_web, url, True)
                 while not cancel.wait(0.2):
                     if child.poll() is not None:
                         raise LaunchError(f"Daemon exited (status {child.returncode}).")
@@ -556,7 +761,10 @@ def run_gui(prefix: Path, home: Path) -> int:
         finally:
             while service.shutdown_pending:
                 try:
-                    service.close()
+                    if closing:
+                        service.close_window()
+                    else:
+                        service.close()
                     if closing:
                         error = None
                 except LaunchError as exc:

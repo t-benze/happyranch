@@ -225,7 +225,8 @@ Service failures remain in the window with a plain diagnostic:
   process to recover the port or repair marker files.
 
 After the app successfully starts the validated packaged service, it retains
-the shutdown obligation independently of web attachment. Closing the window,
+the shutdown obligation independently of web attachment. With the keep-running
+switch OFF (or partially on), closing the window,
 Ctrl+Q, SIGTERM or SIGINT, including during startup, stops that service with
 `systemctl --user stop happyranch-daemon`. A startup failure after a successful
 start also enters shutdown. Unit provenance is checked again before stop;
@@ -233,13 +234,69 @@ pre-start refusals create no shutdown obligation. A nonzero or timed-out stop
 shows a plain failure message and keeps the worker, window and desktop lock.
 Closing again requests one more bounded stop attempt; only successful shutdown
 permits exit and lock release. No process is signaled directly in service mode.
-B2a behaves as keep-running
-OFF: no lifetime switch, enable/disable, linger call or desktop state file is
-included yet.
+
+### Keep running after logout
+
+**Keep HappyRanch running when I'm logged out** defaults OFF. Turning it ON
+calls logind's system-bus `SetUserLinger(own uid, true, interactive=true)` via
+system Python's existing Gio/GLib bindings, then
+`systemctl --user enable happyranch-daemon`. There is no new dependency. A local
+polkit `AccessDenied` leaves the switch OFF and names the local polkit rule in
+a plain diagnostic. If enable fails after the app enabled linger, the app rolls
+that linger change back.
+
+The app atomically replaces `~/.config/happyranch/desktop.json` with
+`{"linger_set_by_app": true}` only when it originally enabled linger; otherwise
+the value is false. Repeated ON/repair preserves an existing true undo obligation.
+The replacement uses a same-directory temporary file, file fsync and rename.
+Missing, malformed, invalid-UTF-8 or non-Boolean ownership data means the app did
+not enable linger. If recording the ON change fails, newly enabled linger and
+unit enablement are rolled back; a failed linger rollback retains undo provenance
+where the file can be written.
+
+Turning OFF runs `systemctl --user disable happyranch-daemon` and disables linger
+only when that provenance is true. Existing external linger is preserved. The
+daemon keeps running while the window stays open. State is derived from fresh
+`UnitFileState=enabled` and `loginctl show-user <own uid> -p Linger --value`
+observations, never from the JSON flag. Both must be on for ON. A mismatch shows
+**Partly on - click to repair/turn off** with **Repair** and **Turn off** actions.
+Controls refresh while open and after actions; closing observes the state again.
+Only a fully attached, freshly ON service is left running when the window closes;
+the window exits and releases its lock. Startup/restart proof failures retain the
+existing shutdown obligation even when keep-running had been ON. Failed state
+reads or stops keep window/worker/lock custody for a subsequent close retry.
+
+### Update installed while running
+
+After ownership proof, the app shows **Update installed - restart HappyRanch**
+when `/opt/happyranch-desktop/build-info.json` has `st_ctime` newer than the
+unit's process start, or the unit reports `NeedDaemonReload=yes`. The Debian
+builder moves the payload under `/opt/happyranch-desktop`; dpkg replacement by
+rename makes the installed file's ctime the install-time signal. The app uses
+`ExecMainStartTimestampMonotonic` in microseconds and converts it to realtime
+seconds using the current `time.time() - time.monotonic()` offset. This assumes
+that offset held since process start; wall-clock adjustments can affect this
+best-effort signal. Missing/unreadable metadata or invalid/unrepresentable start
+timestamps suppress the banner and log a warning, without refusing attachment.
+
+This is the authorized substitute for design 2.4's comparison against the
+running daemon's reported version: the daemon currently reports no build
+identity. It preserves the same user-visible banner/restart behavior without
+reading daemon version fields or changing runtime source. An immutable running
+build identity is a possible later improvement.
+
+**Restart HappyRanch** first revalidates ownership, reloads the user manager if
+`NeedDaemonReload=yes`, and restarts `happyranch-daemon`. It then repeats the full
+B2a ownership proof, including the bounded asynchronous PID/port publication
+wait, listener inode, health and post-health rechecks, before reattaching the
+web view. Failed restart or proof enters the existing shutdown path; a failed
+stop retains worker/window/lock custody and subsequent-close retry.
 
 If `systemctl --user is-system-running` is unavailable or reports no running
 manager, the window shows a fallback explanation and retains its child-process
-mode. It requires an empty home (any existing `daemon.pid` or `daemon.port`,
+mode. Its keep-running switch is disabled with the reason **Unavailable: no
+systemd user manager.** It requires an empty home (any existing `daemon.pid` or
+`daemon.port`,
 even stale/partial, refuses startup without changing it). The child receives a
 minimal OS environment, the selected home, loopback bind, random port `0`, and
 the payload's `web/dist`. The window waits for its own Popen PID and healthy
