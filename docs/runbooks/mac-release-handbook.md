@@ -16,24 +16,30 @@ Updates. The feed stays `https://app.happyranch.ai/mac/appcast.xml`. Only the
 founder supplies the public key; no private key or generation is part of this build.
 
 Relaunch requests always enter the app's postpone gate, including Sparkle's
-scheduled/impatient prompt. The app reads the existing public loopback
-`GET /api/v1/health` field `host_sessions.admission.active`, covering tasks,
-threads, dreams and jobs across the daemon. Missing or degraded supervision,
-shutdown, residue survivors/blocked admission or queued work with zero active
-sessions stays BUSY.
-No daemon field, route, auth or API contract changes. An owned idle daemon is
-stopped with the existing routine and its exit confirmed before the held
-Sparkle block runs. Busy users see “N sessions are running” with Update when
-they finish (five-second rechecks), Update now and stop them (fresh status and
-confirmed stop), or Later (no polling; resume via Install Downloaded Update).
-Unavailable status is BUSY and disables immediate update. Stop incomplete
-keeps the old app alive and never releases the block. External daemons and
-CLIENT role pass through without signaling a daemon.
+scheduled/impatient prompt. The app consumes only the new read-only
+`GET /api/v1/health.update_busy` aggregate. The former host admission gauge
+counts attempt capacity and misses durable jobs and invocation retry gaps.
+The new field covers logical/native owners, queues and indexed nonterminal
+producer rows, including retained running jobs with unknown native liveness.
+An old daemon, missing/invalid data or an unavailable producer stays BUSY.
+See the [health contract](../agent-guides/web-and-cli.md#update-readiness-health-field).
+
+An idle snapshot only presents Restart now / Later, with an explicit warning
+that work starting before the stop will be interrupted. Update when they
+finish polls every five seconds and re-presents this confirmation at idle;
+it never auto-stops. Restart now performs a fresh read immediately before
+TERM and returns to the busy prompt if busy/unknown. Update now and stop them
+also re-reads and permits stopping known busy work by explicit consent.
+Unavailable status disables immediate update. Either authorized stop must
+confirm the same daemon exited before invoking the held Sparkle block.
+Stop incomplete keeps the old app alive and never releases it. External
+daemons and CLIENT role pass through without signaling a daemon.
 
 Install on quit keeps the existing Quit/stop path; Sparkle installs after app
 exit. A daemon surviving Quit's bounded TERM/KILL remains possible: the app
 still exits and next-launch discovery treats the survivor as external. The
-busy gauge is a snapshot, not an atomic admission fence. Native acceptance
+read-only observation is not an admission fence; the residual click-to-TERM
+window is covered by the user's explicit warning/consent. Native acceptance
 must cover that limitation and the prompt, wait, explicit-now and failed-stop
 paths. Startup/abort/download failures are logged in Diagnostics → Updates,
 without an app-owned alert for background checks. A one-time notice for

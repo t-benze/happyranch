@@ -9,6 +9,7 @@ from pydantic import BaseModel
 
 from runtime.config import Settings, settings as _settings
 from runtime.daemon.host_session_store import compose_host_sessions_block
+from runtime.daemon.update_busy import UpdateBusy, compose_update_busy
 from runtime.orchestrator.executor_binary_registry import (
     get_binary,
     is_binary_valid,
@@ -104,13 +105,20 @@ class PrereqsResponse(BaseModel):
     prereqs: list[ExecutorPrereq]
 
 
+class HealthResponse(BaseModel):
+    status: str
+    active_runtime: str | None
+    host_sessions: dict | None = None
+    update_busy: UpdateBusy
+
+
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
 
 
-@router.get("/health")
-def health(request: Request) -> dict:
+@router.get("/health", response_model=HealthResponse, response_model_exclude_unset=True)
+async def health(request: Request) -> dict:
     state = request.app.state.daemon
     body: dict = {
         "status": "ok",
@@ -122,10 +130,10 @@ def health(request: Request) -> dict:
     # state, and the capability probe summary. The public variant drops the
     # per-receipt recent window, censused survivor identities (PIDs / start
     # identities), and the backend probe evidence string, keeping counts,
-    # aggregates, and the stable classification observable. Idle states keep
-    # the pre-existing exact two-key contract.
+    # aggregates, and the stable classification observable.
     if state.host_supervisor is not None:
         body["host_sessions"] = compose_host_sessions_block(state, public=True)
+    body["update_busy"] = compose_update_busy(state, body.get("host_sessions")).model_dump()
     return body
 
 

@@ -17,29 +17,28 @@ struct UpdateConfigurationTests {
         }
     }
 
-    @Test("host admission count is typed and degraded or unavailable health stays unknown")
+    @Test("only the new all-producer field can report idle; old or unknown health stays busy")
     func sessionGaugeParsing() throws {
-        func payload(active: Any = 0, queue: Any = 0, healthy: Bool = true,
-                     wired: Bool = true, shutdown: Bool = false, residue: Bool = false,
-                     survivors: Int = 0) throws -> Data {
-            try JSONSerialization.data(withJSONObject: ["status": "ok", "host_sessions": [
-                "wired": wired, "backend": ["healthy": healthy],
-                "admission": ["active": active, "queue_depth": queue, "shutdown": shutdown],
-                "residue": ["admission_blocked": residue, "survivors_count": survivors]]])
+        func payload(host: Any = 0, jobs: Any = 0, invocations: Any = 0,
+                     busy: Bool = false, unknown: Bool = false) throws -> Data {
+            try JSONSerialization.data(withJSONObject: ["status": "ok", "update_busy": [
+                "busy": busy, "unknown": unknown, "counts": [
+                    "host_active": host, "host_queued": 0, "jobs_inflight": 0,
+                    "jobs_nonterminal": jobs, "invocations_nonterminal": invocations]]])
         }
         #expect(UpdateSessionProbe.runningSessionCount(in: try payload()) == 0)
-        #expect(UpdateSessionProbe.runningSessionCount(in: try payload(active: 12)) == 12)
-        #expect(UpdateSessionProbe.runningSessionCount(in: try payload(active: 2, queue: 1)) == 2)
-        let invalidCounts: [Any] = [-1, true, 1.5, "0", NSNull()]
+        #expect(UpdateSessionProbe.runningSessionCount(in: try payload(host: 12, busy: true)) == 12)
+        #expect(UpdateSessionProbe.runningSessionCount(in: try payload(jobs: 1, busy: true)) == 1)
+        #expect(UpdateSessionProbe.runningSessionCount(in: try payload(invocations: 1, busy: true)) == 1)
+        let invalidCounts: [Any] = [-1, true, 1.5, "0", NSNull(), 1001]
         for invalid in invalidCounts {
-            #expect(UpdateSessionProbe.runningSessionCount(in: try payload(active: invalid)) == nil)
+            #expect(UpdateSessionProbe.runningSessionCount(in: try payload(host: invalid)) == nil)
         }
-        for data in [try payload(queue: 1), try payload(queue: -1),
-                     try payload(healthy: false), try payload(wired: false),
-                     try payload(shutdown: true), try payload(residue: true),
-                     try payload(survivors: 1), try payload(survivors: -1),
+        for data in [try payload(unknown: true), try payload(busy: true),
+                     try payload(jobs: 1), try payload(jobs: 1, busy: true, unknown: true),
                      Data("{}".utf8), Data("not json".utf8),
-                     Data(#"{"status":"ok","executor_sessions_active":0}"#.utf8)] {
+                     Data(#"{"status":"ok","host_sessions":{"admission":{"active":0,"queue_depth":0}}}"#.utf8),
+                     Data(#"{"status":"ok","update_busy":{"busy":false,"unknown":false}}"#.utf8)] {
             #expect(UpdateSessionProbe.runningSessionCount(in: data) == nil)
         }
     }

@@ -154,32 +154,35 @@ No private key is generated or handled. The notice manifest includes
 
 Every Sparkle relaunch request, including its scheduled/impatient prompt,
 is postponed through `SPUUpdaterDelegate`. The pure `UpdateGate` policy lives
-in HappyRanchSupervisor. For a live owned daemon it reads the existing
-public loopback `GET /api/v1/health` field `host_sessions.admission.active`,
-a daemon-wide count covering task, thread, dream and job invocations. There is
-no daemon route/schema change.
-Missing/invalid data, HTTP failures, timeouts, unreadable port files, unwired
-or unhealthy supervision, residue survivors/blocked admission and shutdown
-mean BUSY. Queued
-admission also prevents a zero-active observation from being treated as idle.
+in HappyRanchSupervisor. For a live owned daemon it reads the public loopback
+`GET /api/v1/health` field `update_busy` (see the [API contract](../../docs/agent-guides/web-and-cli.md#update-readiness-health-field)).
+The old `host_sessions.admission.active` gauge measures attempt capacity;
+it does not cover durable jobs or logical invocations during retry backoff.
+The new observation includes those producers and retained running job rows.
+Missing/invalid data, an older daemon without the field, HTTP failures,
+timeouts, unreadable port files or any unavailable producer mean BUSY.
 Requests stay on loopback; redirects are refused.
 
 | Condition or choice | Result |
 | --- | --- |
-| Owned daemon, zero sessions | Existing TERM/KILL stop; confirm the same child exited, then release Sparkle's block once |
-| Owned daemon, N sessions | “N sessions are running”: Update when they finish / Update now and stop them / Later |
-| Update when they finish | Re-read every five seconds until idle; revalidate ownership and process identity after HTTP I/O |
-| Update now and stop them | Re-read status, stop even if still busy, confirm exit before releasing |
-| Unknown session count | Hold; immediate update disabled; wait/retry or Later only |
+| Owned daemon, idle snapshot | Ask “Restart HappyRanch to install the update?” with Restart now / Later; never stop automatically |
+| Owned daemon, busy | Update when they finish / Update now and stop them / Later |
+| Update when they finish | Re-read every five seconds; when idle, show the restart confirmation and wait for a new click |
+| Restart now | Fresh re-read immediately before stop; busy/unknown returns to the busy prompt |
+| Update now and stop them | Fresh known status; explicit consent permits stopping busy work |
+| Unknown work status | Hold; immediate update disabled; wait/retry or Later only |
+| Either authorized stop | Existing TERM/KILL stop; confirm the same child exited, then release Sparkle's block once |
 | Later | Hold without polling; Install Downloaded Update in the app menu resumes the gate |
 | Stop incomplete | Never release; retain old app and existing Stop incomplete state; manual resume may retry |
 | External daemon or CLIENT | Release directly; no signal sent to the daemon |
 | Plain Quit | Existing owned-daemon stop/exit path; Sparkle installs after app exit, without a relaunch-block call |
 
-Plain Quit still exits if its bounded stop fails; Sparkle may then install while
-the old daemon survives. On next launch existing discovery treats that daemon
-as external. The session count is an advisory snapshot, not a daemon admission
-lock. Do not infer atomic exclusion of new work between reading it and stopping.
+The confirmation explicitly warns that work starting before the stop will be
+interrupted. The read-only observation is not an admission lock: a residual
+click-to-TERM window remains, covered by that explicit consent. No drain or
+admission-close route is added. Plain Quit still exits if its bounded stop
+fails; Sparkle may then install while the old daemon survives. On next launch
+existing discovery treats that daemon as external.
 
 Check for Updates is user-initiated. Pending relaunches disable that action;
 Install Downloaded Update lets the user revisit Later. Updater startup/abort and

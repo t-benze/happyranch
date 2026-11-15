@@ -179,6 +179,18 @@
         "params": [],
         "responses": [
           "200"
+        ],
+        "update_busy_counts": [
+          "host_active",
+          "host_queued",
+          "invocations_nonterminal",
+          "jobs_inflight",
+          "jobs_nonterminal"
+        ],
+        "update_busy_fields": [
+          "busy",
+          "counts",
+          "unknown"
         ]
       }
     },

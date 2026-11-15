@@ -2,9 +2,9 @@ import Foundation
 
 /// Install policy only: no AppKit, Sparkle, network, timers or process effects.
 public enum UpdateGate {
-    public enum Choice: Equatable, Sendable { case whenIdle, now, later }
+    public enum Choice: Equatable, Sendable { case whenIdle, restart, now, later }
     public enum Action: Equatable {
-        case release, stopDaemon, wait, later
+        case release, stopDaemon, confirmRestart, wait, later
         case prompt(runningSessions: Int?)
     }
 
@@ -18,7 +18,8 @@ public enum UpdateGate {
         guard let count = runningSessions, count >= 0 else {
             return choice == .whenIdle ? .wait : .prompt(runningSessions: nil)
         }
-        if count == 0 || choice == .now { return .stopDaemon }
+        if choice == .now { return .stopDaemon }
+        if count == 0 { return choice == .restart ? .stopDaemon : .confirmRestart }
         return choice == .whenIdle ? .wait : .prompt(runningSessions: count)
     }
 

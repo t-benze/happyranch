@@ -524,12 +524,28 @@ export interface OrgsListResponse {
 export interface HealthResponse {
   status: string;
   active_runtime: string | null;
+  /** Advisory all-producer update observation; missing on older daemons. */
+  update_busy?: UpdateBusy;
   /** Bounded, non-sensitive host-session health block (THR-207). Present only
    *  when the daemon-wide HostSessionSupervisor is wired (runtime-backed
-   *  states); idle states keep the two-key contract. Public variant drops the
+   *  states). Public variant drops the
    *  per-receipt recent window, censused survivor identities, and backend
    *  probe evidence. */
   host_sessions?: HostSessionPublicBlock;
+}
+
+/** Counts are capped at 1000 and can overlap; null means unavailable.
+ * No identities or error details are exposed. Unknown always implies busy. */
+export interface UpdateBusy {
+  busy: boolean;
+  unknown: boolean;
+  counts: {
+    host_active: number | null;
+    host_queued: number | null;
+    jobs_inflight: number | null;
+    jobs_nonterminal: number | null;
+    invocations_nonterminal: number | null;
+  };
 }
 
 /** Mirror of the public (unauthenticated) `host_sessions` block on /health.

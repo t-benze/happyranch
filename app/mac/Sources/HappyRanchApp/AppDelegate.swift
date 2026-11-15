@@ -285,22 +285,50 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, SPUU
             releaseUpdate()
         case .wait:
             diagnostics.recordUpdaterEvent(runningSessions == nil
-                ? "Install held: session count unavailable (BUSY)" : "Waiting for sessions to finish")
+                ? "Install held: work status unavailable (BUSY)" : "Waiting for agent work to finish")
             scheduleUpdateRecheck(requestID: updateRequestID, choice: .whenIdle)
         case .later:
             updateTask?.cancel()
             diagnostics.recordUpdaterEvent("Install postponed by user")
+        case .confirmRestart:
+            let alert = NSAlert()
+            alert.messageText = "Restart HappyRanch to install the update?"
+            alert.informativeText = "HappyRanch will stop and restart. Any agent work that starts before it stops will be interrupted."
+            alert.addButton(withTitle: "Restart now")
+            alert.addButton(withTitle: "Later")
+            let requestID = updateRequestID
+            let handle = currentHandle
+            let response = alert.runModal()
+            guard !terminating, requestID == updateRequestID, hasPendingUpdate else { return }
+            guard currentHandle === handle else {
+                scheduleUpdateRecheck(requestID: requestID, choice: nil)
+                return
+            }
+            if response == .alertFirstButtonReturn {
+                // This click alone authorizes the idle stop. Fresh BUSY/unknown
+                // returns to the busy prompt; polling never retains consent.
+                updateTask = Task { [weak self] in
+                    await self?.checkUpdateGate(requestID: requestID, choice: .restart)
+                }
+            } else {
+                applyUpdateGate(runningSessions: nil, choice: .later)
+            }
         case .prompt(let count):
             let alert = NSAlert()
-            alert.messageText = count.map { "\($0) sessions are running" } ?? "Session status is unavailable"
+            alert.messageText = count == nil ? "Work status is unavailable" : "Agent work is running"
             alert.informativeText = "HappyRanch must stop its daemon before updating. You can also update when you quit."
             alert.addButton(withTitle: "Update when they finish")
             alert.addButton(withTitle: "Update now and stop them")
             alert.addButton(withTitle: "Later")
             alert.buttons[1].isEnabled = count != nil
             let requestID = updateRequestID
+            let handle = currentHandle
             let response = alert.runModal()
             guard !terminating, requestID == updateRequestID, hasPendingUpdate else { return }
+            guard currentHandle === handle else {
+                scheduleUpdateRecheck(requestID: requestID, choice: nil)
+                return
+            }
             let choice: UpdateGate.Choice = response == .alertFirstButtonReturn ? .whenIdle
                 : (response == .alertSecondButtonReturn ? .now : .later)
             // Re-read status after the modal rather than using an old idle/busy answer.

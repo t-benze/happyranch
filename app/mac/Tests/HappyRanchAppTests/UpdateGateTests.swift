@@ -8,7 +8,7 @@ import HappyRanchSupervisor
 @Suite("Update gate", .serialized)
 @MainActor
 struct UpdateGateTests {
-    @Test("owned idle update observes exit before releasing Sparkle")
+    @Test("owned idle update requires a click, then observes exit before releasing Sparkle")
     func idleStopsBeforeRelease() throws {
         let (delegate, factory, handle) = try ownedDaemon()
         var releases = 0
@@ -17,7 +17,11 @@ struct UpdateGateTests {
             #expect(factory.terminateCallCount == 1)
             releases += 1
         }
-        delegate.applyUpdateGate(runningSessions: 0, choice: nil)
+        #expect(UpdateGate.action(ownsDaemon: true, processRunning: handle.isRunning,
+            runningSessions: 0) == .confirmRestart)
+        #expect(factory.terminateCallCount == 0)
+        #expect(releases == 0)
+        delegate.applyUpdateGate(runningSessions: 0, choice: .restart)
         #expect(releases == 1)
         #expect(!delegate.hasPendingUpdate)
         delegate.applyUpdateGate(runningSessions: 0, choice: nil)
@@ -36,9 +40,29 @@ struct UpdateGateTests {
         #expect(delegate.hasPendingUpdate)
         #expect(factory.terminateCallCount == 0)
         // Production polling/resume supplies a fresh observation to this boundary.
-        delegate.applyUpdateGate(runningSessions: 0, choice: .whenIdle)
+        #expect(UpdateGate.action(ownsDaemon: true, processRunning: true,
+            runningSessions: 0, choice: .whenIdle) == .confirmRestart)
+        #expect(factory.terminateCallCount == 0)
+        #expect(releases == 0)
+        delegate.applyUpdateGate(runningSessions: 0, choice: .restart)
         #expect(factory.terminateCallCount == 1)
         #expect(releases == 1)
+    }
+
+    @Test("fresh busy or unknown after Restart now returns to a prompt without stopping")
+    func busyAfterRestartConsentReturnsToPrompt() throws {
+        let (delegate, factory, handle) = try ownedDaemon()
+        var releases = 0
+        delegate.postponeUpdateRelaunch { releases += 1 }
+        for count in [2, nil] as [Int?] {
+            #expect(UpdateGate.action(ownsDaemon: true, processRunning: handle.isRunning,
+                runningSessions: count, choice: .restart) == .prompt(runningSessions: count))
+        }
+        delegate.applyUpdateGate(runningSessions: 2, choice: .whenIdle)
+        #expect(factory.terminateCallCount == 0)
+        #expect(releases == 0)
+        delegate.applyUpdateGate(runningSessions: nil, choice: .later)
+        delegate.applicationWillTerminate(Notification(name: NSApplication.willTerminateNotification))
     }
 
     @Test("Update now stops known busy work only after user choice")
@@ -86,7 +110,7 @@ struct UpdateGateTests {
         delegate.currentHandle = survivor
         var releases = 0
         delegate.postponeUpdateRelaunch { releases += 1 }
-        delegate.applyUpdateGate(runningSessions: 0, choice: nil)
+        delegate.applyUpdateGate(runningSessions: 0, choice: .restart)
         #expect(releases == 0)
         #expect(delegate.hasPendingUpdate)
         #expect(delegate.stateText.contains("Stop incomplete"))
@@ -111,7 +135,7 @@ struct UpdateGateTests {
         defer { original.onTerminate = nil }
         var releases = 0
         delegate.postponeUpdateRelaunch { releases += 1 }
-        delegate.applyUpdateGate(runningSessions: 0, choice: nil)
+        delegate.applyUpdateGate(runningSessions: 0, choice: .restart)
         #expect(!original.isRunning)
         #expect(replacement.isRunning)
         #expect(releases == 0)

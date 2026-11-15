@@ -1,39 +1,35 @@
 import Foundation
 
-/// Reads existing public host admission health across tasks, threads, dreams and jobs.
+/// Reads the all-producer update observation. Old daemons remain unknown/BUSY.
 public enum UpdateSessionProbe {
     private struct Snapshot: Decodable {
         let status: String
-        let host_sessions: Host
-        struct Host: Decodable {
-            let wired: Bool
-            let backend: Backend
-            let admission: Admission
-            let residue: Residue
+        let update_busy: Busy
+        struct Busy: Decodable {
+            let busy: Bool
+            let unknown: Bool
+            let counts: Counts
         }
-        struct Backend: Decodable { let healthy: Bool }
-        struct Admission: Decodable {
-            let active: Int
-            let queue_depth: Int
-            let shutdown: Bool
-        }
-        struct Residue: Decodable {
-            let admission_blocked: Bool
-            let survivors_count: Int
+        struct Counts: Decodable {
+            let host_active: Int
+            let host_queued: Int
+            let jobs_inflight: Int
+            let jobs_nonterminal: Int
+            let invocations_nonterminal: Int
         }
     }
 
+    /// Evidence counts may overlap and saturate at 1000; only zero means idle.
     public static func runningSessionCount(in data: Data) -> Int? {
         guard let snapshot = try? JSONDecoder().decode(Snapshot.self, from: data),
-              snapshot.status == "ok", snapshot.host_sessions.wired,
-              snapshot.host_sessions.backend.healthy,
-              !snapshot.host_sessions.residue.admission_blocked,
-              snapshot.host_sessions.residue.survivors_count == 0 else { return nil }
-        let admission = snapshot.host_sessions.admission
-        guard !admission.shutdown, admission.active >= 0, admission.queue_depth >= 0,
-              // Queued admission must not look idle between two running sessions.
-              admission.active > 0 || admission.queue_depth == 0 else { return nil }
-        return admission.active
+              snapshot.status == "ok", !snapshot.update_busy.unknown else { return nil }
+        let counts = snapshot.update_busy.counts
+        let values = [counts.host_active, counts.host_queued, counts.jobs_inflight,
+                      counts.jobs_nonterminal, counts.invocations_nonterminal]
+        guard values.allSatisfy({ $0 >= 0 && $0 <= 1000 }) else { return nil }
+        let total = values.reduce(0, +)
+        guard snapshot.update_busy.busy == (total > 0) else { return nil }
+        return total
     }
 
     public static func count(homeDir: String) async -> Int? {

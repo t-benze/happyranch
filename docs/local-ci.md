@@ -3235,3 +3235,17 @@ team change at the lease boundary. This is not pytest, retired
 units, general integration or Product E2E. Real daemon/CLI/UI acceptance remains
 a separate independent QA gate. Web `openapi-coverage.test.ts` was retired under
 THR-343; preserve the OpenAPI snapshot and TS client mirror, with Web static CI.
+
+
+Focused update-readiness checks (TASK-16297 / THR-346): run
+`python -B scripts/check_update_busy.py`. This uses the existing standalone
+ASGI/synthetic-org pattern and real SQLite, host admission/retry and logical
+lifetime trackers without lifespan, listeners, providers or native processes.
+`python -B scripts/check_update_busy.py --legacy-signal` is the intentional
+RED comparison with the reviewed active/queue-only signal: retained/registered
+jobs and 429 backoff report idle and fail their busy assertions. Normal
+verification uses the new field. Run the OpenAPI operator with `--write` then
+`--check`; maintain the TS mirror and use Web lint/typecheck via local CI.
+Swift gate/decoder checks remain manager-owned on macOS:
+`swift test --package-path app/mac --filter 'UpdateGateTests|UpdateConfigurationTests'`.
+Retired Python/Web unit lanes are not restored by these focused checks.
