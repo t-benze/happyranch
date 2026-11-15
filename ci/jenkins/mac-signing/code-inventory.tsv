@@ -1,3 +1,6 @@
+sparkle	2	org.sparkle-project.Autoupdate	Contents/Frameworks/Sparkle.framework/Versions/B/Autoupdate
+bundle	2	org.sparkle-project.Updater	Contents/Frameworks/Sparkle.framework/Versions/B/Updater.app
+framework	6	org.sparkle-project.Sparkle	Contents/Frameworks/Sparkle.framework
 lib	6	ai.happyranch.HappyRanchApp.nested.01	Contents/Resources/daemon/_internal/libpython3.12.dylib
 lib	8	ai.happyranch.HappyRanchApp.nested.02	Contents/Resources/daemon/_internal/websockets/speedups.cpython-312-darwin.so
 lib	8	ai.happyranch.HappyRanchApp.nested.03	Contents/Resources/daemon/_internal/httptools/parser/url_parser.cpython-312-darwin.so

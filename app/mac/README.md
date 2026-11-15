@@ -218,8 +218,14 @@ the job's existing 90-minute / 256 MiB-file envelope is unchanged. Its separate
 `supervisor` suite retains its existing filter. No job configuration is changed.
 The manager owns the budgeted native run and signed update proof.
 
-The existing **1.0.1-pinned signing package cannot sign this Sparkle build**.
-Signing-script and code-inventory changes belong to PR3 and are not included here.
+The PR3 signing package accepts this Sparkle build using an owner-supplied,
+strictly validated public pin file (version, build, unsigned ZIP size/hash, member
+layout, source commit/tree and `SUPublicEDKey`). Both versions retain the current
+builder’s three-component format. It signs Autoupdate → Updater.app → framework
+before the app, with Hardened Runtime, timestamps and no entitlements, retaining
+exactly the eight known framework links. See the [per-build signing procedure](../../docs/runbooks/mac-release-handbook.md#step-3--sign-locally-one-separate-stage-at-a-time).
+N+1 must have a strictly higher three-component build; automated monotonic checks,
+publishing and EdDSA/appcast signing remain PR4. No private EdDSA key is read here.
 After review and QA, the separately authorized native packaged run must observe
 the embedded framework, all eight links resolving, no XPCServices, successful app
 launch with the updater inert when no key is supplied, every packaged step passing, and the archive notice

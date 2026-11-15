@@ -15,9 +15,7 @@ use Cwd qw(abs_path);
 my $JSON = JSON::PP->new->canonical->utf8;
 my $HERE = dirname(abs_path(__FILE__));
 my @FILES = qw(run-stage.sh mac-sign.sh code-inventory.tsv bounded-run.pl keychain-state.swift owner-session.sh);
-my $INPUT_SHA = '85b96655a1d072328872fa8797e16ad0087e0e05aa30b8dda2a8bc78b60ac243';
-my $INPUT_SIZE = 49089611;
-my $FINAL = 'HappyRanch-1.0.1-1.0.1-arm64-signed-notarized-stapled.zip';
+my ($INPUT_SHA, $INPUT_SIZE, $FINAL);
 my %BUDGET = (preflight=>180, sign=>900, submit=>600, status=>300, finalize=>900, test=>600);
 my $UUID = qr/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/;
 sub need ($$) { die "REFUSED: $_[1]\n" unless $_[0] }
@@ -123,9 +121,35 @@ sub copy_private {
     flush_dir(dirname($to));
     need(digest($from) eq digest($to), 'copy digest');
 }
+# Read the same strict public pin format as the owner script. No native stage,
+# Keychain or owner consent path is invoked by the read-only pins command.
+sub build_pins {
+    my ($file) = @_;
+    regular($file,4096);
+    open(my $f,'-|','/bin/bash','-p',"$HERE/mac-sign.sh",'pins',$file) or die "pin reader open\n";
+    my $raw=''; while (my $line=<$f>) { $raw.=$line; need(length($raw)<=4096,'pin output cap'); }
+    close($f) or die "pin validation failed\n";
+    my %p=map {split /=/,$_,2} split /\n/,$raw;
+    closed(\%p,qw(VERSION BUILD INPUT_SIZE INPUT_SHA LAYOUT_SHA SOURCE SOURCE_TREE SUPUBLIC_ED_KEY));
+    return \%p;
+}
+sub selected_pins {
+    my ($action) = @_;
+    my $root="$ENV{HOME}/Library/Application Support/HappyRanchSigning";
+    my $file=$action eq 'preflight' ? "$root/build.pins" : "$root/inputs/build.pins";
+    my $p=build_pins($file);
+    if ($action ne 'preflight') {
+        my $sha=bytes("$root/inputs/pins.sha256",65); chomp $sha;
+        need($sha eq digest($file),'retained input pin binding');
+    }
+    ($INPUT_SIZE,$INPUT_SHA)=@$p{qw(INPUT_SIZE INPUT_SHA)};
+    $FINAL="HappyRanch-$p->{VERSION}-$p->{BUILD}-arm64-signed-notarized-stapled.zip";
+    return $p;
+}
+my $RELEASE = qr/(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)/;
 sub associated {
     my ($info,$log,$id,$name,$sha) = @_;
-    need($id =~ /\A$UUID\z/ && $name =~ /\AHappyRanch-1\.0\.1-submission-$UUID\.zip\z/ && $sha =~ /\A[0-9a-f]{64}\z/, 'submission identity syntax');
+    need($id =~ /\A$UUID\z/ && $name =~ /\AHappyRanch-$RELEASE-$RELEASE-submission-$UUID\.zip\z/ && $sha =~ /\A[0-9a-f]{64}\z/, 'submission identity syntax');
     my $i=read_json($info,1048576); my $l=read_json($log,1048576);
     need(ref($i) eq 'HASH' && ref($l) eq 'HASH', 'real info/log objects');
     need(lc($i->{id}//'') eq $id && ($i->{name}//'') eq $name && lc($l->{jobId}//'') eq $id && lc($l->{sha256}//'') eq $sha, 'info/name/log/hash association');
@@ -136,7 +160,7 @@ sub seal_attempt {
     my ($dir) = @_;
     private_dir($dir);
     my $name=bytes("$dir/artifact-name.txt",128); chomp($name);
-    need($name =~ /\AHappyRanch-1\.0\.1-submission-$UUID\.zip\z/,'unique archive name');
+    need($name =~ /\AHappyRanch-$RELEASE-$RELEASE-submission-$UUID\.zip\z/,'unique archive name');
     my $sha=bytes("$dir/artifact.sha256",65); chomp($sha);
     my $size=bytes("$dir/artifact.size",32); chomp($size);
     need($sha =~ /\A[0-9a-f]{64}\z/ && $size =~ /\A[1-9][0-9]*\z/ && $size<=134217728,'submission bounds');
@@ -264,6 +288,7 @@ sub gate {
     my ($action, $source) = @_;
     my $root = "$ENV{HOME}/Library/Application Support/HappyRanchSigning";
     private_dir($root);
+    selected_pins($action);
     # Every admission and native recheck obtains live controller/allocation
     # observations through the SAME attended window, never an old scalar.
     if ($^O eq 'darwin') {
@@ -328,7 +353,7 @@ sub render {
 # adoption; the failure reader separately requires the saved canonical ID.
 sub observe_info {
     my ($base,$id,$name) = @_;
-    need($id =~ /\A$UUID\z/ && $name =~ /\AHappyRanch-1\.0\.1-submission-$UUID\.zip\z/,'info identity syntax');
+    need($id =~ /\A$UUID\z/ && $name =~ /\AHappyRanch-$RELEASE-$RELEASE-submission-$UUID\.zip\z/,'info identity syntax');
     my $o={id=>$id,name=>$name,status=>'UNKNOWN',cause=>'info-unobserved'};
     my $file="$base.out";
     if (-e $file || -l $file) {
@@ -363,7 +388,7 @@ sub failure_output {
         notarization=>{info_status=>undef,cause=>'info-unobserved',association=>'unproven'}};
     return $o unless $action eq 'status' && (-e "$sd/notary-info.json" || -l "$sd/notary-info.json");
     my $i=read_control("$sd/notary-info.json"); closed($i,qw(id name status cause));
-    need($i->{id} =~ /\A$UUID\z/ && $i->{name} =~ /\AHappyRanch-1\.0\.1-submission-$UUID\.zip\z/,'observed info identity');
+    need($i->{id} =~ /\A$UUID\z/ && $i->{name} =~ /\AHappyRanch-$RELEASE-$RELEASE-submission-$UUID\.zip\z/,'observed info identity');
     need($i->{cause} =~ /\A(?:info-unobserved|info-command-incomplete|info-malformed-or-unavailable|info-id-name-mismatch|info-status-unknown|validated-info)\z/,'info cause allowlist');
     need($i->{status} =~ /\A(?:UNKNOWN|Accepted|Invalid|Pending|In Progress)\z/ && (($i->{cause} eq 'validated-info') == ($i->{status} ne 'UNKNOWN')),'info status allowlist');
     $o->{notarization}{cause}=$i->{cause};
@@ -387,7 +412,7 @@ sub failure_output {
 sub command_journal {
     my ($sd) = @_;
     my $raw=(-e "$sd/commands.tsv" || -l "$sd/commands.tsv") ? bytes("$sd/commands.tsv",262100) : '';
-    my $native=qr/(?:retain-unsigned|extract-baseline|copy-app|archive|archive-extract|submit|info|log|history|copy-final|staple|ticket|reextract|reextracted-ticket|syspolicy|gatekeeper|verify-outer|(?:original-metadata|original-entitlements|dependencies|sign|verify|metadata|entitlements)-(?:[1-9]|1[01]))/;
+    my $native=qr/(?:retain-unsigned|extract-baseline|copy-app|archive|archive-extract|submit|info|log|history|copy-final|staple|ticket|reextract|reextracted-ticket|syspolicy|gatekeeper|verify-outer|(?:original-metadata|original-entitlements|dependencies|sign|verify|metadata|entitlements)-(?:[1-9]|1[0-5]))/;
     my $label=qr/(?:stage|keychain-state|identity-(?:uname|hostname|id|stat|dscl|ps|df)|(?:console-|lock-)?$native)/;
     my $reason=qr/(?:exited|signal|wait_error|timeout|unsettled_child|inherited_stream|capture_read|output_cap|capture_write|teardown_unknown|capture_sync|capture_close)/;
     for my $line (split /(?<=\n)/,$raw) {
@@ -492,7 +517,7 @@ sub stage {
             closedir($dh) or die "publisher close\n";
             need(@names<=4,'publisher file count');
             for my $n (@names) {
-                need($d eq 'public-output' ? $n eq $FINAL : $n =~ /\A(?:stage\.json|commands\.tsv|output\.json|notary-log\.json)\z/,'publisher filename allowlist');
+                need($d eq 'public-output' ? $n =~ /\AHappyRanch-$RELEASE-$RELEASE-arm64-signed-notarized-stapled\.zip\z/ : $n =~ /\A(?:stage\.json|commands\.tsv|output\.json|notary-log\.json)\z/,'publisher filename allowlist');
                 regular("$ws/$d/$n",$d eq 'public-output' ? 134217728 : 1048576);
             }
             rename("$ws/$d","$sd/prior-$d") or die "preserve prior publisher directory\n";
@@ -518,12 +543,16 @@ sub stage {
         my @lines = split /\n/,$free; my @fields = split /\s+/,$lines[-1];
         need(@fields >= 6 && $fields[3] =~ /\A[0-9]+\z/ && $fields[3] >= 1048576, 'one GiB free');
         if ($action eq 'preflight') {
+            copy_private("$root/build.pins","$root/inputs/build.pins",4096);
+            save("$root/inputs/pins.sha256",digest("$root/inputs/build.pins")."\n");
+            selected_pins("sign");
+            need($p->{upload}{size}==$INPUT_SIZE && $p->{upload}{sha256} eq $INPUT_SHA,"retained pins match current permission");
             copy_private("$ws/ORIGINAL_ZIP",$input,67108864);
         }
         my $run = "$root/runs/$ENV{RUN_ID}";
         my @args = ($action);
-        if ($action eq 'preflight') { push @args,$input; }
-        elsif ($action eq 'sign') { need(!-e $run && !-l $run,'new run only'); push @args,$input,$run; }
+        if ($action eq 'preflight') { push @args,"$root/inputs/build.pins",$input; }
+        elsif ($action eq 'sign') { need(!-e $run && !-l $run,'new run only'); push @args,"$root/inputs/build.pins",$input,$run; }
         else {
             private_dir($run); push @args,$run;
             push @args,'--recover-id',$ENV{RECOVER_ID} if length($ENV{RECOVER_ID});
@@ -535,7 +564,7 @@ sub stage {
         $failure_cause='post-work-check-incomplete';
         gate($action,$source);
         if ($action eq 'sign') {
-            seal_files(map {"$run/$_"} qw(original.zip package.sha256 baseline.sha256 baseline-data.txt signed-files.txt sign.ready));
+            seal_files(map {"$run/$_"} qw(original.zip build.pins pins.sha256 package.sha256 baseline.sha256 baseline-data.txt signed-files.txt sign.ready));
         }
         if ($action eq 'submit') { seal_files("$run/submission/id.txt"); }
         if ($action eq 'status') {
@@ -548,7 +577,7 @@ sub stage {
             seal_files(map {"$run/final/$_"} ($FINAL,qw(final.sha256 final.size association.txt final-files.txt ready)));
         }
         $marker = $action eq 'preflight' ? "$root/inputs/preflight.complete" : $action eq 'sign' ? "$run/sign.complete" : $action eq 'finalize' ? "$run/final/complete" : "$sd/complete";
-        if ($action eq 'preflight') { unlink("$ws/ORIGINAL_ZIP") or die "remove admitted workspace input\n"; }
+        if ($action eq 'preflight') { seal_files("$root/inputs/build.pins","$root/inputs/pins.sha256"); unlink("$ws/ORIGINAL_ZIP") or die "remove admitted workspace input\n"; }
         $failure_cause='evidence-publication-incomplete';
         # Publisher must start empty; a stale artifact cannot satisfy this build.
         mkdir("$ws/public-evidence",0700) or die "public evidence exists\n";
