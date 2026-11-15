@@ -2330,6 +2330,21 @@ def local_registration_transitions():
                            for reason in report['coverage']['reasons']), report
                 assert row(report, a)['state'] == 'retained' and 'Permission denied' in row(report, a)['reason'], report
                 assert report['partial_unknown_count'] == 0 and not report['phases']['worktree']['attribution_unknown'], report
+            elif when == 'post_remove' and kind == 'unreadable_index':
+                # Seq361 also removes the peer census from B's confirmation.
+                assert report['discovery'] == 'complete' and report['unreached'] == 0, report
+                damaged = row(report, a)
+                assert damaged['state'] == 'retained' and damaged['reason'].startswith('git_failed:'), report
+                assert str(entry / 'index') in damaged['reason'] and 'Permission denied' in damaged['reason'], report
+                assert a.is_dir() and entry.is_dir(), report
+                assert str(a) in f.git(repo, 'worktree', 'list', '--porcelain', '-z'), report
+                removed = row(report, b)
+                assert removed['state'] == 'removed' and removed['measurement']['confirmed_effect'] == {'remove': 1}, report
+                assert removed['removed_attributable_bytes'] > 0, report
+                assert not report['coverage']['complete'] and not report['coverage']['unknown_discovery'], report
+                assert any(str(a) in reason and str(entry / 'index') in reason
+                           for reason in report['coverage']['reasons']), report
+                assert report['partial_unknown_count'] == 0 and not report['phases']['worktree']['attribution_unknown'], report
             else:
                 assert report['discovery'] == ('complete' if when == 'during_B_census' else 'partial'), report
                 assert (report['unreached'] is None) == (when != 'during_B_census'), report
