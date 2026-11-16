@@ -70,7 +70,7 @@ import hashlib
 import json
 import os
 import stat
-import tempfile
+import secrets
 import threading
 import time
 from datetime import datetime
@@ -79,7 +79,9 @@ from typing import Any, Iterator
 
 import fcntl
 
-from runtime.remote_access.authorization import DeviceAuthorization, PendingPairing, TrustState
+from runtime.remote_access.authorization import (
+    DeviceAuthorization, InviteRecord, PendingApproval, PendingPairing, TrustState,
+)
 from runtime.remote_access.identity import ConnectorIdentity
 from runtime.remote_access.policy import canonical_json
 # The non-normative local envelope (not a founder-gated schema). Bumping the
@@ -89,7 +91,10 @@ from runtime.remote_access.policy import canonical_json
 # v2 adds the monotonic ``generation`` field (envelope-level) bound to the
 # companion anchor. v1 envelopes (no generation, no anchor) are rejected as
 # unsupported — a v1 snapshot can no longer be trusted without an anchor.
-ENVELOPE_VERSION = 2
+ENVELOPE_VERSION = 3
+LEGACY_ENVELOPE_VERSION = 2
+MAX_PINNED_DEVICES = 32
+MAX_STATE_BYTES = 1024 * 1024
 ENVELOPE_KIND = "connector-trust-state-nonnormative"
 
 # The companion monotonic generation/digest anchor (founder THR-097 seq163).
@@ -120,6 +125,9 @@ _PAYLOAD_KEYS = frozenset(
         "current_device_id",
         "devices",
         "pending_pairings",
+        "invite_record",
+        "pending_approval",
+        "delivery",
     }
 )
 _IDENTITY_KEYS = frozenset({"tenant_id", "home_id", "connector_id"})
@@ -132,12 +140,14 @@ _DEVICE_KEYS = frozenset(
         "expires_at",
         "revoked",
         "credential_digest",
+        "control_plane_id",
+        "stable_node_id",
     }
 )
 # credential_digest is OPTIONAL (Unit 3A additive): pre-3A envelopes that
 # predate it must still load (absent = None); a present value is validated
 # strictly. Unknown keys are still rejected via ``_DEVICE_KEYS``.
-_DEVICE_REQUIRED_KEYS = _DEVICE_KEYS - {"credential_digest"}
+_DEVICE_REQUIRED_KEYS = _DEVICE_KEYS - {"credential_digest", "control_plane_id", "stable_node_id"}
 _PENDING_KEYS = frozenset({"code_digest", "expires_at", "consumed"})
 
 
@@ -179,7 +189,69 @@ def _require_tz_datetime(value: Any) -> datetime:
     return parsed
 
 
-def _state_from_payload(payload: dict[str, Any]) -> TrustState:
+def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise CorruptTrustStateError("trust state duplicate key")
+        result[key] = value
+    return result
+
+
+def _require_identity_text(value: Any) -> str:
+    if not isinstance(value, str) or not value or len(value) > 256 or any(ord(c) < 32 or ord(c) == 127 for c in value):
+        raise CorruptTrustStateError("trust state identity invalid")
+    return value
+
+
+def _digest(value: Any) -> str:
+    if not isinstance(value, str) or len(value) != 64 or any(c not in "0123456789abcdef" for c in value):
+        raise CorruptTrustStateError("trust state digest invalid")
+    return value
+
+
+def _invite_from_payload(raw: Any) -> InviteRecord | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, dict) or set(raw) != {"secret_digest", "expires_at", "generation"}:
+        raise CorruptTrustStateError("trust state invite invalid")
+    generation = _require_int(raw, "generation")
+    if generation < 1:
+        raise CorruptTrustStateError("trust state invite generation invalid")
+    return InviteRecord(_digest(raw["secret_digest"]), _require_tz_datetime(raw["expires_at"]), generation)
+
+
+def _approval_from_payload(raw: Any, *, delivery: bool) -> PendingApproval | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, dict) or set(raw) != {
+        "generation", "control_plane_id", "stable_node_id", "handle_digest",
+        "comparison_phrase", "expires_at", "device_id",
+    }:
+        raise CorruptTrustStateError("trust state approval invalid")
+    generation = _require_int(raw, "generation")
+    device_id = raw["device_id"]
+    if generation < 1 or (delivery and not isinstance(device_id, str)) or (not delivery and device_id is not None):
+        raise CorruptTrustStateError("trust state approval generation/device invalid")
+    if delivery:
+        _require_identity_text(device_id)
+    return PendingApproval(
+        generation, _require_identity_text(raw["control_plane_id"]),
+        _require_identity_text(raw["stable_node_id"]), _digest(raw["handle_digest"]),
+        _require_identity_text(raw["comparison_phrase"]), _require_tz_datetime(raw["expires_at"]), device_id,
+    )
+
+
+def _record_payload(record: InviteRecord | PendingApproval | None) -> dict[str, Any] | None:
+    if record is None:
+        return None
+    from dataclasses import asdict
+    result = asdict(record)
+    result["expires_at"] = record.expires_at.isoformat()
+    return result
+
+
+def _state_from_payload(payload: dict[str, Any], *, legacy: bool = False) -> TrustState:
     """Strictly validate and rebuild a TrustState from the envelope payload.
 
     Unknown keys, missing required keys, wrong types, bool-epochs, naive
@@ -190,7 +262,7 @@ def _state_from_payload(payload: dict[str, Any]) -> TrustState:
     unknown = set(payload) - _PAYLOAD_KEYS
     if unknown:
         raise CorruptTrustStateError("trust state payload has unknown keys")
-    required = {"pairing_epoch", "revocation_epoch", "devices"}
+    required = ({"pairing_epoch", "revocation_epoch", "devices"} if legacy else _PAYLOAD_KEYS)
     missing = required - set(payload)
     if missing:
         raise CorruptTrustStateError("trust state payload incomplete")
@@ -230,7 +302,7 @@ def _state_from_payload(payload: dict[str, Any]) -> TrustState:
         unknown_device = set(raw) - _DEVICE_KEYS
         if unknown_device:
             raise CorruptTrustStateError("trust state device record has unknown keys")
-        missing_device = _DEVICE_REQUIRED_KEYS - set(raw)
+        missing_device = (_DEVICE_REQUIRED_KEYS if legacy else _DEVICE_KEYS) - set(raw)
         if missing_device:
             raise CorruptTrustStateError("trust state device record incomplete")
         stored_id = _require_str(raw, "device_id")
@@ -253,6 +325,16 @@ def _state_from_payload(payload: dict[str, Any]) -> TrustState:
                 raise CorruptTrustStateError(
                     "trust state device credential_digest must be a sha256 hex digest"
                 )
+        control_plane_id = raw.get("control_plane_id")
+        stable_node_id = raw.get("stable_node_id")
+        if (control_plane_id is None) != (stable_node_id is None):
+            raise CorruptTrustStateError("trust state pin incomplete")
+        if control_plane_id is not None:
+            _require_identity_text(control_plane_id)
+            _require_identity_text(stable_node_id)
+        epoch = _require_int(raw, "authorization_epoch")
+        if epoch < 1 or epoch > pairing_epoch:
+            raise CorruptTrustStateError("trust state device epoch invalid")
         devices[device_id] = DeviceAuthorization(
             device_id=stored_id,
             tenant_id=_require_str(raw, "tenant_id"),
@@ -261,6 +343,8 @@ def _state_from_payload(payload: dict[str, Any]) -> TrustState:
             expires_at=_require_tz_datetime(raw.get("expires_at")),
             revoked=revoked,
             credential_digest=credential_digest,
+            control_plane_id=control_plane_id,
+            stable_node_id=stable_node_id,
         )
 
     pending_raw = payload.get("pending_pairings")
@@ -301,6 +385,19 @@ def _state_from_payload(payload: dict[str, Any]) -> TrustState:
             raise CorruptTrustStateError(
                 "trust state current_device_id references an unknown device"
             )
+    if len([d for d in devices.values() if not d.re_pair_required]) > MAX_PINNED_DEVICES:
+        raise CorruptTrustStateError("trust state device limit exceeded")
+    invite = _invite_from_payload(payload.get("invite_record"))
+    pending = _approval_from_payload(payload.get("pending_approval"), delivery=False)
+    delivery = _approval_from_payload(payload.get("delivery"), delivery=True)
+    if sum(x is not None for x in (invite, pending, delivery)) > 1:
+        raise CorruptTrustStateError("trust state has competing ceremonies")
+    if delivery is not None:
+        device = devices.get(delivery.device_id)
+        if device is None or (device.control_plane_id, device.stable_node_id) != (
+            delivery.control_plane_id, delivery.stable_node_id
+        ):
+            raise CorruptTrustStateError("trust state delivery pin mismatch")
     return TrustState(
         connector_identity=connector_identity,
         pairing_epoch=pairing_epoch,
@@ -308,6 +405,9 @@ def _state_from_payload(payload: dict[str, Any]) -> TrustState:
         devices=devices,
         current_device_id=current_device_id,
         pending_pairings=pending_pairings,
+        invite_record=invite,
+        pending_approval=pending,
+        delivery=delivery,
     )
 
 
@@ -335,9 +435,14 @@ def _payload_from_state(state: TrustState) -> dict[str, Any]:
                 "expires_at": device.expires_at.isoformat(),
                 "revoked": device.revoked,
                 "credential_digest": device.credential_digest,
+                "control_plane_id": device.control_plane_id,
+                "stable_node_id": device.stable_node_id,
             }
             for device_id, device in sorted(state.devices.items())
         },
+        "invite_record": _record_payload(state.invite_record),
+        "pending_approval": _record_payload(state.pending_approval),
+        "delivery": _record_payload(state.delivery),
         "pending_pairings": {
             device_name: {
                 "code_digest": pending.code_digest,
@@ -441,16 +546,18 @@ class AtomicFileTrustStateStore:
         an aliased snapshot or anchor into an acceptable state.
         """
         lock_path = Path(str(self._path) + ".lock")
-        parent = lock_path.parent
         fd: int | None = None
         try:
-            parent.mkdir(parents=True, exist_ok=True)
-            os.chmod(parent, _STATE_DIR_MODE)
-            fd = os.open(
-                lock_path,
-                os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK,
-                _STATE_FILE_MODE,
-            )
+            with self._open_parent(lock_path) as parent_fd:
+                fd = os.open(
+                    lock_path.name,
+                    os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK,
+                    _STATE_FILE_MODE, dir_fd=parent_fd,
+                )
+                named = os.stat(lock_path.name, dir_fd=parent_fd, follow_symlinks=False)
+                opened = os.fstat(fd)
+                if (named.st_dev, named.st_ino) != (opened.st_dev, opened.st_ino):
+                    raise OSError("trust state lock changed")
             lock_stat = os.fstat(fd)
             if (
                 not stat.S_ISREG(lock_stat.st_mode)
@@ -542,15 +649,14 @@ class AtomicFileTrustStateStore:
         raw = self._read_owner_only(path, "trust state file")
         anchor = self._parse_anchor(self._read_owner_only(anchor_path, "trust state anchor"))
         try:
-            envelope = json.loads(raw)
+            envelope = json.loads(raw, object_pairs_hook=_unique_object)
         except (ValueError, TypeError) as exc:
             raise CorruptTrustStateError("trust state file is not valid JSON") from exc
         if not isinstance(envelope, dict):
             raise CorruptTrustStateError("trust state envelope must be an object")
-        unknown = set(envelope) - _ENVELOPE_KEYS
-        if unknown:
+        if set(envelope) != _ENVELOPE_KEYS:
             raise CorruptTrustStateError("trust state envelope has unknown keys")
-        if envelope.get("version") != ENVELOPE_VERSION:
+        if type(envelope.get("version")) is not int or envelope["version"] not in (LEGACY_ENVELOPE_VERSION, ENVELOPE_VERSION):
             raise CorruptTrustStateError("trust state envelope version unsupported")
         if envelope.get("kind") != ENVELOPE_KIND:
             raise CorruptTrustStateError("trust state envelope kind mismatch")
@@ -585,7 +691,11 @@ class AtomicFileTrustStateStore:
             raise CorruptTrustStateError(
                 "trust state snapshot does not match companion anchor"
             )
-        return _state_from_payload(payload)
+        state = _state_from_payload(payload, legacy=envelope["version"] == LEGACY_ENVELOPE_VERSION)
+        for record in (state.invite_record, state.pending_approval, state.delivery):
+            if record is not None and record.generation > generation:
+                raise CorruptTrustStateError("trust state ceremony generation rollback")
+        return state
 
     def save(self, state: TrustState) -> None:
         """Publish *state* at the next monotonic generation, under the SAME
@@ -594,6 +704,7 @@ class AtomicFileTrustStateStore:
         transaction and can never observe/regress the anchored generation.
         """
         with self._lock_file():
+            self.load()  # a corrupt/torn pair cannot be overwritten into acceptance
             self._write_pair(state, self._next_generation())
 
     def _write_pair(self, state: TrustState, generation: int) -> None:
@@ -602,6 +713,7 @@ class AtomicFileTrustStateStore:
         mismatched pair that ``load()`` rejects — never a stale state).
         Only ever called while holding the inter-process lock."""
         payload = _payload_from_state(state)
+        _state_from_payload(payload)  # validate BEFORE either durable file changes
         envelope = {
             "version": ENVELOPE_VERSION,
             "kind": ENVELOPE_KIND,
@@ -632,6 +744,7 @@ class AtomicFileTrustStateStore:
         """Serialize *state* exactly as ``save`` would at *generation*
         (deterministic; used by tests to construct/verify envelopes)."""
         payload = _payload_from_state(state)
+        _state_from_payload(payload)  # validate BEFORE either durable file changes
         envelope = {
             "version": ENVELOPE_VERSION,
             "kind": ENVELOPE_KIND,
@@ -676,15 +789,14 @@ class AtomicFileTrustStateStore:
     def _parse_anchor(self, raw: bytes) -> dict[str, int | str]:
         """Strictly validate the companion anchor; any violation fails closed."""
         try:
-            anchor = json.loads(raw)
+            anchor = json.loads(raw, object_pairs_hook=_unique_object)
         except (ValueError, TypeError) as exc:
             raise CorruptTrustStateError("trust state anchor is not valid JSON") from exc
         if not isinstance(anchor, dict):
             raise CorruptTrustStateError("trust state anchor must be an object")
-        unknown = set(anchor) - _ANCHOR_KEYS
-        if unknown:
+        if set(anchor) != _ANCHOR_KEYS:
             raise CorruptTrustStateError("trust state anchor has unknown keys")
-        if anchor.get("version") != ANCHOR_VERSION:
+        if type(anchor.get("version")) is not int or anchor["version"] != ANCHOR_VERSION:
             raise CorruptTrustStateError("trust state anchor version unsupported")
         if anchor.get("kind") != ANCHOR_KIND:
             raise CorruptTrustStateError("trust state anchor kind mismatch")
@@ -715,69 +827,97 @@ class AtomicFileTrustStateStore:
             raise CorruptTrustStateError("trust state anchor integrity check failed")
         return {"generation": generation, "snapshot_digest": snapshot_digest}
 
+    @contextlib.contextmanager
+    def _open_parent(self, path: Path) -> Iterator[int]:
+        """Open literal parents without symlinks; never repair existing modes."""
+        absolute = path.absolute()
+        fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            for part in absolute.parts[1:-1]:
+                try:
+                    child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+                except FileNotFoundError:
+                    os.mkdir(part, _STATE_DIR_MODE, dir_fd=fd)
+                    child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+                os.close(fd)
+                fd = child
+            metadata = os.fstat(fd)
+            if metadata.st_uid != os.geteuid() or stat.S_IMODE(metadata.st_mode) != _STATE_DIR_MODE:
+                raise OSError("unsafe trust state parent")
+            yield fd
+        finally:
+            os.close(fd)
+
+    @staticmethod
+    def _safe_file(metadata: os.stat_result) -> bool:
+        return (stat.S_ISREG(metadata.st_mode) and metadata.st_nlink == 1
+                and metadata.st_uid == os.geteuid()
+                and stat.S_IMODE(metadata.st_mode) == _STATE_FILE_MODE
+                and metadata.st_size <= MAX_STATE_BYTES)
+
     def _read_owner_only(self, path: Path, what: str) -> bytes:
-        """Read a state/anchor file with the owner-only contract enforced:
-        symlink, non-file, loose permissions, or unreadable all fail closed."""
-        if path.is_symlink():
-            raise StateStoreError(f"{what} must not be a symlink")
-        if not path.is_file():
-            raise StateStoreError(f"{what} path is not a file")
+        """Bounded read of one no-follow, owner-only, single-link stable inode."""
         try:
-            mode = stat.S_IMODE(path.stat().st_mode)
+            with self._open_parent(path) as parent_fd:
+                fd = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent_fd)
+                try:
+                    before = os.fstat(fd)
+                    named = os.stat(path.name, dir_fd=parent_fd, follow_symlinks=False)
+                    if not self._safe_file(before) or before != named:
+                        raise OSError("unsafe trust state inode")
+                    chunks: list[bytes] = []
+                    remaining = MAX_STATE_BYTES + 1
+                    while remaining:
+                        chunk = os.read(fd, min(65536, remaining))
+                        if not chunk:
+                            break
+                        chunks.append(chunk)
+                        remaining -= len(chunk)
+                    after = os.fstat(fd)
+                    named_after = os.stat(path.name, dir_fd=parent_fd, follow_symlinks=False)
+                    if before != after or after != named_after or remaining == 0:
+                        raise OSError("trust state inode changed or oversized")
+                    return b"".join(chunks)
+                finally:
+                    os.close(fd)
         except OSError as exc:
-            raise StateStoreError(f"{what} unreadable") from exc
-        if mode & 0o077:
-            raise StateStoreError(f"{what} permissions too loose")
-        try:
-            return path.read_bytes()
-        except OSError as exc:
-            raise StateStoreError(f"{what} unreadable") from exc
+            raise StateStoreError(f"{what} unavailable") from exc
 
     def _write_bytes(self, path: Path, data: bytes) -> None:
-        """Atomic owner-only write: temp file in the same directory, fsync,
-        rename, directory fsync. A crash never leaves a half-written file."""
-        parent = path.parent
-        fd = None
-        tmp_name: str | None = None
+        """Exclusive temporary inode, fsync and descriptor-relative publication."""
+        if len(data) > MAX_STATE_BYTES:
+            raise StateStoreError("trust state exceeds size bound")
         try:
-            parent.mkdir(parents=True, exist_ok=True)
-            # The state directory must be owner-only: a group/world-readable
-            # state directory would leak device/epoch metadata and invite
-            # tampering. Tightening is always safe for the connector state dir.
-            os.chmod(parent, _STATE_DIR_MODE)
-        except OSError as exc:
-            raise StateStoreError("trust state directory unavailable") from exc
-        try:
-            fd, tmp_name = tempfile.mkstemp(
-                prefix=f".{path.name}.", suffix=".tmp", dir=parent
-            )
-            os.fchmod(fd, _STATE_FILE_MODE)
-            with os.fdopen(fd, "wb") as fh:
-                fd = None
-                fh.write(data)
-                fh.flush()
-                os.fsync(fh.fileno())
-            os.replace(tmp_name, path)
-            tmp_name = None
-            # fsync the directory so the rename is durable across a crash.
-            dir_fd = os.open(parent, os.O_RDONLY)
-            try:
-                os.fsync(dir_fd)
-            finally:
-                os.close(dir_fd)
+            with self._open_parent(path) as parent_fd:
+                try:
+                    previous = os.stat(path.name, dir_fd=parent_fd, follow_symlinks=False)
+                except FileNotFoundError:
+                    previous = None
+                if previous is not None and not self._safe_file(previous):
+                    raise OSError("unsafe trust state destination")
+                temporary = f".{path.name}.{secrets.token_hex(16)}.tmp"
+                fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                             _STATE_FILE_MODE, dir_fd=parent_fd)
+                try:
+                    with os.fdopen(fd, "wb") as stream:
+                        stream.write(data)
+                        stream.flush()
+                        os.fsync(stream.fileno())
+                    try:
+                        current = os.stat(path.name, dir_fd=parent_fd, follow_symlinks=False)
+                    except FileNotFoundError:
+                        current = None
+                    if current != previous:
+                        raise OSError("trust state destination changed")
+                    os.replace(temporary, path.name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+                    os.fsync(parent_fd)
+                finally:
+                    try:
+                        os.unlink(temporary, dir_fd=parent_fd)
+                    except FileNotFoundError:
+                        pass
         except OSError as exc:
             raise StateStoreError("trust state write failed") from exc
-        finally:
-            if fd is not None:
-                try:
-                    os.close(fd)
-                except OSError:
-                    pass
-            if tmp_name is not None:
-                try:
-                    os.unlink(tmp_name)
-                except OSError:
-                    pass
 
 
 class _TrustStateTransaction:

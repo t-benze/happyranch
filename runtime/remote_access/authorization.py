@@ -36,6 +36,30 @@ class DeviceAuthorization:
     expires_at: datetime
     revoked: bool = False
     credential_digest: str | None = None
+    control_plane_id: str | None = None
+    stable_node_id: str | None = None
+
+    @property
+    def re_pair_required(self) -> bool:
+        return self.control_plane_id is None or self.stable_node_id is None
+
+
+@dataclass(frozen=True)
+class InviteRecord:
+    secret_digest: str
+    expires_at: datetime
+    generation: int
+
+
+@dataclass(frozen=True)
+class PendingApproval:
+    generation: int
+    control_plane_id: str
+    stable_node_id: str
+    handle_digest: str
+    comparison_phrase: str
+    expires_at: datetime
+    device_id: str | None = None  # set only after durable approval
 
 
 @dataclass(frozen=True)
@@ -63,6 +87,9 @@ class TrustState:
     devices: dict[str, DeviceAuthorization] = field(default_factory=dict)
     current_device_id: str | None = None
     pending_pairings: dict[str, PendingPairing] = field(default_factory=dict)
+    invite_record: InviteRecord | None = None
+    pending_approval: PendingApproval | None = None
+    delivery: PendingApproval | None = None
 
     def apply_pairing(self, device: DeviceAuthorization) -> None:
         """Pair/re-pair a device; epochs are monotonic (rollback rejected)."""
@@ -110,6 +137,8 @@ class TrustState:
 class AuthorizationVerdict:
     ok: bool
     reason: str | None = None  # identity|pairing|current_device|revocation
+    device_id: str | None = None
+    authorization_epoch: int | None = None
 
 
 class AuthorizationVerifier:
