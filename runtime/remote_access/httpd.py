@@ -4,7 +4,8 @@
 Both the LAB-ONLY conformance adapter and the Supported-DIY customer-owned-
 network adapter run the SAME security-critical serving mechanics: parse the
 raw HTTP request into a ``RemoteRequest``, never log raw request lines,
-serve a gateway ``Decision`` (deny => 403 category-only JSON; allowed HTTP
+serve a gateway ``Decision`` (deny => 403 category-only JSON, or 503 for
+release verification refusal; allowed HTTP
 => relayed loopback response; allowed SSE => tracked-stream pump that stops
 on revocation), and send only category-level JSON errors. Keeping one shared
 implementation avoids divergent copies of the serving path across providers.
@@ -59,12 +60,13 @@ def send_json(handler: BaseHTTPRequestHandler, status: int, payload: dict) -> No
 
 def serve_decision(handler: BaseHTTPRequestHandler, decision: Decision) -> None:
     """Serve one gateway ``Decision`` to the wire. Denials are 403 with the
-    stable category only; allowed HTTP relays the loopback response; allowed
+    stable category only (503 for release verification refusal); allowed HTTP relays the loopback response; allowed
     SSE pumps the tracked stream until EOF/closure (fail closed on
     revocation — the sealed handle raises and the pump terminates)."""
     if not decision.allowed:
         category = decision.audit_category or "denied"
-        send_json(handler, _DENY_STATUS, {"error": category})
+        status = 503 if decision.denied and decision.denied.reason == "release_verification_refused" else _DENY_STATUS
+        send_json(handler, status, {"error": category})
         return
     if decision.response is not None:
         handler.send_response(decision.response.status)
