@@ -84,6 +84,24 @@ SH-to-EX rediscovery, zero busy wait/deadline and backend/TS hold-reason parity.
 Ordinary complete validation, original-owner qualification, actual writable
 rehearsal, supervised installation and startup/listener acceptance remain required.
 
+`BootstrapStartup`/`BootstrapDiscovery` now compose the original SH/EX routing
+and cumulative admission ledger, still without an automatic runtime caller.
+Discovery owns every selector and returned fence before fallible observations.
+SH closes positively before EX; EX always selects again, and an arriving install
+returns through a new SH selection. The common at-most-0.5-second wait debits
+all acquisition wall time and never resets; exhausted waiting allows only a
+nonblocking native acquisition. Original 120s/org and 180s-total deadlines, 60s
+new-org admission and 20s tail reserve are unchanged. Installed selection does
+not require an unexpired upgrade window. No budget/contention hold creates an
+install intent. One-shot original SH transfer into `OrgState.load` retains that
+same descriptor through connection/native custody and positive loader close;
+foreign or EX attachment fences refuse. Unknown selector/fence closure keeps
+its original handles and error, without native retry or transfer. The existing
+shell's `--bootstrap-discovery[=CASE]` observes real fence contention, fresh SQL,
+window exhaustion, original cause/closure and real native load/failure paths.
+Original-owner qualification, helper supervision and all-org/listener timing
+remain incomplete; this stage does not authorize setup effects.
+
 > Moved verbatim from the repository-root `AGENTS.md` on 2026-10-30. Sections keep
 > their original relative order. Where a later section says it supersedes or
 > extends an earlier one, the later section controls; sections marked

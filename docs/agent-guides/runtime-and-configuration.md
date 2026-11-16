@@ -51,6 +51,21 @@ only after positive original handle closure. The four A4 hold reasons now have
 backend/TypeScript parity; existing status rendering is unchanged. This stage
 still has no automatic startup caller. See the [selection boundary](../superpowers/specs/2026-11-14-automatic-workflow-setup.md#a4-read-only-startup-selection-checkpoint).
 
+The unmounted `BootstrapStartup`/`BootstrapDiscovery` composition retains one
+original 180-second upgrade window and at-most-120-second org deadline. An absent
+org needs at least 60 seconds of global remainder and the final 20-second reserve
+before EX admission. It closes the original SH before fresh EX selection; an
+installation arriving in that gap requires fresh SH selection before ordinary
+attachment. All fence acquisitions share one cumulative 0.5-second wait allowance;
+admission wall time is charged conservatively, and exhaustion permits only
+nonblocking acquisition. This is not a hard bound on native filesystem calls.
+Installed selection stays available after upgrade-window expiry. Budget/contention
+holds allocate no install attempt. Only a positively selected original SH may
+transfer once into `OrgState.load(access_fence=...)`; foreign/EX fences refuse,
+and normal loader closure retains the existing original attachment custody.
+Native-owner qualification, helper supervision and automatic startup mounting
+remain incomplete. See the [discovery boundary](../superpowers/specs/2026-11-14-automatic-workflow-setup.md#a4-original-discovery-and-upgrade-window-checkpoint).
+
 POST `/orgs` now creates J + Coding + sequential storage and ownership-2 through
 a distinct owner after exclusive skeleton creation and exclusive DB-file
 creation. It retains A1's pre-open org-access fence, Default human-managed team

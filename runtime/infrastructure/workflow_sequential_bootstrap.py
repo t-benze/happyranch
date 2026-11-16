@@ -24,7 +24,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from runtime.config import Settings
-from runtime.infrastructure.org_access_fence import OrgAccessFence
+from runtime.infrastructure.org_access_fence import OrgAccessFence, OrgAccessHeld
 from runtime.infrastructure.workflow_integrity import IntegrityLedger, require_install_integrity
 from runtime.infrastructure.workflow_schema import (
     SequentialInstallAllowance, _coding_org_identity, inspect_sequential_install,
@@ -343,6 +343,7 @@ class BootstrapSelection:
         self.primary: BaseException | None = None
         self.close_error: BaseException | None = None
 
+
     def _check(self) -> None:
         self.fence.assert_held()
         if time.monotonic() >= self.deadline:
@@ -454,6 +455,184 @@ class BootstrapSelection:
             self.failed = True
             self.close_error = errors[0]
             raise BootstrapEvidenceError('workflow_setup_selection_close_unknown') from errors[0]
+        self.closed = True
+
+
+class BootstrapStartup:
+    """One startup's original discovery clock and cumulative admission ledger.
+
+    This owner allocates no install attempt and proves no native-host closure.
+    The coordinator must retain each discovery before read(), and qualify absent
+    storage under its returned ORIGINAL EX before any backup or source effects.
+    Installed selection/ordinary attachment do not borrow the upgrade exception.
+    """
+
+    def __init__(self, *, home: Path, runtime_root: Path) -> None:
+        self.home, self.runtime_root = Path(home), Path(runtime_root)
+        self.started = time.monotonic()
+        self.deadline = self.started + 180
+        self.admission_seconds = 0.0
+        self.discoveries: dict[Path, BootstrapDiscovery] = {}
+
+    def discover(self, root: Path) -> BootstrapDiscovery:
+        root = Path(root)
+        if (root.parent != self.runtime_root/'orgs'
+                or re.fullmatch('[a-z0-9-]{1,40}', root.name) is None
+                or not root.is_absolute() or root in self.discoveries
+                or len(self.discoveries) >= 1024):
+            raise BootstrapEvidenceError('workflow_setup_discovery_owner_invalid')
+        discovery = BootstrapDiscovery(self, root)
+        self.discoveries[root] = discovery
+        return discovery
+
+    def _acquire(self, discovery: BootstrapDiscovery, *, exclusive: bool,
+                 deadline: float) -> OrgAccessFence:
+        started = time.monotonic()
+        if started >= deadline:
+            raise BootstrapEvidenceError('workflow_setup_selection_deadline')
+        remaining = max(0.0, .5-self.admission_seconds)
+        try:
+            # Once the common wait is spent, the native API's no-deadline form
+            # still makes ONE nonblocking acquisition; no new .5s is supplied.
+            fence = OrgAccessFence.acquire(discovery.root, exclusive=exclusive,
+                **({'deadline': min(deadline, started+remaining)} if remaining else {}))
+            discovery.fences.append(dict(fence=fence, attempted=False, closed=False, transferred=False))
+            fence.assert_held()
+            if time.monotonic() >= deadline:
+                raise BootstrapEvidenceError('workflow_setup_selection_deadline')
+            return fence
+        finally:
+            self.admission_seconds += max(0.0, time.monotonic()-started)
+
+
+class BootstrapDiscovery:
+    """Owned SH selection, positive SH close and fresh EX rediscovery.
+
+    A hold retains SH for independent ordinary loading, if that loading itself
+    succeeds. Unknown closure never releases or transfers any original fence.
+    A terminal/failed attempt is a refusal, never a new discovery permission.
+    """
+
+    def __init__(self, startup: BootstrapStartup, root: Path) -> None:
+        self.startup, self.root = startup, root
+        self.started_at = time.monotonic()
+        self.deadline = min(self.started_at+120, startup.deadline)
+        self.selection_deadline = self.started_at+5
+        self.fences: list[dict] = []
+        self.selections: list[BootstrapSelection] = []
+        self.fence: OrgAccessFence | None = None
+        self.result: str | None = None
+        self.reason: str | None = None
+        self.started = self.failed = self.closed = False
+        self.primary: BaseException | None = None
+        self.close_error: BaseException | None = None
+        self.exclusion_error: BaseException | None = None
+
+    def _select(self, fence: OrgAccessFence, deadline: float) -> str:
+        selected = BootstrapSelection(home=self.startup.home, fence=fence, deadline=deadline)
+        self.selections.append(selected)
+        return selected.read()
+
+    def _close_fence(self, record: dict) -> None:
+        if record['transferred']:
+            return
+        if record['attempted']:
+            if not record['closed']:
+                raise BootstrapEvidenceError('workflow_setup_discovery_close_unknown') from record['error']
+            return
+        record['attempted'] = True
+        try:
+            record['fence'].close()
+        except BaseException as exc:
+            record['error'] = exc
+            record['fence'].retain_unknown()
+            raise
+        record['closed'] = True
+
+    def read(self) -> str:
+        if self.started or self.failed or self.closed:
+            raise BootstrapEvidenceError('workflow_setup_discovery_latched')
+        self.started = True
+        try:
+            self.fence = self.startup._acquire(self, exclusive=False, deadline=self.selection_deadline)
+            if self._select(self.fence, self.selection_deadline) == 'present':
+                self.result = 'present'
+                return self.result
+            now = time.monotonic()
+            if self.startup.deadline-now < 60 or self.deadline-now <= 20:
+                self.reason = 'startup_upgrade_budget_unavailable'
+                self.result = 'held'
+                return self.result
+            # No lock conversion, original selector snapshot or old absence is
+            # carried across this gap. The EX selection uses its own raw read.
+            self._close_fence(self.fences[-1])
+            try:
+                self.fence = self.startup._acquire(self, exclusive=True,
+                    deadline=min(self.deadline-20, time.monotonic()+5))
+            except OrgAccessHeld as exc:
+                if str(exc) != 'org_access_busy':
+                    raise
+                self.exclusion_error = exc
+                end = min(self.deadline, time.monotonic()+5)
+                self.fence = self.startup._acquire(self, exclusive=False, deadline=end)
+                selected = self._select(self.fence, end)
+                self.reason = 'writer_exclusion_unproven' if selected == 'absent' else None
+                self.result = 'held' if selected == 'absent' else 'present'
+                return self.result
+            selected = self._select(self.fence, min(self.deadline-20, time.monotonic()+5))
+            if selected == 'present':
+                # Another supported owner may install in the SH->EX gap. It is
+                # ordinary storage now: reattach under a freshly selected SH.
+                self._close_fence(self.fences[-1])
+                end = min(self.deadline, time.monotonic()+5)
+                self.fence = self.startup._acquire(self, exclusive=False, deadline=end)
+                if self._select(self.fence, end) != 'present':
+                    raise BootstrapEvidenceError('workflow_setup_discovery_changed')
+            self.result = selected
+            return self.result
+        except BaseException as exc:
+            self.failed, self.primary = True, exc
+            try:
+                self.close()
+            except BaseException as close_error:
+                self.close_error = close_error
+            raise
+
+    def take_shared(self) -> OrgAccessFence:
+        """Transfer once into the normal loader's original attachment custody."""
+        if (self.failed or self.closed or self.result not in ('present', 'held')
+                or self.fence is None or self.fence.exclusive
+                or any(not selected.closed or selected.failed for selected in self.selections)):
+            raise BootstrapEvidenceError('workflow_setup_discovery_transfer_refused')
+        record = self.fences[-1]
+        if record['transferred'] or record['attempted'] or record['fence'] is not self.fence:
+            raise BootstrapEvidenceError('workflow_setup_discovery_transfer_refused')
+        self.fence.assert_held()
+        record['transferred'] = True
+        self.closed = True
+        return self.fence
+
+    def close(self) -> None:
+        errors = []
+        for selected in reversed(self.selections):
+            try:
+                selected.close()
+            except BaseException as exc:
+                errors.append(exc)
+        # Unclosed SQLite/descriptor ownership keeps its ORIGINAL fence.
+        if not errors:
+            for record in reversed(self.fences):
+                try:
+                    self._close_fence(record)
+                except BaseException as exc:
+                    errors.append(exc)
+        if errors:
+            self.failed = True
+            self.close_error = self.close_error or errors[0]
+            for record in self.fences:
+                if not record['closed'] and not record['transferred']:
+                    record['fence'].retain_unknown()
+            raise BootstrapEvidenceError('workflow_setup_discovery_close_unknown') from errors[0]
         self.closed = True
 
 

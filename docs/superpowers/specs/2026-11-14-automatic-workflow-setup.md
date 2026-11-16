@@ -530,3 +530,52 @@ qualified registration/audit/final status, remaining docs and continuous
 production-shaped all-org/listener acceptance remain incomplete. Required hosted
 checks stay Source Boundary Lint and Web Lint (Node24). No live installation,
 restart, deployment, Allow/roles, genuine Coding scratch or PR1252 release follows.
+
+### A4 original discovery and upgrade-window checkpoint
+
+`BootstrapStartup` retains the original discovery start and 180-second upgrade
+window; each org's discovery retains min(original start+120s, global deadline).
+No repeated org discovery renews a window. An absent org requires at least 60s
+global remainder and its final20s reserve before new EX admission. Exhaustion
+returns an in-memory `startup_upgrade_budget_unavailable` hold under SH, without
+an attempt, backup or source writer. Visible publication still belongs to the
+unimplemented final coordinator. Installed selection remains ordinary even after
+the upgrade window expires.
+
+`BootstrapDiscovery` acquires SH before its raw selector, positively closes that
+SH before EX, then performs a completely new raw selection. Storage arriving in
+the gap is reselected under a new SH before ordinary attachment. Contended EX
+can fall back only through a fresh independently acquired/selected SH; absence
+then carries `writer_exclusion_unproven`. No original close uncertainty permits
+fallback or transfer. One cumulative0.5s wait allowance spans all fence attempts;
+all acquisition wall time is conservatively debited. Exhaustion permits one
+nonblocking acquisition, not another wait. Native SQLite remains timeout0. Native
+filesystem calls are cooperative and are not claimed hard-wall bounded here.
+Each selector retains its original at-most5s deadline, clipped to the applicable
+operation/reserve; no shared snapshot supplies EX absence or source validity.
+
+The owner retains every selector and returned fence before fallible observation,
+with sticky original primary and close causes. Failed native close is never
+retried. Unknown raw selector ownership retains its original fence. A selected
+SH transfers once into `OrgState.load(access_fence=...)`, which checks the exact
+root and refuses EX, then retains the SAME original descriptor through normal
+construction/binding/connection/native closure. Existing callers continue their
+original acquisition. A routing result supplies no host/native/preparation/
+profile/remote/registry qualification and no install or COMMIT authority.
+
+The existing shell's `--bootstrap-discovery[=CASE]` adds A4-D rows present,
+absent, ex_reselect, total, org, installed_expired, deadlines, busy, shared_close,
+selection_close, ex_acquire, transfer, load, load_fault and foreign_fence. Actual
+native fences/SQLite and the real full OrgState loader own the observations;
+test-side faults/clocks never substitute a successful validator. The rows cover
+fresh SH/EX routing, installed no-install work, original allowance exhaustion,
+contention fallback, returned-fence custody, exact one-shot transfer, real normal
+load/SQLite failure and foreign/EX refusal. Existing selection/install/rehearsal
+keepers retain their distinct source/storage/COMMIT contracts.
+
+Automatic startup mounting, original-host/native/producer/Pause/preparation/
+profile/remote/registry qualification, supervised helper/COMMIT/kill/reap custody,
+registration/audit, final visible status and continuous production-shaped all-org/
+listener acceptance remain incomplete. Keep A4 draft. No limits, parts2-7,
+I1a/I1b, historical initializer, A1/A2, independent review/QA or exact-head gates
+change; no live install, restart, role/Allow or workflow work is authorized.

@@ -72,6 +72,14 @@ if len(sys.argv) == 2 and sys.argv[1].startswith('--bootstrap-rehearsal='):
                              'metadata_changed', 'backup_changed', 'space', 'scratch_location', 'deadline', 'load_init', 'authority', 'close')
     sys.argv[1:] = ['--bootstrap-rehearsal']
 
+discovery_case = None
+if len(sys.argv) == 2 and sys.argv[1].startswith('--bootstrap-discovery='):
+    discovery_case = sys.argv[1].split('=', 1)[1]
+    assert discovery_case in ('present', 'absent', 'ex_reselect', 'total', 'org', 'installed_expired',
+                              'deadlines', 'busy', 'shared_close', 'selection_close', 'ex_acquire',
+                              'transfer', 'load', 'load_fault', 'foreign_fence')
+    sys.argv[1:] = ['--bootstrap-discovery']
+
 selection_case = None
 if len(sys.argv) == 2 and sys.argv[1].startswith('--bootstrap-selection='):
     selection_case = sys.argv[1].split('=', 1)[1]
@@ -102,7 +110,7 @@ if len(sys.argv) == 2 and sys.argv[1].startswith('--retained-corruption-phase=')
         uncommitted='between uncommitted')[sys.argv[1].split('=', 1)[1]]
     sys.argv[1:] = ['--retained-corruption']
 
-assert sys.argv[1:] in ([], ['--bootstrap-selection'], ['--bootstrap-install'], ['--bootstrap-rehearsal'], ['--bootstrap-backup'], ['--bootstrap-journal'], ['--bootstrap-precommit'], ['--startup-isolation'], ['--fresh-catalog'], ['--org-access-fence'], ['--org-access-openers'], ['--org-access-native'], ['--org-access-guardian'], ['--org-access-profile'], ['--setup-status'], ['--daily-integrity'], ['--install-integrity'], ['--bounded-acquisition'], ['--trace-custody'], ['--sequential-reuse'], ['--sequential-load'], ['--sequential-freshness'], ['--sequential-faults'], ['--sequential-sql-exhaustion'], ['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--coding-authority-corruption'], ['--document-native-corruption'], ['--author-handoff-corruption'], ['--document-revision-corruption'], ['--coding-history-corruption'], ['--physical-corruption'], ['--sequential-uncommitted'], ['--i2-cutover'], ['--i2-native']), 'unknown schema-load selection'
+assert sys.argv[1:] in ([], ['--bootstrap-discovery'], ['--bootstrap-selection'], ['--bootstrap-install'], ['--bootstrap-rehearsal'], ['--bootstrap-backup'], ['--bootstrap-journal'], ['--bootstrap-precommit'], ['--startup-isolation'], ['--fresh-catalog'], ['--org-access-fence'], ['--org-access-openers'], ['--org-access-native'], ['--org-access-guardian'], ['--org-access-profile'], ['--setup-status'], ['--daily-integrity'], ['--install-integrity'], ['--bounded-acquisition'], ['--trace-custody'], ['--sequential-reuse'], ['--sequential-load'], ['--sequential-freshness'], ['--sequential-faults'], ['--sequential-sql-exhaustion'], ['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--coding-authority-corruption'], ['--document-native-corruption'], ['--author-handoff-corruption'], ['--document-revision-corruption'], ['--coding-history-corruption'], ['--physical-corruption'], ['--sequential-uncommitted'], ['--i2-cutover'], ['--i2-native']), 'unknown schema-load selection'
 
 
 print('SCHEMA_RUNTIME', json.dumps(dict(python=sys.version, executable=sys.executable, sqlite=sqlite3.sqlite_version,
@@ -2177,6 +2185,260 @@ runpy.run_module('runtime.daemon',run_name='__main__')
             else:
                 raise AssertionError('hardlinked report accepted')
         daily_case('PASS')
+    if sys.argv[1:]:
+        raise SystemExit(0)
+
+# A4-D composes the actual original fence/selector and native loader boundaries.
+if sys.argv[1:] in ([], ['--bootstrap-discovery']):
+    from runtime.infrastructure import workflow_sequential_bootstrap as bootstrap
+    from runtime.infrastructure import workflow_schema as schema
+    from runtime.infrastructure.org_access_fence import OrgAccessFence, OrgAccessHeld, original_org_fence
+    from runtime.daemon.routes.orgs import _seed_skeleton
+    from runtime.orchestrator.org_config import initialize_fresh_reviewer_agents
+
+    discovery_cases = ('present', 'absent', 'ex_reselect', 'total', 'org', 'installed_expired',
+                       'deadlines', 'busy', 'shared_close', 'selection_close', 'ex_acquire',
+                       'transfer', 'load', 'load_fault', 'foreign_fence')
+    for fault in discovery_cases:
+        if discovery_case is not None and discovery_case != fault:
+            continue
+        with tempfile.TemporaryDirectory(prefix='a4-discovery-') as scratch:
+            private = Path(scratch).resolve()
+            home, runtime = private/'home', private/'runtime'
+            home.mkdir(mode=0o700)
+            root = runtime/'orgs/scratch'
+            _seed_skeleton(root, from_example=None)
+            path = root/'happyranch.db'
+            installed = fault in ('present', 'installed_expired', 'transfer', 'load', 'load_fault', 'foreign_fence')
+            db = schema.initialize_fresh_org_database(path, expected_org_slug='scratch') if installed else Database(path)
+            try:
+                if not installed:
+                    schema.initialize_complete_org_schema(db, expected_org_slug='scratch', layout='J')
+                install_pause_schema(db, org_slug='scratch')
+                initialize_fresh_reviewer_agents(OrgPaths(root), db)
+            finally:
+                db.close()
+            original_bytes = path.read_bytes()
+            with patch.dict(os.environ, {'HAPPYRANCH_DAEMON_HOME': str(home)}), ExitStack() as stack:
+                actual_clock = time.monotonic
+                offset = [0.0]
+                stack.enter_context(patch.object(bootstrap.time, 'monotonic', side_effect=lambda: actual_clock()+offset[0]))
+                startup = bootstrap.BootstrapStartup(home=home, runtime_root=runtime)
+                if fault in ('total', 'installed_expired'):
+                    offset[0] = 181 if fault == 'installed_expired' else 121
+                route = startup.discover(root)
+                assert route.deadline == min(route.started_at+120, startup.deadline), 'A4-D original org/total deadlines'
+                acquisitions, closes, injected, native = [], [], [], []
+                actual_acquire = OrgAccessFence.acquire
+                actual_close = OrgAccessFence.close
+                actual_select = bootstrap.BootstrapDiscovery._select
+                actual_connect = sqlite3.connect
+                blocker = None
+                if fault == 'busy':
+                    blocker = actual_acquire(root)
+                def acquire(selected_root, **kwargs):
+                    acquisitions.append((selected_root, dict(kwargs)))
+                    if fault == 'busy' and len(acquisitions) == 1:
+                        time.sleep(.3)
+                    fence = actual_acquire(selected_root, **kwargs)
+                    if fault == 'ex_acquire' and kwargs.get('exclusive'):
+                        def unavailable():
+                            injected.append('ex_acquire')
+                            raise OSError('synthetic returned EX observation unavailable')
+                        fence.assert_held = unavailable
+                    return fence
+                def close(fence):
+                    closes.append(fence)
+                    if fault == 'shared_close' and not injected and not fence.exclusive:
+                        injected.append('shared_close')
+                        raise OSError('synthetic original SH close uncertainty')
+                    return actual_close(fence)
+                def select(discovery, fence, end):
+                    result = actual_select(discovery, fence, end)
+                    if fault == 'org' and len(discovery.selections) == 1:
+                        offset[0] = 101
+                    return result
+                def connect(*args, **kwargs):
+                    conn = actual_connect(*args, **kwargs)
+                    if fault != 'selection_close':
+                        return conn
+                    native.append(conn)
+                    class CloseFault:
+                        def __getattr__(self, name):
+                            return getattr(conn, name)
+                        @property
+                        def row_factory(self):
+                            return conn.row_factory
+                        @row_factory.setter
+                        def row_factory(self, value):
+                            conn.row_factory = value
+                        def close(self):
+                            injected.append('selection_close')
+                            raise OSError('synthetic original selector close uncertainty')
+                    return CloseFault()
+                actual_close_fence = bootstrap.BootstrapDiscovery._close_fence
+                def close_fence(discovery, record):
+                    result = actual_close_fence(discovery, record)
+                    if fault == 'ex_reselect' and len(discovery.fences) == 1 and record['closed'] and not injected:
+                        injected.append('ex_reselect')
+                        with closing(actual_connect(path)) as changed:
+                            changed.execute('CREATE TABLE workflow_seq_arrived(v TEXT)')
+                            changed.commit()
+                    return result
+                stack.enter_context(patch.object(OrgAccessFence, 'acquire', side_effect=acquire))
+                stack.enter_context(patch.object(OrgAccessFence, 'close', close))
+                stack.enter_context(patch.object(bootstrap.BootstrapDiscovery, '_select', select))
+                stack.enter_context(patch.object(bootstrap.BootstrapDiscovery, '_close_fence', close_fence))
+                stack.enter_context(patch.object(bootstrap.sqlite3, 'connect', side_effect=connect))
+                forbidden = [stack.enter_context(patch.object(owner, name,
+                    side_effect=AssertionError('A4-D source/install work in discovery')))
+                    for owner, name in ((bootstrap.BootstrapSource, 'open'), (bootstrap.BootstrapAttempt, 'begin'),
+                                        (bootstrap, 'require_install_integrity'), (schema, 'sequential_storage_inventory'), (schema, 'install_sequential_schema'))]
+                error = None
+                result = None
+                started = actual_clock()
+                try:
+                    result = route.read()
+                except BaseException as exc:
+                    error = exc
+                elapsed = actual_clock()-started
+                assert all(call.call_count == 0 for call in forbidden), 'A4-D source/install work in discovery'
+                if fault in ('shared_close', 'selection_close', 'ex_acquire'):
+                    assert error is not None and route.failed and result is None, 'A4-D unproven discovery escaped'
+                    assert route.primary is error, 'A4-D original discovery cause lost'
+                    if fault == 'ex_acquire':
+                        assert injected == ['ex_acquire'] and len(route.fences) == 2, 'A4-D lost returned EX before observation'
+                        assert route.closed and all(r['closed'] for r in route.fences), 'A4-D lost returned EX custody'
+                    else:
+                        assert not route.closed and route.close_error is not None, 'A4-D unknown discovery closure lost'
+                        before = len(closes), len(injected)
+                        try:
+                            route.close()
+                        except bootstrap.BootstrapEvidenceError:
+                            pass
+                        else:
+                            raise AssertionError('A4-D unknown discovery close retried')
+                        assert before == (len(closes), len(injected)), 'A4-D retried original native close'
+                        try:
+                            actual_acquire(root, exclusive=True)
+                        except OrgAccessHeld:
+                            pass
+                        else:
+                            raise AssertionError('A4-D released unknown original fence')
+                    try:
+                        route.take_shared()
+                    except bootstrap.BootstrapEvidenceError:
+                        pass
+                    else:
+                        raise AssertionError('A4-D transferred uncertain original')
+                else:
+                    assert error is None, (fault, error)
+                    expected = ('held' if fault in ('total', 'org', 'busy') else
+                                'absent' if fault in ('absent', 'deadlines') else 'present')
+                    assert result == expected, 'A4-D wrong fresh routing'
+                    if fault in ('total', 'org'):
+                        assert route.reason == 'startup_upgrade_budget_unavailable' and len(acquisitions) == 1, 'A4-D exhausted upgrade admitted EX'
+                    if fault == 'installed_expired':
+                        assert route.reason is None and len(acquisitions) == 1 and not route.fence.exclusive, 'A4-D upgrade expiry denied installed load'
+                    if fault == 'absent':
+                        assert len(route.selections) == 2 and route.fences[0]['closed'] and route.fence.exclusive, 'A4-D stale SH absence reused'
+                    if fault == 'ex_reselect':
+                        assert len(route.selections) == 3 and not route.fence.exclusive and all(r['closed'] for r in route.fences[:-1]), 'A4-D EX arrival bypassed SH rediscovery'
+                    if fault == 'busy':
+                        assert route.reason == 'writer_exclusion_unproven' and route.exclusion_error is not None, 'A4-D contention omitted visible hold'
+                        assert .45 <= elapsed < .85, ('A4-D replenished cumulative busy wait', elapsed)
+                        assert acquisitions[1][1]['deadline'] - acquisitions[0][1]['deadline'] < .02, 'A4-D renewed admission deadline'
+                        assert 'deadline' not in acquisitions[2][1], 'A4-D exhausted wait was replenished'
+                        assert not route.fence.exclusive and len(route.selections) == 2, 'A4-D contention bypassed fresh ordinary SH'
+                    if fault == 'deadlines':
+                        original_deadline = startup.deadline
+                        offset[0] = 100
+                        second = startup.discover(runtime/'orgs/later')
+                        assert startup.deadline == original_deadline and second.deadline == original_deadline, 'A4-D renewed all-org window'
+                        assert route.deadline == route.started_at+120, 'A4-D renewed original org window'
+                        try:
+                            startup.discover(root)
+                        except bootstrap.BootstrapEvidenceError:
+                            pass
+                        else:
+                            raise AssertionError('A4-D repeated original discovery')
+                    if fault in ('transfer', 'load', 'load_fault'):
+                        fence = route.take_shared()
+                        assert fence is route.fence and route.fences[-1]['transferred'], 'A4-D original SH not transferred'
+                        route.close()
+                        fence.assert_held()
+                        try:
+                            route.take_shared()
+                        except bootstrap.BootstrapEvidenceError:
+                            pass
+                        else:
+                            raise AssertionError('A4-D transferred original SH twice')
+                        if fault == 'transfer':
+                            actual_close(fence)
+                        else:
+                            owner = dict(startup_acquisition=True)
+                            writer = actual_connect(path, timeout=0) if fault == 'load_fault' else None
+                            if writer is not None:
+                                writer.execute('BEGIN EXCLUSIVE')
+                            before = len(acquisitions)
+                            loaded = None
+                            try:
+                                loaded = OrgState.load(slug='scratch', root=root, settings=Settings(),
+                                    attachment_owner=owner, access_fence=fence)
+                            except sqlite3.OperationalError:
+                                assert fault == 'load_fault' and owner['load_db_closed'] and fence._closed, 'A4-D failed attachment lost original SH'
+                            else:
+                                assert fault == 'load' and loaded.db._org_access_fence is fence and original_org_fence('scratch') is fence, 'A4-D normal load replaced original SH'
+                            finally:
+                                if writer is not None:
+                                    writer.rollback()
+                                    writer.close()
+                                if loaded is not None:
+                                    loaded.close()
+                            assert len(acquisitions) == before, 'A4-D normal loader reacquired original SH'
+                            assert fence._closed, 'A4-D loader omitted original close'
+                    elif fault == 'foreign_fence':
+                        other = runtime/'orgs/foreign'
+                        other.mkdir()
+                        wrong = actual_acquire(other)
+                        exclusive = None
+                        try:
+                            for selected_root in (root,):
+                                try:
+                                    OrgState.load(slug='scratch', root=selected_root, settings=Settings(), access_fence=wrong)
+                                except ValueError as exc:
+                                    assert str(exc) == 'org_access_attachment_fence_mismatch'
+                                else:
+                                    raise AssertionError('A4-D accepted foreign original fence')
+                            wrong.assert_held()
+                            route.close()
+                            exclusive = actual_acquire(root, exclusive=True)
+                            try:
+                                OrgState.load(slug='scratch', root=root, settings=Settings(), access_fence=exclusive)
+                            except ValueError as exc:
+                                assert str(exc) == 'org_access_attachment_fence_mismatch'
+                            else:
+                                raise AssertionError('A4-D attached under EX')
+                            exclusive.assert_held()
+                        finally:
+                            actual_close(wrong)
+                            if exclusive is not None:
+                                actual_close(exclusive)
+                    else:
+                        route.close()
+                    assert route.closed, 'A4-D original discovery not closed/transferred'
+                # All unknown fault cleanup here is test-owned, outside production
+                # retry. Assertions above retain the uncertainty and real blocker.
+                for conn in native:
+                    conn.close()
+                for record in route.fences:
+                    if not record['closed'] and not record['transferred']:
+                        actual_close(record['fence'])
+                if blocker is not None:
+                    actual_close(blocker)
+                if fault not in ('ex_reselect', 'load'):
+                    assert path.read_bytes() == original_bytes, 'A4-D discovery changed source bytes'
+                print('PASS A4-D original discovery/window/custody:', fault, flush=True)
     if sys.argv[1:]:
         raise SystemExit(0)
 
