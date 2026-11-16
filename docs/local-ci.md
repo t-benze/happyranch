@@ -3453,5 +3453,30 @@ uses the existing standalone script venue with a disposable private dbus-daemon,
 a fake polkit Authority, and temporary Unix sockets. System Python needs the
 already-required python3-gi/Gio; tests load its fixed distribution library path.
 No host bus, installed polkit definition, service, or live Headscale is touched.
-Native authentication dialogs and real slice-2 operation binding are NOT RUN.
+Native authentication dialogs are NOT RUN. Slice 2b-2 below covers the real
+operation binding using the retained temporary-socket venue.
 The source policy/bus definitions are not installed or wired into the package.
+
+
+THR-327 slice 2b-2 helper binding standalone verification (no system-bus/polkit
+install, live Headscale or Product E2E):
+
+```bash
+PYTHONPATH=$PWD uv run --frozen pytest scripts/test_pinned_pairing.py scripts/test_identity_ingress.py scripts/test_managed_admission.py scripts/test_remote_access_helper.py -v --tb=short
+```
+
+Use the existing system-Python Gio venue (`uv run --frozen --python
+/usr/bin/python3 pytest ...`) to prepare a compatible task-local environment
+when the default interpreter cannot load system `gi`. Bound tests use real
+private Unix sockets/store/manager/registry and the retained private Gio bus;
+only root-peer and protected-release-record observations are simulated. They
+cover immutable approval/rejection, anchored CAS at actual mutation admission,
+read-only status/cursor, targeted revoke/incomplete cleanup, legacy projection,
+Unicode/frame bounds, private socket custody, and kernel wrong-UID refusal.
+The expired-grant regression opens A/B HTTP, SSE and attributed WS streams before
+A's valid persisted credential deadline, crosses it with the real clock, then
+revokes A through private Gio or directly through the control listener. It checks
+fresh helper authorization, continued selection of expired grants, durable deny
+before A's closures and continued B delivery. No production clock seam is added.
+Installed package activation and native password dialogs remain NOT RUN.
+Required hosted checks remain Source Boundary Lint and Web Lint (Node 24).
