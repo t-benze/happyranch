@@ -1029,6 +1029,7 @@ class ConnectorSupervisor:
             )
         iterations = 0
         notified_ready = False
+        waiting_gates = None
         while True:
             iterations += 1
             if max_iterations is not None and iterations > max_iterations:
@@ -1046,7 +1047,14 @@ class ConnectorSupervisor:
                 if report.ready and not notified_ready and not self._provider_running:
                     self._start_provider()
                 if not report.ready:
-                    self._notify_fn("STATUS=waiting for readiness\n")
+                    message = "waiting for readiness"
+                    if self.config.uses_release_verifier():
+                        failures = ','.join(f'{name}:{gate.category}' for name, gate in report.gates.items() if not gate.ok)
+                        message += f"; failing_gates={failures}"
+                        if failures != waiting_gates:
+                            print(message, file=sys.stderr, flush=True)
+                            waiting_gates = failures
+                    self._notify_fn(f"STATUS={message}\n")
                 self._reconcile_revocation()
                 if self._shutdown:
                     break

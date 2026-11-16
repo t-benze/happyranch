@@ -14,7 +14,8 @@ import sys
 import tempfile
 import threading
 import unittest
-from contextlib import contextmanager
+from contextlib import contextmanager, redirect_stderr
+from io import StringIO
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from types import SimpleNamespace
@@ -26,7 +27,7 @@ from runtime.remote_access.gateway import _forward_failure
 from runtime.remote_access.httpd import serve_decision
 from runtime.remote_access.installer import InstallerError, ManagedInstaller, managed_units
 from runtime.remote_access.models import Decision
-from runtime.remote_access.supervisor import ConnectorConfig, ConnectorConfigError
+from runtime.remote_access.supervisor import ConnectorConfig, ConnectorConfigError, ConnectorSupervisor
 
 
 class ReleaseVerifierTests(unittest.TestCase):
@@ -56,6 +57,37 @@ class ReleaseVerifierTests(unittest.TestCase):
             with self.subTest(request=request):
                 self.assertEqual(self.verifier.request(request), b'refused invalid_request\n')
         self.command.assert_not_called()
+
+    def test_refusal_diagnostics_are_closed(self):
+        with self.assertLogs(rv.__name__, level='WARNING') as logs:
+            self.assertEqual(self.verifier.request(b'resolve /synthetic-secret\n'),
+                             b'refused invalid_request\n')
+            with patch.object(self.verifier, '_configuration', side_effect=OSError('synthetic-secret')):
+                self.assertEqual(self.verifier.request(b'resolve\n'), b'refused evidence_unavailable\n')
+        self.assertEqual([entry.getMessage() for entry in logs.records], [
+            'release verification refused: invalid_request',
+            'release verification refused: evidence_unavailable',
+        ])
+
+    def test_initial_readiness_diagnostics(self):
+        from runtime.remote_access.managed_provider import ManagedProviderConfig
+        from runtime.remote_access.readiness import GateResult, ReadinessReport
+
+        cfg = ConnectorConfig(tenant_id='t', home_id='h', connector_id='c', system=True,
+                              daemon_token_path='fixture-unused', policy_path='fixture-unused',
+                              managed=ManagedProviderConfig())
+        notifications = []
+        supervisor = ConnectorSupervisor(config=cfg, notify_fn=notifications.append)
+        report = ReadinessReport(False, {'daemon_loopback': GateResult(
+            False, 'daemon_unavailable', 'synthetic-secret-detail')})
+        stderr = StringIO()
+        with patch.object(supervisor, 'readiness_report', return_value=report), \
+                patch.object(supervisor, '_reconcile_revocation'), redirect_stderr(stderr):
+            code = supervisor.run(max_iterations=2, wait_fn=lambda _: None)
+        message = 'waiting for readiness; failing_gates=daemon_loopback:daemon_unavailable\n'
+        self.assertEqual(code, 0)
+        self.assertEqual(stderr.getvalue(), message)  # unchanged failures logged once
+        self.assertEqual(notifications, ['STATUS=' + message] * 2)
 
     def test_unsafe_port_files(self):
         for data in (b'', b'0', b'65536', b'-2', b'True', b' 123', b'1\n2', b'9' * 17):

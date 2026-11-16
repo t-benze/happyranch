@@ -6,6 +6,7 @@ No request can select a file, user, unit or command. Success is never cached.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import pwd
 import re
@@ -212,8 +213,10 @@ class ReleaseVerifier:
             self.verify(daemon_port=int(match[2]), local_port=int(match[1]))
             return b'ok\n'
         except VerificationRefused as exc:
+            logging.getLogger(__name__).warning('release verification refused: %s', exc.reason)
             return f'refused {exc.reason}\n'.encode('ascii')
         except (OSError, ValueError, UnicodeError, subprocess.SubprocessError, KeyError, IndexError):
+            logging.getLogger(__name__).warning('release verification refused: evidence_unavailable')
             return b'refused evidence_unavailable\n'
 
 

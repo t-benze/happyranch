@@ -875,6 +875,11 @@ For **every** new upstream TCP connection, including readiness probes:
    socket, logs a machine reason, and maps to remote HTTP 503 (`daemon_unavailable`).
    No fixed-port fallback exists. Readiness loss still removes admission.
 
+While managed Linux waits for initial readiness, STATUS and the journal name
+the failing gates and categories; unchanged failures are journaled only once.
+The root verifier journals only closed refusal reasons, never raw evidence or
+exception text. These startup diagnostics survive installer rollback.
+
 The root verifier reads no token. The copied `/etc/happyranch/daemon.token` and
 connector `LoadCredential` handling remain unchanged. File/PID hints alone are
 never authority. Bounds: request 64 bytes, response 80 bytes, one client at a

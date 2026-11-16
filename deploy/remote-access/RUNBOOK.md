@@ -161,6 +161,12 @@ The root-owned socket is `/run/happyranch-release-verifier/control.sock`, mode
 no paths or usernames and reads no daemon token. The connector remains the
 unprivileged `happyranch` account with its existing empty capabilities.
 
+If install times out, inspect the connector journal's initial `failing_gates`
+categories and the verifier journal's closed refusal reason. An installer
+rollback stops the units; a later `verifier_unavailable` probe alone does not
+identify the original startup failure. Unchanged waiting gates are logged once;
+raw evidence and exception text are never logged by the verifier.
+
 Verifier hardening (the separate root service only):
 
 | Setting | Reason |
