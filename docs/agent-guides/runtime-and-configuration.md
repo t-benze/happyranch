@@ -1,5 +1,17 @@
 # Runtime And Configuration
 
+Startup attachment construction now records the original SQLite connection
+before its first PRAGMA. A failed constructor closes once, preserves its primary
+cause and retains any unclosed handle in the daemon's attachment owner. Startup
+SQLite admission uses zero busy waiting through load and both profile tails;
+successful serving connections then regain the existing five-second timeout.
+Per-org load, post-load binding and selector failures quarantine that org and
+continue later orgs. Profile classification failures keep conservative dependency
+holds while allowing the listener to start. Public broken-org reasons are
+sanitized; original exceptions remain with their owned state. This A4 custody
+checkpoint adds no automatic installer caller. See the
+[lifecycle contract](contracts/runtime-lifecycle.md#a4-startup-attachment-custody).
+
 POST `/orgs` now creates J + Coding + sequential storage and ownership-2 through
 a distinct owner after exclusive skeleton creation and exclusive DB-file
 creation. It retains A1's pre-open org-access fence, Default human-managed team

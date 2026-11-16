@@ -23,6 +23,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import sqlite3
 import stat
 import time
@@ -1691,6 +1692,19 @@ class ProfileCoordinator:
                         )
 
     def reconcile_startup(self) -> None:
+        """Contain unexpected classification failures without publishing consumers."""
+        try:
+            self._reconcile_startup()
+        except Exception:
+            self._startup_unknown = True
+            with self._capture_orgs() as orgs:
+                for slug in orgs:
+                    self._startup_holds.setdefault(slug, 'profile_startup_unavailable')
+            if self._hold_startup is not None:
+                self._hold_startup(self._startup_holds)
+            logger.error('profile startup held: profile_startup_unavailable')
+
+    def _reconcile_startup(self) -> None:
         """Classify complete startup evidence, recover eligible groups, then sync.
 
         Refusals latch for this attachment. An ordinary local journal is never
@@ -1704,10 +1718,15 @@ class ProfileCoordinator:
             first = next(iter(reasons.values()), None)
             def refused(slugs: Sequence[str], exc: Exception, *, uncertain: bool = False) -> None:
                 nonlocal first, unknown
-                cause = getattr(exc, "code", str(exc))
+                cause = getattr(exc, 'code', None)
+                if type(cause) is not str or re.fullmatch('[a-z_]{1,96}', cause) is None:
+                    cause = ('profile_org_database_unavailable' if isinstance(exc, sqlite3.Error)
+                             else 'profile_org_filesystem_unavailable' if isinstance(exc, OSError)
+                             else 'profile_org_refused' if isinstance(exc, (ValueError, OrgConsistencyError))
+                             else 'profile_startup_unavailable')
                 first = first or cause
                 unknown = unknown or uncertain
-                logger.warning("profile startup held: %s", cause, exc_info=True)
+                logger.warning("profile startup held: %s", cause)
                 for slug in slugs:
                     reasons.setdefault(slug, cause)
 

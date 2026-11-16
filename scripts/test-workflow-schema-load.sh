@@ -56,17 +56,195 @@ if len(sys.argv) == 2 and sys.argv[1].startswith('--fresh-catalog='):
     assert a2_case in ('route', 'historical', 'registration')
     sys.argv[1:] = ['--fresh-catalog']
 
+startup_case = None
+if len(sys.argv) == 2 and sys.argv[1].startswith('--startup-isolation='):
+    startup_case = sys.argv[1].split('=', 1)[1]
+    assert startup_case in ('constructor', 'database', 'post_load', 'selector', 'profile')
+    sys.argv[1:] = ['--startup-isolation']
+
 retained_phase = None
 if len(sys.argv) == 2 and sys.argv[1].startswith('--retained-corruption-phase='):
     retained_phase = dict(first='first', local='between local', external='between external',
         uncommitted='between uncommitted')[sys.argv[1].split('=', 1)[1]]
     sys.argv[1:] = ['--retained-corruption']
 
-assert sys.argv[1:] in ([], ['--fresh-catalog'], ['--org-access-fence'], ['--org-access-openers'], ['--org-access-native'], ['--org-access-guardian'], ['--org-access-profile'], ['--setup-status'], ['--daily-integrity'], ['--install-integrity'], ['--bounded-acquisition'], ['--trace-custody'], ['--sequential-reuse'], ['--sequential-load'], ['--sequential-freshness'], ['--sequential-faults'], ['--sequential-sql-exhaustion'], ['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--coding-authority-corruption'], ['--document-native-corruption'], ['--author-handoff-corruption'], ['--document-revision-corruption'], ['--coding-history-corruption'], ['--physical-corruption'], ['--sequential-uncommitted'], ['--i2-cutover'], ['--i2-native']), 'unknown schema-load selection'
+assert sys.argv[1:] in ([], ['--startup-isolation'], ['--fresh-catalog'], ['--org-access-fence'], ['--org-access-openers'], ['--org-access-native'], ['--org-access-guardian'], ['--org-access-profile'], ['--setup-status'], ['--daily-integrity'], ['--install-integrity'], ['--bounded-acquisition'], ['--trace-custody'], ['--sequential-reuse'], ['--sequential-load'], ['--sequential-freshness'], ['--sequential-faults'], ['--sequential-sql-exhaustion'], ['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--coding-authority-corruption'], ['--document-native-corruption'], ['--author-handoff-corruption'], ['--document-revision-corruption'], ['--coding-history-corruption'], ['--physical-corruption'], ['--sequential-uncommitted'], ['--i2-cutover'], ['--i2-native']), 'unknown schema-load selection'
 
 
 print('SCHEMA_RUNTIME', json.dumps(dict(python=sys.version, executable=sys.executable, sqlite=sqlite3.sqlite_version,
     source=sys.modules[Database.__module__].__file__)), flush=True)
+
+# A4 connection custody and per-org isolation use this existing shell venue.
+# Faults/observers are local to each temporary fixture; no production test hook.
+if sys.argv[1:] in ([], ['--startup-isolation']):
+    import asyncio
+    import httpx
+    from runtime.infrastructure import remote_job_schema
+    from runtime.daemon.routes.orgs import _seed_skeleton
+    from runtime.daemon.state import DaemonState
+    from runtime.daemon.app import create_app
+    from runtime.runtime import RuntimeDir
+    from runtime.platform.passthrough_backend import PassthroughBackend
+    from runtime.workflows.profile_coordinator import ProfileCoordinator
+    from runtime.workflows.authority import WorkflowAuthorityCoordinator
+    from runtime.infrastructure.workflow_schema import initialize_complete_org_schema
+    from runtime.orchestrator.org_config import initialize_fresh_reviewer_agents
+
+    with tempfile.TemporaryDirectory(prefix='a4-construction-') as scratch:
+        for fail_close in (False, True):
+            native = sqlite3.connect(Path(scratch) / ('unknown.db' if fail_close else 'closed.db'))
+            close_calls = []
+            class CloseFault:
+                def __getattr__(self, name):
+                    return getattr(native, name)
+                @property
+                def row_factory(self):
+                    return native.row_factory
+                @row_factory.setter
+                def row_factory(self, value):
+                    native.row_factory = value
+                def close(self):
+                    close_calls.append('close')
+                    if fail_close:
+                        raise OSError('synthetic close uncertainty')
+                    native.close()
+            connection = CloseFault()
+            owner = {}
+            primary = ValueError('synthetic constructor refusal')
+            try:
+                with patch.object(sqlite3, 'connect', return_value=connection), patch.object(
+                        remote_job_schema, 'validate_identity_enrollment_schema_preflight', side_effect=primary):
+                    try:
+                        Database(Path(scratch) / 'private.db', construction_owner=owner, acquisition_timeout=0)
+                    except ValueError as exc:
+                        assert exc is primary, 'A4-C1 original constructor failure was replaced'
+                    else:
+                        raise AssertionError('A4-C1 constructor refusal disappeared')
+                assert owner['load_db']._conn is connection, 'A4-C1 lost original partial connection'
+                assert close_calls == ['close'], 'A4-C1 original connection closed more than once'
+                assert owner['load_db_closed'] is (not fail_close), 'A4-C1 invented successful closure'
+                if fail_close:
+                    assert isinstance(owner['load_close_error'], OSError)
+                    assert native.execute('SELECT 1').fetchone()[0] == 1
+                else:
+                    try:
+                        native.execute('SELECT 1')
+                    except sqlite3.ProgrammingError:
+                        pass
+                    else:
+                        raise AssertionError('A4-C1 positive close left a usable original connection')
+                print('PASS A4-C1 original partial constructor custody:', 'retained-unknown' if fail_close else 'closed', flush=True)
+            finally:
+                native.close()  # the exact synthetic handle, after custody assertions
+
+        busy_path = Path(scratch) / 'busy.db'
+        with closing(sqlite3.connect(busy_path)) as writer:
+            writer.execute('CREATE TABLE private_fixture (id INTEGER)')
+            writer.commit()
+            writer.execute('BEGIN EXCLUSIVE')
+            owner = {}
+            started = time.monotonic()
+            try:
+                Database(busy_path, construction_owner=owner, acquisition_timeout=0)
+            except sqlite3.OperationalError as exc:
+                assert getattr(exc, 'sqlite_errorcode', None) == sqlite3.SQLITE_BUSY
+            else:
+                raise AssertionError('A4-C2 busy source accepted')
+            elapsed = time.monotonic() - started
+            assert elapsed < .5 and owner['load_db_closed'], ('A4-C2 replenished busy wait', elapsed)
+            writer.rollback()
+        print('PASS A4-C2 actual exclusive SQLite contention: zero retry, closed; seconds=', elapsed, flush=True)
+
+    def seed_isolation_org(runtime, slug):
+        root = runtime.orgs_dir / slug
+        _seed_skeleton(root, from_example=None)
+        db = Database(root / 'happyranch.db')
+        try:
+            initialize_complete_org_schema(db, expected_org_slug=slug, layout='J')
+            initialize_fresh_reviewer_agents(OrgPaths(root), db)
+        finally:
+            db.close()
+        return root
+
+    for failure in (case for case in ('database', 'post_load', 'selector', 'profile')
+                    if startup_case is None or case == startup_case):
+        with tempfile.TemporaryDirectory(prefix='a4-isolation-') as scratch:
+            home = Path(scratch).resolve()
+            runtime = RuntimeDir.init(home / 'runtime')
+            first_root = seed_isolation_org(runtime, 'alpha')
+            second_root = seed_isolation_org(runtime, 'beta')
+            if failure == 'selector':
+                for root in (first_root, second_root):
+                    definition = AgentDef(name='manager', team='engineering', role='manager', executor='codex',
+                        allow_rules=('happyranch',), repos={}, enrolled_by=None, enrolled_at_task=None,
+                        enrolled_at=None, system_prompt='Synthetic private A4 selector manager.')
+                    (root / 'org/agents/manager.md').write_text(render_agent_text(definition))
+                    (root / 'org/teams.yaml').write_text('teams:\n  engineering:\n    manager: manager\n    workers: []\n')
+            state = None
+            actual_load = OrgState.load
+            reached = []
+            selector_calls = []
+            actual_selector = WorkflowAuthorityCoordinator.ensure_authority_selector
+            def observed_selector(authority, **kwargs):
+                if kwargs.get('publisher') == 'daemon-state-load:selector-initialization':
+                    selector_calls.append(authority._org_slug)
+                    if authority._org_slug == 'alpha':
+                        raise OSError('PRIVATE selector diagnostic')
+                return actual_selector(authority, **kwargs)
+            def observed_load(**kwargs):
+                org = actual_load(**kwargs)
+                reached.append(org.slug)
+                if org.slug == 'alpha' and failure == 'post_load':
+                    def refuse_queue(queue):
+                        raise OSError('PRIVATE post-load diagnostic')
+                    org.orchestrator.attach_queue = refuse_queue
+                return org
+            if failure == 'database':
+                (first_root / 'happyranch.db').write_bytes(b'not a SQLite database')
+            try:
+                with ExitStack() as stack:
+                    stack.enter_context(patch.dict(os.environ, {'HAPPYRANCH_DAEMON_HOME': str(home)}))
+                    stack.enter_context(patch('runtime.platform.backend_factory.select_session_backend',
+                                              return_value=PassthroughBackend()))
+                    stack.enter_context(patch.object(OrgState, 'load', side_effect=observed_load))
+                    if failure == 'selector':
+                        stack.enter_context(patch.object(WorkflowAuthorityCoordinator, 'ensure_authority_selector', observed_selector))
+                    if failure == 'profile':
+                        stack.enter_context(patch.object(ProfileCoordinator, '_reconcile_startup',
+                                                         side_effect=RuntimeError('PRIVATE unexpected profile error')))
+                    try:
+                        state = DaemonState.from_runtime(runtime, Settings())
+                    except Exception as exc:
+                        raise AssertionError('A4-C3 runtime aborted before isolated completion: ' + failure) from exc
+                    all_orgs = state._all_orgs_snapshot()
+                    assert 'beta' in reached and 'beta' in all_orgs, ('A4-C3 later org not attached', failure, reached)
+                    if failure in ('database', 'post_load', 'selector'):
+                        assert 'alpha' in state.broken_orgs and 'alpha' not in state.orgs
+                        assert 'PRIVATE' not in state.broken_orgs['alpha'], 'A4-C3 raw diagnostic escaped'
+                    if failure == 'selector':
+                        assert selector_calls == ['alpha', 'beta'], ('A4-C3 intended selector boundary not reached', selector_calls)
+                    if failure == 'post_load':
+                        assert all_orgs['alpha']._runner_admission_closed
+                    if failure == 'profile':
+                        assert state.profile_coordinator._startup_unknown
+                        assert set(state._startup_held_orgs) == {'alpha', 'beta'} and not state.orgs
+                        assert all(org._runner_admission_closed for org in all_orgs.values())
+                    async def independent_app_read():
+                        app = create_app(state)
+                        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://private') as client:
+                            response = await client.get('/api/v1/health')
+                            assert response.status_code == 200, ('A4-C3 independent health failed', failure, response.status_code)
+                    asyncio.run(independent_app_read())
+                    assert all(owner.get('slug') != 'alpha' or not owner.get('load_db_closed')
+                               for owner in state._attachment_owners.values()), 'A4-C3 closed handle retained as unknown'
+                print('PASS A4-C3 per-org startup containment, later actual org, independent ASGI health:', failure, flush=True)
+            finally:
+                if state is not None:
+                    asyncio.run(state.close_all())
+
+    if sys.argv[1:] == ['--startup-isolation']:
+        raise SystemExit(0)
+
 
 # A1 extends this existing disposable shell venue. Real process pipes/files are
 # barriers; trace observers record actual opens and never supply gate outcomes.

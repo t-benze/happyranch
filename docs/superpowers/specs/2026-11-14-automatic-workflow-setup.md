@@ -281,3 +281,19 @@ schema/local-CI pass at the final approved head (MEM-681). Required hosted check
 stay exactly Source Boundary Lint and Web Lint (Node24), followed by independent
 review/QA and manager guarded merge at the exact head. No E2E, V3 or CI trigger
 is added.
+
+## A4 construction and isolation checkpoint
+
+The first A4 checkpoint implements the original connection-custody and startup
+isolation portion only. See the [current lifecycle contract](../../agent-guides/contracts/runtime-lifecycle.md#a4-startup-attachment-custody).
+The existing schema shell adds focused `--startup-isolation` and individual
+`--startup-isolation=constructor|database|post_load|selector|profile` selections.
+Original constructor handles and secondary close failures remain owned;
+per-org post-load/selector failures and unexpected profile classification no
+longer abort healthy later construction or the independent app surface.
+Startup SQLite uses no busy retries and restores the original serving timeout
+after the profile tails. Parts 2–7, original reader budgets, A1 fencing and A2
+registration remain unchanged. This checkpoint contains no automatic backup or
+installer caller and supplies no first/next rehearsal or whole-startup timing
+acceptance. The complete A4 protocol and its remaining proof obligations are
+still required before source readiness or any separately authorized restart.

@@ -477,7 +477,15 @@ class Database(
     AuthorityV2AttemptsMixin,
     AuthorityV2ContinuationMixin,
 ):
-    def __init__(self, db_path: Path) -> None:
+    def __init__(self, db_path: Path, *, construction_owner: dict | None = None,
+                 acquisition_timeout: float | None = None) -> None:
+        if acquisition_timeout is not None and (type(acquisition_timeout) not in (int, float)
+                                               or not 0 <= acquisition_timeout <= .5):
+            raise ValueError('database_acquisition_timeout_invalid')
+        if construction_owner is not None:
+            # No native handle exists yet. Replace this fact immediately at
+            # connect, before the first fallible PRAGMA or migration.
+            construction_owner['load_db_closed'] = True
         self.db_path = db_path
         self._thread_release_serving_binding = None
         db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -517,7 +525,11 @@ class Database(
         # lock wait/hold times (seconds). Test seam — tests set this to a low
         # value to verify instrumentation fires.
         self._lock_warn_threshold_seconds = 1.0
-        self._conn = sqlite3.connect(str(db_path), check_same_thread=False)
+        self._conn = sqlite3.connect(str(db_path), check_same_thread=False,
+                                     timeout=5.0 if acquisition_timeout is None else acquisition_timeout)
+        if construction_owner is not None:
+            construction_owner['load_db'] = self
+            construction_owner['load_db_closed'] = False
         try:
             self._conn.row_factory = sqlite3.Row
             self._conn.execute("PRAGMA foreign_keys=ON")
@@ -554,12 +566,22 @@ class Database(
             # `_synchronized`) is preserved across both surfaces.
             self.work_hours = WorkHoursStore(self._conn, self._lock, db=self)
             self.schedules = ScheduleStore(self._conn, self._lock, db=self)
-        except BaseException:
+        except BaseException as primary:
             # Database owns the connection as soon as connect() succeeds.  A
             # fail-closed schema check or interrupted migration can raise before
             # callers receive an instance, so close here rather than depending
             # on exception-frame collection to release SQLite descriptors.
-            self._conn.close()
+            if construction_owner is not None:
+                construction_owner['primary'] = primary
+            try:
+                self._conn.close()
+            except BaseException as cleanup:
+                if construction_owner is not None:
+                    construction_owner['load_close_error'] = cleanup
+                primary.add_note('database construction close failed: ' + type(cleanup).__name__)
+            else:
+                if construction_owner is not None:
+                    construction_owner['load_db_closed'] = True
             raise
 
 

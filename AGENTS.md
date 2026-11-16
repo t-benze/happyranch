@@ -287,3 +287,4 @@ One line per area; read the linked contract before changing it.
 - **Agent retirement:** Founder-only `agents retire` preserves archives and may retire an empty non-routing manager team; manager-session terminate stays worker-only. See [agent lifecycle](docs/agent-guides/orchestrator-contracts.md#agent-lifecycle-enrollment-approval-and-termination).
 
 - **Org access fencing (A1):** preconstructor org EX/SH, original native child/guardian custody and sorted profile-org order: [automatic setup contract](docs/superpowers/specs/2026-11-14-automatic-workflow-setup.md#a1-cooperative-org-access-fence).
+- **Startup attachment custody (A4):** partial constructor handles, bounded SQLite admission and per-org load/selector/profile isolation: [lifecycle contract](docs/agent-guides/contracts/runtime-lifecycle.md#a4-startup-attachment-custody).

@@ -431,8 +431,10 @@ class OrgState:
     @_startup_load_timing()
     def load(cls, *, slug: str, root: Path, settings: Settings, attachment_owner: dict | None = None) -> "OrgState":
         from runtime.infrastructure.org_access_fence import OrgAccessFence, bind_org_fence
-        fence = OrgAccessFence.acquire(root)
         owner = attachment_owner if attachment_owner is not None else {}
+        owner['load_db_closed'] = True
+        fence = OrgAccessFence.acquire(root)
+        owner['access_fence'] = fence
         try:
             state = cls._load_fenced(slug=slug, root=root, settings=settings,
                                      attachment_owner=owner, access_fence=fence)
@@ -453,11 +455,33 @@ class OrgState:
         from runtime.daemon.__main__ import _startup_span
         paths = OrgPaths(root=root)
         from runtime.identities.schema import preflight
-        naming_preflight = preflight(paths.db_path, org_slug=slug)
+        if attachment_owner is not None and attachment_owner.get('startup_acquisition'):
+            # The historical diagnostic is advisory. Its separate native open
+            # must not introduce a replenished five-second busy wait.
+            from runtime.identities.schema import validate_names
+            naming_preflight = None
+            diagnostic = None
+            try:
+                diagnostic = sqlite3.connect(paths.db_path.as_uri() + '?mode=ro', uri=True, timeout=0)
+                attachment_owner['naming_connection'] = diagnostic
+                attachment_owner['load_db_closed'] = False
+                diagnostic.execute('PRAGMA query_only=ON')
+                validate_names(diagnostic, org_slug=slug)
+            except (ValueError, sqlite3.DatabaseError, OSError):
+                naming_preflight = 'naming_preflight_unavailable'
+            finally:
+                if diagnostic is not None:
+                    diagnostic.close()
+                    attachment_owner['load_db_closed'] = True
+                    del attachment_owner['naming_connection']
+        else:
+            naming_preflight = preflight(paths.db_path, org_slug=slug)
         if attachment_owner is not None:
             attachment_owner["db_construction_started"] = True
         with _startup_span("org_database"):
-            db = Database(paths.db_path)
+            db = Database(paths.db_path, construction_owner=attachment_owner,
+                          acquisition_timeout=0 if attachment_owner is not None
+                          and attachment_owner.get('startup_acquisition') else None)
             db._org_access_fence = access_fence
         if attachment_owner is not None:
             attachment_owner["load_db"] = db

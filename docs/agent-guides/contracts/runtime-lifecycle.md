@@ -1,5 +1,39 @@
 # Runtime lifecycle, launch and preparation contracts
 
+### A4 startup attachment custody
+
+`DaemonState.from_runtime` contains each org's construction and post-load binding
+before adding it to the runnable map. Expected SQLite/filesystem/data refusals
+and unexpected per-org exceptions produce closed sanitized reasons and allow
+later org loads. A returned OrgState whose later binding fails transfers to the
+held attachment map with runner admission closed. Failed construction or close
+retains its original unfinished owner instead; it is never reopened as fallback
+or silently removed from custody. Per-org selector failures also hold admission.
+Profile discovery keeps its existing conservative dependency closure; an
+unexpected classification failure marks the whole unknown scope held and
+returns without aborting the listener. Process cancellation, KeyboardInterrupt
+and SystemExit still propagate through the original cleanup boundary.
+
+The optional `Database` construction owner receives the instance immediately
+after connect and before PRAGMA/DDL. Constructor failure attempts one close,
+preserves the first exception and records secondary close uncertainty. Only a
+successful original close sets `load_db_closed`. The constructor remains
+workflow-free and its generic defaults are unchanged.
+
+Startup callers select zero SQLite busy waiting, which is within the cumulative
+0.5-second ceiling without query-by-query retries. The separate advisory naming
+read is mode=ro/query_only with the same zero wait and retained original handle.
+The normal five-second SQLite timeout is restored only after load, profile and
+selector startup work, before serving. Failure to restore it quarantines the org.
+This does not widen SQL, logical, five-second reader or startup budgets.
+
+The existing shell's `--startup-isolation` selection covers A4-C1 original partial
+constructor close/unknown custody, A4-C2 actual SQLite exclusive contention, and
+A4-C3 database/post-load/selector/profile failure containment with a later real
+OrgState and independent ASGI health response. It is scoped behavior evidence,
+not cold/listener timing or backup/install acceptance. Automatic existing-org
+backup, qualification and installation remain a separate A4 checkpoint.
+
 > Moved verbatim from the repository-root `AGENTS.md` on 2026-10-30. Sections keep
 > their original relative order. Where a later section says it supersedes or
 > extends an earlier one, the later section controls; sections marked
