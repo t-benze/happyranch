@@ -6,8 +6,12 @@ cause and retains any unclosed handle in the daemon's attachment owner. Startup
 SQLite admission uses zero busy waiting through load and both profile tails;
 successful serving connections then regain the existing five-second timeout.
 Per-org load, post-load binding and selector failures quarantine that org and
-continue later orgs. Profile classification failures keep conservative dependency
-holds while allowing the listener to start. Public broken-org reasons are
+continue later orgs. The final daemon entry tail also contains original owner
+binding and recovery/publication failures, retains the original attachment and
+cause, and renews conservative profile dependency holds after later org tails.
+It restores zero busy waiting throughout that tail; only still-runnable orgs
+regain the normal timeout afterward. Genuine process cancellation propagates.
+Profile classification failures keep conservative dependency holds while allowing the listener to start. Public broken-org reasons are
 sanitized; original exceptions remain with their owned state. This A4 custody
 checkpoint adds no automatic installer caller. See the
 [lifecycle contract](contracts/runtime-lifecycle.md#a4-startup-attachment-custody).

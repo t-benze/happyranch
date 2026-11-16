@@ -101,7 +101,8 @@ startup_case = None
 if len(sys.argv) == 2 and sys.argv[1].startswith('--startup-isolation='):
     startup_case = sys.argv[1].split('=', 1)[1]
     assert startup_case in ('constructor', 'database', 'post_load', 'selector', 'profile',
-                            'profile_database', 'profile_filesystem', 'profile_capture')
+                            'profile_database', 'profile_filesystem', 'profile_capture',
+                            'main_owner', 'main_selector', 'main_sweep', 'main_unexpected', 'main_cancel', 'main_success', 'main_restore')
     sys.argv[1:] = ['--startup-isolation']
 
 retained_phase = None
@@ -209,14 +210,15 @@ if sys.argv[1:] in ([], ['--startup-isolation']):
         return root
 
     for failure in (case for case in ('database', 'post_load', 'selector', 'profile',
-                                    'profile_database', 'profile_filesystem', 'profile_capture')
+                                    'profile_database', 'profile_filesystem', 'profile_capture',
+                                    'main_owner', 'main_selector', 'main_sweep', 'main_unexpected', 'main_cancel', 'main_success', 'main_restore')
                     if startup_case is None or case == startup_case):
         with tempfile.TemporaryDirectory(prefix='a4-isolation-') as scratch:
             home = Path(scratch).resolve()
             runtime = RuntimeDir.init(home / 'runtime')
             first_root = seed_isolation_org(runtime, 'alpha')
             second_root = seed_isolation_org(runtime, 'beta')
-            if failure == 'selector':
+            if failure in ('selector', 'main_selector', 'main_success'):
                 for root in (first_root, second_root):
                     definition = AgentDef(name='manager', team='engineering', role='manager', executor='codex',
                         allow_rules=('happyranch',), repos={}, enrolled_by=None, enrolled_at_task=None,
@@ -273,6 +275,104 @@ if sys.argv[1:] in ([], ['--startup-isolation']):
                         state = DaemonState.from_runtime(runtime, Settings())
                     except Exception as exc:
                         raise AssertionError('A4-C3 runtime aborted before isolated completion: ' + failure) from exc
+                    if failure.startswith('main_'):
+                        import runtime.daemon.__main__ as entry
+                        # Execute the real entry tail AFTER the real state load.
+                        # Only the selected failing operation is replaced/denied;
+                        # beta still runs its original native tail in order.
+                        original_bind = OrgState.bind_authority_v2_owner
+                        original_sweep = entry._sweep_on_startup
+                        original_publish = entry._publish_v2_generations_on_startup
+                        tail, faults, startup_waits = [], [], []
+                        primary = KeyboardInterrupt('PRIVATE genuine process cancellation') if failure == 'main_cancel' else (
+                            RuntimeError('PRIVATE unexpected entry diagnostic') if failure == 'main_unexpected' else
+                            OSError('PRIVATE original entry diagnostic'))
+                        def bind(org):
+                            if org.slug == 'alpha' and failure == 'main_restore':
+                                def restoration_fault(action, name, value, *_):
+                                    if action == sqlite3.SQLITE_PRAGMA and name == 'busy_timeout' and value == '5000':
+                                        faults.append('native-timeout-restoration-denied')
+                                        return sqlite3.SQLITE_DENY
+                                    return sqlite3.SQLITE_OK
+                                org.db._conn.set_authorizer(restoration_fault)
+                            startup_waits.append((org.slug, 'bind', org.db._conn.execute('PRAGMA busy_timeout').fetchone()[0]))
+                            tail.append((org.slug, 'bind'))
+                            if org.slug == 'alpha' and failure in ('main_owner', 'main_unexpected', 'main_cancel'):
+                                faults.append(primary)
+                                raise primary
+                            return original_bind(org)
+                        def selector(authority, **kwargs):
+                            if kwargs.get('publisher') == 'daemon-startup:selector-initialization':
+                                tail.append((authority._org_slug, 'selector'))
+                                if authority._org_slug == 'alpha' and failure == 'main_selector':
+                                    faults.append(primary)
+                                    raise primary
+                            return actual_selector(authority, **kwargs)
+                        def sweep(db, queue, slug, orchestrator):
+                            tail.append((slug, 'sweep'))
+                            if slug == 'alpha' and failure == 'main_sweep':
+                                # The native owner fails on its real first SQL,
+                                # rather than on a substituted successful scan.
+                                db._conn.set_authorizer(lambda *_: sqlite3.SQLITE_DENY)
+                                try:
+                                    return original_sweep(db, queue, slug, orchestrator)
+                                except Exception as exc:
+                                    faults.append(exc)
+                                    raise
+                                finally:
+                                    db._conn.set_authorizer(None)
+                            return original_sweep(db, queue, slug, orchestrator)
+                        def publish(org, queue):
+                            startup_waits.append((org.slug, 'publish', org.db._conn.execute('PRAGMA busy_timeout').fetchone()[0]))
+                            tail.append((org.slug, 'publish'))
+                            return original_publish(org, queue)
+                        originals = dict(state._all_orgs_snapshot())
+                        connections = {slug: org.db._conn for slug, org in originals.items()}
+                        from runtime.infrastructure.org_access_fence import original_org_fence
+                        fences = {slug: original_org_fence(slug) for slug in originals}
+                        with patch.object(OrgState, 'bind_authority_v2_owner', bind), \
+                                patch.object(WorkflowAuthorityCoordinator, 'ensure_authority_selector', selector), \
+                                patch.object(entry, '_sweep_on_startup', sweep), \
+                                patch.object(entry, '_publish_v2_generations_on_startup', publish):
+                            try:
+                                entry._initialize_runnable_startup(state)
+                            except KeyboardInterrupt as exc:
+                                assert failure == 'main_cancel' and exc is primary, 'A4-C4 wrong process cancellation'
+                            except Exception as exc:
+                                raise AssertionError('A4-C4 entry aborted remaining org/listener: ' + failure) from exc
+                            else:
+                                assert failure != 'main_cancel', 'A4-C4 swallowed process cancellation'
+                        for org in originals.values():
+                            org.db._conn.set_authorizer(None)
+                        assert startup_waits and all(wait == 0 for _, _, wait in startup_waits), ('A4-C4 renewed entry SQLite busy waiting', startup_waits)
+                        assert len(faults) == (0 if failure == 'main_success' else 1), ('A4-C4 intended boundary not reached', failure, tail)
+                        if failure == 'main_success':
+                            assert not state.broken_orgs and not state._startup_held_orgs, 'A4-C4 healthy entry held'
+                            assert tail == [(slug, phase) for slug in ('alpha', 'beta') for phase in ('bind', 'selector', 'sweep', 'publish')], ('A4-C4 original entry order', tail)
+                            assert all(org.db._conn.execute('PRAGMA busy_timeout').fetchone()[0] == 5000
+                                       for org in state.orgs.values()), 'A4-C4 serving timeout not restored'
+                        elif failure == 'main_cancel':
+                            assert tail == [('alpha', 'bind')] and not state.broken_orgs, 'A4-C4 process cancellation continued orgs'
+                        else:
+                            assert ('beta', 'sweep') in tail and ('beta', 'publish') in tail, ('A4-C4 later tail lost', tail)
+                            assert all(org is state._all_orgs_snapshot()[slug] and org.db._conn is connections[slug]
+                                       and original_org_fence(slug) is fences[slug] for slug, org in originals.items()), 'A4-C4 original custody replaced'
+                            assert all(conn.execute('SELECT 1').fetchone()[0] == 1 for conn in connections.values()), 'A4-C4 original connection lost'
+                            assert 'alpha' in state._startup_held_orgs and 'alpha' not in state.orgs, 'A4-C4 failed org runnable'
+                            held = state._startup_held_orgs['alpha']
+                            assert held is originals['alpha'] and held._runner_admission_closed, 'A4-C4 failed org runnable'
+                            assert held._startup_publication_held, 'A4-C4 failed publication runnable'
+                            if failure == 'main_restore':
+                                assert faults == ['native-timeout-restoration-denied'] and isinstance(held._startup_authority_error, sqlite3.DatabaseError), 'A4-C4 original restoration failure lost'
+                                assert held._startup_authority_error.sqlite_errorcode == sqlite3.SQLITE_AUTH, 'A4-C4 wrong native restoration failure'
+                            else:
+                                assert held._startup_authority_error is faults[0], 'A4-C4 original failure lost'
+                            assert 'PRIVATE' not in state.broken_orgs['alpha'], 'A4-C4 raw entry diagnostic escaped'
+                            assert state.profile_coordinator._startup_unknown, 'A4-C4 dependency hold not renewed'
+                            assert all(org.db._conn.execute('PRAGMA busy_timeout').fetchone()[0] == 0
+                                       for org in state._startup_held_orgs.values()), 'A4-C4 restored held timeout'
+                            assert (('alpha', 'publish') in tail) == (failure == 'main_restore'), 'A4-C4 continued failed org tail'
+                        print('PASS A4-C4 actual entry tail/original handles/later tail or process cancellation:', failure, flush=True)
                     all_orgs = state._all_orgs_snapshot()
                     assert 'beta' in reached and 'beta' in all_orgs, ('A4-C3 later org not attached', failure, reached)
                     if failure in ('database', 'post_load', 'selector'):

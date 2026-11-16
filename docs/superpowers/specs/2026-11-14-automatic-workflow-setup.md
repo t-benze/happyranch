@@ -579,3 +579,23 @@ registration/audit, final visible status and continuous production-shaped all-or
 listener acceptance remain incomplete. Keep A4 draft. No limits, parts2-7,
 I1a/I1b, historical initializer, A1/A2, independent review/QA or exact-head gates
 change; no live install, restart, role/Allow or workflow work is authorized.
+
+### A4 final entry startup isolation checkpoint
+
+The custody boundary also spans the actual daemon entry tail after
+`DaemonState.from_runtime`: original owner binding, later selector initialization,
+recovery and publication retain their order and original owners. A per-org
+SQLite/filesystem/data or unexpected exception holds that exact attachment and
+primary cause, then permits later independent tails. Conservative profile
+dependency classification runs after that iteration; no failed org is retried.
+Process cancellation propagates through the original construction cleanup.
+The entire final tail uses zero SQLite busy waiting, including profile work;
+only its still-runnable attachments restore the existing five-second timeout.
+
+Existing `--startup-isolation=main_owner|main_selector|main_sweep|main_unexpected|main_cancel|main_success|main_restore`
+rows observe this production boundary with real private OrgStates/connections,
+a native SQL authorizer refusal, actual later-org tails and independent ASGI
+health. They do not claim whole-listener startup timing or setup qualification.
+Automatic bootstrap qualification/supervision/registration/status/mount and
+whole-startup acceptance remain incomplete. No budget or native/authentication
+semantic predicate is relaxed.

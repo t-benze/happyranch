@@ -14,6 +14,18 @@ unexpected classification failure marks the whole unknown scope held and
 returns without aborting the listener. Process cancellation, KeyboardInterrupt
 and SystemExit still propagate through the original cleanup boundary.
 
+The final `__main__._initialize_runnable_startup` tail applies the same per-org
+boundary to original authority-owner binding, the later selector initialization,
+startup recovery and publication. A refusal preserves that exact OrgState,
+connection, fence and exception in held custody; no later operation on that org
+or attachment retry follows. Independent later tails complete, then profile
+dependency classification renews its conservative unknown scope. Genuine process
+cancellation still propagates to `_build_state`'s original cleanup owner.
+The entry tail resets SQLite busy waiting to zero before any of this work and
+restores the normal five-second timeout only for still-runnable attachments after
+its final profile pass. Held connections retain zero waiting. These operations
+supply neither original-host setup qualification nor whole-listener timing proof.
+
 The optional `Database` construction owner receives the instance immediately
 after connect and before PRAGMA/DDL. Constructor failure attempts one close,
 preserves the first exception and records secondary close uncertainty. Only a
@@ -31,8 +43,12 @@ The existing shell's `--startup-isolation` selection covers A4-C1 original parti
 constructor close/unknown custody, A4-C2 actual SQLite exclusive contention, and
 A4-C3 database/post-load/selector/profile failure containment with a later real
 OrgState and independent ASGI health response, including SQLite/filesystem
-profile errors and failure to acquire the profile inventory itself. Unknown
-classification never retries that failed reader. Cold/listener timing and
+profile errors and failure to acquire the profile inventory itself. A4-C4's
+`main_owner`, `main_selector`, `main_sweep`, `main_unexpected`, `main_cancel` and
+`main_success` and `main_restore` rows extend the same table through the actual
+entry tail. They observe native SQLite denial, original handle/error retention, later real tails,
+zero startup busy waiting, serving-time restoration and process cancellation.
+Unknown classification never retries that failed reader. Cold/listener timing and
 backup/install acceptance remain unverified by these cases. The unmounted
 `BootstrapSource` now retains coherent RO source and independent verified-backup
 connections before PRAGMA and attempts each original close once. Its focused
