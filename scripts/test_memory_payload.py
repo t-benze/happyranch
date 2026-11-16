@@ -14,7 +14,10 @@ from cli.commands import learning
 
 
 class MemoryPayloadTests(unittest.TestCase):
-    def invoke(self, group: str, verb: str, raw: str, suffix: str = ".yaml") -> tuple:
+    def invoke(
+        self, group: str, verb: str, raw: str, suffix: str = ".yaml",
+        extra_args: tuple[str, ...] = (),
+    ) -> tuple:
         parser = argparse.ArgumentParser(prog="happyranch")
         learning.register(parser.add_subparsers(dest="command"))
         client = Mock()
@@ -30,6 +33,7 @@ class MemoryPayloadTests(unittest.TestCase):
             if verb == "update":
                 argv.append("MEM-001")
             argv.extend(["--from-file", str(path)])
+            argv.extend(extra_args)
             args = parser.parse_args(argv)
             with (
                 patch.object(learning, "_learning_client", return_value=client),
@@ -105,6 +109,22 @@ class MemoryPayloadTests(unittest.TestCase):
                         self.assertIn("ok:", stdout)
                         write = client.post if verb == "add" else client.request
                         write.assert_called_once()
+                        self.assertEqual(write.call_args.kwargs["json"], expected)
+
+    def test_salience_and_supersedes_forwarding(self) -> None:
+        payload = {"salience": 20, "supersedes": "MEM-007"}
+        for group in ("memory", "learning"):
+            for verb in ("add", "update"):
+                for flags, expected in (
+                    ((), payload),
+                    (("--salience", "-5", "--supersedes", "MEM-008"),
+                     {"salience": -5, "supersedes": "MEM-008"}),
+                ):
+                    with self.subTest(group=group, verb=verb, flags=flags):
+                        code, _, _, client = self.invoke(
+                            group, verb, json.dumps(payload), extra_args=flags)
+                        self.assertEqual(code, 0)
+                        write = client.post if verb == "add" else client.request
                         self.assertEqual(write.call_args.kwargs["json"], expected)
 
 

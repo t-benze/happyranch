@@ -3390,6 +3390,7 @@ class LearningAddBody(BaseModel):
     source_task: str | None = None
     related_to: list[str] = []
     supersedes: str | None = None
+    salience: int = 50
 
 
 class LearningUpdateBody(BaseModel):
@@ -3401,6 +3402,7 @@ class LearningUpdateBody(BaseModel):
     source_task: str | None = None
     related_to: list[str] = []
     supersedes: str | None = None
+    salience: int | None = None
 
 
 def _invalid_entry_to_http(err: InvalidLearningEntry) -> HTTPException:
@@ -3427,6 +3429,7 @@ async def add_learning(
             source_task=body.source_task,
             related_to=list(body.related_to),
             supersedes=body.supersedes,
+            salience=body.salience,
         )
         try:
             written = store.write_entry(entry, agent=agent_name)
@@ -3485,7 +3488,7 @@ async def update_learning(
         except LearningNotFound:
             prior_slug = None  # store.update_entry will raise its own LearningNotFound
         try:
-            written = store.update_entry(id, entry, agent=agent_name)
+            written = store.update_entry(id, entry, agent=agent_name, salience=body.salience)
         except LearningNotFound:
             raise HTTPException(status_code=404, detail={"error": "id_not_found", "id": id})
         except PromotedLocked as e:

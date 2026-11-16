@@ -44,6 +44,15 @@
 > **THR-032 P3a (explicit lifecycle transition API).** The `MemoryStore.set_lifecycle()` method supports manual lifecycle transitions (valid ↔ superseded ↔ evicted) with audit-only reason, promoted-lock enforcement, permanent `LRN-` id resolution, and no hard delete. The `PATCH /memory/entries/{id}/lifecycle` route and `happyranch memory lifecycle` CLI command enable explicit eviction, supersession, and restoration. The audit `log_memory_lifecycle_changed()` row records `from`/`to`/`reason`/`source` per transition. No compaction sweeps, search-ranking changes, or KB federation are included in P3a.
 >
 > **THR-032 P3b (manual memory compaction).** `MemoryStore.compact(dry_run=True/False)` provides manual soft-eviction sweep with conservative protections: promoted items, directive memories, team/org scoped entries, cross-referenced items (via `related_to`, `supersedes`, or `MEM-NNN`/`LRN-NNN` body tokens), and already-evicted items are all protected. Eligible candidates are stale low-salience entries and superseded entries beyond the grace period. Dry-run writes nothing; apply recomputes under serialized write protection, transitions eligible entries to `lifecycle: evicted`, regenerates the index, and emits one audit row per transition. When a new entry declares `supersedes: MEM-NNN`, the target is automatically marked `superseded` under the same write lock and audited. No hard deletes, no renumbering, no automatic scheduling. Route `POST /memory/entries/compact` and CLI `happyranch memory compact --dry-run|--apply`.
+
+> **THR-366 PR-B (writer salience and reachable retirement).** Add/update accept
+> clamped salience; stale-note age uses preserved `authored_at`, so lowering an
+> old note's salience does not restart the stale window. A replacement's
+> `supersedes` link alone no longer protects a superseded predecessor past grace;
+> explicit related/body references still protect it. See [Memory compaction and
+> retirement](2026-05-13-per-agent-learnings-structural-upgrade-design.md#memory-compaction-and-retirement-thr-366-pr-b)
+> for all six `memory_compaction` defaults, trigger semantics and reversible
+> retirement examples. No live configuration or memory is changed by this PR.
 >
 > **THR-032 P4a (improved memory search ranking).** `MemoryStore.search()` now uses additive multi-term scoring over title, tags/topic, body (capped), provenance, lifecycle penalty (superseded -20), and effective salience contribution. Evicted and superseded entries are excluded by default with explicit `include_evicted`/`include_superseded` flags. Additive hit fields include `source`, `lifecycle`, `provenance`, `salience`, and `updated_at`. Malformed files are skipped without fatal error. Empty query returns no hits (exit 0).
 >

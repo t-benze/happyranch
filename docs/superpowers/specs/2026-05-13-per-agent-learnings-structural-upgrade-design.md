@@ -473,3 +473,94 @@ Run via the existing `uv run pytest tests/ -v` and `... -m integration` for the 
 - **Founder-only delete** if dead/wrong learnings accumulate faster than supersede chains can hide them.
 - **Auto-detect dangling `promoted_to`** when a KB precedent is deleted (today only `reindex` surfaces it).
 - **Cross-agent `related_to` references** — would require KB-style cross-workspace ID resolution; not needed in v1.
+
+## Memory compaction and retirement (THR-366 PR-B)
+
+This section supersedes historical salience-preservation and compaction details
+above. It changes file-backed memory only; there is no SQLite schema change.
+
+Writers can supply integer `salience` in `memory add` and `memory update` YAML
+or JSON payloads. The existing store clamp normalizes it to 0–100. Add defaults
+to 50; update omission/null preserves the stored value. The CLI also accepts
+`--salience`, overriding the payload. Updates still require slug, title, topic
+and body, preserve lifecycle/provenance/scope/verification/inherited metadata,
+and stamp `updated_at`. Promoted entries remain locked.
+
+Stale-note eligibility uses the existing **`authored_at` local creation stamp**,
+preserved through all updates, rather than the displayed last-update age. Legacy
+notes with a missing or unusable stamp fall back to `updated_at`; if neither is
+usable, the entry is retained. Compaction accepts ISO strings and YAML-loaded
+datetime/date values, normalizes them to aware UTC, and treats naive timestamps
+and date-only midnight as UTC. Content and salience edits leave creation age intact.
+This deliberately lets lowering an old note's salience make it eligible now.
+To retain a useful old note, raise its salience above the effective floor or
+replace it with current guidance. Recall's `age_days` still means last-update
+age; no existing timestamp or audit field changes meaning.
+
+Choose 0–10 for low-value notes eligible after the default 45 days. Compaction
+retains the existing effective-salience calculation: stored salience minus two
+per creation-age day, capped at 30. Thus stored values through 40 can qualify
+at the default age/floor, while default 50 bottoms out at 20 and stays retained.
+The effective value is calculated only, never written back.
+
+`supersedes: MEM-001` on a new/revised note, or CLI `--supersedes MEM-001`,
+marks that predecessor superseded. `memory lifecycle ... --set superseded`
+retires it without a replacement. Both feed the same grace-period path,
+independent of salience and creation age: seven days since the predecessor's
+latest `updated_at`. Superseding stamps it; later content/salience edits restart
+this grace. The replacement's `supersedes` link alone does not keep a superseded
+predecessor alive. Explicit `related_to` and `MEM-NNN`/`LRN-NNN` body references
+still protect it, including references from other superseded notes; references
+from evicted notes do not. A restored valid target is again protected by its
+replacement's `supersedes` link.
+
+All compaction paths protect promoted, directive, team/org-scoped, referenced
+and already-evicted notes, and apply at most `max_evictions_per_run`. Dry-run
+writes nothing; apply rechecks eligibility and soft-evicts only, retains the
+entry file and regenerates the index. `memory lifecycle ... --set evicted`
+explicitly retires a note immediately; `--set valid` restores either superseded
+or evicted notes. Restoration does not reset creation age or salience: an old
+low-salience note can qualify again, so raise salience when retaining it.
+
+Org `org/config.yaml` supports this opt-in block (shown with all defaults):
+
+```yaml
+memory_compaction:
+  enabled: false
+  salience_floor: 10
+  stale_days: 45
+  superseded_grace_days: 7
+  max_evictions_per_run: 25
+  auto_trigger_entry_count: 0
+```
+
+`enabled` gates manual apply and automatic compaction; dry-run is always
+available. `salience_floor` is the inclusive effective-salience ceiling (0–100).
+`stale_days` and `superseded_grace_days` are inclusive whole-day thresholds
+(1–3650). `max_evictions_per_run` bounds a sweep (1–10000).
+`auto_trigger_entry_count` (0–100000) disables automatic triggering at zero;
+when positive and enabled, ordinary adds run compaction inline after reaching
+that many entry files, including superseded/evicted files. It triggers on each
+subsequent add, not just the threshold crossing. This sweep is best effort:
+after the note is written, a sweep exception logs a warning and does not propagate
+to the add caller, allowing the route to complete its existing `memory_added`
+audit. Already applied sweep effects are not rolled back. Updates and inherited
+imports do not trigger it. There is no scheduled sweep. The existing manual API accepts
+policy overrides without changing config. This PR does not enable live config
+or curate live memories.
+
+Examples (each lifecycle operation requires a nonempty reason):
+
+```bash
+happyranch memory update --org ORG --agent AGENT MEM-001 --from-file /absolute/note.json --salience 5
+happyranch memory add --org ORG --agent AGENT --from-file /absolute/replacement.json --supersedes MEM-001
+happyranch memory lifecycle --org ORG --agent AGENT MEM-001 --set superseded --reason "Obsolete guidance"
+happyranch memory compact --org ORG --agent AGENT --dry-run
+happyranch memory compact --org ORG --agent AGENT --apply
+happyranch memory lifecycle --org ORG --agent AGENT MEM-001 --set valid --reason "Restore useful guidance"
+```
+
+Existing `memory_lifecycle_changed` and digest-impression audit payloads, scope
+identities and historical rows remain unchanged. Required checks remain lint/
+static only. Focused standalone verification is documented in `docs/local-ci.md`;
+retired Python units, general integration and Product E2E are not invoked.
