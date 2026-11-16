@@ -14,10 +14,12 @@ import (
 	"io"
 	"log"
 	"net"
+	"net/http"
 	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"golang.org/x/sys/unix"
@@ -26,14 +28,15 @@ import (
 const homeTrustRefused = -20
 
 type homeLaunch struct {
-	CA             []byte `json:"ca"`
-	Fingerprint    string `json:"fingerprint"`
-	ControlURL     string `json:"controlURL"`
-	Hostname       string `json:"hostname"`
-	StateDirectory string `json:"stateDirectory"`
-	JoinKey        string `json:"joinKey"`
-	SocketPath     string `json:"socketPath"`
-	Target         string `json:"target"`
+	Recovery       *homeAddressRecovery `json:"recovery,omitempty"`
+	CA             []byte               `json:"ca"`
+	Fingerprint    string               `json:"fingerprint"`
+	ControlURL     string               `json:"controlURL"`
+	Hostname       string               `json:"hostname"`
+	StateDirectory string               `json:"stateDirectory"`
+	JoinKey        string               `json:"joinKey"`
+	SocketPath     string               `json:"socketPath"`
+	Target         string               `json:"target"`
 }
 
 var errHomeTrust = errors.New("home_trust_refused")
@@ -100,6 +103,20 @@ func validateHomeLaunch(cfg homeLaunch) (*x509.CertPool, error) {
 			return nil, errHomeTrust
 		}
 	}
+	if cfg.Recovery != nil {
+		r := cfg.Recovery
+		if cfg.JoinKey != "" || r.PreviousControlURL == cfg.ControlURL ||
+			r.StableNodeID == "" || len(r.StableNodeID) > 256 || hasControl(r.StableNodeID) ||
+			len(r.Bearer) == 0 || len(r.Bearer) > 4096 || strings.IndexFunc(r.Bearer, func(c rune) bool { return c < 33 || c > 126 }) >= 0 {
+			return nil, errHomeTrust
+		}
+		previous := cfg
+		previous.ControlURL = r.PreviousControlURL
+		previous.Recovery = nil
+		if _, err := validateHomeLaunch(previous); err != nil {
+			return nil, errHomeTrust
+		}
+	}
 	return homeRoots(cfg.CA, cfg.Fingerprint, ip.String(), time.Now())
 }
 
@@ -121,7 +138,7 @@ func helperMain() {
 	}
 	// Exactly once, before even constructing the tsnet server. Never in the app.
 	x509.SetFallbackRoots(roots)
-	code := managedInit(cfg.JoinKey, cfg.ControlURL, cfg.Hostname, cfg.StateDirectory)
+	code := initHomeProfile(cfg)
 	cfg.JoinKey = ""
 	if code != 0 {
 		fmt.Fprintln(os.Stdout, code)
@@ -134,6 +151,26 @@ func helperMain() {
 	if code = managedUp(120000); code != 0 {
 		fmt.Fprintln(os.Stdout, code)
 		return
+	}
+	if cfg.Recovery != nil {
+		ctx, cancel := context.WithTimeout(managed.ctx, 10*time.Second)
+		transport := &http.Transport{MaxResponseHeaderBytes: 8192, DisableKeepAlives: true, DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			host, _, _ := net.SplitHostPort(cfg.Target)
+			conn, code := managedDialPeer(ctx, host, 443)
+			if code != 0 {
+				return nil, errManagedState
+			}
+			return conn, nil
+		}}
+		client := &http.Client{Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+		err := completeHomeAddressRecovery(ctx, cfg, managed.selfNodeID, managed.profile, client)
+		cancel()
+		transport.CloseIdleConnections()
+		cfg.Recovery.Bearer = ""
+		if err != nil {
+			fmt.Fprintln(os.Stdout, managedPeerChanged)
+			return
+		}
 	}
 	listener, err := homeListener(cfg.SocketPath)
 	if err != nil {

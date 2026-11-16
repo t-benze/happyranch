@@ -72,4 +72,12 @@ final class HomeInviteProtocolTests: XCTestCase {
             XCTAssertFalse(failure.localizedDescription.contains(canary), "Secret leaked from closed error copy")
         }
     }
+    func testAddressRecoveryBearerDiagnosticCanary() {
+        let canary = "SYNTHETIC-ADDRESS-RECOVERY-CANARY"
+        let text = DiagnosticsRedactor.redact("{\"recovery\":{\"bearer\":\"" + canary + "\"}}")
+        XCTAssertFalse(text.contains(canary))
+        let fields = DiagnosticsRedactor.redactStrings(in: ["bearer": canary])
+        XCTAssertFalse(String(describing: fields).contains(canary))
+    }
+
 }

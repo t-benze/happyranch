@@ -294,3 +294,31 @@ func TestHomeDERPTLSSeparateFromNoise(t *testing.T) {
 		})
 	}
 }
+
+func TestHomeSameCARenewalAcrossRestart(t *testing.T) {
+	ca := makeHomeCA(t, true)
+	var previous []byte
+	for generation := 0; generation < 2; generation++ {
+		// New leaf/key and a restarted server/helper, with the SAME saved CA.
+		leaf := homeLeaf(t, ca, "valid")
+		if bytes.Equal(previous, leaf.Certificate[0]) {
+			t.Fatal("renewal fixture reused the old leaf")
+		}
+		previous = leaf.Certificate[0]
+		relay := derp.NewServer(key.NewNode(), func(string, ...any) {})
+		server := httptest.NewUnstartedServer(derphttp.Handler(relay))
+		server.Config.ErrorLog = log.New(io.Discard, "", 0)
+		server.TLS = &tls.Config{Certificates: []tls.Certificate{leaf}}
+		server.StartTLS()
+		payload, err := json.Marshal(homeTLSProbe{ca.der, homeFingerprint(ca.der), server.URL + "/derp", "derp"})
+		if err != nil {
+			t.Fatal("synthetic probe serialization failed")
+		}
+		got := runHomeChild(t, "tls", payload, "x509usefallbackroots=1")
+		server.Close()
+		relay.Close()
+		if got != "ACCEPTED\n" {
+			t.Fatal("same saved CA refused renewed leaf after restart")
+		}
+	}
+}

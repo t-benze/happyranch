@@ -123,7 +123,43 @@ final class HomeInviteModel: ObservableObject {
                     guard previous.trust.caSHA256 == trust.caSHA256, previous.trust.caDER == trust.caDER,
                           previous.trust.controlPlaneID == trust.controlPlaneID,
                           previous.trust.connectorID == trust.connectorID else { throw HomeConnectionFailure.identityChanged }
-                    guard previous.trust == trust else { throw HomeConnectionFailure.addressChanged }
+                    if previous.trust != trust {
+                        _ = try previous.updatingAddress(to: trust)
+                        guard records.values.filter({ $0.trust.homeID == trust.homeID }).count == 1 else {
+                            throw HomeConnectionFailure.addressChanged
+                        }
+                        if let id = previous.networkProfileID, !rePairHomeIDs.contains(id) {
+                            invite = nil // New join key/pair secret are never submitted in metadata recovery.
+                            armExpiry(deadline, token: token)
+                            selectedHomeID = id
+                            let saved = try await store.load(binding: previous.binding, trust: previous.trust)
+                            try check(token)
+                            guard saved.binding == previous.binding, saved.networkProfileID == id,
+                                  saved.trust == previous.trust else { throw HomeConnectionFailure.identityUnavailable }
+                            let candidate = makeSession(); session = candidate
+                            phase = .joining
+                            let recovered = try await candidate.recoverAddress(saved, to: trust)
+                            try check(token)
+                            guard Date() < deadline, recovered.binding == saved.binding,
+                                  recovered.networkProfileID == id, recovered.trust == trust,
+                                  recovered.withBearer({ old in saved.withBearer { old == $0 } }) else {
+                                throw HomeConnectionFailure.identityUnavailable
+                            }
+                            let updated = try await store.refreshAddress(from: saved, to: trust)
+                            try check(token)
+                            records[id] = updated
+                            savedHomes.removeAll { $0.id == id }; savedHomes.append(SavedHome(id: id, trust: trust))
+                            expiryTask?.cancel(); expiryTask = nil; expiresAt = nil
+                            needsNewInvite = false
+                            try await open(candidate, credential: updated, token: token)
+                            return
+                        }
+                        // A previous recovery proved the old grant/node unusable.
+                        // Only explicit consent plus a fresh invite can start a
+                        // new profile and ordinary Linux approval; never rewrite
+                        // the old profile to repair an unknown identity.
+                        guard replacementConsent else { throw HomeConnectionFailure.addressChanged }
+                    }
                     if let id = previous.networkProfileID, !rePairHomeIDs.contains(id) {
                         invite = nil
                         expiresAt = nil
@@ -179,6 +215,13 @@ final class HomeInviteModel: ObservableObject {
                 if let error = error as? RemoteInviteError { failure = error == .time ? .expiredInvite : .malformedInvite }
                 else { failure = (error as? HomeConnectionFailure) ?? .authorizationIncomplete }
                 await fail(failure, token: token)
+                if let custody = error as? SavedAccessFailure, attemptID == token, session == nil {
+                    phase = .keychain(custody)
+                    if custody != .saveFailed {
+                        needsReplacementConsent = true
+                        if let id = selectedHomeID { rePairHomeIDs.insert(id) }
+                    }
+                }
             }
         }
     }
@@ -305,7 +348,9 @@ final class HomeInviteModel: ObservableObject {
         do { try await session?.stop(); session = nil; phase = .failed(failure) }
         catch { phase = .failed(.cleanupIncomplete) }
         if failure == .approvalDenied || failure == .revoked || failure == .identityUnavailable { needsNewInvite = true }
-        if failure == .approvalDenied || failure == .identityUnavailable, let id = selectedHomeID { rePairHomeIDs.insert(id) }
+        if failure == .approvalDenied || failure == .identityUnavailable, let id = selectedHomeID {
+            rePairHomeIDs.insert(id); needsReplacementConsent = true
+        }
     }
 
     /// Disconnect retains the Keychain record and native membership. Cancel

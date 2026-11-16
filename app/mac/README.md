@@ -15,7 +15,7 @@ Retained historical source is nonshipping; it is not invoked indirectly.
 
 ## Development
 
-### THR-327 slice 5c: home invite UI and saved reconnect
+### THR-327 slice 5: home invite UI, saved reconnect and address recovery
 
 The CLIENT form now defaults to **Home invite**. Paste one invite and choose
 Connect. The app validates it offline, displays the control host and release
@@ -72,10 +72,44 @@ with slice 2b; this PR does not assert live connector interoperability. No new
 invite-envelope fields were introduced. The slice-3c issuer is still absent;
 5a's provisional invite-format assumptions below remain literal.
 
-**Same-CA address/consumed-marker migration is REMAINING.** Accepting a changed
-URL fails closed with a visible remove-and-approve-again recovery; no marker is
-rewritten, identity repinned or CA trusted automatically. This is the brief's
-explicit deferral, not acceptance of section 6 recovery.
+**Same-CA address recovery (5d).** Ordinary restart or a renewed leaf at the
+unchanged URL reuses saved trust and an empty join key, without an invite. TLS
+still checks CA, validity, chain and URL IP SAN. A changed LAN control URL needs
+an explicitly accepted fresh invite with the exact same home/control/connector,
+CA DER/fingerprint and tailnet runtime endpoint. Its new join key/pair secret
+are discarded, never redeemed; Linux owns unused-key expiry/cleanup.
+
+Recovery re-reads the exact saved Keychain grant/profile. The isolated helper
+validates the old protected URL and consumed marker under the native flock,
+starts existing membership with an empty key at the refreshed endpoint, compares
+the actual tsnet Self StableID to the saved grant's node, then sends the saved
+bearer to the fixed connector `/api/v1/health` route through the peer-only dial.
+Only ordinary current-grant/WhoIs admission with HTTP 200 permits migration.
+Redirects, missing/invalid grants, changed nodes and missing/conflicting markers
+refuse. No hostname repin or implicit CA change exists. An unusable grant/node
+needs another fresh invite, explicit replacement consent and ordinary Linux
+approval in a new profile; the obsolete record is never silently rewritten.
+A different CA shows **Home identity changed — approve again**; remove the old
+local computer and repeat Linux approval.
+
+Successful recovery writes a version-1 protected URL/node receipt and consumed
+marker, preserving the native profile/hostname/node state. Future reopen enforces
+the saved StableID. Both files are fsynced; interruption between writes leaves a
+mismatched pair that refuses and needs removal/reapproval. If native commit
+succeeds but Keychain update fails, the exact protected old/new/node receipt
+permits a retry only after another live node/grant check. The existing Keychain
+item is updated by exact reference, data only, after consent-enabled read and
+current-executable ACL validation; its grant, binding, profile UUID and ACL remain
+unchanged and readback is checked. No absent item is recreated by recovery.
+
+The issuer still owns authenticated RefreshHomeAddress, old-invite invalidation
+and Linux-side marker migration. No extra invite field or Linux behavior is
+invented here. The Mac can check the specified invite expiry and explicit
+acceptance, but cannot independently query issuer invalidation of an unredeemed
+pair secret: this must be reconciled with slice 3c. The fixed authorized health
+route and connector WhoIs/grant admission must be reconciled with slice 2/2b;
+no new protocol fields are assumed. Actual two-endpoint recovery remains native
+slice-6 acceptance, not a claim from these fixtures.
 
 Verification on the Linux maker host: Go test/vet ran successfully with the
 existing readonly module graph (effective local toolchain go1.27.1). Swift build,
@@ -134,9 +168,10 @@ approval and credential delivery. Save failure retains the in-memory grant for
 Retry; process loss needs a new invite. Not-found, cancellation, denial, locked
 Keychain, identity/ACL mismatch and removal failure remain distinct closed
 outcomes. Custody state never implies runtime access or Connected.
-Explicit replacement consent, same-CA address migration and signed-release
-migration are deferred to the owning integration/release legs; unsigned access
-has no signing prerequisite. No automatic migration or storage downgrade exists.
+Explicit replacement consent and same-CA address migration are integrated as
+described above. Signed-release migration remains a separate release acceptance
+item; unsigned access has no signing prerequisite. No automatic CA migration or
+storage downgrade exists.
 
 Slice 5b must feed only validated CA/profile data into a dedicated per-home Go
 process, validate `/key` and DERP TLS and preserve Noise's distinct semantics.
@@ -198,11 +233,10 @@ Pairing, HTTP, SSE and upgrade I/O use this same helper. Monotonic handle IDs
 prevent stale stream IDs from reusing new FDs. Stop closes streams and confirms
 process exit before releasing the profile. Readiness never means Connected.
 
-Slice 5c wires validated invites/saved records into this seam as described above. Same-CA endpoint recovery still needs explicit saved-grant
-validation and protected URL/consumed-marker migration from section 6; this
-trust leg does not implement that migration. Changed URLs still refuse existing
-state; no marker rewrite, hostname repin or automatic CA change is provided.
-Signed credential migration and native acceptance remain separate.
+The slice-5 UI wires validated invites/saved records into this seam. Slice 5d
+adds the explicit same-CA, same-node, saved-grant address recovery described
+above; protected marker conflicts still refuse. Signed credential migration
+and native acceptance remain separate.
 
 Supported commands with the existing readonly Go graph:
 

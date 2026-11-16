@@ -12,7 +12,7 @@ public struct DiagnosticsRedactor: Sendable {
     private static let patterns: [(pattern: String, description: String)] = [
         (#"hrinvite1:[^\r\n]*"#, "raw invite including malformed envelope"),
         (#"hr(?:pin|pair|session)_[A-Za-z0-9_.-]+"#, "device or session bearer"),
-        (#"[\"']?(?:join_key|pair_secret|completion_handle|raw_invite|credential)[\"']?\s*[:=]\s*[^,}\r\n]*"#, "ceremony field including malformed JSON"),
+        (#"[\"']?(?:join_key|pair_secret|completion_handle|raw_invite|credential|bearer)[\"']?\s*[:=]\s*[^,}\r\n]*"#, "ceremony field including malformed JSON"),
         // daemon.token file content (hr_token_ prefix)
         ("hr_token_[A-Za-z0-9_\\-\\.]+", "daemon token"),
         // Bearer tokens: "Bearer <value>" or "bearer <value>" or "Bearer token: <value>"

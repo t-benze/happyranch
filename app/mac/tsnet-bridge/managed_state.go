@@ -19,10 +19,13 @@ var errManagedState = errors.New("managed state refused")
 var profileUUID = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 
 type profileRecord struct {
-	ControlURL string `json:"controlURL"`
-	Hostname   string `json:"hostname"`
-	UUID       string `json:"uuid"`
-	Phase      string `json:"phase"`
+	Version            int    `json:"version,omitempty"`
+	StableNodeID       string `json:"stableNodeID,omitempty"`
+	PreviousControlURL string `json:"previousControlURL,omitempty"`
+	ControlURL         string `json:"controlURL"`
+	Hostname           string `json:"hostname"`
+	UUID               string `json:"uuid"`
+	Phase              string `json:"phase"`
 }
 type managedProfile struct {
 	path      string
@@ -123,6 +126,11 @@ func openManagedProfile(path, hostname, control string, fresh bool) (*managedPro
 		dec := json.NewDecoder(bytes.NewReader(raw))
 		dec.DisallowUnknownFields()
 		if dec.Decode(&p.record) != nil || dec.Decode(new(any)) != io.EOF || p.record.ControlURL != expected.ControlURL || p.record.Hostname != expected.Hostname || p.record.UUID != expected.UUID {
+			return nil, errManagedState
+		}
+		if p.record.Version != 0 && p.record.Version != 1 ||
+			p.record.Version == 0 && (p.record.StableNodeID != "" || p.record.PreviousControlURL != "") ||
+			p.record.Version == 1 && (p.record.StableNodeID == "" || p.record.PreviousControlURL == "") {
 			return nil, errManagedState
 		}
 		if p.record.Phase != "joined" && p.record.Phase != "submitting" {
@@ -248,6 +256,10 @@ func (p *managedProfile) phase(phase string) error {
 	return nil
 }
 func (p *managedProfile) marker() string {
+	if p.record.Version == 1 {
+		sum := sha256.Sum256([]byte("home-address-v1\x00" + p.record.UUID + "\x00" + p.record.StableNodeID + "\x00" + p.record.Hostname + "\x00" + p.record.ControlURL))
+		return "v1:" + hex.EncodeToString(sum[:]) + "\n"
+	}
 	sum := sha256.Sum256([]byte(p.record.Hostname + "\x00" + p.record.ControlURL))
 	return hex.EncodeToString(sum[:]) + "\n"
 }

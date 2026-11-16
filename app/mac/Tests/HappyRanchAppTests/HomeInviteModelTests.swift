@@ -2,7 +2,7 @@ import Foundation
 import Combine
 import CryptoKit
 import Testing
-import HappyRanchSupervisor
+@testable import HappyRanchSupervisor
 @testable import HappyRanchApp
 
 private actor HomeStoreFixture: SavedHomeCredentialStore {
@@ -10,6 +10,7 @@ private actor HomeStoreFixture: SavedHomeCredentialStore {
     var readFailure: SavedAccessFailure?
     var saveFails = false
     var deleteFails = false
+    private(set) var refreshes = 0
     private(set) var saves = 0
     func configure(read: SavedAccessFailure? = nil, saveFails: Bool = false, deleteFails: Bool = false) {
         readFailure = read; self.saveFails = saveFails; self.deleteFails = deleteFails
@@ -27,6 +28,13 @@ private actor HomeStoreFixture: SavedHomeCredentialStore {
         guard let credential = credentials.first(where: { $0.binding == binding && $0.trust == trust }) else { throw SavedAccessFailure.notFound }
         return credential
     }
+    func refreshAddress(from credential: SavedDeviceCredential, to trust: SavedHomeTrust) async throws -> SavedDeviceCredential {
+        refreshes += 1
+        if saveFails { throw SavedAccessFailure.saveFailed }
+        let updated = try credential.updatingAddress(to: trust)
+        credentials.removeAll { $0.binding == credential.binding }; credentials.append(updated)
+        return updated
+    }
     func delete(binding: SavedDeviceBinding) async throws {
         if deleteFails { throw SavedAccessFailure.deletionFailed }
         credentials.removeAll { $0.binding == binding }
@@ -36,6 +44,10 @@ private actor HomeStoreFixture: SavedHomeCredentialStore {
 private actor HomeSessionFixture: HomeInviteSession {
     var joinFailure: HomeConnectionFailure?
     var accessFailure: HomeConnectionFailure?
+    private(set) var recoveries = 0
+    private(set) var pairs = 0
+    var returnedNode: String?
+    func changeReturnedNode(_ node: String) { returnedNode = node }
     private(set) var joins = 0
     private(set) var emptyKeys = 0
     private(set) var completions = 0
@@ -44,13 +56,26 @@ private actor HomeSessionFixture: HomeInviteSession {
         joinFailure = join; accessFailure = access
     }
     func approve() { approved = true }
+    func resetApproval() { approved = false }
     func join(trust: SavedHomeTrust, profileID: UUID, key: Data?) async throws {
         joins += 1
         if key == nil { emptyKeys += 1 }
         if let joinFailure { throw joinFailure }
     }
+    func recoverAddress(_ credential: SavedDeviceCredential, to trust: SavedHomeTrust) async throws -> SavedDeviceCredential {
+        recoveries += 1
+        if let accessFailure { throw accessFailure }
+        let updated = try credential.updatingAddress(to: trust)
+        if let returnedNode {
+            return try SavedDeviceCredential(binding: SavedDeviceBinding(homeID: trust.homeID,
+                controlPlaneID: trust.controlPlaneID, stableNodeID: returnedNode), trust: trust,
+                deliveredBearer: credential.withBearer { $0 }, networkProfileID: credential.networkProfileID)
+        }
+        return updated
+    }
     func pair(_ invite: HomePairingInvitation) async throws -> PendingHomeApproval {
-        try PendingHomeApproval(comparisonPhrase: "pair-1234-abcd-5678-efab", expiresAt: invite.expiresAt,
+        pairs += 1
+        return try PendingHomeApproval(comparisonPhrase: "pair-1234-abcd-5678-efab", expiresAt: invite.expiresAt,
             completionHandle: String(repeating: "a", count: 64))
     }
     func complete(_ pending: PendingHomeApproval, trust: SavedHomeTrust, profileID: UUID) async throws -> SavedDeviceCredential? {
@@ -225,20 +250,93 @@ struct HomeInviteModelTests {
         #expect(try await store.savedHomes().isEmpty)
     }
 
-    @Test("Same CA with changed URL visibly refuses before touching saved membership")
-    func changedAddressRemainsClosed() async throws {
+    @Test("Explicit same-CA fresh invite updates saved address without redeeming its new key or secret")
+    func changedAddressUsesSavedGrant() async throws {
         let session = HomeSessionFixture()
         await session.approve()
-        let model = HomeInviteModel(store: HomeStoreFixture(), makeSession: { session })
+        let store = HomeStoreFixture()
+        let model = HomeInviteModel(store: store, makeSession: { session })
         model.accept(try invite())
         #expect(await eventually { model.webURL != nil })
         model.cancel()
         #expect(await eventually { !model.busy })
         model.accept(try invite(control: "https://192.168.1.41:8443"))
-        #expect(await eventually { model.phase == .failed(.addressChanged) && !model.busy })
+        #expect(await eventually { model.phase == .opening && !model.busy })
         #expect(await session.joins == 1)
-        #expect(model.webURL == nil && !model.savedHomes.isEmpty)
+        #expect(await session.pairs == 1)
+        #expect(await session.recoveries == 1)
+        #expect(await store.refreshes == 1)
+        #expect(await store.saves == 1)
+        #expect(model.savedHomes.first?.trust.controlURL == "https://192.168.1.41:8443")
+        model.webLoaded(url: try #require(model.webURL), attempt: model.attemptID)
+        #expect(model.phase == .connected)
+        model.cancel()
     }
+
+    @Test("Address recovery refuses missing saved grant and changed node without replacing custody")
+    func addressRecoveryRefusals() async throws {
+        for scenario in ["missing-grant", "different-node", "native-marker-refusal", "save-failure"] {
+            let store = HomeStoreFixture(), session = HomeSessionFixture()
+            await session.approve()
+            let model = HomeInviteModel(store: store, makeSession: { session })
+            model.accept(try invite())
+            #expect(await eventually { model.webURL != nil })
+            model.cancel()
+            #expect(await eventually { !model.busy })
+            switch scenario {
+            case "missing-grant": await store.configure(read: .notFound)
+            case "different-node": await session.changeReturnedNode("other-node")
+            case "native-marker-refusal": await session.configure(access: .identityUnavailable)
+            default: await store.configure(saveFails: true)
+            }
+            model.accept(try invite(control: "https://192.168.1.41:8443"))
+            #expect(await eventually { !model.busy })
+            #expect(model.webURL == nil && model.savedHomes.first?.trust.controlURL == "https://192.168.1.40:8443")
+            #expect(await session.pairs == 1)
+            #expect(await session.joins == 1)
+            if scenario == "missing-grant" { #expect(model.phase == .keychain(.notFound)); #expect(await session.recoveries == 0) }
+            else if scenario == "save-failure" { #expect(model.phase == .keychain(.saveFailed)) }
+            else { #expect(model.phase == .failed(.identityUnavailable)); #expect(await store.refreshes == 0) }
+            if scenario != "save-failure" {
+                let refusal = model.phase
+                await store.configure(); await session.configure(); await session.resetApproval()
+                model.accept(try invite(control: "https://192.168.1.41:8443"))
+                #expect(model.phase == refusal, "New enrollment requires explicit consent")
+                model.accept(try invite(control: "https://192.168.1.41:8443"), replacementConsent: true)
+                #expect(await eventually { model.phase == .awaitingApproval })
+                #expect(await session.joins == 2)
+                #expect(await session.pairs == 2)
+                #expect(await store.refreshes == 0)
+                model.cancel()
+                #expect(await eventually { !model.busy })
+            }
+        }
+    }
+
+    @Test("A different saved CA requires reapproval, never address recovery")
+    func addressRecoveryRejectsDifferentCA() async throws {
+        let parsed = try RemoteInvite.parse(invite())
+        let t = parsed.trust
+        let foreign = SavedHomeTrust(homeID: t.homeID, controlPlaneID: t.controlPlaneID,
+            connectorID: t.connectorID, controlURL: t.controlURL, homeEndpoint: t.homeEndpoint,
+            caDER: Data("synthetic-other-ca".utf8), caSHA256: String(repeating: "0", count: 64))
+        let credential = try SavedDeviceCredential(binding: SavedDeviceBinding(homeID: t.homeID,
+            controlPlaneID: t.controlPlaneID, stableNodeID: "synthetic-stable-node"), trust: foreign,
+            deliveredBearer: Data("SYNTHETIC-CA-REFUSAL-CANARY".utf8), networkProfileID: UUID())
+        let store = HomeStoreFixture(), session = HomeSessionFixture()
+        try await store.save(credential)
+        let model = HomeInviteModel(store: store, makeSession: { session })
+        model.prepare()
+        #expect(await eventually { model.webURL != nil })
+        model.cancel()
+        #expect(await eventually { !model.busy })
+        model.accept(try invite(control: "https://192.168.1.41:8443"))
+        #expect(await eventually { model.phase == .failed(.identityChanged) && !model.busy })
+        #expect(await session.recoveries == 0)
+        #expect(await store.refreshes == 0)
+        #expect(model.webURL == nil)
+    }
+
 }
 
 private func certificateDigest(_ ca: Data) -> String {

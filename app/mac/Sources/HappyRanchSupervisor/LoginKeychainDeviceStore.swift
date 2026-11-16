@@ -1,8 +1,8 @@
 import Foundation
 import Security
 
-/// Thin file-based login-Keychain adapter. Never updates/recreates an existing
-/// item, changes an ACL, adds a CA, or uses a data-protection/shared store.
+/// Thin file-based login-Keychain adapter. Ordinary save never replaces an item.
+/// Explicit address recovery updates data only. Never changes an ACL, adds a CA, or uses a data-protection/shared store.
 public actor LoginKeychainDeviceStore: SavedHomeCredentialStore {
     public static let service = "ai.happyranch.HappyRanchApp.saved-home.v1"
     public init() {}
@@ -154,6 +154,28 @@ public actor LoginKeychainDeviceStore: SavedHomeCredentialStore {
             return try JSONDecoder().decode(SavedDeviceCredential.self, from: bytes)
         } catch let error as SavedAccessFailure { throw error }
         catch { throw SavedAccessFailure.invalidRecord }
+    }
+
+    public func refreshAddress(from credential: SavedDeviceCredential, to trust: SavedHomeTrust) async throws -> SavedDeviceCredential {
+        let updated = try credential.updatingAddress(to: trust)
+        let ref = try item(login(), credential.binding) // Never create or replace an absent item.
+        let current = try read(ref) // Consent-enabled read and exact current-executable ACL.
+        let sameBearer = current.withBearer { old in credential.withBearer { old == $0 } }
+        guard current.binding == credential.binding, current.networkProfileID == credential.networkProfileID,
+              sameBearer, current.trust == credential.trust || current.trust == updated.trust else {
+            throw SavedAccessFailure.identityChanged
+        }
+        if current.trust == updated.trust { return current } // Exact retry after interrupted UI settlement.
+        var bytes = try JSONEncoder().encode(updated)
+        defer { bytes.resetBytes(in: 0..<bytes.count) }
+        let status = SecItemUpdate([kSecClass as String: kSecClassGenericPassword,
+                                   kSecMatchItemList as String: [ref]] as CFDictionary,
+                                  [kSecValueData as String: bytes] as CFDictionary)
+        guard status == errSecSuccess else { throw failure(status) }
+        let saved = try read(ref).validated(binding: updated.binding, trust: updated.trust)
+        guard saved.networkProfileID == updated.networkProfileID,
+              saved.withBearer({ old in updated.withBearer { old == $0 } }) else { throw SavedAccessFailure.saveFailed }
+        return saved
     }
 
     public func delete(binding: SavedDeviceBinding) async throws {

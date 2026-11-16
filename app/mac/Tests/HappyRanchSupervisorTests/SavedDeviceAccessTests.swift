@@ -106,6 +106,32 @@ final class SavedDeviceAccessTests: XCTestCase, @unchecked Sendable {
         XCTAssertEqual(wrongCA, .failed(.identityChanged), "Different CA must never become TOFU")
     }
 
+    func testAddressUpdatePreservesGrantAndRefusesTrustChanges() throws {
+        let original = try credential()
+        let t = original.trust
+        let saved = try SavedDeviceCredential(binding: original.binding, trust: t,
+            deliveredBearer: original.withBearer { $0 }, networkProfileID: UUID())
+        func changed(_ part: String) -> SavedHomeTrust {
+            SavedHomeTrust(homeID: part == "home" ? "other" : t.homeID,
+                controlPlaneID: part == "control" ? "other" : t.controlPlaneID,
+                connectorID: part == "connector" ? "other" : t.connectorID,
+                controlURL: part == "http" ? "http://192.168.1.41:8443" : "https://192.168.1.41:8443",
+                homeEndpoint: part == "endpoint" ? "100.64.0.2:443" : t.homeEndpoint,
+                caDER: part == "ca" ? Data("different-synthetic-ca".utf8) : t.caDER,
+                caSHA256: part == "fingerprint" ? String(repeating: "0", count: 64) : t.caSHA256)
+        }
+        let updated = try saved.updatingAddress(to: changed("url"))
+        XCTAssertEqual(updated.binding, saved.binding)
+        XCTAssertEqual(updated.networkProfileID, saved.networkProfileID)
+        XCTAssertTrue(updated.withBearer { new in saved.withBearer { new == $0 } })
+        for part in ["home", "control", "connector", "endpoint", "ca", "fingerprint", "http"] {
+            XCTAssertThrowsError(try saved.updatingAddress(to: changed(part)), part)
+        }
+        XCTAssertThrowsError(try original.updatingAddress(to: changed("url")), "Missing protected profile cannot recover a node")
+        let display = String(describing: updated) + String(reflecting: updated)
+        XCTAssertFalse(display.contains("SYNTHETIC-BEARER-CANARY"))
+    }
+
     func testSavedCredentialAndFailureMessagesDoNotLeak() throws {
         let credential = try credential()
         let rendered = String(describing: credential) + String(reflecting: credential) + String(describing: credential.customMirror.children)

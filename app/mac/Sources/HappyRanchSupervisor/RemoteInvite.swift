@@ -109,7 +109,7 @@ public struct RemoteInvite: Sendable, CustomStringConvertible, CustomDebugString
             inviteIDBytes: inviteID, joinKeyBytes: Data(join.utf8), pairSecretBytes: pairSecret)
     }
 
-    private static func homeControlHost(_ text: String) throws -> [UInt8] {
+    static func homeControlHost(_ text: String) throws -> [UInt8] {
         guard text.utf8.allSatisfy({ $0 > 32 && $0 < 127 }), !text.contains("%"),
               let url = URLComponents(string: text), url.scheme == "https", url.port == 8443,
               url.user == nil, url.password == nil, url.query == nil, url.fragment == nil,

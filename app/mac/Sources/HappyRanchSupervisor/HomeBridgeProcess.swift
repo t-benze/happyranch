@@ -28,7 +28,14 @@ public final class HomeBridgeProcess: @unchecked Sendable {
 
     /// Caller has validated/explicitly accepted this trust; a trust change always
     /// stops/reaps the old helper first. No key is retained after pipe handoff.
-    public func start(trust: SavedHomeTrust, hostname: String, stateDirectory: String, joinKey: Data) throws {
+    public func start(trust: SavedHomeTrust, hostname: String, stateDirectory: String, joinKey: Data, addressRecovery: SavedDeviceCredential? = nil) throws {
+        if let addressRecovery {
+            _ = try addressRecovery.updatingAddress(to: trust)
+            guard let id = addressRecovery.networkProfileID, joinKey.isEmpty,
+                  stateDirectory == HomeNetworkState.directory(id) else {
+                throw ManagedNetworkError.invalidConfiguration
+            }
+        }
         guard !lock.withLock({ cancelled }) else { throw ManagedNetworkError.canceled }
         if lock.withLock({ process?.isRunning == true && self.trust == trust && profile == stateDirectory && self.hostname == hostname }) {
             guard joinKey.isEmpty else { throw ManagedNetworkError.busy }
@@ -63,10 +70,19 @@ public final class HomeBridgeProcess: @unchecked Sendable {
             guard fcntl(incoming.fileHandleForWriting.fileDescriptor, F_SETNOSIGPIPE, 1) == 0 else {
                 throw ManagedNetworkError.unavailable
             }
-            var payload = try JSONSerialization.data(withJSONObject: ["ca": trust.caDER.base64EncodedString(),
+            var fields: [String: Any] = ["ca": trust.caDER.base64EncodedString(),
                 "fingerprint": trust.caSHA256, "controlURL": trust.controlURL, "hostname": hostname,
                 "stateDirectory": stateDirectory, "joinKey": String(decoding: joinKey, as: UTF8.self),
-                "socketPath": socket, "target": trust.homeEndpoint])
+                "socketPath": socket, "target": trust.homeEndpoint]
+            if let addressRecovery {
+                fields["recovery"] = addressRecovery.withBearer { bearer in
+                    ["previousControlURL": addressRecovery.trust.controlURL,
+                     "stableNodeID": addressRecovery.binding.stableNodeID,
+                     "bearer": String(decoding: bearer, as: UTF8.self)]
+                }
+            }
+            var payload = try JSONSerialization.data(withJSONObject: fields)
+            fields.removeAll()
             defer { payload.resetBytes(in: 0..<payload.count) }
             guard payload.count <= 16384 else { throw ManagedNetworkError.invalidConfiguration }
             var size = UInt32(payload.count).bigEndian

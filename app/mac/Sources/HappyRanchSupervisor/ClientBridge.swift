@@ -148,7 +148,8 @@ public final class ClientBridge: @unchecked Sendable {
     /// PR2 must delete the Keychain item BEFORE invoking this API. No String key.
     public func joinManagedNetwork(
         key: ManagedEnrollmentKey, controlURL: String, hostname: String, stateDirectory: String,
-        homeTrust: SavedHomeTrust? = nil, helper: HomeBridgeProcess? = nil
+        homeTrust: SavedHomeTrust? = nil, helper: HomeBridgeProcess? = nil,
+        addressRecovery: SavedDeviceCredential? = nil
     ) async throws {
         defer { key.discard() }
         guard lane == .managed else { throw ManagedNetworkError.invalidConfiguration }
@@ -180,10 +181,10 @@ public final class ClientBridge: @unchecked Sendable {
                             var material = try key.consume { auth in Data(bytes: auth, count: strlen(auth)) }
                             defer { material.resetBytes(in: 0..<material.count) }
                             try helper.start(trust: homeTrust, hostname: hostname, stateDirectory: stateDirectory,
-                                joinKey: material)
+                                joinKey: material, addressRecovery: addressRecovery)
                             result = 0
                         } else {
-                            guard helper == nil else { throw ManagedNetworkError.invalidConfiguration }
+                            guard helper == nil, addressRecovery == nil else { throw ManagedNetworkError.invalidConfiguration }
                             // Init configures only. Holding this lock closes cancel-before-init.
                             result = try Self.tsnetLock.withLock {
                                 guard self.managedAttempt == attempt else { return -12 }
@@ -239,10 +240,11 @@ public final class ClientBridge: @unchecked Sendable {
 
     /// Explicit saved-membership check. Never supplies/replays an enrollment key.
     public func resumeManagedNetwork(controlURL: String, hostname: String, stateDirectory: String,
-        homeTrust: SavedHomeTrust? = nil, helper: HomeBridgeProcess? = nil) async throws {
+        homeTrust: SavedHomeTrust? = nil, helper: HomeBridgeProcess? = nil,
+        addressRecovery: SavedDeviceCredential? = nil) async throws {
         guard let allocation = calloc(1, 1) else { throw ManagedNetworkError.unavailable }
         let empty = ManagedEnrollmentKey(taking: allocation, byteCount: 1)
-        try await joinManagedNetwork(key: empty, controlURL: controlURL, hostname: hostname, stateDirectory: stateDirectory, homeTrust: homeTrust, helper: helper)
+        try await joinManagedNetwork(key: empty, controlURL: controlURL, hostname: hostname, stateDirectory: stateDirectory, homeTrust: homeTrust, helper: helper, addressRecovery: addressRecovery)
     }
 
     /// Closes traffic/pin and discards pairing authority, retaining saved membership.

@@ -46,4 +46,38 @@ final class HomeBridgeProcessTests: XCTestCase {
         XCTAssertThrowsError(try helper.start(trust: trust(), hostname: "synthetic-mac", stateDirectory: "/synthetic/cancelled", joinKey: Data()))
         XCTAssertEqual(fake.launchCallCount, 0)
     }
+    func testSessionAddressRecoveryUsesEmptyKeyAndPrivatePipe() async throws {
+        let fake = FakeProcessController()
+        let session = ManagedHomeInviteSession(controller: fake, executable: URL(fileURLWithPath: "/bundle/helper"))
+        let original = trust()
+        let target = SavedHomeTrust(homeID: original.homeID, controlPlaneID: original.controlPlaneID,
+            connectorID: original.connectorID, controlURL: "https://192.168.1.41:8443",
+            homeEndpoint: original.homeEndpoint, caDER: original.caDER, caSHA256: original.caSHA256)
+        let profile = UUID()
+        let canary = "SYNTHETIC-RECOVERY-PIPE-CANARY"
+        let credential = try SavedDeviceCredential(binding: SavedDeviceBinding(homeID: original.homeID,
+            controlPlaneID: original.controlPlaneID, stableNodeID: "synthetic-stable-node"), trust: original,
+            deliveredBearer: Data(canary.utf8), networkProfileID: profile)
+        // Fake process acknowledges launch only. Native grant/node enforcement
+        // belongs to Go tests; this test owns session -> bridge -> pipe wiring.
+        let updated = try await session.recoverAddress(credential, to: target)
+        XCTAssertEqual(updated.trust, target)
+        XCTAssertEqual(updated.binding, credential.binding)
+        let input = try XCTUnwrap(fake.lastPipedInput)
+        let length = try XCTUnwrap(input.read(upToCount: 4))
+        let size = length.reduce(0) { ($0 << 8) | Int($1) }
+        let data = try XCTUnwrap(input.read(upToCount: size))
+        let fields = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let recovery = try XCTUnwrap(fields["recovery"] as? [String: String])
+        XCTAssertTrue(fields["joinKey"] as? String == "")
+        XCTAssertTrue(fields["controlURL"] as? String == target.controlURL)
+        XCTAssertTrue(recovery["previousControlURL"] == original.controlURL)
+        XCTAssertTrue(recovery["stableNodeID"] == credential.binding.stableNodeID)
+        XCTAssertTrue(recovery["bearer"] == canary, "Saved grant must cross only the private pipe")
+        XCTAssertTrue(fake.lastArguments == ["--home-bridge-v1"])
+        XCTAssertTrue(fake.lastEnvironment == ["GODEBUG": "x509usefallbackroots=1"])
+        XCTAssertFalse(String(describing: session).contains(canary))
+        try await session.stop()
+    }
+
 }

@@ -47,6 +47,17 @@ public struct SavedDeviceCredential: Codable, Sendable, CustomStringConvertible,
 
     public func withBearer<T>(_ body: (Data) throws -> T) rethrows -> T { try body(bearer) }
 
+    /// Only an explicitly accepted fresh invite may select a new LAN URL.
+    /// No tailnet endpoint, home, connector, CA or node repin is permitted.
+    public func updatingAddress(to target: SavedHomeTrust) throws -> Self {
+        guard trust.homeID == target.homeID, trust.controlPlaneID == target.controlPlaneID,
+              trust.connectorID == target.connectorID, trust.homeEndpoint == target.homeEndpoint,
+              trust.caDER == target.caDER, trust.caSHA256 == target.caSHA256,
+              networkProfileID != nil else { throw HomeConnectionFailure.identityChanged }
+        _ = try RemoteInvite.homeControlHost(target.controlURL)
+        return try Self(binding: binding, trust: target, deliveredBearer: bearer, networkProfileID: networkProfileID)
+    }
+
     func validated(binding: SavedDeviceBinding, trust: SavedHomeTrust) throws -> Self {
         guard self.binding == binding, self.trust == trust else { throw SavedAccessFailure.identityChanged }
         return try Self(binding: binding, trust: trust, deliveredBearer: bearer, networkProfileID: networkProfileID)
@@ -79,6 +90,8 @@ public protocol SavedDeviceCredentialStore: Sendable {
 /// Discovery reads the same protected records; there is no plaintext index.
 public protocol SavedHomeCredentialStore: SavedDeviceCredentialStore {
     func savedHomes() async throws -> [SavedDeviceCredential]
+    /// Updates data on the exact existing item, preserving its current ACL.
+    func refreshAddress(from credential: SavedDeviceCredential, to trust: SavedHomeTrust) async throws -> SavedDeviceCredential
 }
 
 /// Custody state only. A loaded/saved credential never means Connected.

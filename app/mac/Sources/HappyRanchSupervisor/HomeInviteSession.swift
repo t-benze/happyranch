@@ -18,7 +18,7 @@ public enum HomeConnectionFailure: String, Error, Equatable, Sendable, CaseItera
         case .revoked: return "Access revoked — Create new invite on Linux"
         case .daemonUnavailable: return "Home HappyRanch is offline/restarting — Retry"
         case .identityChanged: return "Home identity changed — approve again"
-        case .addressChanged: return "Home address changed — saved address recovery unavailable. Remove saved computer and approve again."
+        case .addressChanged: return "Home address changed — Refresh home address on Linux and accept a fresh invite. If device identity cannot be retained, approve again."
         case .cleanupIncomplete: return "Local cleanup incomplete — Retry removal"
         }
     }
@@ -113,6 +113,7 @@ public struct HomePairingInvitation: Sendable, CustomStringConvertible, CustomDe
 /// Normal dependency boundary for the UI; the real adapter owns network work.
 public protocol HomeInviteSession: Sendable {
     func join(trust: SavedHomeTrust, profileID: UUID, key: Data?) async throws
+    func recoverAddress(_ credential: SavedDeviceCredential, to trust: SavedHomeTrust) async throws -> SavedDeviceCredential
     func pair(_ invite: HomePairingInvitation) async throws -> PendingHomeApproval
     func complete(_ pending: PendingHomeApproval, trust: SavedHomeTrust, profileID: UUID) async throws -> SavedDeviceCredential?
     func open(_ credential: SavedDeviceCredential) async throws -> URL
@@ -133,6 +134,17 @@ public final class ManagedHomeInviteSession: HomeInviteSession, @unchecked Senda
     }
 
     public func join(trust: SavedHomeTrust, profileID: UUID, key: Data?) async throws {
+        try await join(trust: trust, profileID: profileID, key: key, recovery: nil)
+    }
+
+    public func recoverAddress(_ credential: SavedDeviceCredential, to trust: SavedHomeTrust) async throws -> SavedDeviceCredential {
+        let updated = try credential.updatingAddress(to: trust)
+        guard let id = credential.networkProfileID else { throw HomeConnectionFailure.identityUnavailable }
+        try await join(trust: trust, profileID: id, key: nil, recovery: credential)
+        return updated // Helper already checked live StableID and current connector admission.
+    }
+
+    private func join(trust: SavedHomeTrust, profileID: UUID, key: Data?, recovery: SavedDeviceCredential?) async throws {
         guard let target = URLComponents(string: "https://" + trust.homeEndpoint),
               let host = target.host, target.port == 443 else { throw HomeConnectionFailure.malformedInvite }
         let candidate = ClientBridge(homeConnectorHost: host, homeConnectorPort: 443, lane: .managed)
@@ -151,7 +163,7 @@ public final class ManagedHomeInviteSession: HomeInviteSession, @unchecked Senda
                     controlURL: trust.controlURL, hostname: hostname, stateDirectory: directory, homeTrust: trust, helper: helper)
             } else {
                 try await candidate.resumeManagedNetwork(controlURL: trust.controlURL, hostname: hostname,
-                    stateDirectory: directory, homeTrust: trust, helper: helper)
+                    stateDirectory: directory, homeTrust: trust, helper: helper, addressRecovery: recovery)
             }
             try Task.checkCancellation()
         } catch {
