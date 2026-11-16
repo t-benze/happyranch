@@ -456,6 +456,7 @@ class MemoryStore:
 
     def update_entry(
         self, id: str, entry: MemoryItem, agent: str,
+        *, salience: int | None = None,
     ) -> MemoryItem:
         self.validate_id(id)
         existing_path = self._find_by_id(id)
@@ -472,9 +473,9 @@ class MemoryStore:
         # pure id-normalization — never a prefix flip.
         entry.id = existing.id
         entry.promoted_to = existing.promoted_to  # always None at this point
-        # Content edits preserve metadata owned by the existing entry.
+        # Content edits preserve metadata; salience changes are explicit.
         entry.lifecycle = existing.lifecycle
-        entry.salience = existing.salience
+        entry.salience = existing.salience if salience is None else _clamp_salience(salience)
         entry.provenance = existing.provenance
         entry.scope = existing.scope
         entry.last_verified = existing.last_verified
@@ -1084,9 +1085,15 @@ class MemoryStore:
         return prior
 
     # Cross-reference detection helpers for compaction protection
-    def _is_referenced_by(self, entry_id: str, exclude_lifecycles: set[str] | None = None) -> bool:
-        """Check if any non-evicted/non-superseded entry references ``entry_id``
-        via ``related_to``, ``supersedes``, or body tokens ``MEM-NNN``/``LRN-NNN``."""
+    def _is_referenced_by(
+        self, entry_id: str, exclude_lifecycles: set[str] | None = None,
+        *, ignore_supersedes: bool = False,
+    ) -> bool:
+        """Check non-evicted references, optionally ignoring retirement links.
+
+        A supersedes link retires its target; it must not keep an already
+        superseded target alive forever. Related/body references still protect it.
+        """
         if exclude_lifecycles is None:
             exclude_lifecycles = {"evicted"}
         # Build the set of id variants to search for (MEM-NNN and LRN-NNN aliases)
@@ -1101,7 +1108,7 @@ class MemoryStore:
             # direct refs — check all variants
             if any(v in entry.related_to for v in variants):
                 return True
-            if entry.supersedes in variants:
+            if not ignore_supersedes and entry.supersedes in variants:
                 return True
             # body token refs (MEM-NNN / LRN-NNN)
             for variant in variants:
@@ -1120,7 +1127,7 @@ class MemoryStore:
             return "already_evicted"
         if entry.scope in ("team", "org"):
             return f"scope:{entry.scope}"
-        if self._is_referenced_by(entry.id):
+        if self._is_referenced_by(entry.id, ignore_supersedes=entry.lifecycle == "superseded"):
             return "referenced_by_others"
         return None
 
@@ -1161,12 +1168,15 @@ class MemoryStore:
                     pass
             return None
 
-        # Low effective salience + stale
-        # Compute effective salience at read time (never write back)
+        # Staleness uses the immutable local creation stamp, not updated_at:
+        # lowering salience on an old note must not restart its stale window.
+        # Legacy notes without authored_at retain the prior updated_at fallback.
+        # Compute effective salience at read time (never write back).
         effective = entry.salience
-        if entry.updated_at:
+        stale_since = entry.authored_at or entry.updated_at
+        if stale_since:
             try:
-                ts = entry.updated_at
+                ts = stale_since
                 if ts.endswith("Z"):
                     ts = ts[:-1] + "+00:00"
                 updated = datetime.fromisoformat(ts)

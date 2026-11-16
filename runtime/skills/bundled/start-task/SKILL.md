@@ -743,6 +743,44 @@ logs/screenshots/review packets to Shared Artifacts as an ownership workaround.
    happyranch memory add --org {ORG_SLUG} --agent <your_agent_id> --from-file /tmp/mem-<slug>.yaml
    ```
 
+   **Curation and compaction.** Add/update payloads may include integer
+   `salience` (clamped to 0–100; default 50 on add, preserved when omitted/null
+   on update). Optional `--salience` overrides the payload. Choose 0–10 for a
+   low-value note you are willing to retire. Update still supplies the complete
+   slug/title/topic/body payload:
+
+   ```bash
+   happyranch memory update --org {ORG_SLUG} --agent <your_agent_id> MEM-001 --from-file /tmp/mem-<slug>.yaml --salience 5
+   happyranch memory add --org {ORG_SLUG} --agent <your_agent_id> --from-file /tmp/mem-replacement.yaml --supersedes MEM-001
+   happyranch memory lifecycle --org {ORG_SLUG} --agent <your_agent_id> MEM-001 --set superseded --reason "Replaced guidance"
+   happyranch memory compact --org {ORG_SLUG} --agent <your_agent_id> --dry-run
+   happyranch memory lifecycle --org {ORG_SLUG} --agent <your_agent_id> MEM-001 --set valid --reason "Restore useful guidance"
+   ```
+
+   `supersedes: MEM-001` in an add/update payload also retires its predecessor;
+   `--supersedes` overrides that field. Lifecycle `evicted` explicitly retires a
+   note immediately; `evicted -> valid` restores it. Nothing is hard-deleted.
+   These commands describe the interface; live curation/config changes still
+   require the task's authority. Promoted notes remain locked.
+
+   Org `memory_compaction` defaults: `enabled: false`, `salience_floor: 10`,
+   `stale_days: 45`, `superseded_grace_days: 7`, `max_evictions_per_run: 25`,
+   `auto_trigger_entry_count: 0`. Dry-run is always available; `--apply` requires
+   enablement. A positive auto-trigger count plus enablement runs compaction
+   inline after ordinary adds at/above that many files (including evicted
+   files); zero disables the trigger, and updates do not trigger it. Inherited
+   imports bypass it. There is no scheduled sweep.
+   Staleness uses local creation `authored_at`, preserved by updates (legacy
+   missing stamps fall back to `updated_at`). Lowering salience on an old note
+   therefore need not wait another 45 days. At default thresholds, 0–10 is
+   eligible after 45 days; existing decay subtracts up to 30, so stored values
+   through 40 can also qualify. Default 50 stays above the floor.
+   Superseded notes instead wait seven days from their latest `updated_at`;
+   editing them restarts that grace. Promoted, directive, team/org and explicitly
+   referenced notes remain protected. A replacement's `supersedes` link alone
+   does not protect a superseded predecessor; `related_to` and body references
+   still do. Applied sweeps respect the cap and retain files for restoration.
+
    `learning` is a deprecated alias of `memory`.
 
    **Pre-migration workspaces (legacy flat `learnings.md`, neither `memory/` nor structured legacy `learnings/` exists):** the bare `memory --text` callback appends to the flat file only with the active task/session binding. The daemon returns `410 Gone` when either structured directory exists; use the verb-dispatched form above for migrated workspaces.

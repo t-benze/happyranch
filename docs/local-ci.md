@@ -1,5 +1,19 @@
 # Local CI
 
+## Focused memory compaction and writer salience (THR-366 PR-B)
+
+```sh
+python -B -m unittest scripts.test_memory_compaction scripts.test_memory_payload scripts.test_memory_digest -v
+```
+
+These standalone checks drive real memory write/lifecycle/compaction route
+functions, file-backed storage and SQLite audit rows in temporary synthetic orgs.
+They cover writer salience/clamping, creation-age eviction after a metadata edit,
+both supersession paths and grace, protections, caps, dry-run and restoration.
+The CLI checks intercept HTTP transport; no server, provider or live org is used.
+This existing standalone venue is outside retired Python units, skipped general
+integration and Product E2E, and adds no required check or trigger.
+
 ## Focused worktree guard ownership
 
 ```sh

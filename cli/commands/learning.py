@@ -285,6 +285,10 @@ def cmd_learning_add(args: argparse.Namespace) -> None:
     client = _learning_client()
     org = resolve_org_slug(args_org=args.org, available=_shared._fetch_available_orgs(client))
     payload = _read_yaml_payload(args.from_file)
+    if args.salience is not None:
+        payload["salience"] = args.salience
+    if args.supersedes is not None:
+        payload["supersedes"] = args.supersedes
     r = client.post(
         f"/api/v1/orgs/{org}/agents/{args.agent}/memory/entries/",
         json=payload,
@@ -300,6 +304,10 @@ def cmd_learning_update(args: argparse.Namespace) -> None:
     client = _learning_client()
     org = resolve_org_slug(args_org=args.org, available=_shared._fetch_available_orgs(client))
     payload = _read_yaml_payload(args.from_file)
+    if args.salience is not None:
+        payload["salience"] = args.salience
+    if args.supersedes is not None:
+        payload["supersedes"] = args.supersedes
     r = client.request("PUT", f"/api/v1/orgs/{org}/agents/{args.agent}/memory/entries/{args.id}", json=payload)
     if not _ok(r):
         return
@@ -511,6 +519,8 @@ def _register_group(sub, name: str, *, deprecated: bool) -> None:
     pa = verb_sub.add_parser("add", help="Add a new memory item (file payload)")
     pa.add_argument("--org", required=False, default=argparse.SUPPRESS)
     pa.add_argument("--agent", required=True)
+    pa.add_argument("--salience", type=int, help="Override payload salience (clamped to 0..100)")
+    pa.add_argument("--supersedes", help="Override payload predecessor ID to retire")
     pa.add_argument(
         "--from-file", required=True,
         help="YAML mapping or JSON object (.json or leading '{'); quote YAML strings containing ' #'. "
@@ -521,6 +531,8 @@ def _register_group(sub, name: str, *, deprecated: bool) -> None:
     pu = verb_sub.add_parser("update", help="Update an existing memory item by ID")
     pu.add_argument("--org", required=False, default=argparse.SUPPRESS)
     pu.add_argument("--agent", required=True)
+    pu.add_argument("--salience", type=int, help="Override payload salience (clamped to 0..100)")
+    pu.add_argument("--supersedes", help="Override payload predecessor ID to retire")
     pu.add_argument("id")
     pu.add_argument(
         "--from-file", required=True,
