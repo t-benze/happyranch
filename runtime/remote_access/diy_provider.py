@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import json
 import threading
+from http.server import ThreadingHTTPServer
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Callable
@@ -158,11 +159,7 @@ class DiyProviderAdapter:
         bind_host = self._resolve_bind_address()
         self._bind_address = bind_host
         try:
-            from http.server import ThreadingHTTPServer
-
-            self._server = ThreadingHTTPServer(
-                (bind_host, self.config.bind_port), self._handler_factory()
-            )
+            self._server = self._create_server(bind_host)
         except OSError as exc:
             raise DiyProviderError("diy provider failed to bind listener") from exc
         self._ready = True
@@ -170,6 +167,11 @@ class DiyProviderAdapter:
             target=self._server.serve_forever, name="hr-diy-provider", daemon=True
         )
         self._thread.start()
+
+    def _create_server(self, bind_host: str) -> ThreadingHTTPServer:
+        return ThreadingHTTPServer(
+            (bind_host, self.config.bind_port), self._handler_factory()
+        )
 
     def stop(self) -> None:
         server = self._server

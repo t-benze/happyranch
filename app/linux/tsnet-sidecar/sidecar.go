@@ -6,6 +6,7 @@ package sidecar
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -18,6 +19,8 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
+	"unicode/utf8"
 )
 
 var (
@@ -30,7 +33,12 @@ var (
 
 const consumedMarker = "credential.consumed"
 
+const LinuxIdentityProfile = "linux-managed-identity-v1"
+const ConnectorSocket = "/run/happyranch-connector/ingress.sock"
+const identityFrameLimit = 1024
+
 type Config struct {
+	Profile                                             string `json:",omitempty"`
 	StateDir, CredentialFile, ControlURL, RoleIdentity  string
 	ExpectedPeer, ListenAddr, ConnectorAddr, DERPPolicy string
 	ExcludedDaemonPorts                                 []int `json:",omitempty"`
@@ -41,20 +49,30 @@ func (c Config) Validate() error {
 	if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil || strings.EqualFold(u.Hostname(), "controlplane.tailscale.com") {
 		return ErrConfiguration
 	}
-	if !strings.HasPrefix(c.RoleIdentity, "home-sidecar-") || len(c.RoleIdentity) <= len("home-sidecar-") || strings.TrimSpace(c.ExpectedPeer) == "" {
+	if c.Profile != "" && (c.Profile != LinuxIdentityProfile || runtime.GOOS != "linux") {
+		return ErrConfiguration
+	}
+	if !strings.HasPrefix(c.RoleIdentity, "home-sidecar-") || len(c.RoleIdentity) <= len("home-sidecar-") || (c.Profile == "" && strings.TrimSpace(c.ExpectedPeer) == "") {
 		return ErrConfiguration
 	}
 	if c.DERPPolicy != "private-only" {
 		return ErrConfiguration
 	}
-	host, port, err := net.SplitHostPort(c.ConnectorAddr)
-	if err != nil || host != "127.0.0.1" || port == "" || port == "8765" {
-		return ErrConfiguration
-	}
-	for _, excluded := range c.ExcludedDaemonPorts {
-		connectorPort, err := strconv.Atoi(port)
-		if excluded < 1 || excluded > 65535 || err != nil || connectorPort == excluded {
+	if c.Profile == LinuxIdentityProfile {
+		// The profile owns the endpoint; no caller-selected socket path.
+		if c.ConnectorAddr != "" || c.ExpectedPeer != "" {
 			return ErrConfiguration
+		}
+	} else {
+		host, port, err := net.SplitHostPort(c.ConnectorAddr)
+		if err != nil || host != "127.0.0.1" || port == "" || port == "8765" {
+			return ErrConfiguration
+		}
+		for _, excluded := range c.ExcludedDaemonPorts {
+			connectorPort, err := strconv.Atoi(port)
+			if excluded < 1 || excluded > 65535 || err != nil || connectorPort == excluded {
+				return ErrConfiguration
+			}
 		}
 	}
 	if _, p, err := net.SplitHostPort(c.ListenAddr); err != nil || p == "" {
@@ -66,7 +84,7 @@ func (c Config) Validate() error {
 	return nil
 }
 
-type EngineConfig struct{ StateDir, ControlURL, RoleIdentity, ExpectedPeer string }
+type EngineConfig struct{ StateDir, ControlURL, RoleIdentity, ExpectedPeer, Profile string }
 type RedemptionReceipt struct{ Redeemed, Durable, ExpectedPeerVisible bool }
 type Engine interface {
 	Start(context.Context, EngineConfig, []byte) (RedemptionReceipt, error)
@@ -123,11 +141,11 @@ func (s *Sidecar) Start(ctx context.Context) error {
 	if err != nil {
 		return ErrCredential
 	}
-	receipt, err := s.engine.Start(ctx, EngineConfig{s.cfg.StateDir, s.cfg.ControlURL, s.cfg.RoleIdentity, s.cfg.ExpectedPeer}, credential)
+	receipt, err := s.engine.Start(ctx, EngineConfig{s.cfg.StateDir, s.cfg.ControlURL, s.cfg.RoleIdentity, s.cfg.ExpectedPeer, s.cfg.Profile}, credential)
 	for i := range credential {
 		credential[i] = 0
 	}
-	if err != nil || !receipt.Redeemed || !receipt.Durable || !receipt.ExpectedPeerVisible {
+	if err != nil || !receipt.Redeemed || !receipt.Durable || (s.cfg.Profile == "" && !receipt.ExpectedPeerVisible) {
 		s.closeEngine()
 		return ErrCredential
 	}
@@ -139,7 +157,7 @@ func (s *Sidecar) Start(ctx context.Context) error {
 			return ErrCredential
 		}
 	}
-	probe, err := s.dialer.DialContext(ctx, "tcp", s.cfg.ConnectorAddr)
+	probe, err := s.dialConnector(ctx)
 	if err != nil || probe == nil || probe.Close() != nil {
 		s.closeEngine()
 		return ErrConnector
@@ -361,7 +379,41 @@ func (s *Sidecar) acceptLoop(ctx context.Context, l net.Listener) {
 }
 func (s *Sidecar) proxy(ctx context.Context, inbound net.Conn) {
 	defer s.proxyWG.Done()
-	outbound, err := s.dialer.DialContext(ctx, "tcp", s.cfg.ConnectorAddr)
+	var frame []byte
+	if s.cfg.Profile == LinuxIdentityProfile {
+		// Track before WhoIs/dial so shutdown closes new-profile admissions.
+		s.mu.Lock()
+		if s.stopping {
+			s.mu.Unlock()
+			_ = inbound.Close()
+			return
+		}
+		s.active[inbound] = struct{}{}
+		s.mu.Unlock()
+		defer func() {
+			_ = inbound.Close()
+			s.mu.Lock()
+			delete(s.active, inbound)
+			s.mu.Unlock()
+		}()
+		resolver, ok := s.engine.(interface {
+			peerIdentity(context.Context, string) (string, error)
+		})
+		if !ok {
+			return
+		}
+		lookupCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		identity, err := resolver.peerIdentity(lookupCtx, inbound.RemoteAddr().String())
+		cancel()
+		if err != nil {
+			return
+		}
+		frame, err = identityFrame(identity)
+		if err != nil {
+			return
+		}
+	}
+	outbound, err := s.dialConnector(ctx)
 	if err != nil {
 		_ = inbound.Close()
 		return
@@ -384,6 +436,14 @@ func (s *Sidecar) proxy(ctx context.Context, inbound net.Conn) {
 		delete(s.active, outbound)
 		s.mu.Unlock()
 	}()
+	if len(frame) != 0 {
+		_ = outbound.SetWriteDeadline(time.Now().Add(5 * time.Second))
+		n, err := outbound.Write(frame)
+		if err != nil || n != len(frame) {
+			return
+		}
+		_ = outbound.SetWriteDeadline(time.Time{})
+	}
 	done := make(chan struct{}, 2)
 	go func() {
 		_, _ = io.Copy(outbound, inbound)
@@ -456,4 +516,25 @@ func (s *Sidecar) shutdown(cause error, acceptCaller bool) {
 		}
 		s.mu.Unlock()
 	})
+}
+
+func (s *Sidecar) dialConnector(ctx context.Context) (net.Conn, error) {
+	if s.cfg.Profile == LinuxIdentityProfile {
+		return s.dialer.DialContext(ctx, "unix", ConnectorSocket)
+	}
+	return s.dialer.DialContext(ctx, "tcp", s.cfg.ConnectorAddr)
+}
+
+// Wire: HRID, version byte 1, big-endian uint16 UTF-8 byte length, StableID.
+// The bound includes the seven-byte header. HTTP begins immediately afterward.
+func identityFrame(stableID string) ([]byte, error) {
+	if strings.TrimSpace(stableID) == "" || !utf8.ValidString(stableID) || len(stableID)+7 > identityFrameLimit || strings.ContainsAny(stableID, "\r\n\x00") {
+		return nil, ErrEngine
+	}
+	frame := make([]byte, 7+len(stableID))
+	copy(frame, "HRID")
+	frame[4] = 1
+	binary.BigEndian.PutUint16(frame[5:7], uint16(len(stableID)))
+	copy(frame[7:], stableID)
+	return frame, nil
 }

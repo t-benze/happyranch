@@ -1153,3 +1153,39 @@ Swift build/tests, signed ACL/locked behavior, actual deletion-failure/wipe proo
 and live join/relaunch/revocation remain **NOT RUN** pending a separately chosen
 native venue. See the Mac README for the real-state capture checklist; no test-only
 production state injection is provided. PR3 still owns release binding/signing.
+
+### Linux managed identity ingress v1 (THR-327 slice 1a)
+
+The explicit `linux-managed-identity-v1` profile uses the fixed
+`/run/happyranch-connector/ingress.sock`, not a caller-selected endpoint. Go
+`Profile` and Python `managed.profile` select it; omitted/empty profiles retain
+legacy ExpectedPeer/TCP behavior and Mac/DIY hosting is unchanged. Unknown
+profiles refuse; the identity profile is Linux-only. `ExpectedPeer` and
+`ConnectorAddr` are omitted in the new sidecar profile. Enrollment/restart retain
+durable state/consumption, private-only config, connector liveness, listener and
+watchdog gates; no peer is required for READY. Health makes no expected-peer
+selection. An empty paired set grants no access.
+
+Each tsnet connection resolves `LocalClient.WhoIs(remote IP:port)` and requires a
+nonempty `Node.StableID`, with no hostname/IP fallback. It opens one fresh Unix
+connection and writes one frame: ASCII `HRID`, byte version 1, uint16 big-endian
+UTF-8 byte count, then StableID; total at most 1024 bytes. HTTP follows unchanged.
+The Python listener lives in `diy_provider.py` with its managed transport override
+in `managed_provider.py`; the shared `httpd.py` handler checks SO_PEERCRED against
+the fixed happyranch service UID before frame parsing. Unknown version, missing,
+empty, oversize, invalid UTF-8, CR/LF/NUL, truncated or duplicate frames close.
+Initial frame/request-line reads have a two-second socket timeout. The socket is
+0600 in an owned 0700 directory; existing/unsafe socket paths refuse rather than
+being overwritten. Identity lives only in the handler's request-local
+`ingress_node_identity` context; reserved HappyRanch/Tailscale identity headers
+are stripped, including duplicates, while the existing device-credential header
+continues to serve the unchanged pairing pipeline. Identity is not yet used for
+pairing or authorization (slice 2).
+
+`ConnectorUnitSpec.ingress_profile` adds only `RuntimeDirectoryMode=0700` for the
+fixed system service. Existing hardening, MDWE, AF_UNIX allowance, capabilities,
+notify/watchdog, restart limits and target/bind/uphold relations remain exact.
+The legacy installer still validates legacy configs; slice 3b owns generated
+profile/unit selection and migration. No service was installed or restarted.
+CA/TLS/control/DERP trust changes belong to slice 1b. Real Headscale v0.25.1 WhoIs
+and native recovery acceptance remain M2/later-slice work.

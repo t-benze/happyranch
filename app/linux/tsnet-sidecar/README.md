@@ -5,6 +5,32 @@ HTTP or daemon-bearer knowledge. `tailscale.com v1.78.0`, the module identity an
 the existing dependency pins are shared by Linux and Darwin. Use Go 1.23.12
 (the Mac toolchain pin), with CGO disabled.
 
+Linux adds an explicit `Profile: "linux-managed-identity-v1"`. In that profile,
+omit `ExpectedPeer` and `ConnectorAddr`: the endpoint is fixed at
+`/run/happyranch-connector/ingress.sock`. Each accepted tailnet connection calls
+LocalClient WhoIs with its remote IP:port, requires `Node.StableID`, opens one
+Unix connection, and writes `HRID` + version byte `1` + big-endian uint16 UTF-8
+byte length + StableID. The complete frame is at most 1024 bytes (1017 identity
+bytes). Empty, invalid UTF-8, CR/LF/NUL or oversize identities close without
+forwarding; failed/absent WhoIs has no hostname/IP fallback. HTTP bytes follow
+unchanged and connections are never pooled. WhoIs and the initial frame write
+have five-second bounds.
+
+This profile keeps enrollment/durable consumption, private-only configuration,
+connector probe, listener, notify/watchdog and systemd BindsTo gates. Empty peers
+are READY; health selects no single expected peer and emits no peer-specific
+ping. Identity metadata grants no access: pairing/pin enforcement is a later
+slice. No CA, TLS, DERP or control trust behavior changes here. The connector's
+matching `managed.profile` is `linux-managed-identity-v1`; it runs as the fixed
+`happyranch` service UID and requires a 0700 runtime directory and 0600 socket.
+The renderer's matching `ConnectorUnitSpec.ingress_profile` adds only
+`RuntimeDirectoryMode=0700`; AF_UNIX is already allowed. The existing installer
+still admits legacy configs; generation/migration and profile/unit wiring belong
+to slice 3b, with no automatic migration or deployment in this change.
+
+An omitted/empty profile retains the legacy Linux and Darwin behavior below.
+Unknown profiles and this Linux profile on Darwin refuse.
+
 `ConnectorAddr` must use literal `127.0.0.1`; literal port 8765 is always
 refused. Optional JSON `ExcludedDaemonPorts` is a list of integers in 1..65535;
 validation refuses any matching connector port. Omission preserves existing
