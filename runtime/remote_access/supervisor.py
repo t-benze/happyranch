@@ -26,18 +26,21 @@ from __future__ import annotations
 
 import json
 import os
+import pwd
 import sys
 import threading
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Callable
+from typing import Callable, ContextManager
 
 from pydantic import ValidationError
 
-from runtime.remote_access.authorization import AuthorizationVerifier, DeviceAuthorization, TrustState
+from runtime.remote_access.authorization import (
+    AuthorizationVerifier, DeviceAuthorization, PendingApproval, TrustState,
+)
 from runtime.remote_access.credentials import (
     CredentialUnavailable,
     DaemonCredentialProvider,
@@ -54,6 +57,7 @@ from runtime.remote_access.diy_provider import (
 from runtime.remote_access.forwarding import LOOPBACK_HOST, HttpLoopbackForwarder, LoopbackTarget
 from runtime.remote_access.release_verifier import VerifierClient
 from runtime.remote_access.gateway import GatewayContext
+from runtime.remote_access import helper_control
 from runtime.remote_access.identity import (
     ConnectorIdentity,
     DeviceProof,
@@ -75,7 +79,7 @@ from runtime.remote_access.managed_provider import (
     make_pinned_context_factory,
 )
 from runtime.remote_access.network import NetworkAddressError, NetworkConfig
-from runtime.remote_access.pairing import PairingManager, PinnedPairingManager
+from runtime.remote_access.pairing import PairingError, PairingManager, PinnedPairingManager
 from runtime.remote_access.revocation import RevocationIncomplete
 from runtime.remote_access.policy import PolicyEnvelope, PolicyError, RoutePolicyConsumer
 from runtime.remote_access.readiness import ConnectorReadiness, ReadinessReport
@@ -261,6 +265,126 @@ def sd_notify(state: str, notify_socket: str | None = None) -> bool:
         return False
 
 
+class _HelperOperations:
+    """Typed facade over the serving owner; never constructs a ceremony owner."""
+
+    def __init__(self, supervisor: ConnectorSupervisor) -> None:
+        self.supervisor = supervisor
+
+    def mutation_lock(self) -> ContextManager[None]:
+        manager = self.supervisor._pinned_pairing_manager
+        if manager is None:
+            raise helper_control.Refused('unavailable')
+        return manager.mutation_lock()
+
+    def _state(self) -> tuple[TrustState, int]:
+        store = self.supervisor.state_store
+        if not isinstance(store, AtomicFileTrustStateStore):
+            raise helper_control.Refused('unavailable')
+        return store.snapshot()
+
+    def status(self) -> helper_control.Snapshot:
+        from runtime.remote_access import release_verifier
+        supervisor = self.supervisor
+        # Fixed protected record; never app metadata, credentials or an inferred
+        # UID. The root helper independently compares its protected release UID.
+        record = release_verifier._object(release_verifier._read(
+            release_verifier.RECORD_PATH, uid=0, limit=4096, trusted=True))
+        release_verifier.validate_record(record)
+        state, generation = self._state()
+        owned = (supervisor.config.uses_release_verifier()
+                 and supervisor.config.managed.profile == LINUX_IDENTITY_PROFILE
+                 and bool(supervisor.config.managed.control_plane_id)
+                 and os.geteuid() == pwd.getpwnam('happyranch').pw_uid
+                 and state.connector_identity == supervisor._configured_identity())
+        ready = (owned and not supervisor._shutdown and supervisor._listener_running()
+                 and supervisor.readiness_report().ready)
+        pending = state.pending_approval
+        projected_pending = None if pending is None else helper_control.Device(
+            f'pending-{pending.generation}', pending.stable_node_id, pending.stable_node_id[:96],
+            pending.comparison_phrase, pending.expires_at.timestamp(),
+        )
+        # Historical DIY records have no managed pin and are NOT subject to the
+        # helper's 32-record projection limit. Never truncate the store or derive
+        # tuple authority from these labels/fingerprints.
+        devices = tuple(helper_control.Device(
+            device.device_id, device.stable_node_id, device.stable_node_id[:96],
+            'paired device', device.expires_at.timestamp(),
+        ) for device in sorted(state.devices.values(), key=lambda d: d.device_id)
+                        if not device.re_pair_required and not device.revoked)
+        failed = (supervisor._control_incomplete or
+                  (pending is not None and supervisor._now_fn() >= pending.expires_at))
+        phase = 'failed' if failed else 'off' if supervisor._shutdown else (
+            'paused' if not ready else 'pending' if pending is not None else 'ready')
+        snapshot = helper_control.Snapshot(generation, record['uid'], owned, phase,
+                                          ready and not failed, projected_pending, devices)
+        # Validate the entire projection before exposing it. Oversized/unsafe
+        # metadata refuses this request only; it cannot veto legacy store load.
+        value = json.loads(json.dumps(asdict(snapshot)))
+        helper_control.snapshot_from(value)
+        if len(json.dumps({'snapshot': value}, separators=(',', ':')).encode()) + 1 > helper_control.MAX_FRAME:
+            raise helper_control.Refused('unavailable')
+        return snapshot
+
+    def _pending(self, record: helper_control.Device, generation: int) -> PendingApproval:
+        state, current = self._state()
+        pending = state.pending_approval
+        if (current != generation or pending is None
+                or record.record_id != f'pending-{pending.generation}'
+                or record.stable_id != pending.stable_node_id
+                or record.comparison_phrase != pending.comparison_phrase
+                or record.expires_at != pending.expires_at.timestamp()):
+            raise helper_control.Refused('changed')
+        return pending
+
+    def approve_pending(self, record: helper_control.Device, generation: int) -> None:
+        if not self.status().ready:
+            raise helper_control.Refused('unavailable')
+        pending = self._pending(record, generation)
+        try:
+            result = self.supervisor._pinned_pairing_manager.approve_pending(
+                pending.generation, (pending.control_plane_id, pending.stable_node_id),
+                expected_generation=generation)
+        except PairingError:
+            raise helper_control.Refused('changed') from None
+        except StateStoreError:
+            self.supervisor._control_incomplete = True
+            raise helper_control.Refused('unavailable') from None
+        if result is None:
+            self.supervisor._control_incomplete = True
+            raise helper_control.Refused('unavailable')
+
+    def reject_pending(self, record: helper_control.Device, generation: int) -> None:
+        pending = self._pending(record, generation)
+        try:
+            result = self.supervisor._pinned_pairing_manager.reject_pending(
+                pending.generation, (pending.control_plane_id, pending.stable_node_id),
+                expected_generation=generation)
+        except PairingError:
+            raise helper_control.Refused('changed') from None
+        except StateStoreError:
+            self.supervisor._control_incomplete = True
+            raise helper_control.Refused('unavailable') from None
+        if not result:
+            raise helper_control.Refused('changed')
+
+    def revoke_device(self, record: helper_control.Device, generation: int) -> None:
+        try:
+            result = self.supervisor._pinned_pairing_manager.revoke_device(
+                record.record_id, expected_generation=generation)
+        except RevocationIncomplete:
+            self.supervisor._control_incomplete = True
+            raise helper_control.Refused('unavailable') from None
+        except PairingError:
+            raise helper_control.Refused('changed') from None
+        except StateStoreError:
+            self.supervisor._control_incomplete = True
+            raise helper_control.Refused('unavailable') from None
+        if not result.complete or result.device_id != record.record_id:
+            self.supervisor._control_incomplete = True
+            raise helper_control.Refused('unavailable')
+
+
 class ConnectorSupervisor:
     """Composes the native connector lifecycle."""
 
@@ -303,6 +427,8 @@ class ConnectorSupervisor:
         self._registry: StreamRegistry | None = None
         self._pairing_manager: PairingManager | None = None
         self._pinned_pairing_manager: PinnedPairingManager | None = None
+        self._control_listener: helper_control.ControlListener | None = None
+        self._control_incomplete = False
         # The revocation epoch the run loop has already reconciled (streams
         # closed): cross-process revoke/remove from the CLI is closed here
         # within one poll interval.
@@ -1086,6 +1212,7 @@ class ConnectorSupervisor:
                         f"STATUS=device revocation cleanup incomplete; epoch={exc.applied_epoch}; "
                         f"streams={len(exc.stream_ids)}\n"
                     )
+                    self._control_incomplete = True
                 if self._shutdown:
                     break
                 if notified_ready and not self._listener_running():
@@ -1124,6 +1251,10 @@ class ConnectorSupervisor:
     def _listener_running(self) -> bool:
         provider = self._provider
         if not self._provider_running or provider is None or not provider.listening:
+            return False
+        if (self.config.uses_release_verifier()
+                and self.config.managed.profile == LINUX_IDENTITY_PROFILE
+                and (self._control_listener is None or not self._control_listener.listening)):
             return False
         # Shipping adapters expose listening, but that flag alone survives an
         # unexpectedly exited serve_forever thread. Check that owner as well.
@@ -1252,6 +1383,9 @@ class ConnectorSupervisor:
         with self._lifecycle_lock:
             first_shutdown = not self._shutdown
             self._shutdown = True
+            if self._control_listener is not None:
+                self._control_listener.close()
+                self._control_listener = None
             if first_shutdown and self._provider_running:
                 self._stop_provider()
             if first_shutdown and self._registry is not None:
@@ -1307,6 +1441,14 @@ class ConnectorSupervisor:
             return False
         self._provider = provider
         self._provider_running = True
+        if (self.config.uses_release_verifier()
+                and self.config.managed.profile == LINUX_IDENTITY_PROFILE):
+            try:
+                self._control_listener = helper_control.ControlListener(_HelperOperations(self))
+            except helper_control.Refused:
+                self._stop_provider_locked()
+                self._notify_fn('STATUS=private control listener unavailable\n')
+                return False
         return True
 
     def _stop_provider(self) -> bool:
@@ -1314,6 +1456,9 @@ class ConnectorSupervisor:
             return self._stop_provider_locked()
 
     def _stop_provider_locked(self) -> bool:
+        if self._control_listener is not None:
+            self._control_listener.close()
+            self._control_listener = None
         provider = self._provider
         if provider is None:
             self._provider_running = False

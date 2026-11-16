@@ -1,7 +1,8 @@
-"""Closed root-to-connector protocol; slice-2 binding is deliberately separate.
+"""Closed root-to-connector protocol and private connector listener.
 
-OperationAPI implementations must hold the SAME trust-store mutation lock across
+OperationAPI implementations must hold the SAME manager mutation lock across
 status/revalidation and the operation, including revocation's stream closure.
+The file lock is used only for coherent reads and actual mutation admission.
 No credentials, invitation material or raw exceptions cross this protocol.
 """
 from __future__ import annotations
@@ -10,10 +11,14 @@ import hashlib
 import html
 import json
 import math
+import os
 import socket
+import stat
 import struct
+import threading
 import time
 from dataclasses import asdict, dataclass
+from pathlib import Path
 from typing import Callable, ContextManager, Protocol
 
 CONTROL_SOCKET = '/run/happyranch-connector/control.sock'
@@ -236,3 +241,97 @@ class ControlClient:
                             'deadline': deadline}, before_commit)
         if reply != {'result': 'ok'}:
             raise Refused('unavailable')
+
+
+class ControlListener:
+    """Supervisor-owned AF_UNIX listener; only kernel UID 0 reaches operations.
+
+    The fixed private parent belongs to the service UID. Bind/unlink relative
+    to its pinned directory FD, refusing existing entries rather than repairing
+    or deleting them. No network endpoint, environment or caller path input.
+    """
+
+    def __init__(self, operations: OperationAPI) -> None:
+        self.handler = ControlHandler(operations)
+        self._stopped = threading.Event()
+        self._active_lock = threading.Lock()
+        self._active: socket.socket | None = None
+        self._parent = -1
+        self._identity: tuple[int, int] | None = None
+        self._socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self._thread: threading.Thread | None = None
+        path = Path(CONTROL_SOCKET)
+        try:
+            if not path.is_absolute() or '..' in path.parts:
+                raise Refused('unavailable')
+            self._name = path.name
+            self._parent = os.open('/', os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+            for part in path.parts[1:-1]:
+                child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                                dir_fd=self._parent)
+                os.close(self._parent)
+                self._parent = child
+            info = os.fstat(self._parent)
+            if info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o700:
+                raise Refused('unavailable')
+            # Linux /proc resolves this exact opened parent, even if a literal
+            # ancestor moves after validation. bind refuses ANY existing leaf.
+            self._socket.bind(f'/proc/self/fd/{self._parent}/{self._name}')
+            info = os.stat(self._name, dir_fd=self._parent, follow_symlinks=False)
+            self._identity = (info.st_dev, info.st_ino)
+            os.chmod(self._name, 0o600, dir_fd=self._parent)
+            self._socket.listen(4)
+            self._socket.settimeout(.1)
+            self._thread = threading.Thread(target=self._serve, daemon=True, name='remote-access-control')
+            self._thread.start()
+        except Exception:
+            self.close()
+            raise Refused('unavailable') from None
+
+    @property
+    def listening(self) -> bool:
+        return not self._stopped.is_set() and self._thread is not None and self._thread.is_alive()
+
+    def _serve(self) -> None:
+        while not self._stopped.is_set():
+            try:
+                connection, _ = self._socket.accept()
+            except socket.timeout:
+                continue
+            except OSError:
+                return
+            with connection:
+                with self._active_lock:
+                    if self._stopped.is_set():
+                        return
+                    self._active = connection
+                try:
+                    self.handler.handle(connection)
+                finally:
+                    with self._active_lock:
+                        self._active = None
+
+    def close(self) -> None:
+        self._stopped.set()
+        self._socket.close()
+        with self._active_lock:
+            if self._active is not None:
+                try:
+                    self._active.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+        if self._thread is not None:
+            self._thread.join(3)
+            if self._thread.is_alive():
+                raise Refused('unavailable')
+        if self._parent >= 0:
+            try:
+                if self._identity is not None:
+                    info = os.stat(self._name, dir_fd=self._parent, follow_symlinks=False)
+                    if (info.st_dev, info.st_ino) == self._identity:
+                        os.unlink(self._name, dir_fd=self._parent)
+            except FileNotFoundError:
+                pass
+            finally:
+                os.close(self._parent)
+                self._parent = -1
