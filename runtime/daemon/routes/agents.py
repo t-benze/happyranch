@@ -14,7 +14,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, Coroutine, Literal, TypeVar
+from typing import Any, Callable, Coroutine, Literal, TypeVar
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, ConfigDict, StrictStr, field_validator, model_validator
@@ -2431,7 +2431,10 @@ async def set_agent_executor(
 
     async with _consumer_writer_interval(
         org, publisher="set_agent_executor", consumer=agent_name, executor=body.executor,
-    ) as authority_change:
+    ) as authority_change, org.teams_lock, org.db_lock:
+        # Keep journal capture through bootstrap compensation in the memory
+        # writer interval. Teams precedes DB, matching other dual-lock writers.
+        # No workspace RLock is held across the materialization await below.
         with authority_change.validation():
             existing = prompt_loader.load_agent(paths, agent_name)
             if existing is None:
@@ -2588,9 +2591,8 @@ async def set_agent_executor(
                         },
                     )
 
-            # The materialization await above permits another accepted route writer.
-            # Refresh before bootstrap so it receives the latest prompt, and reject a
-            # competing executor/model change instead of silently clobbering it.
+            # Refresh after materialization as a final canonical-state check,
+            # retaining the existing executor/model conflict detection.
             fresh = prompt_loader.load_agent(paths, agent_name)
             if fresh is None:
                 raise HTTPException(status_code=404, detail={"code": "agent_not_found", "agent": agent_name})
@@ -2682,39 +2684,38 @@ async def set_agent_executor(
             # ── Step 3: Persist the new executor frontmatter ──
             # Only reached if union materialization AND bootstrap both succeeded
             # (or no workspace exists).
-            # Final supported-route compare/mutate boundary: no await occurs while
-            # teams_lock is held. Atomic replace provides durable bytes, while this
-            # fresh read prevents a stale whole-definition write among ASGI writers.
-            async with org.teams_lock:
-                latest = prompt_loader.load_agent(paths, agent_name)
-                if latest is None:
-                    raise HTTPException(status_code=404, detail={"code": "agent_not_found", "agent": agent_name})
-                if latest.executor != existing.executor or latest.model != existing.model or latest.reasoning_effort != existing.reasoning_effort:
-                    raise HTTPException(status_code=409, detail={"code": "executor_switch_conflict", "agent": agent_name})
-                updated = AgentDef(
-                    name=latest.name, team=latest.team, role=latest.role,
-                    executor=body.executor, allow_rules=latest.allow_rules,
-                    repos=latest.repos, enrolled_by=latest.enrolled_by,
-                    enrolled_at_task=latest.enrolled_at_task, enrolled_at=latest.enrolled_at,
-                    system_prompt=latest.system_prompt, description=latest.description,
-                    model=None if body.executor != latest.executor else latest.model,
-                    reasoning_effort=None if body.executor != latest.executor else latest.reasoning_effort,
-                )
-                from runtime.orchestrator.agent_def import render_agent_text
-                active_path = paths.agents_dir / f"{agent_name}.md"
-                original_bytes = active_path.read_bytes()
-                fd, tmp = tempfile.mkstemp(prefix=f".{agent_name}.", suffix=".md", dir=str(paths.agents_dir))
+            # Final supported-route compare/mutate boundary, still under teams_lock.
+            # Atomic replace provides durable bytes; the fresh read prevents a
+            # stale whole-definition write among ASGI writers.
+            latest = prompt_loader.load_agent(paths, agent_name)
+            if latest is None:
+                raise HTTPException(status_code=404, detail={"code": "agent_not_found", "agent": agent_name})
+            if latest.executor != existing.executor or latest.model != existing.model or latest.reasoning_effort != existing.reasoning_effort:
+                raise HTTPException(status_code=409, detail={"code": "executor_switch_conflict", "agent": agent_name})
+            updated = AgentDef(
+                name=latest.name, team=latest.team, role=latest.role,
+                executor=body.executor, allow_rules=latest.allow_rules,
+                repos=latest.repos, enrolled_by=latest.enrolled_by,
+                enrolled_at_task=latest.enrolled_at_task, enrolled_at=latest.enrolled_at,
+                system_prompt=latest.system_prompt, description=latest.description,
+                model=None if body.executor != latest.executor else latest.model,
+                reasoning_effort=None if body.executor != latest.executor else latest.reasoning_effort,
+            )
+            from runtime.orchestrator.agent_def import render_agent_text
+            active_path = paths.agents_dir / f"{agent_name}.md"
+            original_bytes = active_path.read_bytes()
+            fd, tmp = tempfile.mkstemp(prefix=f".{agent_name}.", suffix=".md", dir=str(paths.agents_dir))
+            try:
+                with authority_change.canonical_change():
+                    with os.fdopen(fd, "w") as fh:
+                        fh.write(render_agent_text(updated))
+                    os.replace(tmp, active_path)
+            except Exception:
                 try:
-                    with authority_change.canonical_change():
-                        with os.fdopen(fd, "w") as fh:
-                            fh.write(render_agent_text(updated))
-                        os.replace(tmp, active_path)
-                except Exception:
-                    try:
-                        os.unlink(tmp)
-                    except FileNotFoundError:
-                        pass
-                    raise
+                    os.unlink(tmp)
+                except FileNotFoundError:
+                    pass
+                raise
 
             after_ws = before_ws
             stale_files: list[str] = []
@@ -3409,6 +3410,14 @@ def _invalid_entry_to_http(err: InvalidLearningEntry) -> HTTPException:
     return HTTPException(status_code=400, detail={"error": err.code, "message": str(err)})
 
 
+def _memory_workspace_write(
+    store: MemoryStore, operation: Callable[..., _ConsumerResult], *args: Any, **kwargs: Any,
+) -> _ConsumerResult:
+    """Join bootstrap's workspace lock inside the worker, never across an await."""
+    with _workspace_skills_transaction(store.root.parent):
+        return operation(*args, **kwargs)
+
+
 @router.post("/agents/{agent_name}/memory/entries/", status_code=201)
 
 
@@ -3417,7 +3426,8 @@ async def add_learning(
     slug: str, agent_name: str, body: LearningAddBody, org: OrgDep,
 ) -> dict:
     store = _workspace_memory_store(org, agent_name)
-    async with org.db_lock:
+
+    async def write_and_audit() -> dict:
         new_id = store.next_id()
         entry = MemoryItem(
             id=new_id,
@@ -3432,7 +3442,8 @@ async def add_learning(
             salience=body.salience,
         )
         try:
-            written = store.write_entry(entry, agent=agent_name)
+            # write_entry can run the automatic compaction sweep.
+            written = await asyncio.to_thread(_memory_workspace_write, store, store.write_entry, entry, agent=agent_name)
         except InvalidLearningEntry as e:
             raise _invalid_entry_to_http(e)
         except LearningIdExists as e:
@@ -3441,7 +3452,7 @@ async def add_learning(
             raise HTTPException(status_code=409, detail={"error": "slug_exists", "slug": e.slug})
         # THR-032 P3b: audit supersede lifecycle transition if it occurred
         sup_target = getattr(written, '_superseded_target_id', None)
-        store.regenerate_index()
+        await asyncio.to_thread(_memory_workspace_write, store, store.regenerate_index)
         if sup_target is not None:
             AuditLogger(org.db).log_memory_lifecycle_changed(
                 agent=agent_name,
@@ -3459,8 +3470,12 @@ async def add_learning(
             tags=written.tags,
             source_task=written.source_task,
         )
-    rel_path = f"memory/{written.id}-{written.slug}.md"
-    return {"id": written.id, "path": rel_path, "authored_at": written.authored_at}
+        rel_path = f"memory/{written.id}-{written.slug}.md"
+        return {"id": written.id, "path": rel_path, "authored_at": written.authored_at}
+
+    async with org.db_lock:
+        # Cancellation must not release serialization before writes and audits.
+        return await _finish_consumer_write(write_and_audit())
 
 
 @router.put("/agents/{agent_name}/memory/entries/{id}")
@@ -3656,8 +3671,9 @@ async def compact_memory(
         max_evictions_per_run=body.max_evictions_per_run if body.max_evictions_per_run is not None else cc.max_evictions_per_run,
     )
     store = _workspace_memory_store(org, agent_name)
-    async with org.db_lock:
-        result = store.compact(dry_run=body.dry_run, policy=policy)
+
+    async def compact_and_audit() -> dict:
+        result = await asyncio.to_thread(_memory_workspace_write, store, store.compact, dry_run=body.dry_run, policy=policy)
         # Audit each eviction
         if not body.dry_run:
             for evicted_id in result.evicted:
@@ -3681,6 +3697,9 @@ async def compact_memory(
             "skipped": result.skipped,
             "errors": result.errors,
         }
+
+    async with org.db_lock:
+        return await _finish_consumer_write(compact_and_audit())
 
 
 def _validate_reasoning_selection(executor: str, model: str | None, effort: str | None) -> None:

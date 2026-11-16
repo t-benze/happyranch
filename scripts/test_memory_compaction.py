@@ -2,17 +2,22 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager, nullcontext
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import tempfile
+import threading
 from types import SimpleNamespace
+from typing import Any, AsyncIterator, Callable
 import unittest
 from unittest.mock import patch
 
 from runtime.daemon.routes import agents
+from runtime.config import Settings
 from runtime.infrastructure import learnings_store
 from runtime.infrastructure.database import Database
-from runtime.infrastructure.learnings_store import MemoryItem, MemoryStore
+from runtime.infrastructure.learnings_store import LearningSummary, MemoryItem, MemoryStore
+from runtime.orchestrator.workspace_adapters import PersistentWorkspaceSetup, _get_workspace_lock
 
 
 NOW = datetime(2026, 11, 16, tzinfo=timezone.utc)
@@ -66,6 +71,115 @@ class MemoryCompactionTests(unittest.IsolatedAsyncioTestCase):
     def lifecycle_payloads(self) -> list[dict]:
         return [row["payload"] for row in self.db.get_audit_logs("AGENT-synthetic")
                 if row["action"] == "memory_lifecycle_changed"]
+
+    async def test_bootstrap_index_cannot_overwrite_compact_evictions(self) -> None:
+        mid = await self.add("bootstrap-target", salience=0)
+        workspace = self.store.root.parent
+        lock = _get_workspace_lock(workspace)
+        entered, captured, publish = threading.Event(), threading.Event(), threading.Event()
+        loop_thread = threading.get_ident()
+        offload, listing = asyncio.to_thread, MemoryStore.list_entries
+
+        async def competing_worker(func: Callable[..., Any], /, *args: Any, **kwargs: Any) -> Any:
+            def run() -> Any:
+                entered.set()
+                self.assertTrue(captured.wait(3), "bootstrap did not read summaries")
+                # Only control scheduling: if bootstrap owns the real lock it
+                # must publish first; otherwise let compact finish first, as in
+                # the reviewer's stale-summary overwrite probe.
+                available = lock.acquire(blocking=False)
+                if available:
+                    lock.release()
+                else:
+                    publish.set()
+                try:
+                    return func(*args, **kwargs)
+                finally:
+                    publish.set()
+            return await offload(run)
+
+        def capture_summaries(store: MemoryStore, **kwargs: Any) -> list[LearningSummary]:
+            summaries = listing(store, **kwargs)
+            if threading.get_ident() == loop_thread and store.root == self.store.root:
+                self.assertEqual(summaries[0].lifecycle, "valid")
+                self.assertTrue(self.org.db_lock.locked())
+                captured.set()
+                self.assertTrue(publish.wait(3), "competing writer did not reach publication")
+            return summaries
+
+        with patch.object(asyncio, "to_thread", competing_worker), \
+                patch.object(MemoryStore, "list_entries", capture_summaries):
+            task = asyncio.create_task(self.compact(dry_run=False))
+            try:
+                self.assertTrue(await offload(entered.wait, 3))
+                PersistentWorkspaceSetup(Settings()).ensure(workspace, "synthetic")
+                result = await task
+            finally:
+                captured.set()
+                publish.set()
+                await asyncio.gather(task, return_exceptions=True)
+        self.assertEqual(result["evicted"], [mid])
+        self.assertEqual(self.store.read_entry(mid).lifecycle, "evicted")
+        self.assertIn(mid, [p["id"] for p in self.lifecycle_payloads()])
+        self.assertNotIn(mid, (self.store.root / "_index.md").read_text())
+
+    async def test_executor_bootstrap_compensation_cannot_restore_evicted_index(self) -> None:
+        mid = await self.add("compensation-target", salience=0)
+        workspace = self.store.root.parent
+        agent_path = self.root / "org/agents/synthetic.md"
+        agent_path.parent.mkdir()
+        agent_path.write_text("---\nname: synthetic\nteam: engineering\nrole: worker\n"
+                              "executor: claude\n---\nSynthetic role.\n")
+        original = agent_path.read_bytes()
+        self.org.settings = Settings()
+        self.org.slug = "synthetic"
+        self.org.teams_lock = asyncio.Lock()
+        entered, release = threading.Event(), threading.Event()
+
+        @asynccontextmanager
+        async def authority(*args: Any, **kwargs: Any) -> AsyncIterator[SimpleNamespace]:
+            yield SimpleNamespace(validation=nullcontext, canonical_change=nullcontext)
+
+        def materialize(*args: Any, **kwargs: Any) -> list[str]:
+            entered.set()
+            self.assertTrue(release.wait(3), "materialization was not released")
+            return []
+
+        def fail_after_index(
+            ctx: agents.ContextBuilder, target: Path, name: str, *args: Any, **kwargs: Any,
+        ) -> None:
+            PersistentWorkspaceSetup(ctx._settings).ensure(target, name)
+            raise RuntimeError("synthetic failure after index publication")
+
+        with patch.object(agents, "_consumer_writer_interval", authority), \
+                patch.object(agents, "_executor_switch_materialize", materialize), \
+                patch.object(agents.ContextBuilder, "ensure_workspace_ready", fail_after_index):
+            switch = asyncio.create_task(agents.set_agent_executor(
+                "synthetic", "synthetic", agents.SetExecutorBody(executor="codex"), self.org))
+            compact = None
+            try:
+                self.assertTrue(await asyncio.to_thread(entered.wait, 3))
+                compact = asyncio.create_task(self.compact(dry_run=False))
+                # If the switch excludes memory writers, let its real rollback
+                # finish first. Otherwise reproduce eviction between the real
+                # journal capture and the real bootstrap compensation.
+                if not self.org.db_lock.locked():
+                    await compact
+                release.set()
+                with self.assertRaises(agents.HTTPException) as error:
+                    await switch
+                self.assertEqual(error.exception.detail["code"], "executor_bootstrap_failed")
+                result = await compact
+            finally:
+                release.set()
+                await asyncio.gather(switch, *([compact] if compact else []), return_exceptions=True)
+        self.assertEqual(result["evicted"], [mid])
+        self.assertEqual(self.store.read_entry(mid).lifecycle, "evicted")
+        self.assertIn(mid, [p["id"] for p in self.lifecycle_payloads()])
+        self.assertNotIn(mid, (self.store.root / "_index.md").read_text())
+        self.assertEqual(agent_path.read_bytes(), original)
+        self.assertFalse(self.org.db_lock.locked())
+        self.assertFalse(self.org.teams_lock.locked())
 
     def legacy_note(self, authored: str, *, updated: str = '"2026-11-16T00:00:00Z"') -> str:
         mid = self.store.next_id()
@@ -253,6 +367,235 @@ class MemoryCompactionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.store.read_entry(ordinary).lifecycle, "valid")
         self.assertEqual((await self.compact(dry_run=False))["evicted"], [second])
         self.assertEqual((await self.compact(dry_run=False))["evicted"], [])
+
+    def seed(self, count: int = 300) -> list[str]:
+        ids = []
+        for number in range(1, count + 1):
+            mid = f"MEM-{number:03d}"
+            item = MemoryItem(id=mid, slug=f"note-{number}", title=mid, topic="curation",
+                              body="Synthetic note.", salience=0,
+                              authored_at=OLD.isoformat(), updated_at=OLD.isoformat())
+            self.store.path_for(mid, item.slug).write_text(self.store._serialize(item))
+            ids.append(mid)
+        return ids
+
+    async def test_compaction_entry_parses_are_linear(self) -> None:
+        ids = self.seed()
+        for dry_run, budget in ((True, 300), (False, 625)):
+            with self.subTest(dry_run=dry_run):
+                parses = 0
+                parse = self.store._parse
+
+                def counted(text: str) -> MemoryItem:
+                    nonlocal parses
+                    parses += 1
+                    self.assertLessEqual(parses, budget, "compaction exceeded linear entry-parse budget")
+                    return parse(text)
+
+                with patch.object(self.store, "_parse", side_effect=counted):
+                    result = self.store.compact(dry_run=dry_run, now=NOW)
+                self.assertEqual(parses, budget)
+                self.assertEqual([c.id for c in result.candidates], ids[:25])
+                self.assertEqual(result.skipped, [{"id": mid, "reason": "cap_reached"} for mid in ids[25:]])
+                self.assertEqual(result.errors, [])
+                self.assertEqual(result.evicted, [] if dry_run else ids[:25])
+
+    async def test_reference_sources_aliases_and_token_boundaries(self) -> None:
+        # Each case has one target and one source; expected decisions are
+        # independent of the implementation's reference index.
+        cases = (
+            ("related-alias", "valid", "valid", {"related_to": ["LRN-001"]}, True),
+            ("supersedes-valid", "valid", "valid", {"supersedes": "LRN-001"}, True),
+            ("supersedes-retired", "superseded", "valid", {"supersedes": "MEM-001"}, False),
+            ("related-retired", "superseded", "superseded", {"related_to": ["MEM-001"]}, True),
+            ("body-retired", "superseded", "superseded", {"body": "(LRN-001)."}, True),
+            ("evicted-source", "valid", "evicted", {"related_to": ["MEM-001"], "body": "MEM-001"}, False),
+            ("body-boundary", "valid", "valid", {"body": "MEM-001-MEM-002"}, True),
+            ("body-long-number", "valid", "valid", {"body": "MEM-0010"}, False),
+            ("body-word", "valid", "valid", {"body": "xMEM-001 MEM-001_ éMEM-001"}, False),
+            ("self-reference", "valid", "valid", {"body": "MEM-001"}, True),
+            ("historical-id", "valid", "valid", {"body": "(old.id)"}, True),
+        )
+        for label, lifecycle, source_lifecycle, refs, protected in cases:
+            with self.subTest(case=label), tempfile.TemporaryDirectory() as folder:
+                store = MemoryStore(Path(folder))
+                mid = "old.id" if label == "historical-id" else "MEM-001"
+                target = MemoryItem(id=mid, slug="target", title="Target", topic="curation",
+                                    body="Synthetic.", salience=0, lifecycle=lifecycle,
+                                    authored_at=OLD.isoformat(), updated_at=OLD.isoformat())
+                source = MemoryItem(id="MEM-002", slug="source", title="Source", topic="curation",
+                                    body="Synthetic.", lifecycle=source_lifecycle)
+                if label == "self-reference":
+                    target.body = refs["body"]
+                else:
+                    for key, value in refs.items():
+                        setattr(source, key, value)
+                # Filenames remain resolvable even for historical frontmatter IDs.
+                store.path_for("MEM-001", "target").write_text(store._serialize(target))
+                store.path_for(source.id, source.slug).write_text(store._serialize(source))
+                preview = store.compact(dry_run=True, now=NOW)
+                self.assertEqual(preview.skipped[0] if protected else preview.candidates[0].id,
+                                 {"id": mid, "reason": "referenced_by_others"} if protected else mid)
+                applied = store.compact(dry_run=False, now=NOW)
+                self.assertEqual(applied.evicted, [] if protected else [mid])
+
+    async def test_apply_reads_fresh_candidate_and_references(self) -> None:
+        for change, reason in (("directive", "became_protected"),
+                               ("salience", "no_longer_eligible"),
+                               ("self-reference", "became_protected"),
+                               ("missing", "not_found_on_apply"),
+                               ("malformed", "parse_error_on_apply")):
+            with self.subTest(change=change), tempfile.TemporaryDirectory() as folder:
+                store = MemoryStore(Path(folder))
+                item = MemoryItem(id="MEM-001", slug="target", title="Target", topic="curation",
+                                  body="Synthetic.", salience=0, authored_at=OLD.isoformat())
+                path = store.path_for(item.id, item.slug)
+                path.write_text(store._serialize(item))
+                find = store._find_by_id
+
+                def changed(mid: str) -> Path | None:
+                    if change == "missing":
+                        path.unlink()
+                    elif change == "malformed":
+                        path.write_text("Malformed synthetic note.")
+                    else:
+                        if change == "directive":
+                            item.provenance = "directive"
+                        elif change == "salience":
+                            item.salience = 100
+                        else:
+                            item.body = item.id
+                        path.write_text(store._serialize(item))
+                    return find(mid)
+
+                with patch.object(store, "_find_by_id", side_effect=changed):
+                    result = store.compact(dry_run=False, now=NOW)
+                self.assertEqual([c.id for c in result.candidates], [item.id])
+                self.assertEqual(result.evicted, [])
+                self.assertEqual(result.skipped, [{"id": item.id, "reason": reason}])
+                self.assertEqual(result.errors, [f"{item.id}: {reason}"]
+                                 if change in ("missing", "malformed") else [])
+
+    async def test_apply_tracks_reference_source_changes(self) -> None:
+        for change in ("evicted", "missing", "malformed", "different-filename"):
+            with self.subTest(change=change), tempfile.TemporaryDirectory() as folder:
+                store = MemoryStore(Path(folder))
+                first = MemoryItem(id="MEM-001", slug="first", title="First", topic="curation",
+                                   body="Synthetic.", salience=0, supersedes="LRN-002",
+                                   authored_at=OLD.isoformat())
+                first_path = store.path_for(first.id, first.slug)
+                if change == "different-filename":
+                    first.slug = "other-name"
+                second = MemoryItem(id="MEM-002", slug="second", title="Second", topic="curation",
+                                    body="Synthetic.", salience=0, lifecycle="superseded",
+                                    authored_at=OLD.isoformat(), updated_at=OLD.isoformat())
+                first_path.write_text(store._serialize(first))
+                store.path_for(second.id, second.slug).write_text(store._serialize(second))
+                find = store._find_by_id
+
+                def changed(mid: str) -> Path | None:
+                    if mid == first.id and change == "missing":
+                        first_path.unlink()
+                    elif mid == first.id and change == "malformed":
+                        first_path.write_text("Malformed synthetic source.")
+                    elif mid == second.id:
+                        second.lifecycle = "valid"
+                        store.path_for(second.id, second.slug).write_text(store._serialize(second))
+                    return find(mid)
+
+                with patch.object(store, "_find_by_id", side_effect=changed):
+                    result = store.compact(dry_run=False, now=NOW)
+                if change == "evicted":
+                    self.assertEqual(result.evicted, [first.id, second.id])
+                    self.assertEqual(result.skipped, [])
+                elif change == "different-filename":
+                    # The old file remains non-evicted when the persisted slug
+                    # points elsewhere; its references must still protect.
+                    self.assertEqual(result.evicted, [first.id])
+                    self.assertEqual(result.skipped, [{"id": second.id, "reason": "became_protected"}])
+                else:
+                    self.assertEqual(result.evicted, [second.id])
+                    reason = "not_found_on_apply" if change == "missing" else "parse_error_on_apply"
+                    self.assertEqual(result.skipped, [{"id": first.id, "reason": reason}])
+
+    async def test_routes_allow_loop_progress_during_sweep(self) -> None:
+        self.seed()
+        for route in ("dry-run", "apply", "auto-add"):
+            with self.subTest(route=route):
+                if route == "auto-add":
+                    (self.root / "org/config.yaml").write_text(
+                        "memory_compaction:\n  enabled: true\n  auto_trigger_entry_count: 1\n")
+                entered, progress = threading.Event(), threading.Event()
+                observed = []
+                compact = MemoryStore.compact
+
+                def sweep(store: MemoryStore, **kwargs: object) -> object:
+                    entered.set()
+                    observed.append((progress.wait(0.5), threading.get_ident()))
+                    self.assertTrue(observed[-1][0], "event loop stalled during compaction")
+                    return compact(store, **kwargs)
+
+                async def heartbeat() -> None:
+                    while not entered.is_set():
+                        await asyncio.sleep(0.001)
+                    self.assertTrue(self.org.db_lock.locked())
+                    progress.set()
+
+                observer = asyncio.create_task(heartbeat())
+                try:
+                    with patch.object(MemoryStore, "compact", autospec=True, side_effect=sweep):
+                        if route == "auto-add":
+                            await self.add("loop-add", at=NOW)
+                        else:
+                            await self.compact(dry_run=route == "dry-run")
+                    await observer
+                    self.assertEqual(len(observed), 1)
+                    self.assertTrue(observed[0][0], "event loop stalled during compaction")
+                    self.assertNotEqual(observed[0][1], threading.get_ident())
+                finally:
+                    observer.cancel()
+                    await asyncio.gather(observer, return_exceptions=True)
+
+    async def test_route_cancellation_drains_writes_and_audits_under_lock(self) -> None:
+        for route in ("apply", "auto-add"):
+            with self.subTest(route=route):
+                mid = await self.add(f"cancel-target-{route}", salience=0)
+                if route == "auto-add":
+                    (self.root / "org/config.yaml").write_text(
+                        "memory_compaction:\n  enabled: true\n  auto_trigger_entry_count: 1\n")
+                entered, release = threading.Event(), threading.Event()
+                compact = MemoryStore.compact
+
+                def sweep(store: MemoryStore, **kwargs: object) -> object:
+                    entered.set()
+                    release.wait(1)
+                    return compact(store, **kwargs)
+
+                with patch.object(MemoryStore, "compact", autospec=True, side_effect=sweep):
+                    task = asyncio.create_task(self.compact(dry_run=False) if route == "apply"
+                                               else self.add("cancelled-add", at=NOW))
+                    try:
+                        async with asyncio.timeout(2):
+                            while not entered.is_set():
+                                await asyncio.sleep(0.001)
+                        task.cancel()
+                        await asyncio.sleep(0)
+                        self.assertTrue(self.org.db_lock.locked())
+                        self.assertFalse(task.done())
+                        release.set()
+                        with self.assertRaises(asyncio.CancelledError):
+                            await task
+                    finally:
+                        release.set()
+                        await asyncio.gather(task, return_exceptions=True)
+                self.assertFalse(self.org.db_lock.locked())
+                self.assertEqual(self.store.read_entry(mid).lifecycle, "evicted")
+                if route == "apply":
+                    self.assertIn(mid, [p["id"] for p in self.lifecycle_payloads()])
+                else:
+                    adds = [r["payload"]["slug"] for r in self.db.get_audit_logs("AGENT-synthetic")
+                            if r["action"] == "memory_added"]
+                    self.assertIn("cancelled-add", adds)
 
 
 if __name__ == "__main__":

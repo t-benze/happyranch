@@ -2756,6 +2756,23 @@ unusable stamps; neither usable means retain. ISO strings and YAML datetime/date
 values normalize to UTC; naive timestamps and date-only midnight mean UTC.
 Lowering salience does not renew an old note. Auto-compaction errors after the
 note write are logged without aborting the add or preventing its add audit.
+Each compaction run parses the selection inventory once and indexes related,
+supersedes and body-token references from non-evicted entries. Apply rereads each
+candidate, refreshes its reference contributions and removes them on eviction;
+index regeneration still makes its own fresh pass. The run assumes the caller
+holds the existing write boundary: other entries' references use that run's
+snapshot, with no cache shared across runs. Manual compact and ordinary add
+(including its automatic sweep) run store work in worker threads under
+`org.db_lock`; cancellation drains writes and audits before releasing the lock.
+The compact/add workers also take the existing process-local workspace RLock,
+shared with `PersistentWorkspaceSetup.ensure` from migration through index
+summary reads and publication. Executor switching holds teams then `org.db_lock`
+from rollback capture through materialization, bootstrap and compensation, so an
+old captured index cannot overwrite a completed sweep. The workspace RLock is
+acquired/released synchronously inside each worker or bootstrap call, never held
+on the event loop across an await; the worker does not need a loop callback to
+release it. This is in-process serialization, not an external filesystem fence.
+Updates do not trigger compaction. Dream completion's writer is unchanged.
 See the memory design spec's **Memory compaction and retirement (THR-366 PR-B)**
 section for defaults, protections, supersession grace and reversible retirement.
 The S3a Instill owner also preserves `inherited_from` and the separate

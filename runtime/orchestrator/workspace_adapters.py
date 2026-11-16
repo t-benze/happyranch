@@ -71,7 +71,9 @@ from runtime.skills.symlink_materializer import (
 # temporary file between write and os.replace, causing FileNotFoundError.
 #
 # This registry holds one threading.Lock per canonical (resolved) workspace
-# path. All pre-spawn materialization — wholesale refresh (when enabled),
+# path. Memory compact/add workers and persistent bootstrap also use it for
+# the memory index read/write interval. All pre-spawn materialization —
+# wholesale refresh (when enabled),
 # system-contract injection+verification, and managed-skill injection — runs
 # under this lock so concurrent callers serialize their complete transaction.
 #
@@ -1850,25 +1852,28 @@ class PersistentWorkspaceSetup:
         from runtime.infrastructure.learnings_store import MemoryStore
         from runtime.infrastructure.memory_migration import migrate_workspace
 
-        # Idempotent + lossless: moves a legacy learnings/ dir to memory/ if
-        # present, no-op once memory/ exists, leaves flat learnings.md alone.
-        migrate_workspace(workspace)
+        # Share the compact/add worker interval through summary reads and index
+        # publication. This is synchronous; no event-loop await holds the RLock.
+        with _workspace_skills_transaction(workspace):
+            # Idempotent + lossless: moves a legacy learnings/ dir to memory/ if
+            # present, no-op once memory/ exists, leaves flat learnings.md alone.
+            migrate_workspace(workspace)
 
-        flat_path = workspace / "learnings.md"
-        memory_dir = workspace / "memory"
-        if memory_dir.exists():
-            # Regenerate even a present index: entry edits/additions/removals
-            # can leave it stale. This is bootstrap, not per-session refresh;
-            # memory/_index.md is already a declared rollback-owned write.
-            store = MemoryStore(memory_dir)
-            store.regenerate_index()
-        elif flat_path.exists():
-            # Pre-migration legacy flat-file workspace: leave untouched.
-            pass
-        else:
-            # Brand-new workspace: create memory/ on the new layout.
-            memory_dir.mkdir(parents=True, exist_ok=True)
-            MemoryStore(memory_dir).regenerate_index()
+            flat_path = workspace / "learnings.md"
+            memory_dir = workspace / "memory"
+            if memory_dir.exists():
+                # Regenerate even a present index: entry edits/additions/removals
+                # can leave it stale. This is bootstrap, not per-session refresh;
+                # memory/_index.md is already a declared rollback-owned write.
+                store = MemoryStore(memory_dir)
+                store.regenerate_index()
+            elif flat_path.exists():
+                # Pre-migration legacy flat-file workspace: leave untouched.
+                pass
+            else:
+                # Brand-new workspace: create memory/ on the new layout.
+                memory_dir.mkdir(parents=True, exist_ok=True)
+                MemoryStore(memory_dir).regenerate_index()
 
         return self.detect_repo_names(workspace)
 
