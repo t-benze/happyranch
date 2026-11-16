@@ -201,6 +201,8 @@ The historical A0b-2 primary EXPECTED REFUSAL is retained as evidence. I2 owns
 fresh private captures and actual DEFAULT writable FIRST/genuine NEXT on Python
 3.12/3.14 for happyranch, danze, family and genuine fresh creation. Acceptance is
 L≤32M, every complete read <5s and all three orgs plus profile reconciliation
-and eight selectors ≤6s. A primary refusal/limit breach stops implementation
+and all current eligible selectors ≤10s (Founder THR-336 msg208; seven-selector
+disposition: `dev_agent/output/TASK-16507/selector-disposition.md`). A primary
+refusal/limit breach stops implementation
 without enlarging any budget or weakening a check. No live installation or
 operating qualification follows private-copy evidence.
