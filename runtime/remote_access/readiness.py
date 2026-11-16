@@ -7,7 +7,8 @@ secret-free category; one failed gate means not-ready and the supervisor
 binds no listener.
 
 - ``daemon_loopback``: TCP connect to **literal 127.0.0.1** at the configured
-  daemon port. The connect implementation is shared and refuses any other
+  daemon port outside managed Linux system mode. Managed Linux uses a fresh
+  resolve/connect/confirm probe without HTTP bytes. The connect implementation is shared and refuses any other
   host — the daemon stays loopback-only and the connector only ever touches
   it on the final loopback hop.
 - ``credential_permissions``: the daemon credential provider (file ``0600``
@@ -26,6 +27,7 @@ binds no listener.
 """
 from __future__ import annotations
 
+import logging
 import socket
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -36,7 +38,8 @@ from runtime.remote_access.credentials import (
     DaemonCredentialProvider,
 )
 from runtime.remote_access.authorization import TrustState
-from runtime.remote_access.forwarding import LOOPBACK_HOST
+from runtime.remote_access.forwarding import LOOPBACK_HOST, HttpLoopbackForwarder, LoopbackTarget
+from runtime.remote_access.release_verifier import VerifierClient
 from runtime.remote_access.identity import ConnectorIdentity
 from runtime.remote_access.policy import PolicyError, RoutePolicyConsumer
 from runtime.remote_access.state import TrustStateStore
@@ -95,6 +98,7 @@ class ConnectorReadiness:
         self,
         *,
         daemon_port: int | None,
+        release_verifier: VerifierClient | None = None,
         credential_provider: DaemonCredentialProvider,
         policy: RoutePolicyConsumer | None,
         policy_failure_category: str | None = None,
@@ -103,6 +107,7 @@ class ConnectorReadiness:
         connect_fn: ConnectFn | None = None,
     ) -> None:
         self._daemon_port = daemon_port
+        self._release_verifier = release_verifier
         self._credential_provider = credential_provider
         self._policy = policy
         self._policy_failure_category = policy_failure_category
@@ -125,6 +130,13 @@ class ConnectorReadiness:
     # ── gate 1: daemon loopback reachability (literal 127.0.0.1) ─────────
 
     def _gate_daemon_loopback(self) -> GateResult:
+        if self._release_verifier is not None:
+            try:
+                HttpLoopbackForwarder(LoopbackTarget(LOOPBACK_HOST, 0),
+                                      verifier=self._release_verifier)._connect().close()
+            except OSError:
+                return GateResult(False, "daemon_unavailable", "release verification refused")
+            return GateResult(True, "daemon_loopback_ok", "release connection verified")
         port = self._daemon_port
         if port is None or not isinstance(port, int) or isinstance(port, bool) or not (0 <= port <= 65535):
             return GateResult(False, "daemon_unavailable", "daemon port not configured")
@@ -139,9 +151,24 @@ class ConnectorReadiness:
     def _gate_credential_permissions(self) -> GateResult:
         try:
             self._credential_provider.read_bearer()
-        except CredentialUnavailable:
+        except CredentialUnavailable as exc:
+            if self._release_verifier is not None:
+                # Only these existing provider messages select a closed reason;
+                # never journal an arbitrary exception, path, or credential.
+                reasons = {
+                    'CREDENTIALS_DIRECTORY not set (not running under LoadCredential=)': 'injection_not_configured',
+                    'daemon credential not injected': 'injection_missing',
+                    'daemon credential must not be a symlink': 'injection_symlink',
+                    'daemon credential unreadable': 'injection_unreadable',
+                    'daemon credential permissions too loose': 'injection_permissions',
+                    'daemon credential empty': 'injection_empty',
+                }
+                message = exc.args[0] if len(exc.args) == 1 and isinstance(exc.args[0], str) else ''
+                logging.getLogger(__name__).warning('daemon credential refused: %s', reasons.get(message, 'unavailable'))
             return GateResult(False, "credential_unreadable", "daemon credential missing or unreadable")
         except Exception:  # noqa: BLE001 — any provider failure fails closed
+            if self._release_verifier is not None:
+                logging.getLogger(__name__).warning('daemon credential refused: unavailable')
             return GateResult(False, "credential_unreadable", "daemon credential unavailable")
         return GateResult(True, "credential_ok", "daemon credential readable with safe permissions")
 

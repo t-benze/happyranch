@@ -8,9 +8,12 @@ request carrying credential-shaped material is ever transmitted.
 from __future__ import annotations
 
 import http.client
+import logging
+
 from dataclasses import dataclass
 from typing import Protocol
 
+from runtime.remote_access.release_verifier import VerificationRefused, VerifierClient
 from runtime.remote_access.audit import scan_secret_shapes
 from runtime.remote_access.models import (
     ForwardedResponse,
@@ -211,10 +214,11 @@ class HttpLoopbackForwarder:
     daemon bearer on the final hop, and refuses credential-bearing outbound
     requests."""
 
-    def __init__(self, target: LoopbackTarget) -> None:
+    def __init__(self, target: LoopbackTarget, *, verifier: VerifierClient | None = None) -> None:
         if target.host != LOOPBACK_HOST:
             raise LoopbackViolation("forwarder requires a literal 127.0.0.1 target")
         self.target = target
+        self._verifier = verifier
 
     def _require_loopback_host(self, host: str) -> None:
         if host != LOOPBACK_HOST:
@@ -222,7 +226,25 @@ class HttpLoopbackForwarder:
 
     def _connect(self) -> http.client.HTTPConnection:
         self._require_loopback_host(self.target.host)
-        return http.client.HTTPConnection(LOOPBACK_HOST, self.target.port, timeout=10)
+        if self._verifier is None:
+            return http.client.HTTPConnection(LOOPBACK_HOST, self.target.port, timeout=10)
+        conn = None
+        try:
+            port = self._verifier.resolve()
+            conn = http.client.HTTPConnection(LOOPBACK_HOST, port, timeout=10)
+            conn.connect()
+            conn.auto_open = 0  # never transparently reconnect after confirmation
+            self._verifier.confirm(conn.sock.getsockname()[1], port)
+            return conn
+        except VerificationRefused as exc:
+            logging.getLogger(__name__).warning('release verification refused: %s', exc.reason)
+            if conn is not None:
+                conn.close()
+            raise
+        except BaseException:
+            if conn is not None:
+                conn.close()
+            raise
 
     def forward_once(
         self,

@@ -8,7 +8,7 @@ MANAGED_DOWNLOADS=${MANAGED_DOWNLOADS:-${RUNNER_TEMP:-/tmp}/managed-downloads}
 python=/opt/happyranch/venv/bin/python
 services=(happyranch-connector.service happyranch-tsnet-sidecar.service)
 target=happyranch-managed.target
-fixtures=(happyranch-m1-headscale.service happyranch-m1-peer.service happyranch-m1-http.service)
+fixtures=(happyranch-m1-headscale.service happyranch-m1-peer.service)
 fail() { echo "M1: $*" >&2; exit 1; }
 absent() { [[ ! -e $1 && ! -L $1 ]] || fail "unexpected residue: $1"; }
 wait_for() {
@@ -32,7 +32,7 @@ policy = dict(schema_version=1, artifact_version=int(artifact['version']),
               issued_at=(datetime.now(timezone.utc) - timedelta(seconds=10)).isoformat(),
               max_age_seconds=3600, revision=1, state='active', artifact=artifact)
 connector = dict(tenant_id='tenant-ci', home_id='home-ci', connector_id='connector-ci',
-                 daemon_port=18765, daemon_token_path='/etc/happyranch/daemon.token',
+                 daemon_token_path='/etc/happyranch/daemon.token',
                  policy_path='/etc/happyranch/policy.json',
                  state_path='/var/lib/happyranch-connector/trust-state.json',
                  system=True, service_user='happyranch', service_group='happyranch',
@@ -43,6 +43,7 @@ sidecar = dict(StateDir='/var/lib/happyranch-tsnet-sidecar',
                ConnectorAddr='127.0.0.1:18443', DERPPolicy='private-only')
 for name, value in [('policy', policy), ('connector', connector), ('sidecar', sidecar)]:
     (dest / f'{name}.json').write_text(json.dumps(value))
+    (dest / f'{name}.json').chmod(0o600)
 (dest / 'fixture_http.py').write_text('''from http.server import BaseHTTPRequestHandler, HTTPServer
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -50,7 +51,11 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200 if ok else 403)
         self.end_headers()
         self.wfile.write(b'M1 loopback response' if ok else b'denied')
-HTTPServer(('127.0.0.1', 18765), Handler).serve_forever()
+import os
+from pathlib import Path
+server = HTTPServer(('127.0.0.1', 0), Handler)
+(Path(os.environ['HAPPYRANCH_DAEMON_HOME']) / 'daemon.port').write_text(str(server.server_port))
+server.serve_forever()
 ''')
 PY
 }
@@ -76,8 +81,6 @@ provision() {
   sudo install -m 0755 "$M1_BUILD/happyranch-tsnet-sidecar" /opt/happyranch/bin/
   # Installer validates this exact account; precreate it to own the token input.
   sudo useradd --system --user-group --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin happyranch
-  for name in connector sidecar policy; do sudo install -m 0644 "$M1_BUILD/$name.json" "/etc/happyranch/$name.json"; done
-  printf '%s\n' synthetic-m1-daemon-token | sudo install -m 0600 -o happyranch -g happyranch /dev/stdin /etc/happyranch/daemon.token
   sudo install -d -m 0700 "$M1_WORK"
   mkdir -p "$MANAGED_DOWNLOADS"
   if [[ ! -f $MANAGED_DOWNLOADS/headscale ]]; then
@@ -147,8 +150,39 @@ EOF
   sudo "$M1_WORK/tailscale" --socket="$M1_WORK/peer.sock" up --login-server=https://127.0.0.1:18080 \
     --auth-key="file:$M1_WORK/peer.key" --hostname=synthetic-peer-ci --accept-dns=false --timeout=60s
   sudo rm "$M1_WORK/peer.key"
-  sudo systemd-run --unit="${fixtures[2]}" /usr/bin/python3 "$M1_WORK/fixture_http.py"
-  wait_for curl --silent --connect-timeout 2 --max-time 3 --output /dev/null http://127.0.0.1:18765/api/v1/health
+  provision_release_daemon
+}
+provision_release_daemon() {
+  release_fixture /usr/bin/python3 /opt/happyranch/bin/fixture_http.py
+  sudo "$python" -m runtime.remote_access.installer provision \
+    --connector-config "$M1_BUILD/connector.json" --sidecar-config "$M1_BUILD/sidecar.json" \
+    --policy-file "$M1_BUILD/policy.json" --release-user "$(id -un)" --data-home "$release_home"
+}
+release_fixture() {
+  release_home="$HOME/.local/share/happyranch-m1-ci"
+  absent "$release_home"
+  mkdir -p "$release_home"
+  chmod 0700 "$release_home"
+  printf '%s\n' synthetic-m1-daemon-token > "$release_home/daemon.token"
+  chmod 0600 "$release_home/daemon.token"
+  sudo install -m 0644 "$M1_BUILD/fixture_http.py" /opt/happyranch/bin/fixture_http.py
+  # CI equivalent at the packaged path: synthetic backend, same user-manager identity proof.
+  absent /usr/lib/systemd/user/happyranch-daemon.service
+  sudo tee /usr/lib/systemd/user/happyranch-daemon.service >/dev/null <<EOF
+[Unit]
+Description=HappyRanch M1 release fixture (CI equivalent)
+[Service]
+ExecStart=$*
+Environment=HAPPYRANCH_DAEMON_HOME=$release_home
+EOF
+  sudo loginctl enable-linger "$(id -un)"
+  sudo systemctl start "user@$(id -u).service"
+  export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+  export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"
+  systemctl --user daemon-reload
+  systemctl --user start happyranch-daemon.service
+  wait_for test -s "$release_home/daemon.port"
+  wait_for curl --silent --connect-timeout 2 --max-time 3 --output /dev/null "http://127.0.0.1:$(cat "$release_home/daemon.port")/api/v1/health"
 }
 installer() {
   local rc=0
@@ -201,13 +235,13 @@ PY
 }
 residue() {
   local path unit
-  for unit in "${services[@]}" "$target"; do
+  for unit in "${services[@]}" "$target" happyranch-release-verifier.socket happyranch-release-verifier.service; do
     absent "/etc/systemd/system/$unit"
     [[ $(systemctl show "$unit" -p LoadState --value) == not-found ]] || fail "still loaded: $unit"
     ! systemctl is-active --quiet "$unit" || fail "still active: $unit"
   done
   for path in /etc/systemd/system/multi-user.target.wants/happyranch-managed.target \
-    /etc/credstore/happyranch-tsnet-enrollment /etc/happyranch/enrollment.key "$M1_WORK/enrollment.key" \
+    /etc/credstore/happyranch-tsnet-enrollment /etc/happyranch/enrollment.key /etc/happyranch/release-daemon.json /run/happyranch-release-verifier/control.sock "$M1_WORK/enrollment.key" \
     /var/lib/happyranch-{connector,tsnet-sidecar} /run/happyranch-{connector,tsnet-sidecar}; do
     if ! sudo test ! -e "$path" || ! sudo test ! -L "$path"; then fail "installer residue: $path"; fi
   done
@@ -216,7 +250,11 @@ residue() {
   echo 'Uninstall/purge removed units, enrollment and service state. Payload, config, logs and account are documented retained items.'
 }
 logs() {
+  export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+  export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"
   mkdir -p "$M1_LOGS"
+  sudo systemctl --user -M "$(id -un)@.host" show happyranch-daemon.service -p MainPID,ActiveState,FragmentPath,DropInPaths || true
+  journalctl --user --no-pager -u happyranch-daemon.service -n 80 || true
   runtime_directories 2>&1 | tee "$M1_LOGS/runtime-directories.txt"
   # Manager reloads are not included in the individual unit journals.
   # shellcheck disable=SC2024
@@ -224,7 +262,7 @@ logs() {
     > "$M1_LOGS/systemd-manager.journal.txt" 2>&1 || true
   cat "$M1_LOGS/systemd-manager.journal.txt"
   local unit
-  for unit in "${services[@]}" "$target" "${fixtures[@]}"; do
+  for unit in "${services[@]}" "$target" happyranch-release-verifier.socket happyranch-release-verifier.service "${fixtures[@]}"; do
     # These redirects intentionally create runner-owned artifact logs.
     # shellcheck disable=SC2024
     sudo journalctl --no-pager -o short-precise -u "$unit" > "$M1_LOGS/$unit.journal.txt" 2>&1 || true
@@ -241,6 +279,11 @@ logs() {
     2>&1 | tee "$M1_LOGS/connector-readiness.txt" || true
 }
 teardown() {
+  export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+  export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"
+  systemctl --user stop happyranch-daemon.service || true
+  sudo rm -f /usr/lib/systemd/user/happyranch-daemon.service
+  systemctl --user daemon-reload || true
   sudo rm -f "$M1_WORK/peer.key" "$M1_WORK/enrollment.key"
   # Preserve product residue for diagnosis; runner disposal removes retained data.
   sudo systemctl stop "${fixtures[@]}"

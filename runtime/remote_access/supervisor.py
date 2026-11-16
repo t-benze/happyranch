@@ -52,6 +52,7 @@ from runtime.remote_access.diy_provider import (
     make_diy_context_factory,
 )
 from runtime.remote_access.forwarding import LOOPBACK_HOST, HttpLoopbackForwarder, LoopbackTarget
+from runtime.remote_access.release_verifier import VerifierClient
 from runtime.remote_access.gateway import GatewayContext
 from runtime.remote_access.identity import (
     ConnectorIdentity,
@@ -153,11 +154,16 @@ class ConnectorConfig:
     diy: DiyProviderConfig | None = None
     managed: ManagedProviderConfig | None = None
 
+    def uses_release_verifier(self) -> bool:
+        return sys.platform == "linux" and self.system and self.managed is not None
+
     def validate(self) -> None:
         if not (self.tenant_id and self.home_id and self.connector_id):
             raise ConnectorConfigError("tenant_id/home_id/connector_id are required")
-        if self.daemon_port is None:
-            raise ConnectorConfigError("daemon_port is required")
+        if self.daemon_port is None and not self.uses_release_verifier():
+            raise ConnectorConfigError("daemon_port is required outside managed Linux system mode")
+        if self.uses_release_verifier() and self.daemon_port is not None:
+            raise ConnectorConfigError("managed Linux system mode resolves ports; remove daemon_port")
         if (not isinstance(self.excluded_daemon_ports, list)
                 or any(type(port) is not int or not 1 <= port <= 65535
                        for port in self.excluded_daemon_ports)):
@@ -410,6 +416,7 @@ class ConnectorSupervisor:
             policy_failure_category = exc.category
         return ConnectorReadiness(
             daemon_port=self.config.daemon_port,
+            release_verifier=VerifierClient() if self.config.uses_release_verifier() else None,
             credential_provider=self.credential_provider(),
             policy=policy,
             policy_failure_category=policy_failure_category,
@@ -426,7 +433,8 @@ class ConnectorSupervisor:
         lab_device = config.lab.lab_device_id if config.lab else "lab-client-1"
         credential_provider = self.credential_provider()
         forwarder = HttpLoopbackForwarder(
-            LoopbackTarget(LOOPBACK_HOST, config.daemon_port)
+            LoopbackTarget(LOOPBACK_HOST, config.daemon_port or 0),
+            verifier=VerifierClient() if config.uses_release_verifier() else None,
         )
         registry = self.registry
 
@@ -466,7 +474,8 @@ class ConnectorSupervisor:
         identity_ = self._configured_identity()
         credential_provider = self.credential_provider()
         forwarder = HttpLoopbackForwarder(
-            LoopbackTarget(LOOPBACK_HOST, config.daemon_port)
+            LoopbackTarget(LOOPBACK_HOST, config.daemon_port or 0),
+            verifier=VerifierClient() if config.uses_release_verifier() else None,
         )
         return make_diy_context_factory(
             identity=identity_,
@@ -1020,6 +1029,7 @@ class ConnectorSupervisor:
             )
         iterations = 0
         notified_ready = False
+        waiting_gates = None
         while True:
             iterations += 1
             if max_iterations is not None and iterations > max_iterations:
@@ -1037,7 +1047,14 @@ class ConnectorSupervisor:
                 if report.ready and not notified_ready and not self._provider_running:
                     self._start_provider()
                 if not report.ready:
-                    self._notify_fn("STATUS=waiting for readiness\n")
+                    message = "waiting for readiness"
+                    if self.config.uses_release_verifier():
+                        failures = ','.join(f'{name}:{gate.category}' for name, gate in report.gates.items() if not gate.ok)
+                        message += f"; failing_gates={failures}"
+                        if failures != waiting_gates:
+                            print(message, file=sys.stderr, flush=True)
+                            waiting_gates = failures
+                    self._notify_fn(f"STATUS={message}\n")
                 self._reconcile_revocation()
                 if self._shutdown:
                     break

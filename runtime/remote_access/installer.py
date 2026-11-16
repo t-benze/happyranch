@@ -25,17 +25,22 @@ from urllib.parse import urlsplit
 
 from runtime.remote_access.service_manager import ServiceManagerError, SystemdServiceManager
 from runtime.remote_access.systemd_unit import (
+    VERIFIER_FILESYSTEM_HARDENING,
     ConnectorUnitSpec,
     SidecarUnitSpec,
     render_connector_unit,
     render_managed_target,
     render_sidecar_unit,
+    render_verifier_socket,
+    render_verifier_unit,
 )
 
 UNITS = (
     "happyranch-connector.service",
     "happyranch-tsnet-sidecar.service",
     "happyranch-managed.target",
+    "happyranch-release-verifier.socket",
+    "happyranch-release-verifier.service",
 )
 _UNIT_DIR = "etc/systemd/system"
 _ENROLLMENT = "etc/happyranch/enrollment.key"
@@ -60,12 +65,14 @@ def managed_units(layout: str = "source") -> dict[str, str]:
     sidecar = f"/opt/{'happyranch-desktop' if layout == 'deb' else 'happyranch'}/bin/happyranch-tsnet-sidecar"
     return {
         UNITS[0]: render_connector_unit(ConnectorUnitSpec(
-            user="happyranch", group="happyranch",
+            user="happyranch", group="happyranch", release_verifier=True,
             exec_start=(*python, "-m", "runtime.remote_access.cli",
                         "run", "--managed", "--config", "/etc/happyranch/connector.json"),
         )),
         UNITS[1]: render_sidecar_unit(SidecarUnitSpec(binary_path=sidecar)),
         UNITS[2]: render_managed_target(),
+        UNITS[3]: render_verifier_socket(),
+        UNITS[4]: render_verifier_unit(python),
     }
 
 
@@ -307,7 +314,7 @@ class ManagedInstaller:
             cfg.validate()
             if (any(not isinstance(value, str) or not value.strip() for value in (cfg.tenant_id, cfg.home_id, cfg.connector_id))
                     or cfg.system is not True or cfg.service_user != "happyranch" or cfg.service_group != "happyranch"
-                    or type(cfg.daemon_port) is not int or not 1 <= cfg.daemon_port <= 65535
+                    or cfg.daemon_port is not None
                     or not 1 <= cfg.managed.bind_port <= 65535
                     or cfg.daemon_token_path != "/etc/happyranch/daemon.token"
                     or cfg.policy_path != "/etc/happyranch/policy.json"
@@ -329,7 +336,7 @@ class ManagedInstaller:
             if (not isinstance(sidecar_excluded, list)
                     or any(type(port) is not int or not 1 <= port <= 65535 for port in sidecar_excluded)):
                 raise ValueError
-            excluded = sorted({8765, cfg.daemon_port, *cfg.excluded_daemon_ports, *sidecar_excluded})
+            excluded = sorted({8765, *cfg.excluded_daemon_ports, *sidecar_excluded})
             if (cfg.managed.bind_port in excluded
                     or sidecar["ConnectorAddr"] != f"127.0.0.1:{cfg.managed.bind_port}"):
                 raise ValueError
@@ -419,31 +426,71 @@ class ManagedInstaller:
                 os.close(descriptor)
             os.fsync(parent)
 
+    def _release_record(self, user_name: str, data_home: Path | None) -> dict:
+        from runtime.remote_access.release_verifier import FRAGMENT, UNIT, validate_record
+
+        try:
+            user = self._lookup_user(user_name)
+            home = data_home if data_home is not None else Path(user.pw_dir) / '.local/share/happyranch'
+            if home.anchor != '/':
+                raise InstallerError(f'release data home {home} must use a canonical absolute path')
+            record = dict(user=user_name, uid=user.pw_uid, data_home=str(home), unit=UNIT, fragment_path=FRAGMENT)
+            with self._input_parent(home / 'daemon.port') as directory:
+                info = os.fstat(directory)
+                # No-follow traversal above rejects symlinked parents. Compare
+                # that literal path without resolving through a new alias.
+                for directive, hidden in VERIFIER_FILESYSTEM_HARDENING:
+                    if any(home.is_relative_to(path) for path in hidden):
+                        raise InstallerError(f'release data home {home} is hidden or inaccessible '
+                                             f'in the verifier namespace by {directive}')
+                if info.st_uid != user.pw_uid or info.st_mode & 0o022:
+                    raise InstallerError('release data home must be owned by the target uid without group/other writes')
+            validate_record(record)
+            return record
+        except (OSError, ValueError, KeyError):
+            raise InstallerError('invalid release user or data home (require existing absolute no-symlink target-owned directory)') from None
+
+    def _check_release_record(self) -> dict:
+        from runtime.remote_access.release_verifier import validate_record
+
+        with self._directory('etc/happyranch') as parent:
+            record = self._json(self._read_file(parent, 'release-daemon.json', owner=self.root_owner, mode=0o644))
+        try:
+            validate_record(record)
+            if record != self._release_record(record['user'], Path(record['data_home'])):
+                raise InstallerError('release user identity changed')
+        except (OSError, ValueError, KeyError, TypeError):
+            raise InstallerError('invalid release install record') from None
+        return record
+
     def provision(self, *, connector_config: Path, sidecar_config: Path, policy_file: Path,
-                  daemon_token_source: Path) -> None:
+                  release_user: str, data_home: Path | None = None,
+                  daemon_token_source: Path | None = None) -> None:
         """Fresh-host, no-service-start staging. Existing files always refuse."""
         try:
+            release = self._release_record(release_user, data_home)
+            daemon_token_source = daemon_token_source or Path(release['data_home']) / 'daemon.token'
             files = {name: self._input(path) for name, path in (
                 ("connector.json", connector_config), ("sidecar.json", sidecar_config), ("policy.json", policy_file))}
             self._validate_configs(files)
-            if self.layout == "deb":
-                connector = self._json(files["connector.json"])
-                sidecar = self._json(files["sidecar.json"])
-                excluded = sorted({8765, connector["daemon_port"],
-                                   *connector.get("excluded_daemon_ports", []),
-                                   *sidecar.get("ExcludedDaemonPorts", [])})
-                connector["excluded_daemon_ports"] = excluded
-                sidecar["ExcludedDaemonPorts"] = excluded
-                for name, value in (("connector.json", connector), ("sidecar.json", sidecar)):
-                    files[name] = json.dumps(value, sort_keys=True).encode()
-                self._validate_configs(files, staged=True)
+            connector = self._json(files["connector.json"])
+            sidecar = self._json(files["sidecar.json"])
+            excluded = sorted({8765,
+                               *connector.get("excluded_daemon_ports", []),
+                               *sidecar.get("ExcludedDaemonPorts", [])})
+            connector.pop("daemon_port", None)
+            connector["excluded_daemon_ports"] = excluded
+            sidecar["ExcludedDaemonPorts"] = excluded
+            for name, value in (("connector.json", connector), ("sidecar.json", sidecar)):
+                files[name] = json.dumps(value, sort_keys=True).encode()
+            self._validate_configs(files, staged=True)
             token = self._input(daemon_token_source, token=True)
             self._check_deb_payload()
             self._service_owner = self._account(create=False)
             self._preflight()
             try:
                 with self._directory("etc/happyranch") as parent:
-                    for name in (*files, "daemon.token", "provision.json"):
+                    for name in (*files, "daemon.token", "provision.json", "release-daemon.json"):
                         try:
                             os.stat(name, dir_fd=parent, follow_symlinks=False)
                         except FileNotFoundError:
@@ -459,6 +506,7 @@ class ManagedInstaller:
                     pass
             for name, data in files.items():
                 self._write_provision_file(name, data, (self.root_owner[0], self._service_owner[1]), 0o640)
+            self._write_provision_file("release-daemon.json", json.dumps(release, sort_keys=True).encode(), self.root_owner, 0o644)
             self._write_provision_file("daemon.token", token, self._service_owner, 0o600)
             record = dict(layout=self.layout, token_source=str(daemon_token_source),
                           token_sha256=hashlib.sha256(token).hexdigest(),
@@ -470,6 +518,7 @@ class ManagedInstaller:
 
     def _check_provisioning(self) -> None:
         try:
+            self._check_release_record()
             with self._directory("etc/happyranch") as parent:
                 record = self._json(self._read_file(parent, "provision.json", owner=self.root_owner, mode=0o600))
                 if record.keys() != {"layout", "token_source", "token_sha256", "configs"} or record["layout"] != self.layout:
@@ -642,6 +691,7 @@ class ManagedInstaller:
             self._service_owner = self._account(create=False)
             self._preflight()
             self._check_deb_payload()
+            self._check_release_record()
             if self.layout == "deb" or self._has_provisioning():
                 self._check_provisioning()
             if self._check_enrollment():
@@ -656,6 +706,7 @@ class ManagedInstaller:
             staged = True
             self._write_enrollment(data)
             self.manager.daemon_reload()
+            self.manager.enable(UNITS[3])
             self.manager.enable(UNITS[2])
             try:
                 # Connector then sidecar each have TimeoutStartSec=120.
@@ -692,6 +743,7 @@ class ManagedInstaller:
                 self.layout = record.get("layout")
                 self.units = managed_units(self.layout)
             self._check_deb_payload()
+            self._check_release_record()
             if self.layout == "deb" or self._has_provisioning():
                 self._service_owner = self._account(create=False)
                 self._check_provisioning()
@@ -726,6 +778,9 @@ class ManagedInstaller:
             # Keep RuntimeDirectory loaded until each service has shut down.
             for name in reversed(UNITS[:2]):
                 self.manager.stop(name, timeout=50.0)
+            self.manager.stop(UNITS[3], timeout=5.0)
+            self.manager.stop(UNITS[4], timeout=5.0)
+            self.manager.disable(UNITS[3])
             self.manager.disable(UNITS[2])
             try:
                 with self._directory(_UNIT_DIR) as parent:
@@ -736,6 +791,17 @@ class ManagedInstaller:
                             continue
                         os.unlink(name, dir_fd=parent)
                     os.fsync(parent)
+            except FileNotFoundError:
+                pass
+            try:
+                with self._directory('etc/happyranch') as parent:
+                    try:
+                        self._read_file(parent, 'release-daemon.json', owner=self.root_owner, mode=0o644)
+                    except FileNotFoundError:
+                        pass
+                    else:
+                        os.unlink('release-daemon.json', dir_fd=parent)
+                        os.fsync(parent)
             except FileNotFoundError:
                 pass
             self.manager.daemon_reload()
@@ -781,6 +847,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--layout", choices=("source", "deb"), default="source")
     for option in ("connector-config", "sidecar-config", "policy-file", "daemon-token-source"):
         parser.add_argument(f"--{option}", type=Path, help="absolute input path (provision only)")
+    parser.add_argument("--release-user", help="passwd user owning the release daemon (provision only)")
+    parser.add_argument("--data-home", type=Path, help="resolved XDG data home; defaults to passwd-home/.local/share/happyranch")
     parser.add_argument("--purge", action="store_true", help="also remove service state on uninstall")
     parser.add_argument("--enrollment-key-file", type=Path, help="root-owned regular 0600 file containing a fresh single-use key (install only)")
     args = parser.parse_args(argv)
@@ -789,9 +857,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.enrollment_key_file is not None and args.command != "install":
         parser.error("--enrollment-key-file is only valid with install")
     inputs = {name: getattr(args, name) for name in (
-        "connector_config", "sidecar_config", "policy_file", "daemon_token_source")}
-    if args.command == "provision" and not all(inputs.values()):
-        parser.error("provision requires --connector-config, --sidecar-config, --policy-file and --daemon-token-source")
+        "connector_config", "sidecar_config", "policy_file", "daemon_token_source", "release_user", "data_home")}
+    if args.command == "provision" and not all(inputs[key] for key in ("connector_config", "sidecar_config", "policy_file", "release_user")):
+        parser.error("provision requires --connector-config, --sidecar-config, --policy-file and --release-user")
     if args.command != "provision" and any(inputs.values()):
         parser.error("provisioning inputs are only valid with provision")
     try:
