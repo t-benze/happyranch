@@ -617,10 +617,15 @@ The existing sequential storage must already be installed through the explicit
 offline installer. The publisher refuses agent task environment markers,
 live-account daemon/org paths, unlisted/aliased runtime roots, unstopped daemon
 controls, invalid definitions/bindings/independence, and incompatible storage.
-The persistent live homes are the realpaths of `<passwd-home>/.happyranch` and
-`<passwd-home>/.happyranch-release`, independently of private `HOME` and
-`HAPPYRANCH_DAEMON_HOME`. The candidate daemon home and org root must be outside
-both; the selected disposable home is not itself added to that list.
+The persistent live homes retain the realpaths of `<passwd-home>/.happyranch`
+and `<passwd-home>/.happyranch-release`, and add
+`<passwd-home>/.local/share/happyranch`, independently of private `HOME` and
+`HAPPYRANCH_DAEMON_HOME`. An absolute `XDG_DATA_HOME` in the venue process also
+adds `$XDG_DATA_HOME/happyranch`; absent, empty or relative XDG values remove no
+exclusions. The candidate daemon home and org root must be outside all these
+homes, including aliases, before any open. The selected disposable home is not
+itself added to that list. Workflows query neither installation records nor the
+user manager: a custom XDG value present only in the user manager is not detected.
 The operator maintains cooperative stopped-state exclusion; neither missing PID
 nor the confirmation flag proves historical cleanup or excludes same-UID writers.
 

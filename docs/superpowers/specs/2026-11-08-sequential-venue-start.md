@@ -1,9 +1,14 @@
 # U3s venue-only sequential start enablement — SB-1 (a)
 
 > A0 home-isolation amendment (TASK-16235, THR-327 seq383): the persistent
-> live-home list in the fence below now contains the realpaths of both
-> `<passwd-home>/.happyranch` and `<passwd-home>/.happyranch-release`.
-> Candidate daemon-home and org-root containment in either, including aliases,
+> live-home list in the fence below retains the realpaths of
+> `<passwd-home>/.happyranch` and `<passwd-home>/.happyranch-release`, and now adds
+> `<passwd-home>/.local/share/happyranch` (PR-D release-home parity). An absolute
+> `XDG_DATA_HOME` in the venue process additionally excludes
+> `$XDG_DATA_HOME/happyranch`; absent, empty or relative values remove no exclusions.
+> Workflows read neither installation records nor the user manager. A custom XDG
+> value present only in the user manager is not detected.
+> Candidate daemon-home and org-root containment in any protected home, including aliases,
 > receives the same `sequential_venue_live_home` before any open. The list is
 > independent of `HOME` and `HAPPYRANCH_DAEMON_HOME`; a disposable selected home
 > is not added to it. Original evidence and other admission/marker ordering

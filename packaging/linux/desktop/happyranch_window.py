@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import fcntl
 import hashlib
 import http.client
@@ -15,6 +16,7 @@ import re
 import signal
 import stat
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -31,9 +33,13 @@ class LaunchError(Exception):
         self.action = action
 
 
-def desktop_home() -> Path:
-    """The packaged unit and window share only the release home."""
-    return Path.home() / ".happyranch-release"
+def desktop_home(user_home: Path | None = None, *,
+                 environment: dict[str, str] | None = None) -> Path:
+    """Shared by the packaged unit launcher, window and port query."""
+    account = user_home if user_home is not None else Path.home()
+    env = os.environ if environment is None else environment
+    data = Path(env.get("XDG_DATA_HOME", ""))
+    return (data if data.is_absolute() else account / ".local/share") / "happyranch"
 
 
 def acquire_lock(home: Path) -> IO[bytes] | None:
@@ -180,7 +186,7 @@ class ServiceMode:
         if self.command("systemctl", "--user", "daemon-reload").returncode:
             raise LaunchError("The old unit was removed, but the user manager could not reload.")
 
-    def validate_environment(self) -> None:
+    def manager_home(self) -> Path:
         result = self.command("systemctl", "--user", "show-environment")
         if result.returncode:
             raise LaunchError("Could not inspect the user manager environment.")
@@ -188,6 +194,20 @@ class ServiceMode:
                            if line.startswith("HAPPYRANCH_")})
         if polluted:
             raise LaunchError("Remove these variables from the user manager environment: " + ", ".join(polluted))
+        environment = dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
+        value = environment.get("XDG_DATA_HOME", "")
+        if value.startswith("$'"):
+            # show-environment uses dollar-single-quote C escaping for spaces,
+            # quotes and control bytes. Decode a literal; never run a shell.
+            try:
+                environment["XDG_DATA_HOME"] = ast.literal_eval(value[1:])
+            except (SyntaxError, ValueError) as exc:
+                raise LaunchError("Could not decode the user manager XDG_DATA_HOME.") from exc
+        return desktop_home(self.user_home, environment=environment)
+
+    def validate_environment(self) -> None:
+        if self.home.resolve() != self.manager_home().resolve():
+            raise LaunchError("The packaged service requires its XDG release home; remove --daemon-home.")
         path = self.user_home / ".config/happyranch/daemon.env"
         try:
             metadata = path.lstat()
@@ -372,7 +392,19 @@ class ServiceMode:
 
     def read_marker(self, name: str) -> int | None:
         try:
-            raw = (self.home / name).read_text(encoding="utf-8").strip()
+            path = self.home / name
+            before = path.lstat()
+            if (not stat.S_ISREG(before.st_mode) or before.st_nlink != 1
+                    or before.st_uid != os.getuid() or before.st_size > 64):
+                raise LaunchError(f"Invalid {name}; require a small owned regular marker without links.")
+            with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), "rb") as stream:
+                if self.unit_identity(os.fstat(stream.fileno())) != self.unit_identity(before):
+                    raise LaunchError(f"Changed {name}; retry after daemon publication.")
+                data = stream.read(65)
+                if (self.unit_identity(os.fstat(stream.fileno())) != self.unit_identity(before)
+                        or self.unit_identity(path.lstat()) != self.unit_identity(before)):
+                    raise LaunchError(f"Changed {name}; retry after daemon publication.")
+            raw = data.decode("utf-8").strip()
         except FileNotFoundError:
             return None
         except (OSError, UnicodeError) as exc:
@@ -387,13 +419,23 @@ class ServiceMode:
             raise LaunchError(f"Invalid {name}; review the release-home marker before starting HappyRanch.") from exc
         return value
 
+    def owned_port(self, pid: int) -> int | None:
+        # Missing/partial/invalid publication remains pending only after an
+        # admitted start. read_marker is strict in the pre-start/query path.
+        try:
+            return self.read_marker("daemon.port") if self.read_marker("daemon.pid") == pid else None
+        except LaunchError:
+            return None
+
     def refuse_external(self, pid: int) -> None:
         owner = self.read_marker("daemon.pid")
         self.read_marker("daemon.port")
         if owner is not None and owner != pid and (self.proc / str(owner)).exists():
             raise LaunchError("A CLI-started daemon is running in the release home. Stop it yourself before opening HappyRanch.")
 
-    def listeners(self) -> set[str]:
+    def listeners(self, port: int | None) -> set[str]:
+        if port is None or port == 8765:
+            return set()
         inodes = set()
         for name in ("tcp", "tcp6"):
             try:
@@ -406,8 +448,8 @@ class ServiceMode:
                 fields = line.split()
                 if len(fields) < 10:
                     raise LaunchError("Could not inspect the release port listener.")
-                address, port = fields[1].split(":")
-                if port.upper() == "223E" and fields[3] == "0A" and address.upper() in {
+                address, raw_port = fields[1].split(":")
+                if raw_port.upper() == f"{port:04X}" and fields[3] == "0A" and address.upper() in {
                         "0100007F", "00000000", "0" * 32, "0000000000000000FFFF00000100007F"}:
                     inodes.add(fields[9])
         return inodes
@@ -435,16 +477,17 @@ class ServiceMode:
               timeout: float = 60) -> str | None:
         if not self.manager_available():
             return None
-        if self.home != self.user_home / ".happyranch-release":
-            raise LaunchError("The packaged service requires ~/.happyranch-release; remove --daemon-home.")
         self.check_legacy()
         self.validate_environment()
         state = self.state()
         pid = self.pid(state)
         self.refuse_external(pid)
-        listeners = self.listeners()
+        port = self.read_marker("daemon.port")
+        if port == 8765:
+            raise LaunchError("Release daemon ownership or health check failed: development port 8765 is excluded.")
+        listeners = self.listeners(port)
         if listeners and not self.owns_listener(pid, listeners):
-            raise LaunchError("Port 8766 is used by another program")
+            raise LaunchError(f"Port {port} is used by another program")
         if retry:
             self.control("reset-failed")
         else:
@@ -457,26 +500,48 @@ class ServiceMode:
         self.shutdown_pending = True
         return self.wait_for_attachment(cancel, timeout=timeout)
 
+    def verified_port(self, state: dict[str, str]) -> int | None:
+        """One proof for GTK attachment and the read-only CLI query."""
+        pid = self.pid(state)
+        port = self.owned_port(pid)
+        if port is None or port == 8765:
+            return None
+        listeners = self.listeners(port)
+        owns = self.owns_listener(pid, listeners)
+        if listeners and not owns:
+            raise LaunchError(f"Port {port} is used by another program")
+        if state.get("ActiveState") == "active" and owns and self.health(port, 0.5):
+            # Re-observe after HTTP before releasing either the URL or port.
+            if (self.state() == state and self.owned_port(pid) == port
+                    and self.owns_listener(pid, self.listeners(port))):
+                return port
+        return None
+
+    def current_port(self) -> int:
+        """Inspect only: never start, stop, enable, repair or migrate anything."""
+        if not self.manager_available():
+            raise LaunchError("The user manager is unavailable; no release port can be verified.")
+        self.check_legacy()
+        self.validate_environment()
+        state = self.state()
+        self.refuse_external(self.pid(state))
+        port = self.verified_port(state)
+        if port is None:
+            raise LaunchError("Release daemon ownership or health check failed; no port was printed.")
+        return port
+
     def wait_for_attachment(self, cancel: threading.Event, *, timeout: float = 60) -> str:
         deadline = time.monotonic() + timeout
         while True:
             state = self.state()
             self.crash_error(state)
-            pid = self.pid(state)
             # After an admitted start, write_text can expose missing, empty or
             # partial markers. The tolerant read below waits for the complete
             # PID/port pair within this deadline; pre-start validation is strict.
-            listeners = self.listeners()
-            owns = self.owns_listener(pid, listeners)
-            if listeners and not owns:
-                raise LaunchError("Port 8766 is used by another program")
-            if owns and read_owned_port(self.home, pid) == 8766:
-                if self.health(8766, 0.5):
-                    # Re-observe after HTTP before releasing the URL to GTK.
-                    if (self.state() == state and read_owned_port(self.home, pid) == 8766
-                            and self.owns_listener(pid, self.listeners())):
-                        self.attached = True
-                        return "http://127.0.0.1:8766/"
+            port = self.verified_port(state)
+            if port is not None:
+                self.attached = True
+                return f"http://127.0.0.1:{port}/"
             if cancel.is_set():
                 # The supervisor owns shutdown, including cancellation before
                 # attachment. A failed stop must retain its worker and lock.
@@ -858,10 +923,38 @@ def run_gui(prefix: Path, home: Path) -> int:
 def main() -> int:
     parser = argparse.ArgumentParser(description="HappyRanch Linux desktop window")
     parser.add_argument("--prefix", type=Path, required=True)
-    parser.add_argument("--daemon-home", type=Path, default=desktop_home(),
+    parser.add_argument("--daemon-home", type=Path,
                         help="Explicit isolated desktop runtime home")
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument("--print-port", action="store_true", help="Print the verified running release daemon port")
+    modes.add_argument("--run-service", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--user-home", type=Path, default=Path.home(), help=argparse.SUPPRESS)
     args = parser.parse_args()
-    return run_gui(args.prefix.resolve(), args.daemon_home.expanduser().resolve())
+    if args.run_service:
+        # systemd supplies its account home via %h; exec preserves MainPID.
+        env = dict(os.environ, HAPPYRANCH_DAEMON_HOME=str(desktop_home(args.user_home)),
+                   HAPPYRANCH_DAEMON_PORT="0", HAPPYRANCH_DAEMON_BIND_HOST="127.0.0.1")
+        os.execve(args.prefix / "bin/happyranch-daemon", ["happyranch-daemon"], env)
+    try:
+        home = args.daemon_home or desktop_home()
+        service = ServiceMode(home)
+        if args.daemon_home is None and service.manager_available():
+            # Select the manager's XDG home before acquiring desktop.lock.
+            try:
+                home = service.manager_home()
+            except LaunchError:
+                if args.print_port:
+                    raise
+                # The GUI's existing startup path presents the diagnostic.
+        home = home.expanduser().resolve()
+        if args.print_port:
+            service.home = home
+            print(service.current_port())
+            return 0
+        return run_gui(args.prefix.resolve(), home)
+    except (OSError, LaunchError) as exc:
+        print(f"happyranch-app: {exc}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":
