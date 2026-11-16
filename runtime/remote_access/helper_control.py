@@ -187,6 +187,8 @@ class ControlHandler:
                         raise Refused('changed')
                     if record.expires_at <= time.time():
                         raise Refused('expired')
+                    if time.monotonic() >= deadline:
+                        raise Refused('expired')
                     operation(record, captured.generation)
                     response = {'result': 'ok'}
                 else:

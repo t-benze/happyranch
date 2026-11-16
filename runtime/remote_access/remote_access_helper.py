@@ -70,6 +70,7 @@ class RemoteAccessHelper:
         self.inflight: Capture | None = None
         self.timer = 0
         self.cancelled = False
+        self.authorization_terminal = False
         self.authority = Gio.DBusProxy.new_sync(connection, Gio.DBusProxyFlags.DO_NOT_LOAD_PROPERTIES,
             None, 'org.freedesktop.PolicyKit1', '/org/freedesktop/PolicyKit1/Authority',
             'org.freedesktop.PolicyKit1.Authority', None)
@@ -178,6 +179,7 @@ class RemoteAccessHelper:
                 capture = Capture(method, sender, uid, snapshot, record, self.clock() + self.deadline,
                                   uuid.uuid4().hex, message)
                 self.inflight, self.cancelled = capture, False
+                self.authorization_terminal = False
                 public = record.public()
                 verb = {'ApprovePending': 'Approve device', 'RejectPending': 'Reject device',
                         'RevokeSelected': 'Revoke device'}[method]
@@ -200,15 +202,29 @@ class RemoteAccessHelper:
         if self.timer:
             GLib.source_remove(self.timer)
         self.timer, self.inflight = 0, None
+        self.authorization_terminal = False
 
     def _authorized(self, proxy: Gio.DBusProxy, result: Gio.AsyncResult, capture: Capture) -> None:
+        terminal = False
         try:
             authorization = proxy.call_finish(result)
+            terminal = True
             granted = authorization.unpack()[0][0] is True
-        except Exception:
+        except Exception as error:
             granted = False
+            # A polkit error reply is terminal too; a transport timeout/loss is not.
+            remote = Gio.DBusError.get_remote_error(error) if isinstance(error, GLib.Error) else None
+            terminal = terminal or bool(remote and remote.startswith('org.freedesktop.PolicyKit1.Error.'))
         with self.lock:
-            if self.inflight is not capture or self.cancelled:
+            if self.inflight is not capture:
+                return
+            self.authorization_terminal = terminal
+            if self.cancelled:
+                if terminal:
+                    self._clear()  # A late reply settles even an uncertain cancellation; never commit it.
+                return
+            if not terminal:
+                self._cancel('unavailable')
                 return
             try:
                 if self.clock() >= capture.deadline:
@@ -258,6 +274,9 @@ class RemoteAccessHelper:
                 return
             self.cancelled = True
             self._error(capture.message, category)
+            if self.authorization_terminal:
+                self._clear()  # polkit already removed this completed cancellation ID.
+                return
             # Keep the global slot until the Authority acknowledges cancellation.
             self.authority.call('CancelCheckAuthorization', GLib.Variant('(s)', (capture.cancellation_id,)),
                 Gio.DBusCallFlags.NONE, 2000, None, self._cancelled, capture)
@@ -266,7 +285,7 @@ class RemoteAccessHelper:
         try:
             proxy.call_finish(result)
         except Exception:
-            return  # Uncertain prompt cancellation seals mutations until helper restart.
+            return  # Seal while the outstanding check has no terminal reply or cancellation acknowledgement.
         with self.lock:
             if self.inflight is capture:
                 self._clear()

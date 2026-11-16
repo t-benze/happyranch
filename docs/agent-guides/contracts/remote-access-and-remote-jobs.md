@@ -955,8 +955,11 @@ installation of the source bus/polkit definitions remain pending. Run the fixed
 packaged entry with system Python `-I`, without user settings or argv overrides.
 
 The helper captures caller/UID, target, ownership and snapshot generation before
-authorization, then revalidates after it. The 120-second deadline cancels polkit;
-uncertain cancellation seals further mutations until helper restart. One dialog
+authorization, then revalidates after it. The 120-second deadline cancels an
+outstanding polkit check; uncertain cancellation seals further mutations until
+cancellation is acknowledged or that check's terminal reply arrives. A terminal
+reply releases the dialog slot even if subsequent deadline/target expiry refuses
+the mutation; a late reply never authorizes an expired mutation. One dialog
 is allowed globally. Per-unique-name cursors disappear on disconnect. Status
 contains only bounded public summaries. Error/log categories are closed.
 IssueInvite and all install/lifecycle/R3 methods are absent, so invite issuance's
@@ -966,7 +969,10 @@ one-per-minute rate limit and policy-renewal installation belong to later slices
 and revoke_device plus the shared trust mutation lock. The new root-only Unix
 request handler revalidates the captured snapshot under that same lock before
 calling the operation. A ready/commit handshake keeps the connector lock held
-while root rechecks the live caller UID and deadline. The real binding to slice 2 is a serial integration leg
+while root rechecks the live caller UID and deadline. After its final potentially
+blocking status revalidation, the handler checks the monotonic deadline again
+immediately before the operation, still under that lock.
+The real binding to slice 2 is a serial integration leg
 after both slices merge; no current connector listener installs this handler.
 It must preserve generation/ownership/expiry checks, transactional approval and
 revocation stream closure. Fixed production control path:

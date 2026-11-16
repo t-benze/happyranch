@@ -66,6 +66,7 @@ class Authority:
     def __init__(self, connection: Any) -> None:
         self.calls, self.waiting, self.cancels = [], [], []
         self.mode = 'grant'
+        self.cancel_fails = False
         self.registration = connection.register_object('/org/freedesktop/PolicyKit1/Authority',
             Gio.DBusNodeInfo.new_for_xml(AUTH_XML).interfaces[0], self.method, None, None)
         own(connection, 'org.freedesktop.PolicyKit1')
@@ -83,6 +84,9 @@ class Authority:
         else:
             cancellation_id = parameters.unpack()[0]
             self.cancels.append(cancellation_id)
+            if self.cancel_fails or not any(ident == cancellation_id for ident, _ in self.waiting):
+                invocation.return_dbus_error('org.freedesktop.PolicyKit1.Error.Failed', 'No such cancellation_id')
+                return
             for ident, pending in list(self.waiting):
                 if ident == cancellation_id:
                     pending.return_dbus_error('org.freedesktop.PolicyKit1.Error.Cancelled', 'cancelled')
@@ -306,16 +310,22 @@ def test_fresh_authorization_and_operations(venue: Any) -> None:
     with operations.lock:
         operations.snapshot = replace(operations.snapshot, generation=3,
             pending=Device('pending-d', 'stable-d', 'Second Mac', 'red pear', time.time() + 600))
+    Call(client).finish()
+    assert len(authority.calls) == 2 and authority.calls[0][-1] != authority.calls[1][-1]
+    assert authority.calls[0][1] == authority.calls[1][1] == 'ai.happyranch.remote-access.approve-pending'
+    with operations.lock:
+        operations.snapshot = replace(operations.snapshot, generation=5,
+            pending=Device('pending-e', 'stable-e', 'Third Mac', 'gold peach', time.time() + 600))
     Call(client, 'RejectPending').finish()
     Call(client, 'NextDevice').finish()
     Call(client, 'RevokeSelected').finish()
     assert operations.snapshot.pending is None
     assert all(d.record_id != 'device-a' for d in operations.snapshot.devices)
-    assert operations.snapshot.generation == 5
-    assert [row[0] for row in operations.effects] == ['approve', 'reject', 'revoke']
-    assert len(authority.calls) == 3 and len({row[-1] for row in authority.calls}) == 3
+    assert operations.snapshot.generation == 7
+    assert [row[0] for row in operations.effects] == ['approve', 'approve', 'reject', 'revoke']
+    assert len(authority.calls) == 4 and len({row[-1] for row in authority.calls}) == 4
     assert [row[1] for row in authority.calls] == ['ai.happyranch.remote-access.' + action for action in
-                                                ('approve-pending', 'reject-pending', 'revoke-selected')]
+                            ('approve-pending', 'approve-pending', 'reject-pending', 'revoke-selected')]
 
 
 @pytest.mark.parametrize('venue', [{'release_uid': os.getuid() + 1}], indirect=True)
@@ -503,16 +513,70 @@ def test_system_python_isolated_import() -> None:
 
 
 @pytest.mark.parametrize('venue', [{'deadline': .05}], indirect=True)
-def test_deadline_under_store_lock(venue: Any) -> None:
+@pytest.mark.parametrize('delayed_read', [2, 3, 4])
+def test_deadline_under_store_lock(venue: Any, delayed_read: Any) -> None:
     helper, authority, operations, client, _ = venue
     original = operations.status
     counts = []
     def status() -> Any:
         counts.append(1)
-        if len(counts) == 3:  # capture snapshot, post-auth snapshot, connector admission
+        # Capture, post-auth snapshot, connector admission, final locked revalidation.
+        if len(counts) == delayed_read:
             time.sleep(.07)
         return original()
     operations.status = status
     Call(client).finish('expired')
-    eventually(lambda: bool(authority.cancels) and helper.inflight is None)
+    eventually(lambda: helper.inflight is None)
     assert operations.snapshot.generation == 1 and not operations.effects
+    assert not authority.cancels, 'terminal authorization must not cancel a removed polkit ID'
+    operations.status = original
+    assert Call(client).finish() == 'ok'
+    assert len(authority.calls) == 2 and len({row[-1] for row in authority.calls}) == 2
+    assert operations.effects == [('approve', 'pending-c', 1)]
+
+
+def test_target_expiry_after_authorization(venue: Any) -> None:
+    helper, authority, operations, client, _ = venue
+    with operations.lock:
+        operations.snapshot = replace(operations.snapshot,
+            pending=replace(operations.snapshot.pending, expires_at=time.time() + .05))
+    original = operations.status
+    counts = []
+    def status() -> Any:
+        counts.append(1)
+        if len(counts) == 2:
+            time.sleep(.07)
+        return original()
+    operations.status = status
+    Call(client).finish('expired')
+    eventually(lambda: helper.inflight is None)
+    assert not operations.effects and operations.snapshot.generation == 1
+    assert not authority.cancels
+    operations.status = original
+    with operations.lock:
+        operations.snapshot = replace(operations.snapshot, generation=2,
+            pending=replace(operations.snapshot.pending, expires_at=time.time() + 600))
+    assert Call(client).finish() == 'ok'
+    assert len(authority.calls) == 2 and len({row[-1] for row in authority.calls}) == 2
+    assert operations.effects == [('approve', 'pending-c', 2)]
+
+
+@pytest.mark.parametrize('venue', [{'deadline': .05}], indirect=True)
+@pytest.mark.parametrize('late_completion', [False, True])
+def test_deadline_uncertain_cancellation(venue: Any, late_completion: Any) -> None:
+    helper, authority, operations, client, new = venue
+    authority.mode, authority.cancel_fails = 'delay', True
+    Call(client).finish('expired')
+    eventually(lambda: bool(authority.cancels))
+    # Drain the cancellation error via another bus request before checking sealing.
+    Call(new()).finish('busy')
+    assert len(authority.calls) == 1 and len(authority.waiting) == 1
+    assert helper.inflight is not None and helper.cancelled and not operations.effects
+    if late_completion:
+        authority.grant()
+        eventually(lambda: helper.inflight is None)
+        assert not operations.effects and operations.snapshot.generation == 1
+        authority.mode, authority.cancel_fails = 'grant', False
+        assert Call(client).finish() == 'ok'
+        assert len(authority.calls) == 2 and len({row[-1] for row in authority.calls}) == 2
+        assert operations.effects == [('approve', 'pending-c', 1)]
