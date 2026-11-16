@@ -157,16 +157,6 @@ provision_release_daemon() {
   sudo "$python" -m runtime.remote_access.installer provision \
     --connector-config "$M1_BUILD/connector.json" --sidecar-config "$M1_BUILD/sidecar.json" \
     --policy-file "$M1_BUILD/policy.json" --release-user "$(id -un)" --data-home "$release_home"
-  # TASK-16570 temporary observation only: never print credential contents.
-  echo 'M1 credential metadata: provisioning input, then installed LoadCredential source'
-  sudo stat -c '%U %G %a' "$release_home/daemon.token" /etc/happyranch/daemon.token
-  if command -v getfacl >/dev/null; then
-    sudo getfacl --absolute-names "$release_home/daemon.token" /etc/happyranch/daemon.token
-  fi
-  sudo systemd-run --unit=happyranch-m1-credential-metadata --wait --pipe --collect \
-    --property=User=happyranch --property=Group=happyranch \
-    --property=LoadCredential=daemon.token:/etc/happyranch/daemon.token \
-    /bin/sh -ec 'echo "M1 injected credential metadata"; stat -c "%U %G %a" "$CREDENTIALS_DIRECTORY/daemon.token"; if command -v getfacl >/dev/null; then getfacl --absolute-names "$CREDENTIALS_DIRECTORY/daemon.token"; fi'
 }
 release_fixture() {
   release_home="$HOME/.local/share/happyranch-m1-ci"
