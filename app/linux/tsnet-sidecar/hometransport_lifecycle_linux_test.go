@@ -397,7 +397,7 @@ func TestHomeProcessRestartAndIsolation(t *testing.T) {
 	first := launch(configs[0], fixture.up.Listener.Addr().String(), "127.0.0.2")
 	second := launch(configs[1], fixture.up.Listener.Addr().String(), "127.0.0.2")
 	a, b := read(first), read(second)
-	if a.Proxy == b.Proxy || a.Issuer == b.Issuer || !a.UsedEnrollment || !b.UsedEnrollment {
+	if a.Proxy == b.Proxy || a.Issuer == "" || a.Issuer == b.Issuer || !a.UsedEnrollment || !b.UsedEnrollment {
 		t.Fatal("simultaneous processes shared listener/issuer or missed enrollment")
 	}
 	finish(first)
@@ -494,7 +494,7 @@ func runHomeRestartChild(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	report, _ := json.Marshal(homeProcessReport{f.proxyURL(), homeFingerprint(leaf), resolved[0], len(credential) != 0})
+	report, _ := json.Marshal(homeProcessReport{f.proxyURL(), base64.StdEncoding.EncodeToString(leaf.AuthorityKeyId), resolved[0], len(credential) != 0})
 	if err := os.WriteFile(os.Getenv("HR_HOME_REPORT"), report, 0o600); err != nil {
 		t.Fatal(err)
 	}

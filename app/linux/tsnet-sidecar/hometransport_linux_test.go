@@ -311,6 +311,7 @@ func runHomeTransportProfile(t *testing.T, profile, path string) {
 		}
 	}
 	var keyHits, noiseAttempts, registrations, canaries atomic.Int32
+	var rotateLeaf atomic.Bool
 	noise := key.NewMachine()
 	machine := key.NewMachine()
 	advertised := noise.Public()
@@ -370,7 +371,7 @@ func runHomeTransportProfile(t *testing.T, profile, path string) {
 		if profile == "outer-forged" && keyHits.Load() > 0 {
 			return &forged, nil
 		}
-		if profile == "renewed-leaf" && keyHits.Load() > 0 {
+		if profile == "renewed-leaf" && (keyHits.Load() > 0 || rotateLeaf.Load()) {
 			return &renewed, nil
 		}
 		return &leaf, nil
@@ -453,7 +454,7 @@ func runHomeTransportProfile(t *testing.T, profile, path string) {
 	cancel()
 	if profile == "renewed-leaf" && derpErr == nil {
 		dc.Close()
-		keyHits.Store(1) // Switch the served leaf under the same admitted CA.
+		rotateLeaf.Store(true)
 		dc = derphttp.NewRegionClient(key.NewNode(), func(string, ...any) {}, netmon.NewStatic(), func() *tailcfg.DERPRegion { return region })
 		defer dc.Close()
 		ctx, cancel = context.WithTimeout(context.Background(), 3*time.Second)
