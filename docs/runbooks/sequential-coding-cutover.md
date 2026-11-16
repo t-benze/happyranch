@@ -39,6 +39,17 @@ grants no live operation or genuine execution acceptance. See the
 
 ## Install and setup sequence
 
+A2 source (2026-11-17) creates combined storage for positively fresh POST
+`/orgs` requests and registers the literal reviewed Coding v2 definition after
+storage/native/authority qualification. An exact existing definition writes zero;
+mismatch refuses. No settings/admission/roles/runs/tasks are allocated, so missing
+defaults remain Disabled and roles unset. Existing saved state stays exact.
+The explicit offline registration operator below remains available under its
+existing authority/backup rules and shares exact immutable-row selection.
+Existing-org storage installation remains separately owned until A4; a missing
+DB on startup never qualifies as fresh. These changes grant no live operating
+authority or genuine Coding execution acceptance.
+
 1. Obtain separate authority naming actual runtime/org/source and cooperative
    maintenance window. Preserve original owners, settings/save keys, unknown
    effects, backups and native/job/preparation exclusions. Deployment, stop/restart,

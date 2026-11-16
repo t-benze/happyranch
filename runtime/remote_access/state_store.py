@@ -613,6 +613,16 @@ class AtomicFileTrustStateStore:
 
     # ── TrustStateStore protocol ──────────────────────────────────────────
 
+    def snapshot(self) -> tuple[TrustState, int]:
+        """Read the validated state AND its anchored generation coherently.
+
+        This is not a transaction: no publication, recovery or generation bump.
+        The shared file lock is released before any IPC or transport callback.
+        """
+        with self._lock_file(shared=True):
+            state = self._load_locked()
+            return state, self.anchored_generation() or 0
+
     def load(self) -> TrustState:
         """Validate a stable snapshot+anchor pair under the shared lock.
 

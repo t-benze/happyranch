@@ -3,6 +3,14 @@
 > Status: current source contract; U9a, inert U9b setup and atomic U9b obligations 2+3+4 delivered. TASK-15624 mounts reviewed-v2 public fresh Coding selection together with unconditional old-fresh refusal. Separate installation/loaded identity/admission/native acceptance remain open.
 > Current Source: docs/agent-guides/contracts/reusable-workflows.md; docs/runbooks/sequential-coding-cutover.md
 
+2026-11-17 A2 supersession: distinct positively fresh org creation installs
+J + Coding + sequential/ownership-2. Qualified literal Coding v2 catalog
+registration inserts definition bytes only; exact existing rows write zero and
+mismatch refuses. Missing defaults stay Disabled, roles unset, and saved
+settings/admission/history stay exact. The offline operator below retains its
+authority/backup/CAS rules and shares exact definition selection. Existing-org
+automatic storage bootstrap remains A4. See [current A2 contract](2026-11-14-automatic-workflow-setup.md#a2-fresh-creation-and-definition-only-catalog).
+
 THR-336 / ROOT TASK-15606. U9a maker TASK-15613; inert U9b setup maker
 TASK-15616 at base `9c481ce589ff3cdba65cfe22288eebaa309fb2df`. U9a base
 `fb1ab588d48ac5d9e7cfc25e7025dc2abaa3cbed` includes U8b PR1442. Plan rev3

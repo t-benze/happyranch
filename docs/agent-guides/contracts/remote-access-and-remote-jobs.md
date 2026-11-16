@@ -1128,8 +1128,9 @@ unfinished ceremonies still burn. Standalone verification:
 These tests use real temporary Unix sockets, synthetic protected state and
 controlled upstream handles. The WS attribution case supplies a synthetic
 permitted template to reach registration, separately from the shipped policy's
-deny gate. Native WS protocol behavior, live Headscale, helper binding,
-installation and service recovery remain separate acceptance work.
+deny gate. Native WS protocol behavior, live Headscale,
+installation and service recovery remain separate acceptance work. The helper
+binding is covered in the slice 2b-2 section below.
 
 ## Fixed Linux helper source (THR-327 slice 3a)
 
@@ -1147,8 +1148,8 @@ The helper captures caller/UID, target, ownership and snapshot generation before
 authorization, then revalidates after it. The 120-second deadline cancels an
 outstanding polkit check; uncertain cancellation seals further mutations until
 cancellation is acknowledged or that check's terminal reply arrives. A terminal
-reply releases the dialog slot even if subsequent deadline/target expiry refuses
-the mutation; a late reply never authorizes an expired mutation. One dialog
+reply releases the dialog slot even if the authorization deadline or pending-request
+expiry refuses the mutation; a late reply never authorizes an expired request. One dialog
 is allowed globally. Per-unique-name cursors disappear on disconnect. Status
 contains only bounded public summaries. Error/log categories are closed.
 IssueInvite and all install/lifecycle/R3 methods are absent, so invite issuance's
@@ -1161,9 +1162,40 @@ calling the operation. A ready/commit handshake keeps the connector lock held
 while root rechecks the live caller UID and deadline. After its final potentially
 blocking status revalidation, the handler checks the monotonic deadline again
 immediately before the operation, still under that lock.
-The real binding to slice 2 is a serial integration leg
-after both slices merge; no current connector listener installs this handler.
-It must preserve generation/ownership/expiry checks, transactional approval and
-revocation stream closure. Fixed production control path:
+Slice 2b-2 binds this interface in the Linux system HRID supervisor to its
+existing serving PinnedPairingManager, AtomicFileTrustStateStore and attributed
+registry. It does not construct a second ceremony owner for Status/NextDevice or
+diagnostics. The supervisor starts/stops a service-owned 0600 private Unix socket
+inside the service-owned 0700 runtime directory; existing entries/aliases refuse,
+and cleanup removes only its own socket inode. Kernel UID 0 is checked before
+parsing. No new network listener or app-selected configuration is introduced.
+The release UID comes from the existing fixed root-owned release record through
+the verifier's no-follow bounded reader/validator, and the helper independently
+compares its own protected UID. Provisioning/activation remain slice 3b.
+
+Snapshot reads validate state plus anchored generation under a shared file lock,
+without publishing or recovering ceremony state. The helper projection excludes
+legacy unpinned rows (including historical stores with more than 32 DIY devices);
+32 managed summaries and the 32768-byte frame remain hard request bounds. An
+oversized projection refuses the control request, never truncates/rejects the
+underlying legacy store. Labels never reconstruct authority: mutations reload
+the real pending generation and exact control-plane/StableID tuple. Snapshot and
+pending generations remain distinct, and None/False core results are refusals.
+
+The live manager RLock spans ready/commit and final revalidation, sharing local
+serialization with redeem/complete/invite. Each actual mutation also compares
+the expected anchored generation inside its exclusive file transaction, so a
+cross-process writer after final revalidation refuses. The file flock is never
+held across IPC or transport-close callbacks. Revoke maps the actual device ID,
+persists its deny before closing only that device's streams, and retains
+RevocationIncomplete as an unavailable result and failed control phase. The
+helper and control listener distinguish pending-request expiry from paired-credential
+expiry: expired grants remain listed and revocable, including their existing HTTP,
+SSE and attributed WS streams. Fresh polkit, captured identity/ownership, the
+authorization deadline and actual-admission anchored CAS still apply to revocation.
+ApprovePending and RejectPending both refuse expired pending requests.
+The serving loop retains incomplete-cleanup reporting/reconciliation without
+terminating other devices. Expired pending authority remains visibly failed and
+cannot be approved; read-only observations never burn it. Fixed production control path:
 `/run/happyranch-connector/control.sock`; no credential is returned by this
-control protocol. Native dialogs and the real operation binding remain unproven.
+control protocol. Native dialogs and installed service/package activation remain unproven.

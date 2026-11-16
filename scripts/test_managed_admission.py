@@ -76,7 +76,7 @@ def policy_now():
 
 
 @contextmanager
-def running(monkeypatch, *, control="protected-control", state_path=None):
+def running(monkeypatch, *, control="protected-control", state_path=None, helper=False):
     with tempfile.TemporaryDirectory(dir="/tmp", prefix="hr-admit-") as directory:
         root = Path(directory)
         path = root / "ingress.sock"
@@ -86,10 +86,19 @@ def running(monkeypatch, *, control="protected-control", state_path=None):
         monkeypatch.delenv("CREDENTIALS_DIRECTORY", raising=False)
         monkeypatch.setattr(managed, "INGRESS_SOCKET", path)
         monkeypatch.setattr(managed.pwd, "getpwnam", lambda name: SimpleNamespace(pw_uid=os.geteuid()))
+        if helper:
+            from runtime.remote_access import helper_control, release_verifier
+            monkeypatch.setattr(helper_control, "CONTROL_SOCKET", str(root / "control.sock"))
+            # Protected-record observation only; no live root record or verifier.
+            monkeypatch.setattr(release_verifier, "_read", lambda *a, **kw: json.dumps({
+                "user": "synthetic", "uid": os.getuid(), "data_home": "/opt/synthetic-release",
+                "unit": release_verifier.UNIT, "fragment_path": release_verifier.FRAGMENT,
+            }).encode())
         config = ConnectorConfig(
             tenant_id="tenant", home_id="home", connector_id="connector", daemon_port=12345,
             daemon_token_path=str(token), policy_path="synthetic-unused",
             state_path=str(state_path or root / "trust.json"),
+            system=helper,
             managed=managed.ManagedProviderConfig(profile=managed.LINUX_IDENTITY_PROFILE,
                                                    control_plane_id=control),
         )
