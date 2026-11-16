@@ -85,7 +85,7 @@ class HomeIsolationTests(unittest.TestCase):
             with PrivateReleaseRequests("example").directory():
                 self.fail("symlink daemon home admitted")
 
-    def test_venue_refuses_both_persistent_homes_before_open_and_admits_disposable(self) -> None:
+    def test_venue_refuses_persistent_homes_before_open_and_admits_disposable(self) -> None:
         # HOME and the selected daemon home are deliberately not the passwd home.
         os.environ["HOME"] = str(self.work / "private-home")
         org = self.selected / "runtime/orgs/example"
@@ -98,19 +98,28 @@ class HomeIsolationTests(unittest.TestCase):
         venue.write_marker(observation)
         self.assertEqual(venue.check_venue_start(org_slug="example", org_root=org, db_path=db), observation)
 
-        for name in (".happyranch", ".happyranch-release"):
+        os.environ["XDG_DATA_HOME"] = str(self.account / "custom-data")
+        for name in (".happyranch", ".happyranch-release", ".local/share/happyranch",
+                     "custom-data/happyranch"):
             live = self.account / name
-            live.mkdir(exist_ok=True)
-            alias = self.work / (name + "-alias")
+            live.mkdir(parents=True, exist_ok=True)
+            alias = self.work / (name.replace("/", "-") + "-alias")
             alias.symlink_to(live, target_is_directory=True)
             for home, root in ((live, org), (live / "nested", org), (alias, org),
-                               (self.selected, live / "runtime/orgs/example")):
+                               (self.selected, live / "runtime/orgs/example"),
+                               (self.selected, alias / "runtime/orgs/example")):
                 with self.subTest(live=name, home=home, org=root):
                     os.environ["HAPPYRANCH_DAEMON_HOME"] = str(home)
                     with patch.object(venue.os, "open", side_effect=AssertionError("live home opened")):
                         with self.assertRaises(venue.SequentialVenueUnavailable) as raised:
                             venue.check_venue_start(org_slug="example", org_root=root, db_path=db)
                     self.assertEqual(raised.exception.code, "sequential_venue_live_home")
+
+        for value in ("", "relative"):
+            os.environ["XDG_DATA_HOME"] = value
+            os.environ["HAPPYRANCH_DAEMON_HOME"] = str(self.selected)
+            self.assertEqual(venue.check_venue_start(org_slug="example", org_root=org, db_path=db),
+                             observation)
 
         # A non-live alias keeps its original env-absent classification.
         alias = self.work / "disposable-alias"

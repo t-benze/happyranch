@@ -20,11 +20,17 @@ class SequentialVenueUnavailable(ValueError):
         super().__init__(code)
 
 
-def live_daemon_home() -> tuple[Path, Path]:
-    """Persistent account homes, independent of the venue's environment."""
+def live_daemon_home() -> tuple[Path, ...]:
+    """Persistent account homes; the process XDG value only adds refusals."""
     account = Path(pwd.getpwuid(os.getuid()).pw_dir)
-    return (Path(os.path.realpath(account / '.happyranch')),
-            Path(os.path.realpath(account / '.happyranch-release')))
+    homes = [account / '.happyranch', account / '.happyranch-release',
+             account / '.local/share/happyranch']
+    # Mirrors packaging/linux/desktop/happyranch_window.py:desktop_home without
+    # importing the GTK packaging boundary or consulting the user manager.
+    xdg = Path(os.environ.get('XDG_DATA_HOME', ''))
+    if xdg.is_absolute():
+        homes.append(xdg / 'happyranch')
+    return tuple(Path(os.path.realpath(home)) for home in homes)
 
 
 def _inside(path: Path, parent: Path) -> bool:

@@ -218,7 +218,7 @@ try:
     check('private D-Bus has no systemd user manager')
     result['stage'] = 'app-launch'
     app = start(command, 'app', env)
-    home = private / 'home/.happyranch-release'
+    home = private / 'data/happyranch'
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     daemon = {}
 

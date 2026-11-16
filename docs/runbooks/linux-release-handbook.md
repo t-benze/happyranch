@@ -107,23 +107,24 @@ existing drift refusal, not an automatic upgrade procedure. Source publication
 performs no live unit action. Sidecar on-demand refresh remains the five-minute
 periodic cadence in v1.
 
-Managed remote access also enforces the cross-config port contract before
-provisioning publishes files or install starts services: sidecar `ConnectorAddr`
-must be exactly `127.0.0.1:<managed.bind_port>`, and ingress must differ from
-`daemon_port`, permanent DEV 8765 and all excluded daemon ports. Deb staging
-writes matching sorted unique connector `excluded_daemon_ports` and sidecar
-`ExcludedDaemonPorts` containing 8765 and the configured daemon port (8766 for
-RELEASE), preserving any extra operator exclusions. List entries must be
-integers in 1..65535. Install and check-drift reject missing or inconsistent
-staged lists or addresses. Older source configs may omit the lists; the shared
-Go sidecar retains its previous absent-list behavior for Mac configs. See the
-Desktop package host runbook above for inputs and operator recovery.
+Managed remote access resolves the running release daemon through the root
+verifier and its provisioned data-home record. There is no fixed release port.
+The verifier reads `daemon.port`, excludes DEV 8765 and configured exclusions,
+and proves the packaged unit's MainPID owns the listener and the connected
+socket before the connector sends a bearer/request. Sidecar `ConnectorAddr`
+remains exactly `127.0.0.1:<managed.bind_port>`; staged connector and sidecar
+exclusion lists retain 8765 and operator exclusions. For a custom XDG home,
+provision the connector with `--data-home` pointing to that same absolute
+`$XDG_DATA_HOME/happyranch`: its default is the passwd account's
+`.local/share/happyranch`, and it does not discover the user manager's XDG value.
+See the [managed remote-access runbook](../../../deploy/remote-access/RUNBOOK.md).
 
 Inside a runtime session (nonempty `HAPPYRANCH_RUNTIME_SESSION_ID`), the packaged
 `bin/happyranch` CLI refuses an unset or empty `HAPPYRANCH_DAEMON_HOME`, exits
 nonzero and names that variable in one stderr line. Outside a session its
 behavior is unchanged. The desktop child sets the home explicitly; the packaged
-release user unit sets it to `~/.happyranch-release`. Executors and jobs
+release user unit resolves it to `$XDG_DATA_HOME/happyranch` when the manager
+has an absolute XDG value, otherwise `~/.local/share/happyranch`. Executors and jobs
 preserve that inherited home. This catches partial environment scrubs only:
 same-UID processes that clear both variables (for example `env -i`) are not
 detected. The daemon launcher is unchanged.
@@ -138,12 +139,15 @@ no-overwrite/no-unlink custody. With no home override the root is still
 daemon home (`<daemon-home>/canonical-skills`); explicit store/settings roots
 retain precedence.
 
-The disposable sequential-venue fence protects both persistent account homes,
-`<passwd-home>/.happyranch` and `<passwd-home>/.happyranch-release`, using their
-realpaths independently of `HOME` and `HAPPYRANCH_DAEMON_HOME`. A candidate home
-or org root inside either receives `sequential_venue_live_home` before any
-file open, including live aliases. A separate disposable home remains eligible
-under the existing marker and identity checks.
+The disposable sequential-venue fence retains the realpaths of
+`<passwd-home>/.happyranch` and `<passwd-home>/.happyranch-release`, and adds
+`<passwd-home>/.local/share/happyranch`. An absolute `XDG_DATA_HOME` in the venue
+process adds `$XDG_DATA_HOME/happyranch`; an absent, empty or relative value
+removes none of the account exclusions. Candidate home or org-root containment,
+including aliases, receives `sequential_venue_live_home` before any file open.
+The fence does not query the user manager or read installation records. A custom
+XDG value present only in the user manager is not detected. A separate disposable
+home remains eligible under the existing marker and identity checks.
 
 Focused native home-isolation checks use temporary homes and synthetic request
 identities, with no daemon, installation or retired Python-unit selection:
@@ -193,14 +197,18 @@ which continues to run bundled CPython 3.12.10.
 /usr/bin/python3 -B packaging/linux/desktop/test_happyranch_window.py -v
 ```
 
-Default runtime home is `~/.happyranch-release`, shared with the packaged
-`happyranch-daemon.service`, with `desktop.lock` in that home. Inherited
-`HAPPYRANCH_DAEMON_HOME` and `XDG_DATA_HOME` do not select the desktop home.
+The release home is `$XDG_DATA_HOME/happyranch` for an absolute XDG value,
+otherwise `~/.local/share/happyranch`, with `desktop.lock` in that home.
+Service mode selects XDG from the user manager, including when it differs from
+the window's environment. Without a manager, the child fallback uses the
+window's XDG value. Inherited `HAPPYRANCH_DAEMON_HOME` does not select the home.
+An existing `~/.happyranch-release` is left untouched and unused; no data is
+moved, copied or deleted.
 The development daemon (`~/.happyranch`, port 8765) is never contacted or
 signaled; selecting its home explicitly is refused before taking a lock.
 `--daemon-home` remains useful for an isolated smoke run only when no user
 manager is available; service mode refuses a different home because the
-packaged unit fixes its runtime home.
+packaged unit resolves its own runtime home.
 
 Opening the window first checks for a user manager. A degraded manager is
 available even though `is-system-running` exits 1. When available, the window
@@ -211,20 +219,38 @@ service mode. The web view attaches only when all observations agree:
 - The loaded `FragmentPath` is exactly
   `/usr/lib/systemd/user/happyranch-daemon.service`, and `DropInPaths` is empty.
 - The release home's `daemon.pid` equals the unit's positive `MainPID`, and
-  `daemon.port` equals 8766.
-- The listener for `127.0.0.1:8766` belongs to that MainPID: matching LISTEN
+  `daemon.port` is an integer in 1..65535 other than 8765.
+- The listener for `127.0.0.1:<port>` read from `daemon.port` belongs to that MainPID: matching LISTEN
   inodes from `/proc/net/tcp` and relevant wildcard/mapped `/proc/net/tcp6`
   entries must appear in `/proc/<MainPID>/fd` socket links.
-- `GET http://127.0.0.1:8766/api/v1/health` returns HTTP 200 and `status: ok`.
+- `GET http://127.0.0.1:<port>/api/v1/health` returns HTTP 200 and `status: ok`.
   Probes bypass inherited HTTP proxies. Unit, markers and listener ownership
   are checked again after the response before releasing the web URL.
+
+`happyranch-app --print-port` uses this same ownership/health proof without
+starting, stopping or enabling a service, acquiring a lock, or importing GTK.
+It prints only the verified port on success. Missing manager, marker, unit,
+listener or health evidence produces a clear stderr message and nonzero exit;
+it never falls back to a fixed port. For SSH browser access, obtain the port
+on the remote release host, then forward it from your local machine:
+
+```bash
+# On the release host:
+happyranch-app --print-port
+# Locally, replace <port> with that verified value:
+ssh -L <local>:127.0.0.1:<port> <user>@<release-host>
+```
+
+Open `http://127.0.0.1:<local>/` locally. Re-read the port after a daemon restart.
 
 Missing or unreadable evidence refuses attachment. These are sampled
 same-user observations, not an atomic fence against later process/unit changes.
 The checks detect overrides; they do not protect user-owned configuration from
 other processes of the same user.
-Existing PID and port markers must decode as UTF-8 positive decimal integers
-(port at most 65535). Invalid markers refuse with a plain message before any
+Existing PID and port markers must be current-user-owned regular files of at
+most 64 bytes, with one link, opened without following a final symlink and
+rechecked for changes. They must decode as UTF-8 positive decimal integers
+(port at most 65535, excluding 8765). Invalid markers refuse with a plain message before any
 start, health probe or stop; their bytes are preserved for the user to review.
 After a successful admitted start, missing, empty, malformed or mismatched
 markers are pending publication within the existing 60-second startup deadline:
@@ -258,7 +284,7 @@ migration or cleanup of any other user unit.
 
 Service failures remain in the window with a plain diagnostic:
 
-- Foreign listener: **Port 8766 is used by another program**. No attachment,
+- Foreign listener: **Port <port> is used by another program**. No attachment,
   start command or process signal follows a pre-start refusal.
 - Before start, a live release-home `daemon.pid` different from MainPID: stop
   the CLI-started daemon yourself before opening the window. The app never signals it.
@@ -421,7 +447,7 @@ It validates `/usr/share/applications/happyranch.desktop` and executes its
 installed Exec command as the normal user, with Xvfb, a window manager, private
 D-Bus and isolated HOME/XDG directories. It first requires that the private bus
 has no systemd user manager, then exercises the existing child-daemon fallback
-with the release home at the isolated `HOME/.happyranch-release`. This is not
+with the release home at the isolated `$XDG_DATA_HOME/happyranch`. This is not
 service-mode acceptance: it neither starts nor enables a user service. It
 discovers the port from the app home's `daemon.pid`/`daemon.port`, verifies the
 daemon is the app's child, checks HTTP200/status `ok` at `/api/v1/health`, and
@@ -492,23 +518,33 @@ uses those packaged executables and retains separate config/state ownership. See
 No maintainer scripts are needed. Ubuntu/Debian's `desktop-file-utils` and
 `hicolor-icon-theme` dpkg triggers refresh their caches when installed. Package
 removal deletes only package-owned files; it does not signal a running app or
-daemon. Quit the desktop app before upgrading/removing it. The default user
-home `~/.happyranch-release` is preserved, including on purge. Earlier
-`~/.local/share/happyranch` / `$XDG_DATA_HOME/happyranch` data is also left in
-place. The package never owns user data or `~/.happyranch`.
+daemon. Quit the desktop app before upgrading/removing it. The release data in
+`~/.local/share/happyranch` / `$XDG_DATA_HOME/happyranch` is preserved, including
+on purge. Any legacy `~/.happyranch-release` remains untouched and unused. The
+package never owns user data or `~/.happyranch`.
 
 ### Packaged release user unit (slice B1)
 
 `build-deb.sh` copies `packaging/linux/systemd/happyranch-daemon.service`
 byte for byte into `/usr/lib/systemd/user/happyranch-daemon.service`, with
-root:root ownership and mode 0644 in the package. It launches
-`/opt/happyranch-desktop/bin/happyranch-daemon` with home
-`~/.happyranch-release`, port 8766 and bind host `127.0.0.1`. The bundled bin
-directory and fixed PATH are explicit. The optional
-`EnvironmentFile=-%h/.config/happyranch/daemon.env` supplies user environment
-extras and can override `Environment=` assignments. `%h` expands to the user
-manager's home in both directives; see [systemd.unit specifiers](https://www.freedesktop.org/software/systemd/man/latest/systemd.unit.html#Specifiers)
-and [systemd.exec environment settings](https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html#Environment).
+root:root ownership and mode 0644 in the package. Its ExecStart runs the
+system Python desktop module with `--run-service --user-home %h`. This uses the
+same `desktop_home` resolver as the window and port query, then `exec`s
+`/opt/happyranch-desktop/bin/happyranch-daemon`, preserving MainPID. This small
+launcher is needed because the home rule requires an absolute-XDG test and a
+fallback; no shell expansion or drop-in is required. The home is
+`$XDG_DATA_HOME/happyranch` when the user manager's XDG value is absolute,
+otherwise `%h/.local/share/happyranch`. Bind host remains `127.0.0.1`, and the
+requested port is `0`. The existing daemon `_bind_port` binds that request and
+returns `getsockname()[1]`; startup publishes the actual bound port to
+`<daemon-home>/daemon.port`, then its PID to `daemon.pid`, and serves on the same
+socket. A new free port is selected at each start.
+
+The bundled bin directory and fixed PATH remain explicit. The optional
+`EnvironmentFile=-%h/.config/happyranch/daemon.env` is restricted by desktop
+validation to PATH additions. The service launcher sets the home, port and
+loopback host before exec. The loaded unit must still have exactly
+`FragmentPath=/usr/lib/systemd/user/happyranch-daemon.service` and no drop-ins.
 
 Installation does not enable or start the unit. The desktop window starts it,
 validates environment-file overrides and handles the old hand-written unit as

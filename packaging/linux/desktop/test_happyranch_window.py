@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import contextlib
+import io
+import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import os
 from pathlib import Path
@@ -46,17 +48,45 @@ class LifecycleTests(unittest.TestCase):
         (self.home / "daemon.pid").write_text(str(pid))
         (self.home / "daemon.port").write_text(port)
 
-    def test_home_uses_release_home_ignoring_inherited_settings(self) -> None:
+    def test_home_uses_absolute_xdg_and_ignores_daemon_override(self) -> None:
         with patch.dict(os.environ, {"XDG_DATA_HOME": str(self.home),
                                      "HAPPYRANCH_DAEMON_HOME": "/external"}):
-            self.assertEqual(window.desktop_home(), Path.home() / ".happyranch-release")
+            self.assertEqual(window.desktop_home(), self.home / "happyranch")
         for value in ("", "relative"):
             with self.subTest(value=value), patch.dict(os.environ, {"XDG_DATA_HOME": value}):
-                self.assertEqual(window.desktop_home(), Path.home() / ".happyranch-release")
+                self.assertEqual(window.desktop_home(), Path.home() / ".local/share/happyranch")
         with patch.object(Path, "home", return_value=self.home):
             with self.assertRaisesRegex(window.LaunchError, "development daemon home"):
                 window.acquire_lock(self.home / ".happyranch")
             self.assertFalse((self.home / ".happyranch").exists())
+
+    def test_service_entry_resolves_home_and_execs_with_same_pid(self) -> None:
+        prefix = self.home / "payload"
+        (prefix / "bin").mkdir(parents=True)
+        daemon = prefix / "bin/happyranch-daemon"
+        daemon.write_text("#!/usr/bin/python3\nimport json, os\n"
+                          "print(json.dumps([os.getpid(), {k: os.environ[k] for k in "
+                          "('HAPPYRANCH_DAEMON_HOME', 'HAPPYRANCH_DAEMON_PORT', "
+                          "'HAPPYRANCH_DAEMON_BIND_HOST')}]))\n")
+        daemon.chmod(0o755)
+        for value in (None, "", "relative", str(self.home / "data space")):
+            with self.subTest(xdg=value):
+                env = dict(os.environ, HOME=str(self.home / "untrusted-home"),
+                           HAPPYRANCH_DAEMON_HOME="/ignored", HAPPYRANCH_DAEMON_PORT="8765")
+                env.pop("XDG_DATA_HOME", None)
+                if value is not None:
+                    env["XDG_DATA_HOME"] = value
+                child = subprocess.Popen([sys.executable, "-I", window.__file__, "--prefix", str(prefix),
+                                          "--run-service", "--user-home", str(self.home)],
+                                         env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                stdout, stderr = child.communicate(timeout=3)
+                self.assertEqual(child.returncode, 0, stderr)
+                pid, actual = json.loads(stdout)
+                self.assertEqual(pid, child.pid, "launcher must exec to preserve unit MainPID")
+                expected = Path(value) if value and value.startswith("/") else self.home / ".local/share"
+                self.assertEqual(actual, {"HAPPYRANCH_DAEMON_HOME": str(expected / "happyranch"),
+                                          "HAPPYRANCH_DAEMON_PORT": "0",
+                                          "HAPPYRANCH_DAEMON_BIND_HOST": "127.0.0.1"})
 
     def test_lock_excludes_second_process_and_reopens_same_inode(self) -> None:
         lock = window.acquire_lock(self.home)
@@ -345,8 +375,8 @@ class ServiceTests(unittest.TestCase):
         scratch = tempfile.TemporaryDirectory()
         self.addCleanup(scratch.cleanup)
         self.user_home = Path(scratch.name)
-        self.home = self.user_home / ".happyranch-release"
-        self.home.mkdir()
+        self.home = self.user_home / ".local/share/happyranch"
+        self.home.mkdir(parents=True)
         self.proc = self.user_home / "proc"
         (self.proc / "net").mkdir(parents=True)
         (self.proc / "42/fd").mkdir(parents=True)
@@ -367,12 +397,12 @@ class ServiceTests(unittest.TestCase):
                                           proc=self.proc, runner=self.run_command,
                                           health=self.health)
 
-    def publish(self, pid: str = "42", port: str = "8766") -> None:
+    def publish(self, pid: str = "42", port: str = "43127") -> None:
         (self.home / "daemon.pid").write_text(pid)
         (self.home / "daemon.port").write_text(port)
 
     def net(self, *, inode: str = "555", address: str = "0100007F",
-            protocol: str = "tcp", state: str = "0A", port: str = "223E") -> None:
+            protocol: str = "tcp", state: str = "0A", port: str = "A877") -> None:
         (self.proc / "net" / protocol).write_text(
             "header\n" + f"0: {address}:{port} 00000000:0000 {state} 0:0 00:0 0 1000 0 {inode} 1\n")
 
@@ -613,7 +643,7 @@ class ServiceTests(unittest.TestCase):
                     self.publish(pid="43")
             return result
         self.service.runner = restart
-        self.assertEqual(self.service.restart(threading.Event(), timeout=1), "http://127.0.0.1:8766/")
+        self.assertEqual(self.service.restart(threading.Event(), timeout=1), "http://127.0.0.1:43127/")
         self.assertTrue(self.service.attached)
         self.assertTrue(self.service.shutdown_pending)
         self.assertGreaterEqual(polls, 3)  # Includes post-health state observation.
@@ -796,7 +826,7 @@ class ServiceTests(unittest.TestCase):
                             pump(lambda: any(w.label == "Update installed - restart HappyRanch" for w in current()))
                             click("Restart HappyRanch")
                             pump(lambda: len(urls) == 2 and switch() is not None)
-                            self.assertEqual(urls, ["http://127.0.0.1:8766/"] * 2)
+                            self.assertEqual(urls, ["http://127.0.0.1:43127/"] * 2)
                             self.assertIn("daemon-reload", self.verbs())
                             self.assertIn("restart", self.verbs())
                         elif scenario == "on":
@@ -902,6 +932,96 @@ class ServiceTests(unittest.TestCase):
                 self.assertNotIn("disable", self.verbs())
                 self.assertFalse(self.service.desktop_config.exists())
 
+    def test_random_port_and_print_port_share_read_only_ownership_proof(self) -> None:
+        for port in (43127, 53219):
+            with self.subTest(port=port):
+                self.publish(port=str(port))
+                self.net(port=f"{port:04X}")
+                self.assertEqual(self.start(), f"http://127.0.0.1:{port}/")
+                self.calls.clear()
+                self.probes.clear()
+                out, err = io.StringIO(), io.StringIO()
+                with patch.object(sys, "argv", ["happyranch-app", "--prefix", "/unused", "--print-port"]), \
+                        patch.object(window, "ServiceMode", return_value=self.service), \
+                        contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                    self.assertEqual(window.main(), 0)
+                self.assertEqual(out.getvalue(), f"{port}\n")
+                self.assertEqual(err.getvalue(), "")
+                self.assertEqual(self.probes, [(port, 0.5)])
+                self.assertFalse({"start", "stop", "enable", "restart"} & set(self.verbs()))
+
+    def test_print_port_refuses_unproven_daemon_without_lifecycle_effects(self) -> None:
+        for case in ("dev", "missing", "symlink", "hardlink", "foreign", "health", "changed", "unit", "inactive", "manager"):
+            with self.subTest(case=case):
+                (self.home / "daemon.port").unlink(missing_ok=True)
+                self.publish()
+                self.net()
+                self.healthy = True
+                self.state.update(ActiveState="active", DropInPaths="")
+                self.manager = (0, "running\n")
+                self.service.health = self.health
+                if case == "dev":
+                    self.publish(port="8765")
+                    self.net(port="223D")
+                elif case == "missing":
+                    (self.home / "daemon.port").unlink()
+                elif case in {"symlink", "hardlink"}:
+                    target = self.user_home / (case + ".port")
+                    target.write_text("43127")
+                    marker = self.home / "daemon.port"
+                    marker.unlink()
+                    if case == "symlink":
+                        marker.symlink_to(target)
+                    else:
+                        os.link(target, marker)
+                elif case == "foreign":
+                    self.net(inode="999")
+                elif case == "health":
+                    self.healthy = False
+                elif case == "changed":
+                    def changed(_port: int, _timeout: float) -> bool:
+                        self.publish(port="53219")
+                        return True
+                    self.service.health = changed
+                elif case == "unit":
+                    self.state["DropInPaths"] = "/override.conf"
+                elif case == "inactive":
+                    self.state["ActiveState"] = "inactive"
+                elif case == "manager":
+                    self.manager = (1, "offline\n")
+                self.calls.clear()
+                self.probes.clear()
+                out, err = io.StringIO(), io.StringIO()
+                with patch.object(sys, "argv", ["happyranch-app", "--prefix", "/unused", "--daemon-home", str(self.home), "--print-port"]), \
+                        patch.object(window, "ServiceMode", return_value=self.service), \
+                        contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                    self.assertEqual(window.main(), 1)
+                self.assertEqual(out.getvalue(), "")
+                self.assertIn("happyranch-app:", err.getvalue())
+                self.assertFalse({"start", "stop", "enable", "restart"} & set(self.verbs()))
+                if case in {"dev", "missing", "symlink", "hardlink", "foreign", "unit", "inactive", "manager"}:
+                    self.assertEqual(self.probes, [])
+
+    def test_service_home_uses_manager_xdg_and_main_selects_it_before_gui(self) -> None:
+        for value in ("", "relative", str(self.user_home / "custom data"),
+                      str(self.user_home / "données 'quoted'\nline")):
+            with self.subTest(xdg=value):
+                escaped = value.replace("\\", "\\\\").replace("'", "\\'").replace("\n", "\\n")
+                self.environment = "XDG_DATA_HOME=$'" + escaped + "'\n"
+                expected = ((Path(value) if value.startswith("/") else self.user_home / ".local/share")
+                            / "happyranch")
+                expected.mkdir(parents=True, exist_ok=True)
+                self.service.home = expected
+                self.home = expected
+                self.publish()
+                self.assertEqual(self.start(), "http://127.0.0.1:43127/")
+                with patch.dict(os.environ, {"XDG_DATA_HOME": "/different"}), \
+                        patch.object(sys, "argv", ["happyranch-app", "--prefix", "/unused"]), \
+                        patch.object(window, "ServiceMode", return_value=self.service), \
+                        patch.object(window, "run_gui", return_value=0) as gui:
+                    self.assertEqual(window.main(), 0)
+                    self.assertEqual(gui.call_args.args[1], expected.resolve())
+
     def test_service_positive_and_stop_on_close(self) -> None:
         self.state["MainPID"] = "0"
         (self.home / "daemon.pid").unlink()
@@ -916,8 +1036,8 @@ class ServiceTests(unittest.TestCase):
                 self.net()
             return result
         self.service.runner = publish_on_start
-        self.assertEqual(self.start(), "http://127.0.0.1:8766/")
-        self.assertEqual(self.probes, [(8766, 0.5)])
+        self.assertEqual(self.start(), "http://127.0.0.1:43127/")
+        self.assertEqual(self.probes, [(43127, 0.5)])
         self.assertIn(["systemctl", "--user", "start", "happyranch-daemon"], self.calls)
         self.service.close(keep_running=True)
         self.assertNotIn("stop", self.verbs())
@@ -946,7 +1066,7 @@ class ServiceTests(unittest.TestCase):
         def publish_later() -> None:
             release.wait()
             # Match the real daemon's port-then-PID publication order.
-            (self.home / "daemon.port").write_text("8766")
+            (self.home / "daemon.port").write_text("43127")
             (self.home / "daemon.pid").write_text("42")
 
         def run_command(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess:
@@ -955,7 +1075,7 @@ class ServiceTests(unittest.TestCase):
                 self.state["MainPID"] = "42"
                 self.net()
                 if name == "daemon.pid":
-                    (self.home / "daemon.port").write_text("8766")
+                    (self.home / "daemon.port").write_text("43127")
                 else:
                     (self.home / "daemon.pid").write_text("42")
                 if raw is not None:
@@ -995,9 +1115,9 @@ class ServiceTests(unittest.TestCase):
                         url = self.service.start(threading.Event(), timeout=1)
                     except window.LaunchError as exc:
                         self.fail(f"Pending {name} refused before publication: {exc}")
-                    self.assertEqual(url, "http://127.0.0.1:8766/")
+                    self.assertEqual(url, "http://127.0.0.1:43127/")
                     self.assertGreaterEqual(polls[0], 2)
-                    self.assertEqual(self.probes, [(8766, 0.5)])
+                    self.assertEqual(self.probes, [(43127, 0.5)])
                     self.assertTrue(self.service.attached)
                     self.assertNotIn("stop", self.verbs())
                     self.service.close()
@@ -1037,7 +1157,7 @@ class ServiceTests(unittest.TestCase):
             with self.subTest(error=type(error).__name__), patch.object(self.service, "runner", side_effect=error):
                 self.assertIsNone(self.start())
         self.manager = 1, "degraded\n"
-        self.assertEqual(self.start(), "http://127.0.0.1:8766/")
+        self.assertEqual(self.start(), "http://127.0.0.1:43127/")
 
     def test_manager_pollution_names_only_and_inspection_failure(self) -> None:
         self.environment = "HAPPYRANCH_DAEMON_HOME=synthetic-private-value\nHAPPYRANCH_DEBUG=synthetic-secret\n"
@@ -1058,7 +1178,7 @@ class ServiceTests(unittest.TestCase):
             with self.subTest(value=value):
                 path = self.env_file("# optional tools\n; comment\nPATH=\"" + value + "\"\n")
                 before = path.read_bytes()
-                self.assertEqual(self.start(), "http://127.0.0.1:8766/")
+                self.assertEqual(self.start(), "http://127.0.0.1:43127/")
                 self.assertEqual(path.read_bytes(), before)
 
     def test_env_file_refuses_every_other_key_and_path_replacement(self) -> None:
@@ -1115,14 +1235,14 @@ class ServiceTests(unittest.TestCase):
                                   ("tcp6", "0000000000000000FFFF00000100007F")):
             with self.subTest(protocol=protocol, address=address):
                 self.net(inode="999", address=address, protocol=protocol)
-                with self.assertRaisesRegex(window.LaunchError, "Port 8766 is used by another program"):
+                with self.assertRaisesRegex(window.LaunchError, "Port 43127 is used by another program"):
                     self.start()
                 self.net(protocol=protocol, state="01")
         self.assertNotIn("start", self.verbs())
         self.assertEqual(self.probes, [])
 
     def test_markers_listener_health_and_post_health_recheck_all_required(self) -> None:
-        for pid, port in (("999", "8766"), ("42", "8765"), ("42", "bad")):
+        for pid, port in (("999", "43127"), ("42", "8765"), ("42", "bad")):
             with self.subTest(pid=pid, port=port):
                 self.publish(pid, port)
                 expected = "Invalid daemon.port" if port == "bad" else "ownership or health"
@@ -1171,7 +1291,7 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(self.verbs().count("stop"), 1)
         self.calls.clear()
         self.net(inode="999")
-        with self.assertRaisesRegex(window.LaunchError, "Port 8766"):
+        with self.assertRaisesRegex(window.LaunchError, "Port 43127"):
             self.service.start(cancel, timeout=0)
         self.assertNotIn("stop", self.verbs())
 
@@ -1321,7 +1441,7 @@ class ServiceTests(unittest.TestCase):
                 self.net(inode="999")
             return result
         self.service.runner = changed_on_start
-        with self.assertRaisesRegex(window.LaunchError, "Port 8766"):
+        with self.assertRaisesRegex(window.LaunchError, "Port 43127"):
             self.start()
         self.assertIn("start", self.verbs())
         self.assertEqual(self.probes, [])
@@ -1347,7 +1467,7 @@ class ServiceTests(unittest.TestCase):
                          [f"synthetic journal {i}" for i in range(5, 25)])
         self.assertIn(["journalctl", "--user", "-u", "happyranch-daemon", "-n", "20", "--no-pager"], self.calls)
         self.assertNotIn("start", self.verbs())
-        self.assertEqual(self.start(retry=True), "http://127.0.0.1:8766/")
+        self.assertEqual(self.start(retry=True), "http://127.0.0.1:43127/")
         self.assertLess(self.verbs().index("reset-failed"), self.verbs().index("start"))
 
     def test_command_failures_and_custom_home_refuse(self) -> None:
