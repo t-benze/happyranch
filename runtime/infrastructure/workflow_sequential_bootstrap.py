@@ -776,9 +776,14 @@ class BootstrapRehearsal:
                 raise BootstrapEvidenceError('workflow_setup_rehearsal_latched')
             self.started = True
             catalog = tuple(compiled.pin for compiled in preset_catalog())
+            temporary = Path(tempfile.gettempdir()).resolve(strict=True)
+            if (temporary.is_relative_to(self.attempt.runtime_root)
+                    or temporary.is_relative_to(self.attempt.home/'backups')
+                    or set(temporary.parts) & {'output', 'artifacts', 'task-attachments'}):
+                raise BootstrapEvidenceError('workflow_setup_rehearsal_location_unsafe')
             # Retain the actual scratch location before any fallible setup. No
             # TemporaryDirectory finalizer can delete unknown live handles.
-            self.root = Path(tempfile.mkdtemp(prefix='happyranch-workflow-rehearsal-'))
+            self.root = Path(tempfile.mkdtemp(prefix='happyranch-workflow-rehearsal-', dir=temporary))
             parent = _directory(self.root, self.descriptors)
             _private_directory(parent['fd'])
             info = os.fstat(parent['fd'])

@@ -380,6 +380,10 @@ hash/identity revalidation, <=8192 metadata entries, <=32 directory depth,
 <=1MiB per metadata file and <=16MiB aggregate metadata bound acquisition. These
 are rehearsal refusal boundaries, not increases to any runtime read limit.
 No workspaces, task outputs, caches, task attachments or live user home are copied.
+The configured temp directory is canonicalized before scratch creation; a location
+inside the original runtime or backup tree, or an output/artifact/attachment
+directory component, refuses before allocation. Aliased canonical temp roots
+still undergo the original literal no-follow directory traversal.
 
 The private installer uses the SAME original cumulative install allowance and
 physical ledger/deadline. Actual writable `OrgState.load` FIRST then NEXT runs on
@@ -405,8 +409,8 @@ Focused `--bootstrap-rehearsal[=CASE]` uses a genuine `_seed_skeleton(None)` plu
 native J/Pause/reviewer/ownership fixture. It observes same-image writable
 FIRST/NEXT and actual default 32M/A-B-C budgets; first/next native SQL exhaustion;
 real private install-integrity refusal; metadata alias/drift and changed verified
-backup; space/deadline refusal; partial constructor closure; original authority
-failure; and unknown private-close retention without replay. Source SQL/types/
+backup; space/deadline/unsafe-scratch-location refusal; partial constructor
+closure; original authority failure; and unknown private-close retention without replay. Source SQL/types/
 cells/rowids and main-file bytes stay exact, and no source phase advances to
 pre_commit. This is the commissioned standalone shell venue, not the retired
 Python unit or skipped general integration suite.

@@ -69,7 +69,7 @@ rehearsal_case = None
 if len(sys.argv) == 2 and sys.argv[1].startswith('--bootstrap-rehearsal='):
     rehearsal_case = sys.argv[1].split('=', 1)[1]
     assert rehearsal_case in ('none', 'first_budget', 'next_budget', 'install', 'metadata_alias',
-                             'metadata_changed', 'backup_changed', 'space', 'deadline', 'load_init', 'authority', 'close')
+                             'metadata_changed', 'backup_changed', 'space', 'scratch_location', 'deadline', 'load_init', 'authority', 'close')
     sys.argv[1:] = ['--bootstrap-rehearsal']
 
 startup_case = None
@@ -2169,6 +2169,7 @@ if sys.argv[1:] in ([], ['--bootstrap-rehearsal']):
     import shutil
     from runtime.infrastructure import workflow_sequential_bootstrap as bootstrap
     from runtime.infrastructure import workflow_schema as schema
+    from runtime.infrastructure.workflow_integrity import InstallIntegrityError
     from runtime.infrastructure.org_access_fence import OrgAccessFence
     from runtime.daemon.routes.orgs import _seed_skeleton
     from runtime.orchestrator.org_config import initialize_fresh_reviewer_agents
@@ -2178,7 +2179,7 @@ if sys.argv[1:] in ([], ['--bootstrap-rehearsal']):
     from runtime.workflows.authority import WorkflowAuthorityCoordinator, WorkflowAuthorityError
 
     rehearsal_cases = ('none', 'first_budget', 'next_budget', 'install', 'metadata_alias',
-                       'metadata_changed', 'backup_changed', 'space', 'deadline', 'load_init', 'authority', 'close')
+                       'metadata_changed', 'backup_changed', 'space', 'scratch_location', 'deadline', 'load_init', 'authority', 'close')
     for fault in rehearsal_cases:
         if rehearsal_case is not None and rehearsal_case != fault:
             continue
@@ -2211,6 +2212,7 @@ if sys.argv[1:] in ([], ['--bootstrap-rehearsal']):
                 load_calls, install_calls, budget_calls, injections, close_calls = [], [], [], [], []
                 current = [None]
                 authority_error = WorkflowAuthorityError('authority_pointer_not_ready')
+                construction_error = ValueError('synthetic private constructor refusal')
                 def current_inventory():
                     with closing(sqlite3.connect(path.as_uri()+'?mode=ro', uri=True)) as conn:
                         conn.execute('PRAGMA query_only=ON')
@@ -2224,7 +2226,7 @@ if sys.argv[1:] in ([], ['--bootstrap-rehearsal']):
                     install_calls.append(kwargs['expected_path'])
                     if fault == 'install':
                         injections.append(fault)
-                        # Real target integrity refusal on this native writer.
+                        # Real writer-source integrity refusal on this native writer.
                         conn.set_authorizer(lambda action, a, b, *_: sqlite3.SQLITE_DENY
                             if action == sqlite3.SQLITE_PRAGMA and a.lower() == 'integrity_check' else sqlite3.SQLITE_OK)
                     return actual_install(conn, **kwargs)
@@ -2259,7 +2261,7 @@ if sys.argv[1:] in ([], ['--bootstrap-rehearsal']):
                             if fault == 'load_init':
                                 injections.append(fault)
                                 faults.enter_context(patch.object(remote_job_schema,
-                                    'validate_identity_enrollment_schema_preflight', side_effect=ValueError('synthetic private constructor refusal')))
+                                    'validate_identity_enrollment_schema_preflight', side_effect=construction_error))
                             if fault == 'authority':
                                 injections.append(fault)
                                 faults.enter_context(patch.object(WorkflowAuthorityCoordinator,
@@ -2303,6 +2305,9 @@ if sys.argv[1:] in ([], ['--bootstrap-rehearsal']):
                         if fault == 'space':
                             injections.append(fault)
                             faults.enter_context(patch.object(bootstrap.os, 'fstatvfs', return_value=SimpleNamespace(f_bavail=0, f_frsize=4096)))
+                        if fault == 'scratch_location':
+                            injections.append(fault)
+                            faults.enter_context(patch.object(bootstrap.tempfile, 'tempdir', str(runtime)))
                         if fault == 'deadline':
                             injections.append(fault)
                             faults.enter_context(patch.object(bootstrap.time, 'monotonic', return_value=source.deadline-19))
@@ -2326,10 +2331,26 @@ if sys.argv[1:] in ([], ['--bootstrap-rehearsal']):
                                 assert str(error) == 'workflow_setup_rehearsal_input_changed', 'A4-R source metadata drift accepted'
                             elif fault == 'backup_changed':
                                 assert not install_calls and str(error) == 'workflow_setup_rehearsal_input_changed', 'A4-R unverified candidate installed'
+                            elif fault == 'metadata_alias':
+                                assert not install_calls and str(error) == 'workflow_setup_file_unsafe', 'A4-R copied aliased metadata'
+                            elif fault == 'install':
+                                assert not load_calls and isinstance(error, InstallIntegrityError) and error.stage == 'writer_source', 'A4-R wrong private integrity boundary'
                             elif fault == 'space':
                                 assert not install_calls and str(error) == 'workflow_setup_rehearsal_space_unavailable', 'A4-R ignored rehearsal headroom'
                             elif fault == 'deadline':
                                 assert not install_calls and rehearsal.root is None, 'A4-R used reserved COMMIT time for rehearsal'
+                            elif fault == 'scratch_location':
+                                assert not install_calls and rehearsal.root is None and str(error) == 'workflow_setup_rehearsal_location_unsafe', 'A4-R created scratch in production storage'
+                            elif fault == 'load_init':
+                                assert error is construction_error and len(rehearsal.attachments) == 1, 'A4-R lost private construction failure'
+                                owner = rehearsal.attachments[0]
+                                assert owner['load_db_closed'] and owner['db_construction_started'], 'A4-R private constructor did not positively close'
+                                try:
+                                    owner['load_db']._conn.execute('SELECT 1')
+                                except sqlite3.ProgrammingError:
+                                    pass
+                                else:
+                                    raise AssertionError('A4-R positive constructor close left usable native handle')
                             elif fault == 'authority':
                                 assert error is authority_error and not exhausted(error), 'A4-R replaced original authority refusal with size or generic failure'
                         # Successful and failed rehearsals are never replayed.
