@@ -24,6 +24,7 @@ from runtime.config import Settings
 from runtime.infrastructure.audit_logger import AuditLogger
 from runtime.infrastructure.database import Database
 from runtime.infrastructure.db.authority_v2_admission import authenticated_omitted_result
+from runtime.orchestrator.context_builder import refresh_session_instructions
 from runtime.orchestrator.executor_registry import build_executor, get_registry
 from runtime.models import (
     CompletionReport,
@@ -982,6 +983,12 @@ class Orchestrator:
                                 "worker_execution" if task.task_type == "subtask" else "unattributed"),
         )
 
+        with task_preparation_effects():
+            refresh_session_instructions(
+                workspace, self._settings, self._paths, selection_def,
+                slug=self._slug, provider=provider,
+            )
+
         # Issue #536: serialize the complete pre-spawn skill materialization
         # transaction under a process-local workspace lock so concurrent
         # task/thread/wake/dream/schedule callers targeting the same workspace
@@ -1144,7 +1151,7 @@ class Orchestrator:
                 f"to bootstrap it."
             )
 
-        # Workspace is initialized once at `happyranch init-agent` — not per session.
+        # Bootstrap remains explicit; the canonical prompt is refreshed each session.
         # Brief is injected here:
         brief = task.brief if task else ""
         # THR-032 Phase 2: build the per-task memory digest from the agent's

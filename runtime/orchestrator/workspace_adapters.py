@@ -3894,6 +3894,12 @@ def canonical_instruction_pair_ok(workspace: Path) -> bool:
 
 
 def write_canonical_instruction_pair(workspace: Path, content: str) -> None:
+    """Serialize instruction publication/compensation with other local writers."""
+    with _workspace_skills_transaction(workspace):
+        _write_canonical_instruction_pair(workspace, content)
+
+
+def _write_canonical_instruction_pair(workspace: Path, content: str) -> None:
     """Converge *workspace* on the canonical instruction pair (non-destructive).
 
     Preflight classifies both paths without following links. Every required

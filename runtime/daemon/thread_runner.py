@@ -19,6 +19,7 @@ from pathlib import Path
 from types import TracebackType
 from typing import Any, TypeVar
 
+from runtime.orchestrator.context_builder import refresh_session_instructions
 from runtime.config import (
     Settings,
     THREAD_REPLY_BREAKER_COOLDOWN_SECONDS,
@@ -1460,6 +1461,10 @@ async def _run_invocation_owned(
     def prepare() -> Any:
         move_owner.before_fifo()
         with move_owner.preparation_effects():
+            refresh_session_instructions(
+                workspace, settings, paths, agent_def,
+                slug=org_state.slug, provider=executor_name,
+            )
             skills_root = settings.project_root / "runtime" / "skills"
             expected_specs = materialize_workspace_skills(
                 workspace, settings,

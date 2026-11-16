@@ -29,6 +29,7 @@ from runtime.infrastructure.audit_logger import AuditLogger
 from runtime.identities.presentation import prompt_name_context
 from runtime.identities.registry import read_name_metadata
 from runtime.models import WorkHourStatus
+from runtime.orchestrator.context_builder import refresh_session_instructions
 from runtime.orchestrator._paths import OrgPaths
 from runtime.orchestrator.executor_registry import get_registry
 from runtime.orchestrator.host_supervisor import (
@@ -202,6 +203,10 @@ async def _run_wake(
     # and return BEFORE executor spawn (REVISE TASK-2829).
     try:
         with producer_preparation_effects(_move_owner):
+            refresh_session_instructions(
+                workspace, settings, paths, agent_def,
+                slug=org_state.slug, provider=_prov,
+            )
             skills_root = settings.project_root / "runtime" / "skills"
             expected_specs = materialize_workspace_skills(
                 workspace, settings,
