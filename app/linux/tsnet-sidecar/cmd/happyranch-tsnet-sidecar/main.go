@@ -68,6 +68,22 @@ func run(ctx context.Context, args []string) int {
 	return serve(ctx, svc)
 }
 
+// A string pointer distinguishes JSON null from an empty string. Decode each
+// occurrence here so a later duplicate cannot hide an invalid profile value.
+type configProfile string
+
+func (p *configProfile) UnmarshalJSON(data []byte) error {
+	var value *string
+	if err := json.Unmarshal(data, &value); err != nil {
+		return err
+	}
+	if value == nil {
+		return sidecar.ErrConfiguration
+	}
+	*p = configProfile(*value)
+	return nil
+}
+
 func loadConfig(path, credentialFile string) (sidecar.Config, error) {
 	// Nonblocking/no-follow admission prevents a replaced FIFO or symlink from
 	// turning a config read into an unbounded wait or an aliased state read.
@@ -82,14 +98,19 @@ func loadConfig(path, credentialFile string) (sidecar.Config, error) {
 		return sidecar.Config{}, sidecar.ErrConfiguration
 	}
 	var cfg sidecar.Config
+	input := struct {
+		*sidecar.Config
+		Profile configProfile
+	}{Config: &cfg}
 	decoder := json.NewDecoder(io.LimitReader(f, (1<<20)+1))
 	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&cfg); err != nil {
+	if err := decoder.Decode(&input); err != nil {
 		return cfg, err
 	}
 	if err := decoder.Decode(new(any)); err != io.EOF {
 		return cfg, sidecar.ErrConfiguration
 	}
+	cfg.Profile = string(input.Profile)
 	if credentialFile != "" {
 		cfg.CredentialFile = credentialFile
 	}

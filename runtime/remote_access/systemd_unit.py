@@ -99,6 +99,7 @@ class ConnectorUnitSpec:
     )
     system: bool = True
     release_verifier: bool = False
+    ingress_profile: str = ""
     user: str | None = None
     group: str | None = None
     daemon_token_path: str = ""
@@ -123,6 +124,11 @@ def _quote_systemd_arg(arg: str) -> str:
 
 def render_connector_unit(spec: ConnectorUnitSpec) -> str:
     """Render the connector systemd unit file deterministically."""
+    if spec.ingress_profile not in ("", "linux-managed-identity-v1"):
+        raise ValueError("unknown ingress profile")
+    if spec.ingress_profile and (not spec.system or spec.run_dir != "happyranch-connector"
+                                 or spec.user != "happyranch" or spec.group != "happyranch"):
+        raise ValueError("identity ingress requires the fixed system service")
     lines: list[str] = []
     lines.append("[Unit]")
     lines.append("Description=HappyRanch remote-access connector (supervised Linux home connector)")
@@ -153,6 +159,8 @@ def render_connector_unit(spec: ConnectorUnitSpec) -> str:
     lines.extend(_hardening(system=spec.system))
     lines.append(f"StateDirectory={spec.state_dir}")
     lines.append(f"RuntimeDirectory={spec.run_dir}")
+    if spec.ingress_profile:
+        lines.append("RuntimeDirectoryMode=0700")
     lines.append(f"LogsDirectory={spec.logs_dir}")
     if spec.daemon_token_path:
         # The token VALUE is never rendered — only the file path, which
