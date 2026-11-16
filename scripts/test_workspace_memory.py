@@ -141,3 +141,127 @@ def test_legacy_flat_memory_is_bounded_without_changing_file(tmp_path: Path) -> 
     assert 'happyranch memory --org <slug> --task-id <task_id> --session-id <session_id> --agent <you> --text' in rendered
     assert flat.read_text() == original
     assert not (tmp_path / "memory").exists()
+
+
+@pytest.mark.parametrize("context", ["task", "thread", "wake", "schedule", "dream",
+                                     "task-codex", "task-opencode", "task-pi"])
+@pytest.mark.parametrize("case", ["stale", "unchanged", "render-failure", "write-failure", "missing", "broken-link"])
+async def test_session_spawn_instruction_refresh(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+                                               context: str, case: str) -> None:
+    """Drive shipping producer prefixes; stop at skill preparation, never a provider."""
+    from types import SimpleNamespace
+    from runtime.daemon import dream_runner, schedule_runner, thread_runner, wake_runner
+    from runtime.models import ScheduleStatus, TaskRecord
+    from runtime.orchestrator import orchestrator as task_runner
+    from runtime.orchestrator.workspace_adapters import ClaudeWorkspaceAdapter
+    from scripts.test_agent_retirement import fixture, seed_future
+    from scripts.test_thread_prompt_size import seed
+
+    # BaseException is an observation stop outside producer error handling.
+    class Prepared(BaseException):
+        pass
+
+    async with fixture(tmp_path / "org") as (org, _client):
+        provider = context.split("-", 1)[1] if "-" in context else "claude"
+        context = context.split("-", 1)[0]
+        definition = org.root / "org" / "agents" / "worker.md"
+        definition.write_text(definition.read_text().replace("executor: claude", f"executor: {provider}"))
+        workspace = org.root / "workspaces" / "worker"
+        pair = workspace / "AGENTS.md"
+        link = workspace / "CLAUDE.md"
+        pair.write_text("STALE full inline memory index\n")
+        link.symlink_to("AGENTS.md")
+        # Permission/settings sentinels must never participate in prompt refresh.
+        (workspace / ".claude").mkdir()
+        settings_path = workspace / ".claude" / "settings.json"
+        settings_path.write_text('{"synthetic": "retained"}\n')
+        permission_path = workspace / "opencode.json"
+        permission_path.write_text('{"synthetic": "retained"}\n')
+        if case == "unchanged":
+            adapter_type = ClaudeWorkspaceAdapter if provider == "claude" else CodexWorkspaceAdapter
+            adapter = adapter_type(org.settings, org.orchestrator._paths, slug=org.slug)
+            writer = adapter.write_claude_md if provider == "claude" else adapter.write_agents_md
+            writer(workspace, "worker", "Synthetic role.\n")
+        import os
+        os.utime(pair, ns=(1_000_000_000, 1_000_000_000))
+        before = (pair.read_bytes(), pair.stat().st_mtime_ns, link.lstat().st_mtime_ns)
+        if case == "missing":
+            pair.unlink()
+        elif case == "broken-link":
+            link.unlink()
+            link.symlink_to("missing.md")
+        elif case == "render-failure":
+            def fail(*args: object, **kwargs: object) -> None:
+                raise OSError("synthetic instruction render failure")
+            adapter_type = ClaudeWorkspaceAdapter if provider == "claude" else CodexWorkspaceAdapter
+            renderer = "render_claude_md" if provider == "claude" else "render_agents_md"
+            monkeypatch.setattr(adapter_type, renderer, fail)
+        elif case == "write-failure":
+            def fail_write(*args: object, **kwargs: object) -> None:
+                raise OSError("synthetic instruction write failure")
+            monkeypatch.setattr("runtime.orchestrator.workspace_adapters._atomic_write_regular", fail_write)
+        module = {"task": task_runner, "thread": thread_runner, "wake": wake_runner,
+                  "schedule": schedule_runner, "dream": dream_runner}[context]
+        observed = []
+
+        def preparation_boundary(*args: object, **kwargs: object) -> None:
+            observed.append(pair.read_text() if pair.exists() else None)
+            raise Prepared
+
+        monkeypatch.setattr(module, "materialize_workspace_skills", preparation_boundary)
+        monkeypatch.setattr(thread_runner, "_build_executor_for_provider", lambda *a, **k: SimpleNamespace())
+        monkeypatch.setattr(org.orchestrator, "_build_executor", lambda *a: SimpleNamespace())
+        # Fail immediately if any production path escapes to a provider process.
+        monkeypatch.setattr("subprocess.Popen", lambda *a, **k: pytest.fail("unexpected provider launch"))
+        error = ""
+        try:
+            if context == "task":
+                org.db.insert_task(TaskRecord(id="TASK-refresh", assigned_agent="worker", team="retiring",
+                                              brief="Synthetic prompt refresh"))
+                org.orchestrator._run_agent_impl("TASK-refresh", "worker", "Synthetic guidance")
+            elif context == "thread":
+                token = seed(org, history=[], required=["Synthetic instruction refresh"])
+                await thread_runner.run_invocation(org_state=org, invocation_token=token, settings=org.settings)
+                error = org.db.get_invocation_any_status(token).decline_reason or ""
+            else:
+                seed_future(org)
+                if context == "wake":
+                    await wake_runner.run_wake(org_state=org, work_hour_id="WH-001", settings=org.settings)
+                    error = org.db.work_hours.get("WH-001").error or ""
+                elif context == "schedule":
+                    org.db.schedules.update("SCH-001", status=ScheduleStatus.FIRING)
+                    await schedule_runner.run_schedule(org_state=org, schedule_id="SCH-001", settings=org.settings)
+                    error = org.db.schedules.get("SCH-001").error or ""
+                else:
+                    await dream_runner.run_dream(org_state=org, dream_id="DRM-001", settings=org.settings)
+                    error = org.db.get_dream("DRM-001").error or ""
+        except Prepared:
+            pass
+        except RuntimeError as exc:
+            error = str(exc)
+        assert settings_path.read_text() == '{"synthetic": "retained"}\n'
+        assert permission_path.read_text() == '{"synthetic": "retained"}\n'
+        if case in {"render-failure", "write-failure", "missing", "broken-link"}:
+            assert not observed, "invalid/failed instruction refresh reached spawn preparation"
+            assert "instruction" in error.lower(), error
+            if case in {"render-failure", "write-failure"}:
+                if case == "render-failure":
+                    assert "synthetic instruction render failure" in error
+                else:
+                    # InstructionPairConflict deliberately exposes a stable public
+                    # operation diagnostic, not its raw underlying exception.
+                    assert error.endswith("instruction_refresh_failed for 'worker': "
+                                          "instruction pair conflict at AGENTS.md: canonical write failed")
+                assert (pair.read_bytes(), pair.stat().st_mtime_ns) == before[:2]
+            elif case == "missing":
+                assert not pair.exists()
+            else:
+                assert os.readlink(link) == "missing.md"
+                assert pair.read_bytes() == before[0]
+        else:
+            assert len(observed) == 1
+            assert "## System Prompt\n\nSynthetic role." in observed[0]
+            assert "STALE full inline memory index" not in observed[0]
+            assert os.readlink(link) == "AGENTS.md"
+            if case == "unchanged":
+                assert (pair.read_bytes(), pair.stat().st_mtime_ns, link.lstat().st_mtime_ns) == before

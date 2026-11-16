@@ -2747,7 +2747,17 @@ and operational H-v1 duties remain separately gated.
 
 Per-agent memory lives under `<runtime>/orgs/<slug>/workspaces/<agent>/memory/`, one `MEM-NNN-<slug>.md` per entry. CLI: `happyranch memory list|get|search|add|update|promote|reindex`.
 Content updates, including slug changes, preserve the edited entry's lifecycle,
-salience, provenance, scope and `last_verified` from storage under the write lock.
+provenance, scope and `last_verified` from storage under the write lock. Salience
+is writer-settable on add/update (integer clamped to 0–100); omission defaults to
+50 on add and preserves storage on update. CLI payload `salience` and optional
+`--salience` both work; the flag takes precedence. Compaction staleness uses
+`authored_at` (local creation), falling back to `updated_at` for missing or
+unusable stamps; neither usable means retain. ISO strings and YAML datetime/date
+values normalize to UTC; naive timestamps and date-only midnight mean UTC.
+Lowering salience does not renew an old note. Auto-compaction errors after the
+note write are logged without aborting the add or preventing its add audit.
+See the memory design spec's **Memory compaction and retirement (THR-366 PR-B)**
+section for defaults, protections, supersession grace and reversible retirement.
 The S3a Instill owner also preserves `inherited_from` and the separate
 `imported_at` through MemoryStore reads, search/list/index and supported updates.
 `inherited` records source knowledge, never recipient experience or current

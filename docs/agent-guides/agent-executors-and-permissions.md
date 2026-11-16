@@ -508,7 +508,7 @@ ownership releases. Stable known-target contention remains 409
 `profile_coordinator_busy`, and ordinary no-target approval creates no profile.
 The adapter writer never acquires a new profile lease.
 
-Prompt-only founder saves reuse the registered profile's text renderer: Claude's instruction renderer for the Claude adapter, the shared Codex renderer for Codex/Pi, and the OpenCode renderer for its adapter. They update regular `AGENTS.md` plus raw `CLAUDE.md -> AGENTS.md` without invoking permission/settings/skills bootstrap. Existing safe pair conversion preserves original files and never writes through external instruction links; unsafe/unreadable inputs refuse. A cancelled prompt request finishes its started renderer and terminal reconciliation under the writer gate before cancellation propagates. Disconnected init streams drain their started worker before releasing that gate. Saving without a workspace persists canonical content only; explicit init later delivers it. Launch pair validation remains read-only and refuses incomplete pairs. Disk preparation and a resume ID do not prove provider adoption. Founder THR-280 seq21 waives only C16 empirical genuine-provider adoption, including retained sessions and finite genuine Codex recovery episodes: FOUNDER-WAIVED / NOT EXECUTED, never PASS. All four adapters' launch/resume, full/delta/hole/fallback and finite callback-recovery input transport/orchestration remains required; deterministic stubs do not establish model adoption, and THR-211 seq371 forbids real test-generated provider sessions in every venue.
+Prompt-only founder saves reuse the registered profile's text renderer: Claude's instruction renderer for the Claude adapter, the shared Codex renderer for Codex/Pi, and the OpenCode renderer for its adapter. They update regular `AGENTS.md` plus raw `CLAUDE.md -> AGENTS.md` without invoking permission/settings/skills bootstrap. Existing safe pair conversion preserves original files and never writes through external instruction links; unsafe/unreadable inputs refuse. A cancelled prompt request finishes its started renderer and terminal reconciliation under the writer gate before cancellation propagates. Disconnected init streams drain their started worker before releasing that gate. Saving without a workspace persists canonical content only; explicit init later delivers it. Launch pair validation remains read-only and refuses incomplete pairs; a preceding prompt-only refresh updates an already canonical pair on every session spawn. Disk preparation and a resume ID do not prove provider adoption. Founder THR-280 seq21 waives only C16 empirical genuine-provider adoption, including retained sessions and finite genuine Codex recovery episodes: FOUNDER-WAIVED / NOT EXECUTED, never PASS. All four adapters' launch/resume, full/delta/hole/fallback and finite callback-recovery input transport/orchestration remains required; deterministic stubs do not establish model adoption, and THR-211 seq371 forbids real test-generated provider sessions in every venue.
 
 Both adapter registration entry points (`register_adapter` and
 `submit_adapter`), approval/bind/removal, executor-profile removal,
@@ -548,14 +548,39 @@ workspace holds one regular `AGENTS.md` plus the raw relative symlink
 both paths are classified without following links, every required
 collision-safe preservation copy is written and verified before either path
 is mutated, and an external target is never written through. Session launch
-is read-only and refuses every incomplete/non-canonical pair for every
-provider through `WorkspaceNotInitialized` with an actionable
+first refuses every incomplete/non-canonical pair without repairing it, with an
+actionable
 `happyranch init-agent <agent>` and no executor launch; the operator
 `init-agent` retry completes the pair or stops on a named preserved conflict
 and is idempotent. There is no persistent journal, scheduler, durable receipt
 or automatic reopen recovery; a caught in-process conversion failure restores
 the exact prior state, while abrupt process death leaves the actual on-disk
 state and preservation copies for the explicit retry.
+
+**Session instruction freshness (THR-366 PR-A).** Task (including recovery),
+thread (fresh/resumed/fallback/nudge), wake, schedule and dream preparation
+refreshes the canonical prompt from the invocation's current AgentDef snapshot
+and registered workspace adapter before skill materialization, integrity/readiness
+checks and launch. Bootstrap and executor switch are management operations,
+not extra session paths. The pair must already be canonical: a read-only check
+runs before rendering, so missing files, foreign links and broken workspaces
+still require explicit init. The existing task pair/refusal and profile marker
+checks remain in place after refresh. Render/publication failure refuses launch
+with an instruction-refresh diagnostic through the producer's existing failure
+path. Matching bytes preserve both file and link mtimes; changed bytes use the
+existing preservation-copy and same-directory atomic replace writer.
+
+The process-local workspace RLock serializes the instruction writer's complete
+publication/compensation step with other local instruction writers (including
+manage-agent). Same-snapshot writers render the same bytes; different accepted
+snapshots can leave the last complete render on disk, and the next spawn renders
+its selected current snapshot again. This is not a canonical-agent revision CAS,
+a cross-process fence or proof that an already running provider adopted new text.
+No new rollback-owned path is introduced in agents.py: AGENTS.md/CLAUDE.md are
+already declared; preservation/temp siblings keep their existing ownership rules.
+Settings, permission files, persistent memory/index/history initialization and
+skill materialization keep their existing owners; prompt refresh does not run
+`ensure_workspace_ready` or regenerate settings.json/opencode.json.
 
 **Per-agent model selection (THR-067):** Each built-in profile carries a verified `model_arg` — the CLI flag the executor uses when the agent has a model set:
 

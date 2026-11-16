@@ -1,5 +1,22 @@
 # Local CI
 
+## Focused memory compaction and writer salience (THR-366 PR-B)
+
+```sh
+python -B -m unittest scripts.test_memory_compaction scripts.test_memory_payload scripts.test_memory_digest -v
+```
+
+These standalone checks drive real memory write/lifecycle/compaction route
+functions, file-backed storage and SQLite audit rows in temporary synthetic orgs.
+They cover writer salience/clamping, creation-age eviction after a metadata edit,
+both supersession paths and grace, protections, caps, dry-run and restoration.
+The timestamp table includes YAML datetime/date/integer values, UTC boundaries
+and conservative fallback/retention. Auto-trigger cases assert persisted notes,
+index entries and exact add audits, including when the sweep raises an error.
+The CLI checks intercept HTTP transport; no server, provider or live org is used.
+This existing standalone venue is outside retired Python units, skipped general
+integration and Product E2E, and adds no required check or trigger.
+
 ## Focused worktree guard ownership
 
 ```sh
@@ -19,6 +36,13 @@ retired Python units, general integration or Product E2E are exercised.
 ```sh
 uv run --frozen pytest scripts/test_workspace_memory.py -v --tb=short
 ```
+
+The same command also drives the shipping task, thread, wake, schedule and dream
+producer prefixes against temporary synthetic orgs, stopping at the existing
+skill-materialization seam. It checks stale instructions refresh without any
+manage-agent call, unchanged file/link mtimes, refusal on render failure or
+missing/broken pairs, and retained permission/settings bytes. Provider process
+creation is forbidden; this proves prelaunch preparation, not provider adoption.
 
 These standalone no-launch checks exercise the real store and prompt renderer
 on temporary workspaces: UTF-8 byte limits, deterministic whole-line topic and

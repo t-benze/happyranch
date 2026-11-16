@@ -145,9 +145,15 @@ Every CLI command is a thin wrapper around an HTTP call. A shared helper reads `
 
 ### Workspace layout (per agent, single persistent directory)
 
+> **Current instruction lifecycle (THR-366, 2026-11-16):** the historical
+> init-only prompt description below is superseded. Every executor session
+> refreshes an already canonical `AGENTS.md` / `CLAUDE.md -> AGENTS.md` pair
+> before launch checks; missing/broken pairs still refuse without repair.
+> See [current executor guide](../../agent-guides/agent-executors-and-permissions.md).
+
 ```
 <runtime>/workspaces/<agent>/
-├── CLAUDE.md              # role + agent identity, regenerated only by opc init-agent
+├── CLAUDE.md              # compatibility link to AGENTS.md; refreshed before each session
 ├── .claude/
 │   ├── settings.json      # permissions + optional repo-pull hooks
 │   └── skills/            # copied from protocol/skills/ at init-agent time
