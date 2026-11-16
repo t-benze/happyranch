@@ -967,6 +967,7 @@ if sys.argv[1:] in ([], ['--fresh-catalog']):
                             print('PASS A2-C actual authority capability loss refuses zero writes', flush=True)
                 finally:
                     await state.close_all()
+                    state.metrics_store.close()
                 if a2_case in (None, 'registration'):
                     # The prior direct refusal left the real org missing the
                     # current definition. A genuine FIRST/NEXT startup owns
