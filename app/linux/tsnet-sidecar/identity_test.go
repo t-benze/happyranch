@@ -11,11 +11,12 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"testing"
+	"time"
+
 	"tailscale.com/client/tailscale/apitype"
 	"tailscale.com/ipn/ipnstate"
 	"tailscale.com/tailcfg"
-	"testing"
-	"time"
 )
 
 type identityLookup struct {
@@ -202,12 +203,18 @@ func TestIdentityProfileReadinessAndLegacyGate(t *testing.T) {
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	for _, mutation := range []func(*Config){func(c *Config) { c.Profile = "future-v2" }, func(c *Config) { c.ConnectorAddr = "/tmp/chosen.sock" }, func(c *Config) { c.Profile = "" }} {
-		bad := cfg
-		mutation(&bad)
-		if bad.Validate() == nil {
-			t.Fatal("unsafe or legacy config accepted")
-		}
+	for name, mutation := range map[string]func(*Config){
+		"unknown-profile":      func(c *Config) { c.Profile = "future-v2" },
+		"caller-socket":        func(c *Config) { c.ConnectorAddr = "/tmp/chosen.sock" },
+		"legacy-peer-required": func(c *Config) { c.Profile = ""; c.ConnectorAddr = "127.0.0.1:9443" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			bad := cfg
+			mutation(&bad)
+			if bad.Validate() == nil {
+				t.Fatal("unsafe or legacy config accepted")
+			}
+		})
 	}
 	if !expectedPeerVisible(EngineConfig{Profile: LinuxIdentityProfile}, &ipnstate.Status{BackendState: "Running"}) {
 		t.Fatal("empty-peer profile not ready")
@@ -250,9 +257,11 @@ func TestIdentityFrameEncodingBound(t *testing.T) {
 			t.Fatalf("frame size=%d %v", len(b), err)
 		}
 	}
-	for _, id := range []string{"", " ", strings.Repeat("n", 1018), "node\nforged", "\xff"} {
-		if _, err := identityFrame(id); err == nil {
-			t.Fatal("invalid identity encoded")
-		}
+	for name, id := range map[string]string{"empty": "", "blank": " ", "oversize": strings.Repeat("n", 1018), "control-character": "node\nforged", "invalid-utf8": "\xff"} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := identityFrame(id); err == nil {
+				t.Fatal("invalid identity encoded")
+			}
+		})
 	}
 }

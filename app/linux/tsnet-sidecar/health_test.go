@@ -427,7 +427,11 @@ func TestIdentityHealthHasNoExpectedPeer(t *testing.T) {
 	// An unnamed peer must not become the expected node just because the new
 	// profile's ExpectedPeer is absent. No peer-specific ping is emitted.
 	status := healthStatus(true, "198.51.100.7:443", "Running")
-	for _, p := range status.Peer {
+	for k, p := range status.Peer {
+		if p.HostName != "expected-mac" {
+			delete(status.Peer, k)
+			continue
+		}
 		p.HostName = ""
 		p.DNSName = ""
 	}
