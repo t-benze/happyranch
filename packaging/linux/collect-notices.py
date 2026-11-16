@@ -66,7 +66,7 @@ def main() -> None:
     # Collect the actual native target graph as well as the retained amd64
     # inventory, so arm64-specific modules do not inherit amd64 attribution.
     raw = subprocess.check_output(
-        ["go", "list", "-mod=readonly", "-deps", "-json", "./cmd/happyranch-tsnet-sidecar"],
+        ["go", "list", "-buildvcs=false", "-mod=readonly", "-deps", "-json", "./cmd/happyranch-tsnet-sidecar"],
         cwd=sidecar, text=True)
     decoder, position, modules = json.JSONDecoder(), 0, {}
     while position < len(raw):
