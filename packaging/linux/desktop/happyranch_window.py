@@ -704,10 +704,12 @@ def run_gui(prefix: Path, home: Path) -> int:
             return False
         for widget in controls.get_children():
             controls.remove(widget)
+        setting_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
         label = Gtk.Label(label=tr("Keep HappyRanch running when I'm logged out",
                                    "退出登录后保持 HappyRanch 运行"))
-        controls.pack_start(label, False, False, 0)
+        setting_row.pack_start(label, False, False, 0)
         switch = Gtk.Switch()
+        switch.set_valign(Gtk.Align.CENTER)
         switch.set_active(state == "on")
         switch.set_sensitive(available)
         def toggled(_switch: object, active: bool) -> bool:
@@ -715,24 +717,30 @@ def run_gui(prefix: Path, home: Path) -> int:
             requests.put("on" if active else "off")
             return True  # Only fresh observations update the displayed switch.
         switch.connect("state-set", toggled)
-        controls.pack_start(switch, False, False, 0)
+        setting_row.pack_start(switch, False, False, 0)
+        controls.pack_start(setting_row, False, False, 0)
         if state == "partial":
-            controls.pack_start(Gtk.Label(label=tr("Partly on - click to repair/turn off",
-                                                   "部分开启 - 点击修复或关闭")), False, False, 0)
+            partial_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+            partial_row.pack_start(Gtk.Label(label=tr("Partly on - click to repair/turn off",
+                                                      "部分开启 - 点击修复或关闭")), False, False, 0)
             for text, zh, action in (("Repair", "修复", "on"), ("Turn off", "关闭", "off")):
                 button = Gtk.Button(label=tr(text, zh))
                 button.connect("clicked", lambda _button, action=action: requests.put(action))
-                controls.pack_start(button, False, False, 0)
+                partial_row.pack_start(button, False, False, 0)
+            controls.pack_start(partial_row, False, False, 0)
         if detail:
             diagnostic = Gtk.Label(label=detail)
             diagnostic.set_line_wrap(True)
+            diagnostic.set_xalign(0)
             controls.pack_start(diagnostic, False, False, 0)
         if update:
-            controls.pack_start(Gtk.Label(label=tr("Update installed - restart HappyRanch",
-                                                   "更新已安装 - 请重启 HappyRanch")), False, False, 0)
+            update_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+            update_row.pack_start(Gtk.Label(label=tr("Update installed - restart HappyRanch",
+                                                     "更新已安装 - 请重启 HappyRanch")), False, False, 0)
             button = Gtk.Button(label=tr("Restart HappyRanch", "重启 HappyRanch"))
             button.connect("clicked", lambda _button: requests.put("restart"))
-            controls.pack_start(button, False, False, 0)
+            update_row.pack_start(button, False, False, 0)
+            controls.pack_start(update_row, False, False, 0)
         controls.show_all()
         return False
 
@@ -749,9 +757,14 @@ def run_gui(prefix: Path, home: Path) -> int:
             return False
         for widget in window.get_children():
             window.remove(widget)
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
-        controls = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        controls = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        controls.set_margin_start(12)
+        controls.set_margin_end(12)
+        controls.set_margin_top(12)
+        controls.set_margin_bottom(12)
         box.pack_start(controls, False, False, 0)
+        box.pack_start(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL), False, False, 0)
         view = WebKit2.WebView()
         def load_failed(*_args: object) -> bool:
             show_error(tr("The web interface could not load.", "无法加载网页界面。"))
