@@ -5,9 +5,12 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestReadinessFlagsRejectLinux(t *testing.T) {
@@ -36,7 +39,13 @@ func TestReadinessFlagsRejectLinux(t *testing.T) {
 	}
 }
 
-func TestRunRejectsNullProfileBeforeStateOrCredential(t *testing.T) {
+func TestMainRejectsNullProfileBeforeStateOrCredential(t *testing.T) {
+	// Reuse the existing subprocess-main pattern, entirely within test code.
+	if path := os.Getenv("SIDECAR_NULL_PROFILE_CONFIG"); path != "" {
+		os.Args = []string{"happyranch-tsnet-sidecar", "--config", path}
+		main()
+		return
+	}
 	t.Setenv("WATCHDOG_USEC", "")
 	t.Setenv("NOTIFY_SOCKET", "")
 	t.Setenv("CREDENTIALS_DIRECTORY", "")
@@ -52,8 +61,14 @@ func TestRunRejectsNullProfileBeforeStateOrCredential(t *testing.T) {
 	if err := os.WriteFile(path, append([]byte(`{"Profile":null,`), data[1:]...), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if code := run(context.Background(), []string{"--config", path}); code != 2 {
-		t.Fatalf("null Profile: command exit %d, want configuration exit 2", code)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestMainRejectsNullProfileBeforeStateOrCredential$")
+	cmd.Env = append(os.Environ(), "SIDECAR_NULL_PROFILE_CONFIG="+path)
+	output, err := cmd.CombinedOutput()
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 2 {
+		t.Fatalf("null Profile: process error %v, want configuration exit 2; output: %s", err, output)
 	}
 	if _, err := os.Stat(cfg.StateDir); !os.IsNotExist(err) {
 		t.Fatalf("configuration refusal touched state: %v", err)
