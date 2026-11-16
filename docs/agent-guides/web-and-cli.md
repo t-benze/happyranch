@@ -3777,10 +3777,10 @@ retain their F/E/G/H/I paths; old families keep their construction and digests.
 The strict fresh-J initializer still requires empty native operational storage
 and valid remote markers; it correctly refuses this retained sequence row.
 Neither that guard nor any real migration changes; calling the real coding
-migration here would recurse through reference validation. Actual create-org
-still explicitly initializes I. Normal OrgState.load subsequently adds coding
-beside the actual document foundation; I plus coding is J. Enable performs no
-document upgrade. Empty J uses the existing I draft/submission/handoff/
+migration here would recurse through reference validation. A2 fresh POST
+`/orgs` creates J + Coding + sequential storage + ownership-2; startup
+with an absent DB stays historical. Existing startup/reopen/enable only validates.
+Empty J uses the existing I draft/submission/handoff/
 revision and document drain readers. Any J, even empty, blocks pre-J downgrade;
 retain compatible J code or a separately approved verified pre-J backup. No
 stripping, automatic migration or old-reader downgrade claim follows.
