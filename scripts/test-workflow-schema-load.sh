@@ -2362,6 +2362,13 @@ if sys.argv[1:] in ([], ['--install-integrity'], ['--bootstrap-backup'], ['--boo
                         # Drop clock/space faults before independent cleanup.
                     if fault in ('none', 'wal', 'checkpointed_wal'):
                         assert error is None, ('A4-B unexpected backup failure', fault, error)
+                        # Observe committed WAL content independently before
+                        # URI-sensitive durability instrumentation can fail.
+                        if fault in ('wal', 'checkpointed_wal'):
+                            with closing(native_connect(attempt.backup_path.as_uri()+'?mode=ro', uri=True)) as b:
+                                assert b.execute("SELECT 1 FROM sqlite_schema WHERE type='table' AND name='a4_native_preservation'").fetchone() is not None, 'A4-B lost committed WAL data'
+                                value = b.execute('SELECT t FROM a4_native_preservation WHERE id=77').fetchone()
+                                assert value is not None and value[0] == 'committed WAL sentinel', 'A4-B lost committed WAL data'
                         assert [s[0] for s in stages] == ['source', 'backup'], 'A4-B mandatory backup physical gate omitted'
                         assert len({s[1] for s in stages}) == 1 and stages[1][2] == stages[0][3] > 0, 'A4-B physical allowance replenished'
                         assert owner.backup_sha256 == hashlib.sha256(attempt.backup_path.read_bytes()).hexdigest()
@@ -2382,9 +2389,6 @@ if sys.argv[1:] in ([], ['--install-integrity'], ['--bootstrap-backup'], ['--boo
                         assert (attempt.root/'01.json').is_file(), 'A4-B verified phase missing'
                         status = read_setup_status(daemon_home(), path.parents[2], 'scratch')
                         assert status.state == 'unknown' and status.reason == 'install_incomplete', 'A4-B backup claimed installation'
-                        if fault in ('wal', 'checkpointed_wal'):
-                            with closing(native_connect(attempt.backup_path.as_uri()+'?mode=ro', uri=True)) as b:
-                                assert b.execute('SELECT t FROM a4_native_preservation WHERE id=77').fetchone()[0] == 'committed WAL sentinel', 'A4-B lost committed WAL data'
                     else:
                         assert error is not None and injections, ('A4-B intended fault missed', fault, error)
                         assert owner.failed, 'A4-B failed source owner not latched'
