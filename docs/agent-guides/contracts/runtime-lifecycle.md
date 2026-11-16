@@ -30,8 +30,10 @@ This does not widen SQL, logical, five-second reader or startup budgets.
 The existing shell's `--startup-isolation` selection covers A4-C1 original partial
 constructor close/unknown custody, A4-C2 actual SQLite exclusive contention, and
 A4-C3 database/post-load/selector/profile failure containment with a later real
-OrgState and independent ASGI health response. It is scoped behavior evidence,
-not cold/listener timing or backup/install acceptance. Automatic existing-org
+OrgState and independent ASGI health response, including SQLite/filesystem
+profile errors and failure to acquire the profile inventory itself. Unknown
+classification never retries that failed reader. Cold/listener timing and
+backup/install acceptance remain unverified by these cases. Automatic existing-org
 backup, qualification and installation remain a separate A4 checkpoint.
 
 > Moved verbatim from the repository-root `AGENTS.md` on 2026-10-30. Sections keep

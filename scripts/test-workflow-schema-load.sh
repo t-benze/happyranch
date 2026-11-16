@@ -59,7 +59,8 @@ if len(sys.argv) == 2 and sys.argv[1].startswith('--fresh-catalog='):
 startup_case = None
 if len(sys.argv) == 2 and sys.argv[1].startswith('--startup-isolation='):
     startup_case = sys.argv[1].split('=', 1)[1]
-    assert startup_case in ('constructor', 'database', 'post_load', 'selector', 'profile')
+    assert startup_case in ('constructor', 'database', 'post_load', 'selector', 'profile',
+                            'profile_database', 'profile_filesystem', 'profile_capture')
     sys.argv[1:] = ['--startup-isolation']
 
 retained_phase = None
@@ -120,7 +121,7 @@ if sys.argv[1:] in ([], ['--startup-isolation']):
                         assert exc is primary, 'A4-C1 original constructor failure was replaced'
                     else:
                         raise AssertionError('A4-C1 constructor refusal disappeared')
-                assert owner['load_db']._conn is connection, 'A4-C1 lost original partial connection'
+                assert getattr(owner.get('load_db'), '_conn', None) is connection, 'A4-C1 lost original partial connection'
                 assert close_calls == ['close'], 'A4-C1 original connection closed more than once'
                 assert owner['load_db_closed'] is (not fail_close), 'A4-C1 invented successful closure'
                 if fail_close:
@@ -166,7 +167,8 @@ if sys.argv[1:] in ([], ['--startup-isolation']):
             db.close()
         return root
 
-    for failure in (case for case in ('database', 'post_load', 'selector', 'profile')
+    for failure in (case for case in ('database', 'post_load', 'selector', 'profile',
+                                    'profile_database', 'profile_filesystem', 'profile_capture')
                     if startup_case is None or case == startup_case):
         with tempfile.TemporaryDirectory(prefix='a4-isolation-') as scratch:
             home = Path(scratch).resolve()
@@ -185,6 +187,16 @@ if sys.argv[1:] in ([], ['--startup-isolation']):
             reached = []
             selector_calls = []
             actual_selector = WorkflowAuthorityCoordinator.ensure_authority_selector
+            actual_capture = ProfileCoordinator._capture_org_dependencies
+            def observed_capture(coordinator, org, **kwargs):
+                if org.slug == 'alpha':
+                    error = sqlite3.OperationalError if failure == 'profile_database' else OSError
+                    raise error('PRIVATE profile acquisition diagnostic')
+                return actual_capture(coordinator, org, **kwargs)
+            @contextmanager
+            def failed_inventory(coordinator):
+                raise OSError('PRIVATE profile inventory diagnostic')
+                yield  # preserve the context-manager protocol; no successful fact
             def observed_selector(authority, **kwargs):
                 if kwargs.get('publisher') == 'daemon-state-load:selector-initialization':
                     selector_calls.append(authority._org_slug)
@@ -209,6 +221,10 @@ if sys.argv[1:] in ([], ['--startup-isolation']):
                     stack.enter_context(patch.object(OrgState, 'load', side_effect=observed_load))
                     if failure == 'selector':
                         stack.enter_context(patch.object(WorkflowAuthorityCoordinator, 'ensure_authority_selector', observed_selector))
+                    if failure in ('profile_database', 'profile_filesystem'):
+                        stack.enter_context(patch.object(ProfileCoordinator, '_capture_org_dependencies', observed_capture))
+                    if failure == 'profile_capture':
+                        stack.enter_context(patch.object(ProfileCoordinator, '_capture_orgs', failed_inventory))
                     if failure == 'profile':
                         stack.enter_context(patch.object(ProfileCoordinator, '_reconcile_startup',
                                                          side_effect=RuntimeError('PRIVATE unexpected profile error')))
@@ -225,10 +241,11 @@ if sys.argv[1:] in ([], ['--startup-isolation']):
                         assert selector_calls == ['alpha', 'beta'], ('A4-C3 intended selector boundary not reached', selector_calls)
                     if failure == 'post_load':
                         assert all_orgs['alpha']._runner_admission_closed
-                    if failure == 'profile':
+                    if failure.startswith('profile'):
                         assert state.profile_coordinator._startup_unknown
                         assert set(state._startup_held_orgs) == {'alpha', 'beta'} and not state.orgs
                         assert all(org._runner_admission_closed for org in all_orgs.values())
+                        assert all('PRIVATE' not in reason for reason in state.broken_orgs.values())
                     async def independent_app_read():
                         app = create_app(state)
                         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://private') as client:

@@ -1697,9 +1697,11 @@ class ProfileCoordinator:
             self._reconcile_startup()
         except Exception:
             self._startup_unknown = True
-            with self._capture_orgs() as orgs:
-                for slug in orgs:
-                    self._startup_holds.setdefault(slug, 'profile_startup_unavailable')
+            # Do not retry the reader whose acquisition may itself have failed.
+            # This map is the unpublished startup inventory; unknown remains a
+            # global veto even for membership that could not be captured.
+            for slug in tuple(self.orgs):
+                self._startup_holds.setdefault(slug, 'profile_startup_unavailable')
             if self._hold_startup is not None:
                 self._hold_startup(self._startup_holds)
             logger.error('profile startup held: profile_startup_unavailable')
