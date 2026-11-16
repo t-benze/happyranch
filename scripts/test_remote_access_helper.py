@@ -737,6 +737,93 @@ def test_bound_revoke_only_selected_and_retains_incomplete(monkeypatch: Any, fai
         assert supervisor._listener_running()
 
 
+@pytest.mark.parametrize('boundary', ['helper', 'control'])
+def test_bound_revoke_expired_grant_closes_only_selected(venue: Any, monkeypatch: Any, boundary: str) -> None:
+    from datetime import datetime, timedelta, timezone
+    from scripts.test_managed_admission import (
+        ControlledForwarder, ControlledHandle, call, connect, grant, read_all, result, supervisor_module,
+    )
+    helper, authority, _, caller, _ = venue
+    transport = ControlledForwarder()
+    monkeypatch.setattr(supervisor_module, 'HttpLoopbackForwarder', lambda *a, **kw: transport)
+    with bound_control(monkeypatch) as (client, supervisor, path):
+        helper.control = HELPER.ControlClient(client.path)
+        device_a, credential_a = grant(supervisor, path)
+        device_b, credential_b = grant(supervisor, path, 'node-b', 'synthetic-invite-b')
+        with supervisor.state_store.transaction() as tx:
+            tx.state.devices[device_a] = replace(tx.state.devices[device_a],
+                expires_at=datetime.now(timezone.utc) + timedelta(seconds=2))
+        expiry = supervisor.state_store.load().devices[device_a].expires_at
+        denied_before_close = set()
+        checking_deny = False
+        original_close = ControlledHandle.close
+        def close(handle: Any) -> None:
+            if checking_deny and handle.label.startswith('a-'):
+                # Observe the real persisted deny at the transport callback.
+                assert supervisor.state_store.load().devices[device_a].revoked
+                denied_before_close.add(handle.label)
+            original_close(handle)
+        monkeypatch.setattr(ControlledHandle, 'close', close)
+        clients, handles = {}, {}
+        try:
+            for owner, node, credential in [('a', 'node-a', credential_a), ('b', 'node-b', credential_b)]:
+                for kind in ('http', 'websocket', 'sse'):
+                    label = owner + '-' + kind
+                    clients[label] = connect(path, node, credential, kind, label)
+                    handle = transport.handles.get(timeout=3)
+                    assert handle.label == label and handle.started.wait(3)
+                    handles[label] = handle
+                    if kind != 'http':
+                        assert b'200 OK' in clients[label].recv(4096)
+            assert datetime.now(timezone.utc) < expiry, 'all streams must open before credential expiry'
+            while datetime.now(timezone.utc) <= expiry:
+                time.sleep(.02)
+            assert not any(handle.closed for handle in handles.values())
+            snapshot = client.status()
+            target = next(d for d in snapshot.devices if d.record_id == device_a)
+            assert target.expires_at == expiry.timestamp() < time.time()
+            assert snapshot.ready and snapshot.phase == 'ready'
+            checking_deny = True
+            if boundary == 'helper':
+                for _ in snapshot.devices:
+                    shown = Call(caller, 'NextDevice').finish()
+                    if shown['selected']['label'] == 'node-a':
+                        break
+                assert shown['selected']['label'] == 'node-a', 'expired grant must remain selectable'
+                authority.mode = 'delay'
+                revoke = Call(caller, 'RevokeSelected')
+                eventually(lambda: len(authority.waiting) == 1 or revoke.done.is_set())
+                if revoke.done.is_set():
+                    revoke.finish()  # Surface an early refusal at the Gio boundary.
+                assert len(authority.calls) == 1 and 'node-a' in authority.calls[0][2]['polkit.message']
+                assert not supervisor.state_store.load().devices[device_a].revoked
+                authority.grant()
+                assert revoke.finish() == 'ok'
+            else:
+                # Exercise the listener's own expiry checks independently of Gio.
+                client.mutate('RevokeSelected', snapshot, target, time.monotonic() + 60, lambda: None)
+            state = supervisor.state_store.load()
+            assert state.devices[device_a].revoked and not state.devices[device_b].revoked
+            assert denied_before_close == {'a-http', 'a-websocket', 'a-sse'}
+            for kind in ('http', 'websocket', 'sse'):
+                assert handles['a-' + kind].closed and not handles['b-' + kind].closed
+                closed = read_all(clients['a-' + kind])
+                assert result(closed)[0] == 403 if kind == 'http' else closed == b''
+                handles['b-' + kind].events.put(b'data: survivor-after-expired-revoke\n\n')
+                if kind == 'http':
+                    handles['b-http'].events.put(None)
+                    assert b'survivor-after-expired-revoke' in read_all(clients['b-http'])
+                else:
+                    assert b'survivor-after-expired-revoke' in clients['b-' + kind].recv(4096)
+            assert result(call(path, 'node-a', credential=credential_a))[0] == 403
+            assert b'200 OK' in call(path, 'node-b', credential=credential_b)
+        finally:
+            checking_deny = False
+            supervisor.shutdown()
+            for wire in clients.values():
+                wire.close()
+
+
 @pytest.mark.parametrize('method', ['ApprovePending', 'RejectPending', 'RevokeSelected'])
 def test_bound_generation_cas_at_actual_mutation(monkeypatch: Any, method: str) -> None:
     from runtime.remote_access import helper_control as control

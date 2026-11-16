@@ -1117,8 +1117,8 @@ The helper captures caller/UID, target, ownership and snapshot generation before
 authorization, then revalidates after it. The 120-second deadline cancels an
 outstanding polkit check; uncertain cancellation seals further mutations until
 cancellation is acknowledged or that check's terminal reply arrives. A terminal
-reply releases the dialog slot even if subsequent deadline/target expiry refuses
-the mutation; a late reply never authorizes an expired mutation. One dialog
+reply releases the dialog slot even if the authorization deadline or pending-request
+expiry refuses the mutation; a late reply never authorizes an expired request. One dialog
 is allowed globally. Per-unique-name cursors disappear on disconnect. Status
 contains only bounded public summaries. Error/log categories are closed.
 IssueInvite and all install/lifecycle/R3 methods are absent, so invite issuance's
@@ -1158,7 +1158,12 @@ cross-process writer after final revalidation refuses. The file flock is never
 held across IPC or transport-close callbacks. Revoke maps the actual device ID,
 persists its deny before closing only that device's streams, and retains
 RevocationIncomplete as an unavailable result and failed control phase. The
-serving loop retains incomplete-cleanup reporting/reconciliation without
+helper and control listener distinguish pending-request expiry from paired-credential
+expiry: expired grants remain listed and revocable, including their existing HTTP,
+SSE and attributed WS streams. Fresh polkit, captured identity/ownership, the
+authorization deadline and actual-admission anchored CAS still apply to revocation.
+ApprovePending and RejectPending both refuse expired pending requests.
+The serving loop retains incomplete-cleanup reporting/reconciliation without
 terminating other devices. Expired pending authority remains visibly failed and
 cannot be approved; read-only observations never burn it. Fixed production control path:
 `/run/happyranch-connector/control.sock`; no credential is returned by this

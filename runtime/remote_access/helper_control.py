@@ -47,6 +47,8 @@ class Device:
     stable_id: str
     label: str
     comparison_phrase: str
+    # Pending-request expiry vetoes approval/rejection. Paired-credential
+    # expiry never vetoes revocation of an existing grant or its live streams.
     expires_at: float
 
     def public(self) -> dict:
@@ -176,7 +178,7 @@ class ControlHandler:
                               next((d for d in current.devices if d.record_id == record.record_id), None))
                     if not current.owned or current != captured or target != record:
                         raise Refused('changed')
-                    if record.expires_at <= time.time():
+                    if method != 'revoke-selected' and record.expires_at <= time.time():
                         raise Refused('expired')
                     operation = {'approve-pending': self.operations.approve_pending,
                                  'reject-pending': self.operations.reject_pending,
@@ -190,7 +192,7 @@ class ControlHandler:
                         raise Refused('expired')
                     if self.operations.status() != captured:
                         raise Refused('changed')
-                    if record.expires_at <= time.time():
+                    if method != 'revoke-selected' and record.expires_at <= time.time():
                         raise Refused('expired')
                     if time.monotonic() >= deadline:
                         raise Refused('expired')

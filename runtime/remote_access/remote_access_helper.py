@@ -138,7 +138,7 @@ class RemoteAccessHelper:
                   next((d for d in snapshot.devices if d.record_id == self.cursors.get(sender)), None))
         if target is None:
             raise Refused('changed')
-        if target.expires_at <= time.time():
+        if method != 'RevokeSelected' and target.expires_at <= time.time():
             raise Refused('expired')
         return target
 
@@ -253,7 +253,8 @@ class RemoteAccessHelper:
 
     def _before_commit(self, capture: Capture) -> None:
         """Runs while BOTH helper and connector trust mutation locks are held."""
-        if self.clock() >= capture.deadline or capture.record.expires_at <= time.time():
+        if (self.clock() >= capture.deadline
+                or (capture.method != 'RevokeSelected' and capture.record.expires_at <= time.time())):
             raise Refused('expired')
         if self._uid(capture.sender) != capture.uid or capture.uid != self.release_uid:
             raise Refused('wrong-uid')

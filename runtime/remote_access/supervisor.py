@@ -307,6 +307,8 @@ class _HelperOperations:
         # Historical DIY records have no managed pin and are NOT subject to the
         # helper's 32-record projection limit. Never truncate the store or derive
         # tuple authority from these labels/fingerprints.
+        # Keep expired paired credentials selectable: their expiry blocks new
+        # admissions, not an explicitly authorized deny and live-stream closure.
         devices = tuple(helper_control.Device(
             device.device_id, device.stable_node_id, device.stable_node_id[:96],
             'paired device', device.expires_at.timestamp(),

@@ -3473,5 +3473,10 @@ only root-peer and protected-release-record observations are simulated. They
 cover immutable approval/rejection, anchored CAS at actual mutation admission,
 read-only status/cursor, targeted revoke/incomplete cleanup, legacy projection,
 Unicode/frame bounds, private socket custody, and kernel wrong-UID refusal.
+The expired-grant regression opens A/B HTTP, SSE and attributed WS streams before
+A's valid persisted credential deadline, crosses it with the real clock, then
+revokes A through private Gio or directly through the control listener. It checks
+fresh helper authorization, continued selection of expired grants, durable deny
+before A's closures and continued B delivery. No production clock seam is added.
 Installed package activation and native password dialogs remain NOT RUN.
 Required hosted checks remain Source Boundary Lint and Web Lint (Node 24).
