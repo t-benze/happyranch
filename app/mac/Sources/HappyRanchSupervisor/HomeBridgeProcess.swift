@@ -76,12 +76,12 @@ public final class HomeBridgeProcess: @unchecked Sendable {
             payload.removeAll()
             defer { try? outgoing.fileHandleForReading.close() }
             var response = Data()
-            let deadline = Date().addingTimeInterval(130)
+            let deadline = Date().addingTimeInterval(120)
             while response.count < 8 && !response.contains(10) {
                 let remaining = deadline.timeIntervalSinceNow
                 guard remaining > 0 else { throw ManagedNetworkError.deadline }
                 var fd = pollfd(fd: outgoing.fileHandleForReading.fileDescriptor, events: Int16(POLLIN), revents: 0)
-                guard poll(&fd, 1, Int32(min(remaining * 1000, 130000))) > 0,
+                guard poll(&fd, 1, Int32(min(remaining * 1000, 120000))) > 0,
                       let byte = try outgoing.fileHandleForReading.read(upToCount: 1), !byte.isEmpty else {
                     throw ManagedNetworkError.unavailable
                 }

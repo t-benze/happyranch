@@ -72,9 +72,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, SPUU
     /// The client loopback bridge (only active in CLIENT role).
     var clientBridge: ClientBridge?
     let managedJoin = ManagedJoinModel()
-    @Published var clientLane: ClientBridge.Lane = .diy
+    let homeInvite = HomeInviteModel()
+    @Published var clientLane: ClientBridge.Lane = .managed
     private var remoteHealthTask: Task<Void, Never>?
     private var managedJoinObservation: AnyCancellable?
+    private var homeInviteObservations: Set<AnyCancellable> = []
 
     override init() {
         super.init()
@@ -82,6 +84,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, SPUU
             guard let self, self.clientLane == .managed else { return }
             self.connectionState = phase.connectionState
         }
+        homeInvite.$webURL.sink { [weak self] url in
+            guard let self, self.clientLane == .managed else { return }
+            self.webViewURL = url?.absoluteString
+        }.store(in: &homeInviteObservations)
+        homeInvite.$phase.sink { [weak self] phase in
+            guard let self, self.clientLane == .managed else { return }
+            self.connectionState = phase == .connected ? .online : (phase == .idle ? .tailnetNotDetected : .offline)
+        }.store(in: &homeInviteObservations)
     }
 
     /// Connection state manager for the remote-connection surface.
@@ -957,7 +967,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, SPUU
             return supervisor.isManagedBySelf &&
                    (supervisor.state == .running || supervisor.state == .starting || supervisor.state == .unhealthy)
         case .client:
-            return clientBridge != nil || managedJoin.bridge != nil || managedJoin.busy
+            return clientBridge != nil || managedJoin.bridge != nil || managedJoin.busy || homeInvite.busy || homeInvite.phase == .connected
         }
     }
 
@@ -997,7 +1007,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, SPUU
             }
         case .client:
             // Disconnect client bridge if active.
-            if clientBridge != nil || managedJoin.bridge != nil || managedJoin.busy {
+            if clientBridge != nil || managedJoin.bridge != nil || managedJoin.busy || homeInvite.busy || homeInvite.phase == .connected {
                 disconnectRemote()
             }
         }
@@ -1229,6 +1239,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, SPUU
 
     /// Disconnect from the remote home runtime (CLIENT role).
     func disconnectRemote() {
+        homeInvite.cancel()
         remoteHealthTask?.cancel()
         remoteHealthTask = nil
         isConnecting = false

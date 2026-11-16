@@ -15,6 +15,80 @@ Retained historical source is nonshipping; it is not invoked indirectly.
 
 ## Development
 
+### THR-327 slice 5c: home invite UI and saved reconnect
+
+The CLIENT form now defaults to **Home invite**. Paste one invite and choose
+Connect. The app validates it offline, displays the control host and release
+runtime, joins through the isolated home helper, pairs, shows the comparison
+phrase while awaiting Linux approval, then opens the verified session. **Connected**
+is published only after the expected authorized main-frame web navigation
+finishes; network membership and health alone cannot publish it. Existing DIY
+Tailscale remains an explicit separate selection, never an error fallback. R3
+URL/key intake is absent; QR transfer remains deferred.
+
+`HomeInviteModel` owns attempt IDs, the actual invite-expiry countdown and cancel
+fencing. `ManagedHomeInviteSession` uses the 5b helper and the existing managed
+peer-only bridge for every ceremony, health and product request. Native/helper
+join has a 120-second bound, each ceremony request and opening navigation a
+10-second bound, and approval cannot outlive the invite. Cancel forgets draft,
+pairing material and handle; late results cannot reconnect. A failed join,
+including a helper TLS-close failure, reaches a closed failure with Retry (#1563).
+A spent join key is never retried. A retained same-trust unfinished membership,
+or a saved computer, reopens with an empty key. Fresh pairing still needs a new
+invite and Linux approval. #1564 Home-mode Start Connector is outside this path
+and remains queued; this change does not reproduce or repair that crash.
+
+After durable approval/delivery, the existing local login-Keychain store saves
+the grant, exact home/control/node binding, CA/trust and native profile UUID in
+one record. Discovery reads those protected records, with no plaintext index.
+There is no synchronized/shared item, CA installation, plaintext fallback or
+signing prerequisite. Reads retain normal unlock/consent UI and the sole-current-
+executable ACL validation from 5a. Changed executable identity/denial stays visible;
+there is no silent ACL expansion or replacement. A fresh delivered grant may
+replace an obsolete local item only after explicit consent. Failed saving offers
+Retry while delivery remains in memory; process loss before saving needs a new
+invite. Signed-release migration is still **REMAINING**, not automatic behavior.
+
+One saved computer reconnects on ordinary reopen without an invite. Multiple
+computers require selection. Disconnect keeps saved access. Remove saved computer
+stops the session, removes only its owned private flat native profile under the
+native flock, then deletes its exact Keychain item and verifies absence. Unknown,
+unsafe or future nested layouts refuse visibly. Failed native deletion retains
+the protected record for retry; failed Keychain deletion names that remaining
+storage. Revocation observed through the closed connector code closes access
+and runs local removal. Local removal never claims host revocation.
+
+**Pairing wire reconciliation remains required.** Section 5 specifies semantics
+and POST `/pair/invite`, but not the completion route/HTTP schemas. The fixture
+adapter provisionally sends `{invite_id, pair_secret}` (unchanged base64url
+encoding) there; 202 returns exactly `{completion_handle, comparison_phrase,
+expires_at}`. POST `/pair/complete` sends `{completion_handle}`; 202 is pending,
+200 delivers exactly `{credential, stable_node_id, home_id, control_plane_id,
+connector_id}`. Stable identity comes from connector WhoIs, never a client header.
+The connector must distinguish pending from a spent handle without re-delivery.
+Only fixed `error=revoked` on 403 and `error=daemon_unavailable` on 503 establish
+those specific failure categories. These route/schema/code choices need agreement
+with slice 2b; this PR does not assert live connector interoperability. No new
+invite-envelope fields were introduced. The slice-3c issuer is still absent;
+5a's provisional invite-format assumptions below remain literal.
+
+**Same-CA address/consumed-marker migration is REMAINING.** Accepting a changed
+URL fails closed with a visible remove-and-approve-again recovery; no marker is
+rewritten, identity repinned or CA trusted automatically. This is the brief's
+explicit deferral, not acceptance of section 6 recovery.
+
+Verification on the Linux maker host: Go test/vet ran successfully with the
+existing readonly module graph (effective local toolchain go1.27.1). Swift build,
+Swift tests and attributable Swift failure/pass proofs are **NOT RUN / PROOF NOT
+RUN**: Swift, AppKit, WebKit and Security are unavailable here. Existing ci.yml
+is lint-only; managed-m4.yml is a main-only C-ABI tailnet venue and does not build
+Swift. build-mac-app.yml compiles the app at independently reviewed source SHA/tree
+but does not run Swift tests; dispatch awaits independent review of this head.
+There is no current hosted Swift-test job. Actual unsigned Mac-mini build,
+Keychain quit/reopen, ACL/update, GUI screenshots and signed migration acceptance
+are **NOT RUN**, owed to slice 6/separate authorization. Lint or fixtures do not
+establish those native outcomes. See the PR body for exact-head check/job status.
+
 ### THR-327 slice 5a: single-invite and saved-access seams
 
 `RemoteInvite.parse(_:now:)` is an offline, home-only parser for the merged
@@ -66,9 +140,8 @@ has no signing prerequisite. No automatic migration or storage downgrade exists.
 
 Slice 5b must feed only validated CA/profile data into a dedicated per-home Go
 process, validate `/key` and DERP TLS and preserve Noise's distinct semantics.
-Slice 5c must wire invite intake, approval/delivery, saved-access retries/removal,
-attempt cancellation and sanitized #1563 failures, with Connected only after
-the authorized release web UI opens. Neither leg's behavior is implemented here.
+Slice 5c now wires these seams as described above; native execution and connector
+wire reconciliation remain unverified.
 
 On an authorized macOS host, the existing XCTest venue is:
 `swift test --package-path app/mac --filter 'RemoteInviteTests|SavedDeviceAccessTests'`.
@@ -125,8 +198,7 @@ Pairing, HTTP, SSE and upgrade I/O use this same helper. Monotonic handle IDs
 prevent stale stream IDs from reusing new FDs. Stop closes streams and confirms
 process exit before releasing the profile. Readiness never means Connected.
 
-Slice 5c must wire validated invites/saved records into this seam and settle
-approval/delivery/UI. Same-CA endpoint recovery still needs explicit saved-grant
+Slice 5c wires validated invites/saved records into this seam as described above. Same-CA endpoint recovery still needs explicit saved-grant
 validation and protected URL/consumed-marker migration from section 6; this
 trust leg does not implement that migration. Changed URLs still refuse existing
 state; no marker rewrite, hostname repin or automatic CA change is provided.
@@ -1393,7 +1465,11 @@ zero-before-free is source reviewed, not observed after free or through a
 production test hook. Keychain/UI/screenshots remain PR2; release pins and
 owner-run signing remain PR3. No manual main-only Mac workflow is dispatched.
 
-## Managed join and pairing screen (PR2)
+## Managed join and pairing screen (PR2, superseded)
+
+This historical manual-managed UI description is superseded by the single-invite
+5c flow above. Its model compatibility seams/tests remain; the current home form
+does not expose URL/key or separate pairing-code entry.
 
 In the existing CLIENT “Connect to Remote Runtime” form, DIY Tailscale remains
 selected by default. Select Managed network explicitly. Enter a trusted HTTPS

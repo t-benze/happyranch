@@ -26,25 +26,30 @@ public struct SavedDeviceBinding: Codable, Equatable, Sendable {
 public struct SavedDeviceCredential: Codable, Sendable, CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
     public let binding: SavedDeviceBinding
     public let trust: SavedHomeTrust
+    /// Nonsecret native profile identity, kept with the protected trust/grant.
+    /// Nil denotes a pre-integration record; it cannot silently select a node.
+    public let networkProfileID: UUID?
     private let bearer: Data
     public var description: String { "SavedDeviceCredential(<redacted>)" }
     public var debugDescription: String { description }
     public var customMirror: Mirror { Mirror(self, children: ["contents": "<redacted>"]) }
 
-    public init(binding: SavedDeviceBinding, trust: SavedHomeTrust, deliveredBearer: Data) throws {
+    public init(binding: SavedDeviceBinding, trust: SavedHomeTrust, deliveredBearer: Data,
+                networkProfileID: UUID? = nil) throws {
         guard binding.homeID == trust.homeID, binding.controlPlaneID == trust.controlPlaneID,
               !deliveredBearer.isEmpty, deliveredBearer.count <= 4096,
               deliveredBearer.allSatisfy({ $0 >= 33 && $0 <= 126 }) else { throw SavedAccessFailure.invalidRecord }
         self.binding = binding
         self.trust = trust
         self.bearer = deliveredBearer
+        self.networkProfileID = networkProfileID
     }
 
     public func withBearer<T>(_ body: (Data) throws -> T) rethrows -> T { try body(bearer) }
 
     func validated(binding: SavedDeviceBinding, trust: SavedHomeTrust) throws -> Self {
         guard self.binding == binding, self.trust == trust else { throw SavedAccessFailure.identityChanged }
-        return try Self(binding: binding, trust: trust, deliveredBearer: bearer)
+        return try Self(binding: binding, trust: trust, deliveredBearer: bearer, networkProfileID: networkProfileID)
     }
 }
 
@@ -69,6 +74,11 @@ public protocol SavedDeviceCredentialStore: Sendable {
     func save(_ credential: SavedDeviceCredential) async throws
     func load(binding: SavedDeviceBinding, trust: SavedHomeTrust) async throws -> SavedDeviceCredential
     func delete(binding: SavedDeviceBinding) async throws
+}
+
+/// Discovery reads the same protected records; there is no plaintext index.
+public protocol SavedHomeCredentialStore: SavedDeviceCredentialStore {
+    func savedHomes() async throws -> [SavedDeviceCredential]
 }
 
 /// Custody state only. A loaded/saved credential never means Connected.

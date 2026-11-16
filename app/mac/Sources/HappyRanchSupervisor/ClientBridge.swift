@@ -494,6 +494,86 @@ public final class ClientBridge: @unchecked Sendable {
         }
     }
 
+    /// Read only after stopManagedNetwork's serialized teardown barrier.
+    public var managedStopConfirmed: Bool {
+        Self.tsnetLock.withLock { homeProcess == nil && !nativeConfigured && Self.managedOwner == nil }
+    }
+
+    /// Install delivered/saved home authority; the connector still checks the
+    /// actual WhoIs node, current grant and release verifier on every request.
+    public func useHomeCredential(_ credential: SavedDeviceCredential) throws {
+        try Self.tsnetLock.withLock {
+            guard managedReady, managedAttempt != nil, homeProcess != nil else { throw HomeConnectionFailure.identityUnavailable }
+            deviceCredential = credential.withBearer { String(decoding: $0, as: UTF8.self) }
+            managedPaired = true
+        }
+    }
+
+    /// Fixed home ceremony requests, never DIY or the OS network. Body/header
+    /// bytes and native exception text are never logged. One ten-second bound
+    /// covers dial, partial writes and fragmented reads; cancel closes the FD.
+    func homeRequest(_ path: HomeRequestPath, body: Data = Data()) async throws -> HomeHTTPResponse {
+        let attempt = try Self.tsnetLock.withLock { () throws -> UUID in
+            guard managedReady, homeProcess != nil, let attempt = managedAttempt else { throw HomeConnectionFailure.identityUnavailable }
+            return attempt
+        }
+        guard body.count <= 8192 else { throw HomeConnectionFailure.authorizationIncomplete }
+        let completer = RedeemCompleter()
+        let response: String = try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                completer.configure(continuation: continuation)
+                DispatchQueue.global().asyncAfter(deadline: .now() + 10) {
+                    completer.finish(with: .failure(HomeConnectionFailure.homeUnavailable))
+                }
+                DispatchQueue.global().async {
+                    guard !completer.isCompleted else { return }
+                    let handle = self.managedDial(timeoutMs: 10_000, expectedAttempt: attempt)
+                    guard handle >= 0 else {
+                        completer.finish(with: .failure(HomeConnectionFailure.homeUnavailable)); return
+                    }
+                    defer { self.closeManagedHandle(handle) }
+                    guard completer.installManagedHandle(handle, close: { self.closeManagedHandle($0) }) else { return }
+                    let method = path == .invite || path == .complete ? "POST" : "GET"
+                    var header = "\(method) \(path.rawValue) HTTP/1.1\r\nHost: \(self.homeConnectorHost):443\r\nContent-Type: application/json\r\nContent-Length: \(body.count)\r\nConnection: close\r\n"
+                    if path == .health || path == .runtime {
+                        guard let credential = self.deviceCredential else {
+                            completer.finish(with: .failure(HomeConnectionFailure.authorizationIncomplete)); return
+                        }
+                        header += "X-HappyRanch-Device-Credential: \(credential)\r\n"
+                    }
+                    var request = Data((header + "\r\n").utf8)
+                    request.append(body)
+                    defer { request.resetBytes(in: 0..<request.count) }
+                    guard self.writeAll(request, handle: handle) == 0 else {
+                        completer.finish(with: .failure(HomeConnectionFailure.homeUnavailable)); return
+                    }
+                    var bytes = Data(), buffer = [CChar](repeating: 0, count: 8192)
+                    defer { bytes.resetBytes(in: 0..<bytes.count); buffer.withUnsafeMutableBytes { $0.initializeMemory(as: UInt8.self, repeating: 0) } }
+                    while !completer.isCompleted {
+                        let count = self.readManaged(handle, &buffer, 8192)
+                        guard count >= 0 else {
+                            completer.finish(with: .failure(HomeConnectionFailure.homeUnavailable)); return
+                        }
+                        if count > 0 { bytes.append(buffer.withUnsafeBytes { Data($0.prefix(Int(count))) }) }
+                        guard bytes.count <= 65536 else {
+                            completer.finish(with: .failure(HomeConnectionFailure.authorizationIncomplete)); return
+                        }
+                        do {
+                            if let text = try Self.completePairingResponse(bytes, eof: count == 0) {
+                                completer.finish(with: .success(text)); return
+                            }
+                        } catch {
+                            completer.finish(with: .failure(HomeConnectionFailure.authorizationIncomplete)); return
+                        }
+                    }
+                }
+            }
+        } onCancel: { completer.finish(with: .failure(CancellationError())) }
+        try Task.checkCancellation()
+        guard Self.tsnetLock.withLock({ managedReady && managedAttempt == attempt }) else { throw CancellationError() }
+        return try HomeHTTPResponse.parse(response)
+    }
+
     /// Authenticated runtime health via this bridge's local loopback listener.
     /// No redirects/proxies: a remote Location must never escape the selected lane.
     public enum RuntimeHealth: Sendable, Equatable {

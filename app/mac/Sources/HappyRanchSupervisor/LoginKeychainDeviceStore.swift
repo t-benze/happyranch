@@ -3,7 +3,7 @@ import Security
 
 /// Thin file-based login-Keychain adapter. Never updates/recreates an existing
 /// item, changes an ACL, adds a CA, or uses a data-protection/shared store.
-public actor LoginKeychainDeviceStore: SavedDeviceCredentialStore {
+public actor LoginKeychainDeviceStore: SavedHomeCredentialStore {
     public static let service = "ai.happyranch.HappyRanchApp.saved-home.v1"
     public init() {}
 
@@ -107,12 +107,35 @@ public actor LoginKeychainDeviceStore: SavedDeviceCredentialStore {
         // Read back the real item and enforce its actual binding and ACL.
         let saved = try await load(binding: credential.binding, trust: credential.trust)
         let sameBearer = saved.withBearer { old in credential.withBearer { old == $0 } }
-        guard sameBearer else { throw SavedAccessFailure.identityChanged }
+        guard sameBearer, saved.networkProfileID == credential.networkProfileID else { throw SavedAccessFailure.identityChanged }
     }
 
     public func load(binding: SavedDeviceBinding, trust: SavedHomeTrust) async throws -> SavedDeviceCredential {
         let keychain = try login()
         let ref = try item(keychain, binding)
+        return try read(ref).validated(binding: binding, trust: trust)
+    }
+
+    public func savedHomes() async throws -> [SavedDeviceCredential] {
+        let keychain = try login()
+        let request: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: Self.service, kSecAttrSynchronizable as String: false,
+            kSecMatchSearchList as String: [keychain], kSecMatchLimit as String: kSecMatchLimitAll,
+            kSecReturnRef as String: true]
+        var result: CFTypeRef?
+        let status = SecItemCopyMatching(request as CFDictionary, &result)
+        if status == errSecItemNotFound { return [] }
+        guard status == errSecSuccess, let refs = result as? [SecKeychainItem], refs.count <= 32 else {
+            throw failure(status)
+        }
+        // No partial discovery: a denied/changed item must remain visibly recoverable.
+        return try refs.map { ref in
+            let credential = try read(ref)
+            return try credential.validated(binding: credential.binding, trust: credential.trust)
+        }
+    }
+
+    private func read(_ ref: SecKeychainItem) throws -> SavedDeviceCredential {
         var request: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
                                      kSecMatchItemList as String: [ref], kSecReturnData as String: true,
                                      kSecMatchLimit as String: kSecMatchLimitOne]
@@ -128,7 +151,7 @@ public actor LoginKeychainDeviceStore: SavedDeviceCredentialStore {
         // never return material until the resulting exact ACL is validated.
         try validateACL(ref)
         do {
-            return try JSONDecoder().decode(SavedDeviceCredential.self, from: bytes).validated(binding: binding, trust: trust)
+            return try JSONDecoder().decode(SavedDeviceCredential.self, from: bytes)
         } catch let error as SavedAccessFailure { throw error }
         catch { throw SavedAccessFailure.invalidRecord }
     }

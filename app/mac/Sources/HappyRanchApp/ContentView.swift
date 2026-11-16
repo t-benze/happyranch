@@ -4,6 +4,53 @@ import WebKit
 /// NSViewRepresentable wrapping WKWebView.
 struct WebView: NSViewRepresentable {
     let url: URL
+    var verifiedHome = false
+    var onLoaded: (@MainActor (URL) -> Void)?
+    var onFailed: (@MainActor (URL) -> Void)?
+
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+    @MainActor
+    final class Coordinator: NSObject, WKNavigationDelegate {
+        var owner: WebView
+        private var authorizedRoot = false
+        init(_ owner: WebView) { self.owner = owner }
+
+        func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
+                     decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+            guard owner.verifiedHome else { decisionHandler(.allow); return }
+            guard let target = navigationAction.request.url,
+                  target.scheme == owner.url.scheme, target.host == owner.url.host,
+                  target.port == owner.url.port else { decisionHandler(.cancel); owner.onFailed?(owner.url); return }
+            decisionHandler(.allow)
+        }
+
+        func webView(_ webView: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse,
+                     decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void) {
+            guard owner.verifiedHome, navigationResponse.isForMainFrame else { decisionHandler(.allow); return }
+            guard let response = navigationResponse.response as? HTTPURLResponse,
+                  (200...299).contains(response.statusCode), let target = response.url,
+                  target.scheme == owner.url.scheme, target.host == owner.url.host, target.port == owner.url.port,
+                  authorizedRoot || target == owner.url else {
+                decisionHandler(.cancel); owner.onFailed?(owner.url); return
+            }
+            authorizedRoot = true
+            decisionHandler(.allow)
+        }
+
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            guard owner.verifiedHome, authorizedRoot, let target = webView.url,
+                  target.scheme == owner.url.scheme, target.host == owner.url.host, target.port == owner.url.port else { return }
+            owner.onLoaded?(owner.url)
+        }
+
+        func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+            authorizedRoot = false; owner.onFailed?(owner.url)
+        }
+        func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+            authorizedRoot = false; owner.onFailed?(owner.url)
+        }
+    }
 
     func makeNSView(context: Context) -> WKWebView {
         let config = WKWebViewConfiguration()
@@ -12,11 +59,13 @@ struct WebView: NSViewRepresentable {
         config.defaultWebpagePreferences = prefs
 
         let webView = WKWebView(frame: .zero, configuration: config)
+        webView.navigationDelegate = context.coordinator
         webView.load(URLRequest(url: url))
         return webView
     }
 
     func updateNSView(_ nsView: WKWebView, context: Context) {
+        context.coordinator.owner = self
         if nsView.url != url {
             nsView.load(URLRequest(url: url))
         }
@@ -32,7 +81,14 @@ struct ContentView: View {
         ZStack {
             if let urlString = appDelegate.webViewURL, let url = URL(string: urlString) {
                 ZStack(alignment: .top) {
-                    WebView(url: url)
+                    let attempt = appDelegate.homeInvite.attemptID
+                    WebView(url: url, verifiedHome: appDelegate.clientLane == .managed && appDelegate.connectionRole == .client,
+                        onLoaded: { appDelegate.homeInvite.webLoaded(url: $0, attempt: attempt) },
+                        onFailed: { appDelegate.homeInvite.webFailed(url: $0, attempt: attempt) })
+                    if appDelegate.connectionRole == .client && appDelegate.clientLane == .managed {
+                        HomeSessionStatus(model: appDelegate.homeInvite)
+                            .environmentObject(appDelegate)
+                    }
                     if appDelegate.supervisor.state == .unhealthy ||
                        appDelegate.supervisor.state == .failed {
                         unhealthyBanner
@@ -221,6 +277,30 @@ struct ContentView: View {
         )
         .padding(.horizontal, 16)
         .padding(.top, 8)
+    }
+}
+
+/// Saving failure remains visible even after the web UI replaces the form.
+private struct HomeSessionStatus: View {
+    @EnvironmentObject var appDelegate: AppDelegate
+    @ObservedObject var model: HomeInviteModel
+    var body: some View {
+        if model.phase != .connected || model.saveFailure != nil {
+            HStack {
+                if model.phase != .connected { Text(model.phase.message) }
+                if let failure = model.saveFailure {
+                    Text("Access was not saved").foregroundStyle(.red)
+                    Text(failure.localizedDescription).font(.caption)
+                    if failure == .identityChanged {
+                        Button("Manage saved access…") { appDelegate.showRemoteAccess = true }
+                    } else {
+                        Button("Retry saving") { model.retrySave() }
+                    }
+                }
+            }
+            .padding(10)
+            .background(.regularMaterial)
+        }
     }
 }
 

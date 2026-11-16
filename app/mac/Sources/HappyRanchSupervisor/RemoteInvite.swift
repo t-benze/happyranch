@@ -139,14 +139,14 @@ enum Base64URL {
 
 /// Small bounded JSON grammar: objects, strings and integer tokens only.
 /// Decoding keys before insertion catches even escaped duplicate names.
-private indirect enum InviteValue { case text(String), number(Int64), object([String: InviteValue]) }
-private extension Dictionary where Key == String, Value == InviteValue {
+indirect enum InviteValue { case text(String), number(Int64), object([String: InviteValue]) }
+extension Dictionary where Key == String, Value == InviteValue {
     func text(_ key: String) throws -> String {
         guard case .text(let value) = self[key] else { throw RemoteInviteError.schema }
         return value
     }
 }
-private struct InviteJSON {
+struct InviteJSON {
     let bytes: [UInt8]
     var index = 0
     mutating func whitespace() { while index < bytes.count && [9, 10, 13, 32].contains(bytes[index]) { index += 1 } }
