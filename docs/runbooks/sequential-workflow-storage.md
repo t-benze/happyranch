@@ -11,7 +11,7 @@ After writer acquisition, `not_installed` requires owned rollback, writer close
 and independent RO original-inventory equality; uncertain proof is `unknown`
 (exit 4). There is no new post-COMMIT physical veto or automatic restore.
 The existing offline backup remains operator-created and untouched; A4 owns
-automatic bootstrap/phase publication. Inline load checks remain until I2;
+automatic bootstrap/phase publication. I2 removes inline physical checks;
 the daily read-only report is I1b. See the
 [I1a contract](../superpowers/specs/2026-11-14-automatic-workflow-setup.md).
 
@@ -23,17 +23,20 @@ identity and a pinned zero-write snapshot. Writes/write rollback, schema/config
 execution or failed observation invalidate it; replaced files refuse. Retained
 charges import once per compatible caller and changed targets debit original
 cumulative counters. Public/unknown snapshots and later loads validate fresh.
-Every miss retains full physical/FK checks and original finite limits. A0b-2
-capacity acceptance requires actual default writable installed danze, family and
+Every miss retains full FK/domain checks and original finite limits. Historically,
+A0b-2 capacity acceptance required actual default writable installed danze,
+family and
 genuine fresh-org FIRST/NEXT returns on Python3.12/3.14. Installed happyranch's
-FIRST and attempted NEXT must refuse with zero DB changes, no partial certificate
+FIRST and attempted NEXT had to refuse with zero DB changes, no partial certificate
 and no leaked trace registration: **EXPECTED REFUSAL - part 1 retained until I2**,
 never PASS. Retain the once-only original pre-A0b-2 observation of that private
 image; continuation and head re-verification must not repeat it.
 Installed happyranch FIRST/NEXT/Pause/all-org-tail capacity acceptance belongs to
 I2, on its fresh base and capture; all other A0b-2 cases remain required. No cap,
-check, deadline or caller changes here. Automatic install stays size-guarded/held
-for over-budget orgs; no setup or operating authority follows.
+check, deadline or caller changes here. The current [I2 policy](../superpowers/specs/2026-11-14-automatic-workflow-setup.md#i2-load-and-revalidation-policy)
+requires successful primary/tail reads under the 10s all-org envelope.
+Automatic install stays size-guarded/held for over-budget orgs; no setup or
+operating authority follows.
 The [v3/F1 case map](../local-ci.md#a0b-2-requirement-to-case-map-v3-section-4-and-f1)
 records each named assertion and the separately evidenced old-Coding queued-family
 applicability limit. It is not an executed capacity or readiness receipt.
@@ -42,8 +45,8 @@ A0b finite SQL prerequisite: complete readers materialize shared singleton row
 shape/size once and specialize equivalent ownership type predicates. The private
 exceptional-text scan still follows a complete whole-table type/size proof in
 the same snapshot, with bounded acquisition and original logical charges.
-This component adds no installer/startup caller or new reuse and retains full
-physical/FK checks and every existing runtime/operator allowance below.
+This component adds no installer/startup caller or new reuse and retains
+full FK/domain checks and every existing runtime/operator allowance below.
 
 **SOURCE ONLY; isolated-copy installer evidence, no live acceptance.** TASK-14597 adds
 `scripts/install_workflow_sequential_schema.py` and the explicit installer in
@@ -264,4 +267,5 @@ The existing Audit filter `action=workflow_integrity_check` exposes loaded-org
 reports; unattached audit failure is retained in external reporting metadata.
 See [report semantics](../agent-guides/contracts/observability.md#daily-workflow-physical-integrity-advisory-i1b).
 These records authorize no restore, hold, cancellation, installation or admission
-change. All existing load validation remains until I2.
+change. I2 removes inline physical checks; full FKs and parts 2–7 remain on
+complete reads under the original budgets and deadline.

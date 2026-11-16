@@ -312,7 +312,7 @@ enablement, deployment or a Phase1-completion claim.
   committed requests only on ready E/G/H before teams/settings mutation. F keeps
   authentic history and actionable script guidance without recovery advancement.
   GET/preflight never advance.
-  SQLite integrity/FKs and contradictory pre-enable work block verification;
+  Whole SQLite FKs and contradictory pre-enable work block verification;
   incomplete/nonterminal F5 closures block drain with actual ownership and
   deferred U2D/U4/U5 actions, never cancellation or task/outbox mutation.
   Downgrade is eligible only for pristine F initial history and zero workflow data.

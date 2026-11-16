@@ -222,9 +222,6 @@ class WorkflowCutoverStore:
         )]
 
     def _integrity_blockers(self, conn: sqlite3.Connection) -> list[dict]:
-        if [row[0] for row in conn.execute("PRAGMA integrity_check")] != ["ok"]:
-            return [self._blocker("cutover_sqlite_integrity", owner="workflow_cutover_reconciler",
-                                  required_action="reconcile_storage")]
         if conn.execute("PRAGMA foreign_key_check").fetchone() is not None:
             return [self._blocker("cutover_foreign_key_integrity", owner="workflow_cutover_reconciler",
                                   required_action="reconcile_storage")]

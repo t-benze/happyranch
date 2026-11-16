@@ -34,7 +34,7 @@ authority/history readers or audit column/type metadata checks. The scan's
 nonnegative shared-budget charges are removed; the limit constants and
 release/imported/mappings/queued values stay unchanged. Supported histories may
 move from exhaustion refusal to acceptance, never the reverse from these charges.
-Tasks, task_results, workflow tables and structural/integrity/FK checks retain
+Tasks, task_results, workflow tables and structural/full FK checks retain
 their validation. No marker, replacement scan or budget reconstruction is added.
 `startup_timing` and `startup_workflow_validation` remain; after a Founder restart,
 read `startup_partition outcome=serving` and require `launcher_to_serving < 10s`.
@@ -625,7 +625,7 @@ extra/orphan/incorrectly typed relation refuses; failures roll back all new rows
 Independent installed/metadata readers retain source/naming/team/document
 checks, including validate_data=False with coding present. The generic wrapper
 omits only duplicate source/team checks proven by its own same-snapshot coding
-inventory; absent/unproven coding retains them. Physical/FK, native/mutable and
+inventory; absent/unproven coding retains them. Full FK/domain, native/mutable and
 direct complete history checks remain. The generic audit scan and watermark
 were removed per THR-308 seq403; its accepted detection and budget changes
 are described in the current coding validation contract.
@@ -2473,7 +2473,7 @@ remain unchanged. See the current THR296 spec's separate online contract.
   observed-only. Existing-org load/enable do not install the draft extension.
   One cold-load call before teams/settings resumes only authentic requests on validated E/G;
   F retains history and the explicit migration remedy without advancing; pure
-  reads never advance. Enable verifies real integrity/FKs and absence of
+  reads never advance. Enable verifies whole FKs/domain predicates and absence of
   contradictory work before compatibility_verified and again before enabled.
   Disable commits its admission fence before separate drain commits. F5 closure
   inspection retains actual owners and terminal history; queued cancellation,

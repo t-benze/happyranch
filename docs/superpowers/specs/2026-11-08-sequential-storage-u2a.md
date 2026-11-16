@@ -1,5 +1,7 @@
 # Sequential storage U2a source boundary
 
+> Supersession — 2026-11-16, I2 / Founder THR-336 msg194: full SQLite physical checks are removed from every load/revalidation, cutover recovery/projection/request/replay/get/downgrade and native constructor helper. Full foreign keys and parts 2–7, all budgets/deadlines and callers remain. Explicit install-time full checks and the daily advisory monitor remain separate. See [current policy](2026-11-14-automatic-workflow-setup.md#i2-load-and-revalidation-policy).
+
 TASK-14536 / root TASK-14531 implements the canonical records and standalone
 reader portion of U2 from Founder THR336 msg85-approved TASK14461 revision3.
 The authoritative unchanged storage/ownership/compatibility specification is

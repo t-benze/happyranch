@@ -9,7 +9,7 @@ transient schema/config execution and observation failures invalidate it. Snapsh
 pinning preserves caller transactions and acquisition/exit races fall back fresh.
 Each compatible retained budget imports a fact once; changed targets charge their
 actual new work cumulatively. Scope exit clears all associations on BaseException.
-Public/nondefault/unknown snapshots and later loads remain fresh. Full physical/FK
+Public/nondefault/unknown snapshots and later loads remain fresh. Full FK/domain
 checks and original budgets remain; no automatic setup or operating grant follows.
 
 > Moved verbatim from the repository-root `AGENTS.md` on 2026-10-30. Sections keep
@@ -120,7 +120,7 @@ THR308seq348/353/354 permits explicit source reads later in the SAME unpublished
 `OrgState.load` to reuse a complete result only with unchanged coherent SQLite
 bookends: local `total_changes`, main AND TEMP schema cookies, `data_version`,
 connection/database and configuration identity. Every load's first validation
-is complete, including unchanged `integrity_check` and `foreign_key_check`.
+is complete for parts 2–7, including the full `foreign_key_check`.
 Known settings seed/backfill, Pause journal UPDATEs and naming reservation audit
 writes invalidate reuse. Unknown, failed or changed metadata forces a full read.
 Autocommit reuse brackets a pinned read snapshot with outside observations;
@@ -136,7 +136,7 @@ A0b's finite SQL component materializes bounded whole-row shape/size once and
 specializes sequential ownership's equivalent type predicates. Exceptional text
 is still acquired/decoded under the original limits only after the whole-table
 type/size prerequisite passes in the same snapshot. This does not extend the
-load reuse contract above or remove any physical/FK/history check. See the
+load reuse contract above or remove any FK/history check. See the
 [shared finite SQL contract](reusable-workflows.md) for the unchanged charges.
 The A0b-2 [requirement-to-case map](../../local-ci.md#a0b-2-requirement-to-case-map-v3-section-4-and-f1)
 distinguishes reachable nonallocating source/mapping/settings history from the
@@ -165,7 +165,7 @@ authority/history readers or audit column/type metadata checks. The scan's
 nonnegative shared-budget charges are removed; the limit constants and
 release/imported/mappings/queued values stay unchanged. Supported histories may
 move from exhaustion refusal to acceptance, never the reverse from these charges.
-Tasks, task_results, workflow tables and structural/integrity/FK checks retain
+Tasks, task_results, workflow tables and structural/full FK checks retain
 their validation. No marker, replacement scan or budget reconstruction is added.
 `startup_timing` and `startup_workflow_validation` remain; after a Founder restart,
 read `startup_partition outcome=serving` and require `launcher_to_serving < 10s`.
@@ -394,7 +394,7 @@ role/import/template readers retain their existing defaults and provenance.
 Independent installed/metadata readers retain source/naming/team/document
 checks, including validate_data=False with coding present. The generic wrapper
 omits only duplicate source/team checks proven by its own same-snapshot coding
-inventory; absent/unproven coding retains them. Physical/FK, native/mutable and
+inventory; absent/unproven coding retains them. Full FK/domain, native/mutable and
 direct complete history checks remain. The generic audit scan and watermark
 were removed per THR-308 seq403; its accepted detection and budget changes
 are described in the current coding validation contract.

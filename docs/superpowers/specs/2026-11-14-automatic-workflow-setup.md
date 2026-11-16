@@ -55,11 +55,12 @@ compensating DDL is introduced. Backup bytes remain untouched.
 
 ## Delivery boundaries
 
-Inline load-time full integrity checks remain unchanged until I2. Redundancy
-during I1a through I2 is intentional. Full FK validation, parts 2–7, L32M,
-separate A/B/C2M allowances, logical caps, five-second complete-reader deadline
-and existing load callers remain unchanged. Installed primary capacity remains
-**EXPECTED REFUSAL — part 1 retained until I2**, never a success claim here.
+I1a initially retained inline load-time full integrity checks; I2 now removes
+that redundancy under the [current policy](#i2-load-and-revalidation-policy).
+Full FK validation, parts 2–7, L32M, separate A/B/C2M allowances, logical caps, five-second complete-reader deadline
+and existing load callers remain unchanged. I1a recorded installed primary
+capacity as **EXPECTED REFUSAL — part 1 retained until I2**, never a success
+claim for that earlier stage. I2 owns the subsequent successful-read gate.
 
 The daily advisory report is I1b; this slice adds no monitor, scheduler or daemon
 entrypoint. I2 depends on both I1a and I1b and the separately assigned status
@@ -125,9 +126,9 @@ The existing shell venue adds `--daily-integrity` private cases on 3.12/3.14;
 no new CI lane or test-only production seam. Actual full-suite persistent-job
 receipts and both exact-head hosted lints remain required before readiness.
 Independent review/QA and manager guarded merge remain. No daily result gates
-loads/tasks/workflows/admission. Inline integrity, complete FK/parts 2–7,
-L32M/A-B-C/logical caps/five-second readers remain until I2. A3 status visibility
-and A4 bootstrap are separate deliveries; no live install, restart or deploy.
+loads/tasks/workflows/admission. I2 removes inline physical checks; complete
+FK/parts 2–7, L32M/A-B-C/logical caps/five-second readers remain. A3 status
+visibility and A4 bootstrap are separate deliveries; no live install, restart or deploy.
 
 Attempt identity includes runtime key as well as slug/date, so an in-process
 runtime switch cannot consume another runtime's same-day attempt.
@@ -149,8 +150,9 @@ The existing Workflows surface shows status independently of failed
 definition/settings reads. The task banner returns empty only after a real
 task, current authority and complete history prove sequential absence.
 Corrupt, partial, denied or exhausted reads retain their original errors,
-including when installation evidence reports success. No integrity reader,
-load-time physical check, FK check, logical/SQL cap or five-second policy changes.
+including when installation evidence reports success. A3 changes no integrity
+reader, FK check, logical/SQL cap or five-second policy; I2 separately removes
+load-time physical checks.
 
 The card exposes only `integrity_report` outcome, closed reason, original
 checked_at/scheduled_date and external/audit reporting. Stale results retain
@@ -172,3 +174,37 @@ corresponding original-owned evidence; A3 never manufactures it. Multiple
 attempts or unrecognized phase/reason evidence remain unknown pending explicit
 owner reconciliation, and safe path metadata is not independent backup-content
 verification. The status reader opens neither the backup nor the org database.
+
+## I2 load and revalidation policy
+
+Founder THR-336 msg194 removes only physical `PRAGMA integrity_check` from
+the shared complete checker, every cutover blocker branch and the load-reachable
+native attempt constructor helper. No load/revalidation executes `quick_check`
+or a replacement physical scan. This includes recovery and its error fallback,
+projection, request/replay, public get, downgrade preflight, old-native source,
+rebuilt target, post-COMMIT observation and fresh native construction.
+
+Full `foreign_key_check` stays at every original site. Task/mark type, size,
+exception and binding guards; Pause rows and ancestry; schema/reference/workflow/
+native checks; ownership inventory/equality; both result decision scans; all
+cutover state/history/work-closure predicates and blocker identities remain.
+L stays 32M SQL steps, A/B/C retain separate 2M allowances, logical charges remain,
+and every complete read retains its original 5s deadline. Callers, transaction
+ownership and load-certificate invalidation remain unchanged. No skip flag,
+caller context, daily-cache substitution or test-only production seam is added.
+
+I1a install gates and I1b daily advisory full checks remain unchanged. Physical
+corruption detectable only by the native full check can survive a logical load
+until independent detection; install still refuses it before COMMIT. Daily
+results grant no certificate or admission. Native old/T2 literals, parent/child
+values and rowids, schema/journaling/cleanup/commit uncertainty remain exact.
+
+The historical A0b-2 primary EXPECTED REFUSAL is retained as evidence. I2 owns
+fresh private captures and actual DEFAULT writable FIRST/genuine NEXT on Python
+3.12/3.14 for happyranch, danze, family and genuine fresh creation. Acceptance is
+L≤32M, every complete read <5s and all three orgs plus profile reconciliation
+and all current eligible selectors ≤10s (Founder THR-336 msg208; seven-selector
+disposition: `dev_agent/output/TASK-16507/selector-disposition.md`). A primary
+refusal/limit breach stops implementation
+without enlarging any budget or weakening a check. No live installation or
+operating qualification follows private-copy evidence.

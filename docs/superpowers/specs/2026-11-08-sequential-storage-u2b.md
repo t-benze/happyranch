@@ -1,5 +1,7 @@
 # U2b explicit sequential storage installer/check source
 
+> Supersession — 2026-11-16, I2 / Founder THR-336 msg194: full SQLite physical checks are removed from every load/revalidation, cutover recovery/projection/request/replay/get/downgrade and native constructor helper. Full foreign keys and parts 2–7, all budgets/deadlines and callers remain. Explicit install-time full checks and the daily advisory monitor remain separate. See [current policy](2026-11-14-automatic-workflow-setup.md#i2-load-and-revalidation-policy).
+
 Append-only pointer for TASK-14597 under TASK-14595 / ROOT TASK-14563.
 Founder THR-336 msg85 approved TASK-14461 plan revision3 U1–U9 SOURCE;
 msg95 continues it. This unit delivers only the explicit operator script,

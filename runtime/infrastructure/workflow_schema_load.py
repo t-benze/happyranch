@@ -3,6 +3,7 @@
 Only audited source wrappers and the three unchanged cutover/ownership/naming
 startup targets borrow complete validation. Public reads and changed or unknown
 intervals remain fresh, with the original cumulative budgets and deadlines.
+Complete means full FKs and parts 2–7; physical checks are install/daily work.
 """
 from __future__ import annotations
 

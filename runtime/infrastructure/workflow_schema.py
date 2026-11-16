@@ -1134,9 +1134,11 @@ def _stored_json(raw: object, digest: object, *, code: str = "workflow_source_da
 
 
 def _validate_source_data(conn: sqlite3.Connection, *, coding: _CodingInventory | None = None) -> None:
-    """DB-resident contracts only; historical eligibility is not re-authorized."""
-    if ([row[0] for row in conn.execute('PRAGMA integrity_check')] != ['ok']
-            or conn.execute('PRAGMA foreign_key_check').fetchone() is not None):
+    """DB-resident FK/domain contracts; historical eligibility is not re-authorized.
+
+    Physical integrity belongs to explicit installation and daily monitoring.
+    """
+    if conn.execute('PRAGMA foreign_key_check').fetchone() is not None:
         raise ValueError('workflow_source_data_corrupt')
     for table, column, digest in (
         ('workflow_template_drafts', 'definition_bytes', 'definition_digest'),

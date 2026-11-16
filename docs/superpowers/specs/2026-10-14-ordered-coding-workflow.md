@@ -1,5 +1,7 @@
 # Ordered coding workflow — agent-read contract
 
+> Supersession — 2026-11-16, I2 / Founder THR-336 msg194: full SQLite physical checks are removed from every load/revalidation, cutover recovery/projection/request/replay/get/downgrade and native constructor helper. Full foreign keys and parts 2–7, all budgets/deadlines and callers remain. Explicit install-time full checks and the daily advisory monitor remain separate. See [current policy](2026-11-14-automatic-workflow-setup.md#i2-load-and-revalidation-policy).
+
 THR-308 seq403 removes the generic `audit_log` coding scan, its process-local
 watermark and collector/publication plumbing, including its scan diagnostic.
 Startup and runtime coding validation therefore no longer detect otherwise

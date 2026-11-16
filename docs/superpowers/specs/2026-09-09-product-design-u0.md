@@ -1862,6 +1862,8 @@ under the same operation/owner and preserves every template/version/activation/
 request/outbox identity. A corrupt or unsupported marker fails closed without
 writes.
 
+> Supersession — 2026-11-16: I2 / Founder THR-336 msg194 replaces historical every-load physical integrity checking with explicit install-time checks and daily advisory reporting. Whole FKs and parts 2–7 remain on complete reads, including cutover/native paths, with unchanged limits. See [current I2 policy](2026-11-14-automatic-workflow-setup.md#i2-load-and-revalidation-policy).
+
 The executed compatibility boundary is additive and preservation-only:
 
 - fresh empty SQLite and current v2 `RuntimeDir.init -> DaemonState.from_runtime
