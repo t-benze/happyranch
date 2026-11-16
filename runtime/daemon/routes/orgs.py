@@ -162,13 +162,21 @@ async def init_org(body: InitOrgBody, request: Request) -> dict:
             or body.slug in state.orgs):
         return await _init_org_fenced(body, request)
     try:
-        with org_access(state.runtime.orgs_dir / body.slug):
-            return await _init_org_fenced(body, request)
+        with org_access(state.runtime.orgs_dir / body.slug) as fence:
+            access_owner = {"resources_started": False}
+            try:
+                return await _init_org_fenced(body, request, access_owner=access_owner)
+            except BaseException:
+                if not access_owner["resources_started"]:
+                    # Skeleton/input refusal preceded every SQL/native owner.
+                    fence.close()
+                raise
     except OrgAccessHeld as exc:
         raise HTTPException(status_code=409, detail={'code': str(exc)}) from None
 
 
-async def _init_org_fenced(body: InitOrgBody, request: Request) -> dict:
+async def _init_org_fenced(body: InitOrgBody, request: Request, *,
+                           access_owner: dict | None = None) -> dict:
     state: DaemonState = request.app.state.daemon
     _require_runtime(state)
     if not _SLUG_RE.match(body.slug) or body.slug in _RESERVED:
@@ -184,6 +192,8 @@ async def _init_org_fenced(body: InitOrgBody, request: Request) -> dict:
         )
     org_root = state.runtime.orgs_dir / body.slug
     if org_root.exists():
+        if access_owner is not None:
+            access_owner["resources_started"] = True
         # The org is not loaded. Two paths:
         #  a) Pristine skeleton (no real data) → reclaim silently.
         #  b) Data-bearing dir → protective 409, do NOT touch.
@@ -224,6 +234,8 @@ async def _init_org_fenced(body: InitOrgBody, request: Request) -> dict:
         db_path = OrgPaths(org_root).db_path
         if db_path.exists():
             raise ValueError("fresh_org_database_already_exists")
+        if access_owner is not None:
+            access_owner["resources_started"] = True
         database = Database(db_path)
         try:
             initialize_complete_org_schema(database, expected_org_slug=body.slug, layout="I")

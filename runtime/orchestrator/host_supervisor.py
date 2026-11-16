@@ -1773,7 +1773,7 @@ class HostSessionSupervisor:
             if not entered:
                 # Slot/spacing admission can veto before final validation owns
                 # cleanup. Preserve typed deferrals and abandon exactly once.
-                self._safe_abandon(self._backend, pending, request.move_reservation)
+                ctx._org_abandoned = self._safe_abandon(self._backend, pending, request.move_reservation)
             raise
 
     def _execute_prepared_attempt(
@@ -1803,10 +1803,10 @@ class HostSessionSupervisor:
             try:
                 finalized = task_commit(ctx)
             except DeferredRootPause:
-                self._safe_abandon(self._backend, pending, request.move_reservation)
+                ctx._org_abandoned = self._safe_abandon(self._backend, pending, request.move_reservation)
                 raise
             except BaseException:
-                self._safe_abandon(self._backend, pending, request.move_reservation)
+                ctx._org_abandoned = self._safe_abandon(self._backend, pending, request.move_reservation)
                 raise
             if finalized is None:
                 self._abandon_pre_launch(ctx, pending, attempt, request.move_reservation)
@@ -1820,14 +1820,14 @@ class HostSessionSupervisor:
                     from runtime.orchestrator.task_pause import DeferredRootPause, PauseControlError
                     from runtime.orchestrator.team_move import DeferredTeamMove
                     if isinstance(exc, (DeferredRootPause, DeferredTeamMove, PauseControlError)):
-                        self._safe_abandon(self._backend, pending, request.move_reservation)
+                        ctx._org_abandoned = self._safe_abandon(self._backend, pending, request.move_reservation)
                         raise
                     ctx.freeze_terminal(TerminalReason.FAILURE)
                     ctx.set_error(f"final pre-launch validation failed: {exc}")
                     # Keep the actionable validation error; _abandon_pre_launch
                     # intentionally replaces it with the concurrent terminal
                     # winner's generic text for cancellation/shutdown paths.
-                    self._safe_abandon(self._backend, pending, request.move_reservation)
+                    ctx._org_abandoned = self._safe_abandon(self._backend, pending, request.move_reservation)
                     return self._outcome(request, ctx, attempt)
             # ── launch commitment: the single atomic gate ──
             if not ctx.commit_launch():

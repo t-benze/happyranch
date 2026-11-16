@@ -227,9 +227,11 @@ class OrgAccessFence:
             os.close(self.fd)
             os.close(self._parent)
             self._closed = True
+            _uncertain.discard(self)
 
     def retain_unknown(self) -> None:
-        _uncertain.add(self)
+        if not self._closed:
+            _uncertain.add(self)
 
 
 @contextmanager

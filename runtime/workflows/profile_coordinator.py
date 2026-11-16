@@ -295,11 +295,18 @@ class ProfileCoordinator:
                 os.close(fd)
 
     @contextmanager
-    def _org_fences(self, *, allow_unloaded: bool = False) -> Iterator[None]:
+    def _org_fences(self, *, allow_unloaded: bool = False,
+                    attaching_org: OrgState | None = None) -> Iterator[None]:
         from runtime.infrastructure.org_access_fence import OrgAccessFence, org_access_key
         with self._capture_orgs() as current:
             captured = dict(current)
         roots = {slug: org.root for slug, org in captured.items()}
+        if attaching_org is not None:
+            if attaching_org.slug in captured and captured[attaching_org.slug] is not attaching_org:
+                raise ProfileCoordinatorError('profile_consumer_changed')
+            # The original loaded candidate is not published in the runnable
+            # map yet. Include only it in the exact discovered membership.
+            roots[attaching_org.slug] = attaching_org.root
         if self._org_roots is not None:
             discovered = dict(self._org_roots())  # metadata only, never Database
             if (any(discovered.get(slug) != root for slug, root in roots.items())
@@ -323,9 +330,10 @@ class ProfileCoordinator:
         profile_names: Sequence[str],
         *,
         wait: bool,
+        attaching_org: OrgState | None = None,
     ) -> Iterator[tuple[str, ...]]:
         names = tuple(sorted({name.strip().lower() for name in profile_names if name.strip()}))
-        with self._org_fences(), ExitStack() as stack:
+        with self._org_fences(attaching_org=attaching_org), ExitStack() as stack:
             for name in names:
                 stack.enter_context(self._profile_lease(name, wait=wait))
             yield names
@@ -1353,7 +1361,7 @@ class ProfileCoordinator:
         """Synchronize and attach one org without escaping profile capture."""
         capture = self._capture_org_dependencies(org, attachment=True)
         desired, revision, snapshot = capture.desired, capture.revision, capture.snapshot
-        with self._profile_leases(capture.profile_names, wait=True) as names:
+        with self._profile_leases(capture.profile_names, wait=True, attaching_org=org) as names:
             self._validate_effective_inputs(capture.effective_identity)
             for name in names or (None,):
                 self._assert_no_active_operation(name, attaching_org=org)
