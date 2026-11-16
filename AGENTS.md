@@ -270,7 +270,7 @@ One line per area; read the linked contract before changing it.
 
 - **Coding workflow** (disabled by default; built-in definition, historical Founder settings at `/orgs/:slug/settings/coding` — since U8b a pointer to Workflows → Setup with read-only original-save recovery — `scripts/setup_coding.py`): [coding-workflow.md](docs/agent-guides/contracts/coding-workflow.md)
 - **Sequential Coding cutover** (atomic v2 fresh-start selection/old-fresh fence; separate offline setup/admission): [operator install/backout](docs/runbooks/sequential-coding-cutover.md)
-- **Workflow schema, activation and document review** (F–J layouts, explicit migration scripts only): [document-workflows.md](docs/agent-guides/contracts/document-workflows.md)
+- **Workflow schema, activation and document review** (F–J; fresh combined storage, existing migrations stay explicit until A4): [document-workflows.md](docs/agent-guides/contracts/document-workflows.md), [automatic setup](docs/superpowers/specs/2026-11-14-automatic-workflow-setup.md#a2-fresh-creation-and-definition-only-catalog).
 - **Escalation authority policy** (THR-181/229/277/279; THR308 T-0 ordinary callbacks omit attempt/admitted audit/token, retained escalation and lineage admission): [authority-policy.md](docs/agent-guides/contracts/authority-policy.md)
 - **Task orchestration** (attachments, retries, root Pause/Resume, creation-time ownership marks): [task-orchestration.md](docs/agent-guides/contracts/task-orchestration.md)
 - **Launch, preparation and daemon lifecycle** (repository refresh, preparation recovery, startup safety, ordinary Pause-unknown crash recovery, shutdown): [runtime-lifecycle.md](docs/agent-guides/contracts/runtime-lifecycle.md)

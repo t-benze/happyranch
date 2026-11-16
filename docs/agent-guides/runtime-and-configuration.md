@@ -1,5 +1,16 @@
 # Runtime And Configuration
 
+POST `/orgs` now creates J + Coding + sequential storage and ownership-2 through
+a distinct owner after exclusive skeleton creation and exclusive DB-file
+creation. It retains A1's pre-open org-access fence, Default human-managed team
+(zero agents), and the current `none` reviewer policy. Startup cannot infer
+freshness from an absent DB. After actual storage/native/authority qualification,
+the literal Coding v2 catalog adds definition bytes only: exact existing rows
+write zero, mismatches refuse, missing defaults stay Disabled and roles unset.
+Historical constructors and saved settings/admission/history are unchanged.
+Existing-org automatic storage installation belongs to A4; see the
+[A2 contract](../superpowers/specs/2026-11-14-automatic-workflow-setup.md#a2-fresh-creation-and-definition-only-catalog).
+
 `Database.observe_trace(callback)` explicitly owns and composes the native trace
 slot on Database-owned connections. Production callers register through this
 owner; raw `set_trace_callback` is unsupported. One dispatcher delivers in
@@ -3285,8 +3296,9 @@ retain their F/E/G/H/I paths; old families keep their construction and digests.
 The strict fresh-J initializer still requires empty native operational storage
 and valid remote markers; it correctly refuses this retained sequence row.
 Neither that guard nor any real migration changes; calling the real coding
-migration here would recurse through reference validation. Actual create-org
-still explicitly initializes I. Normal OrgState.load subsequently adds coding
+migration here would recurse through reference validation. A2's distinct
+positively fresh create-org owner now initializes combined J/sequential/ownership-2;
+the historical complete initializer keeps its G default. Historical OrgState.load adds coding
 beside the actual document foundation; I plus coding is J. Enable performs no
 document upgrade. Empty J uses the existing I draft/submission/handoff/
 revision and document drain readers. Any J, even empty, blocks pre-J downgrade;

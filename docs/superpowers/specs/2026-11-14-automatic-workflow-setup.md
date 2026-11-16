@@ -9,12 +9,6 @@ install gates (I1a) from the daily read-only advisory report (I1b).
 
 ## I1a: mandatory full integrity during offline installation
 
-A2 adds a distinct fresh-org owner: POST `/orgs` first creates its skeleton,
-then exclusively creates the database file and initializes J, Coding, sequential
-storage and ownership-2. The native historical initializer and its G default
-remain unchanged. Startup absence is never positive freshness evidence. This
-source change does not install existing orgs; A4 remains separate.
-
 `runtime/infrastructure/workflow_integrity.py` owns the explicit native full
 `PRAGMA integrity_check`. Success requires exactly one single-cell text `ok`
 row followed by normal cursor completion. Non-ok results and corruption errors
@@ -228,3 +222,62 @@ The original native JOB owner is **`runtime/daemon/jobs_runner.py`**: `create_su
 Agent sessions use the in-set host supervisor and `runtime/daemon/sessions.py` guardian. A separate shell inherits the original descriptor before native prepare and retains it on EOF/parent loss. The supervisor sends a close instruction only for positive original receipt/quiescence with complete cleanup, or positively unlaunched/abandoned preparation. Provider-wrapper refusal, final-validator veto/deferral and task-commit exceptions record positive never-launched abandonment before the guardian finalizer. Unknown prepare/spawn/cleanup, failed abandonment or lost original guardian remains HOLD. The four platform/executor transport files remain unchanged. This source delivery does not qualify service-wide kill, cold/macOS operating behavior or historical original owners from a dead PID.
 
 The existing schema shell adds focused `--org-access-fence`, `--org-access-openers`, `--org-access-native`, `--org-access-guardian` and `--org-access-profile` selections. They use real EX-holder processes and exact source file/SQLite-open observations, physical org/profile lock acquisition, original guardian close/EOF barriers and a genuinely launched registered native JOB which observes its inherited lock inode after parent copies close. The real empty-org create/reattachment boundary, unrelated unloaded consumer, supervisor refusal branches and repeated pre-open input refusals are covered in these same selections. Input/skeleton and existing-directory refusals positively close the route fence when no DB/native operation began or the original probe positively closed; a probe error without closure proof or later unknown ownership still retains HOLD. Positive original fence closure retires its uncertainty record. No test-only production seam, new test venue, required check or trigger is added. Full ordinary budgets (32M SQL, separate A/B/C 2M, logical charges, 5s reads), <=10s startup envelope, parts 2–7 and I1a/I1b full checks remain unchanged. Automatic selector/requalification, backup/phase/installation and cold whole-startup acceptance belong to A4; obtaining EX supplies no such authority.
+
+
+## A2: fresh creation and definition-only catalog
+
+2026-11-17 source supersedes the earlier fresh-I/offline-only registration
+checkpoint. POST `/orgs` retains A1's pre-open fence and exclusively creates its
+skeleton. The distinct `initialize_fresh_org_database` uses native O_EXCL file
+creation, the byte-unchanged historical J initializer, sequential literals and
+an empty-only ownership-2 owner. A complete default reader validates the literal
+independent J + Coding + sequential/ownership-2 reference, followed by a target
+full physical integrity check before publication. The route retains the current
+Default human-managed team, zero agents and current intentional `none` reviewer
+configuration. Historical initializer bytes/defaults and generic Database stay
+unchanged. Startup DB absence is never fresh-creation authority.
+
+`sequential_builtin.PRESET_CATALOG` literally names only the reviewed Coding v2
+source and definition digests. Resource discovery precedes SQL ownership. Real
+OrgState load calls the registrar after its recovery/authority tail. Absent
+storage remains historical; held startup publication defers missing registration.
+An exact existing definition causes zero writes, including audit/settings rows.
+An immutable mismatch refuses without repair or replacing its stored ID.
+
+Before insertion, the owner requires real file/cache authority readiness, the
+original mounted native owner, its existing bounded strict census and safety
+predicates, and complete default source history/storage qualification under
+publisher/Database locks and an owning writer transaction. The original live
+nondurable native reservation is identified by its unique registry addition
+while those locks remain held. Only compiled catalog definition bytes are
+inserted. Target verification checks exact immutable row bytes, the precise
+write count, definition FK state and original authority/native ownership before
+COMMIT. This append-only operation does not rescan the entire unchanged retained
+history on a replenished ledger. Full source parts 2–7 and every existing load
+check remain; L32M, separate A/B/C2M, logical charges, the original five-second
+reader deadline, I1a/I1b physical checks and the <=10s all-org startup limit do
+not change. Whole production startup qualification remains A4's acceptance.
+
+Registration never creates settings, admission, roles, runs, tasks or Allowed
+state. Missing defaults remain Disabled and roles unset; saved settings,
+admission and history retain their exact bytes/rowids. The offline operator
+shares exact immutable definition selection and retains its own unchanged
+cooperative/offline/backup rules. Source delivery grants no live setup,
+restart/deployment, role assignment, Allow or genuine Coding scratch authority.
+Existing-org automatic installation and visible size holds remain A4.
+
+The existing schema shell's focused `--fresh-catalog` selection covers A2-H
+(historical defaults/literal references/exact initializer bytes), A2-R (the real
+POST and native creation, current team/reviewer defaults, exclusive-create
+refusal and absent-DB historical startup), and A2-C (literal catalog, absent
+insert/exact-zero-write/mismatch refusal, complete preservation including saved
+Allowed settings, ordinary FIRST/NEXT registration and actual authority/native
+uncertainty). `--fresh-catalog=historical|route|registration` selects the same
+cases for mutation receipts. Private fixture corruption restores the ORIGINAL
+immutable triggers and complete layout before any owner under test executes.
+No test-only production seam or flag exists. This build runs only focused
+Python3.12/3.14 cases and source-boundary lint; the manager owns the one full
+schema/local-CI pass at the final approved head (MEM-681). Required hosted checks
+stay exactly Source Boundary Lint and Web Lint (Node24), followed by independent
+review/QA and manager guarded merge at the exact head. No E2E, V3 or CI trigger
+is added.

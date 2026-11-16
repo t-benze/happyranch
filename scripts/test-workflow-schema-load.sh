@@ -50,13 +50,19 @@ from runtime.orchestrator.agent_def import AgentDef, render_agent_text
 
 # A focused phase selects the same retained corruption rows/assertions. The
 # default/full matrix remains all four phases; no case is skipped or weakened.
+a2_case = None
+if len(sys.argv) == 2 and sys.argv[1].startswith('--fresh-catalog='):
+    a2_case = sys.argv[1].split('=', 1)[1]
+    assert a2_case in ('route', 'historical', 'registration')
+    sys.argv[1:] = ['--fresh-catalog']
+
 retained_phase = None
 if len(sys.argv) == 2 and sys.argv[1].startswith('--retained-corruption-phase='):
     retained_phase = dict(first='first', local='between local', external='between external',
         uncommitted='between uncommitted')[sys.argv[1].split('=', 1)[1]]
     sys.argv[1:] = ['--retained-corruption']
 
-assert sys.argv[1:] in ([], ['--org-access-fence'], ['--org-access-openers'], ['--org-access-native'], ['--org-access-guardian'], ['--org-access-profile'], ['--setup-status'], ['--daily-integrity'], ['--install-integrity'], ['--bounded-acquisition'], ['--trace-custody'], ['--sequential-reuse'], ['--sequential-load'], ['--sequential-freshness'], ['--sequential-faults'], ['--sequential-sql-exhaustion'], ['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--coding-authority-corruption'], ['--document-native-corruption'], ['--author-handoff-corruption'], ['--document-revision-corruption'], ['--coding-history-corruption'], ['--physical-corruption'], ['--sequential-uncommitted'], ['--i2-cutover'], ['--i2-native']), 'unknown schema-load selection'
+assert sys.argv[1:] in ([], ['--fresh-catalog'], ['--org-access-fence'], ['--org-access-openers'], ['--org-access-native'], ['--org-access-guardian'], ['--org-access-profile'], ['--setup-status'], ['--daily-integrity'], ['--install-integrity'], ['--bounded-acquisition'], ['--trace-custody'], ['--sequential-reuse'], ['--sequential-load'], ['--sequential-freshness'], ['--sequential-faults'], ['--sequential-sql-exhaustion'], ['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--coding-authority-corruption'], ['--document-native-corruption'], ['--author-handoff-corruption'], ['--document-revision-corruption'], ['--coding-history-corruption'], ['--physical-corruption'], ['--sequential-uncommitted'], ['--i2-cutover'], ['--i2-native']), 'unknown schema-load selection'
 
 
 print('SCHEMA_RUNTIME', json.dumps(dict(python=sys.version, executable=sys.executable, sqlite=sqlite3.sqlite_version,
@@ -786,6 +792,230 @@ def inline_sql_observation(case, *, collected_failures=None):
     print('PASS', case, 'whole-native-connections', len(connections), 'complete-reads', len(reads),
           ('whole-FK/native-queued/native-metadata/workflow-metadata=1/1/1/1 per complete candidate; physical=0'
            if reads else 'physical=0; no sequential complete reader in this case'), flush=True)
+
+
+if sys.argv[1:] in ([], ['--fresh-catalog']):
+    import asyncio
+    import inspect
+    import httpx
+    from runtime.daemon.app import create_app
+    from runtime.daemon.routes.orgs import _seed_skeleton
+    from runtime.daemon.state import DaemonState
+    from runtime.runtime import RuntimeDir
+    from runtime.infrastructure.workflow_schema import (
+        initialize_complete_org_schema, initialize_fresh_org_database,
+        _layout, _canonical_layout, _canonical_sequential_layout,
+        sequential_storage_inventory, _schema_snapshot,
+    )
+    from runtime.workflows.sequential_builtin import SequentialBuiltinStore, PRESET_CATALOG
+    from runtime.workflows.sequential_history import read_sequential_history, StorageSettings, _bytes
+    from runtime.workflows.sequential_release import read_coding_release
+
+    def a2_inventory(conn):
+        with _schema_snapshot(conn):
+            return sequential_storage_inventory(conn)
+
+    def a2_definition_fixture(db, sql, args=()):
+        # Adversarial private input only. Restore the ORIGINAL trigger SQL and
+        # complete layout BEFORE the production registrar or history reader runs.
+        # No disabled guard or test-only flag reaches the owner under test.
+        before = _layout(db._conn)
+        with db.workflow_schema_transaction() as conn:
+            triggers = list(conn.execute("SELECT name,sql FROM sqlite_schema WHERE type='trigger' AND tbl_name='workflow_seq_definitions'"))
+            for name, _ in triggers:
+                conn.execute('DROP TRIGGER "' + name.replace('"', '""') + '"')
+            conn.execute(sql, args)
+            for _, ddl in triggers:
+                conn.execute(ddl)
+        assert _layout(db._conn) == before, 'A2 fixture failed exact trigger/layout restoration'
+
+    if a2_case in (None, 'historical'):
+
+        with tempfile.TemporaryDirectory(prefix='a2-historical-') as scratch:
+            # Historical constructor defaults are observed independently of the
+            # new owner and the literal combined target.
+            for requested, expected in ((None, 'G'), ('G', 'G'), ('H', 'H'), ('I', 'I'), ('J', 'J')):
+                db = Database(Path(scratch) / (expected + str(requested) + '.db'))
+                try:
+                    assert not _layout(db._conn)[0], 'A2 generic Database installed workflow storage'
+                    kwargs = {} if requested is None else dict(layout=requested)
+                    initialize_complete_org_schema(db, expected_org_slug='scratch', **kwargs)
+                    assert validate_workflow_schema(db._conn, expected_org_slug='scratch') == expected, 'A2 historical default changed'
+                    assert _layout(db._conn) == _canonical_layout(expected, coding_extension=expected == 'J', owner_indexed=True)
+                    assert not read_sequential_history(db._conn, expected_org_slug='scratch').layout.sequential
+                finally:
+                    db.close()
+            assert hashlib.sha256(inspect.getsource(initialize_complete_org_schema).encode()).hexdigest() == 'd0b462c6dd54bda7bef702a43fc0293cfbaadc3486f29e17c6fe9ef03406a582', 'A2 historical initializer bytes changed'
+            print('PASS A2-H historical default G and explicit G/H/I/J; independent references; exact initializer bytes', flush=True)
+
+    async def a2_route_registration():
+        with tempfile.TemporaryDirectory(prefix='a2-fresh-catalog-') as scratch:
+            home = Path(scratch).resolve()
+            runtime = RuntimeDir.init(home / 'runtime')
+            with patch.dict(os.environ, {'HAPPYRANCH_DAEMON_HOME': str(home)}):
+                (home / 'daemon.token').write_text('synthetic-a2-founder')
+                state = DaemonState(runtime=runtime, settings=Settings())
+                from runtime.workflows.profile_coordinator import ProfileCoordinator
+                state.profile_coordinator = ProfileCoordinator(daemon_home=home, orgs=state.orgs)
+                app = create_app(state)
+                try:
+                    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://asgi') as client:
+                        started = time.monotonic()
+                        response = await client.post('/api/v1/orgs', headers={'Authorization': 'Bearer synthetic-a2-founder'}, json={'slug': 'scratch'})
+                        assert response.status_code == 200, ('A2 real POST route', response.status_code, response.text)
+                        org = state.orgs['scratch']
+                        db, conn = org.db, org.db._conn
+                        history = read_sequential_history(conn, expected_org_slug='scratch')
+                        assert history.layout.document == 'J' and history.layout.sequential and history.layout.ownership == 2, 'A2 route must initialize fresh combined J+Coding+sequential+ownership2'
+                        assert _layout(conn) == _canonical_sequential_layout('J', coding_extension=True, owner_indexed=True, ownership=2), 'A2 route differs from independent combined reference'
+                        assert list(org.teams.teams()) == ['default']
+                        manager = org.teams.manager_for_team('default')
+                        assert manager.kind == 'human' and manager.principal == 'founder' and manager.workers == ()
+                        assert list(OrgPaths(org.root).agents_dir.glob('*.md')) == []
+                        assert {key: json.loads(value) for key, value in db.get_reviewer_agents_pair().items()} == {'reviewer_agents': [], 'reviewer_agents_policy': {'version': 2}}, 'A2 fresh reviewer policy differs'
+                        from runtime.orchestrator.org_config import resolve_reviewer_configuration
+                        assert resolve_reviewer_configuration(db, known_agents=set()).state == 'none'
+                        for table in ('workflow_seq_settings', 'workflow_seq_settings_operations', 'workflow_seq_runs', 'workflow_seq_visits', 'tasks', 'workflow_coding_mappings'):
+                            assert conn.execute('SELECT count(*) FROM ' + table).fetchone()[0] == 0, 'A2 fresh route allocated ' + table
+                        compiled = read_coding_release()
+                        expected_catalog = (('release/happyranch/coding', 2,
+                            '5039e9eb60a03f8de110b40123a123d25962fbff48c39af5271a0666d679d065',
+                            'a3b012d117c5905a1bac3c67a3158a8b1afa5a571acdba73c876ac7de24f790c'),)
+                        assert PRESET_CATALOG == expected_catalog, 'A2 literal catalog grew or drifted'
+                        assert [tuple(r) for r in conn.execute('SELECT identity,version,source_digest,definition_digest FROM workflow_seq_definitions')] == list(expected_catalog), 'A2 reviewed catalog registration missing or changed'
+                        assert conn.execute('SELECT definition_bytes FROM workflow_seq_definitions').fetchone()[0] == compiled.raw
+                        # Exclusive create refuses even a genuinely empty file;
+                        # no existence/absence observation supplies ownership.
+                        before = a2_inventory(conn)
+                        try:
+                            initialize_fresh_org_database(db.db_path, expected_org_slug='scratch')
+                        except FileExistsError:
+                            pass
+                        else:
+                            raise AssertionError('A2 fresh initializer reused an existing file')
+                        assert a2_inventory(conn) == before
+                        print('PASS A2-R real POST fresh combined literal reference; Default human/zero agents; none reviewer; Disabled/unset; exclusive create; seconds', round(time.monotonic()-started, 3), flush=True)
+
+                        if a2_case in (None, 'registration'):
+                            store = SequentialBuiltinStore(org)
+                            # Existing exact definition takes no native reservation
+                            # and makes no writes to any table, including audits.
+                            before = a2_inventory(conn)
+                            changes = conn.total_changes
+                            store.ensure_registered()
+                            assert conn.total_changes == changes and a2_inventory(conn) == before, 'A2 exact existing catalog must write zero'
+                            print('PASS A2-C exact existing definition zero writes and complete typed-rowid/schema preservation', flush=True)
+                            # Private synthetic retained settings/history are never
+                            # launched. The real history reader authenticates them.
+                            from runtime.workflows.sequential_definition import compile_definition
+                            from scripts.setup_sequential_coding import _write
+                            raw = json.loads(compiled.raw)
+                            raw.update(identity='release/synthetic/retained', version=1)
+                            retained = compile_definition(_bytes(raw), source_digest='0' * 64)
+                            pin = retained.pin
+                            conn.execute('INSERT INTO workflow_seq_definitions VALUES (?,?,?,?,?,?,?,?,?,?)',
+                                ('retained-definition', pin.identity, pin.version, retained.raw, pin.definition_digest,
+                                 pin.source_digest, pin.compiler, pin.validator, pin.interpreter, pin.capabilities))
+                            saved = StorageSettings(format='workflow-sequential-settings-storage@1', definition=pin,
+                                bindings=[dict(role=role, principal='synthetic-' + role) for role, _ in retained.definition.roles],
+                                limits=retained.definition.limits, admission='Allowed')
+                            _write(conn, 'scratch', 'admission', SimpleNamespace(operation_key='retained-settings', expected_generation=0, definition=pin),
+                                dict(write=dict(definition_id='retained-definition', generation=1, raw=_bytes(saved.model_dump(mode='json')))))
+                            conn.commit()
+                            db.insert_task(TaskRecord(id='TASK-a2-retained', brief='Synthetic ordinary preserved task'))
+                            read_sequential_history(conn, expected_org_slug='scratch')
+                            a2_definition_fixture(db, "DELETE FROM workflow_seq_definitions WHERE identity='release/happyranch/coding'")
+                            before = a2_inventory(conn)
+                            changes, statements = conn.total_changes, []
+                            with db.observe_trace(statements.append):
+                                store.ensure_registered()
+                            after = a2_inventory(conn)
+                            assert conn.total_changes - changes == 1, 'A2 registrar wrote settings/roles/admission or other forbidden rows'
+                            assert before[0] == after[0] and before[1].keys() == after[1].keys()
+                            assert all(after[1][table] == rows for table, rows in before[1].items() if table != 'workflow_seq_definitions'), 'A2 registration changed existing settings/admission/history'
+                            assert after[1]['workflow_seq_definitions'][0] == before[1]['workflow_seq_definitions'][0] + 1
+                            assert not any('integrity_check' in sql.lower() or 'quick_check' in sql.lower() for sql in statements)
+                            read_sequential_history(conn, expected_org_slug='scratch')
+                            print('PASS A2-C absent definition inserts exactly one row; saved Allowed/settings/bindings and ordinary history byte/rowid exact; physical=0', flush=True)
+                            a2_definition_fixture(db, "UPDATE workflow_seq_definitions SET source_digest=? WHERE identity='release/happyranch/coding'", ('1' * 64,))
+                            before = a2_inventory(conn)
+                            changes = conn.total_changes
+                            try:
+                                store.ensure_registered()
+                            except ValueError as exc:
+                                assert str(exc) == 'sequential_coding_definition_conflict', str(exc)
+                            else:
+                                raise AssertionError('A2 mismatched immutable definition accepted')
+                            assert conn.total_changes == changes and a2_inventory(conn) == before
+                            a2_definition_fixture(db, "UPDATE workflow_seq_definitions SET source_digest=? WHERE identity='release/happyranch/coding'", (compiled.pin.source_digest,))
+                            print('PASS A2-C immutable mismatch refuses with zero writes', flush=True)
+                            # A lost real cache capability must refuse before the
+                            # absent definition is inserted, with no recovery here.
+                            a2_definition_fixture(db, "DELETE FROM workflow_seq_definitions WHERE identity='release/happyranch/coding'")
+                            cache = dict(org.workflow_authority._cache)
+                            org.workflow_authority._cache.clear()
+                            before, changes = a2_inventory(conn), conn.total_changes
+                            try:
+                                store.ensure_registered()
+                            except RuntimeError as exc:
+                                assert str(exc) == 'authority_pointer_not_ready'
+                            else:
+                                raise AssertionError('A2 registrar ignored authority qualification')
+                            finally:
+                                org.workflow_authority._cache.update(cache)
+                            assert conn.total_changes == changes and a2_inventory(conn) == before
+                            print('PASS A2-C actual authority capability loss refuses zero writes', flush=True)
+                finally:
+                    await state.close_all()
+                if a2_case in (None, 'registration'):
+                    # The prior direct refusal left the real org missing the
+                    # current definition. A genuine FIRST/NEXT startup owns
+                    # registration; no fixture supplies readiness or a success.
+                    startup = OrgState.load(slug='scratch', root=runtime.orgs_dir / 'scratch', settings=Settings())
+                    try:
+                        conn, db = startup.db._conn, startup.db
+                        assert conn.execute("SELECT count(*) FROM workflow_seq_definitions WHERE identity='release/happyranch/coding'").fetchone()[0] == 1, 'A2 ordinary qualified load did not register missing catalog'
+                        assert all(a2_inventory(conn)[1][table] == before[1][table]
+                            for table in ('workflow_seq_settings', 'workflow_seq_settings_operations')), 'A2 ordinary load changed saved settings/admission'
+                        read_sequential_history(conn, expected_org_slug='scratch')
+                    finally:
+                        startup.close()
+                    startup = OrgState.load(slug='scratch', root=runtime.orgs_dir / 'scratch', settings=Settings())
+                    try:
+                        conn, db = startup.db._conn, startup.db
+                        a2_definition_fixture(db, "DELETE FROM workflow_seq_definitions WHERE identity='release/happyranch/coding'")
+                        try:
+                            with native_writer(db, publisher='synthetic-a2-original-owner'):
+                                raise RuntimeError('synthetic interrupted native writer')
+                        except RuntimeError as exc:
+                            assert str(exc) == 'synthetic interrupted native writer'
+                        before, changes = a2_inventory(conn), conn.total_changes
+                        try:
+                            SequentialBuiltinStore(startup).ensure_registered()
+                        except ValueError as exc:
+                            assert str(exc) == 'native_writer_unsettled'
+                        else:
+                            raise AssertionError('A2 registrar ignored original native uncertainty')
+                        assert conn.total_changes == changes and a2_inventory(conn) == before
+                    finally:
+                        startup.close()
+                    print('PASS A2-C ordinary qualified FIRST/NEXT registration; saved state exact; genuine native UNKNOWN refuses zero writes', flush=True)
+                # Real default startup on a previously created skeleton WITHOUT a
+                # DB must retain the historical initializer, never the fresh owner.
+                if a2_case in (None, 'route'):
+                    root = runtime.orgs_dir / 'historical'
+                    _seed_skeleton(root, from_example=None)
+                    historical = OrgState.load(slug='historical', root=root, settings=Settings())
+                    try:
+                        assert not read_sequential_history(historical.db._conn, expected_org_slug='historical').layout.sequential, 'A2 absent DB was treated as positive freshness on startup'
+                    finally:
+                        historical.close()
+                    print('PASS A2-R absent-DB startup remains historical; no fresh inference', flush=True)
+
+    if a2_case in (None, 'route', 'registration'):
+        asyncio.run(a2_route_registration())
+    if sys.argv[1:] == ['--fresh-catalog']:
+        raise SystemExit(0)
 
 
 # Real request/advance owners create C1-C5. Interruption occurs only AFTER the
