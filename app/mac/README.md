@@ -81,63 +81,43 @@ with slice 2b; this PR does not assert live connector interoperability. No new
 invite-envelope fields were introduced. The slice-3c issuer is still absent;
 5a's provisional invite-format assumptions below remain literal.
 
-**Same-CA address recovery (5d).** Ordinary restart or a renewed leaf at the
-unchanged URL reuses saved trust and an empty join key, without an invite. TLS
-still checks CA, validity, chain and URL IP SAN. A changed LAN control URL needs
-an explicitly accepted fresh invite with the exact same home/control/connector,
-CA DER/fingerprint and tailnet runtime endpoint. Its new join key/pair secret
-are discarded, never redeemed; Linux owns unused-key expiry/cleanup.
+**Same-CA address recovery (Go v2, leg 5f).** The canonical control URL is
+`https://control.happyranch.invalid:8443`; an optional root slash normalizes away
+(F2). The CA/fingerprint, home/control-plane IDs and saved node distinguish homes,
+never the shared DNS alias. A refreshed v2 invite supplies a new RFC1918 `dialIP`
+for the same home/CA; recovery uses an empty join key and discards the new invite's
+unused enrollment/pair material. Linux owns its expiry/cleanup. The runtime
+`home_endpoint` keeps its existing tailnet host:443 meaning.
 
-Recovery re-reads the exact saved Keychain grant/profile. The isolated helper
-validates the old protected URL and consumed marker under the native flock,
-starts existing membership with an empty key at the refreshed endpoint, compares
-the actual tsnet Self StableID to the saved grant's node, then sends the saved
-bearer to the fixed connector `/api/v1/health` route through the peer-only dial.
-Only ordinary current-grant/WhoIs admission with HTTP 200 permits migration.
-Redirects, missing/invalid grants, changed nodes and missing/conflicting markers
-refuse. No hostname repin or implicit CA change exists. An unusable grant/node
-needs another fresh invite, explicit replacement consent and ordinary Linux
-approval in a new profile; the obsolete record is never silently rewritten.
-A different CA shows **Home identity changed — approve again**; remove the old
-local computer and repeat Linux approval.
+The dedicated helper validates protected v2 bindings and the consumed marker under
+the native flock, then uses existing membership through the fresh forwarder. It
+checks tsnet Self StableID and the saved grant on the fixed connector
+`/api/v1/health` route through peer-only dialing. Only HTTP 200 permits an atomic,
+fsynced `profile.json` replacement of `dialIP`/`previousDialIP`. Canonical URL,
+protected IDs/CA fingerprint, version, hostname/profile UUID, stable node,
+`tailscaled.state` and the v2 consumed-marker bytes stay unchanged. There is no
+marker migration. Failed replacement retains the old committed metadata; an
+unknown pending writer refuses a later write. An exact committed old/new/node
+receipt supports retry after a failed Keychain update, with another live grant
+check. Replayed metadata, changed home/CA/node, redirects and invalid grants refuse.
 
-The permitted root URL with or without a trailing slash has the same native
-canonical binding. Recovery normalizes that representation before receipt
-comparisons and persistence, matching ordinary empty-key reopen; it never repairs
-an existing conflicting marker or protected profile.
+Saved v1 IP profiles (including the original unversioned format) return the closed
+`-21` / `home_reapproval_required` outcome: obtain a new v2 invite and Linux
+approval in a new profile. Never rewrite a v1 marker/profile into v2 or repin from
+the DNS alias. Ordinary v2 restart and same-CA leaf renewal at the same address
+need no invite. Address/home changes require a new dedicated process, flushing
+old connections/resolver caches and generating a new local port/issuer.
 
-Successful recovery writes a version-1 protected URL/node receipt and consumed
-marker, preserving the native profile/hostname/node state. Future reopen enforces
-the saved StableID. Both files are fsynced; interruption between writes leaves a
-mismatched pair that refuses and needs removal/reapproval. If native commit
-succeeds but Keychain update fails, the exact protected old/new/node receipt
-permits a retry only after another live node/grant check. The existing Keychain
-item is updated by exact reference, data only, after consent-enabled read and
-current-executable ACL validation; its grant, binding, profile UUID and ACL remain
-unchanged and readback is checked. No absent item is recreated by recovery.
+Swift is intentionally unchanged in 5f. Its existing v1 parser, launcher and
+saved-Keychain format still need leg 5g's v2 changes, including mapping `-21` to
+explicit reapproval. The helper rejects their v1 launch; this intermediate branch
+is not app acceptance. Preserve the existing exact-reference Keychain updates,
+sole-current-executable ACL, visible errors/Retry and F1/F3/F4 fixes in that leg.
+Actual two-endpoint recovery, Swift build/XCTest and unsigned Darwin/Keychain/UI
+acceptance are **NOT RUN** on this Linux host. No hosted Mac/managed-m4 workflow
+is dispatched here. The final PR body records the pinned Go and CI results.
 
-The issuer still owns authenticated RefreshHomeAddress, old-invite invalidation
-and Linux-side marker migration. No extra invite field or Linux behavior is
-invented here. The Mac can check the specified invite expiry and explicit
-acceptance, but cannot independently query issuer invalidation of an unredeemed
-pair secret: this must be reconciled with slice 3c. The fixed authorized health
-route and connector WhoIs/grant admission must be reconciled with slice 2/2b;
-no new protocol fields are assumed. Actual two-endpoint recovery remains native
-slice-6 acceptance, not a claim from these fixtures.
-
-Verification on the Linux maker host: Go test/vet ran successfully with the
-existing readonly module graph (effective local toolchain go1.27.1). Swift build,
-Swift tests and attributable Swift failure/pass proofs are **NOT RUN / PROOF NOT
-RUN**: Swift, AppKit, WebKit and Security are unavailable here. Existing ci.yml
-is lint-only; managed-m4.yml is a main-only C-ABI tailnet venue and does not build
-Swift. build-mac-app.yml compiles the app at independently reviewed source SHA/tree
-but does not run Swift tests; dispatch awaits independent review of this head.
-There is no current hosted Swift-test job. Actual unsigned Mac-mini build,
-Keychain quit/reopen, ACL/update, GUI screenshots and signed migration acceptance
-are **NOT RUN**, owed to slice 6/separate authorization. Lint or fixtures do not
-establish those native outcomes. See the PR body for exact-head check/job status.
-
-### THR-327 slice 5a: single-invite and saved-access seams
+### THR-327 slice 5a: Swift v1 seams (v2 update pending leg 5g)
 
 `RemoteInvite.parse(_:now:)` is an offline, home-only parser for the merged
 [one-click contract](../../docs/superpowers/specs/2026-11-16-one-click-remote-access.md).
@@ -148,8 +128,9 @@ expiry must be within 300 seconds of issuance. Secret display, debug and mirror
 representations are redacted. `withSecrets` is an explicit memory-only transport
 handoff; Swift/Data copies cannot promise cryptographic memory erasure.
 
-The Linux slice-3c issuer does not exist yet. These fixture-based wire choices
-are **provisional questions for the issuer/spec owner**, not new envelope fields:
+The unchanged Swift v1 implementation below is historical implementation context,
+not the current Round-7 contract. Leg 5g must replace its IP URL/prefix/trust fields
+with the spec's v2 schema and `dial_ip`. Its original fixture assumptions were:
 
 - Are all identity, endpoint and secret fields strings, with `v` an integer?
   This parser uses bounded ASCII identity strings and a 48-lowercase-hex join key.
@@ -162,8 +143,8 @@ are **provisional questions for the issuer/spec owner**, not new envelope fields
 - Is `home_endpoint` tailnet `host:443`, distinct from the RFC1918 control URL
   `https://IP:8443[/]`? That is the interpretation implemented here.
 - The CA must have CA:TRUE and be valid now; it need not have a SAN. The URL
-  IP SAN belongs to the live server leaf and is enforced by the helper's trust
-  pool during TLS verification (EM TASK-16704 ruling). No leaf field is added.
+  IP SAN belonged to the superseded v1 proposal. Round 7 requires a fixed DNS
+  SAN and separate home-only upstream verifier; the old root constraint is removed.
 
 `SavedDeviceCredentialStore` separates custody from UI/network work.
 `LoginKeychainDeviceStore` uses a separate local login-Keychain generic password,
@@ -210,14 +191,14 @@ SwiftPM release dead stripping. Retained native sources can inspect ABI exports;
 uses basic bundle checks. Native tests remain separate from automated lint/static
 merge checks.
 
-## THR-327 slice 5e: strict home-only transport (not wired yet)
+## THR-327 slices 5e/5f: strict home-only transport and startup
 
 `tsnet-bridge/home_transport.go` implements section 6 B as a separately owned
 transport. `newHomeTransport` validates exactly one current CA DER/fingerprint
 and an RFC1918 IPv4, binds its own `127.0.0.1:0` listener, and creates an
 in-memory ephemeral CA and fixed `control.happyranch.invalid` DNS leaf. `Addr`
 exposes the owned proxy address; `LocalCA` returns only public issuer DER for
-5f's isolated fallback pool. The caller must call `Close`; it cancels setup,
+the dedicated helper's isolated fallback pool. The caller must call `Close`; it cancels setup,
 closes the listener and both sides of all owned streams, then waits for handlers.
 Keys are never serialized, installed or logged.
 
@@ -231,12 +212,32 @@ or any application byte. Then local TLS presents only the ephemeral leaf;
 the duplex relay preserves arbitrary upgrade/Noise/DERP bytes and TLS half-close.
 There is no public-root, redirect or direct retry path in this transport.
 
-This leg leaves `home_helper.go` and Swift unchanged. **The running 5b helper
-below still uses the rejected IP/fallback-root mechanism; strict home trust is
-not delivered to the app until 5f wires proxy/roots/resolver/v2 profile lifecycle.**
-The transport itself needs no root, signing, entitlement or trust-store install.
-Real pinned tsnet startup/bootstrap/Noise/DERP, v2 invite/profile/address recovery,
-Darwin unsigned/Keychain/UI and sequential-home acceptance remain separate gates.
+`home_helper.go` now wires this transport only in the dedicated executable.
+Startup validates the bounded exact v2 frame and CA/pin/dial IP, binds loopback,
+then creates the ephemeral issuer. It sets owned `GODEBUG=x509usefallbackroots=1`
+**before** the single `x509.SetFallbackRoots` call with only that local issuer.
+It clears inherited upper/lowercase proxy, trust and debug overrides, then sets
+`HTTP_PROXY` and `HTTPS_PROXY` to its owned listener. Registered upstream debug
+caches are reset too. A nonempty inherited `SSLKEYLOGFILE` refuses before roots
+or clients: pinned tlsdial caches it at package init, so clearing it later would
+not revoke key logging. No keylog file is opened. The immutable process resolver
+and `dnscache.Get().Forward` answer only the fixed home name with admitted IPv4,
+return empty AAAA and refuse other names through in-memory pipes. No host DNS
+configuration or resolver socket changes. Only then is tsnet constructed with
+the canonical URL. The C archive installs none of these globals.
+
+Listener/upstream dial/verifier failure, parent EOF, shutdown or cancellation
+closes tsnet admission, exported streams, the proxy and its owned streams. The
+runtime socket also seals and closes its tracked local streams; relay peer ends
+close with them. Keys are released after TLS handlers exit. Local issuer expiry
+(24 hours) cancels this owner, requiring a fresh dedicated process; no expired
+issuer or direct/public fallback remains admitted. One home per process; a
+second initialization refuses and each start uses a new random port and issuer.
+The transport needs no root, signing, entitlement or trust-store installation.
+Real pinned controlclient `/key`/Noise and DERP region clients run through these
+proxy/root/resolver APIs against synthetic loopback upstreams on Linux. Full tsnet
+netmap/startup and native unsigned Darwin, save/reopen/rebuild and sequential-home
+acceptance remain **NOT RUN**, not inferred from these checks.
 
 Socket tests use synthetic CAs and owned loopback upstream fakes, checking the
 constructor's fixed RFC1918:8443 target independently before test-side endpoint
@@ -263,28 +264,22 @@ this Linux host. No hosted Mac/managed-m4 build is dispatched.
 
 `build-app.sh` builds `Contents/Helpers/happyranch-home-bridge` from the existing
 `tsnet-bridge` Go module, alongside its C archive. Only the separate executable's
-fixed `--home-bridge-v1` mode installs fallback roots; the archive never runs
+fixed `--home-bridge-v2` mode installs fallback roots; the archive never runs
 `main`. No dependency, entitlement, CA installation, public-root mode or R3
 intake is added. Optional signing inventories include the helper; signing is
 not needed for this milestone.
 
-`HomeBridgeProcess` uses the existing `ProcessControlling` injection and only
-`GODEBUG=x509usefallbackroots=1` in the child environment. A bounded, length-
-prefixed stdin frame carries CA DER/pin, control URL, join key (empty for saved
-membership), state directory and immutable runtime target. No secret enters
-argv/env or an IPC file. EOF/cancellation ends the helper. It validates exactly
-one current CA and pin, then calls `x509.SetFallbackRoots` exactly once before
-managed engine admission. One process owns one profile; changed trust stops and
-reaps it before replacement. Uncertain stop retains ownership.
-
-The pool's standard `AddCertWithConstraint` enforces leaf `VerifyHostname`
-against the URL IP. Pinned tailscale v1.78.0 `tlsdial.Config` uses
-`ConnectionState.ServerName`, empty for IP-literal SNI: real `/key` and DERP
-negative tests fail without this constraint. The constraint only refuses
-chains; it adds no TLS acceptance/bypass callback. Upstream baked-in Let's
-Encrypt roots remain, so this is not universal CA-only verification. Noise's
-outer TLS failures remain nonfatal; the fetched key authenticates the Noise
-handshake. WireGuard and product approval remain separate boundaries.
+The v2 launch frame is uint32 big-endian byte length (1..16384), then exact JSON.
+Required keys: `version` (2), `caDER` (standard JSON base64 bytes), `fingerprint`,
+`dialIP`, `homeID`, `controlPlaneID`, `controlURL`, `hostname`, `stateDirectory`,
+`joinKey` (empty for saved membership), `socketPath`, `target`. Optional `recovery`
+contains exactly `previousDialIP`, `stableNodeID`, `bearer`. Unknown/duplicate,
+case-aliased, missing/null or extra trust fields, trailing JSON, IP control URLs
+and v1 frames refuse. The control URL accepts only the fixed DNS URL above,
+with its optional trailing slash. No secret enters argv/env or an IPC file.
+EOF/cancellation ends the helper. Changed trust stops/reaps it before replacement;
+uncertain stop retains ownership. Leg 5g must send this frame and v2 mode from
+`HomeBridgeProcess`, whose current Swift implementation is still v1.
 
 After membership readiness, a 0600 Unix socket in a newly allocated 0700 private
 temporary directory carries streams to the single configured runtime on 443.
@@ -296,9 +291,9 @@ Pairing, HTTP, SSE and upgrade I/O use this same helper. Monotonic handle IDs
 prevent stale stream IDs from reusing new FDs. Stop closes streams and confirms
 process exit before releasing the profile. Readiness never means Connected.
 
-The slice-5 UI wires validated invites/saved records into this seam. Slice 5d
-adds the explicit same-CA, same-node, saved-grant address recovery described
-above; protected marker conflicts still refuse. Signed credential migration
+The slice-5 UI requires leg 5g to wire v2 invites/saved records into this seam.
+Go leg 5f implements the same-CA, same-node, saved-grant metadata recovery above;
+protected marker conflicts still refuse. Signed credential migration
 and native acceptance remain separate.
 
 Supported commands with the existing readonly Go graph:

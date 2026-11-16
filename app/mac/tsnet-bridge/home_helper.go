@@ -4,7 +4,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"crypto/x509"
 	"encoding/binary"
 	"encoding/hex"
@@ -15,21 +14,26 @@ import (
 	"log"
 	"net"
 	"net/http"
-	"net/netip"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/sys/unix"
 )
 
 const homeTrustRefused = -20
+const homeReapprovalRequired = -21
+const homeControlURL = "https://" + homeControlName + ":8443"
 
 type homeLaunch struct {
 	Recovery       *homeAddressRecovery `json:"recovery,omitempty"`
-	CA             []byte               `json:"ca"`
+	Version        int                  `json:"version"`
+	CA             []byte               `json:"caDER"`
+	DialIP         string               `json:"dialIP"`
+	HomeID         string               `json:"homeID"`
+	ControlPlaneID string               `json:"controlPlaneID"`
 	Fingerprint    string               `json:"fingerprint"`
 	ControlURL     string               `json:"controlURL"`
 	Hostname       string               `json:"hostname"`
@@ -40,24 +44,6 @@ type homeLaunch struct {
 }
 
 var errHomeTrust = errors.New("home_trust_refused")
-
-func homeRoots(der []byte, fingerprint, host string, now time.Time) (*x509.CertPool, error) {
-	cert, err := x509.ParseCertificate(der) // exactly ONE DER certificate, no trailing bytes
-	sum := sha256.Sum256(der)
-	if err != nil || !cert.BasicConstraintsValid || !cert.IsCA || now.Before(cert.NotBefore) || !now.Before(cert.NotAfter) || hex.EncodeToString(sum[:]) != fingerprint {
-		return nil, errHomeTrust
-	}
-	pool := x509.NewCertPool()
-	// tlsdial v1.78 uses ConnectionState.ServerName, which is empty for
-	// an IP-literal SNI. Enforce the invite URL IP on every chain rooted here.
-	pool.AddCertWithConstraint(cert, func(chain []*x509.Certificate) error {
-		if len(chain) == 0 || chain[0].VerifyHostname(host) != nil {
-			return errHomeTrust
-		}
-		return nil
-	})
-	return pool, nil
-}
 
 func readHomeLaunch(in io.Reader) (homeLaunch, error) {
 	var size uint32
@@ -70,6 +56,9 @@ func readHomeLaunch(in io.Reader) (homeLaunch, error) {
 		return cfg, errHomeTrust
 	}
 	defer clear(data)
+	if !exactHomeObject(data, false) {
+		return homeLaunch{}, errHomeTrust
+	}
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
 	if dec.Decode(&cfg) != nil || dec.Decode(new(any)) != io.EOF {
@@ -78,19 +67,76 @@ func readHomeLaunch(in io.Reader) (homeLaunch, error) {
 	return cfg, nil
 }
 
+// Enforce exact key spelling and uniqueness as well as DisallowUnknownFields.
+func exactHomeObject(data []byte, recovery bool) bool {
+	allowed := []string{"version", "caDER", "dialIP", "homeID", "controlPlaneID", "fingerprint", "controlURL", "hostname", "stateDirectory", "joinKey", "socketPath", "target"}
+	if recovery {
+		allowed = []string{"previousDialIP", "stableNodeID", "bearer"}
+	}
+	dec := json.NewDecoder(bytes.NewReader(data))
+	token, err := dec.Token()
+	if err != nil || token != json.Delim('{') {
+		return false
+	}
+	seen := make(map[string]bool)
+	for dec.More() {
+		token, err := dec.Token()
+		key, ok := token.(string)
+		if err != nil || !ok || seen[key] {
+			return false
+		}
+		seen[key] = true
+		var raw json.RawMessage
+		if dec.Decode(&raw) != nil || bytes.Equal(raw, []byte("null")) {
+			return false
+		}
+		if key == "recovery" && !recovery {
+			if !exactHomeObject(raw, true) {
+				return false
+			}
+			continue
+		}
+		known := false
+		for _, name := range allowed {
+			if name == key {
+				known = true
+				break
+			}
+		}
+		if !known {
+			return false
+		}
+	}
+	if token, err := dec.Token(); err != nil || token != json.Delim('}') || dec.Decode(new(any)) != io.EOF {
+		return false
+	}
+	for _, name := range allowed {
+		if !seen[name] {
+			return false
+		}
+	}
+	return true
+}
+
+func validHomeID(s string) bool {
+	if len(s) == 0 || len(s) > 128 {
+		return false
+	}
+	for _, c := range s {
+		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-' || c == '_') {
+			return false
+		}
+	}
+	return true
+}
+
 func validateHomeLaunch(cfg homeLaunch) (*x509.CertPool, error) {
-	if os.Getenv("GODEBUG") != "x509usefallbackroots=1" || ambientOverride() {
-		return nil, errHomeTrust
-	}
-	u, err := url.Parse(cfg.ControlURL)
-	if err != nil || u.Scheme != "https" || u.Port() != "8443" || u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || (u.Path != "" && u.Path != "/") {
-		return nil, errHomeTrust
-	}
-	ip, err := netip.ParseAddr(u.Hostname())
-	if err != nil || !ip.Is4() || !ip.IsPrivate() || cfg.ControlURL != "https://"+ip.String()+":8443" && cfg.ControlURL != "https://"+ip.String()+":8443/" {
-		return nil, errHomeTrust
-	}
-	if !validHostname(cfg.Hostname) || !filepath.IsAbs(cfg.StateDirectory) || hasControl(cfg.SocketPath+cfg.Target) {
+	// tlsdial caches this value during package init; Unsetenv cannot revoke it.
+	if ambientOverride() || os.Getenv("SSLKEYLOGFILE") != "" || cfg.Version != 2 ||
+		cfg.ControlURL != homeControlURL && cfg.ControlURL != homeControlURL+"/" ||
+		!validHomeID(cfg.HomeID) || !validHomeID(cfg.ControlPlaneID) ||
+		!validHostname(cfg.Hostname) || !filepath.IsAbs(cfg.StateDirectory) ||
+		hasControl(cfg.SocketPath+cfg.Target) {
 		return nil, errHomeTrust
 	}
 	host, port, err := net.SplitHostPort(cfg.Target)
@@ -105,25 +151,26 @@ func validateHomeLaunch(cfg homeLaunch) (*x509.CertPool, error) {
 	}
 	if cfg.Recovery != nil {
 		r := cfg.Recovery
-		if cfg.JoinKey != "" || strings.TrimSuffix(r.PreviousControlURL, "/") == strings.TrimSuffix(cfg.ControlURL, "/") ||
+		if cfg.JoinKey != "" || r.PreviousDialIP == cfg.DialIP ||
 			r.StableNodeID == "" || len(r.StableNodeID) > 256 || hasControl(r.StableNodeID) ||
 			len(r.Bearer) == 0 || len(r.Bearer) > 4096 || strings.IndexFunc(r.Bearer, func(c rune) bool { return c < 33 || c > 126 }) >= 0 {
 			return nil, errHomeTrust
 		}
-		previous := cfg
-		previous.ControlURL = r.PreviousControlURL
-		previous.Recovery = nil
-		if _, err := validateHomeLaunch(previous); err != nil {
+		if _, _, err := admitHomeTransport(cfg.CA, cfg.Fingerprint, r.PreviousDialIP, time.Now()); err != nil {
 			return nil, errHomeTrust
 		}
 	}
-	return homeRoots(cfg.CA, cfg.Fingerprint, ip.String(), time.Now())
+	roots, _, err := admitHomeTransport(cfg.CA, cfg.Fingerprint, cfg.DialIP, time.Now())
+	if err != nil {
+		return nil, errHomeTrust
+	}
+	return roots, nil
 }
 
 func helperMain() {
 	// Suppress upstream diagnostics at their destination; never interpolate errors.
 	log.SetOutput(io.Discard)
-	if len(os.Args) != 2 || os.Args[1] != "--home-bridge-v1" {
+	if len(os.Args) != 2 || os.Args[1] != "--home-bridge-v2" {
 		os.Exit(2)
 	}
 	cfg, err := readHomeLaunch(os.Stdin)
@@ -131,13 +178,12 @@ func helperMain() {
 		fmt.Fprintln(os.Stdout, homeTrustRefused)
 		return
 	}
-	roots, err := validateHomeLaunch(cfg)
+	transport, err := prepareHomeProcess(cfg)
 	if err != nil {
 		fmt.Fprintln(os.Stdout, homeTrustRefused)
 		return
 	}
-	// Exactly once, before even constructing the tsnet server. Never in the app.
-	x509.SetFallbackRoots(roots)
+	defer transport.Close()
 	code := initHomeProfile(cfg)
 	cfg.JoinKey = ""
 	if code != 0 {
@@ -145,9 +191,11 @@ func helperMain() {
 		return
 	}
 	defer tsnet_close()
+	if transport.ctx.Err() != nil {
+		return
+	}
 	// Parent pipe ownership is the lifetime capability. EOF also cancels Up.
-	done := make(chan struct{})
-	go func() { _, _ = io.Copy(io.Discard, os.Stdin); cancelManaged(); close(done) }()
+	go func() { _, _ = io.Copy(io.Discard, os.Stdin); cancelManaged(); transport.Close() }()
 	if code = managedUp(120000); code != 0 {
 		fmt.Fprintln(os.Stdout, code)
 		return
@@ -178,15 +226,48 @@ func helperMain() {
 		return
 	}
 	defer listener.Close()
-	go func() { <-done; listener.Close() }()
 	fmt.Fprintln(os.Stdout, 0) // membership readiness only, never product approval
 	host, _, _ := net.SplitHostPort(cfg.Target)
+	serveHomeRuntime(transport.ctx, listener, host)
+}
+
+// Closing the owned listener or process context seals admission and closes all
+// local ends, which also unblocks and closes every relay's peer end.
+func serveHomeRuntime(ctx context.Context, listener net.Listener, host string) {
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	streams := make(map[net.Conn]struct{})
+	closed := false
+	closeOwned := func() {
+		mu.Lock()
+		defer mu.Unlock()
+		closed = true
+		_ = listener.Close()
+		for c := range streams {
+			_ = c.Close()
+		}
+	}
+	stop := context.AfterFunc(ctx, closeOwned)
+	defer func() { stop(); closeOwned(); cancelManaged(); wg.Wait() }()
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
 			return
 		}
-		go relayHome(conn, host)
+		mu.Lock()
+		if closed || len(streams) >= homeStreamLimit {
+			mu.Unlock()
+			_ = conn.Close()
+			continue
+		}
+		streams[conn] = struct{}{}
+		wg.Add(1)
+		mu.Unlock()
+		go func() {
+			defer wg.Done()
+			defer func() { mu.Lock(); delete(streams, conn); mu.Unlock() }()
+			relayHome(ctx, conn, host)
+		}()
 	}
 }
 
@@ -213,9 +294,9 @@ func homeListener(path string) (net.Listener, error) {
 }
 
 // Same peer-only pin boundary as the archive; no arbitrary dial IPC operation.
-func relayHome(local net.Conn, host string) {
+func relayHome(parent context.Context, local net.Conn, host string) {
 	defer local.Close()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(parent, 10*time.Second)
 	remote, code := managedDialPeer(ctx, host, 443)
 	cancel()
 	if remote != nil {

@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -13,27 +15,30 @@ import (
 	"testing"
 )
 
-const recoveryOldURL = "https://192.168.1.40:8443"
-const recoveryNewURL = "https://192.168.1.41:8443"
+const recoveryOldIP = "192.168.1.40"
+const recoveryNewIP = "192.168.1.41"
 const recoveryCanary = "SYNTHETIC-RECOVERY-BEARER-CANARY"
 
 func recoveryFixture(t *testing.T, status int) (*managedProfile, homeLaunch, *http.Client, *atomic.Int32) {
 	t.Helper()
-	p, err := openManagedProfile(profilePath(t), testHostname, recoveryOldURL, true)
+	cfg := homeLaunchFixture(makeHomeCA(t, true).der)
+	cfg.Hostname, cfg.StateDirectory = testHostname, profilePath(t)
+	p, err := openBoundManagedProfile(cfg.StateDirectory, cfg.Hostname, homeControlURL, true, &cfg)
 	if err != nil {
 		t.Fatal("profile creation failed")
 	}
 	t.Cleanup(func() { p.close() })
+	p.record.StableNodeID = "stable-synthetic-node"
 	if os.WriteFile(filepath.Join(p.path, "tailscaled.state"), []byte("synthetic-persisted-node"), 0600) != nil || p.commitConsumed() != nil {
 		t.Fatal("saved membership setup failed")
 	}
-	cfg := homeLaunch{ControlURL: recoveryNewURL, Target: "100.64.0.1:443",
-		Recovery: &homeAddressRecovery{PreviousControlURL: recoveryOldURL, StableNodeID: "stable-synthetic-node", Bearer: recoveryCanary}}
+	cfg.DialIP = recoveryNewIP
+	cfg.Recovery = &homeAddressRecovery{PreviousDialIP: recoveryOldIP, StableNodeID: p.record.StableNodeID, Bearer: recoveryCanary}
 	requests := new(atomic.Int32)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests.Add(1)
 		if r.Method != "GET" || r.URL.Path != "/api/v1/health" || r.Host != cfg.Target || r.Header.Get("X-HappyRanch-Device-Credential") != recoveryCanary || r.Header.Get("Authorization") != "" {
-			t.Error("saved-grant request escaped its fixed route, target or authorization")
+			t.Error("saved-grant request escaped fixed route, target or authorization")
 		}
 		if status == 302 {
 			w.Header().Set("Location", "/forbidden-redirect")
@@ -48,49 +53,62 @@ func recoveryFixture(t *testing.T, status int) (*managedProfile, homeLaunch, *ht
 	client := &http.Client{Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	return p, cfg, client, requests
 }
+func reopenHome(t *testing.T, cfg homeLaunch) (*managedProfile, error) {
+	t.Helper()
+	return openBoundManagedProfile(cfg.StateDirectory, cfg.Hostname, homeControlURL, false, &cfg)
+}
+func recoveryBytes(p *managedProfile) ([]byte, []byte) {
+	a, _ := p.read("profile.json")
+	b, _ := p.read("consumed")
+	return a, b
+}
 
 func TestHomeAddressRecoveryCommitAndReopen(t *testing.T) {
 	p, cfg, client, requests := recoveryFixture(t, 200)
-	oldMarker, _ := p.read("consumed")
+	original := p.record
+	_, oldMarker := recoveryBytes(p)
 	state, _ := p.read("tailscaled.state")
 	if completeHomeAddressRecovery(context.Background(), cfg, cfg.Recovery.StableNodeID, p, client) != nil {
 		t.Fatal("authorized recovery refused")
 	}
-	if requests.Load() != 1 || p.record.Version != 1 || p.record.ControlURL != recoveryNewURL || p.record.StableNodeID != cfg.Recovery.StableNodeID || p.record.PreviousControlURL != recoveryOldURL {
-		t.Fatal("protected recovery receipt missing")
+	expected := original
+	expected.DialIP, expected.PreviousDialIP = recoveryNewIP, recoveryOldIP
+	if requests.Load() != 1 || p.record != expected {
+		t.Fatal("recovery changed identity instead of dial metadata only")
 	}
-	marker, _ := p.read("consumed")
+	_, marker := recoveryBytes(p)
 	afterState, _ := p.read("tailscaled.state")
-	if string(marker) == string(oldMarker) || !strings.HasPrefix(string(marker), "v1:") || string(state) != string(afterState) {
-		t.Fatal("migration failed to bind new marker or replaced node state")
+	if !bytes.Equal(marker, oldMarker) || !strings.HasPrefix(string(marker), "v2:") || !bytes.Equal(state, afterState) {
+		t.Fatal("recovery replaced consumed authority or node state")
 	}
-	path := p.path
 	p.close()
-	reopened, err := openManagedProfile(path, testHostname, recoveryNewURL, false)
+	resumed := cfg
+	resumed.Recovery = nil
+	reopened, err := reopenHome(t, resumed)
 	if err != nil {
-		t.Fatal("new protected binding cannot reopen")
+		t.Fatal("new dial metadata cannot reopen")
 	}
 	reopened.close()
-	if old, err := openManagedProfile(path, testHostname, recoveryOldURL, false); err == nil {
-		old.close()
-		t.Fatal("old URL replay accepted")
+	old := resumed
+	old.DialIP = recoveryOldIP
+	if replay, err := reopenHome(t, old); err == nil {
+		replay.close()
+		t.Fatal("stale dial metadata replay accepted")
 	}
-	if fresh, err := openManagedProfile(path, testHostname, recoveryNewURL, true); err == nil {
+	if fresh, err := openBoundManagedProfile(cfg.StateDirectory, cfg.Hostname, homeControlURL, true, &cfg); err == nil {
 		fresh.close()
 		t.Fatal("new key consumed in existing profile")
 	}
-	// A replayed legacy marker is never repaired against the migrated profile.
-	if os.WriteFile(filepath.Join(path, "consumed"), oldMarker, 0600) != nil {
+	if os.WriteFile(filepath.Join(cfg.StateDirectory, "consumed"), []byte("v1:obsolete-marker\n"), 0600) != nil {
 		t.Fatal("marker fixture failed")
 	}
-	if replay, err := openManagedProfile(path, testHostname, recoveryNewURL, false); err == nil {
+	if replay, err := reopenHome(t, resumed); err == nil {
 		replay.close()
-		t.Fatal("legacy consumed marker replay accepted")
+		t.Fatal("v1 consumed marker silently repaired")
 	}
 }
-
 func TestHomeAddressRecoveryRefusals(t *testing.T) {
-	for _, scenario := range []string{"different-node", "missing-grant", "denied-grant", "redirect", "missing-marker", "replayed-marker", "wrong-old-url", "stale-pending"} {
+	for _, scenario := range []string{"different-node", "missing-grant", "denied-grant", "redirect", "missing-marker", "replayed-marker", "wrong-old-ip", "different-home", "different-control", "different-ca", "stale-pending", "protected-url-slash"} {
 		t.Run(scenario, func(t *testing.T) {
 			status := 200
 			if scenario == "denied-grant" {
@@ -110,70 +128,67 @@ func TestHomeAddressRecoveryRefusals(t *testing.T) {
 				os.Remove(filepath.Join(p.path, "consumed"))
 			case "replayed-marker":
 				os.WriteFile(filepath.Join(p.path, "consumed"), []byte("stale-consumed-marker\n"), 0600)
-			case "wrong-old-url":
-				cfg.Recovery.PreviousControlURL = "https://192.168.1.99:8443"
+			case "wrong-old-ip":
+				cfg.Recovery.PreviousDialIP = "192.168.1.99"
+			case "different-home":
+				cfg.HomeID = "different-home"
+			case "different-control":
+				cfg.ControlPlaneID = "different-control"
+			case "different-ca":
+				cfg.CA = makeHomeCA(t, true).der
+				cfg.Fingerprint = homeFingerprint(cfg.CA)
 			case "stale-pending":
-				os.WriteFile(filepath.Join(p.path, "consumed.pending"), []byte("unknown-writer"), 0600)
+				os.WriteFile(filepath.Join(p.path, "profile.json.pending"), []byte("unknown-writer"), 0600)
+			case "protected-url-slash":
+				p.record.ControlURL += "/"
+				if p.phase("joined") != nil {
+					t.Fatal("fixture failed")
+				}
 			}
-			beforeProfile, _ := p.read("profile.json")
-			beforeMarker, _ := p.read("consumed")
+			beforeProfile, beforeMarker := recoveryBytes(p)
 			if completeHomeAddressRecovery(context.Background(), cfg, node, p, client) == nil {
 				t.Error("unauthorized metadata recovery accepted")
 			}
-			afterProfile, _ := p.read("profile.json")
-			afterMarker, _ := p.read("consumed")
-			if string(beforeProfile) != string(afterProfile) || string(beforeMarker) != string(afterMarker) {
+			afterProfile, afterMarker := recoveryBytes(p)
+			if !bytes.Equal(beforeProfile, afterProfile) || !bytes.Equal(beforeMarker, afterMarker) {
 				t.Error("refusal rewrote protected binding or marker")
 			}
-			if scenario == "denied-grant" || scenario == "redirect" {
+			if scenario == "denied-grant" || scenario == "redirect" || scenario == "stale-pending" {
 				if requests.Load() != 1 {
-					t.Error("grant refusal did not reach connector admission")
+					t.Error("fixture did not reach saved-grant admission")
 				}
-			}
-			if scenario == "different-node" || scenario == "missing-grant" || scenario == "missing-marker" || scenario == "replayed-marker" || scenario == "wrong-old-url" {
-				if requests.Load() != 0 {
-					t.Error("local refusal contacted connector")
-				}
+			} else if requests.Load() != 0 {
+				t.Error("local refusal contacted connector")
 			}
 		})
 	}
 }
-
 func TestHomeAddressRecoveryRetryReceipt(t *testing.T) {
 	p, cfg, client, requests := recoveryFixture(t, 200)
 	if completeHomeAddressRecovery(context.Background(), cfg, cfg.Recovery.StableNodeID, p, client) != nil {
 		t.Fatal("initial recovery failed")
 	}
-	profile, _ := p.read("profile.json")
-	marker, _ := p.read("consumed")
+	profile, marker := recoveryBytes(p)
 	if completeHomeAddressRecovery(context.Background(), cfg, cfg.Recovery.StableNodeID, p, client) != nil || requests.Load() != 2 {
 		t.Fatal("exact retry failed to revalidate saved grant")
 	}
-	afterProfile, _ := p.read("profile.json")
-	afterMarker, _ := p.read("consumed")
-	if string(profile) != string(afterProfile) || string(marker) != string(afterMarker) {
+	afterProfile, afterMarker := recoveryBytes(p)
+	if !bytes.Equal(profile, afterProfile) || !bytes.Equal(marker, afterMarker) {
 		t.Fatal("exact retry rewrote native receipt")
 	}
-	cfg.Recovery.PreviousControlURL = "https://192.168.1.99:8443"
+	cfg.Recovery.PreviousDialIP = "192.168.1.99"
 	if completeHomeAddressRecovery(context.Background(), cfg, cfg.Recovery.StableNodeID, p, client) == nil {
 		t.Fatal("foreign retry receipt accepted")
 	}
 }
-
 func TestHomeAddressRecoveryLaunchRefusals(t *testing.T) {
-	t.Setenv("GODEBUG", "x509usefallbackroots=1")
-	for _, k := range ambientKeys {
-		t.Setenv(k, "")
-		os.Unsetenv(k)
-	}
-	ca := makeHomeCA(t, true)
-	cfg := homeLaunch{CA: ca.der, Fingerprint: homeFingerprint(ca.der), ControlURL: recoveryNewURL,
-		Hostname: testHostname, StateDirectory: "/synthetic-profile", Target: "100.64.0.1:443",
-		Recovery: &homeAddressRecovery{PreviousControlURL: recoveryOldURL, StableNodeID: "synthetic-node", Bearer: recoveryCanary}}
+	cfg := homeLaunchFixture(makeHomeCA(t, true).der)
+	cfg.DialIP = recoveryNewIP
+	cfg.Recovery = &homeAddressRecovery{PreviousDialIP: recoveryOldIP, StableNodeID: "synthetic-node", Bearer: recoveryCanary}
 	if _, err := validateHomeLaunch(cfg); err != nil {
 		t.Fatal("valid recovery launch refused")
 	}
-	for _, scenario := range []string{"new-key", "http-old-url", "missing-grant", "header-injection", "missing-node", "same-endpoint-slash"} {
+	for _, scenario := range []string{"new-key", "public-old-ip", "missing-grant", "header-injection", "missing-node", "same-address", "ip-control-url"} {
 		t.Run(scenario, func(t *testing.T) {
 			changed := cfg
 			recovery := *cfg.Recovery
@@ -181,16 +196,18 @@ func TestHomeAddressRecoveryLaunchRefusals(t *testing.T) {
 			switch scenario {
 			case "new-key":
 				changed.JoinKey = strings.Repeat("ab", 24)
-			case "http-old-url":
-				recovery.PreviousControlURL = "http://192.168.1.40:8443"
+			case "public-old-ip":
+				recovery.PreviousDialIP = "8.8.8.8"
 			case "missing-grant":
 				recovery.Bearer = ""
 			case "header-injection":
 				recovery.Bearer += "\r\nInjected: value"
 			case "missing-node":
 				recovery.StableNodeID = ""
-			case "same-endpoint-slash":
-				changed.ControlURL = recoveryOldURL + "/"
+			case "same-address":
+				changed.DialIP = recoveryOldIP
+			case "ip-control-url":
+				changed.ControlURL = "https://192.168.1.41:8443/"
 			}
 			if _, err := validateHomeLaunch(changed); err == nil {
 				t.Error("unsafe recovery launch accepted")
@@ -198,69 +215,60 @@ func TestHomeAddressRecoveryLaunchRefusals(t *testing.T) {
 		})
 	}
 }
-
 func TestHomeAddressRecoveryRedaction(t *testing.T) {
 	recovery := homeAddressRecovery{Bearer: recoveryCanary}
-	display := fmt.Sprintf("%v %#v %v", recovery, recovery, errManagedState)
-	if strings.Contains(display, recoveryCanary) {
+	if strings.Contains(fmt.Sprintf("%v %#v %v", recovery, recovery, errManagedState), recoveryCanary) {
 		t.Fatal("recovery diagnostic leaked material")
 	}
 }
-
 func TestHomeAddressRecoveryInterruptedCommitStaysClosed(t *testing.T) {
 	p, cfg, client, _ := recoveryFixture(t, 200)
-	oldProfile, _ := p.read("profile.json")
-	oldMarker, _ := p.read("consumed")
-	// The existing exclusive-pending-file contract simulates a failed second
-	// write after the new consumed marker is durably committed.
+	oldProfile, oldMarker := recoveryBytes(p)
 	if os.WriteFile(filepath.Join(p.path, "profile.json.pending"), []byte("unknown-writer"), 0600) != nil {
 		t.Fatal("pending fixture failed")
 	}
 	if completeHomeAddressRecovery(context.Background(), cfg, cfg.Recovery.StableNodeID, p, client) == nil {
-		t.Fatal("partial commit reported success")
+		t.Fatal("failed atomic commit reported success")
 	}
-	profile, _ := p.read("profile.json")
-	marker, _ := p.read("consumed")
-	if string(profile) != string(oldProfile) || string(marker) == string(oldMarker) {
-		t.Fatal("fixture did not reach the interrupted two-file commit")
+	profile, marker := recoveryBytes(p)
+	if !bytes.Equal(profile, oldProfile) || !bytes.Equal(marker, oldMarker) {
+		t.Fatal("failed single-file transaction changed authority")
 	}
-	path := p.path
 	p.close()
-	for _, control := range []string{recoveryOldURL, recoveryNewURL} {
-		if reopened, err := openManagedProfile(path, testHostname, control, false); err == nil {
-			reopened.close()
-			t.Fatal("interrupted migration was silently repaired")
-		}
+	cfg.Recovery = nil
+	if reopened, err := reopenHome(t, cfg); err == nil {
+		reopened.close()
+		t.Fatal("uncommitted address admitted after interruption")
 	}
+	cfg.DialIP = recoveryOldIP
+	old, err := reopenHome(t, cfg)
+	if err != nil {
+		t.Fatal("interruption damaged old committed address")
+	}
+	old.close()
 }
-
 func TestHomeAddressRecoveryProfileAdmission(t *testing.T) {
 	cleanEngine(t)
 	p, cfg, client, _ := recoveryFixture(t, 200)
-	cfg.StateDirectory = p.path
-	cfg.Hostname = testHostname
 	if p.phase("submitting") != nil {
 		t.Fatal("offline reconnect fixture failed")
 	}
+	before, _ := p.read("profile.json")
 	p.close()
 	if code := initHomeProfile(cfg); code != 0 {
 		t.Fatalf("consumed offline profile refused: %d", code)
 	}
-	if managed.server.ControlURL != recoveryNewURL || managed.profile.record.ControlURL != recoveryOldURL {
-		t.Fatal("native admission rewrote protected URL before live validation")
+	after, _ := managed.profile.read("profile.json")
+	if managed.server.ControlURL != homeControlURL || !bytes.Equal(before, after) || managed.profile.record.DialIP != recoveryOldIP {
+		t.Fatal("admission changed protected metadata before live validation")
 	}
-	tsnet_close()
-	p, err := openManagedProfile(cfg.StateDirectory, testHostname, recoveryOldURL, false)
-	if err != nil {
-		t.Fatal("old binding lost before validation")
-	}
-	if p.phase("joined") != nil {
+	if managed.profile.phase("joined") != nil {
 		t.Fatal("fixture failed")
 	}
-	if completeHomeAddressRecovery(context.Background(), cfg, cfg.Recovery.StableNodeID, p, client) != nil {
-		t.Fatal("migration fixture failed")
+	if completeHomeAddressRecovery(context.Background(), cfg, cfg.Recovery.StableNodeID, managed.profile, client) != nil {
+		t.Fatal("recovery fixture failed")
 	}
-	p.close()
+	tsnet_close()
 	if code := initHomeProfile(cfg); code != 0 {
 		t.Fatalf("native receipt could not recover Keychain save failure: %d", code)
 	}
@@ -271,41 +279,48 @@ func TestHomeAddressRecoveryProfileAdmission(t *testing.T) {
 		t.Fatal("native retry accepted different-node receipt")
 	}
 }
-
 func TestHomeAddressRecoveryRootSlashCompatibility(t *testing.T) {
-	for _, oldSlash := range []string{"", "/"} {
+	for _, savedSlash := range []string{"", "/"} {
 		for _, newSlash := range []string{"", "/"} {
-			t.Run(fmt.Sprintf("old-slash=%t/new-slash=%t", oldSlash != "", newSlash != ""), func(t *testing.T) {
+			t.Run(fmt.Sprintf("saved-slash=%t/refreshed-slash=%t", savedSlash != "", newSlash != ""), func(t *testing.T) {
 				cleanEngine(t)
 				p, cfg, client, _ := recoveryFixture(t, 200)
-				cfg.StateDirectory, cfg.Hostname = p.path, testHostname
-				cfg.ControlURL += newSlash
-				cfg.Recovery.PreviousControlURL += oldSlash
+				_, marker := recoveryBytes(p)
 				state, _ := p.read("tailscaled.state")
 				p.close()
-				if code := initHomeProfile(cfg); code != 0 {
-					t.Fatalf("slash-bearing saved trust could not admit recovery: %d", code)
+				saved := cfg
+				saved.Recovery, saved.DialIP, saved.ControlURL = nil, recoveryOldIP, homeControlURL+savedSlash
+				if code := initHomeProfile(saved); code != 0 {
+					t.Fatalf("slash-bearing saved trust could not reopen: %d", code)
 				}
-				if managed.server.ControlURL != recoveryNewURL {
+				tsnet_close()
+				cfg.ControlURL += newSlash
+				if code := initHomeProfile(cfg); code != 0 {
+					t.Fatalf("slash-bearing trust could not admit recovery: %d", code)
+				}
+				if managed.server.ControlURL != homeControlURL {
 					t.Fatal("runtime URL was not canonical")
 				}
 				if completeHomeAddressRecovery(context.Background(), cfg, cfg.Recovery.StableNodeID, managed.profile, client) != nil {
-					t.Fatal("slash-bearing trust could not migrate")
+					t.Fatal("slash-bearing trust could not recover")
 				}
-				if managed.profile.record.ControlURL != recoveryNewURL || managed.profile.record.PreviousControlURL != recoveryOldURL {
+				if managed.profile.record.ControlURL != homeControlURL || managed.profile.record.DialIP != recoveryNewIP {
 					t.Fatal("protected receipt is not canonical")
 				}
-				after, _ := managed.profile.read("tailscaled.state")
-				if string(after) != string(state) {
-					t.Fatal("node identity state changed")
+				afterState, _ := managed.profile.read("tailscaled.state")
+				_, afterMarker := recoveryBytes(managed.profile)
+				if !bytes.Equal(afterState, state) || !bytes.Equal(afterMarker, marker) {
+					t.Fatal("node or consumed identity changed")
 				}
 				tsnet_close()
-				if code := managedInit("", cfg.ControlURL, testHostname, cfg.StateDirectory); code != 0 {
+				resumed := cfg
+				resumed.Recovery = nil
+				if code := initHomeProfile(resumed); code != 0 {
 					t.Fatalf("shipping empty-key reopen failed: %d", code)
 				}
 				tsnet_close()
 				if code := initHomeProfile(cfg); code != 0 {
-					t.Fatalf("exact migration receipt retry failed: %d", code)
+					t.Fatalf("exact recovery receipt retry failed: %d", code)
 				}
 				if completeHomeAddressRecovery(context.Background(), cfg, cfg.Recovery.StableNodeID, managed.profile, client) != nil {
 					t.Fatal("canonical receipt could not revalidate saved grant")
@@ -313,5 +328,38 @@ func TestHomeAddressRecoveryRootSlashCompatibility(t *testing.T) {
 				tsnet_close()
 			})
 		}
+	}
+}
+func TestHomeAddressRecoveryRefusesV1(t *testing.T) {
+	for _, version := range []int{0, 1} {
+		t.Run(fmt.Sprint(version), func(t *testing.T) {
+			cleanEngine(t)
+			_, cfg, client, requests := recoveryFixture(t, 200)
+			legacyPath := profilePath(t)
+			legacy, err := openManagedProfile(legacyPath, testHostname, "https://192.168.1.40:8443", true)
+			if err != nil {
+				t.Fatal("legacy fixture failed")
+			}
+			defer legacy.close()
+			if version == 1 {
+				legacy.record.Version, legacy.record.StableNodeID, legacy.record.PreviousControlURL = 1, cfg.Recovery.StableNodeID, "https://192.168.1.39:8443"
+			}
+			if os.WriteFile(filepath.Join(legacyPath, "tailscaled.state"), []byte("legacy-node"), 0600) != nil || legacy.commitConsumed() != nil {
+				t.Fatal("legacy fixture failed")
+			}
+			before, marker := recoveryBytes(legacy)
+			if !errors.Is(completeHomeAddressRecovery(context.Background(), cfg, cfg.Recovery.StableNodeID, legacy, client), errHomeReapproval) {
+				t.Error("v1 profile did not require reapproval")
+			}
+			after, afterMarker := recoveryBytes(legacy)
+			if !bytes.Equal(before, after) || !bytes.Equal(marker, afterMarker) || requests.Load() != 0 {
+				t.Error("v1 refusal changed protected files or contacted connector")
+			}
+			legacy.close()
+			cfg.StateDirectory = legacyPath
+			if code := initHomeProfile(cfg); code != homeReapprovalRequired {
+				t.Errorf("saved v1 startup did not return reapproval required: %d", code)
+			}
+		})
 	}
 }

@@ -1,7 +1,6 @@
 package main
 
-// This transport is deliberately not installed by helperMain yet. Its caller
-// must own Close and install LocalCA/proxy routing before constructing tsnet.
+// The dedicated helper owns Close and installs local roots/proxy routing before tsnet.
 import (
 	"bufio"
 	"bytes"
@@ -73,26 +72,39 @@ func newHomeTransport(der []byte, fingerprint, dialIP string) (*homeTransport, e
 	if err != nil {
 		return nil, err
 	}
-	ca, leaf, err := ephemeralHomeIdentity(time.Now())
-	if err != nil {
-		return nil, errHomeTransport
-	}
 	listener, err := net.Listen("tcp4", "127.0.0.1:0")
 	if err != nil {
 		return nil, errHomeTransport
 	}
-	ctx, cancel := context.WithCancel(context.Background())
+	ca, leaf, err := ephemeralHomeIdentity(time.Now())
+	if err != nil {
+		_ = listener.Close()
+		return nil, errHomeTransport
+	}
+	parsed, err := x509.ParseCertificate(leaf.Certificate[0])
+	if err != nil {
+		_ = listener.Close()
+		return nil, errHomeTransport
+	}
+	// A new process is required after the memory-only issuer expires.
+	ctx, cancel := context.WithDeadline(context.Background(), parsed.NotAfter)
 	h := &homeTransport{listener: listener, upstream: upstream,
 		upstreamTLS: &tls.Config{RootCAs: roots, ServerName: homeControlName, MinVersion: tls.VersionTLS12},
 		localTLS:    &tls.Config{Certificates: []tls.Certificate{leaf}, MinVersion: tls.VersionTLS12},
 		localCA:     ca, ctx: ctx, cancel: cancel, streams: make(map[*homeTransportStream]struct{})}
 	h.wg.Add(1)
 	go h.accept()
+	go func() { <-ctx.Done(); _ = h.Close() }()
 	return h, nil
 }
 
-func (h *homeTransport) Addr() net.Addr  { return h.listener.Addr() }
-func (h *homeTransport) LocalCA() []byte { return append([]byte(nil), h.localCA...) }
+func (h *homeTransport) Addr() net.Addr { return h.listener.Addr() }
+func (h *homeTransport) LocalCA() []byte {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return append([]byte(nil), h.localCA...)
+}
+func (h *homeTransport) Done() <-chan struct{} { return h.ctx.Done() }
 
 // Close cancels pending dials/handshakes and both sides of every owned stream,
 // and waits until accept/relay handlers have relinquished ownership.
@@ -110,6 +122,11 @@ func (h *homeTransport) Close() error {
 		}
 		h.mu.Unlock()
 		h.wg.Wait()
+		h.mu.Lock()
+		h.localTLS.Certificates = nil // relinquish private-key references after all TLS users exit
+		clear(h.localCA)
+		h.localCA = nil
+		h.mu.Unlock()
 	})
 	return nil
 }
@@ -160,6 +177,7 @@ func (h *homeTransport) serve(s *homeTransportStream) {
 	raw, err := (&net.Dialer{}).DialContext(ctx, "tcp4", h.upstream)
 	if err != nil {
 		homeConnectFailure(s.local)
+		h.cancel() // terminal upstream/verifier failure; never retry directly
 		return
 	}
 	h.mu.Lock()
@@ -174,6 +192,7 @@ func (h *homeTransport) serve(s *homeTransportStream) {
 	upstream := tls.Client(raw, h.upstreamTLS)
 	if upstream.HandshakeContext(ctx) != nil {
 		homeConnectFailure(s.local)
+		h.cancel() // terminal upstream/verifier failure; never retry directly
 		return
 	}
 	// No remote application byte or local success precedes upstream verification.

@@ -1,50 +1,80 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
+	"net/netip"
 	"strings"
 )
 
+var errHomeReapproval = errors.New("home_reapproval_required")
+
 // Private pipe metadata, never part of the invite schema or process arguments.
 type homeAddressRecovery struct {
-	PreviousControlURL string `json:"previousControlURL"`
-	StableNodeID       string `json:"stableNodeID"`
-	Bearer             string `json:"bearer"`
+	PreviousDialIP string `json:"previousDialIP"`
+	StableNodeID   string `json:"stableNodeID"`
+	Bearer         string `json:"bearer"`
 }
 
 func (homeAddressRecovery) String() string     { return "homeAddressRecovery(<redacted>)" }
 func (r homeAddressRecovery) GoString() string { return r.String() }
 
-// managedInit stores a root URL without its optional slash. Normalize only
-// that already-validated representation; never repair protected profile bytes.
+// Preserve F2: only validated launch representations normalize; protected bytes
+// are never repaired and the optional slash cannot change the profile identity.
 func canonicalHomeLaunch(cfg homeLaunch) homeLaunch {
 	cfg.ControlURL = strings.TrimSuffix(cfg.ControlURL, "/")
-	if cfg.Recovery != nil {
-		recovery := *cfg.Recovery
-		recovery.PreviousControlURL = strings.TrimSuffix(recovery.PreviousControlURL, "/")
-		cfg.Recovery = &recovery
-	}
 	return cfg
 }
+func validHomeDialIP(s string) bool {
+	ip, err := netip.ParseAddr(s)
+	return err == nil && ip.Is4() && ip.IsPrivate() && ip.String() == s
+}
+func matchesHomeProfile(r profileRecord, cfg homeLaunch) bool {
+	cfg = canonicalHomeLaunch(cfg)
+	if r.Version != 2 || r.ControlURL != homeControlURL || cfg.ControlURL != homeControlURL ||
+		r.HomeID != cfg.HomeID || r.ControlPlaneID != cfg.ControlPlaneID || r.CAFingerprint != cfg.Fingerprint ||
+		r.PreviousControlURL != "" || !validHomeDialIP(r.DialIP) || r.PreviousDialIP != "" && !validHomeDialIP(r.PreviousDialIP) {
+		return false
+	}
+	if cfg.Recovery == nil {
+		return r.DialIP == cfg.DialIP
+	}
+	old := cfg.Recovery.PreviousDialIP
+	return r.StableNodeID == cfg.Recovery.StableNodeID &&
+		(r.DialIP == old || r.DialIP == cfg.DialIP && r.PreviousDialIP == old)
+}
 
-// The connector's ordinary admission checks the current saved grant AND WhoIs
-// pin. Network membership or a matching hostname cannot authorize this write.
+func sameHomeRecord(p *managedProfile) bool {
+	raw, err := p.read("profile.json")
+	if err != nil {
+		return false
+	}
+	expected, err := json.Marshal(p.record)
+	return err == nil && bytes.Equal(raw, append(expected, '\n'))
+}
+
+// The ordinary connector route validates the saved grant and WhoIs pin. Only
+// after that live proof may one atomic, fsynced profile replacement change dial
+// metadata. Canonical identity, consumed marker and tailscaled.state stay exact.
 func completeHomeAddressRecovery(ctx context.Context, cfg homeLaunch, node string, p *managedProfile, client *http.Client) error {
 	cfg = canonicalHomeLaunch(cfg)
 	r := cfg.Recovery
-	if r == nil || cfg.JoinKey != "" || node == "" || node != r.StableNodeID || r.Bearer == "" ||
-		p.record.Phase != "joined" || (p.record.Version == 1 && p.record.StableNodeID != node) || p.validate() != nil {
+	if p.record.Version != 2 {
+		return errHomeReapproval
+	}
+	if _, err := validateHomeLaunch(cfg); err != nil {
+		return errManagedState
+	}
+	if r == nil || cfg.JoinKey != "" || node == "" || node != r.StableNodeID ||
+		p.record.StableNodeID != node || !matchesHomeProfile(p.record, cfg) ||
+		p.record.Phase != "joined" || p.validate() != nil || !sameHomeRecord(p) {
 		return errManagedState
 	}
 	marker, err := p.read("consumed")
 	if err != nil || string(marker) != p.marker() {
-		return errManagedState
-	}
-	retry := p.record.Version == 1 && p.record.ControlURL == cfg.ControlURL &&
-		p.record.PreviousControlURL == r.PreviousControlURL && p.record.StableNodeID == node
-	if !retry && p.record.ControlURL != r.PreviousControlURL {
 		return errManagedState
 	}
 	req, err := http.NewRequestWithContext(ctx, "GET", "http://"+cfg.Target+"/api/v1/health", nil)
@@ -60,73 +90,43 @@ func completeHomeAddressRecovery(ctx context.Context, cfg homeLaunch, node strin
 	if response.StatusCode != http.StatusOK || ctx.Err() != nil {
 		return errManagedState
 	}
-	if retry {
-		return nil
-	}
-	if p.validate() != nil {
+	if p.validate() != nil || !sameHomeRecord(p) {
 		return errManagedState
 	}
-	// Recheck the old marker immediately before replacing either protected file.
 	marker, err = p.read("consumed")
 	if err != nil || string(marker) != p.marker() {
 		return errManagedState
 	}
+	if p.record.DialIP == cfg.DialIP {
+		return nil
+	} // exact committed receipt; grant rechecked
 	record := p.record
-	p.record.Version = 1
-	p.record.PreviousControlURL = r.PreviousControlURL
-	p.record.ControlURL = cfg.ControlURL
-	p.record.StableNodeID = node
-	data, err := json.Marshal(p.record)
+	record.DialIP, record.PreviousDialIP = cfg.DialIP, r.PreviousDialIP
+	data, err := json.Marshal(record)
 	if err != nil {
-		p.record = record
 		return errManagedState
 	}
-	// A crash between these fsynced writes leaves a mismatched pair and refuses
-	// reopen. It never repairs/replays a marker or grants new authorization.
-	if err = p.atomic("consumed", []byte(p.marker())); err != nil {
-		p.record = record
+	if p.atomic("profile.json", append(data, '\n')) != nil {
 		return errManagedState
 	}
-	if err = p.atomic("profile.json", append(data, '\n')); err != nil {
-		return errManagedState
-	}
+	p.record = record
 	return nil
 }
 
-// Admit only existing same-profile membership; defer protected URL writes until
-// live node/grant checks. A submitting phase with a valid consumed marker is a
-// previously joined profile whose last reconnect was interrupted/offline.
+// Existing profiles must already be v2 with the exact protected home/CA tuple.
+// A v1 URL or marker is never converted, even with a valid saved grant.
 func initHomeProfile(cfg homeLaunch) int {
+	if _, err := validateHomeLaunch(cfg); err != nil {
+		return homeTrustRefused
+	}
 	cfg = canonicalHomeLaunch(cfg)
-	if cfg.Recovery != nil && cfg.JoinKey != "" {
-		return managedInvalid
-	}
-	control := cfg.ControlURL
-	if cfg.Recovery != nil {
-		control = cfg.Recovery.PreviousControlURL
-	}
-	code := managedInit(cfg.JoinKey, control, cfg.Hostname, cfg.StateDirectory)
-	if code != 0 && cfg.Recovery != nil {
-		// A previous successful native commit may precede a failed Keychain save.
-		// This is accepted only with the exact protected old/new/node receipt.
-		code = managedInit("", cfg.ControlURL, cfg.Hostname, cfg.StateDirectory)
-		if code == 0 && (managed.profile.record.Version != 1 ||
-			managed.profile.record.PreviousControlURL != cfg.Recovery.PreviousControlURL ||
-			managed.profile.record.StableNodeID != cfg.Recovery.StableNodeID) {
-			tsnet_close()
-			code = managedStateError
-		}
-	}
+	code := initManagedProfile(cfg.JoinKey, cfg.ControlURL, cfg.Hostname, cfg.StateDirectory, &cfg)
 	if code == 0 && cfg.Recovery != nil {
 		p := managed.profile
 		marker, err := p.read("consumed")
 		if err != nil || string(marker) != p.marker() || (p.record.Phase != "joined" && p.record.Phase != "submitting") {
 			tsnet_close()
-			code = managedStateError
-		} else {
-			// Select the explicit refreshed endpoint without changing protected
-			// metadata until both same-node and saved-grant checks succeed.
-			managed.server.ControlURL = cfg.ControlURL
+			return managedStateError
 		}
 	}
 	return code

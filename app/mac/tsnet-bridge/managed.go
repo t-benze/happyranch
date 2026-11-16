@@ -93,6 +93,10 @@ func validHostname(s string) bool {
 }
 
 func managedInit(authKey, controlURL, hostname, stateDir string) int {
+	return initManagedProfile(authKey, controlURL, hostname, stateDir, nil)
+}
+
+func initManagedProfile(authKey, controlURL, hostname, stateDir string, home *homeLaunch) int {
 	if !opMu.TryLock() {
 		return managedResult(managedBusy)
 	}
@@ -114,8 +118,11 @@ func managedInit(authKey, controlURL, hostname, stateDir string) int {
 	}
 	u.Host = strings.ToLower(u.Host)
 	u.Path = ""
-	profile, err := openManagedProfile(stateDir, hostname, u.String(), authKey != "")
+	profile, err := openBoundManagedProfile(stateDir, hostname, u.String(), authKey != "", home)
 	if err != nil {
+		if errors.Is(err, errHomeReapproval) {
+			return homeReapprovalRequired
+		}
 		return managedResult(managedStateError)
 	}
 	logtail.Disable()
@@ -211,7 +218,13 @@ func managedUp(timeoutMs int) int {
 		if st.Self != nil {
 			m.selfNodeID = string(st.Self.ID)
 		}
-		if m.profile.record.Version == 1 && m.profile.record.StableNodeID != m.selfNodeID {
+		if m.profile.record.Version == 2 && m.profile.record.StableNodeID == "" {
+			if m.selfNodeID == "" {
+				return managedPeerChanged
+			}
+			m.profile.record.StableNodeID = m.selfNodeID
+		}
+		if m.profile.record.Version >= 1 && m.profile.record.StableNodeID != m.selfNodeID {
 			return managedPeerChanged
 		}
 		return contextResult(ctx, 0)
