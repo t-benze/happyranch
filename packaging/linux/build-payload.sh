@@ -151,7 +151,7 @@ cp -a "$WORK/source/web/dist" "$PAYLOAD/web/dist"
 # Keep the private module cache removable by the EXIT trap. Go otherwise makes
 # downloaded module directories read-only, causing a completed build to fail.
 export CGO_ENABLED=0 GOOS=linux GOARCH="$GO_ARCH" GOFLAGS=-modcacherw
-(cd "$WORK/source/app/linux/tsnet-sidecar" && go build -mod=readonly -trimpath \
+(cd "$WORK/source/app/linux/tsnet-sidecar" && go build -buildvcs=false -mod=readonly -trimpath \
     -o "$PAYLOAD/bin/happyranch-tsnet-sidecar" ./cmd/happyranch-tsnet-sidecar)
 cat > "$PAYLOAD/bin/happyranch" <<'CLI'
 #!/bin/sh
