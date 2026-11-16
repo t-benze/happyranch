@@ -96,7 +96,7 @@ func TestStartWithConsumedCredentialReusesDurableState(t *testing.T) {
 	if err := s.Start(context.Background()); err != nil {
 		t.Fatalf("restart with consumed marker and no credential: %v", err)
 	}
-	if len(e.credential) != 0 || e.config != (EngineConfig{cfg.StateDir, cfg.ControlURL, cfg.RoleIdentity, cfg.ExpectedPeer}) {
+	if len(e.credential) != 0 || e.config != (EngineConfig{cfg.StateDir, cfg.ControlURL, cfg.RoleIdentity, cfg.ExpectedPeer, cfg.Profile}) {
 		t.Fatal("restart did not reuse the configured state without an auth key")
 	}
 	if strings.Join(events, ",") != "start,probe,listen" {

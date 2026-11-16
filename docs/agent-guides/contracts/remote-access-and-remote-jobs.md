@@ -941,3 +941,198 @@ loopback `/auth/bootstrap` exposes the daemon token. No
 installation, daemon/service restart, package build or Mac acceptance was
 performed by this source slice. The retained standalone installer-script tests
 cover temp-root/fake-manager behavior; required PR checks remain lint/static.
+
+### Linux managed identity ingress v1 (THR-327 slice 1a)
+
+The explicit `linux-managed-identity-v1` profile uses the fixed
+`/run/happyranch-connector/ingress.sock`, not a caller-selected endpoint. Go
+`Profile` and Python `managed.profile` select it; only omission or an empty
+string retains legacy ExpectedPeer/TCP behavior and Mac/DIY hosting is unchanged.
+Non-string values (including null) and unknown strings refuse; the Go command
+returns configuration exit 2 before state or credential handling. The identity
+profile is Linux-only. `ExpectedPeer` and
+`ConnectorAddr` are omitted in the new sidecar profile. Enrollment/restart retain
+durable state/consumption, private-only config, connector liveness, listener and
+watchdog gates; no peer is required for READY. Health makes no expected-peer
+selection. An empty paired set grants no access.
+
+Each tsnet connection resolves `LocalClient.WhoIs(remote IP:port)` and requires a
+nonempty `Node.StableID`, with no hostname/IP fallback. It opens one fresh Unix
+connection and writes one frame: ASCII `HRID`, byte version 1, uint16 big-endian
+UTF-8 byte count, then StableID; total at most 1024 bytes. HTTP follows unchanged.
+The Python listener lives in `diy_provider.py` with its managed transport override
+in `managed_provider.py`; the shared `httpd.py` handler checks SO_PEERCRED against
+the fixed happyranch service UID before frame parsing. Unknown version, missing,
+empty, oversize, invalid UTF-8, CR/LF/NUL, truncated or duplicate frames close.
+Initial frame/request-line reads have a two-second socket timeout. The socket is
+0600 in an owned 0700 directory; existing/unsafe socket paths refuse rather than
+being overwritten. Identity lives only in the handler's request-local
+`ingress_node_identity` context; reserved HappyRanch/Tailscale identity headers
+are stripped, including duplicates, while the existing device-credential header
+continues to carry the device bearer. In the managed identity profile, slice
+2b-1 uses this verified frame for pinned pairing and every-request admission.
+
+`ConnectorUnitSpec.ingress_profile` adds only `RuntimeDirectoryMode=0700` for the
+fixed system service. Existing hardening, MDWE, AF_UNIX allowance, capabilities,
+notify/watchdog, restart limits and target/bind/uphold relations remain exact.
+The legacy installer still validates legacy configs; slice 3b owns generated
+profile/unit selection and migration. No service was installed or restarted.
+CA/TLS/control/DERP trust changes belong to slice 1b. Real Headscale v0.25.1 WhoIs
+and native recovery acceptance remain M2/later-slice work.
+
+### Pinned pairing and per-device authorization (slice 2)
+
+PinnedPairingManager is the connector-owned in-process core for THR-327's new
+managed profile. Construct it once at connector startup. Its fixed helper-facing
+operations are status, issue_invite_record, approve_pending, reject_pending and
+revoke_device; helper transport/authentication is separate. Constructor configuration
+supplies the anchored store and connector identity; no operation accepts a path, URL
+or settings. Approval/rejection requires the exact captured (control_plane_id,
+stable_node_id) tuple and pending generation.
+
+The version-3 snapshot extends the existing snapshot/anchor/lock transaction with
+one digest-only invitation and one pending approval or unfinished delivery. Approval
+limits new managed grants to 32 pinned device records (including revoked pins);
+this is not a parse-time limit on historical or DIY records. Each new managed device
+has an internal ID, credential digest, monotonic
+epoch, expiry, revoked flag and exact control-plane/StableID pin. Anchored v2
+records, including more than 32 base-written DIY devices, remain readable and
+DIY-usable/revocable/removable without inventing pins; pinned admission reports them as
+re-pair-required and denies them. Missing/unknown/mistyped v3 fields, duplicate JSON
+keys, torn publication and snapshot/anchor rollback refuse. Literal no-follow
+parents, bounded regular owner-only single-link files and descriptor-relative
+atomic publication apply. The final parent must be a directory owned by the effective
+UID; its mode is tightened to exactly 0700, preserving the shipped owned-0755
+installer lifecycle. Symlinked/non-directory/foreign-owned parents refuse; existing
+unsafe snapshot, anchor and lock metadata is never repaired into acceptance.
+The local anchor cannot detect replacement of both files by a trusted store writer.
+
+Redemption consumes the invitation into the actual node's pending record in one
+transaction. It returns a private completion handle and comparison phrase, granting
+no runtime access. Approval persists the pin/digest/epoch before making a bearer
+available in connector memory. Completion consumes delivery durably and requires
+that handle and the same control-plane/node tuple; it returns the bearer once.
+Expired/failed/replayed attempts never restore invitations. A matched invite's
+digest/generation is fenced in-process before
+publication; write failure attempts a durable burn without burning a newer invite.
+If storage remains unavailable, the fence denies retries and startup burns the
+persisted unfinished invite before serving. Only fresh explicit issuance supersedes
+the fence and burns the old pending/delivery handle. Startup burns unfinished invitations, pending approval
+and delivery; undelivered devices are revoked, while completed grants survive.
+The invitation deadline is at most five minutes and also bounds approval/delivery.
+
+authorization.admit(store, credential, stable_node_id, control_plane_id, now) loads
+current anchored trust and checks digest, credential epoch, expiry, revocation,
+connector audience and exact pin. Its verdict carries device ID and epoch for stream
+registration. Identity comes only from trusted plain arguments: WhoIs StableID and
+connector-configured control-plane ID, never headers, hostname or address. Labels
+currently use bounded escaped identity text and a StableID fingerprint because this
+slice has no OS-label transport. Headscale membership grants no product authority.
+The managed identity listener wires this verdict into request/stream admission
+(slice 2b-1); existing DIY and legacy transport paths keep their versioned behavior.
+
+Attributed registrations use StreamRegistry.open with device_id and epoch.
+Per-device revocation persists invalidation before closing/acknowledging that device's
+registries, fences stale registrations and retains RevocationIncomplete on cleanup
+failure. Other devices remain open. Unattributed legacy revocation keeps its existing
+conservative closure semantics. Focused synthetic checks use the retained standalone
+script venue: uv run --frozen pytest scripts/test_pinned_pairing.py -v --tb=short.
+The core slice adds no UI, helper, polkit/control socket or installer.
+
+### Managed request and stream admission (slice 2b-1)
+
+Protected connector JSON uses the additive optional key
+`managed.control_plane_id`, matching the design's `control_plane_id` identity.
+The later root-helper installation slice writes it. Old configurations without
+the key still load; the identity listener refuses pairing and product requests
+with HTTP 503 `control_plane_id_missing`. It never infers a control plane from
+headers, HRID, hostname, address, URL, tenant/home/connector IDs, or falls back
+to the legacy pairing manager. The supervisor constructs one cached
+PinnedPairingManager for `linux-managed-identity-v1` and supplies it and the
+configured control-plane identity to the protected Unix listener at serving
+startup. Read-only managed diagnostics inspect the existing provider and trust
+store without constructing this owner or running startup recovery; active
+invites, pending approvals and undelivered credentials remain usable.
+
+`POST /pair/invite` takes the raw UTF-8 pairing secret and redeems against that
+configured control plane plus the HRID StableID. It returns `state:
+pending-approval`, a private `completion_handle`, `comparison_phrase` and
+`expires_at`; no product credential is issued before local approval.
+`POST /pair/complete` takes the raw UTF-8 completion handle and returns the
+one-use `credential` only for the same tuple after durable approval. Failures
+return HTTP 403 `pairing_denied`. These exact paths accept no query string.
+The legacy `POST /pair` ceremony grants no authority on this listener.
+
+Framing and pin validation have different bounds: HRID accepts at most 1017
+UTF-8 bytes, rejects blank identity and CR/LF/NUL; pins accept at most 256
+characters and reject every C0 character, DEL and surrogate. A frame-valid
+identity that pins refuse (for example 257 ASCII characters or a nonblank
+identity containing TAB) receives a clean 403, without identity/secret echo or
+500. A matched invalid redemption consumes its invite, following the core's
+consume-before-validation rule. Malformed framing still closes the connection.
+
+Every ordinary request, SSE or WebSocket admission calls authorization.admit
+through the pinned manager using the device bearer and this exact node tuple.
+Wrong-node/valid-bearer requests deny, regardless of forged identity headers.
+The device credential is consumed before forwarding. Successful verdicts carry
+device ID and epoch through the existing route/policy/readiness and release
+verification gates to StreamRegistry.open, including in-flight HTTP. The
+shipped route policy still denies unsupported upgrades (currently all
+WebSocket routes); this wiring adds no allowed route.
+
+Supervisor reconciliation of persisted managed revocation fences and closes
+the revoked or removed device's attributed epochs without stopping the listener or
+rotating/sealing the entire registry. Other devices retain their streams and
+can open new requests. Removal through the shipped CLI deletes the device row;
+reconciliation also closes attributed owners absent from the trust snapshot and
+fences their old epochs, including a delayed first registration. Stale admissions
+racing transport allocation fail at registration; later approved epochs remain
+eligible. Cleanup failures retain RevocationIncomplete rather than acknowledging
+success. The serving loop reports that incomplete result and retries reconciliation
+on each pass while keeping unaffected devices serving. Other exceptions retain
+their existing handling. DIY/legacy reconciliation keeps its existing whole-registry
+closure and rotation. Completed pinned grants survive connector restart;
+unfinished ceremonies still burn. Standalone verification:
+`PYTHONPATH=$PWD uv run --frozen pytest scripts/test_pinned_pairing.py scripts/test_identity_ingress.py scripts/test_managed_admission.py -v`.
+These tests use real temporary Unix sockets, synthetic protected state and
+controlled upstream handles. The WS attribution case supplies a synthetic
+permitted template to reach registration, separately from the shipped policy's
+deny gate. Native WS protocol behavior, live Headscale, helper binding,
+installation and service recovery remain separate acceptance work.
+
+## Fixed Linux helper source (THR-327 slice 3a)
+
+`remote_access_helper.py` exports `ai.happyranch.RemoteAccess1` at
+`/ai/happyranch/RemoteAccess1` with zero-input Status, NextDevice,
+ApprovePending, RejectPending and RevokeSelected. Only the last three request
+fresh interactive polkit authorization. The protected release UID is a mandatory
+trusted constructor value; slice 3b must supply it from its validated root-owned
+release record. The root-only `serve()` connects Gio to the fixed system-bus socket
+(`/run/dbus/system_bus_socket`), ignoring address environment overrides; package activation and
+installation of the source bus/polkit definitions remain pending. Run the fixed
+packaged entry with system Python `-I`, without user settings or argv overrides.
+
+The helper captures caller/UID, target, ownership and snapshot generation before
+authorization, then revalidates after it. The 120-second deadline cancels an
+outstanding polkit check; uncertain cancellation seals further mutations until
+cancellation is acknowledged or that check's terminal reply arrives. A terminal
+reply releases the dialog slot even if subsequent deadline/target expiry refuses
+the mutation; a late reply never authorizes an expired mutation. One dialog
+is allowed globally. Per-unique-name cursors disappear on disconnect. Status
+contains only bounded public summaries. Error/log categories are closed.
+IssueInvite and all install/lifecycle/R3 methods are absent, so invite issuance's
+one-per-minute rate limit and policy-renewal installation belong to later slices.
+
+`helper_control.OperationAPI` defines status, approve_pending, reject_pending,
+and revoke_device plus the shared trust mutation lock. The new root-only Unix
+request handler revalidates the captured snapshot under that same lock before
+calling the operation. A ready/commit handshake keeps the connector lock held
+while root rechecks the live caller UID and deadline. After its final potentially
+blocking status revalidation, the handler checks the monotonic deadline again
+immediately before the operation, still under that lock.
+The real binding to slice 2 is a serial integration leg
+after both slices merge; no current connector listener installs this handler.
+It must preserve generation/ownership/expiry checks, transactional approval and
+revocation stream closure. Fixed production control path:
+`/run/happyranch-connector/control.sock`; no credential is returned by this
+control protocol. Native dialogs and the real operation binding remain unproven.

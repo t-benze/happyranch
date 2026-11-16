@@ -36,7 +36,7 @@ func (s *Sidecar) startHealth(ctx context.Context) {
 		return
 	}
 	ctx, s.healthCancel = context.WithCancel(ctx)
-	m := healthMonitor{client: client, expected: s.cfg.ExpectedPeer, out: os.Stderr, dir: os.Getenv("RUNTIME_DIRECTORY"), at: time.Now()}
+	m := healthMonitor{client: client, expected: s.cfg.ExpectedPeer, profile: s.cfg.Profile, out: os.Stderr, dir: os.Getenv("RUNTIME_DIRECTORY"), at: time.Now()}
 	go func() {
 		ticker := time.NewTicker(time.Second)
 		defer ticker.Stop()
@@ -59,6 +59,7 @@ type healthState struct {
 type healthMonitor struct {
 	client        healthClient
 	expected, dir string
+	profile       string
 	out           io.Writer
 	at            time.Time
 	now           func() time.Time
@@ -107,7 +108,7 @@ func (m *healthMonitor) sample(ctx context.Context, trigger string) {
 	}
 	var selected key.NodePublic
 	var peer *ipnstate.PeerStatus
-	if status != nil {
+	if status != nil && m.profile != LinuxIdentityProfile {
 		for k, p := range status.Peer {
 			if p != nil && (p.HostName == m.expected || strings.TrimSuffix(p.DNSName, ".") == m.expected) {
 				// Ambiguous identities must not expose an arbitrary matching node.

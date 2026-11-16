@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -201,6 +202,54 @@ func TestLoadConfigCredentialOverride(t *testing.T) {
 	}
 	if _, err := loadConfig(path, "relative"); err == nil {
 		t.Fatal("relative override accepted")
+	}
+}
+
+func TestLoadConfigProfileAdmission(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		field   string
+		profile string
+		refuse  bool
+	}{
+		{name: "omitted"},
+		{name: "empty", field: `"Profile":"",`},
+		{name: "identity", field: `"Profile":"linux-managed-identity-v1",`, profile: sidecar.LinuxIdentityProfile, refuse: runtime.GOOS != "linux"},
+		{name: "unknown", field: `"Profile":"future-v2",`, refuse: true},
+		{name: "null", field: `"Profile":null,`, refuse: true},
+		{name: "boolean", field: `"Profile":true,`, refuse: true},
+		{name: "number", field: `"Profile":0,`, refuse: true},
+		{name: "object", field: `"Profile":{},`, refuse: true},
+		{name: "array", field: `"Profile":[],`, refuse: true},
+		{name: "null-before-empty", field: `"Profile":null,"Profile":"",`, refuse: true},
+		{name: "lowercase-null", field: `"profile":null,`, refuse: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			want := configForCommand(t)
+			if tc.profile != "" {
+				want.ExpectedPeer = ""
+				want.ConnectorAddr = ""
+			}
+			data, err := json.Marshal(want)
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(t.TempDir(), "config.json")
+			if err := os.WriteFile(path, append([]byte("{"+tc.field), data[1:]...), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			got, err := loadConfig(path, "")
+			if tc.refuse {
+				if err == nil {
+					t.Fatalf("Profile %s accepted as %q; want configuration refusal", tc.name, got.Profile)
+				}
+				return
+			}
+			want.Profile = tc.profile
+			if err != nil || !reflect.DeepEqual(got, want) {
+				t.Fatalf("config=%v err=%v, want profile %q with unchanged fields", got, err, tc.profile)
+			}
+		})
 	}
 }
 

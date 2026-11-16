@@ -424,6 +424,11 @@ class ProducerMoveAdmission:
         connection under the native locks, and restore the closed original.
         The caller must rethrow: no store or serving caller may use this DB.
         """
+        from runtime.infrastructure.org_access_fence import OrgAccessHeld
+        fence = getattr(self.db, '_org_access_fence', None)
+        if fence is None:
+            raise OrgAccessHeld('org_access_original_owner_unknown')
+        fence.assert_held()  # before existing native/SQLite locks
         with self.move.gate, self.db._lock:
             failed = self.db._conn
             if not failed.in_transaction:

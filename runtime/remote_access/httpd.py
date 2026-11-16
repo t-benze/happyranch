@@ -13,12 +13,81 @@ implementation avoids divergent copies of the serving path across providers.
 from __future__ import annotations
 
 import json
+import os
+import socket
+import struct
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler
+from socketserver import ThreadingUnixStreamServer
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from runtime.remote_access.pairing import PinnedPairingManager
 
 from runtime.remote_access.models import Decision, Header, RemoteRequest
 
 _DENY_STATUS = 403
+
+# Trusted connection metadata, scoped to the current handler/request thread.
+# HTTP fields can neither set nor override this context.
+ingress_node_identity: ContextVar[str | None] = ContextVar("ingress_node_identity", default=None)
+_IDENTITY_PREFIXES = ("x-happyranch-", "x-tailscale-", "tailscale-", "x-tailnet-")
+
+
+class IdentityUnixServer(ThreadingUnixStreamServer):
+    """One protected stream per tailnet connection; no pooled identity state."""
+
+    daemon_threads = True
+
+    def __init__(self, path: str, handler: type[BaseHTTPRequestHandler], expected_uid: int,
+                 *, pairing: PinnedPairingManager | None = None,
+                 control_plane_id: str | None = None) -> None:
+        self.expected_uid = expected_uid
+        self.pairing = pairing
+        self.control_plane_id = control_plane_id
+        self._socket_identity: tuple[int, int] | None = None
+        super().__init__(path, handler, bind_and_activate=False)
+        try:
+            self.server_bind()
+            info = os.lstat(path)
+            self._socket_identity = (info.st_dev, info.st_ino)
+            os.chmod(path, 0o600)
+            self.server_activate()
+        except Exception:
+            self.server_close()
+            raise
+
+    def server_close(self) -> None:
+        super().server_close()
+        if self._socket_identity is not None:
+            try:
+                info = os.lstat(self.server_address)
+                if (info.st_dev, info.st_ino) == self._socket_identity:
+                    os.unlink(self.server_address)
+            except FileNotFoundError:
+                pass
+
+
+def _connection_identity(handler: BaseHTTPRequestHandler) -> str:
+    credentials = handler.connection.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i"))
+    _, uid, _ = struct.unpack("3i", credentials)
+    if uid != handler.server.expected_uid:
+        raise ValueError("peer refused")
+    header = handler.rfile.read(7)
+    if len(header) != 7 or header[:5] != b"HRID\x01":
+        raise ValueError("frame refused")
+    size = int.from_bytes(header[5:7], "big")
+    if not 0 < size <= 1017:
+        raise ValueError("frame refused")
+    raw = handler.rfile.read(size)
+    if len(raw) != size:
+        raise ValueError("frame refused")
+    identity = raw.decode("utf-8", errors="strict")
+    if not identity.strip() or any(c in identity for c in "\r\n\x00"):
+        raise ValueError("frame refused")
+    return identity
+
 
 
 def parse_request(handler: BaseHTTPRequestHandler) -> RemoteRequest:
@@ -30,7 +99,10 @@ def parse_request(handler: BaseHTTPRequestHandler) -> RemoteRequest:
         path = "/"
     length = int(handler.headers.get("Content-Length") or 0)
     body = handler.rfile.read(length) if length else None
-    headers = [Header(k.lower(), v) for k, v in handler.headers.items()]
+    headers = [Header(k.lower(), v) for k, v in handler.headers.items()
+               if not (isinstance(handler.server, IdentityUnixServer)
+                       and k.lower() != "x-happyranch-device-credential"
+                       and k.lower().startswith(_IDENTITY_PREFIXES))]
     stream_type = "http"
     if handler.headers.get("Upgrade", "").lower() == "websocket":
         stream_type = "websocket"
@@ -111,10 +183,35 @@ class BaseConnectorHandler(BaseHTTPRequestHandler):
 
     protocol_version = "HTTP/1.1"
 
+    def handle(self) -> None:
+        if not isinstance(self.server, IdentityUnixServer):
+            super().handle()
+            return
+        token = None
+        try:
+            self.connection.settimeout(2)
+            identity = _connection_identity(self)
+            token = ingress_node_identity.set(identity)
+            super().handle()
+        except (OSError, ValueError, UnicodeError):
+            return
+        finally:
+            if token is not None:
+                ingress_node_identity.reset(token)
+
+    def parse_request(self) -> bool:
+        if isinstance(self.server, IdentityUnixServer) and self.raw_requestline.startswith(b"HRID"):
+            self.close_connection = True
+            return False
+        return super().parse_request()
+
     def log_message(self, format: str, *args) -> None:  # noqa: A002
         return  # never log raw request lines (no paths/secrets in logs)
 
     def _handle(self) -> None:
+        if isinstance(self.server, IdentityUnixServer):
+            self.connection.settimeout(None)
+            self.close_connection = True
         try:
             request = parse_request(self)
         except (ValueError, OSError):

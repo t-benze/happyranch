@@ -12,7 +12,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
+
+if TYPE_CHECKING:
+    from runtime.remote_access.state import TrustStateStore
 
 from runtime.remote_access.identity import ConnectorIdentity
 
@@ -36,6 +39,30 @@ class DeviceAuthorization:
     expires_at: datetime
     revoked: bool = False
     credential_digest: str | None = None
+    control_plane_id: str | None = None
+    stable_node_id: str | None = None
+
+    @property
+    def re_pair_required(self) -> bool:
+        return self.control_plane_id is None or self.stable_node_id is None
+
+
+@dataclass(frozen=True)
+class InviteRecord:
+    secret_digest: str
+    expires_at: datetime
+    generation: int
+
+
+@dataclass(frozen=True)
+class PendingApproval:
+    generation: int
+    control_plane_id: str
+    stable_node_id: str
+    handle_digest: str
+    comparison_phrase: str
+    expires_at: datetime
+    device_id: str | None = None  # set only after durable approval
 
 
 @dataclass(frozen=True)
@@ -63,6 +90,9 @@ class TrustState:
     devices: dict[str, DeviceAuthorization] = field(default_factory=dict)
     current_device_id: str | None = None
     pending_pairings: dict[str, PendingPairing] = field(default_factory=dict)
+    invite_record: InviteRecord | None = None
+    pending_approval: PendingApproval | None = None
+    delivery: PendingApproval | None = None
 
     def apply_pairing(self, device: DeviceAuthorization) -> None:
         """Pair/re-pair a device; epochs are monotonic (rollback rejected)."""
@@ -110,6 +140,60 @@ class TrustState:
 class AuthorizationVerdict:
     ok: bool
     reason: str | None = None  # identity|pairing|current_device|revocation
+    device_id: str | None = None
+    authorization_epoch: int | None = None
+
+
+def admit(
+    state_store: TrustStateStore, credential: str, stable_node_id: str,
+    control_plane_id: str, now: datetime,
+) -> AuthorizationVerdict:
+    """Pure admission decision over CURRENT anchored trust; no HTTP identity input.
+
+    The successful verdict carries the exact device/epoch to register a stream.
+    Slice 2b owns request, WebSocket and SSE wiring and all remaining gateway gates.
+    """
+    import hashlib
+    import hmac
+    from runtime.remote_access.state_store import StateStoreError, _require_identity_text
+
+    denied = AuthorizationVerdict(False, "identity_unestablished")
+    try:
+        _require_identity_text(stable_node_id)
+        _require_identity_text(control_plane_id)
+    except StateStoreError:
+        return denied
+    if (not isinstance(credential, str) or len(credential) > 256
+            or not isinstance(stable_node_id, str) or not stable_node_id
+            or not isinstance(control_plane_id, str) or not control_plane_id
+            or not isinstance(now, datetime) or now.tzinfo is None):
+        return denied
+    parts = credential.split("_")
+    if len(parts) != 3 or parts[0] != "hrpin" or not parts[1].isascii() or not parts[1].isdigit() or len(parts[1]) > 20:
+        return denied
+    epoch = int(parts[1])
+    try:
+        digest = hashlib.sha256(credential.encode("utf-8")).hexdigest()
+    except UnicodeError:
+        return denied
+    try:
+        state = state_store.load()
+    except StateStoreError:
+        return denied
+    if state.connector_identity is None:
+        return denied
+    for device in state.devices.values():
+        if device.credential_digest is None or not hmac.compare_digest(device.credential_digest, digest):
+            continue
+        if (device.re_pair_required or device.revoked or now >= device.expires_at
+                or device.authorization_epoch != epoch
+                or device.tenant_id != state.connector_identity.tenant_id
+                or device.home_id != state.connector_identity.home_id
+                or (device.control_plane_id, device.stable_node_id) != (control_plane_id, stable_node_id)
+                or (state.delivery is not None and state.delivery.device_id == device.device_id)):
+            return denied
+        return AuthorizationVerdict(True, device_id=device.device_id, authorization_epoch=epoch)
+    return denied
 
 
 class AuthorizationVerifier:

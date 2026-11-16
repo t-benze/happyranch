@@ -98,7 +98,7 @@ def registry(home: Path) -> dict:
 
 
 @contextmanager
-def read_database(path: Path):
+def read_database(path: Path, *, org_root: Path | None = None):
     before = identity(path)
     if not stat.S_ISREG(before[2]) or before[4] != 1 or before[3] != os.getuid():
         raise Hold(f'unknown database custody: {path}')
@@ -107,7 +107,16 @@ def read_database(path: Path):
         literal(candidate, missing=True)
         if candidate.exists() and not stat.S_ISREG(candidate.lstat().st_mode):
             raise Hold(f'invalid SQLite companion: {candidate}')
-    conn = sqlite3.connect(path.as_uri() + '?mode=ro', uri=True, timeout=1)
+    from runtime.infrastructure.org_access_fence import OrgAccessFence
+    if org_root is not None and path != org_root / 'happyranch.db':
+        raise Hold('org database boundary mismatch')
+    fence = OrgAccessFence.acquire(org_root) if org_root is not None else None
+    try:
+        conn = sqlite3.connect(path.as_uri() + '?mode=ro', uri=True, timeout=1)
+    except BaseException:
+        if fence is not None:
+            fence.close()
+        raise
     try:
         deadline, steps = time.monotonic() + 120, 0
         def progress():
@@ -128,6 +137,8 @@ def read_database(path: Path):
             raise Hold(f'database identity moved: {path}')
     finally:
         conn.close()
+        if fence is not None:
+            fence.close()
 
 
 def inspect_org_owners(conn: sqlite3.Connection, layout: str, org: str) -> None:
@@ -188,7 +199,7 @@ def observe_maintenance(home: Path, selected: Path) -> dict:
                 raise Hold(f'{org}: unaccounted/partial org entry; original registry/org owner must reconcile')
             literal(org / 'org' / 'teams.yaml')
             path = resolve_org_database(root, org.name)
-            with read_database(path) as conn:
+            with read_database(path, org_root=org) as conn:
                 layout, coding = _read_workflow_schema(conn, expected_org_slug=org.name)
                 _validate_coding_dependencies(conn)
                 validate_names(conn, org_slug=org.name)

@@ -91,9 +91,12 @@ def read_snapshot(root: Path, deadline: float) -> dict:
     ledger = IntegrityLedger(deadline)
     conn = None
     digest = None
+    fence = None
     stage = 'open'
     result = _observation('open_failed', stage)
     try:
+        from runtime.infrastructure.org_access_fence import OrgAccessFence
+        fence = OrgAccessFence.acquire(root, deadline=admission)
         before = _db_identity(root, admission)
         conn = sqlite3.connect((root / 'happyranch.db').as_uri() + '?mode=ro',
                                uri=True, timeout=max(0, admission - time.monotonic()))
@@ -134,6 +137,11 @@ def read_snapshot(root: Path, deadline: float) -> dict:
                 conn.close()
             except (Exception, KeyboardInterrupt):
                 result = _observation('io', 'close', steps=ledger.consumed, digest=digest)
+            else:
+                if fence is not None:
+                    fence.close()
+        elif fence is not None:
+            fence.close()
     if time.monotonic() >= deadline:
         result = _observation('deadline', 'supervision', steps=ledger.consumed, digest=digest)
     return result
@@ -263,6 +271,12 @@ def _latest(parent: int, report: dict, deadline: float) -> None:
 
 
 def _audit(root: Path, report: dict, deadline: float) -> None:
+    from runtime.infrastructure.org_access_fence import org_access
+    with org_access(root, deadline=deadline):
+        _audit_fenced(root, report, deadline)
+
+
+def _audit_fenced(root: Path, report: dict, deadline: float) -> None:
     """Existing audit writer, on a NEW bounded connection after checker close."""
     import threading
     import runtime.infrastructure.database  # noqa: F401 -- facade for writer decorator

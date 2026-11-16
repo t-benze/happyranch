@@ -230,3 +230,67 @@ func TestMainSIGTERMDuringStartup(t *testing.T) {
 	}
 	t.Fatal("startup SIGTERM never published STOPPING")
 }
+
+type identityCommandEngine struct{ commandEngine }
+
+func (e *identityCommandEngine) Start(context.Context, sidecar.EngineConfig, []byte) (sidecar.RedemptionReceipt, error) {
+	return sidecar.RedemptionReceipt{Redeemed: true, Durable: true}, nil
+}
+
+type fixtureUnixDialer string
+
+func (d fixtureUnixDialer) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
+	if network != "unix" || address != "/run/happyranch-connector/ingress.sock" {
+		return nil, sidecar.ErrConnector
+	}
+	return (&net.Dialer{Timeout: time.Second}).DialContext(ctx, network, string(d))
+}
+func TestIdentityServeReadyWatchdogAndListenerLoss(t *testing.T) {
+	notify := notificationSocket(t)
+	t.Setenv("WATCHDOG_USEC", "100000")
+	dir, err := os.MkdirTemp("/tmp", "hr-watchdog-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+	path := filepath.Join(dir, "ingress.sock")
+	local, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer local.Close()
+	cfg := configForCommand(t)
+	cfg.Profile = "linux-managed-identity-v1"
+	cfg.ExpectedPeer = ""
+	cfg.ConnectorAddr = ""
+	inbound, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer inbound.Close()
+	e := &identityCommandEngine{commandEngine{listener: inbound}}
+	svc := sidecar.New(cfg, e, fixtureUnixDialer(path))
+	defer svc.Stop()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	result := make(chan int, 1)
+	go func() { result <- serve(ctx, svc) }()
+	if got := readNotification(t, notify); got != "READY=1" {
+		t.Fatalf("ready=%q", got)
+	}
+	for range 2 {
+		if got := readNotification(t, notify); got != "WATCHDOG=1" {
+			t.Fatalf("watchdog=%q", got)
+		}
+	}
+	inbound.Close()
+	if code := resultCode(t, result); code == 0 || svc.Running() || !e.closed.Load() {
+		t.Fatalf("loss code=%d running=%v", code, svc.Running())
+	}
+	for range 4 {
+		if got := readNotification(t, notify); got == "STOPPING=1" {
+			return
+		}
+	}
+	t.Fatal("loss did not stop watchdog/admission")
+}

@@ -13,6 +13,8 @@ from pathlib import Path
 # A direct script invocation must use this checkout's release code.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from runtime.infrastructure.org_access_fence import OrgAccessFence  # noqa: E402
+
 from runtime.infrastructure.workflow_schema import (  # noqa: E402
     draft_migration_guidance, migrate_draft_schema, validate_workflow_schema,
 )
@@ -52,8 +54,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument('--check', action='store_true', help='read-only readiness; exit 3 if migration needed')
     args = parser.parse_args(argv)
     conn = None
+    fence = None
     try:
         path = resolve_org_database(args.runtime_root, args.org)
+        fence = OrgAccessFence.acquire(path.parent, exclusive=not args.check)
         conn = sqlite3.connect(path.as_uri() + ('?mode=ro' if args.check else '?mode=rw'),
                                uri=True, timeout=1.0)
         conn.row_factory = sqlite3.Row
@@ -84,6 +88,8 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         if conn is not None:
             conn.close()
+        if fence is not None:
+            fence.close()
 
 
 if __name__ == '__main__':

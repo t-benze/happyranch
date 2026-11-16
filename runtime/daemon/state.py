@@ -412,6 +412,7 @@ class DaemonState:
                 orgs=state.orgs,
                 capture_orgs=state._capture_profile_orgs,
                 hold_startup=state._hold_startup_orgs,
+                org_roots=runtime.iter_org_roots,
             )
 
             # Load runtime-level executor profiles into the process-wide registry

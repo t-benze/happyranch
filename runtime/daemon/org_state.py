@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from runtime.infrastructure.org_access_fence import OrgAccessFence
     from runtime.infrastructure.memory_collection import CollectionObserver
     from runtime.daemon.cleanup_diagnostics import _Attachment
 
@@ -429,6 +430,26 @@ class OrgState:
     @classmethod
     @_startup_load_timing()
     def load(cls, *, slug: str, root: Path, settings: Settings, attachment_owner: dict | None = None) -> "OrgState":
+        from runtime.infrastructure.org_access_fence import OrgAccessFence, bind_org_fence
+        fence = OrgAccessFence.acquire(root)
+        owner = attachment_owner if attachment_owner is not None else {}
+        try:
+            state = cls._load_fenced(slug=slug, root=root, settings=settings,
+                                     attachment_owner=owner, access_fence=fence)
+            bind_org_fence(fence)
+            return state
+        except BaseException:
+            # The inner loader records whether its ORIGINAL connection closed.
+            # No new handle, dead PID or terminal task supplies that proof.
+            if owner.get('load_db_closed'):
+                fence.close()
+            else:
+                fence.retain_unknown()
+            raise
+
+    @classmethod
+    def _load_fenced(cls, *, slug: str, root: Path, settings: Settings,
+                     attachment_owner: dict | None, access_fence: OrgAccessFence) -> "OrgState":
         from runtime.daemon.__main__ import _startup_span
         paths = OrgPaths(root=root)
         from runtime.identities.schema import preflight
@@ -437,6 +458,7 @@ class OrgState:
             attachment_owner["db_construction_started"] = True
         with _startup_span("org_database"):
             db = Database(paths.db_path)
+            db._org_access_fence = access_fence
         if attachment_owner is not None:
             attachment_owner["load_db"] = db
         try:
@@ -617,4 +639,9 @@ class OrgState:
         except BaseException as exc:
             self._local_close_error = exc
             raise
+        from runtime.infrastructure.org_access_fence import unbind_org_fence
+        fence = getattr(self.db, '_org_access_fence', None)
+        if fence is not None:
+            unbind_org_fence(fence)
+            fence.close()
         self._local_close_complete = True

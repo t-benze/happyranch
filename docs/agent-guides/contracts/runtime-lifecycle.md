@@ -1094,3 +1094,9 @@ original schema/semantic readers remain intact; complete target validation occur
 the temporary composition ends and before COMMIT. Sequential rows cannot change within
 that legacy scope. A read or terminal/control return supplies no additional settlement
 proof; Option B ordinary/document owners remain UNSETTLED.
+
+## Original org access intervals (A1)
+
+OrgState acquires SH before naming preflight and Database construction, binds that original descriptor to the actual attachment, and releases after local connection closure. Native JOB launch in `runtime/daemon/jobs_runner.py` passes the original locked description through `pass_fds`; its parent holder survives until the existing positive `confirm_job_processes_empty` result. Original registration, producer COMMIT, output attribution and terminal composition remain distinct.
+
+The host supervisor uses `OrgFenceGuardian` in `runtime/daemon/sessions.py` before native preparation. The guardian inherits the same description and retains it on EOF/parent loss. Only positive original native receipt/cleanup, or positively unlaunched/abandoned preparation, permits its close instruction. Missing receipts, uncertain prepare/spawn/cleanup and old/unknown original owners retain HOLD; PID disappearance supplies no clearance. This adds no platform transport field, native settlement, restart adoption or live operating authority.
