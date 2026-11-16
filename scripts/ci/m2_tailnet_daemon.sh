@@ -215,8 +215,10 @@ EOF
 }
 negative_ownership() {
   # Keep the genuine user service active; only the untrusted port file is changed.
-  local actual squatter_pid
+  local actual squatter_pid invocation current deadline state
   actual=$(cat "$release_home/daemon.port")
+  invocation=$(timeout 3 systemctl show happyranch-connector.service -p InvocationID --value)
+  [[ -n $invocation ]] || fail 'connector has no invocation before ownership negative'
   /usr/bin/python3 -u - "$release_home/squatter.port" <<'PY_SQUAT' &
 import socket, sys
 from pathlib import Path
@@ -224,7 +226,7 @@ with socket.socket() as listener:
     listener.bind(('127.0.0.1', 0))
     listener.listen()
     Path(sys.argv[1]).write_text(str(listener.getsockname()[1]))
-    listener.settimeout(10)
+    listener.settimeout(75)
     try:
         peer, _ = listener.accept()
         with peer:
@@ -236,7 +238,8 @@ PY_SQUAT
   squatter_pid=$!
   wait_for test -s "$release_home/squatter.port"
   cat "$release_home/squatter.port" > "$release_home/daemon.port"
-  sudo -u happyranch "$python" - <<'PY_REFUSE'
+  sudo -u happyranch "$python" - "$actual" <<'PY_REFUSE'
+import socket, sys
 from runtime.remote_access.release_verifier import VerificationRefused, VerifierClient
 try:
     VerifierClient().resolve()
@@ -245,10 +248,46 @@ except VerificationRefused as exc:
     print('M2 negative: non-MainPID listener refused (socket_not_owned)')
 else:
     raise AssertionError('verifier trusted squatter port file')
+with socket.create_connection(('127.0.0.1', int(sys.argv[1])), timeout=3) as connection:
+    try:
+        VerifierClient().confirm(connection.getsockname()[1], int(sys.argv[1]))
+    except VerificationRefused as exc:
+        assert exc.reason == 'port_changed', exc.reason
+        print('M2 negative: changed port refused (port_changed)')
+    else:
+        raise AssertionError('verifier confirmed after port file changed')
 PY_REFUSE
+  # Hold the fault until the old notify-READY invocation leaves. Otherwise its
+  # stale active state can pass ready() just before the expected recovery exit.
+  deadline=$((SECONDS + 60))
+  while :; do
+    current=$(timeout 3 systemctl show happyranch-connector.service -p InvocationID --value) || fail 'cannot query connector invocation during ownership negative'
+    [[ $current != "$invocation" ]] && break
+    if (( SECONDS >= deadline )); then
+      timeout 3 systemctl show happyranch-connector.service -p InvocationID,ActiveState,SubState,StatusText,Result,NRestarts || true
+      fail 'connector did not leave its old invocation within 60s of the port replacement'
+    fi
+    sleep 1
+  done
   printf '%s' "$actual" > "$release_home/daemon.port"
   kill "$squatter_pid"
   wait "$squatter_pid" || [[ $? == 143 ]]
+  deadline=$((SECONDS + 60))
+  while :; do
+    state=$(timeout 3 systemctl show happyranch-connector.service -p InvocationID,Type,ActiveState,SubState,StatusText,Result,NRestarts) || state='unit query failed'
+    state=$'\n'"$state"$'\n'
+    if [[ $state == *$'\nType=notify\n'* && $state == *$'\nActiveState=active\n'* &&
+          $state == *$'\nSubState=running\n'* && $state == *$'\nInvocationID='* &&
+          $state != *$'\nInvocationID=\n'* && $state != *$'\nInvocationID='"$invocation"$'\n'* ]]; then
+      break
+    fi
+    if (( SECONDS >= deadline )); then
+      printf '%s\n' "$state" >&2
+      fail 'connector did not recover to a new active notify-READY invocation within 60s after restoring daemon.port'
+    fi
+    sleep 1
+  done
+  echo 'M2 negative: connector recovered automatically to a new active notify-READY invocation'
   ready
 }
 
