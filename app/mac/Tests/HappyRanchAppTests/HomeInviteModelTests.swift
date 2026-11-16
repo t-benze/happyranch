@@ -200,6 +200,8 @@ struct HomeInviteModelTests {
             denied.prepare()
             #expect(await eventually { denied.phase == .keychain(failure) && !denied.busy })
             #expect(denied.webURL == nil)
+            denied.accept(try invite())
+            #expect(denied.phase == .keychain(failure), "Replacement needs explicit consent")
         }
     }
 

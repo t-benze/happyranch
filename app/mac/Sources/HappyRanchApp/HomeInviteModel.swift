@@ -195,11 +195,14 @@ final class HomeInviteModel: ObservableObject {
                 catch {
                     guard attemptID == token else { return }
                     needsReplacementConsent = true
+                    rePairHomeIDs.insert(id)
                     phase = .keychain((error as? SavedAccessFailure) ?? .unavailable); return
                 }
                 try check(token)
                 guard credential.networkProfileID == id, credential.binding == metadata.binding,
                       credential.trust == metadata.trust else { throw HomeConnectionFailure.identityUnavailable }
+                rePairHomeIDs.remove(id)
+                needsReplacementConsent = false
                 let candidate = makeSession(); session = candidate; target = credential.trust
                 phase = .joining
                 try await candidate.join(trust: credential.trust, profileID: id, key: nil)
