@@ -6,7 +6,8 @@ installed profile relations in every org database, so this module uses those
 relations as per-org dependency/operation mirrors and uses a stable owner-only
 ``flock`` file for the one genuinely machine-global serialization primitive.
 
-Supported writers acquire profile lease(s) before any org publication gate.
+Supported writers acquire sorted org access gates, then profile lease(s),
+before any org publication gate.
 No publication path acquires a profile lease, keeping the graph acyclic.  The
 kernel releases a held flock on process death; arbitrary same-UID file/DB edits
 remain outside this cooperative guarantee.
@@ -206,10 +207,12 @@ class ProfileCoordinator:
         lock_wait_seconds: float = _LOCK_WAIT_SECONDS,
         capture_orgs: Callable | None = None,
         hold_startup: Callable | None = None,
+        org_roots: Callable | None = None,
     ) -> None:
         self._daemon_home = Path(daemon_home)
         self.orgs = orgs
         self._attachment_capture = capture_orgs
+        self._org_roots = org_roots
         self._lock_wait_seconds = lock_wait_seconds
         self._hold_startup = hold_startup
         self._startup_holds: dict[str, str] = {}
@@ -292,14 +295,45 @@ class ProfileCoordinator:
                 os.close(fd)
 
     @contextmanager
+    def _org_fences(self, *, allow_unloaded: bool = False,
+                    attaching_org: OrgState | None = None) -> Iterator[None]:
+        from runtime.infrastructure.org_access_fence import OrgAccessFence, org_access_key
+        with self._capture_orgs() as current:
+            captured = dict(current)
+        roots = {slug: org.root for slug, org in captured.items()}
+        if attaching_org is not None:
+            if attaching_org.slug in captured and captured[attaching_org.slug] is not attaching_org:
+                raise ProfileCoordinatorError('profile_consumer_changed')
+            # The original loaded candidate is not published in the runnable
+            # map yet. Include only it in the exact discovered membership.
+            roots[attaching_org.slug] = attaching_org.root
+        if self._org_roots is not None:
+            discovered = dict(self._org_roots())  # metadata only, never Database
+            if (any(discovered.get(slug) != root for slug, root in roots.items())
+                    or not allow_unloaded and discovered.keys() != roots.keys()):
+                raise ProfileCoordinatorError('profile_consumer_unloaded')
+            roots = discovered
+        with ExitStack() as stack:
+            for root in sorted(roots.values(), key=org_access_key):
+                fence = OrgAccessFence.acquire(root)
+                stack.callback(fence.close)
+            with self._capture_orgs() as current:
+                if current.keys() != captured.keys() or any(current[key] is not value for key, value in captured.items()):
+                    raise ProfileCoordinatorError('profile_consumer_changed')
+            if self._org_roots is not None and dict(self._org_roots()) != roots:
+                raise ProfileCoordinatorError('profile_consumer_changed')
+            yield
+
+    @contextmanager
     def _profile_leases(
         self,
         profile_names: Sequence[str],
         *,
         wait: bool,
+        attaching_org: OrgState | None = None,
     ) -> Iterator[tuple[str, ...]]:
         names = tuple(sorted({name.strip().lower() for name in profile_names if name.strip()}))
-        with ExitStack() as stack:
+        with self._org_fences(attaching_org=attaching_org), ExitStack() as stack:
             for name in names:
                 stack.enter_context(self._profile_lease(name, wait=wait))
             yield names
@@ -307,7 +341,7 @@ class ProfileCoordinator:
     @contextmanager
     def profile_read(self, profile_name: str) -> Iterator[None]:
         """Serialize a paired durable/cache read against profile mutation."""
-        with self._profile_lease(profile_name, wait=False):
+        with self._org_fences(allow_unloaded=True), self._profile_lease(profile_name, wait=False):
             yield
 
     @contextmanager
@@ -1327,7 +1361,7 @@ class ProfileCoordinator:
         """Synchronize and attach one org without escaping profile capture."""
         capture = self._capture_org_dependencies(org, attachment=True)
         desired, revision, snapshot = capture.desired, capture.revision, capture.snapshot
-        with self._profile_leases(capture.profile_names, wait=True) as names:
+        with self._profile_leases(capture.profile_names, wait=True, attaching_org=org) as names:
             self._validate_effective_inputs(capture.effective_identity)
             for name in names or (None,):
                 self._assert_no_active_operation(name, attaching_org=org)

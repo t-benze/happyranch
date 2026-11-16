@@ -421,3 +421,35 @@ func TestHealthStartupAndStop(t *testing.T) {
 		t.Fatal("unset runtime directory wrote state file")
 	}
 }
+
+func TestIdentityHealthHasNoExpectedPeer(t *testing.T) {
+	at := time.Now()
+	// An unnamed peer must not become the expected node just because the new
+	// profile's ExpectedPeer is absent. No peer-specific ping is emitted.
+	status := healthStatus(true, "198.51.100.7:443", "Running")
+	for k, p := range status.Peer {
+		if p.HostName != "expected-mac" {
+			delete(status.Peer, k)
+			continue
+		}
+		p.HostName = ""
+		p.DNSName = ""
+	}
+	client := &fakeHealth{status: status}
+	var out bytes.Buffer
+	monitor := healthMonitor{client: client, profile: LinuxIdentityProfile, out: &out, at: at, now: func() time.Time { return at }, runner: tsnethealth.NewRunner(func() time.Time { return at })}
+	monitor.sample(context.Background(), "change")
+	var record struct {
+		Backend string
+		Peer    struct {
+			Name, Path string
+			Online     bool
+		}
+	}
+	if err := json.Unmarshal(bytes.TrimPrefix(bytes.TrimSpace(out.Bytes()), []byte("tsnet-health ")), &record); err != nil {
+		t.Fatal(err)
+	}
+	if record.Backend != "Running" || record.Peer.Name != "" || record.Peer.Online || record.Peer.Path != "none" || client.pings != 0 {
+		t.Fatalf("single-peer assumption survived: %s", out.String())
+	}
+}

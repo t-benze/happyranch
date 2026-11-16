@@ -11,6 +11,8 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from runtime.infrastructure.org_access_fence import OrgAccessFence  # noqa: E402
+
 from scripts.migrate_workflow_submission_schema import (  # noqa: E402
     _MigrationConnection, _identity, _lifecycle_snapshot, resolve_org_database,
 )
@@ -27,12 +29,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument('--check', action='store_true', help='No writes; exit 1 if migration is required')
     args = parser.parse_args(argv)
     conn = None
+    fence = None
     try:
         root = args.org_root
         if not root.is_absolute() or root.is_symlink() or root.name != args.org_slug or root.parent.name != 'orgs':
             raise ValueError('invalid_org_root')
         runtime_root = root.parent.parent
         path = resolve_org_database(runtime_root, args.org_slug)
+        fence = OrgAccessFence.acquire(root, exclusive=not args.check)
         if path.parent != root:
             raise ValueError('org_root_identity_mismatch')
         before = path.stat()
@@ -73,6 +77,8 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         if conn is not None:
             conn.close()
+        if fence is not None:
+            fence.close()
 
 
 if __name__ == '__main__':

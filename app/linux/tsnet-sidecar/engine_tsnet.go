@@ -10,13 +10,22 @@ import (
 	"syscall"
 	"time"
 
+	"tailscale.com/client/tailscale/apitype"
+	"tailscale.com/ipn/ipnstate"
 	"tailscale.com/logtail"
 	"tailscale.com/tsnet"
 )
 
 // TSNetEngine is the production embedded userspace-tailnet adapter. Server.Start
 // launches the backend; readiness requires the bounded Server.Up wait as well.
-type TSNetEngine struct{ server *tsnet.Server }
+type whoIsClient interface {
+	WhoIs(context.Context, string) (*apitype.WhoIsResponse, error)
+}
+
+type TSNetEngine struct {
+	server         *tsnet.Server
+	identityClient whoIsClient
+}
 
 func NewTSNetEngine() *TSNetEngine { return &TSNetEngine{} }
 func (e *TSNetEngine) Start(ctx context.Context, c EngineConfig, credential []byte) (RedemptionReceipt, error) {
@@ -45,14 +54,40 @@ func (e *TSNetEngine) Start(ctx context.Context, c EngineConfig, credential []by
 	if err != nil {
 		return RedemptionReceipt{}, ErrEngine
 	}
-	visible := false
+	if c.Profile == LinuxIdentityProfile {
+		client, err := e.server.LocalClient()
+		if err != nil {
+			return RedemptionReceipt{}, ErrEngine
+		}
+		e.identityClient = client
+	}
+	return RedemptionReceipt{Redeemed: true, Durable: true, ExpectedPeerVisible: expectedPeerVisible(c, status)}, nil
+}
+
+func expectedPeerVisible(c EngineConfig, status *ipnstate.Status) bool {
+	if c.Profile == LinuxIdentityProfile {
+		return true
+	}
+	if status == nil {
+		return false
+	}
 	for _, peer := range status.Peer {
-		if peer.HostName == c.ExpectedPeer || strings.TrimSuffix(peer.DNSName, ".") == c.ExpectedPeer {
-			visible = true
-			break
+		if peer != nil && (peer.HostName == c.ExpectedPeer || strings.TrimSuffix(peer.DNSName, ".") == c.ExpectedPeer) {
+			return true
 		}
 	}
-	return RedemptionReceipt{Redeemed: true, Durable: true, ExpectedPeerVisible: visible}, nil
+	return false
+}
+
+func (e *TSNetEngine) peerIdentity(ctx context.Context, remote string) (string, error) {
+	if e.identityClient == nil {
+		return "", ErrEngine
+	}
+	response, err := e.identityClient.WhoIs(ctx, remote)
+	if err != nil || response == nil || response.Node == nil || response.Node.StableID == "" {
+		return "", ErrEngine
+	}
+	return string(response.Node.StableID), nil
 }
 
 func newTSNetServer(c EngineConfig, credential []byte) *tsnet.Server {

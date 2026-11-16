@@ -13,6 +13,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from runtime.infrastructure.org_access_fence import OrgAccessFence  # noqa: E402
+
 from scripts.migrate_workflow_submission_schema import (  # noqa: E402
     _lifecycle_snapshot, resolve_org_database,
 )
@@ -33,8 +35,10 @@ def main(argv: list[str] | None = None) -> int:
         'This is not PID absence or an OS exclusion guarantee.'))
     args = parser.parse_args(argv)
     conn = None
+    fence = None
     try:
         path = resolve_org_database(args.runtime_root, args.org)
+        fence = OrgAccessFence.acquire(path.parent, exclusive=not args.check)
         before = path.lstat()
         # Original independently resolved path and pre-open file observation;
         # include mode, so drift cannot become a new RO or RW baseline.
@@ -110,6 +114,8 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         if conn is not None:
             conn.close()
+        if fence is not None:
+            fence.close()
 
 
 if __name__ == '__main__':

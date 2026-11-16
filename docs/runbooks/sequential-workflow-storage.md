@@ -269,3 +269,9 @@ See [report semantics](../agent-guides/contracts/observability.md#daily-workflow
 These records authorize no restore, hold, cancellation, installation or admission
 change. I2 removes inline physical checks; full FKs and parts 2–7 remain on
 complete reads under the original budgets and deadline.
+
+## Cooperative org fence (A1)
+
+The supported explicit installers/migration writers now acquire stable EX before the first org connection; read-only check branches acquire SH. Sequential setup holds EX across its source reads, writer, close and publication. The source-only preflight/backup reader and maintenance readers acquire SH. Existing human-host exclusions precede any new fence-file effect. Operator confirmation, registry/lifecycle, backup, source/target checks, original deadlines and uncertain-outcome handling remain required.
+
+Lock files live under `<daemon_home>/org-access-fences/` and are never removed/replaced by the protocol. EX is cooperative exclusion, not original native closure or migration permission. Old/nonparticipating/unknown native custody remains unproved: preserve it and reconcile its original owner. Never infer safety from a free lock or dead PID. Automatic bootstrap and its full original-owner qualification remain the separate A4 owner.

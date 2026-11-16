@@ -21,6 +21,57 @@ already-terminal token.
 """
 from __future__ import annotations
 
+from runtime.infrastructure.org_access_fence import OrgAccessFence
+
+
+class OrgFenceGuardian:
+    """Original interval survives daemon loss until positive native closure.
+
+    The shell inherits the SAME locked open-file description. EOF, parent loss
+    and a dead PID never authorize release. The original supervisor alone sends
+    the close instruction after its native receipt. No platform transport changes.
+    """
+
+    _held: set[OrgFenceGuardian] = set()
+
+    def __init__(self, fence: OrgAccessFence) -> None:
+        import subprocess
+        fence.assert_held()
+        self.root = fence.root
+        self.original_owner = None
+        script = (
+            "printf 'org-access-ready\\n'; "
+            "while IFS= read -r closure; do "
+            "if [ \"$closure\" = org-access-closed ]; then exit 0; fi; done; "
+            "while :; do /bin/sleep 86400; done"
+        )
+        self.process = subprocess.Popen(
+            ['/bin/sh', '-c', script], pass_fds=(fence.fd,),
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            start_new_session=True, env={},
+        )
+        # Retain before ANY fallible handshake. A failed handshake is unknown.
+        self._held.add(self)
+        import selectors
+        with selectors.DefaultSelector() as selector:
+            selector.register(self.process.stdout, selectors.EVENT_READ)
+            if not selector.select(.5) or self.process.stdout.readline() != b'org-access-ready\n':
+                from runtime.infrastructure.org_access_fence import OrgAccessHeld
+                raise OrgAccessHeld('org_access_guardian_unconfirmed')
+
+    def close_confirmed(self) -> None:
+        from runtime.infrastructure.org_access_fence import OrgAccessHeld
+        if self.process.poll() is not None:
+            raise OrgAccessHeld('org_access_original_guardian_lost')
+        self.process.stdin.write(b'org-access-closed\n')
+        self.process.stdin.flush()
+        self.process.wait(timeout=.5)
+        if self.process.returncode != 0:
+            raise OrgAccessHeld('org_access_guardian_close_unconfirmed')
+        self.process.stdin.close()
+        self.process.stdout.close()
+        self._held.remove(self)
+
 from collections.abc import Callable
 from contextlib import contextmanager
 from threading import Lock

@@ -1153,3 +1153,89 @@ Swift build/tests, signed ACL/locked behavior, actual deletion-failure/wipe proo
 and live join/relaunch/revocation remain **NOT RUN** pending a separately chosen
 native venue. See the Mac README for the real-state capture checklist; no test-only
 production state injection is provided. PR3 still owns release binding/signing.
+
+### Linux managed identity ingress v1 (THR-327 slice 1a)
+
+The explicit `linux-managed-identity-v1` profile uses the fixed
+`/run/happyranch-connector/ingress.sock`, not a caller-selected endpoint. Go
+`Profile` and Python `managed.profile` select it; only omission or an empty
+string retains legacy ExpectedPeer/TCP behavior and Mac/DIY hosting is unchanged.
+Non-string values (including null) and unknown strings refuse; the Go command
+returns configuration exit 2 before state or credential handling. The identity
+profile is Linux-only. `ExpectedPeer` and
+`ConnectorAddr` are omitted in the new sidecar profile. Enrollment/restart retain
+durable state/consumption, private-only config, connector liveness, listener and
+watchdog gates; no peer is required for READY. Health makes no expected-peer
+selection. An empty paired set grants no access.
+
+Each tsnet connection resolves `LocalClient.WhoIs(remote IP:port)` and requires a
+nonempty `Node.StableID`, with no hostname/IP fallback. It opens one fresh Unix
+connection and writes one frame: ASCII `HRID`, byte version 1, uint16 big-endian
+UTF-8 byte count, then StableID; total at most 1024 bytes. HTTP follows unchanged.
+The Python listener lives in `diy_provider.py` with its managed transport override
+in `managed_provider.py`; the shared `httpd.py` handler checks SO_PEERCRED against
+the fixed happyranch service UID before frame parsing. Unknown version, missing,
+empty, oversize, invalid UTF-8, CR/LF/NUL, truncated or duplicate frames close.
+Initial frame/request-line reads have a two-second socket timeout. The socket is
+0600 in an owned 0700 directory; existing/unsafe socket paths refuse rather than
+being overwritten. Identity lives only in the handler's request-local
+`ingress_node_identity` context; reserved HappyRanch/Tailscale identity headers
+are stripped, including duplicates, while the existing device-credential header
+continues to serve the unchanged pairing pipeline. Identity is not yet used for
+pairing or authorization (slice 2).
+
+`ConnectorUnitSpec.ingress_profile` adds only `RuntimeDirectoryMode=0700` for the
+fixed system service. Existing hardening, MDWE, AF_UNIX allowance, capabilities,
+notify/watchdog, restart limits and target/bind/uphold relations remain exact.
+The legacy installer still validates legacy configs; slice 3b owns generated
+profile/unit selection and migration. No service was installed or restarted.
+CA/TLS/control/DERP trust changes belong to slice 1b. Real Headscale v0.25.1 WhoIs
+and native recovery acceptance remain M2/later-slice work.
+
+## Pinned pairing and per-device authorization (slice 2)
+
+THR-327's managed ceremony core extends the existing anchored transaction to v3;
+there is no second trust file. PinnedPairingManager exposes fixed in-process
+status, digest-only invite issuance, captured-generation/tuple approval and rejection,
+and device revocation for future helper wiring. It does not authenticate a helper
+or install an IPC endpoint. The authoritative design is PR #1565 at
+e11ad4a5ffabc99b88244b9fbb27168a81c50a39, §§2, 4, 5 and slice 2 in §8.
+
+An invitation becomes the sole pending actual (control_plane_id, stable_node_id)
+in one serialized transaction. Approval durably commits an internal device ID,
+pin, credential digest, monotonic epoch, expiry and revoked flag before the
+credential is deliverable. The same-node handle-bound completion is one-use;
+matching an invite fences its digest/generation in-process before any write.
+Failed publication makes a best-effort durable burn; persistent storage failure
+cannot reopen the invite in that owner, and startup burns a persisted unconsumed
+invite before serving. Only fresh explicit issuance supersedes the fence.
+Unfinished invitation/pending/delivery authority burns on restart, and a lost
+undelivered grant requires a new invitation/approval. Completed grants survive
+restart. Unknown/missing/mistyped fields, duplicate keys, torn state and anchor
+rollback fail closed. Approval refuses a new managed grant when 32 pinned device
+records already exist, including revoked pins; parsing does not cap historical/DIY
+records. Legacy anchored unpinned records, including more than 32 devices, remain
+DIY-usable/revocable/removable, load as re-pair-required for managed, and cannot pass
+pinned admission or spend the pinned grant budget.
+
+Literal no-follow traversal requires a real final parent owned by the effective
+UID and tightens its mode to exactly 0700, including the shipped owned-0755
+installer layout. Symlinked/non-directory/foreign-owned parents refuse. Existing
+unsafe snapshot/anchor/lock metadata refuses without chmod/chown repair; stricter
+installer layout remains owned by slice 3b.
+
+The pure authorization.admit function reloads current anchored trust and requires
+credential digest/epoch/expiry/revocation/audience plus exact control-plane/StableID
+pin equality. StableID enters as a trusted plain argument from ingress; the
+control-plane ID is fixed connector configuration. Headers, names, IPs, membership
+and old credentials cannot supply or change a pin. Status is secret-free, with
+bounded escaped identity labels, StableID fingerprint and comparison phrase;
+OS-derived friendly-label transport is not part of this core slice.
+
+Attributed stream registration carries internal device ID and epoch. Pinned revoke
+persists invalidation, fences old registrations and closes only the selected device's
+streams before success. Physical cleanup failure remains RevocationIncomplete;
+other devices remain usable. Existing unattributed/DIY paths keep their versioned
+semantics. Request, WebSocket and SSE admission wiring is explicitly deferred to
+slice 2b after PR #1572. No UI/helper/socket/installer, live Headscale or host change
+is delivered or authorized by this subsection.
