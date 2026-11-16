@@ -272,8 +272,16 @@ markers are pending publication within the existing 60-second startup deadline:
 the daemon writes the port marker, then the PID marker, with a truncate/write
 interval for each. No health probe or attachment proceeds until the complete
 PID/port pair and listener ownership match. If publication stays invalid until
-the deadline, the window shows the ownership/health refusal and enters the
-existing packaged-service shutdown path. It never repairs the markers.
+the deadline, the window shows a localized connection-timeout error with
+**Retry** and enters the existing packaged-service shutdown path. It never
+repairs the markers.
+
+On launch and every start/retry, the window checks `NeedDaemonReload` and runs
+`systemctl --user daemon-reload` for the current user when it reports `yes`,
+before starting the service. This loads unit changes installed by a `.deb`
+upgrade. Reload failure or command timeout shows a localized error with
+**Retry**, without starting the service. No root maintainer script reloads
+other users' managers.
 
 Before start, the window inspects `systemctl --user show-environment`. Any
 `HAPPYRANCH_*` variable refuses startup and the message lists names only.
