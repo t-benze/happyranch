@@ -202,6 +202,8 @@ def render_sidecar_unit(spec: SidecarUnitSpec) -> str:
         "LoadCredential=enrollment-key:happyranch-tsnet-enrollment",
         "User=happyranch",
         "Group=happyranch",
+        "Environment=SSL_CERT_FILE=/etc/happyranch/control-ca.pem",
+        "Environment=SSL_CERT_DIR=/etc/happyranch/empty-ca-directory",
         "NotifyAccess=main",
         f"RestartSec={spec.restart_sec}",
         f"WatchdogSec={spec.watchdog_sec}",

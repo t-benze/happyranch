@@ -942,6 +942,37 @@ installation, daemon/service restart, package build or Mac acceptance was
 performed by this source slice. The retained standalone installer-script tests
 cover temp-root/fake-manager behavior; required PR checks remain lint/static.
 
+### Linux home control/DERP transport (THR-327 slice 1b)
+
+The Linux identity profile accepts a protected sidecar `control_tls` record with
+`dial_ip` (RFC1918 IPv4) and `ca_sha256` (64 lowercase hex CA DER fingerprint),
+only with `ControlURL=https://control.happyranch.invalid:8443`. The canonical home
+name requires that record. The dedicated process admits the fixed root-owned,
+single-link, bounded exact-one-CA `/etc/happyranch/control-ca.pem` and protected
+empty `/etc/happyranch/empty-ca-directory` before constructing clients. The unit's
+only transport additions are those two fixed `SSL_CERT_FILE`/`SSL_CERT_DIR`
+Environment lines. All other hardening, including MDWE, is unchanged.
+
+An ephemeral loopback CONNECT forwarder verifies upstream TLS with only the
+admitted home CA and fixed DNS identity, before returning 200. Its only targets
+are `control.happyranch.invalid:8443` and `:443`, both mapped to literal
+`dial_ip:8443`; absolute HTTP and other/malformed/oversize requests close. It
+re-presents a process-local in-memory leaf to pinned tsnet, using a separate
+ephemeral-only forced fallback pool. Internally owned proxy/root/resolver setup
+precedes clients. Ambient proxy/bypass/keylog/GODEBUG and all `TS_` overrides
+refuse without value echo. There is no direct/public retry or host trust/DNS
+change. Upstream verification/dial or listener failure closes owned streams;
+shutdown/cancellation closes transport and tsnet. Home/address changes require
+a new dedicated process, retaining canonical durable identities.
+
+The supported Go tests exercise synthetic CA/environment admission, real pinned
+control `/key` + Noise registration/canary and independent DERP region clients
+in fresh subprocesses, plus CONNECT rejection/closure. Slice 3b owns protected
+config/CA/leaf/map generation. Full tsnet startup/lifecycle, exact installed
+protected paths, packaged hardening and native Darwin are separate acceptance
+gates. See the [sidecar README](../../../app/linux/tsnet-sidecar/README.md) and
+[Round-7 specification](../../superpowers/specs/2026-11-16-one-click-remote-access.md#6-invite-selected-bootstrap-and-secret-handling).
+
 ### Linux managed identity ingress v1 (THR-327 slice 1a)
 
 The explicit `linux-managed-identity-v1` profile uses the fixed

@@ -38,7 +38,8 @@ const ConnectorSocket = "/run/happyranch-connector/ingress.sock"
 const identityFrameLimit = 1024
 
 type Config struct {
-	Profile                                             string `json:",omitempty"`
+	ControlTLS                                          *HomeControlTLS `json:"control_tls,omitempty"`
+	Profile                                             string          `json:",omitempty"`
 	StateDir, CredentialFile, ControlURL, RoleIdentity  string
 	ExpectedPeer, ListenAddr, ConnectorAddr, DERPPolicy string
 	ExcludedDaemonPorts                                 []int `json:",omitempty"`
@@ -50,6 +51,9 @@ func (c Config) Validate() error {
 		return ErrConfiguration
 	}
 	if c.Profile != "" && (c.Profile != LinuxIdentityProfile || runtime.GOOS != "linux") {
+		return ErrConfiguration
+	}
+	if c.ControlTLS != nil && (c.Profile != LinuxIdentityProfile || c.ControlURL != homeURL || !c.ControlTLS.valid()) || strings.EqualFold(u.Hostname(), homeName) && c.ControlTLS == nil {
 		return ErrConfiguration
 	}
 	if !strings.HasPrefix(c.RoleIdentity, "home-sidecar-") || len(c.RoleIdentity) <= len("home-sidecar-") || (c.Profile == "" && strings.TrimSpace(c.ExpectedPeer) == "") {
@@ -84,7 +88,10 @@ func (c Config) Validate() error {
 	return nil
 }
 
-type EngineConfig struct{ StateDir, ControlURL, RoleIdentity, ExpectedPeer, Profile string }
+type EngineConfig struct {
+	StateDir, ControlURL, RoleIdentity, ExpectedPeer, Profile string
+	ControlTLS                                                *HomeControlTLS
+}
 type RedemptionReceipt struct{ Redeemed, Durable, ExpectedPeerVisible bool }
 type Engine interface {
 	Start(context.Context, EngineConfig, []byte) (RedemptionReceipt, error)
@@ -141,7 +148,7 @@ func (s *Sidecar) Start(ctx context.Context) error {
 	if err != nil {
 		return ErrCredential
 	}
-	receipt, err := s.engine.Start(ctx, EngineConfig{s.cfg.StateDir, s.cfg.ControlURL, s.cfg.RoleIdentity, s.cfg.ExpectedPeer, s.cfg.Profile}, credential)
+	receipt, err := s.engine.Start(ctx, EngineConfig{s.cfg.StateDir, s.cfg.ControlURL, s.cfg.RoleIdentity, s.cfg.ExpectedPeer, s.cfg.Profile, s.cfg.ControlTLS}, credential)
 	for i := range credential {
 		credential[i] = 0
 	}

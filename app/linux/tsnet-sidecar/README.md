@@ -20,13 +20,59 @@ This profile keeps enrollment/durable consumption, private-only configuration,
 connector probe, listener, notify/watchdog and systemd BindsTo gates. Empty peers
 are READY; health selects no single expected peer and emits no peer-specific
 ping. Identity metadata grants no access: pairing/pin enforcement is a later
-slice. No CA, TLS, DERP or control trust behavior changes here. The connector's
+slice. Identity framing itself changes no CA, TLS, DERP or control trust behavior; the
+separate home transport below owns those changes. The connector's
 matching `managed.profile` is `linux-managed-identity-v1`; it runs as the fixed
 `happyranch` service UID and requires a 0700 runtime directory and 0600 socket.
 The renderer's matching `ConnectorUnitSpec.ingress_profile` adds only
 `RuntimeDirectoryMode=0700`; AF_UNIX is already allowed. The existing installer
 still admits legacy configs; generation/migration and profile/unit wiring belong
 to slice 3b, with no automatic migration or deployment in this change.
+
+Linux home transport (THR-327 1b) adds the optional protected config record
+`"control_tls":{"dial_ip":"192.168.1.10","ca_sha256":"<64 lowercase hex>"}`
+to the identity profile. It requires the canonical control URL
+`https://control.happyranch.invalid:8443` and an RFC1918 IPv4. That home URL
+cannot use the legacy transport. Slice 3b owns generating this configuration,
+the home CA/server leaf and the private DERP map; this module generates none of
+those persistent objects. Existing non-home configs retain their transport.
+
+Before constructing tsnet, Linux admits the fixed no-follow root-owned
+`/etc/happyranch/control-ca.pem` (single-link, at most 64 KiB, one valid CA with
+the exact DER fingerprint, root:happyranch and no group/other writes) and
+`/etc/happyranch/empty-ca-directory` (root:root, empty and not writable by
+group/other). Fixed parents must be real protected root-owned directories.
+The unit supplies exactly those `SSL_CERT_FILE` and `SSL_CERT_DIR` paths.
+Inherited upper/lower `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY`,
+`SSLKEYLOGFILE`, `GODEBUG` and every `TS_` variable refuse startup without
+echoing their values. Refusing the whole `TS_` namespace covers the pinned
+TLS/proxy/DERP/debug and authentication knobs, including future spellings.
+
+The process creates an in-memory issuer/leaf and holds a new `127.0.0.1:0`
+CONNECT listener. Only `control.happyranch.invalid:8443` and `:443` are accepted;
+both dial the admitted literal `dial_ip:8443`. Normal upstream TLS verifies
+only the admitted home CA, fixed DNS SAN, time and server usage, before 200.
+Local TLS then re-presents the ephemeral leaf and relays opaque duplex bytes.
+Absolute HTTP (including Noise's HTTP/80 attempt), other targets/methods,
+malformed headers and headers over 8192 bytes close. Setup/handshakes have a
+ten-second bound; at most 128 raw local/upstream sockets are owned at once.
+
+Setup sets `GODEBUG=x509usefallbackroots=1` before the single
+`x509.SetFallbackRoots` call with only the ephemeral issuer, then installs the
+owned HTTP/HTTPS proxy and in-memory fixed-name resolver before clients. No
+host DNS or trust-store change occurs. Upstream and local root pools stay
+separate; pinned baked roots never authenticate a remote leaf. Listener,
+verifier or upstream dial failure closes the listener and owned streams;
+engine cancellation/shutdown closes both transport and tsnet. The dedicated
+process cannot initialize another home in place: address/home change requires
+a supervisor-owned process restart. Canonical URL/node/consumed identity never
+includes the random port or local issuer. Darwin home transport remains slice 5b.
+
+`hometransport_linux_test.go` uses synthetic temporary certificates and separate
+processes for real pinned `/key`/Noise registration and DERP region clients,
+including matching-name/wildcard public-equivalent chains and receipt counters.
+Temporary admission and socket tests do not establish packaged fixed-path,
+full-tsnet, MDWE, generated-map or native Darwin acceptance.
 
 Only an omitted profile or an empty JSON string retains the legacy Linux and
 Darwin behavior below. Non-string values (including null) and unknown strings

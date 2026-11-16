@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -25,6 +26,9 @@ type whoIsClient interface {
 type TSNetEngine struct {
 	server         *tsnet.Server
 	identityClient whoIsClient
+	home           *homeForwarder
+	closeOnce      sync.Once
+	closeErr       error
 }
 
 func NewTSNetEngine() *TSNetEngine { return &TSNetEngine{} }
@@ -38,12 +42,28 @@ func (e *TSNetEngine) Start(ctx context.Context, c EngineConfig, credential []by
 			return RedemptionReceipt{}, fmt.Errorf("sidecar: unset %s; ambient tsnet authentication is forbidden", name)
 		}
 	}
+	var err error
+	e.home, err = prepareHomeTransport(c)
+	if err != nil {
+		return RedemptionReceipt{}, err
+	}
 	e.server = newTSNetServer(c, credential)
 	if err := clearTSNetLogSpool(c.StateDir); err != nil {
+		_ = e.Close()
 		return RedemptionReceipt{}, err
 	}
 	if err := e.server.Start(); err != nil {
+		_ = e.Close()
 		return RedemptionReceipt{}, ErrEngine
+	}
+	if e.home != nil {
+		go func() {
+			select {
+			case <-ctx.Done():
+			case <-e.home.done:
+			}
+			_ = e.Close()
+		}()
 	}
 	e.server.AuthKey = ""
 	// Start only launches the backend. Joining can legitimately pass through
@@ -52,6 +72,7 @@ func (e *TSNetEngine) Start(ctx context.Context, c EngineConfig, credential []by
 	defer cancel()
 	status, err := e.server.Up(upCtx)
 	if err != nil {
+		_ = e.Close()
 		return RedemptionReceipt{}, ErrEngine
 	}
 	if c.Profile == LinuxIdentityProfile {
@@ -132,10 +153,15 @@ func (e *TSNetEngine) Listen(addr string) (net.Listener, error) {
 	return e.server.Listen("tcp", addr)
 }
 func (e *TSNetEngine) Close() error {
-	if e.server == nil {
-		return nil
-	}
-	return e.server.Close()
+	e.closeOnce.Do(func() {
+		if e.home != nil {
+			_ = e.home.Close()
+		}
+		if e.server != nil {
+			e.closeErr = e.server.Close()
+		}
+	})
+	return e.closeErr
 }
 
 func (e *TSNetEngine) healthClient() (healthClient, error) {

@@ -168,7 +168,13 @@ def test_exact_unit_hardening_parity() -> None:
     assert [line for line in modern if line != "RuntimeDirectoryMode=0700"] == legacy
     assert modern.count("RuntimeDirectoryMode=0700") == 1
     assert tuple(line for line in modern if "=" in line and line != "RuntimeDirectoryMode=0700") == _BASE_CONNECTOR_DIRECTIVES
-    assert tuple(line for line in render_sidecar_unit(SidecarUnitSpec()).splitlines() if "=" in line) == _BASE_SIDECAR_DIRECTIVES
+    sidecar = render_sidecar_unit(SidecarUnitSpec()).splitlines()
+    home_environment = (
+        "Environment=SSL_CERT_FILE=/etc/happyranch/control-ca.pem",
+        "Environment=SSL_CERT_DIR=/etc/happyranch/empty-ca-directory",
+    )
+    assert all(sidecar.count(line) == 1 for line in home_environment)
+    assert tuple(line for line in sidecar if "=" in line and line not in home_environment) == _BASE_SIDECAR_DIRECTIVES
     # The independent directive contract includes the easy-to-miss MDWE line.
     for directive in ("MemoryDenyWriteExecute=yes", "NoNewPrivileges=yes", "ProtectSystem=strict",
                       "ProtectHome=yes", "CapabilityBoundingSet=", "AmbientCapabilities=",
