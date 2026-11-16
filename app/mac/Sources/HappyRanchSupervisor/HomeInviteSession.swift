@@ -4,10 +4,11 @@ import Darwin
 public enum HomeConnectionFailure: String, Error, Equatable, Sendable, CaseIterable, LocalizedError {
     case malformedInvite, expiredInvite, controlUnreachable, joinDenied, homeUnavailable
     case identityUnavailable, approvalDenied, authorizationIncomplete, revoked, daemonUnavailable
-    case identityChanged, addressChanged, cleanupIncomplete
+    case identityChanged, addressChanged, cleanupIncomplete, reapprovalRequired
 
     public var errorDescription: String? {
         switch self {
+        case .reapprovalRequired: return "New invite and approval required"
         case .malformedInvite: return "Invite could not be validated — Create new invite on Linux"
         case .expiredInvite: return "Invite expired — Create new invite on Linux"
         case .controlUnreachable, .homeUnavailable: return "Not on your home network, or home computer unavailable"
@@ -25,6 +26,7 @@ public enum HomeConnectionFailure: String, Error, Equatable, Sendable, CaseItera
 
     public static func joinFailure(_ error: Error) -> Self {
         switch error as? ManagedNetworkError {
+        case .homeReapprovalRequired: return .reapprovalRequired
         case .homeTrust: return .controlUnreachable
         case .deadline, .backend: return .joinDenied
         case .targetNotPeer, .peerChanged, .stateFailure: return .identityUnavailable
@@ -64,8 +66,8 @@ struct HomeHTTPResponse: Sendable, CustomStringConvertible, CustomDebugStringCon
         // Only a closed connector code establishes revocation or daemon outage.
         let fields = try? fields()
         let code = try? fields?.text("error")
-        if status == 403, code == "revoked" { throw HomeConnectionFailure.revoked }
-        if status == 503, code == "daemon_unavailable" { throw HomeConnectionFailure.daemonUnavailable }
+        if status == 403, (code == "revocation_denied" || code == "revocation_stream_closed") { throw HomeConnectionFailure.revoked }
+        if status == 403 || status == 503, code == "daemon_unavailable" { throw HomeConnectionFailure.daemonUnavailable }
         if status == 401 || status == 403 { throw HomeConnectionFailure.approvalDenied }
         throw HomeConnectionFailure.homeUnavailable
     }
@@ -88,26 +90,21 @@ public struct PendingHomeApproval: Sendable, CustomStringConvertible, CustomDebu
         self.comparisonPhrase = comparisonPhrase; self.expiresAt = expiresAt; self.handle = completionHandle
     }
 
-    func requestBody() throws -> Data { try JSONSerialization.data(withJSONObject: ["completion_handle": handle]) }
+    func requestBody() -> Data { Data(handle.utf8) }
 }
 
 /// After join-key handoff only these pairing bytes survive until redemption.
 public struct HomePairingInvitation: Sendable, CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
     public let expiresAt: Date
-    private let inviteID: Data
     private let secret: Data
     public init(_ invite: RemoteInvite) {
         expiresAt = invite.expiresAt
-        let material = invite.withSecrets { id, _, pair in (id, pair) }
-        inviteID = material.0
-        secret = material.1
+        secret = invite.withSecrets { _, _, pair in pair }
     }
     public var description: String { "HomePairingInvitation(<redacted>)" }
     public var debugDescription: String { description }
     public var customMirror: Mirror { Mirror(self, children: ["contents": "<redacted>"]) }
-    func requestBody() throws -> Data {
-        try JSONSerialization.data(withJSONObject: ["invite_id": Base64URL.encode(inviteID), "pair_secret": Base64URL.encode(secret)])
-    }
+    func requestBody() -> Data { Data(Base64URL.encode(secret).utf8) }
 }
 
 /// Normal dependency boundary for the UI; the real adapter owns network work.
@@ -179,42 +176,52 @@ public final class ManagedHomeInviteSession: HomeInviteSession, @unchecked Senda
 
     public func pair(_ invite: HomePairingInvitation) async throws -> PendingHomeApproval {
         guard Date() < invite.expiresAt else { throw HomeConnectionFailure.expiredInvite }
-        var body = try invite.requestBody()
+        var body = invite.requestBody()
         defer { body.resetBytes(in: 0..<body.count) }
         return try Self.pending(try await active().homeRequest(.invite, body: body), deadline: invite.expiresAt)
     }
 
     static func pending(_ response: HomeHTTPResponse, deadline: Date) throws -> PendingHomeApproval {
         if response.status == 503 { try response.requireAuthorized() }
-        guard response.status == 202 else { throw HomeConnectionFailure.approvalDenied }
+        guard response.status == 200 else { throw HomeConnectionFailure.approvalDenied }
         let fields = try response.fields()
-        guard Set(fields.keys) == ["completion_handle", "comparison_phrase", "expires_at"],
-              case .number(let expiry) = fields["expires_at"],
-              Double(expiry) <= deadline.timeIntervalSince1970 else { throw HomeConnectionFailure.authorizationIncomplete }
+        guard Set(fields.keys) == ["state", "completion_handle", "comparison_phrase", "expires_at"],
+              try fields.text("state") == "pending-approval" else { throw HomeConnectionFailure.authorizationIncomplete }
+        let stamp = try fields.text("expires_at")
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        var expiry = formatter.date(from: stamp)
+        if expiry == nil {
+            formatter.formatOptions = [.withInternetDateTime]
+            expiry = formatter.date(from: stamp)
+        }
+        guard let expiry, expiry <= deadline else { throw HomeConnectionFailure.authorizationIncomplete }
         return try PendingHomeApproval(comparisonPhrase: fields.text("comparison_phrase"),
-            expiresAt: Date(timeIntervalSince1970: Double(expiry)), completionHandle: fields.text("completion_handle"))
+            expiresAt: expiry, completionHandle: fields.text("completion_handle"))
     }
 
     public func complete(_ pending: PendingHomeApproval, trust: SavedHomeTrust, profileID: UUID) async throws -> SavedDeviceCredential? {
         guard Date() < pending.expiresAt else { throw HomeConnectionFailure.expiredInvite }
-        var body = try pending.requestBody()
+        var body = pending.requestBody()
         defer { body.resetBytes(in: 0..<body.count) }
         let response = try await active().homeRequest(.complete, body: body)
-        // No redeem retry: only this same-node handle may poll pending approval.
-        if response.status == 202 { return nil }
-        if response.status == 503 { try response.requireAuthorized() }
-        guard response.status == 200 else { throw HomeConnectionFailure.approvalDenied }
-        return try Self.delivered(response, trust: trust, profileID: profileID)
+        guard let node = try active().homeStableNodeID else { throw HomeConnectionFailure.identityUnavailable }
+        return try Self.delivered(response, trust: trust, profileID: profileID, stableNodeID: node)
     }
 
-    static func delivered(_ response: HomeHTTPResponse, trust: SavedHomeTrust, profileID: UUID) throws -> SavedDeviceCredential {
+    static func delivered(_ response: HomeHTTPResponse, trust: SavedHomeTrust, profileID: UUID, stableNodeID: String) throws -> SavedDeviceCredential? {
+        // Linux intentionally conflates pending/rejected/spent handles. Poll only
+        // this exact denial with the same handle until the original deadline.
+        if response.status == 403 {
+            let fields = try response.fields()
+            if Set(fields.keys) == ["error"], try fields.text("error") == "pairing_denied" { return nil }
+        }
+        if response.status == 503 { try response.requireAuthorized() }
+        guard response.status == 200 else { throw HomeConnectionFailure.approvalDenied }
         let fields = try response.fields()
-        guard Set(fields.keys) == ["credential", "stable_node_id", "home_id", "control_plane_id", "connector_id"],
-              try fields.text("home_id") == trust.homeID,
-              try fields.text("control_plane_id") == trust.controlPlaneID,
-              try fields.text("connector_id") == trust.connectorID else { throw HomeConnectionFailure.identityUnavailable }
+        guard Set(fields.keys) == ["credential"] else { throw HomeConnectionFailure.authorizationIncomplete }
         return try SavedDeviceCredential(binding: SavedDeviceBinding(homeID: trust.homeID,
-            controlPlaneID: trust.controlPlaneID, stableNodeID: fields.text("stable_node_id")), trust: trust,
+            controlPlaneID: trust.controlPlaneID, stableNodeID: stableNodeID), trust: trust,
             deliveredBearer: Data(fields.text("credential").utf8), networkProfileID: profileID)
     }
 

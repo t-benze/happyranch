@@ -10,7 +10,7 @@ public struct DiagnosticsRedactor: Sendable {
     /// Patterns to match for redaction. Each element is a tuple of
     /// (regex pattern, description of what is matched).
     private static let patterns: [(pattern: String, description: String)] = [
-        (#"hrinvite1:[^\r\n]*"#, "raw invite including malformed envelope"),
+        (#"hrinvite[12]:[^\r\n]*"#, "raw invite including malformed envelope"),
         (#"hr(?:pin|pair|session)_[A-Za-z0-9_.-]+"#, "device or session bearer"),
         (#"[\"']?(?:join_key|pair_secret|completion_handle|raw_invite|credential|bearer)[\"']?\s*[:=]\s*[^,}\r\n]*"#, "ceremony field including malformed JSON"),
         // daemon.token file content (hr_token_ prefix)

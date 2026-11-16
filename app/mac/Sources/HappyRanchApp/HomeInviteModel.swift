@@ -135,8 +135,7 @@ final class HomeInviteModel: ObservableObject {
                         guard records.values.filter({ $0.trust.homeID == trust.homeID }).count == 1 else {
                             throw HomeConnectionFailure.addressChanged
                         }
-                        if previous.trust.controlURL.trimmingCharacters(in: CharacterSet(charactersIn: "/")) ==
-                            trust.controlURL.trimmingCharacters(in: CharacterSet(charactersIn: "/")),
+                        if previous.trust.controlURL == trust.controlURL, previous.trust.dialIP == trust.dialIP,
                            let id = previous.networkProfileID, !rePairHomeIDs.contains(id) {
                             invite = nil; expiresAt = nil; target = previous.trust
                             selectedHomeID = id; operation = nil; phase = .idle
@@ -244,7 +243,7 @@ final class HomeInviteModel: ObservableObject {
                 }
             } catch {
                 let failure: HomeConnectionFailure
-                if let error = error as? RemoteInviteError { failure = error == .time ? .expiredInvite : .malformedInvite }
+                if let error = error as? RemoteInviteError { failure = error == .reapprovalRequired ? .reapprovalRequired : (error == .time ? .expiredInvite : .malformedInvite) }
                 else { failure = (error as? HomeConnectionFailure) ?? .authorizationIncomplete }
                 await fail(failure, token: token)
                 if let custody = error as? SavedAccessFailure, attemptID == token, session == nil {

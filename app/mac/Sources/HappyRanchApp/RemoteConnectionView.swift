@@ -182,6 +182,8 @@ private struct HomeInviteForm: View {
                 Text(model.phase.message).accessibilityIdentifier("home-invite-status")
                 if let target = model.target {
                     Text("Control host: \(URL(string: target.controlURL)?.host ?? "")")
+                    Text("Home address: \(target.dialIP)")
+                    Text("Home identity: \(target.homeID) / \(target.controlPlaneID)")
                     Text("Release runtime: \(target.homeEndpoint)")
                 }
                 if let expiry = model.expiresAt {

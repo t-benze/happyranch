@@ -578,3 +578,18 @@ func TestHomeCachedKeylogRefusal(t *testing.T) {
 		t.Fatal("keylog override created a file")
 	}
 }
+
+// The private readiness response carries native Self identity, not product
+// approval or any invite/credential. Invalid identity cannot create a frame.
+func TestHomeReadyNativeIdentityFrame(t *testing.T) {
+	var out bytes.Buffer
+	if err := writeHomeReady(&out, "native-stable-node"); err != nil || out.String() != "0 native-stable-node\n" {
+		t.Fatal("native readiness identity frame mismatch")
+	}
+	for _, node := range []string{"", "node with space", "node\nforged", "node\x00", strings.Repeat("n", 257), "nöde"} {
+		out.Reset()
+		if err := writeHomeReady(&out, node); err == nil || out.Len() != 0 {
+			t.Fatal("invalid identity produced readiness bytes")
+		}
+	}
+}

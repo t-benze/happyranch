@@ -226,7 +226,9 @@ func helperMain() {
 		return
 	}
 	defer listener.Close()
-	fmt.Fprintln(os.Stdout, 0) // membership readiness only, never product approval
+	if writeHomeReady(os.Stdout, managed.selfNodeID) != nil {
+		return
+	} // membership identity only, never product approval
 	host, _, _ := net.SplitHostPort(cfg.Target)
 	serveHomeRuntime(transport.ctx, listener, host)
 }
@@ -332,4 +334,15 @@ func relayHome(parent context.Context, local net.Conn, host string) {
 	remote.Close()
 	local.Close()
 	<-finished
+}
+
+// Report the actual Self StableID authenticated during managedUp, never an
+// invite field or a connector-supplied identity. This private stdout frame is
+// the Mac's saved-grant binding; it carries no credential.
+func writeHomeReady(out io.Writer, node string) error {
+	if node == "" || len(node) > 256 || strings.IndexFunc(node, func(c rune) bool { return c <= 32 || c >= 127 }) >= 0 {
+		return errHomeTrust
+	}
+	_, err := fmt.Fprintf(out, "0 %s\n", node)
+	return err
 }

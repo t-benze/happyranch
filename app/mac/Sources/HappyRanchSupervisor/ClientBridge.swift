@@ -503,9 +503,12 @@ public final class ClientBridge: @unchecked Sendable {
 
     /// Install delivered/saved home authority; the connector still checks the
     /// actual WhoIs node, current grant and release verifier on every request.
+    var homeStableNodeID: String? { Self.tsnetLock.withLock { homeProcess?.stableNodeID } }
+
     public func useHomeCredential(_ credential: SavedDeviceCredential) throws {
         try Self.tsnetLock.withLock {
-            guard managedReady, managedAttempt != nil, homeProcess != nil else { throw HomeConnectionFailure.identityUnavailable }
+            guard managedReady, managedAttempt != nil,
+                  homeProcess?.stableNodeID == credential.binding.stableNodeID else { throw HomeConnectionFailure.identityUnavailable }
             deviceCredential = credential.withBearer { String(decoding: $0, as: UTF8.self) }
             managedPaired = true
         }
@@ -536,7 +539,7 @@ public final class ClientBridge: @unchecked Sendable {
                     defer { self.closeManagedHandle(handle) }
                     guard completer.installManagedHandle(handle, close: { self.closeManagedHandle($0) }) else { return }
                     let method = path == .invite || path == .complete ? "POST" : "GET"
-                    var header = "\(method) \(path.rawValue) HTTP/1.1\r\nHost: \(self.homeConnectorHost):443\r\nContent-Type: application/json\r\nContent-Length: \(body.count)\r\nConnection: close\r\n"
+                    var header = "\(method) \(path.rawValue) HTTP/1.1\r\nHost: \(self.homeConnectorHost):443\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: \(body.count)\r\nConnection: close\r\n"
                     if path == .health || path == .runtime {
                         guard let credential = self.deviceCredential else {
                             completer.finish(with: .failure(HomeConnectionFailure.authorizationIncomplete)); return

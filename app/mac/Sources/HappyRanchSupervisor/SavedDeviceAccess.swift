@@ -36,6 +36,7 @@ public struct SavedDeviceCredential: Codable, Sendable, CustomStringConvertible,
 
     public init(binding: SavedDeviceBinding, trust: SavedHomeTrust, deliveredBearer: Data,
                 networkProfileID: UUID? = nil) throws {
+        try trust.validateVersionAndAddress()
         guard binding.homeID == trust.homeID, binding.controlPlaneID == trust.controlPlaneID,
               !deliveredBearer.isEmpty, deliveredBearer.count <= 4096,
               deliveredBearer.allSatisfy({ $0 >= 33 && $0 <= 126 }) else { throw SavedAccessFailure.invalidRecord }
@@ -47,10 +48,12 @@ public struct SavedDeviceCredential: Codable, Sendable, CustomStringConvertible,
 
     public func withBearer<T>(_ body: (Data) throws -> T) rethrows -> T { try body(bearer) }
 
-    /// Only an explicitly accepted fresh invite may select a new LAN URL.
+    /// Only an explicitly accepted fresh invite may select a new LAN dial IP.
     /// No tailnet endpoint, home, connector, CA or node repin is permitted.
     public func updatingAddress(to target: SavedHomeTrust) throws -> Self {
-        guard trust.homeID == target.homeID, trust.controlPlaneID == target.controlPlaneID,
+        try trust.validateVersionAndAddress()
+        try target.validateVersionAndAddress()
+        guard trust.controlURL == target.controlURL, trust.homeID == target.homeID, trust.controlPlaneID == target.controlPlaneID,
               trust.connectorID == target.connectorID, trust.homeEndpoint == target.homeEndpoint,
               trust.caDER == target.caDER, trust.caSHA256 == target.caSHA256,
               networkProfileID != nil else { throw HomeConnectionFailure.identityChanged }
@@ -65,10 +68,11 @@ public struct SavedDeviceCredential: Codable, Sendable, CustomStringConvertible,
 }
 
 public enum SavedAccessFailure: String, Error, CaseIterable, Sendable, LocalizedError {
-    case notFound, cancelled, denied, locked, identityChanged, invalidRecord, saveFailed, deletionFailed, unavailable
+    case reapprovalRequired, notFound, cancelled, denied, locked, identityChanged, invalidRecord, saveFailed, deletionFailed, unavailable
 
     public var errorDescription: String? {
         switch self {
+        case .reapprovalRequired: return "New invite and approval required"
         case .cancelled: return "Saved access needs permission — Retry"
         case .locked: return "Unlock login Keychain and retry"
         case .identityChanged: return "Saved access needs Keychain permission after this update — Unlock/Allow and retry"

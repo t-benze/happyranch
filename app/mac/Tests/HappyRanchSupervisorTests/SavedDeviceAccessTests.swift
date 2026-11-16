@@ -98,7 +98,7 @@ final class SavedDeviceAccessTests: XCTestCase, @unchecked Sendable {
         XCTAssertEqual(wrongNode, .failed(.identityChanged))
         let trust = credential.trust
         let changedCA = SavedHomeTrust(homeID: trust.homeID, controlPlaneID: trust.controlPlaneID,
-            connectorID: trust.connectorID, controlURL: trust.controlURL, homeEndpoint: trust.homeEndpoint,
+            connectorID: trust.connectorID, controlURL: trust.controlURL, dialIP: trust.dialIP, homeEndpoint: trust.homeEndpoint,
             caDER: trust.caDER, caSHA256: String(repeating: "0", count: 64))
         await store.configure(nil, record: credential)
         await model.load(binding: credential.binding, trust: changedCA)
@@ -115,12 +115,16 @@ final class SavedDeviceAccessTests: XCTestCase, @unchecked Sendable {
             SavedHomeTrust(homeID: part == "home" ? "other" : t.homeID,
                 controlPlaneID: part == "control" ? "other" : t.controlPlaneID,
                 connectorID: part == "connector" ? "other" : t.connectorID,
-                controlURL: part == "http" ? "http://192.168.1.41:8443" : "https://192.168.1.41:8443",
+                controlURL: part == "http" ? "http://control.happyranch.invalid:8443" : t.controlURL,
+                dialIP: "192.168.1.41",
                 homeEndpoint: part == "endpoint" ? "100.64.0.2:443" : t.homeEndpoint,
                 caDER: part == "ca" ? Data("different-synthetic-ca".utf8) : t.caDER,
                 caSHA256: part == "fingerprint" ? String(repeating: "0", count: 64) : t.caSHA256)
         }
         let updated = try saved.updatingAddress(to: changed("url"))
+        XCTAssertEqual(updated.trust.version, 2)
+        XCTAssertEqual(updated.trust.dialIP, "192.168.1.41")
+        XCTAssertEqual(updated.trust.controlURL, saved.trust.controlURL)
         XCTAssertEqual(updated.binding, saved.binding)
         XCTAssertEqual(updated.networkProfileID, saved.networkProfileID)
         XCTAssertTrue(updated.withBearer { new in saved.withBearer { new == $0 } })
@@ -130,6 +134,26 @@ final class SavedDeviceAccessTests: XCTestCase, @unchecked Sendable {
         XCTAssertThrowsError(try original.updatingAddress(to: changed("url")), "Missing protected profile cannot recover a node")
         let display = String(describing: updated) + String(reflecting: updated)
         XCTAssertFalse(display.contains("SYNTHETIC-BEARER-CANARY"))
+    }
+
+    func testV1SavedProfilesRefuseWithoutReinterpretingBindings() throws {
+        let record = try credential()
+        let bytes = try JSONEncoder().encode(record)
+        let original = try XCTUnwrap(JSONSerialization.jsonObject(with: bytes) as? [String: Any])
+        for version in [nil, 1] as [Int?] {
+            var fields = original
+            var trust = try XCTUnwrap(fields["trust"] as? [String: Any])
+            if let version { trust["version"] = version } else { trust.removeValue(forKey: "version") }
+            trust.removeValue(forKey: "dialIP")
+            trust["controlURL"] = "https://192.168.1.40:8443"
+            fields["trust"] = trust
+            XCTAssertThrowsError(try JSONDecoder().decode(SavedDeviceCredential.self,
+                from: JSONSerialization.data(withJSONObject: fields))) { error in
+                XCTAssertTrue(error as? SavedAccessFailure == .reapprovalRequired)
+            }
+        }
+        XCTAssertEqual(ManagedNetworkError(rawValue: -21), .homeReapprovalRequired)
+        XCTAssertEqual(HomeConnectionFailure.joinFailure(ManagedNetworkError.homeReapprovalRequired), .reapprovalRequired)
     }
 
     func testSavedCredentialAndFailureMessagesDoNotLeak() throws {

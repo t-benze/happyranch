@@ -4,10 +4,11 @@ import Security
 
 /// Closed failures only: neither decoder diagnostics nor input bytes escape.
 public enum RemoteInviteError: String, Error, Sendable, LocalizedError {
-    case oversized, prefix, encoding, schema, unsupported, url, certificate, fingerprint, san, time, entropy
+    case oversized, prefix, encoding, schema, unsupported, url, certificate, fingerprint, san, time, entropy, reapprovalRequired
 
     public var category: String { self == .time ? "expired_invite" : "malformed_invite" }
     public var errorDescription: String? {
+        self == .reapprovalRequired ? "New invite and approval required" :
         self == .time ? "Invite expired or not yet valid — create new invite on Linux" :
             "Invite could not be validated — create new invite on Linux"
     }
@@ -15,6 +16,8 @@ public enum RemoteInviteError: String, Error, Sendable, LocalizedError {
 
 /// Contains no secrets. Equality binds saved access to one exact trust profile.
 public struct SavedHomeTrust: Codable, Equatable, Sendable {
+    public let version: Int
+    public let dialIP: String
     public let homeID: String
     public let controlPlaneID: String
     public let connectorID: String
@@ -22,6 +25,39 @@ public struct SavedHomeTrust: Codable, Equatable, Sendable {
     public let homeEndpoint: String
     public let caDER: Data
     public let caSHA256: String
+
+    public init(version: Int = 2, homeID: String, controlPlaneID: String, connectorID: String,
+                controlURL: String, dialIP: String, homeEndpoint: String, caDER: Data, caSHA256: String) {
+        self.version = version; self.homeID = homeID; self.controlPlaneID = controlPlaneID
+        self.connectorID = connectorID; self.dialIP = dialIP
+        self.controlURL = controlURL == RemoteInvite.controlURL + "/" ? RemoteInvite.controlURL : controlURL
+        self.homeEndpoint = homeEndpoint; self.caDER = caDER; self.caSHA256 = caSHA256
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case version, dialIP, homeID, controlPlaneID, connectorID, controlURL, homeEndpoint, caDER, caSHA256
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        guard try c.decodeIfPresent(Int.self, forKey: .version) == 2 else {
+            throw SavedAccessFailure.reapprovalRequired
+        }
+        self.init(homeID: try c.decode(String.self, forKey: .homeID),
+            controlPlaneID: try c.decode(String.self, forKey: .controlPlaneID),
+            connectorID: try c.decode(String.self, forKey: .connectorID),
+            controlURL: try c.decode(String.self, forKey: .controlURL),
+            dialIP: try c.decode(String.self, forKey: .dialIP),
+            homeEndpoint: try c.decode(String.self, forKey: .homeEndpoint),
+            caDER: try c.decode(Data.self, forKey: .caDER), caSHA256: try c.decode(String.self, forKey: .caSHA256))
+        try validateVersionAndAddress()
+    }
+
+    func validateVersionAndAddress() throws {
+        guard version == 2 else { throw SavedAccessFailure.reapprovalRequired }
+        _ = try RemoteInvite.homeControlHost(controlURL)
+        _ = try RemoteInvite.homeDialIP(dialIP)
+    }
 }
 
 /// Memory-only envelope. Never serialize this type or pass it to diagnostics.
@@ -47,7 +83,8 @@ public struct RemoteInvite: Sendable, CustomStringConvertible, CustomDebugString
     /// issued <= now < expires, and a maximum five-minute issuance window.
     public static func parse(_ input: String, now: Date = Date()) throws -> Self {
         guard input.utf8.count <= 5500 else { throw RemoteInviteError.oversized }
-        guard input.hasPrefix("hrinvite1:") else { throw RemoteInviteError.prefix }
+        if input.hasPrefix("hrinvite1:") { throw RemoteInviteError.reapprovalRequired }
+        guard input.hasPrefix("hrinvite2:") else { throw RemoteInviteError.prefix }
         let bytes = try Base64URL.decode(String(input.dropFirst(10)))
         guard bytes.count <= 4096 else { throw RemoteInviteError.oversized }
         var reader = InviteJSON(bytes: Array(bytes))
@@ -57,17 +94,28 @@ public struct RemoteInvite: Sendable, CustomStringConvertible, CustomDebugString
             throw RemoteInviteError.schema
         }
         guard case .number(let version) = fields["v"] else { throw RemoteInviteError.schema }
-        guard version == 1, try fields.text("mode") == "home" else { throw RemoteInviteError.unsupported }
+        guard version == 2 else { throw RemoteInviteError.unsupported }
+        let mode = try fields.text("mode")
         guard case .object(let tls) = fields["control_tls"] else { throw RemoteInviteError.schema }
         let kind = try tls.text("kind")
-        guard kind == "local_ca" else { throw RemoteInviteError.unsupported }
-        guard Set(tls.keys) == Set(["kind", "ca_der", "sha256"]) else { throw RemoteInviteError.schema }
+        switch kind {
+        case "system":
+            guard Set(tls.keys) == ["kind"] else { throw RemoteInviteError.schema }
+            // R3 has no UI/intake path. Even a well-shaped system-trust envelope refuses.
+            throw RemoteInviteError.unsupported
+        case "local_ca":
+            guard mode == "home" else { throw RemoteInviteError.unsupported }
+            guard Set(tls.keys) == Set(["kind", "ca_der", "sha256", "dial_ip"]) else { throw RemoteInviteError.schema }
+        default: throw RemoteInviteError.unsupported
+        }
+        let dialIP = try tls.text("dial_ip")
+        _ = try homeDialIP(dialIP)
         let control = try fields.text("control_url")
         _ = try homeControlHost(control)
         let endpoint = try fields.text("home_endpoint")
         // The runtime endpoint is tailnet host:443, never the LAN control endpoint.
         guard let target = URLComponents(string: "https://" + endpoint),
-              target.host != nil, target.port == 443, target.user == nil, target.password == nil,
+              let host = target.host, !host.isEmpty, target.port == 443, target.user == nil, target.password == nil,
               target.query == nil, target.fragment == nil, target.path.isEmpty,
               target.string == "https://" + endpoint, !endpoint.contains("%"),
               endpoint.utf8.allSatisfy({ $0 > 32 && $0 < 127 }) else { throw RemoteInviteError.url }
@@ -104,21 +152,25 @@ public struct RemoteInvite: Sendable, CustomStringConvertible, CustomDebugString
             return value
         }
         return Self(trust: SavedHomeTrust(homeID: try identity("home_id"), controlPlaneID: try identity("control_plane_id"),
-            connectorID: try identity("connector_id"), controlURL: control, homeEndpoint: endpoint, caDER: ca, caSHA256: fingerprint),
+            connectorID: try identity("connector_id"), controlURL: control, dialIP: dialIP, homeEndpoint: endpoint, caDER: ca, caSHA256: fingerprint),
             issuedAt: Date(timeIntervalSince1970: Double(issued)), expiresAt: Date(timeIntervalSince1970: Double(expires)),
             inviteIDBytes: inviteID, joinKeyBytes: Data(join.utf8), pairSecretBytes: pairSecret)
     }
 
-    static func homeControlHost(_ text: String) throws -> [UInt8] {
-        guard text.utf8.allSatisfy({ $0 > 32 && $0 < 127 }), !text.contains("%"),
-              let url = URLComponents(string: text), url.scheme == "https", url.port == 8443,
-              url.user == nil, url.password == nil, url.query == nil, url.fragment == nil,
-              url.path.isEmpty || url.path == "/", let host = url.host else { throw RemoteInviteError.url }
-        let parts = host.split(separator: ".", omittingEmptySubsequences: false)
+    static let controlURL = "https://control.happyranch.invalid:8443"
+
+    static func homeControlHost(_ text: String) throws -> String {
+        guard text == controlURL || text == controlURL + "/" else { throw RemoteInviteError.url }
+        return "control.happyranch.invalid"
+    }
+
+    static func homeDialIP(_ text: String) throws -> [UInt8] {
+        let parts = text.split(separator: ".", omittingEmptySubsequences: false)
         let ip = parts.compactMap { UInt8($0) }
         guard ip.count == 4, zip(parts, ip).allSatisfy({ String($0.1) == $0.0 }),
-              ip[0] == 10 || (ip[0] == 172 && (16...31).contains(ip[1])) || (ip[0] == 192 && ip[1] == 168),
-              text == "https://\(host):8443" || text == "https://\(host):8443/" else { throw RemoteInviteError.url }
+              ip[0] == 10 || (ip[0] == 172 && (16...31).contains(ip[1])) || (ip[0] == 192 && ip[1] == 168) else {
+            throw RemoteInviteError.url
+        }
         return ip
     }
 }

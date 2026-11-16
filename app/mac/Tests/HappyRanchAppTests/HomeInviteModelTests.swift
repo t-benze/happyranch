@@ -116,21 +116,33 @@ struct HomeInviteModelTests {
     // Public synthetic CA; no private key is present in this fixture.
     private let ca = "MIIBcDCCARegAwIBAgIBAzAKBggqhkjOPQQDAjAgMR4wHAYDVQQDExVTeW50aGV0aWMgU0FOLWxlc3MgQ0EwHhcNMjMxMTE0MjIxMzIwWhcNMzMwNTE4MDMzMzIwWjAgMR4wHAYDVQQDExVTeW50aGV0aWMgU0FOLWxlc3MgQ0EwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAAQn+y+9zcuDcMqqUHzKu60sYl6vJtfgX8DR1VfNh6XtkNUwTmInfcpYhOhYzq94Nc4xe87GBk1JAN43UK9cLaDAo0IwQDAOBgNVHQ8BAf8EBAMCAgQwDwYDVR0TAQH/BAUwAwEB/zAdBgNVHQ4EFgQUyJSU09xAckvJECBK6NS3R58e9wswCgYIKoZIzj0EAwIDRwAwRAIgSGTa05eLWaPEQa9fYBwp979EMWXfu6F1aLr+IlLxlqMCIAv6++jkLKpTs+XT4vP9ETW/CdjHrUHv1hqkirv2ErYF"
 
-    private func invite(expired: Bool = false, ttl: Int = 299, control: String = "https://192.168.1.40:8443", home: String = "home", joinKey: String = String(repeating: "ab", count: 24)) throws -> String {
+    private func invite(expired: Bool = false, ttl: Int = 299, control: String = "https://control.happyranch.invalid:8443", dialIP: String = "192.168.1.40", home: String = "home", joinKey: String = String(repeating: "ab", count: 24)) throws -> String {
         func wire(_ data: Data) -> String { data.base64EncodedString().replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "") }
         let now = Int(Date().timeIntervalSince1970)
-        let fields: [String: Any] = ["v": 1, "mode": "home", "control_url": control,
+        let fields: [String: Any] = ["v": 2, "mode": "home", "control_url": control,
             "control_plane_id": "control", "home_id": home, "connector_id": "connector", "home_endpoint": "100.64.0.1:443",
-            "control_tls": ["kind": "local_ca", "ca_der": wire(Data(base64Encoded: ca)!), "sha256": certificateDigest(Data(base64Encoded: ca)!)],
+            "control_tls": ["kind": "local_ca", "dial_ip": dialIP, "ca_der": wire(Data(base64Encoded: ca)!), "sha256": certificateDigest(Data(base64Encoded: ca)!)],
             "invite_id": wire(Data(repeating: 1, count: 16)), "join_key": joinKey,
             "pair_secret": wire(Data(repeating: 2, count: 32)), "issued_at": now - (expired ? 301 : 1), "expires_at": now + (expired ? -1 : ttl)]
-        return "hrinvite1:" + wire(try JSONSerialization.data(withJSONObject: fields))
+        return "hrinvite2:" + wire(try JSONSerialization.data(withJSONObject: fields))
     }
 
     private func eventually(_ predicate: @MainActor () -> Bool) async -> Bool {
         let deadline = Date().addingTimeInterval(5)
         while !predicate(), Date() < deadline { try? await Task.sleep(for: .milliseconds(10)) }
         return predicate()
+    }
+
+    @Test("A v1 invite requires a fresh invite and approval before any join")
+    func v1InviteRequiresReapproval() async throws {
+        let store = HomeStoreFixture(), session = HomeSessionFixture()
+        let model = HomeInviteModel(store: store, makeSession: { session })
+        let v2 = try invite()
+        model.accept("hrinvite1:" + String(v2.dropFirst(10)))
+        #expect(await eventually { model.phase == .failed(.reapprovalRequired) })
+        #expect(await session.joins == 0)
+        #expect(await session.pairs == 0)
+        model.cancel()
     }
 
     @Test("Join and approval never publish Connected before the expected web load")
@@ -277,14 +289,14 @@ struct HomeInviteModelTests {
         #expect(await eventually { model.webURL != nil })
         model.cancel()
         #expect(await eventually { !model.busy })
-        model.accept(try invite(control: "https://192.168.1.41:8443"))
+        model.accept(try invite(dialIP: "192.168.1.41"))
         #expect(await eventually { model.phase == .opening && model.webURL != nil })
         #expect(await session.joins == 1)
         #expect(await session.pairs == 1)
         #expect(await session.recoveries == 1)
         #expect(await store.refreshes == 1)
         #expect(await store.saves == 1)
-        #expect(model.savedHomes.first?.trust.controlURL == "https://192.168.1.41:8443")
+        #expect(model.savedHomes.first?.trust.dialIP == "192.168.1.41")
         model.webLoaded(url: try #require(model.webURL), attempt: model.attemptID)
         #expect(model.phase == .connected)
         model.cancel()
@@ -295,7 +307,7 @@ struct HomeInviteModelTests {
         let store = HomeStoreFixture(), session = HomeSessionFixture()
         await session.approve()
         let model = HomeInviteModel(store: store, makeSession: { session })
-        model.accept(try invite(control: "https://192.168.1.40:8443/"))
+        model.accept(try invite(control: "https://control.happyranch.invalid:8443/"))
         #expect(await eventually { model.webURL != nil })
         model.cancel()
         #expect(await eventually { !model.busy })
@@ -324,9 +336,9 @@ struct HomeInviteModelTests {
             case "native-marker-refusal": await session.configure(access: .identityUnavailable)
             default: await store.configure(saveFails: true)
             }
-            model.accept(try invite(control: "https://192.168.1.41:8443"))
+            model.accept(try invite(dialIP: "192.168.1.41"))
             #expect(await eventually { !model.busy })
-            #expect(model.webURL == nil && model.savedHomes.first?.trust.controlURL == "https://192.168.1.40:8443")
+            #expect(model.webURL == nil && model.savedHomes.first?.trust.dialIP == "192.168.1.40")
             #expect(await session.pairs == 1)
             #expect(await session.joins == 1)
             if scenario == "missing-grant" { #expect(model.phase == .keychain(.notFound)); #expect(await session.recoveries == 0) }
@@ -335,9 +347,9 @@ struct HomeInviteModelTests {
             if scenario != "save-failure" {
                 let refusal = model.phase
                 await store.configure(); await session.configure(); await session.resetApproval()
-                model.accept(try invite(control: "https://192.168.1.41:8443"))
+                model.accept(try invite(dialIP: "192.168.1.41"))
                 #expect(model.phase == refusal, "New enrollment requires explicit consent")
-                model.accept(try invite(control: "https://192.168.1.41:8443"), replacementConsent: true)
+                model.accept(try invite(dialIP: "192.168.1.41"), replacementConsent: true)
                 #expect(await eventually { model.phase == .awaitingApproval })
                 #expect(await session.joins == 2)
                 #expect(await session.pairs == 2)
@@ -467,7 +479,7 @@ struct HomeInviteModelTests {
         let parsed = try RemoteInvite.parse(invite())
         let t = parsed.trust
         let foreign = SavedHomeTrust(homeID: t.homeID, controlPlaneID: t.controlPlaneID,
-            connectorID: t.connectorID, controlURL: t.controlURL, homeEndpoint: t.homeEndpoint,
+            connectorID: t.connectorID, controlURL: t.controlURL, dialIP: t.dialIP, homeEndpoint: t.homeEndpoint,
             caDER: Data("synthetic-other-ca".utf8), caSHA256: String(repeating: "0", count: 64))
         let credential = try SavedDeviceCredential(binding: SavedDeviceBinding(homeID: t.homeID,
             controlPlaneID: t.controlPlaneID, stableNodeID: "synthetic-stable-node"), trust: foreign,
@@ -479,7 +491,7 @@ struct HomeInviteModelTests {
         #expect(await eventually { model.webURL != nil })
         model.cancel()
         #expect(await eventually { !model.busy })
-        model.accept(try invite(control: "https://192.168.1.41:8443"))
+        model.accept(try invite(dialIP: "192.168.1.41"))
         #expect(await eventually { model.phase == .failed(.identityChanged) && !model.busy })
         #expect(await session.recoveries == 0)
         #expect(await store.refreshes == 0)

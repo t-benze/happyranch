@@ -15,10 +15,10 @@ final class RemoteInviteTests: XCTestCase {
             .replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "")
     }
     private func tls(_ ca: Data) -> [String: Any] {
-        ["kind": "local_ca", "ca_der": wire(ca), "sha256": SHA256.hash(data: ca).map { String(format: "%02x", $0) }.joined()]
+        ["kind": "local_ca", "dial_ip": "192.168.1.40", "ca_der": wire(ca), "sha256": SHA256.hash(data: ca).map { String(format: "%02x", $0) }.joined()]
     }
     private func fixture() -> [String: Any] {
-        ["v": 1, "mode": "home", "control_url": "https://192.168.1.40:8443/",
+        ["v": 2, "mode": "home", "control_url": "https://control.happyranch.invalid:8443/",
          "control_plane_id": "test-control", "control_tls": tls(Data(base64Encoded: Self.certificate)!),
          "home_endpoint": "100.64.0.10:443", "home_id": "test-home", "connector_id": "test-connector",
          "invite_id": wire(Data("INVITE-CANARY-12".utf8)), "join_key": joinCanary,
@@ -26,7 +26,7 @@ final class RemoteInviteTests: XCTestCase {
          "issued_at": 1_800_000_000, "expires_at": 1_800_000_300]
     }
     private func encode(_ fields: [String: Any]) throws -> String {
-        "hrinvite1:" + wire(try JSONSerialization.data(withJSONObject: fields, options: [.sortedKeys, .withoutEscapingSlashes]))
+        "hrinvite2:" + wire(try JSONSerialization.data(withJSONObject: fields, options: [.sortedKeys, .withoutEscapingSlashes]))
     }
     private func refusal(_ input: String, _ expected: RemoteInviteError, name: String) {
         do { _ = try RemoteInvite.parse(input, now: Self.now); XCTFail("Accepted refusal case: \(name)") }
@@ -60,12 +60,16 @@ final class RemoteInviteTests: XCTestCase {
         let encoded = try encode(fixture())
         let invite = try RemoteInvite.parse(encoded, now: Self.now)
         XCTAssertEqual(invite.trust.homeID, "test-home")
+        XCTAssertEqual(invite.trust.version, 2)
+        XCTAssertEqual(invite.trust.controlURL, "https://control.happyranch.invalid:8443")
+        XCTAssertEqual(invite.trust.dialIP, "192.168.1.40")
         XCTAssertEqual(invite.trust.homeEndpoint, "100.64.0.10:443")
         XCTAssertEqual(invite.expiresAt.timeIntervalSince(invite.issuedAt), 300)
         let correctSecrets = invite.withSecrets { id, key, pair in
             id == Data("INVITE-CANARY-12".utf8) && key == Data(joinCanary.utf8) &&
                 pair == Data(String(repeating: "PAIR-CANARY-1234", count: 2).utf8)
         }
+        XCTAssertTrue(HomePairingInvitation(invite).requestBody() == Data("UEFJUi1DQU5BUlktMTIzNFBBSVItQ0FOQVJZLTEyMzQ".utf8), "Pair request is only the exact base64url secret text")
         XCTAssertTrue(correctSecrets, "Fixture transport bytes must survive validation")
         let decoded = try JSONSerialization.jsonObject(with: JSONSerialization.data(withJSONObject: fixture())) as! [String: Any]
         XCTAssertEqual(try RemoteInvite.parse(encode(decoded), now: Self.now).trust, invite.trust)
@@ -74,10 +78,10 @@ final class RemoteInviteTests: XCTestCase {
     func testEnvelopeAndExactSchemaRefusals() throws {
         let valid = try encode(fixture())
         refusal(String(repeating: "a", count: 5501), .oversized, name: "encoded limit")
-        refusal("hrinvite1:" + wire(Data(repeating: 32, count: 4097)), .oversized, name: "decoded limit")
+        refusal("hrinvite2:" + wire(Data(repeating: 32, count: 4097)), .oversized, name: "decoded limit")
         refusal("wrong:" + valid, .prefix, name: "prefix")
         for bad in ["", "a", "AA=", "AA+_", "AA/_", "AA\n", "AB"] {
-            refusal("hrinvite1:" + bad, .encoding, name: "base64url")
+            refusal("hrinvite2:" + bad, .encoding, name: "base64url")
         }
         var extra = fixture(); extra["unexpected"] = "value"
         refusal(try encode(extra), .schema, name: "unknown field")
@@ -85,7 +89,7 @@ final class RemoteInviteTests: XCTestCase {
             var missing = fixture(); missing.removeValue(forKey: key)
             refusal(try encode(missing), .schema, name: "missing \(key)")
         }
-        var fields = fixture(); fields["v"] = 2
+        var fields = fixture(); fields["v"] = 3
         refusal(try encode(fields), .unsupported, name: "version")
         for mode in ["advanced", "own-server", "future"] {
             fields = fixture(); fields["mode"] = mode
@@ -97,28 +101,30 @@ final class RemoteInviteTests: XCTestCase {
         }
         let json = String(data: try JSONSerialization.data(withJSONObject: fixture(), options: .sortedKeys), encoding: .utf8)!
         for suffix in [",\"v\":1}", ",\"\\u0076\":1}"] {
-            refusal("hrinvite1:" + wire(Data((String(json.dropLast()) + suffix).utf8)), .schema, name: "duplicate key")
+            refusal("hrinvite2:" + wire(Data((String(json.dropLast()) + suffix).utf8)), .schema, name: "duplicate key")
         }
         let duplicateTLS = json.replacingOccurrences(of: "\"kind\":\"local_ca\"", with: "\"kind\":\"local_ca\",\"kind\":\"local_ca\"")
-        refusal("hrinvite1:" + wire(Data(duplicateTLS.utf8)), .schema, name: "duplicate nested key")
-        refusal("hrinvite1:" + wire(Data((json + "{}").utf8)), .schema, name: "trailing JSON")
-        refusal("hrinvite1:" + wire(Data([0xff, 0xfe])), .schema, name: "invalid UTF8")
+        refusal("hrinvite2:" + wire(Data(duplicateTLS.utf8)), .schema, name: "duplicate nested key")
+        refusal("hrinvite2:" + wire(Data((json + "{}").utf8)), .schema, name: "trailing JSON")
+        refusal("hrinvite2:" + wire(Data([0xff, 0xfe])), .schema, name: "invalid UTF8")
     }
 
     func testURLAndTrustRefusals() throws {
-        for url in ["http://192.168.1.40:8443/", "https://user@192.168.1.40:8443/",
-            "https://user:pass@192.168.1.40:8443/", "https://192.168.1.40:8443/?query",
-            "https://192.168.1.40:8443/#fragment", "https://192.168.1.40:8443/path",
-            "https://192.168.1.40:443/", "https://127.0.0.1:8443/", "https://example.test:8443/",
-            "https://192.168.001.40:8443/", "https://192.168.1.40:8443/%2f"] {
+        for url in ["http://control.happyranch.invalid:8443", "https://user@control.happyranch.invalid:8443",
+            "https://user:pass@control.happyranch.invalid:8443", "https://control.happyranch.invalid:8443?query",
+            "https://control.happyranch.invalid:8443#fragment", "https://control.happyranch.invalid:8443/path",
+            "https://control.happyranch.invalid:443", "https://127.0.0.1:8443", "https://example.test:8443",
+            "https://192.168.1.40:8443", "https://192.168.001.40:8443", "https://control.happyranch.invalid:8443/%2f",
+            "https://CONTROL.happyranch.invalid:8443", "https://control.happyranch.invalid:8443//"] {
             var fields = fixture(); fields["control_url"] = url
             refusal(try encode(fields), .url, name: "control URL")
         }
-        for endpoint in ["100.64.0.10:80", "100.64.0.10:443/path", "user@100.64.0.10:443", "100.64.0.10:443?q", "100.64.0.10:443#f"] {
+        for endpoint in [":443", "100.64.0.10:80", "100.64.0.10:443/path", "user@100.64.0.10:443", "100.64.0.10:443?q", "100.64.0.10:443#f"] {
             var fields = fixture(); fields["home_endpoint"] = endpoint
             refusal(try encode(fields), .url, name: "runtime endpoint")
         }
-        var fields = fixture(); fields["control_url"] = "https://192.168.1.41:8443/"
+        var fields = fixture(); var changedTLS = tls(Data(base64Encoded: Self.certificate)!)
+        changedTLS["dial_ip"] = "192.168.1.41"; fields["control_tls"] = changedTLS
         XCTAssertNoThrow(try RemoteInvite.parse(encode(fields), now: Self.now)) // SAN belongs to live leaf
         var trust = fixture()["control_tls"] as! [String: Any]
         trust["sha256"] = String(repeating: "0", count: 64); fields = fixture(); fields["control_tls"] = trust
@@ -134,7 +140,7 @@ final class RemoteInviteTests: XCTestCase {
             fields = fixture(); fields["control_tls"] = ["kind": kind]
             refusal(try encode(fields), .unsupported, name: "unsupported trust")
         }
-        for key in ["kind", "ca_der", "sha256"] {
+        for key in ["kind", "ca_der", "sha256", "dial_ip"] {
             trust = fixture()["control_tls"] as! [String: Any]; trust.removeValue(forKey: key)
             fields = fixture(); fields["control_tls"] = trust
             refusal(try encode(fields), .schema, name: "missing trust field")
@@ -170,10 +176,42 @@ final class RemoteInviteTests: XCTestCase {
         }
     }
 
+    func testV1AndModeTrustMismatchRequireClosedRefusal() throws {
+        let valid = try encode(fixture())
+        refusal("hrinvite1:" + String(valid.dropFirst(10)), .reapprovalRequired, name: "old prefix")
+        var old = fixture(); old["v"] = 1
+        refusal(try encode(old), .unsupported, name: "old payload in new envelope")
+        var mismatch = fixture(); mismatch["mode"] = "own-server"
+        refusal(try encode(mismatch), .unsupported, name: "local CA in own-server mode")
+        mismatch = fixture(); mismatch["control_tls"] = ["kind": "system"]
+        refusal(try encode(mismatch), .unsupported, name: "system trust in home mode")
+        mismatch["mode"] = "own-server"
+        refusal(try encode(mismatch), .unsupported, name: "R3 disabled")
+        mismatch["control_tls"] = ["kind": "system", "dial_ip": "192.168.1.40"]
+        refusal(try encode(mismatch), .schema, name: "mixed union")
+    }
+
+    func testDialIPIsCanonicalRFC1918AndCannotSelectControlURL() throws {
+        for ip in ["127.0.0.1", "100.64.0.1", "169.254.1.1", "172.15.0.1", "172.32.0.1", "8.8.8.8",
+                   "::1", "::ffff:192.168.1.40", "192.168.001.40", "192.168.1.40:8443", "192.168.1.40\n"] {
+            var fields = fixture(); var trust = tls(Data(base64Encoded: Self.certificate)!)
+            trust["dial_ip"] = ip; fields["control_tls"] = trust
+            refusal(try encode(fields), .url, name: "non-RFC1918/canonical dial IP")
+        }
+        for ip in ["10.0.0.1", "172.16.0.1", "172.31.255.254", "192.168.1.41"] {
+            var fields = fixture(); var trust = tls(Data(base64Encoded: Self.certificate)!)
+            trust["dial_ip"] = ip; fields["control_tls"] = trust
+            let invite = try RemoteInvite.parse(encode(fields), now: Self.now)
+            XCTAssertEqual(invite.trust.dialIP, ip)
+            XCTAssertEqual(invite.trust.controlURL, "https://control.happyranch.invalid:8443")
+            XCTAssertEqual(invite.trust.homeEndpoint, "100.64.0.10:443")
+        }
+    }
+
     static func trust() throws -> SavedHomeTrust {
         let ca = Data(base64Encoded: certificate)!
         return SavedHomeTrust(homeID: "test-home", controlPlaneID: "test-control", connectorID: "test-connector",
-            controlURL: "https://192.168.1.40:8443/", homeEndpoint: "100.64.0.10:443", caDER: ca,
+            controlURL: "https://control.happyranch.invalid:8443/", dialIP: "192.168.1.40", homeEndpoint: "100.64.0.10:443", caDER: ca,
             caSHA256: SHA256.hash(data: ca).map { String(format: "%02x", $0) }.joined())
     }
 }

@@ -13,6 +13,8 @@ public final class HomeBridgeProcess: @unchecked Sendable {
     private var trust: SavedHomeTrust?
     private var profile: String?
     private var hostname: String?
+    private var nodeID: String?
+    var stableNodeID: String? { lock.withLock { process?.isRunning == true ? nodeID : nil } }
     private var descriptors: [Int32: Int32] = [:]
     private var cancelled = false
     private let owner = UUID()
@@ -29,6 +31,9 @@ public final class HomeBridgeProcess: @unchecked Sendable {
     /// Caller has validated/explicitly accepted this trust; a trust change always
     /// stops/reaps the old helper first. No key is retained after pipe handoff.
     public func start(trust: SavedHomeTrust, hostname: String, stateDirectory: String, joinKey: Data, addressRecovery: SavedDeviceCredential? = nil) throws {
+        do { try trust.validateVersionAndAddress() }
+        catch SavedAccessFailure.reapprovalRequired { throw ManagedNetworkError.homeReapprovalRequired }
+        catch { throw ManagedNetworkError.homeTrust }
         if let addressRecovery {
             _ = try addressRecovery.updatingAddress(to: trust)
             guard let id = addressRecovery.networkProfileID, joinKey.isEmpty,
@@ -57,7 +62,7 @@ public final class HomeBridgeProcess: @unchecked Sendable {
         lock.withLock { self.directory = directory; self.trust = trust; self.hostname = hostname }
         do {
             let handle = try controller.launchPiped(executableURL: executable,
-                arguments: ["--home-bridge-v1"], environment: ["GODEBUG": "x509usefallbackroots=1"],
+                arguments: ["--home-bridge-v2"], environment: [:],
                 input: incoming.fileHandleForReading, output: outgoing.fileHandleForWriting)
             try lock.withLock {
                 process = handle
@@ -70,13 +75,14 @@ public final class HomeBridgeProcess: @unchecked Sendable {
             guard fcntl(incoming.fileHandleForWriting.fileDescriptor, F_SETNOSIGPIPE, 1) == 0 else {
                 throw ManagedNetworkError.unavailable
             }
-            var fields: [String: Any] = ["ca": trust.caDER.base64EncodedString(),
+            var fields: [String: Any] = ["version": 2, "dialIP": trust.dialIP,
+                "homeID": trust.homeID, "controlPlaneID": trust.controlPlaneID, "caDER": trust.caDER.base64EncodedString(),
                 "fingerprint": trust.caSHA256, "controlURL": trust.controlURL, "hostname": hostname,
                 "stateDirectory": stateDirectory, "joinKey": String(decoding: joinKey, as: UTF8.self),
                 "socketPath": socket, "target": trust.homeEndpoint]
             if let addressRecovery {
                 fields["recovery"] = addressRecovery.withBearer { bearer in
-                    ["previousControlURL": addressRecovery.trust.controlURL,
+                    ["previousDialIP": addressRecovery.trust.dialIP,
                      "stableNodeID": addressRecovery.binding.stableNodeID,
                      "bearer": String(decoding: bearer, as: UTF8.self)]
                 }
@@ -93,7 +99,7 @@ public final class HomeBridgeProcess: @unchecked Sendable {
             defer { try? outgoing.fileHandleForReading.close() }
             var response = Data()
             let deadline = Date().addingTimeInterval(120)
-            while response.count < 8 && !response.contains(10) {
+            while response.count < 260 && !response.contains(10) {
                 let remaining = deadline.timeIntervalSinceNow
                 guard remaining > 0 else { throw ManagedNetworkError.deadline }
                 var fd = pollfd(fd: outgoing.fileHandleForReading.fileDescriptor, events: Int16(POLLIN), revents: 0)
@@ -103,10 +109,14 @@ public final class HomeBridgeProcess: @unchecked Sendable {
                 }
                 response.append(byte)
             }
-            guard response == Data("0\n".utf8) else {
-                let code = Int32(String(decoding: response, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)) ?? -14
-                throw ManagedNetworkError.result(code)
+            let line = String(decoding: response, as: UTF8.self)
+            guard response.last == 10 else { throw ManagedNetworkError.unavailable }
+            let parts = line.dropLast().split(separator: " ", omittingEmptySubsequences: false)
+            guard parts.count == 2, parts[0] == "0", !parts[1].isEmpty,
+                  parts[1].utf8.count <= 256, parts[1].utf8.allSatisfy({ $0 > 32 && $0 < 127 }) else {
+                throw ManagedNetworkError.result(Int32(line.trimmingCharacters(in: .whitespacesAndNewlines)) ?? -14)
             }
+            lock.withLock { nodeID = String(parts[1]) }
         } catch {
             do { try stop() } catch { throw ManagedNetworkError.stateFailure }
             // No library exception/input bytes cross the launcher boundary.
@@ -202,7 +212,7 @@ public final class HomeBridgeProcess: @unchecked Sendable {
             guard rmdir(old.path) == 0 else { throw ManagedNetworkError.stateFailure }
         }
         let oldProfile = lock.withLock { () -> String? in
-            defer { process = nil; directory = nil; trust = nil; profile = nil; hostname = nil }
+            defer { process = nil; directory = nil; trust = nil; profile = nil; hostname = nil; nodeID = nil }
             return profile
         }
         if let oldProfile { Self.ownerLock.withLock { if Self.owners[oldProfile] == owner { Self.owners.removeValue(forKey: oldProfile) } } }

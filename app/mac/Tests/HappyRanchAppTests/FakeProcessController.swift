@@ -144,13 +144,14 @@ final class FakeProcessController: ProcessControlling, @unchecked Sendable {
         nextPID = pid
     }
 
+    var pipedReadyResponse = Data("0 synthetic-stable-node\n".utf8)
     var lastPipedInput: FileHandle?
     func launchPiped(executableURL: URL, arguments: [String], environment: [String: String],
                      input: FileHandle, output: FileHandle) throws -> any ProcessHandle {
         lastPipedInput = FileHandle(fileDescriptor: dup(input.fileDescriptor), closeOnDealloc: true)
         let handle = try launch(executableURL: executableURL, arguments: arguments,
             currentDirectoryURL: nil, environment: environment, terminationHandler: nil)
-        try output.write(contentsOf: Data("0\n".utf8))
+        try output.write(contentsOf: pipedReadyResponse)
         return handle
     }
 
