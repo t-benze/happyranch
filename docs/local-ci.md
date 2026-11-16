@@ -3445,3 +3445,13 @@ a separate helper sets and confirms kernel `PR_SET_MDWE` before exec.
 Only unavailable user-manager and unsupported kernel MDWE together produce an
 explicit skip reason. Thread/loader failures remain failures. None of these
 checks change systemd hardening, required CI selection or workflow triggers.
+
+## Fixed remote-access helper (THR-327 slice 3a)
+
+`uv run --frozen --python /usr/bin/python3 pytest scripts/test_remote_access_helper.py -v --tb=short`
+uses the existing standalone script venue with a disposable private dbus-daemon,
+a fake polkit Authority, and temporary Unix sockets. System Python needs the
+already-required python3-gi/Gio; tests load its fixed distribution library path.
+No host bus, installed polkit definition, service, or live Headscale is touched.
+Native authentication dialogs and real slice-2 operation binding are NOT RUN.
+The source policy/bus definitions are not installed or wired into the package.

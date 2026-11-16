@@ -1038,3 +1038,40 @@ failure. Other devices remain open. Unattributed legacy revocation keeps its exi
 conservative closure semantics. Focused synthetic checks use the retained standalone
 script venue: uv run --frozen pytest scripts/test_pinned_pairing.py -v --tb=short.
 This slice adds no UI, helper, polkit/control socket, ingress wiring or installer.
+
+## Fixed Linux helper source (THR-327 slice 3a)
+
+`remote_access_helper.py` exports `ai.happyranch.RemoteAccess1` at
+`/ai/happyranch/RemoteAccess1` with zero-input Status, NextDevice,
+ApprovePending, RejectPending and RevokeSelected. Only the last three request
+fresh interactive polkit authorization. The protected release UID is a mandatory
+trusted constructor value; slice 3b must supply it from its validated root-owned
+release record. The root-only `serve()` connects Gio to the fixed system-bus socket
+(`/run/dbus/system_bus_socket`), ignoring address environment overrides; package activation and
+installation of the source bus/polkit definitions remain pending. Run the fixed
+packaged entry with system Python `-I`, without user settings or argv overrides.
+
+The helper captures caller/UID, target, ownership and snapshot generation before
+authorization, then revalidates after it. The 120-second deadline cancels an
+outstanding polkit check; uncertain cancellation seals further mutations until
+cancellation is acknowledged or that check's terminal reply arrives. A terminal
+reply releases the dialog slot even if subsequent deadline/target expiry refuses
+the mutation; a late reply never authorizes an expired mutation. One dialog
+is allowed globally. Per-unique-name cursors disappear on disconnect. Status
+contains only bounded public summaries. Error/log categories are closed.
+IssueInvite and all install/lifecycle/R3 methods are absent, so invite issuance's
+one-per-minute rate limit and policy-renewal installation belong to later slices.
+
+`helper_control.OperationAPI` defines status, approve_pending, reject_pending,
+and revoke_device plus the shared trust mutation lock. The new root-only Unix
+request handler revalidates the captured snapshot under that same lock before
+calling the operation. A ready/commit handshake keeps the connector lock held
+while root rechecks the live caller UID and deadline. After its final potentially
+blocking status revalidation, the handler checks the monotonic deadline again
+immediately before the operation, still under that lock.
+The real binding to slice 2 is a serial integration leg
+after both slices merge; no current connector listener installs this handler.
+It must preserve generation/ownership/expiry checks, transactional approval and
+revocation stream closure. Fixed production control path:
+`/run/happyranch-connector/control.sock`; no credential is returned by this
+control protocol. Native dialogs and the real operation binding remain unproven.
