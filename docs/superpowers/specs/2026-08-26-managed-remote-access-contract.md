@@ -1167,7 +1167,11 @@ An invitation becomes the sole pending actual (control_plane_id, stable_node_id)
 in one serialized transaction. Approval durably commits an internal device ID,
 pin, credential digest, monotonic epoch, expiry and revoked flag before the
 credential is deliverable. The same-node handle-bound completion is one-use;
-unfinished invitation/pending/delivery authority burns on restart, and a lost
+matching an invite fences its digest/generation in-process before any write.
+Failed publication makes a best-effort durable burn; persistent storage failure
+cannot reopen the invite in that owner, and startup burns a persisted unconsumed
+invite before serving. Only fresh explicit issuance supersedes the fence.
+Unfinished invitation/pending/delivery authority burns on restart, and a lost
 undelivered grant requires a new invitation/approval. Completed grants survive
 restart. Unknown/missing/mistyped fields, duplicate keys, torn state and anchor
 rollback fail closed. Approval refuses a new managed grant when 32 pinned device

@@ -392,6 +392,42 @@ def test_redemption_denial_never_restores_invite(tmp_path: Path, case: str) -> N
         assert len(state.devices) == (32 if case == "capacity" else 0)
 
 
+@pytest.mark.parametrize("operation", ["fsync", "replace"])
+@pytest.mark.parametrize("persistent", [False, True])
+def test_redemption_publication_failure_burns_matched_invite(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operation: str, persistent: bool,
+) -> None:
+    from runtime.remote_access import state_store
+    path = tmp_path / "trust.json"
+    manager = manager_at(path)
+    manager.issue_invite_record(hashlib.sha256(b"synthetic-invite").hexdigest(), NOW + timedelta(minutes=5))
+    original = getattr(state_store.os, operation)
+    calls = []
+    def fail_publication(*args, **kwargs):
+        calls.append(None)
+        if persistent or len(calls) == 1:
+            raise OSError("synthetic publication failure")
+        return original(*args, **kwargs)
+    # Patch the binding used by the real atomic file writer, not a manager seam.
+    with monkeypatch.context() as fault:
+        fault.setattr(state_store.os, operation, fail_publication)
+        assert manager.redeem("synthetic-invite", "node-a", "control", NOW) is None
+    assert calls, "the real writer must reach the injected filesystem failure"
+    assert manager.redeem("synthetic-invite", "node-b", "control", NOW) is None, "matched invite must stay burned after write failure"
+    state = store_at(path).load()
+    assert state.pending_approval is None and state.devices == {}
+    if not persistent:
+        assert state.invite_record is None, "one-shot failure must permit best-effort durable burn"
+    else:
+        assert state.invite_record is not None  # both publication attempts failed
+    restarted = manager_at(path)
+    assert store_at(path).load().invite_record is None
+    assert restarted.redeem("synthetic-invite", "node-c", "control", NOW) is None
+    # Only a fresh explicit issuance may supersede the same owner's fence.
+    manager.issue_invite_record(hashlib.sha256(b"synthetic-invite").hexdigest(), NOW + timedelta(minutes=5))
+    assert manager.redeem("synthetic-invite", "node-d", "control", NOW) is not None
+
+
 class Handle:
     def __init__(self, stream_id, close_fn=None):
         self.stream_id, self.closed, self.close_fn = stream_id, False, close_fn

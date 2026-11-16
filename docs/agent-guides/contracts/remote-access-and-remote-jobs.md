@@ -974,8 +974,12 @@ transaction. It returns a private completion handle and comparison phrase, grant
 no runtime access. Approval persists the pin/digest/epoch before making a bearer
 available in connector memory. Completion consumes delivery durably and requires
 that handle and the same control-plane/node tuple; it returns the bearer once.
-Expired/failed/replayed attempts never restore invitations. Replacement burns the
-old pending/delivery handle. Startup burns unfinished invitations, pending approval
+Expired/failed/replayed attempts never restore invitations. A matched invite's
+digest/generation is fenced in-process before
+publication; write failure attempts a durable burn without burning a newer invite.
+If storage remains unavailable, the fence denies retries and startup burns the
+persisted unfinished invite before serving. Only fresh explicit issuance supersedes
+the fence and burns the old pending/delivery handle. Startup burns unfinished invitations, pending approval
 and delivery; undelivered devices are revoked, while completed grants survive.
 The invitation deadline is at most five minutes and also bounds approval/delivery.
 

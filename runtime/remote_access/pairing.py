@@ -518,6 +518,7 @@ class PinnedPairingManager:
         self._lock = threading.RLock()
         self._in_revoke = threading.local()
         self._delivery: dict[str, str] = {}
+        self._burned_invite: tuple[str, int] | None = None
         # Restart cannot recover a private handle or undelivered bearer. Burn
         # unfinished authority durably; a grant awaiting delivery is revoked.
         with self._store.transaction() as tx:
@@ -555,6 +556,8 @@ class PinnedPairingManager:
         with self._lock, self._store.transaction() as tx:
             self._burn(tx.state)
             tx.state.invite_record = InviteRecord(invite_secret_digest, expires_at, tx.generation)
+            tx.commit()
+            self._burned_invite = None
             return tx.generation
 
     def redeem(
@@ -568,6 +571,7 @@ class PinnedPairingManager:
             invite_digest = _sha256(invite_secret)
         except UnicodeError:
             return None
+        matched_invite: tuple[str, int] | None = None
         try:
             with self._lock, self._store.transaction() as tx:
                 state = tx.state
@@ -575,6 +579,13 @@ class PinnedPairingManager:
                 if invite is None or not hmac.compare_digest(invite.secret_digest, invite_digest):
                     tx.abort()
                     return None
+                matched_invite = (invite.secret_digest, invite.generation)
+                if matched_invite == self._burned_invite:
+                    tx.abort()
+                    return None
+                # Publication can fail before replacing either durable file.
+                # Fence the match before writing so no retry can reuse it.
+                self._burned_invite = matched_invite
                 state.invite_record = None
                 try:
                     pin = self._tuple(stable_node_id, control_plane_id)
@@ -594,6 +605,19 @@ class PinnedPairingManager:
                 tx.commit()  # no handle escapes before the anchored write succeeds
                 return RedeemedInvite(tx.generation, handle, phrase, invite.expires_at)
         except StateStoreError:
+            if matched_invite is not None:
+                try:
+                    with self._lock, self._store.transaction() as tx:
+                        invite = tx.state.invite_record
+                        if invite is not None and (invite.secret_digest, invite.generation) == matched_invite:
+                            self._burn(tx.state)
+                        else:
+                            tx.abort()  # never burn a freshly issued replacement
+                except StateStoreError:
+                    # A persistent fault may prevent durable burn. The local
+                    # fence remains, and startup burns any persisted invite
+                    # before this owner can admit another ceremony.
+                    pass
             return None
 
     @staticmethod
