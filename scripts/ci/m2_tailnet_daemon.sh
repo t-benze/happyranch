@@ -452,12 +452,34 @@ residue() {
   done
   for path in /etc/systemd/system/multi-user.target.wants/happyranch-managed.target \
     /etc/credstore/happyranch-tsnet-enrollment /etc/happyranch/enrollment.key /etc/happyranch/release-daemon.json /run/happyranch-release-verifier/control.sock "$M2_WORK/enrollment.key" \
-    /var/lib/happyranch-{connector,tsnet-sidecar} /run/happyranch-{connector,tsnet-sidecar}; do
+    /var/lib/happyranch-{connector,tsnet-sidecar} /run/happyranch-connector; do
     if ! sudo test ! -e "$path" || ! sudo test ! -L "$path"; then fail "installer residue: $path"; fi
   done
+  # RuntimeDirectoryPreserve=yes retains only the sidecar health diagnostics.
+  sudo /usr/bin/python3 - <<'PY'
+import grp
+import pwd
+import stat
+from pathlib import Path
+
+path = Path('/run/happyranch-tsnet-sidecar')
+try:
+    metadata = path.lstat()
+except FileNotFoundError:
+    print(f'M2 residue: {path} absent (documented retained item)')
+else:
+    if not stat.S_ISDIR(metadata.st_mode):
+        raise SystemExit(f'M2: installer residue: {path} must be a real directory, not a symlink or other file')
+    if (metadata.st_uid, metadata.st_gid) != (pwd.getpwnam('happyranch').pw_uid, grp.getgrnam('happyranch').gr_gid):
+        raise SystemExit(f'M2: installer residue: {path} must be owned by happyranch:happyranch')
+    for entry in path.iterdir():
+        if entry.name != 'health.json' or not stat.S_ISREG(entry.lstat().st_mode):
+            raise SystemExit(f'M2: installer residue: {entry}; only a regular non-symlink health.json may remain')
+    print(f'M2 residue: {path} retained; owner=happyranch:happyranch, only optional regular non-symlink health.json')
+PY
   getent passwd happyranch
   getent group happyranch
-  echo 'Uninstall/purge removed units, enrollment and service state. Payload, config, logs and account are documented retained items.'
+  echo 'Uninstall/purge removed units, enrollment and service state. Payload, config, logs, account and /run/happyranch-tsnet-sidecar are documented retained items.'
 }
 logs() {
   export XDG_RUNTIME_DIR="/run/user/$(id -u)"
