@@ -3419,3 +3419,29 @@ rejection of comment-truncated unquoted YAML strings (including intentional
 trailing comments), intact quoted/multiline YAML, comment-free plain strings
 ending in U+00A0/U+3000, and JSON payload files.
 This focused script adds no required CI check or retired-suite execution.
+
+## Linux bundled Python stack checks
+
+Linux payload/.deb build hosts need binutils (`readelf`), in addition to the
+[Linux release handbook](runbooks/linux-release-handbook.md) prerequisites.
+The packaging helper uses Python stdlib only; it adds no runtime dependency.
+
+```sh
+/usr/bin/python3 -B packaging/linux/test_build_deb.py -v
+/usr/bin/python3 -B -I packaging/linux/python-elf-stack.py /absolute/payload/python --mdwe
+```
+
+These focused native packaging checks are outside the retired Python unit
+selection. The .deb cases inspect safe ELF64 fixtures for both architectures
+and reject missing/executable stack headers in executables, shared libraries
+and ELF files with other names. Repair cases verify existing LOAD permissions
+and payload bytes, executable-stack flag clearing and byte-idempotence.
+`build-payload.sh` repairs every bundled ELF and runs the real pinned interpreter
+under MDWE before publishing its tarball. `build-deb.sh` checks all headers
+without executing foreign payloads; `smoke-installed-deb.sh` repeats header and
+MDWE checks on the installed interpreter in its disposable venue.
+A usable systemd user manager selects `MemoryDenyWriteExecute=yes`; otherwise
+a separate helper sets and confirms kernel `PR_SET_MDWE` before exec.
+Only unavailable user-manager and unsupported kernel MDWE together produce an
+explicit skip reason. Thread/loader failures remain failures. None of these
+checks change systemd hardening, required CI selection or workflow triggers.

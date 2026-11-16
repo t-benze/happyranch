@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Destructive package install/remove smoke: disposable Ubuntu 22.04 only.
 set -euo pipefail
-exec /usr/bin/python3 -I - "$@" <<'PY'
+exec /usr/bin/python3 -I - "$0" "$@" <<'PY'
 from __future__ import annotations
 
 import configparser
@@ -21,10 +21,11 @@ import tempfile
 import time
 import urllib.request
 
-if len(sys.argv) != 3:
+if len(sys.argv) != 4:
     sys.exit('usage: smoke-installed-deb.sh <path-to.deb> <evidence-dir>')
-deb = Path(sys.argv[1]).resolve(strict=True)
-evidence = Path(sys.argv[2]).absolute()
+packaging = Path(sys.argv[1]).resolve().parent
+deb = Path(sys.argv[2]).resolve(strict=True)
+evidence = Path(sys.argv[3]).absolute()
 evidence.mkdir(parents=True, exist_ok=False)
 result = {'format': 'happyranch-installed-deb-smoke@1', 'status': 'failed',
           'stage': 'preflight', 'checks': [], 'commands': [], 'cleanup_errors': []}
@@ -148,6 +149,8 @@ try:
     run(apt + ['install', '-y', str(staged_deb)], 'apt-install', timeout=600)
     run(apt + ['check'], 'apt-check')
     run(['happyranch', '--help'], 'cli-help')
+    run(['/usr/bin/python3', '-I', str(packaging / 'python-elf-stack.py'),
+         '/opt/happyranch-desktop/python', '--mdwe'], 'python-stack-mdwe')
     run(['/usr/bin/python3', '-I', '-c',
          'import gi; gi.require_version("Gtk", "3.0"); gi.require_version("WebKit2", "4.1"); '
          'from gi.repository import Gtk, WebKit2; '

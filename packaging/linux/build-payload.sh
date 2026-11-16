@@ -16,7 +16,7 @@ case "$(uname -m)" in
     aarch64) ARCH=aarch64; GO_ARCH=arm64 ;;
     *) echo LINUX_ARCH_UNSUPPORTED >&2; exit 2 ;;
 esac
-for tool in uv git tar gzip npm node go sha256sum; do
+for tool in uv git tar gzip npm node go sha256sum readelf; do
     command -v "$tool" >/dev/null || { echo "LINUX_TOOL_MISSING: $tool" >&2; exit 2; }
 done
 # Same inherited uv/Python admission policy as build_daemon.sh. Never print
@@ -143,12 +143,15 @@ for path in (payload / 'python/bin').iterdir():
 for name in ('python', 'python3'):
     (payload / 'python/bin' / name).symlink_to('python3.12')
 PYCOPY
+# Repair after copying all interpreter/dependency ELFs, before payload execution.
+"$MANAGED_PYTHON" -I "$WORK/source/packaging/linux/python-elf-stack.py" \
+    "$PAYLOAD/python" --fix --mdwe
 (cd "$WORK/source/web" && npm ci --cache "$WORK/npm-cache" && npm run build)
 cp -a "$WORK/source/web/dist" "$PAYLOAD/web/dist"
 # Keep the private module cache removable by the EXIT trap. Go otherwise makes
 # downloaded module directories read-only, causing a completed build to fail.
 export CGO_ENABLED=0 GOOS=linux GOARCH="$GO_ARCH" GOFLAGS=-modcacherw
-(cd "$WORK/source/app/linux/tsnet-sidecar" && go build -mod=readonly -trimpath \
+(cd "$WORK/source/app/linux/tsnet-sidecar" && go build -buildvcs=false -mod=readonly -trimpath \
     -o "$PAYLOAD/bin/happyranch-tsnet-sidecar" ./cmd/happyranch-tsnet-sidecar)
 cat > "$PAYLOAD/bin/happyranch" <<'CLI'
 #!/bin/sh

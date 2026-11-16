@@ -14,6 +14,7 @@ import os
 from pathlib import Path, PurePosixPath
 import posixpath
 import re
+import runpy
 import shutil
 import subprocess
 import sys
@@ -113,6 +114,10 @@ with tempfile.TemporaryDirectory(prefix='happyranch-deb-', dir='/tmp') as tempor
                      'share/applications/happyranch.desktop.in', 'licenses/HappyRanch-LICENSE'):
         if not (payload / required).is_file():
             parser.error('incomplete desktop payload: ' + required)
+
+    # Inspect foreign-architecture payloads without executing them. Reject old
+    # unsafe tarballs; build-payload repairs and tests the native interpreter.
+    runpy.run_path(str(packaging / 'python-elf-stack.py'))['check_tree'](payload / 'python')
 
     stage = work / 'package'
     prefix = stage / 'opt/happyranch-desktop'
