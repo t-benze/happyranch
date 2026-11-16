@@ -20,6 +20,10 @@ from contextlib import redirect_stdout, redirect_stderr
 import hashlib
 import io
 
+# All new fence filesystem effects, including legacy fixture loads, stay private.
+_schema_home = tempfile.TemporaryDirectory(prefix="workflow-schema-home-")
+os.environ["HAPPYRANCH_DAEMON_HOME"] = str(Path(_schema_home.name).resolve())
+
 from runtime.infrastructure.database import Database
 from runtime.infrastructure.workflow_schema import install_or_recover, validate_workflow_schema, migrate_draft_schema
 from runtime.infrastructure.workflow_schema_load import org_load_validation, read_workflow_schema_for_org_load
@@ -52,11 +56,341 @@ if len(sys.argv) == 2 and sys.argv[1].startswith('--retained-corruption-phase=')
         uncommitted='between uncommitted')[sys.argv[1].split('=', 1)[1]]
     sys.argv[1:] = ['--retained-corruption']
 
-assert sys.argv[1:] in ([], ['--setup-status'], ['--daily-integrity'], ['--install-integrity'], ['--bounded-acquisition'], ['--trace-custody'], ['--sequential-reuse'], ['--sequential-load'], ['--sequential-freshness'], ['--sequential-faults'], ['--sequential-sql-exhaustion'], ['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--coding-authority-corruption'], ['--document-native-corruption'], ['--author-handoff-corruption'], ['--document-revision-corruption'], ['--coding-history-corruption'], ['--physical-corruption'], ['--sequential-uncommitted'], ['--i2-cutover'], ['--i2-native']), 'unknown schema-load selection'
+assert sys.argv[1:] in ([], ['--org-access-fence'], ['--org-access-openers'], ['--org-access-native'], ['--org-access-guardian'], ['--org-access-profile'], ['--setup-status'], ['--daily-integrity'], ['--install-integrity'], ['--bounded-acquisition'], ['--trace-custody'], ['--sequential-reuse'], ['--sequential-load'], ['--sequential-freshness'], ['--sequential-faults'], ['--sequential-sql-exhaustion'], ['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--coding-authority-corruption'], ['--document-native-corruption'], ['--author-handoff-corruption'], ['--document-revision-corruption'], ['--coding-history-corruption'], ['--physical-corruption'], ['--sequential-uncommitted'], ['--i2-cutover'], ['--i2-native']), 'unknown schema-load selection'
 
 
 print('SCHEMA_RUNTIME', json.dumps(dict(python=sys.version, executable=sys.executable, sqlite=sqlite3.sqlite_version,
     source=sys.modules[Database.__module__].__file__)), flush=True)
+
+# A1 extends this existing disposable shell venue. Real process pipes/files are
+# barriers; trace observers record actual opens and never supply gate outcomes.
+if sys.argv[1:] in ([], ['--org-access-fence'], ['--org-access-openers'], ['--org-access-native'], ['--org-access-guardian'], ['--org-access-profile']):
+    import asyncio
+    import importlib
+    import subprocess
+    import signal
+    from runtime.runtime import RuntimeDir
+    from runtime.infrastructure.org_access_fence import OrgAccessFence, OrgAccessHeld, original_org_fence
+    from runtime.daemon.sessions import OrgFenceGuardian
+    from runtime.daemon.routes.orgs import _seed_skeleton, _is_reclaimable_partial, init_org, InitOrgBody
+    from runtime.daemon.state import DaemonState
+    from runtime.daemon import org_integrity_monitor as monitor
+    from runtime.daemon.disk_sweeper import Evidence, _manual_audit
+
+    @contextmanager
+    def exclusive_process(root):
+        code = ('import sys; from pathlib import Path; '
+                'from runtime.infrastructure.org_access_fence import OrgAccessFence; '
+                'f=OrgAccessFence.acquire(Path(sys.argv[1]),exclusive=True); '
+                'print("locked",flush=True); sys.stdin.buffer.read(1); f.close()')
+        child = subprocess.Popen([sys.executable, '-c', code, str(root)],
+                                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        try:
+            assert child.stdout.readline() == b'locked\n', child.stderr.read().decode()
+            yield
+        finally:
+            child.stdin.write(b'x')
+            child.stdin.close()
+            assert child.wait(timeout=5) == 0
+            child.stdout.close()
+            child.stderr.close()
+
+    def file_state(path):
+        out = []
+        for suffix in ('', '-wal', '-shm', '-journal'):
+            item = Path(str(path) + suffix)
+            if not item.exists():
+                out.append(None)
+            else:
+                value = item.stat()
+                # This observer's read changes atime on strict-atime mounts.
+                # Preserve every source identity/write timestamp and exact bytes.
+                out.append(((value.st_dev, value.st_ino, value.st_mode, value.st_nlink,
+                             value.st_size, value.st_mtime_ns, value.st_ctime_ns),
+                            hashlib.sha256(item.read_bytes()).hexdigest()))
+        return out
+
+    def acquire_ex(root):
+        try:
+            fence = OrgAccessFence.acquire(root, exclusive=True)
+        except OrgAccessHeld:
+            return False
+        else:
+            fence.close()
+            return True
+
+    if sys.argv[1:] in ([], ['--org-access-fence'], ['--org-access-openers']):
+        with tempfile.TemporaryDirectory(prefix='a1-openers-', dir='/tmp') as scratch:
+            home = Path(scratch).resolve()
+            runtime = RuntimeDir.init(home / 'runtime')
+            root = runtime.orgs_dir / 'scratch'
+            _seed_skeleton(root, from_example=None)
+            path = root / 'happyranch.db'
+            db = Database(path)
+            db.close()
+            before = file_state(path)
+            with patch.dict(os.environ, {'HAPPYRANCH_DAEMON_HOME': str(home)}):
+                (home / 'runtimes.yaml').write_text('active: ' + str(runtime.root) + '\nregistered:\n- ' + str(runtime.root) + '\n')
+                state = SimpleNamespace(runtime=runtime, orgs={}, settings=Settings(), is_idle=False)
+                def setup_attempt(module, method, args):
+                    clean = {key: value for key, value in os.environ.items() if key not in module._MARKERS}
+                    with patch.dict(os.environ, clean, clear=True):
+                        return getattr(module, method)(args)
+                cases = [
+                    ('org-state', lambda: OrgState.load(slug='scratch', root=root, settings=Settings())),
+                    ('add-org-load-owner', lambda: DaemonState._load_attachment(state, {'slug': 'scratch', 'root': root})),
+                    ('fresh-route', lambda: asyncio.run(init_org(InitOrgBody(slug='scratch'), SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(daemon=state)))))),
+                    ('reclaim-reader', lambda: _is_reclaimable_partial(root)),
+                    ('daily-reader', lambda: monitor.read_snapshot(root, time.monotonic() + 2)),
+                    ('daily-audit', lambda: monitor._audit(root, {'snapshot_identity': None}, time.monotonic() + 2)),
+                    ('sweep-reader', lambda: Evidence(root, time.monotonic() + 2)._connection().__enter__()),
+                    ('sweep-audit', lambda: _manual_audit({'orgs': []}, [str(root)], home / 'summary.json')),
+                    ('setup-preflight', lambda: importlib.import_module('scripts._coding_setup_preflight').read_database(path, org_root=root).__enter__()),
+                    ('sequential-coding', lambda: setup_attempt(importlib.import_module('scripts.setup_sequential_coding'), 'operation', SimpleNamespace(runtime_root=runtime.root, org='scratch', confirm_cooperative_offline=True, action='register', operation_key=None))),
+                    ('sequential-venue', lambda: setup_attempt(importlib.import_module('scripts.setup_sequential_venue'), '_publish', SimpleNamespace(runtime_root=runtime.root, org='scratch', confirm_disposable_venue=True))),
+                ]
+                for name in ('draft', 'submission', 'coding'):
+                    module = importlib.import_module('scripts.migrate_workflow_' + name + '_schema')
+                    for check in (True, False):
+                        cases.append(('offline-' + name + ('-check' if check else '-write'), lambda module=module, check=check: module.main(['--runtime-root', str(runtime.root), '--org', 'scratch'] + (['--check'] if check else []))))
+                for name in ('author_handoff', 'document_revision'):
+                    module = importlib.import_module('scripts.migrate_workflow_' + name + '_schema')
+                    for check in (True, False):
+                        cases.append(('offline-' + name + ('-check' if check else '-write'), lambda module=module, check=check: module.main(['--org-root', str(root), '--org-slug', 'scratch'] + (['--check'] if check else []))))
+                module = importlib.import_module('scripts.install_workflow_sequential_schema')
+                for check in (True, False):
+                    cases.append(('offline-install' + ('-check' if check else '-write'), lambda check=check: module.main(['--runtime-root', str(runtime.root), '--org', 'scratch'] + (['--check'] if check else []))))
+                module_settle = importlib.import_module('scripts.settle_native_writer')
+                for apply in (False, True):
+                    cases.append(('offline-settle' + ('-write' if apply else '-check'), lambda apply=apply: module_settle.main(['--runtime-root', str(runtime.root), '--org', 'scratch', '--writer-id', 'a' * 32, '--justification', 'Synthetic original owner custody observation'] + (['--apply'] if apply else []))))
+                raw_connect = sqlite3.connect
+                for name, opener in cases:
+                    opened, constructed, attempted = [], [], []
+                    real_init = Database.__init__
+                    real_acquire = OrgAccessFence.acquire.__func__
+                    def observed_acquire(cls, root, **kwargs):
+                        attempted.append(str(root))
+                        return real_acquire(cls, root, **kwargs)
+                    def observed_connect(*args, **kwargs):
+                        if str(path) in str(args[0]):
+                            opened.append(str(args[0]))
+                        return raw_connect(*args, **kwargs)
+                    def observed_constructor(self, *args, **kwargs):
+                        constructed.append(str(args[0]) if args else str(kwargs))
+                        return real_init(self, *args, **kwargs)
+                    with exclusive_process(root), patch('sqlite3.connect', observed_connect), patch.object(Database, '__init__', observed_constructor), patch.object(OrgAccessFence, 'acquire', classmethod(observed_acquire)):
+                        try:
+                            result = opener()
+                        except Exception as exc:
+                            result = str(exc)
+                        assert not opened and not constructed, ('A1-before-open:' + name, opened, constructed, result)
+                        assert attempted, ('A1 gate was not reached:' + name, result)
+                        assert file_state(path) == before, 'A1-no-DB-effect:' + name
+                    print('PASS A1 EX refuses before open with no DB effect:', name, flush=True)
+                # The shared backup reader also owns non-org SQL sources.
+                # Its admitted global lane must remain usable without org gates.
+                global_path = home / 'runtime-audit.db'
+                global_db = Database(global_path)
+                global_db.close()
+                preflight = importlib.import_module('scripts._coding_setup_preflight')
+                try:
+                    with preflight.read_database(global_path) as conn:
+                        assert conn.execute('SELECT count(*) FROM sqlite_schema').fetchone()[0] > 0
+                except OrgAccessHeld as exc:
+                    raise AssertionError('A1 machine-global reader was wrongly org-fenced') from exc
+                print('PASS A1 shared machine-global reader preserves its non-org exclusion', flush=True)
+                # A pre-protocol original SQL owner has no usable fence. Its
+                # actual fallback must refuse before closing/reopening SQL.
+                import threading
+                legacy = Database(path)
+                closed = OrgAccessFence.acquire(root)
+                closed.close()
+                legacy._org_access_fence = closed
+                move = SimpleNamespace(store=SimpleNamespace(db=legacy, org_slug='scratch'), gate=threading.RLock())
+                owner = producer_move.ProducerMoveAdmission(move)
+                legacy._conn.execute('BEGIN')
+                opened = []
+                def observe_fallback(*args, **kwargs):
+                    opened.append(str(args[0]))
+                    return raw_connect(*args, **kwargs)
+                try:
+                    with exclusive_process(root), patch('sqlite3.connect', observe_fallback):
+                        try:
+                            owner.retain_failed_naming_load()
+                        except OrgAccessHeld as exc:
+                            assert str(exc) == 'org_access_original_custody_unavailable'
+                        else:
+                            raise AssertionError('A1 old native SQL fallback did not HOLD')
+                        assert not opened, 'A1 old native SQL fallback opened under EX'
+                finally:
+                    legacy._conn.rollback()
+                    legacy.close()
+                print('PASS A1 original native fallback with old/closed custody HOLD before SQL', flush=True)
+                # Independent unknown original owner, never a PID disappearance.
+                try:
+                    original_org_fence('scratch')
+                except OrgAccessHeld:
+                    pass
+                else:
+                    raise AssertionError('A1 old/unregistered original owner must HOLD')
+                print('PASS A1 old/unregistered original owner HOLD', flush=True)
+
+    if sys.argv[1:] in ([], ['--org-access-fence'], ['--org-access-profile']):
+        from runtime.workflows.profile_coordinator import ProfileCoordinator
+        with tempfile.TemporaryDirectory(prefix='a1-profile-order-') as scratch:
+            home = Path(scratch).resolve()
+            roots = [home / 'runtime/orgs' / name for name in ('beta', 'alpha')]
+            for root in roots:
+                root.mkdir(parents=True)
+            with patch.dict(os.environ, {'HAPPYRANCH_DAEMON_HOME': str(home)}):
+                coordinator = ProfileCoordinator(daemon_home=home,
+                    orgs={root.name: SimpleNamespace(root=root) for root in roots})
+                opened = []
+                real_open = os.open
+                def observe_lock_open(path, *args, **kwargs):
+                    fd = real_open(path, *args, **kwargs)
+                    if str(path).endswith('.lock'):
+                        opened.append(Path(path).name)
+                    return fd
+                expected = sorted(hashlib.sha256((str(root.parent.parent) + '\0' + root.name).encode()).hexdigest() + '.lock' for root in roots)
+                expected += [hashlib.sha256(b'synthetic').hexdigest() + '.lock']
+                with patch('os.open', observe_lock_open), coordinator._profile_leases(('synthetic',), wait=False):
+                    assert opened == expected, ('A1 physical org/profile lock order', opened, expected)
+                # An EX conflict on any dependency refuses before profile files.
+                other_home = home / 'profile-coordinator-locks'
+                before = sorted(other_home.iterdir())
+                with exclusive_process(roots[0]):
+                    try:
+                        with coordinator._profile_leases(('other-profile',), wait=False):
+                            raise AssertionError('A1 profile writer crossed org EX')
+                    except OrgAccessHeld:
+                        pass
+                    assert sorted(other_home.iterdir()) == before, 'A1 profile effect before all org gates'
+                catalog = lambda: [(root.name, root) for root in roots]
+                startup = ProfileCoordinator(daemon_home=home, orgs={}, org_roots=catalog)
+                before = sorted(other_home.iterdir())
+                with exclusive_process(roots[0]):
+                    try:
+                        with startup.profile_read('startup-cache'):
+                            raise AssertionError('A1 startup cache crossed unloaded org EX')
+                    except OrgAccessHeld:
+                        pass
+                from runtime.workflows.profile_coordinator import ProfileCoordinatorError
+                try:
+                    with startup._profile_leases(('unloaded-writer',), wait=False):
+                        raise AssertionError('A1 writer accepted unloaded dependency')
+                except ProfileCoordinatorError as exc:
+                    assert exc.code == 'profile_consumer_unloaded'
+                assert sorted(other_home.iterdir()) == before, 'A1 unloaded dependency produced profile effects'
+                print('PASS A1 real sorted org descriptors before profile flock; startup EX and unloaded writer refuse before profile effect', flush=True)
+
+    if sys.argv[1:] in ([], ['--org-access-fence'], ['--org-access-guardian']):
+        with tempfile.TemporaryDirectory(prefix='a1-guardian-') as scratch:
+            home = Path(scratch).resolve()
+            root = home / 'runtime/orgs/scratch'
+            root.mkdir(parents=True)
+            with patch.dict(os.environ, {'HAPPYRANCH_DAEMON_HOME': str(home)}):
+                fence = OrgAccessFence.acquire(root)
+                guardian = OrgFenceGuardian(fence)
+                fence.close()
+                try:
+                    assert not acquire_ex(root), 'A1 guardian released before original native closure'
+                    guardian.close_confirmed()
+                    assert acquire_ex(root), 'A1 positive original guardian close did not release'
+                finally:
+                    if guardian in OrgFenceGuardian._held:
+                        guardian.close_confirmed()
+                # Loss of the original parent channel is unknown; EOF cannot close.
+                fence = OrgAccessFence.acquire(root)
+                unknown = OrgFenceGuardian(fence)
+                fence.close()
+                unknown.process.stdin.close()
+                try:
+                    try:
+                        unknown.process.wait(timeout=.1)
+                    except subprocess.TimeoutExpired:
+                        pass
+                    else:
+                        raise AssertionError('A1 unknown guardian custody released on EOF')
+                    assert not acquire_ex(root), 'A1 unknown guardian custody must HOLD'
+                finally:
+                    # Only this synthetic guardian and its own new process group.
+                    if unknown.process.poll() is None:
+                        os.killpg(unknown.process.pid, signal.SIGKILL)
+                    unknown.process.wait(timeout=5)
+                    unknown.process.stdout.close()
+                    OrgFenceGuardian._held.remove(unknown)
+                print('PASS A1 original guardian interval, positive close and unknown EOF HOLD', flush=True)
+
+    if sys.argv[1:] in ([], ['--org-access-fence'], ['--org-access-native']):
+        from runtime.daemon import jobs_runner as job_runner
+        from runtime.models import JobRecord, JobInterpreter
+        async def native_job_case():
+            with tempfile.TemporaryDirectory(prefix='a1-native-job-') as scratch:
+                home = Path(scratch).resolve()
+                root = home / 'runtime/orgs/scratch'
+                root.mkdir(parents=True)
+                with patch.dict(os.environ, {'HAPPYRANCH_DAEMON_HOME': str(home)}):
+                    fence = OrgAccessFence.acquire(root)
+                    info = os.fstat(fence.fd)
+                    db = Database(root / 'happyranch.db')
+                    db._org_access_fence = fence
+                    db.insert_task(TaskRecord(id='TASK-a1', brief='Synthetic native child owner', assigned_agent='synthetic'))
+                    db.insert_job(JobRecord(id='JOB-001', task_id='TASK-a1', agent_name='synthetic',
+                        title='Synthetic inherited descriptor', rationale='Private A1 original custody proof',
+                        script_text='', interpreter=JobInterpreter.PYTHON3, created_at='2031-01-01T00:00:00+00:00'))
+                    gate = home / 'release'
+                    script = f'''import os, json, time
+from pathlib import Path
+wanted = {(info.st_dev, info.st_ino)!r}
+inherited = False
+for fd in range(3, 256):
+    try:
+        s = os.fstat(fd)
+    except OSError:
+        continue
+    inherited |= (s.st_dev, s.st_ino) == wanted
+print(json.dumps({{'inherited': inherited}}), flush=True)
+end = time.monotonic() + 10
+while not Path({str(gate)!r}).exists() and time.monotonic() < end:
+    time.sleep(.005)
+'''
+                    ready = asyncio.Event()
+                    lines = []
+                    async def publish(event):
+                        if event.get('stream') == 'stdout':
+                            lines.append(json.loads(event['line']))
+                            ready.set()
+                    registration = None
+                    async def launch():
+                        return await job_runner.run_job(job_id='JOB-001', task_id='TASK-a1', registration=registration,
+                            script_text=script, interpreter='python3', cwd=str(root),
+                            stdout_path=str(home / 'out'), stderr_path=str(home / 'err'),
+                            max_runtime_seconds=15, publish=publish)
+                    task = asyncio.create_task(launch())
+                    registration = job_runner.register_runner_task('JOB-001', task, db=db, org_slug='scratch')
+                    try:
+                        await asyncio.wait_for(ready.wait(), 5)
+                        assert lines == [{'inherited': True}], 'A1-JOB inherited original descriptor missing'
+                        # Close every parent copy. Only the real child interval
+                        # can keep EX out now, so a missing pass_fds is detectable.
+                        fence.close()
+                        os.close(registration.org_fence_fd)
+                        registration.org_fence_fd = None
+                        assert not acquire_ex(root), 'A1-JOB native child released its original fence early'
+                    finally:
+                        gate.touch()
+                        result = await asyncio.wait_for(task, 5)
+                        db.close()
+                        fence.close()
+                    assert result.exit_code == 0 and registration.observed
+                    assert job_runner.confirm_job_processes_empty(registration), 'A1-JOB positive closure missing'
+                    assert acquire_ex(root), 'A1-JOB confirmed closure did not release'
+                    job_runner._RUNNER_TASKS.pop(registration.key)
+                    print('PASS A1 real native JOB original descriptor survives parent copies until confirmed closure', flush=True)
+        asyncio.run(native_job_case())
+    if sys.argv[1:]:
+        raise SystemExit(0)
 
 # I2 observes every native connection from connect() onward. Database trace
 # registrations compose with the shipping owner; auxiliary/reference connections

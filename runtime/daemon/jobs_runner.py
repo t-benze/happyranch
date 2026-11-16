@@ -124,6 +124,7 @@ class _JobRegistration:
     output_tasks: tuple[asyncio.Task, ...] = ()
     output_process: asyncio.subprocess.Process | None = None
     output_error: Exception | None = None
+    org_fence_fd: int | None = None
 
     @property
     def key(self):
@@ -209,10 +210,14 @@ def confirm_job_processes_empty(registration: _JobRegistration) -> bool:
             pass  # ESRCH is the ONLY affirmative group-empty outcome.
         else:
             return False
-        if sys.platform == "linux":
-            return _linux_session_empty(sid)
-        if sys.platform == "darwin":
-            return _darwin_session_empty(sid)
+        empty = (_linux_session_empty(sid) if sys.platform == "linux" else
+                 _darwin_session_empty(sid) if sys.platform == "darwin" else False)
+        if empty and registration.org_fence_fd is not None:
+            # Only this existing POSITIVE original-session closure releases the
+            # parent's inherited-description holder. Process return alone cannot.
+            os.close(registration.org_fence_fd)
+            registration.org_fence_fd = None
+        return empty
     except Exception:
         return False
     return False
@@ -662,6 +667,15 @@ async def run_job(
             if registration is not None:
                 registration.attempt = _attempt_identity(move_owner)
                 _validate_registration(registration, running_task=True)
+        inherited = ()
+        if registration is not None:
+            from runtime.infrastructure.org_access_fence import OrgAccessHeld
+            fence = getattr(registration.db, '_org_access_fence', None)
+            if fence is None:
+                raise OrgAccessHeld('org_access_original_owner_unknown')
+            fence.assert_held()
+            registration.org_fence_fd = os.dup(fence.fd)
+            inherited = (registration.org_fence_fd,)
         proc = await asyncio.create_subprocess_exec(
             binary,
             "-",  # read script from stdin (bash/sh/zsh/python3 all honor this)
@@ -671,6 +685,7 @@ async def run_job(
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             start_new_session=True,
+            pass_fds=inherited,
         )
     finally:
         if scratch_token is not None:

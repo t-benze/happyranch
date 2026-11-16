@@ -4442,3 +4442,7 @@ No live install, daemon restart or repair is authorized by source delivery.
 
 Attempt identity includes runtime key as well as slug/date, so an in-process
 runtime switch cannot consume another runtime's same-day attempt.
+
+## Cooperative org access (A1)
+
+Supported org loads, fresh/reclaim routes and raw maintenance/offline openers acquire an org access fence before opening SQLite or constructing Database. Normal org connections retain SH through local close; explicit offline schema operations take EX without replacing their existing confirmation/lifecycle gates. Profile writers acquire affected org SH descriptors in stable key order before profile/publication/DB locks. Startup cache reads gate the metadata-only runtime org inventory before loading orgs; writers refuse unloaded dependencies. Generic Database and machine-global stores remain workflow-free. See the [A1 contract](../superpowers/specs/2026-11-14-automatic-workflow-setup.md#a1-cooperative-org-access-fence).

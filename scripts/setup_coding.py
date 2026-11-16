@@ -1901,7 +1901,9 @@ class Coordinator:
                     if _public_suspicion(path):
                         raise Hold('suspect database has no public byte-origin admission', details={'path': str(path)})
                     target = dest / row['slot']
-                    self.backup_database(path, target)
+                    org_root = next((Path(org['path']).parent for org in self.frozen['orgs']
+                                     if org['path'] == str(path)), None)
+                    self.backup_database(path, target, org_root=org_root)
                     row.update(kind='sqlite-backup-including-committed-WAL', integrity_check='ok', foreign_key_violations=0,
                                backup=str(target), restore=str(path), sha256=self.hash_file(target, private=True, work=work),
                                backup_metadata=_metadata(target.lstat()), backup_parents=_parents(target))
@@ -2106,7 +2108,7 @@ class Coordinator:
         work.check()
 
     @staticmethod
-    def backup_database(path, target):
+    def backup_database(path, target, *, org_root=None):
         from scripts._coding_setup_preflight import Hold, read_database
         import time
         deadline = time.monotonic() + 120
@@ -2115,7 +2117,7 @@ class Coordinator:
                 raise Hold(f'complete SQLite backup budget exhausted: {path}; preserve incomplete copy')
         fd = os.open(target, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
         os.close(fd)
-        with read_database(path) as source:
+        with read_database(path, org_root=org_root) as source:
             destination = sqlite3.connect(target)
             try:
                 source.backup(destination, pages=256, progress=progress)

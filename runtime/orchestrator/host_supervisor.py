@@ -1652,6 +1652,49 @@ class HostSessionSupervisor:
         final_prelaunch_validator: Callable[[], None] | None = None,
         prelaunch_wrapper: Callable[[Callable[[], SessionOutcome]], SessionOutcome] | None = None,
     ) -> SessionOutcome:
+        from runtime.infrastructure.org_access_fence import original_org_fence
+        from runtime.daemon.sessions import OrgFenceGuardian
+        guardian = OrgFenceGuardian(original_org_fence(request.org))
+        guardian.original_owner = ctx
+        ctx._org_preparation_started = False
+        ctx._org_launch_started = False
+        ctx._org_abandoned = False
+        try:
+            return self._execute_guarded_attempt(
+                request, ctx=ctx, launch_spec=launch_spec, launch_body=launch_body,
+                grace_seconds=grace_seconds, attempt=attempt,
+                pre_launch_validator=pre_launch_validator,
+                final_prelaunch_validator=final_prelaunch_validator,
+                prelaunch_wrapper=prelaunch_wrapper,
+            )
+        finally:
+            receipt = ctx.receipt()
+            no_native = (not ctx._org_preparation_started or
+                         not ctx._org_launch_started and ctx._org_abandoned)
+            if (no_native or receipt is not None and receipt.quiescent is True
+                    and receipt.cleanup_status is not CleanupStatus.INCOMPLETE
+                    and ctx.cleanup_error() is None):
+                try:
+                    guardian.close_confirmed()
+                except Exception:
+                    # Keeper uncertainty cannot replace the original native
+                    # winner, receipt or caller's terminal callback semantics.
+                    logger.exception('Original org access guardian closure remains unconfirmed')
+            # No receipt, old/unknown owner, failed abandon or cleanup: HOLD.
+
+    def _execute_guarded_attempt(
+        self,
+        request: AdmissionRequest,
+        *,
+        ctx: _AttemptContext,
+        launch_spec: LaunchSpec,
+        launch_body: Callable[[RunningHandle], LaunchResult],
+        grace_seconds: float,
+        attempt: int,
+        pre_launch_validator: Callable[[], None] | None = None,
+        final_prelaunch_validator: Callable[[], None] | None = None,
+        prelaunch_wrapper: Callable[[Callable[[], SessionOutcome]], SessionOutcome] | None = None,
+    ) -> SessionOutcome:
         """Run one granted attempt to a terminal outcome under its ownership
         record.
 
@@ -1685,6 +1728,7 @@ class HostSessionSupervisor:
                 ctx.set_error(f"pre-launch validation failed: {exc}")
                 return self._outcome(request, ctx, attempt)
         # ── prepare (never before admission) ──
+        ctx._org_preparation_started = True
         try:
             pending = self._backend.prepare(request, self._policy)
         except BackendError as exc:
@@ -1795,6 +1839,7 @@ class HostSessionSupervisor:
             self._abandon_pre_launch(ctx, pending, attempt, request.move_reservation)
             return self._outcome(request, ctx, attempt)
         # ── launch ──
+        ctx._org_launch_started = True
         try:
             running = self._backend.launch(pending, launch_spec)
         except BackendError as exc:
@@ -1863,7 +1908,7 @@ class HostSessionSupervisor:
         ``freeze_terminal`` is first-wins, so if the daemon drain froze
         SHUTDOWN first it stays the primary reason; the error text names the
         actual winner. The caller returns the outcome via ``_outcome``."""
-        self._safe_abandon(self._backend, pending, reservation)
+        ctx._org_abandoned = self._safe_abandon(self._backend, pending, reservation)
         winner = ctx.terminal_reason() or ctx.freeze_terminal(TerminalReason.CANCELLED)
         ctx.set_error(
             "cancelled before launch"
@@ -1914,16 +1959,18 @@ class HostSessionSupervisor:
         )
 
     @staticmethod
-    def _safe_abandon(backend: SessionBackend, pending: PendingHandle, reservation: Any = None) -> None:
+    def _safe_abandon(backend: SessionBackend, pending: PendingHandle, reservation: Any = None) -> bool:
         """Best-effort teardown of a prepared-but-not-launched handle."""
         try:
             backend.abandon(pending)
+            return True
         except BaseException as exc:
             if reservation is not None:
                 reservation.failed_cleanup()
             logger.warning("backend.abandon(%r) raised: %s", pending.token, exc)
             if not isinstance(exc, Exception):
                 raise
+            return False
 
     # ── drain / shutdown ────────────────────────────────────────
 

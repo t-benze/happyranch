@@ -88,6 +88,15 @@ async def list_orgs(request: Request) -> dict:
 
 
 def _is_reclaimable_partial(org_root: Path) -> bool:
+    from runtime.infrastructure.org_access_fence import org_access
+    try:
+        with org_access(org_root):
+            return _is_reclaimable_partial_fenced(org_root)
+    except (OSError, ValueError):
+        return False
+
+
+def _is_reclaimable_partial_fenced(org_root: Path) -> bool:
     """Return True ONLY when `org_root` is a pristine runtime-seeded skeleton
     with zero real org data — safe to `rmtree` without dataloss risk.
 
@@ -146,6 +155,19 @@ def _is_reclaimable_partial(org_root: Path) -> bool:
 
 @router.post("/orgs")
 async def init_org(body: InitOrgBody, request: Request) -> dict:
+    from runtime.infrastructure.org_access_fence import org_access, OrgAccessHeld
+    state: DaemonState = request.app.state.daemon
+    _require_runtime(state)
+    if not _SLUG_RE.match(body.slug) or body.slug in _RESERVED:
+        return await _init_org_fenced(body, request)
+    try:
+        with org_access(state.runtime.orgs_dir / body.slug):
+            return await _init_org_fenced(body, request)
+    except OrgAccessHeld as exc:
+        raise HTTPException(status_code=409, detail={'code': str(exc)}) from None
+
+
+async def _init_org_fenced(body: InitOrgBody, request: Request) -> dict:
     state: DaemonState = request.app.state.daemon
     _require_runtime(state)
     if not _SLUG_RE.match(body.slug) or body.slug in _RESERVED:

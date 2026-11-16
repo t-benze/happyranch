@@ -98,6 +98,12 @@ def _publish(args: argparse.Namespace) -> dict:
     if (not args.runtime_root.is_absolute()
             or args.runtime_root.resolve(strict=True) != args.runtime_root):
         raise ValueError('sequential_venue_runtime_alias_refused')
+    from runtime.infrastructure.org_access_fence import org_access
+    with org_access(org_root, exclusive=True):
+        return _publish_fenced(args, home, org_root)
+
+
+def _publish_fenced(args: argparse.Namespace, home: Path, org_root: Path) -> dict:
     # Cooperative serialization includes post-COMMIT oracle/marker publication.
     # No lock file is created; this is not an OS exclusion of other writers.
     lock = _home_fd(home)

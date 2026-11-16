@@ -318,103 +318,105 @@ def operation(args: argparse.Namespace) -> dict:
         key = command.operation_key
     compiled = read_coding_release()  # Resource discovery precedes SQLite scopes.
     path = resolve_org_database(args.runtime_root, args.org)
-    layout, inventory, observation = _readonly_inventory(path, args.org, deadline)
-    if not layout.sequential:
-        raise ValueError('sequential_coding_storage_not_installed')
+    from runtime.infrastructure.org_access_fence import org_access
+    with org_access(path.parent, exclusive=True, deadline=deadline):
+        layout, inventory, observation = _readonly_inventory(path, args.org, deadline)
+        if not layout.sequential:
+            raise ValueError('sequential_coding_storage_not_installed')
 
-    def stable() -> None:
-        if (time.monotonic() >= deadline or _offline(args) != offline
-                or resolve_org_database(args.runtime_root, args.org) != path):
-            raise ValueError('sequential_coding_source_or_deadline_changed')
+        def stable() -> None:
+            if (time.monotonic() >= deadline or _offline(args) != offline
+                    or resolve_org_database(args.runtime_root, args.org) != path):
+                raise ValueError('sequential_coding_source_or_deadline_changed')
 
-    conn = sqlite3.connect(path.as_uri() + '?mode=ro&immutable=1', uri=True, timeout=1.0)
-    try:
-        conn.row_factory = sqlite3.Row
-        conn.execute('PRAGMA query_only=ON')
-        conn.execute('BEGIN')
-        selected = _inspect(conn, org=args.org, action=args.action, command=command,
-                            key=key, compiled=compiled, budget=budget)
+        conn = sqlite3.connect(path.as_uri() + '?mode=ro&immutable=1', uri=True, timeout=1.0)
+        try:
+            conn.row_factory = sqlite3.Row
+            conn.execute('PRAGMA query_only=ON')
+            conn.execute('BEGIN')
+            selected = _inspect(conn, org=args.org, action=args.action, command=command,
+                                key=key, compiled=compiled, budget=budget)
+            stable()
+            if _checkpoint_observation(path) != observation:
+                raise ValueError('sequential_coding_source_changed')
+        finally:
+            conn.close()
         stable()
+        if selected['write'] is None:
+            return {name: value for name, value in selected.items() if name != 'write'}
+        if args.backup is None or args.backup_sha256 is None:
+            raise ValueError('sequential_coding_verified_backup_required')
+        backup = _backup_observation(args.backup, path, args.backup_sha256, args.org, inventory, deadline)
         if _checkpoint_observation(path) != observation:
             raise ValueError('sequential_coding_source_changed')
-    finally:
-        conn.close()
-    stable()
-    if selected['write'] is None:
-        return {name: value for name, value in selected.items() if name != 'write'}
-    if args.backup is None or args.backup_sha256 is None:
-        raise ValueError('sequential_coding_verified_backup_required')
-    backup = _backup_observation(args.backup, path, args.backup_sha256, args.org, inventory, deadline)
-    if _checkpoint_observation(path) != observation:
-        raise ValueError('sequential_coding_source_changed')
-    stable()
-    conn = sqlite3.connect(path.as_uri() + '?mode=rw', uri=True, timeout=1.0)
-    conn.row_factory = sqlite3.Row
-    attempted = False
-    try:
-        conn.execute('PRAGMA foreign_keys=ON')
-        conn.execute('BEGIN IMMEDIATE')
-
-        def writer_stable() -> None:
-            stable()
-            if (_coding_org_identity(conn, expected_org_slug=args.org,
-                                     expected_path=str(path)) != observation[0][:4]
-                    or _checkpoint_observation(args.backup) != backup):
-                raise ValueError('sequential_coding_identity_or_backup_changed')
-
-        writer_stable()
-        if _inventory(conn, deadline) != inventory:
-            raise ValueError('sequential_coding_inventory_changed')
-        current = _inspect(conn, org=args.org, action=args.action, command=command,
-                           key=key, compiled=compiled, budget=budget)
-        if current != selected:
-            raise ValueError('sequential_coding_selection_changed')
-        changes = conn.total_changes
-        conn.set_authorizer(_insert_only(args.action))
-        try:
-            inserted = _write(conn, args.org, args.action, command, selected)
-        finally:
-            conn.set_authorizer(None)
-        if conn.total_changes - changes != len(inserted):
-            raise ValueError('sequential_coding_write_count_mismatch')
-        _preserved(inventory, _inventory(conn, deadline), inserted)
-        verified = _inspect(conn, org=args.org, action=args.action, command=command,
-                            key=key, compiled=compiled, budget=budget)
-        if verified['write'] is not None:
-            raise ValueError('sequential_coding_publication_unverified')
-        writer_stable()
-        attempted = True
-        conn.commit()
-        # Read again in one snapshot after actual COMMIT, preserving ambiguity.
-        conn.execute('BEGIN')
-        result = _inspect(conn, org=args.org, action=args.action, command=command,
-                          key=key, compiled=compiled, budget=budget)
-        _preserved(inventory, _inventory(conn, deadline), inserted)
-        writer_stable()
-        conn.rollback()
-    except Exception as exc:
-        try:
-            if conn.in_transaction:
-                conn.rollback()
-        except Exception as rollback:
-            raise PublicationUncertain(f'sequential_coding_rollback_uncertain: {exc}; rollback: {rollback}; '
-                                       'preserve original command/key') from rollback
-        if attempted:
-            raise PublicationUncertain(f'sequential_coding_publication_uncertain: {exc}; '
-                                       'preserve original command/key') from exc
-        raise
-    finally:
-        try:
-            conn.close()
-        except Exception as exc:
-            raise PublicationUncertain(f'sequential_coding_close_uncertain: {exc}; '
-                                       'preserve original command/key') from exc
-    try:
         stable()
-    except Exception as exc:
-        raise PublicationUncertain(f'sequential_coding_post_commit_uncertain: {exc}; '
-                                   'preserve original command/key') from exc
-    return {name: value for name, value in result.items() if name != 'write'}
+        conn = sqlite3.connect(path.as_uri() + '?mode=rw', uri=True, timeout=1.0)
+        conn.row_factory = sqlite3.Row
+        attempted = False
+        try:
+            conn.execute('PRAGMA foreign_keys=ON')
+            conn.execute('BEGIN IMMEDIATE')
+
+            def writer_stable() -> None:
+                stable()
+                if (_coding_org_identity(conn, expected_org_slug=args.org,
+                                         expected_path=str(path)) != observation[0][:4]
+                        or _checkpoint_observation(args.backup) != backup):
+                    raise ValueError('sequential_coding_identity_or_backup_changed')
+
+            writer_stable()
+            if _inventory(conn, deadline) != inventory:
+                raise ValueError('sequential_coding_inventory_changed')
+            current = _inspect(conn, org=args.org, action=args.action, command=command,
+                               key=key, compiled=compiled, budget=budget)
+            if current != selected:
+                raise ValueError('sequential_coding_selection_changed')
+            changes = conn.total_changes
+            conn.set_authorizer(_insert_only(args.action))
+            try:
+                inserted = _write(conn, args.org, args.action, command, selected)
+            finally:
+                conn.set_authorizer(None)
+            if conn.total_changes - changes != len(inserted):
+                raise ValueError('sequential_coding_write_count_mismatch')
+            _preserved(inventory, _inventory(conn, deadline), inserted)
+            verified = _inspect(conn, org=args.org, action=args.action, command=command,
+                                key=key, compiled=compiled, budget=budget)
+            if verified['write'] is not None:
+                raise ValueError('sequential_coding_publication_unverified')
+            writer_stable()
+            attempted = True
+            conn.commit()
+            # Read again in one snapshot after actual COMMIT, preserving ambiguity.
+            conn.execute('BEGIN')
+            result = _inspect(conn, org=args.org, action=args.action, command=command,
+                              key=key, compiled=compiled, budget=budget)
+            _preserved(inventory, _inventory(conn, deadline), inserted)
+            writer_stable()
+            conn.rollback()
+        except Exception as exc:
+            try:
+                if conn.in_transaction:
+                    conn.rollback()
+            except Exception as rollback:
+                raise PublicationUncertain(f'sequential_coding_rollback_uncertain: {exc}; rollback: {rollback}; '
+                                           'preserve original command/key') from rollback
+            if attempted:
+                raise PublicationUncertain(f'sequential_coding_publication_uncertain: {exc}; '
+                                           'preserve original command/key') from exc
+            raise
+        finally:
+            try:
+                conn.close()
+            except Exception as exc:
+                raise PublicationUncertain(f'sequential_coding_close_uncertain: {exc}; '
+                                           'preserve original command/key') from exc
+        try:
+            stable()
+        except Exception as exc:
+            raise PublicationUncertain(f'sequential_coding_post_commit_uncertain: {exc}; '
+                                       'preserve original command/key') from exc
+        return {name: value for name, value in result.items() if name != 'write'}
 
 
 def main(argv: list[str] | None = None) -> int:

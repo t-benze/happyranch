@@ -17,6 +17,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from runtime.infrastructure.org_access_fence import OrgAccessFence  # noqa: E402
+
 from scripts.migrate_workflow_submission_schema import (  # noqa: E402
     _lifecycle_snapshot, resolve_org_database,
 )
@@ -151,12 +153,14 @@ def main(argv: list[str] | None = None) -> int:
         'profile/move/start/restart until return. PID absence is not historical closure or OS exclusion.'))
     args = parser.parse_args(argv)
     conn = None
+    fence = None
     outcome = None
     result = 1
     allowance = SequentialInstallAllowance(deadline=time.monotonic() + _OPERATION_SECONDS)
     integrity = IntegrityLedger(deadline=allowance.deadline)
     try:
         path = resolve_org_database(args.runtime_root, args.org)
+        fence = OrgAccessFence.acquire(path.parent, exclusive=not args.check)
         layout, inventory, original = _readonly_inventory(path, args.org, allowance, integrity, 'source')
         if (resolve_org_database(args.runtime_root, args.org) != path
                 or _checkpoint_observation(path) != original):
@@ -226,6 +230,8 @@ def main(argv: list[str] | None = None) -> int:
                 print('uncertain: unknown; workflow_seq_connection_close_failed; '
                       f'prior_outcome={outcome!r}', file=sys.stderr)
                 result = 4
+        if fence is not None and result != 4:
+            fence.close()
     # Success publication follows observed COMMIT and close, never a delivery flag.
     if outcome is not None and result in (0, 3):
         print(outcome)

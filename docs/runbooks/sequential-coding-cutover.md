@@ -366,3 +366,7 @@ See [report semantics](../agent-guides/contracts/observability.md#daily-workflow
 I2 removes inline physical integrity checks while retaining complete FK,
 logical and native validation under unchanged limits. A3's setup-status
 projection and A4's automatic setup remain separately owned.
+
+## Org access fence (A1)
+
+Before source SQLite access, supported offline schema writers take EX and check-only paths take SH; sequential Coding registration/admission retains its original EX interval through the complete operation. Human-host/disposable-venue exclusion still runs first. Existing explicit confirmation, backup/lifecycle/native custody and all storage/authority/Save/Allow gates remain unchanged. Normal runtime attachments and daily checks hold SH, native jobs inherit their original descriptor, and the host guardian retains original custody through confirmed cleanup or HOLD on uncertainty. A free EX lock alone proves neither old-owner closure nor automatic setup eligibility. See the [A1 contract](../superpowers/specs/2026-11-14-automatic-workflow-setup.md#a1-cooperative-org-access-fence).

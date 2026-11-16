@@ -14,6 +14,8 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from runtime.infrastructure.org_access_fence import OrgAccessFence  # noqa: E402
+
 from scripts.migrate_workflow_draft_schema import resolve_org_database as _resolve_draft_database  # noqa: E402
 from runtime.infrastructure.workflow_schema import (  # noqa: E402
     _event_revision, _records, _validate_release_database,
@@ -119,8 +121,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument('--check', action='store_true', help='read-only; exit 3 when migration is needed')
     args = parser.parse_args(argv)
     conn = None
+    fence = None
     try:
         path = resolve_org_database(args.runtime_root, args.org)
+        fence = OrgAccessFence.acquire(path.parent, exclusive=not args.check)
         before = path.stat()
         conn = sqlite3.connect(path.as_uri() + ('?mode=ro' if args.check else '?mode=rw'), uri=True, timeout=1.0,
                                factory=_MigrationConnection)
@@ -162,6 +166,8 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         if conn is not None:
             conn.close()
+        if fence is not None:
+            fence.close()
 
 
 if __name__ == '__main__':

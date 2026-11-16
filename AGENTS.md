@@ -285,3 +285,5 @@ One line per area; read the linked contract before changing it.
 - **Founder thread abort** (THR329 seq3/16/22): [runtime guide](docs/agent-guides/runtime-and-configuration.md) and [orchestrator guide](docs/agent-guides/orchestrator-contracts.md) cover original callable return, native settlement and retained uncertainty.
 
 - **Agent retirement:** Founder-only `agents retire` preserves archives and may retire an empty non-routing manager team; manager-session terminate stays worker-only. See [agent lifecycle](docs/agent-guides/orchestrator-contracts.md#agent-lifecycle-enrollment-approval-and-termination).
+
+- **Org access fencing (A1):** preconstructor org EX/SH, original native child/guardian custody and sorted profile-org order: [automatic setup contract](docs/superpowers/specs/2026-11-14-automatic-workflow-setup.md#a1-cooperative-org-access-fence).
