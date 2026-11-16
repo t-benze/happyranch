@@ -242,6 +242,10 @@ private struct HomeInviteForm: View {
                         Button("Retry saving") { model.retrySave() }
                     }
                 }
+                if !model.discoveryFailures.isEmpty {
+                    Text("Some saved access is unavailable. Other approved computers can still reconnect.").font(.caption)
+                    ForEach(model.discoveryFailures, id: \.self) { Text($0.localizedDescription).font(.caption) }
+                }
                 if !model.savedHomes.isEmpty {
                     Divider()
                     Picker("Saved computer", selection: $model.selectedHomeID) {

@@ -105,7 +105,7 @@ func validateHomeLaunch(cfg homeLaunch) (*x509.CertPool, error) {
 	}
 	if cfg.Recovery != nil {
 		r := cfg.Recovery
-		if cfg.JoinKey != "" || r.PreviousControlURL == cfg.ControlURL ||
+		if cfg.JoinKey != "" || strings.TrimSuffix(r.PreviousControlURL, "/") == strings.TrimSuffix(cfg.ControlURL, "/") ||
 			r.StableNodeID == "" || len(r.StableNodeID) > 256 || hasControl(r.StableNodeID) ||
 			len(r.Bearer) == 0 || len(r.Bearer) > 4096 || strings.IndexFunc(r.Bearer, func(c rune) bool { return c < 33 || c > 126 }) >= 0 {
 			return nil, errHomeTrust

@@ -116,7 +116,7 @@ public actor LoginKeychainDeviceStore: SavedHomeCredentialStore {
         return try read(ref).validated(binding: binding, trust: trust)
     }
 
-    public func savedHomes() async throws -> [SavedDeviceCredential] {
+    public func savedHomes() async throws -> SavedHomeDiscovery {
         let keychain = try login()
         let request: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: Self.service, kSecAttrSynchronizable as String: false,
@@ -124,15 +124,26 @@ public actor LoginKeychainDeviceStore: SavedHomeCredentialStore {
             kSecReturnRef as String: true]
         var result: CFTypeRef?
         let status = SecItemCopyMatching(request as CFDictionary, &result)
-        if status == errSecItemNotFound { return [] }
-        guard status == errSecSuccess, let refs = result as? [SecKeychainItem], refs.count <= 32 else {
+        if status == errSecItemNotFound { return SavedHomeDiscovery(credentials: []) }
+        guard status == errSecSuccess, let refs = result as? [SecKeychainItem] else {
             throw failure(status)
         }
-        // No partial discovery: a denied/changed item must remain visibly recoverable.
-        return try refs.map { ref in
-            let credential = try read(ref)
-            return try credential.validated(binding: credential.binding, trust: credential.trust)
+        var credentials: [SavedDeviceCredential] = []
+        var failures: [SavedAccessFailure] = []
+        // Each item still requires consent and its exact ACL. An obsolete item
+        // cannot suppress a separately approved one; never delete denied items.
+        for ref in refs {
+            try Task.checkCancellation()
+            do {
+                let credential = try read(ref)
+                guard credential.networkProfileID != nil else { throw SavedAccessFailure.invalidRecord }
+                credentials.append(try credential.validated(binding: credential.binding, trust: credential.trust))
+            } catch {
+                let reason = (error as? SavedAccessFailure) ?? .unavailable
+                if !failures.contains(reason) { failures.append(reason) }
+            }
         }
+        return SavedHomeDiscovery(credentials: credentials, failures: failures)
     }
 
     private func read(_ ref: SecKeychainItem) throws -> SavedDeviceCredential {

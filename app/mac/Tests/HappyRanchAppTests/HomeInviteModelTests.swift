@@ -8,15 +8,19 @@ import Testing
 private actor HomeStoreFixture: SavedHomeCredentialStore {
     var credentials: [SavedDeviceCredential] = []
     var readFailure: SavedAccessFailure?
+    var discoveryFailures: [SavedAccessFailure] = []
+    func setDiscoveryFailures(_ failures: [SavedAccessFailure]) { discoveryFailures = failures }
     var saveFails = false
     var deleteFails = false
     private(set) var refreshes = 0
     private(set) var saves = 0
+    private(set) var deletedBindings: [SavedDeviceBinding] = []
     func configure(read: SavedAccessFailure? = nil, saveFails: Bool = false, deleteFails: Bool = false) {
         readFailure = read; self.saveFails = saveFails; self.deleteFails = deleteFails
     }
-    func savedHomes() async throws -> [SavedDeviceCredential] {
-        if let readFailure { throw readFailure }; return credentials
+    func savedHomes() async throws -> SavedHomeDiscovery {
+        if let readFailure { throw readFailure }
+        return SavedHomeDiscovery(credentials: credentials, failures: discoveryFailures)
     }
     func save(_ credential: SavedDeviceCredential) async throws {
         saves += 1
@@ -37,6 +41,7 @@ private actor HomeStoreFixture: SavedHomeCredentialStore {
     }
     func delete(binding: SavedDeviceBinding) async throws {
         if deleteFails { throw SavedAccessFailure.deletionFailed }
+        deletedBindings.append(binding)
         credentials.removeAll { $0.binding == binding }
     }
 }
@@ -49,6 +54,15 @@ private actor HomeSessionFixture: HomeInviteSession {
     var returnedNode: String?
     func changeReturnedNode(_ node: String) { returnedNode = node }
     private(set) var joins = 0
+    private(set) var keyProfiles: [UUID] = []
+    private(set) var emptyProfiles: [UUID] = []
+    private var keyedMaterials: [Data] = []
+    func freshKeysDiffer() -> Bool { keyedMaterials.count == 2 && keyedMaterials[0] != keyedMaterials[1] }
+    var rejectEmpty = false
+    var suspendJoin = false
+    func configureMembership(rejectEmpty: Bool = false, suspendJoin: Bool = false) {
+        self.rejectEmpty = rejectEmpty; self.suspendJoin = suspendJoin
+    }
     private(set) var emptyKeys = 0
     private(set) var completions = 0
     private var approved = false
@@ -59,7 +73,10 @@ private actor HomeSessionFixture: HomeInviteSession {
     func resetApproval() { approved = false }
     func join(trust: SavedHomeTrust, profileID: UUID, key: Data?) async throws {
         joins += 1
-        if key == nil { emptyKeys += 1 }
+        if key == nil { emptyKeys += 1; emptyProfiles.append(profileID) }
+        else { keyProfiles.append(profileID); keyedMaterials.append(key!) }
+        if suspendJoin { try await Task.sleep(for: .seconds(30)) }
+        if key == nil && rejectEmpty { throw HomeConnectionFailure.identityUnavailable }
         if let joinFailure { throw joinFailure }
     }
     func recoverAddress(_ credential: SavedDeviceCredential, to trust: SavedHomeTrust) async throws -> SavedDeviceCredential {
@@ -99,13 +116,13 @@ struct HomeInviteModelTests {
     // Public synthetic CA; no private key is present in this fixture.
     private let ca = "MIIBcDCCARegAwIBAgIBAzAKBggqhkjOPQQDAjAgMR4wHAYDVQQDExVTeW50aGV0aWMgU0FOLWxlc3MgQ0EwHhcNMjMxMTE0MjIxMzIwWhcNMzMwNTE4MDMzMzIwWjAgMR4wHAYDVQQDExVTeW50aGV0aWMgU0FOLWxlc3MgQ0EwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAAQn+y+9zcuDcMqqUHzKu60sYl6vJtfgX8DR1VfNh6XtkNUwTmInfcpYhOhYzq94Nc4xe87GBk1JAN43UK9cLaDAo0IwQDAOBgNVHQ8BAf8EBAMCAgQwDwYDVR0TAQH/BAUwAwEB/zAdBgNVHQ4EFgQUyJSU09xAckvJECBK6NS3R58e9wswCgYIKoZIzj0EAwIDRwAwRAIgSGTa05eLWaPEQa9fYBwp979EMWXfu6F1aLr+IlLxlqMCIAv6++jkLKpTs+XT4vP9ETW/CdjHrUHv1hqkirv2ErYF"
 
-    private func invite(expired: Bool = false, ttl: Int = 299, control: String = "https://192.168.1.40:8443") throws -> String {
+    private func invite(expired: Bool = false, ttl: Int = 299, control: String = "https://192.168.1.40:8443", home: String = "home", joinKey: String = String(repeating: "ab", count: 24)) throws -> String {
         func wire(_ data: Data) -> String { data.base64EncodedString().replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "") }
         let now = Int(Date().timeIntervalSince1970)
         let fields: [String: Any] = ["v": 1, "mode": "home", "control_url": control,
-            "control_plane_id": "control", "home_id": "home", "connector_id": "connector", "home_endpoint": "100.64.0.1:443",
+            "control_plane_id": "control", "home_id": home, "connector_id": "connector", "home_endpoint": "100.64.0.1:443",
             "control_tls": ["kind": "local_ca", "ca_der": wire(Data(base64Encoded: ca)!), "sha256": certificateDigest(Data(base64Encoded: ca)!)],
-            "invite_id": wire(Data(repeating: 1, count: 16)), "join_key": String(repeating: "ab", count: 24),
+            "invite_id": wire(Data(repeating: 1, count: 16)), "join_key": joinKey,
             "pair_secret": wire(Data(repeating: 2, count: 32)), "issued_at": now - (expired ? 301 : 1), "expires_at": now + (expired ? -1 : ttl)]
         return "hrinvite1:" + wire(try JSONSerialization.data(withJSONObject: fields))
     }
@@ -247,7 +264,7 @@ struct HomeInviteModelTests {
         model.removeSavedComputer()
         #expect(await eventually { model.phase == .idle && !model.busy })
         #expect(model.savedHomes.isEmpty && model.removalFailures.isEmpty)
-        #expect(try await store.savedHomes().isEmpty)
+        #expect(try await store.savedHomes().credentials.isEmpty)
     }
 
     @Test("Explicit same-CA fresh invite updates saved address without redeeming its new key or secret")
@@ -261,7 +278,7 @@ struct HomeInviteModelTests {
         model.cancel()
         #expect(await eventually { !model.busy })
         model.accept(try invite(control: "https://192.168.1.41:8443"))
-        #expect(await eventually { model.phase == .opening && !model.busy })
+        #expect(await eventually { model.phase == .opening && model.webURL != nil })
         #expect(await session.joins == 1)
         #expect(await session.pairs == 1)
         #expect(await session.recoveries == 1)
@@ -270,6 +287,24 @@ struct HomeInviteModelTests {
         #expect(model.savedHomes.first?.trust.controlURL == "https://192.168.1.41:8443")
         model.webLoaded(url: try #require(model.webURL), attempt: model.attemptID)
         #expect(model.phase == .connected)
+        model.cancel()
+    }
+
+    @Test("An optional root slash alone reopens saved membership without address migration")
+    func rootSlashUsesSavedAccess() async throws {
+        let store = HomeStoreFixture(), session = HomeSessionFixture()
+        await session.approve()
+        let model = HomeInviteModel(store: store, makeSession: { session })
+        model.accept(try invite(control: "https://192.168.1.40:8443/"))
+        #expect(await eventually { model.webURL != nil })
+        model.cancel()
+        #expect(await eventually { !model.busy })
+        model.accept(try invite())
+        #expect(await eventually { model.webURL != nil })
+        #expect(await session.recoveries == 0)
+        #expect(await session.emptyKeys == 1)
+        #expect(await store.refreshes == 0)
+        #expect(await session.pairs == 1)
         model.cancel()
     }
 
@@ -311,6 +346,120 @@ struct HomeInviteModelTests {
                 #expect(await eventually { !model.busy })
             }
         }
+    }
+
+    @Test("Fresh invites recover failed or cancelled first enrollment without replaying its key")
+    func firstEnrollmentRecovery() async throws {
+        for cancelled in [false, true] {
+            let session = HomeSessionFixture()
+            await session.configureMembership(rejectEmpty: true, suspendJoin: cancelled)
+            if !cancelled { await session.configure(join: .controlUnreachable) }
+            let model = HomeInviteModel(store: HomeStoreFixture(), makeSession: { session })
+            model.accept(try invite())
+            if cancelled {
+                #expect(await eventually { model.phase == .joining })
+                // Ensure the first key actually reached the session before cancellation.
+                let joinDeadline = Date().addingTimeInterval(5)
+                while await session.joins == 0, Date() < joinDeadline { await Task.yield() }
+                #expect(await session.joins == 1)
+                model.cancel()
+            }
+            #expect(await eventually { !model.busy })
+            await session.configure(); await session.configureMembership(rejectEmpty: true)
+            model.accept(try invite(joinKey: String(repeating: "cd", count: 24)))
+            #expect(await eventually { model.phase == .awaitingApproval })
+            #expect(await session.freshKeysDiffer())
+            let keyed = await session.keyProfiles
+            let empty = await session.emptyProfiles
+            #expect(keyed.count == 2 && keyed[0] != keyed[1])
+            #expect(empty == [keyed[0]], "Uncertain membership is checked without the spent key")
+            model.cancel()
+            #expect(await eventually { !model.busy })
+        }
+    }
+
+    @Test("Joined membership survives lost delivery and uses an empty key for the next invite")
+    func joinedMembershipRecovery() async throws {
+        let session = HomeSessionFixture()
+        let model = HomeInviteModel(store: HomeStoreFixture(), makeSession: { session })
+        model.accept(try invite())
+        #expect(await eventually { model.phase == .awaitingApproval })
+        model.cancel()
+        #expect(await eventually { !model.busy })
+        model.accept(try invite())
+        #expect(await eventually { model.phase == .awaitingApproval })
+        #expect(await session.keyProfiles.count == 1)
+        let empty = await session.emptyProfiles
+        let keyed = await session.keyProfiles
+        #expect(empty == keyed)
+        model.cancel()
+    }
+
+    @Test("Mixed discovery failures and more than 32 approved records preserve usable saved access")
+    func partialDiscoverySurvivesRestart() async throws {
+        let store = HomeStoreFixture(), session = HomeSessionFixture()
+        let approved = HomeInviteModel(store: store, makeSession: { session })
+        await store.setDiscoveryFailures([.denied, .identityChanged])
+        approved.prepare()
+        #expect(await eventually { !approved.busy })
+        approved.accept(try invite(), replacementConsent: true)
+        await session.approve()
+        #expect(await eventually { approved.webURL != nil })
+        approved.cancel()
+        #expect(await eventually { !approved.busy })
+        let restarted = HomeInviteModel(store: store, makeSession: { session })
+        restarted.prepare()
+        #expect(await eventually { restarted.webURL != nil })
+        #expect(restarted.discoveryFailures == [.denied, .identityChanged])
+        restarted.cancel()
+        #expect(await eventually { !restarted.busy })
+        let trust = try RemoteInvite.parse(invite()).trust
+        for number in 0..<32 {
+            try await store.save(SavedDeviceCredential(binding: SavedDeviceBinding(homeID: trust.homeID,
+                controlPlaneID: trust.controlPlaneID, stableNodeID: "synthetic-node-\(number)"), trust: trust,
+                deliveredBearer: Data("SYNTHETIC-DISCOVERY-CANARY".utf8), networkProfileID: UUID()))
+        }
+        await store.setDiscoveryFailures([.denied, .identityChanged])
+        for _ in 0..<2 {
+            let model = HomeInviteModel(store: store, makeSession: { session })
+            model.prepare()
+            #expect(await eventually { !model.busy })
+            #expect(model.savedHomes.count == 33)
+            #expect(model.discoveryFailures == [.denied, .identityChanged])
+            #expect(model.needsReplacementConsent)
+            model.reconnect()
+            #expect(await eventually { model.webURL != nil })
+            model.cancel()
+            #expect(await eventually { !model.busy })
+        }
+    }
+
+    @Test("Revoked unsaved B cannot erase the selected saved computer A")
+    func revocationTargetsActiveCredential() async throws {
+        let store = HomeStoreFixture(), session = HomeSessionFixture()
+        await session.approve()
+        let model = HomeInviteModel(store: store, makeSession: { session })
+        model.accept(try invite(home: "A"))
+        #expect(await eventually { model.webURL != nil })
+        let savedA = try #require(try await store.savedHomes().credentials.first)
+        model.cancel()
+        #expect(await eventually { !model.busy })
+        await store.configure(saveFails: true); await session.configure(access: .revoked)
+        model.accept(try invite(home: "B"))
+        #expect(await eventually { model.phase == .failed(.revoked) && !model.busy })
+        let remaining = try await store.savedHomes().credentials
+        #expect(remaining.count == 1)
+        let actual = try #require(remaining.first)
+        #expect(actual.binding == savedA.binding && actual.networkProfileID == savedA.networkProfileID && actual.trust == savedA.trust)
+        #expect(actual.withBearer { old in savedA.withBearer { old == $0 } })
+        #expect(model.savedHomes.count == 1 && model.selectedHomeID == savedA.networkProfileID)
+        let deleted = await store.deletedBindings
+        #expect(deleted.count == 1 && deleted.first?.homeID == "B")
+        #expect(model.saveFailure == nil && model.webURL == nil)
+        let saves = await store.saves
+        model.retrySave()
+        await Task.yield()
+        #expect(await store.saves == saves, "Revoked in-memory authority was forgotten")
     }
 
     @Test("A different saved CA requires reapproval, never address recovery")

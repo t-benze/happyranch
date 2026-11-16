@@ -87,9 +87,18 @@ public protocol SavedDeviceCredentialStore: Sendable {
     func delete(binding: SavedDeviceBinding) async throws
 }
 
+/// Valid records remain usable when another item requires visible recovery.
+public struct SavedHomeDiscovery: Sendable {
+    public let credentials: [SavedDeviceCredential]
+    public let failures: [SavedAccessFailure]
+    public init(credentials: [SavedDeviceCredential], failures: [SavedAccessFailure] = []) {
+        self.credentials = credentials; self.failures = failures
+    }
+}
+
 /// Discovery reads the same protected records; there is no plaintext index.
 public protocol SavedHomeCredentialStore: SavedDeviceCredentialStore {
-    func savedHomes() async throws -> [SavedDeviceCredential]
+    func savedHomes() async throws -> SavedHomeDiscovery
     /// Updates data on the exact existing item, preserving its current ACL.
     func refreshAddress(from credential: SavedDeviceCredential, to trust: SavedHomeTrust) async throws -> SavedDeviceCredential
 }

@@ -34,13 +34,19 @@ join has a 120-second bound, each ceremony request and opening navigation a
 pairing material and handle; late results cannot reconnect. A failed join,
 including a helper TLS-close failure, reaches a closed failure with Retry (#1563).
 A spent join key is never retried. A retained same-trust unfinished membership,
-or a saved computer, reopens with an empty key. Fresh pairing still needs a new
-invite and Linux approval. #1564 Home-mode Start Connector is outside this path
+or a saved computer, reopens with an empty key. An interrupted first enrollment
+is checked explicitly without a key; if that check refuses, a fresh invite may
+use its new key in a new profile after confirmed teardown. The old key/profile
+is never repaired or replayed. Fresh pairing still needs Linux approval. #1564 Home-mode Start Connector is outside this path
 and remains queued; this change does not reproduce or repair that crash.
 
 After durable approval/delivery, the existing local login-Keychain store saves
 the grant, exact home/control/node binding, CA/trust and native profile UUID in
 one record. Discovery reads those protected records, with no plaintext index.
+Valid computers remain available when another item is denied, obsolete or invalid;
+closed per-item recovery messages remain visible. There is no service-wide 32-item
+failure threshold. Each item still requires consent and exact ACL validation;
+inaccessible items are retained, and fresh approval requires explicit consent.
 There is no synchronized/shared item, CA installation, plaintext fallback or
 signing prerequisite. Reads retain normal unlock/consent UI and the sole-current-
 executable ACL validation from 5a. Changed executable identity/denial stays visible;
@@ -56,7 +62,10 @@ native flock, then deletes its exact Keychain item and verifies absence. Unknown
 unsafe or future nested layouts refuse visibly. Failed native deletion retains
 the protected record for retry; failed Keychain deletion names that remaining
 storage. Revocation observed through the closed connector code closes access
-and runs local removal. Local removal never claims host revocation.
+and runs local removal for the exact active credential/profile, including a
+newly delivered credential whose save failed. Picker selection never chooses an
+automatic deletion target. Failed removal retains that exact target for Retry;
+new connection attempts wait for removal. Local removal never claims host revocation.
 
 **Pairing wire reconciliation remains required.** Section 5 specifies semantics
 and POST `/pair/invite`, but not the completion route/HTTP schemas. The fixture
@@ -91,6 +100,11 @@ needs another fresh invite, explicit replacement consent and ordinary Linux
 approval in a new profile; the obsolete record is never silently rewritten.
 A different CA shows **Home identity changed — approve again**; remove the old
 local computer and repeat Linux approval.
+
+The permitted root URL with or without a trailing slash has the same native
+canonical binding. Recovery normalizes that representation before receipt
+comparisons and persistence, matching ordinary empty-key reopen; it never repairs
+an existing conflicting marker or protected profile.
 
 Successful recovery writes a version-1 protected URL/node receipt and consumed
 marker, preserving the native profile/hostname/node state. Future reopen enforces

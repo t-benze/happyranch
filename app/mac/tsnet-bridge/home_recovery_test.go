@@ -173,7 +173,7 @@ func TestHomeAddressRecoveryLaunchRefusals(t *testing.T) {
 	if _, err := validateHomeLaunch(cfg); err != nil {
 		t.Fatal("valid recovery launch refused")
 	}
-	for _, scenario := range []string{"new-key", "http-old-url", "missing-grant", "header-injection", "missing-node"} {
+	for _, scenario := range []string{"new-key", "http-old-url", "missing-grant", "header-injection", "missing-node", "same-endpoint-slash"} {
 		t.Run(scenario, func(t *testing.T) {
 			changed := cfg
 			recovery := *cfg.Recovery
@@ -189,6 +189,8 @@ func TestHomeAddressRecoveryLaunchRefusals(t *testing.T) {
 				recovery.Bearer += "\r\nInjected: value"
 			case "missing-node":
 				recovery.StableNodeID = ""
+			case "same-endpoint-slash":
+				changed.ControlURL = recoveryOldURL + "/"
 			}
 			if _, err := validateHomeLaunch(changed); err == nil {
 				t.Error("unsafe recovery launch accepted")
@@ -267,5 +269,49 @@ func TestHomeAddressRecoveryProfileAdmission(t *testing.T) {
 	if code := initHomeProfile(cfg); code == 0 {
 		tsnet_close()
 		t.Fatal("native retry accepted different-node receipt")
+	}
+}
+
+func TestHomeAddressRecoveryRootSlashCompatibility(t *testing.T) {
+	for _, oldSlash := range []string{"", "/"} {
+		for _, newSlash := range []string{"", "/"} {
+			t.Run(fmt.Sprintf("old-slash=%t/new-slash=%t", oldSlash != "", newSlash != ""), func(t *testing.T) {
+				cleanEngine(t)
+				p, cfg, client, _ := recoveryFixture(t, 200)
+				cfg.StateDirectory, cfg.Hostname = p.path, testHostname
+				cfg.ControlURL += newSlash
+				cfg.Recovery.PreviousControlURL += oldSlash
+				state, _ := p.read("tailscaled.state")
+				p.close()
+				if code := initHomeProfile(cfg); code != 0 {
+					t.Fatalf("slash-bearing saved trust could not admit recovery: %d", code)
+				}
+				if managed.server.ControlURL != recoveryNewURL {
+					t.Fatal("runtime URL was not canonical")
+				}
+				if completeHomeAddressRecovery(context.Background(), cfg, cfg.Recovery.StableNodeID, managed.profile, client) != nil {
+					t.Fatal("slash-bearing trust could not migrate")
+				}
+				if managed.profile.record.ControlURL != recoveryNewURL || managed.profile.record.PreviousControlURL != recoveryOldURL {
+					t.Fatal("protected receipt is not canonical")
+				}
+				after, _ := managed.profile.read("tailscaled.state")
+				if string(after) != string(state) {
+					t.Fatal("node identity state changed")
+				}
+				tsnet_close()
+				if code := managedInit("", cfg.ControlURL, testHostname, cfg.StateDirectory); code != 0 {
+					t.Fatalf("shipping empty-key reopen failed: %d", code)
+				}
+				tsnet_close()
+				if code := initHomeProfile(cfg); code != 0 {
+					t.Fatalf("exact migration receipt retry failed: %d", code)
+				}
+				if completeHomeAddressRecovery(context.Background(), cfg, cfg.Recovery.StableNodeID, managed.profile, client) != nil {
+					t.Fatal("canonical receipt could not revalidate saved grant")
+				}
+				tsnet_close()
+			})
+		}
 	}
 }

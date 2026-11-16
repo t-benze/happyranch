@@ -40,6 +40,7 @@ final class HomeInviteModel: ObservableObject {
     @Published private(set) var savedHomes: [SavedHome] = []
     @Published private(set) var saveFailure: SavedAccessFailure?
     @Published private(set) var removalFailures: [String] = []
+    @Published private(set) var discoveryFailures: [SavedAccessFailure] = []
     @Published var selectedHomeID: UUID?
     private(set) var attemptID = UUID()
     private var operation: Task<Void, Never>?
@@ -51,6 +52,8 @@ final class HomeInviteModel: ObservableObject {
     private let makeSession: @Sendable () -> any HomeInviteSession
     private var records: [UUID: SavedDeviceCredential] = [:]
     private var unsaved: SavedDeviceCredential?
+    private var activeCredential: SavedDeviceCredential?
+    private var pendingRemoval: SavedDeviceCredential?
     private var prepared = false
     private var needsNewInvite = false
     private var rePairHomeIDs: Set<UUID> = []
@@ -78,7 +81,10 @@ final class HomeInviteModel: ObservableObject {
         phase = .checkingSavedAccess
         operation = Task {
             do {
-                let credentials = try await store.savedHomes()
+                let discovery = try await store.savedHomes()
+                let credentials = discovery.credentials
+                discoveryFailures = discovery.failures
+                needsReplacementConsent = !discovery.failures.isEmpty
                 try Task.checkCancellation()
                 var discovered: [UUID: SavedDeviceCredential] = [:]
                 for credential in credentials {
@@ -103,10 +109,11 @@ final class HomeInviteModel: ObservableObject {
 
     /// SecureField caller clears its binding synchronously before calling.
     func accept(_ raw: String, replacementConsent: Bool = false) {
-        guard !busy, session == nil else { return }
+        guard !busy, session == nil, pendingRemoval == nil else { return }
         guard !needsReplacementConsent || replacementConsent else { return }
         let token = UUID(); attemptID = token
         phase = .validating; needsNewInvite = true; removalFailures = []
+        activeCredential = nil
         var draft = raw
         operation = Task {
             defer { settleOperation(token); draft.removeAll() }
@@ -128,6 +135,14 @@ final class HomeInviteModel: ObservableObject {
                         guard records.values.filter({ $0.trust.homeID == trust.homeID }).count == 1 else {
                             throw HomeConnectionFailure.addressChanged
                         }
+                        if previous.trust.controlURL.trimmingCharacters(in: CharacterSet(charactersIn: "/")) ==
+                            trust.controlURL.trimmingCharacters(in: CharacterSet(charactersIn: "/")),
+                           let id = previous.networkProfileID, !rePairHomeIDs.contains(id) {
+                            invite = nil; expiresAt = nil; target = previous.trust
+                            selectedHomeID = id; operation = nil; phase = .idle
+                            reconnect()
+                            return
+                        }
                         if let id = previous.networkProfileID, !rePairHomeIDs.contains(id) {
                             invite = nil // New join key/pair secret are never submitted in metadata recovery.
                             armExpiry(deadline, token: token)
@@ -137,6 +152,7 @@ final class HomeInviteModel: ObservableObject {
                             guard saved.binding == previous.binding, saved.networkProfileID == id,
                                   saved.trust == previous.trust else { throw HomeConnectionFailure.identityUnavailable }
                             let candidate = makeSession(); session = candidate
+                            activeCredential = saved
                             phase = .joining
                             let recovered = try await candidate.recoverAddress(saved, to: trust)
                             try check(token)
@@ -171,16 +187,31 @@ final class HomeInviteModel: ObservableObject {
                     }
                 }
                 armExpiry(deadline, token: token)
-                let candidate = makeSession(); session = candidate
+                var candidate = makeSession(); session = candidate
                 let retained = unfinishedMembership.flatMap { $0.trust == trust ? $0.id : nil }
-                let id = retained ?? UUID()
-                unfinishedMembership = (trust, id)
+                var id = retained ?? UUID()
                 phase = .joining
                 var pairing: HomePairingInvitation? = HomePairingInvitation(invite!)
-                var key = retained == nil ? invite!.withSecrets { _, key, _ in key } : Data()
+                var key = invite!.withSecrets { _, key, _ in key }
                 invite = nil
-                do { try await candidate.join(trust: trust, profileID: id, key: retained == nil ? key : nil) }
-                catch { key.resetBytes(in: 0..<key.count); throw error }
+                defer { key.resetBytes(in: 0..<key.count) }
+                var reopened = false
+                if retained != nil {
+                    // An interrupted join may or may not have enrolled. Only an
+                    // explicit empty-key check can establish reusable membership.
+                    do {
+                        try await candidate.join(trust: trust, profileID: id, key: nil)
+                        reopened = true
+                    } catch {
+                        try check(token)
+                        try await candidate.stop()
+                        try check(token)
+                        candidate = makeSession(); session = candidate
+                        id = UUID() // Never repair or reuse the uncertain profile/key.
+                    }
+                }
+                unfinishedMembership = (trust, id)
+                if !reopened { try await candidate.join(trust: trust, profileID: id, key: key) }
                 key.resetBytes(in: 0..<key.count)
                 try check(token)
                 phase = .pairing
@@ -203,6 +234,7 @@ final class HomeInviteModel: ObservableObject {
                         needsNewInvite = false
                         unfinishedMembership = nil
                         unsaved = delivered
+                        activeCredential = delivered
                         await saveDelivered(token: token)
                         try check(token)
                         try await open(candidate, credential: delivered, token: token)
@@ -227,7 +259,7 @@ final class HomeInviteModel: ObservableObject {
     }
 
     func reconnect() {
-        guard !busy, session == nil, let id = selectedHomeID, let metadata = records[id] else { return }
+        guard !busy, session == nil, pendingRemoval == nil, let id = selectedHomeID, let metadata = records[id] else { return }
         let token = UUID(); attemptID = token; needsNewInvite = false
         phase = .checkingSavedAccess
         operation = Task {
@@ -245,8 +277,9 @@ final class HomeInviteModel: ObservableObject {
                 guard credential.networkProfileID == id, credential.binding == metadata.binding,
                       credential.trust == metadata.trust else { throw HomeConnectionFailure.identityUnavailable }
                 rePairHomeIDs.remove(id)
-                needsReplacementConsent = false
+                needsReplacementConsent = !discoveryFailures.isEmpty
                 let candidate = makeSession(); session = candidate; target = credential.trust
+                activeCredential = credential
                 phase = .joining
                 try await candidate.join(trust: credential.trust, profileID: id, key: nil)
                 try check(token)
@@ -286,6 +319,7 @@ final class HomeInviteModel: ObservableObject {
     }
 
     private func open(_ candidate: any HomeInviteSession, credential: SavedDeviceCredential, token: UUID) async throws {
+        activeCredential = credential
         phase = .opening
         let url = try await candidate.open(credential)
         try check(token)
@@ -345,10 +379,14 @@ final class HomeInviteModel: ObservableObject {
         guard attemptID == token else { return }
         expiryTask?.cancel(); expiryTask = nil
         expiresAt = nil; comparisonPhrase = nil; webURL = nil
+        if failure == .revoked {
+            pendingRemoval = activeCredential
+            unsaved = nil; saveFailure = nil
+        }
         do { try await session?.stop(); session = nil; phase = .failed(failure) }
         catch { phase = .failed(.cleanupIncomplete) }
         if failure == .approvalDenied || failure == .revoked || failure == .identityUnavailable { needsNewInvite = true }
-        if failure == .approvalDenied || failure == .identityUnavailable, let id = selectedHomeID {
+        if failure == .approvalDenied || failure == .identityUnavailable, let id = activeCredential?.networkProfileID {
             rePairHomeIDs.insert(id); needsReplacementConsent = true
         }
     }
@@ -357,6 +395,7 @@ final class HomeInviteModel: ObservableObject {
     /// invalidates every late result and forgets pending secrets/handles.
     func cancel(endingAt finalPhase: Phase = .idle) {
         let old = operation; old?.cancel()
+        if finalPhase == .failed(.revoked) { pendingRemoval = activeCredential }
         attemptID = UUID(); let token = attemptID
         expiryTask?.cancel(); monitor?.cancel(); navigationDeadline?.cancel()
         expiresAt = nil; comparisonPhrase = nil; webURL = nil; unsaved = nil; saveFailure = nil
@@ -364,7 +403,11 @@ final class HomeInviteModel: ObservableObject {
         operation = Task {
             await old?.value
             guard attemptID == token else { return }
-            do { try await session?.stop(); session = nil; phase = finalPhase }
+            do {
+                try await session?.stop(); session = nil
+                if finalPhase != .failed(.revoked) { activeCredential = nil }
+                phase = finalPhase
+            }
             catch { phase = .failed(.cleanupIncomplete) }
             operation = nil
             if finalPhase == .failed(.revoked) { removeSavedComputer(afterRevocation: true) }
@@ -387,7 +430,11 @@ final class HomeInviteModel: ObservableObject {
     }
 
     func removeSavedComputer(afterRevocation: Bool = false) {
-        guard operation == nil, let id = selectedHomeID, let credential = records[id] else { return }
+        guard operation == nil else { return }
+        let selected = selectedHomeID.flatMap { records[$0] }
+        guard let credential = pendingRemoval ?? (afterRevocation ? activeCredential : selected),
+              let id = credential.networkProfileID else { return }
+        pendingRemoval = credential
         let token = UUID(); attemptID = token
         monitor?.cancel(); navigationDeadline?.cancel(); expiryTask?.cancel()
         webURL = nil; unsaved = nil; comparisonPhrase = nil; expiresAt = nil
@@ -404,7 +451,9 @@ final class HomeInviteModel: ObservableObject {
             do { try await store.delete(binding: credential.binding) }
             catch { removalFailures = ["Login Keychain bearer and trust could not be erased"]; phase = .keychain(.deletionFailed); return }
             records.removeValue(forKey: id); savedHomes.removeAll { $0.id == id }
-            selectedHomeID = savedHomes.first?.id; target = nil; saveFailure = nil
+            if selectedHomeID == id { selectedHomeID = savedHomes.first?.id }
+            if activeCredential?.binding == credential.binding { activeCredential = nil }
+            pendingRemoval = nil; target = nil; saveFailure = nil
             phase = afterRevocation ? .failed(.revoked) : .idle
             if afterRevocation { needsNewInvite = true }
         }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
 )
 
 // Private pipe metadata, never part of the invite schema or process arguments.
@@ -16,9 +17,22 @@ type homeAddressRecovery struct {
 func (homeAddressRecovery) String() string     { return "homeAddressRecovery(<redacted>)" }
 func (r homeAddressRecovery) GoString() string { return r.String() }
 
+// managedInit stores a root URL without its optional slash. Normalize only
+// that already-validated representation; never repair protected profile bytes.
+func canonicalHomeLaunch(cfg homeLaunch) homeLaunch {
+	cfg.ControlURL = strings.TrimSuffix(cfg.ControlURL, "/")
+	if cfg.Recovery != nil {
+		recovery := *cfg.Recovery
+		recovery.PreviousControlURL = strings.TrimSuffix(recovery.PreviousControlURL, "/")
+		cfg.Recovery = &recovery
+	}
+	return cfg
+}
+
 // The connector's ordinary admission checks the current saved grant AND WhoIs
 // pin. Network membership or a matching hostname cannot authorize this write.
 func completeHomeAddressRecovery(ctx context.Context, cfg homeLaunch, node string, p *managedProfile, client *http.Client) error {
+	cfg = canonicalHomeLaunch(cfg)
 	r := cfg.Recovery
 	if r == nil || cfg.JoinKey != "" || node == "" || node != r.StableNodeID || r.Bearer == "" ||
 		p.record.Phase != "joined" || (p.record.Version == 1 && p.record.StableNodeID != node) || p.validate() != nil {
@@ -83,6 +97,7 @@ func completeHomeAddressRecovery(ctx context.Context, cfg homeLaunch, node strin
 // live node/grant checks. A submitting phase with a valid consumed marker is a
 // previously joined profile whose last reconnect was interrupted/offline.
 func initHomeProfile(cfg homeLaunch) int {
+	cfg = canonicalHomeLaunch(cfg)
 	if cfg.Recovery != nil && cfg.JoinKey != "" {
 		return managedInvalid
 	}
