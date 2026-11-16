@@ -37,10 +37,15 @@ public actor LoginKeychainDeviceStore: SavedDeviceCredentialStore {
         return path
     }
 
-    private func access() throws -> SecAccess {
+    private func trustedApplication() throws -> SecTrustedApplication {
         var app: SecTrustedApplication?
         let status = try executable().withCString { SecTrustedApplicationCreateFromPath($0, &app) }
         guard status == errSecSuccess, let app else { throw SavedAccessFailure.identityChanged }
+        return app
+    }
+
+    private func access() throws -> SecAccess {
+        let app = try trustedApplication()
         var access: SecAccess?
         guard SecAccessCreate("HappyRanch saved home access" as CFString, [app] as CFArray, &access) == errSecSuccess,
               let access else { throw SavedAccessFailure.saveFailed }
@@ -54,7 +59,12 @@ public actor LoginKeychainDeviceStore: SavedDeviceCredentialStore {
         guard SecKeychainItemCopyAccess(item, &access) == errSecSuccess, let access,
               let acls = SecAccessCopyMatchingACLList(access, kSecACLAuthorizationDecrypt) as? [SecACL],
               !acls.isEmpty else { throw SavedAccessFailure.identityChanged }
-        let path = try executable()
+        // Compare the public opaque application data to a freshly constructed
+        // current-executable reference; do not depend on its undocumented encoding.
+        // Keychain itself verifies the code identity during the consent-enabled read.
+        var currentData: CFData?
+        guard SecTrustedApplicationCopyData(try trustedApplication(), &currentData) == errSecSuccess,
+              let currentData else { throw SavedAccessFailure.identityChanged }
         for acl in acls {
             var applications: CFArray?
             var label: CFString?
@@ -63,10 +73,7 @@ public actor LoginKeychainDeviceStore: SavedDeviceCredentialStore {
                   let apps = applications as? [SecTrustedApplication], apps.count == 1 else { throw SavedAccessFailure.identityChanged }
             var appData: CFData?
             guard SecTrustedApplicationCopyData(apps[0], &appData) == errSecSuccess, let appData else { throw SavedAccessFailure.identityChanged }
-            let bytes = appData as Data
-            // Trusted application data is the NUL-terminated executable path.
-            guard bytes == Data(path.utf8) + Data([0]),
-                  path.withCString({ SecTrustedApplicationValidateWithPath(apps[0], $0) }) == errSecSuccess else {
+            guard appData as Data == currentData as Data else {
                 throw SavedAccessFailure.identityChanged
             }
         }
@@ -106,7 +113,8 @@ public actor LoginKeychainDeviceStore: SavedDeviceCredentialStore {
     public func load(binding: SavedDeviceBinding, trust: SavedHomeTrust) async throws -> SavedDeviceCredential {
         let keychain = try login()
         let ref = try item(keychain, binding)
-        var request: [String: Any] = [kSecValueRef as String: ref, kSecReturnData as String: true,
+        var request: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
+                                     kSecMatchItemList as String: [ref], kSecReturnData as String: true,
                                      kSecMatchLimit as String: kSecMatchLimitOne]
         // No interaction-fail/skip flag: normal consent/unlock UI remains enabled.
         var result: CFTypeRef?
@@ -130,7 +138,8 @@ public actor LoginKeychainDeviceStore: SavedDeviceCredentialStore {
         let ref: SecKeychainItem
         do { ref = try item(keychain, binding) }
         catch SavedAccessFailure.notFound { return }
-        let status = SecItemDelete([kSecValueRef as String: ref] as CFDictionary)
+        let status = SecItemDelete([kSecClass as String: kSecClassGenericPassword,
+                                    kSecMatchItemList as String: [ref]] as CFDictionary)
         guard status == errSecSuccess else { throw SavedAccessFailure.deletionFailed }
         do { _ = try item(keychain, binding); throw SavedAccessFailure.deletionFailed }
         catch SavedAccessFailure.notFound { return }
