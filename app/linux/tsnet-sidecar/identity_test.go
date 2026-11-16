@@ -171,7 +171,8 @@ func TestIdentityOneRemoteOneUnixStream(t *testing.T) {
 			}(c)
 		}
 	}()
-	for range 2 {
+	for _, node := range []tailcfg.StableNodeID{"node-123", "node-456"} {
+		lookup.response.Node.StableID = node
 		c, err := net.Dial("tcp", inbound.Addr().String())
 		if err != nil {
 			t.Fatal(err)
@@ -187,16 +188,29 @@ func TestIdentityOneRemoteOneUnixStream(t *testing.T) {
 		}
 		c.Close()
 	}
-	for range 2 {
+	for _, node := range []string{"node-123", "node-456"} {
 		select {
 		case got := <-seen:
-			if got != "HRID\x01\x00\x08node-123HTTP" {
+			if got != "HRID\x01\x00\x08"+node+"HTTP" {
 				t.Fatalf("wire=%q", got)
 			}
 		case <-time.After(2 * time.Second):
 			t.Fatal("pooled connection or missing frame")
 		}
 	}
+	// Runtime connector loss refuses the next remote connection even though
+	// this isolated test has no host systemd BindsTo owner to stop the sidecar.
+	local.Close()
+	c, err := net.Dial("tcp", inbound.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	c.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if n, err := c.Read(make([]byte, 1)); n != 0 || err != io.EOF {
+		t.Fatalf("connector loss left remote open: n=%d err=%v", n, err)
+	}
+
 }
 func TestIdentityProfileReadinessAndLegacyGate(t *testing.T) {
 	cfg := managedConfig(t)
