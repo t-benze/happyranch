@@ -1055,7 +1055,7 @@ if sys.argv[1:] in ([], ['--daily-integrity']):
             limited = monitor.read_snapshot(alpha, time.monotonic()+5)
         assert limited['reason'] == 'sql_budget' and limited['outcome'] == 'unavailable', limited
         daily_case('one pinned WAL snapshot while a private writer commits')
-        pinned_root = private / 'pinned'
+        pinned_root = rt / 'orgs/pinned'
         pinned_root.mkdir()
         db = Database(pinned_root / 'happyranch.db')
         db.close()
@@ -1074,7 +1074,8 @@ if sys.argv[1:] in ([], ['--daily-integrity']):
             assert conn.execute('SELECT count(*) FROM snapshot_probe').fetchone() == (1,), 'read snapshot drifted'
             return result
         with patch.object(monitor, 'check_full_integrity', concurrent_check):
-            assert monitor.read_snapshot(pinned_root, time.monotonic()+5)['outcome'] == 'ok'
+            pinned = monitor.read_snapshot(pinned_root, time.monotonic()+5)
+            assert pinned['outcome'] == 'ok', ('daily pinned WAL snapshot', pinned)
         with original_connect(pinned_root / 'happyranch.db') as reader:
             assert reader.execute('SELECT count(*) FROM snapshot_probe').fetchone() == (2,)
         reader.close()
@@ -1099,10 +1100,11 @@ if sys.argv[1:] in ([], ['--daily-integrity']):
         alias.symlink_to(alpha, target_is_directory=True)
         assert monitor.read_snapshot(alias, time.monotonic() + 5)['outcome'] == 'unavailable'
         alias.unlink()
-        corrupt_bytes = private / 'notadb'
+        corrupt_bytes = rt / 'orgs/notadb'
         corrupt_bytes.mkdir()
         (corrupt_bytes / 'happyranch.db').write_bytes(b'private synthetic not a database' * 30)
-        assert monitor.read_snapshot(corrupt_bytes, time.monotonic() + 5)['reason'] == 'database_corrupt'
+        invalid = monitor.read_snapshot(corrupt_bytes, time.monotonic() + 5)
+        assert invalid['reason'] == 'database_corrupt', ('daily genuine corrupt bytes', invalid)
         assert 'private_corrupt_index' not in json.dumps(bad)
 
         async def daily_integration():
