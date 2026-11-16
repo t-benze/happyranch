@@ -15,6 +15,72 @@ Retained historical source is nonshipping; it is not invoked indirectly.
 
 ## Development
 
+### THR-327 slice 5a: single-invite and saved-access seams
+
+`RemoteInvite.parse(_:now:)` is an offline, home-only parser for the merged
+[one-click contract](../../docs/superpowers/specs/2026-11-16-one-click-remote-access.md).
+It refuses oversized/noncanonical base64url, duplicate/extra/missing keys,
+unsupported versions/modes/trust, malformed certificates, fingerprint/SAN
+mismatches and invalid times. Clock skew is **zero**: issued <= now < expires;
+expiry must be within 300 seconds of issuance. Secret display, debug and mirror
+representations are redacted. `withSecrets` is an explicit memory-only transport
+handoff; Swift/Data copies cannot promise cryptographic memory erasure.
+
+The Linux slice-3c issuer does not exist yet. These fixture-based wire choices
+are **provisional questions for the issuer/spec owner**, not new envelope fields:
+
+- Are all identity, endpoint and secret fields strings, with `v` an integer?
+  This parser uses bounded ASCII identity strings and a 48-lowercase-hex join key.
+- Is `control_tls` exactly `{kind: "local_ca", ca_der: ..., sha256: ...}`?
+  This parser uses unpadded base64url DER and 64 lowercase hexadecimal SHA-256.
+  System trust and all advanced modes remain unsupported and inactive.
+- Are `invite_id` and `pair_secret` unpadded base64url for exactly 16/32 bytes?
+  Length validation cannot establish the issuer's randomness.
+- Are `issued_at`/`expires_at` integer Unix seconds (not RFC3339 or floats)?
+- Is `home_endpoint` tailnet `host:443`, distinct from the RFC1918 control URL
+  `https://IP:8443[/]`? That is the interpretation implemented here.
+- The brief requests an offline certificate IP-SAN check, but the envelope
+  carries only the CA while the spec describes an IP-SAN **leaf**. Provisionally
+  the invite CA must itself carry the matching IP SAN and CA basic constraint.
+  A normal SAN-less CA therefore refuses. Reconcile this with slice 3c before
+  integration; do not add a leaf field or silently relax the guard. This check
+  does not replace the live leaf validity/chain/SAN check in slice 5b.
+
+`SavedDeviceCredentialStore` separates custody from UI/network work.
+`LoginKeychainDeviceStore` uses a separate local login-Keychain generic password,
+non-synchronizing, without an access group or plaintext fallback. Its service
+and length-delimited hashed account bind home/control-plane/stable-node identity.
+The record includes endpoint, CA DER/fingerprint and delivered bearer together.
+At creation, `SecAccessCreate` restricts access to the current executable as the
+sole trusted application via `kSecAttrAccess`. Reads allow normal consent UI,
+then inspect the decrypt ACL, executable identity and exact saved trust binding.
+No ACL update, item replacement or CA trust-store installation occurs. A duplicate
+save only reads/verifies the same record/bearer; it never overwrites it.
+Deletion is exact and absence is checked; failure remains visible.
+
+`SavedAccessModel.saveAfterDelivery` must be called only after durable Linux
+approval and credential delivery. Save failure retains the in-memory grant for
+Retry; process loss needs a new invite. Not-found, cancellation, denial, locked
+Keychain, identity/ACL mismatch and removal failure remain distinct closed
+outcomes. Custody state never implies runtime access or Connected.
+Explicit replacement consent, same-CA address migration and signed-release
+migration are deferred to the owning integration/release legs; unsigned access
+has no signing prerequisite. No automatic migration or storage downgrade exists.
+
+Slice 5b must feed only validated CA/profile data into a dedicated per-home Go
+process, validate `/key` and DERP TLS and preserve Noise's distinct semantics.
+Slice 5c must wire invite intake, approval/delivery, saved-access retries/removal,
+attempt cancellation and sanitized #1563 failures, with Connected only after
+the authorized release web UI opens. Neither leg's behavior is implemented here.
+
+On an authorized macOS host, the existing XCTest venue is:
+`swift test --package-path app/mac --filter 'RemoteInviteTests|SavedDeviceAccessTests'`.
+The maker Linux host has no Swift/macOS Security framework: tests, failure/pass
+mutation proof and unsigned Keychain quit/reopen acceptance are **NOT RUN**.
+`build-mac-app.yml` can compile an independently reviewed exact SHA/tree but does
+not run Swift tests; `ci.yml` is lint-only and `managed-m4.yml` tests the C ABI,
+not Swift. Mac-mini unsigned artifact acceptance belongs to slice 6.
+
 Xcode 16 / Swift 6 and a macOS build host are required. From `app/mac`, use
 `swift build` and `swift run HappyRanchApp`. Existing development weak tsnet
 stubs remain available when no Go archive exists. When the freshly built
