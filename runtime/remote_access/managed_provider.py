@@ -40,6 +40,8 @@ class ManagedProviderConfig:
 
     def validate(self, *, daemon_port: int | None = None,
                  excluded_daemon_ports: list[int] | None = None) -> None:
+        if not isinstance(self.profile, str):
+            raise ManagedProviderError("managed ingress profile is invalid")
         if self.profile:
             if self.profile != LINUX_IDENTITY_PROFILE or sys.platform != "linux":
                 raise ManagedProviderError("managed ingress profile is invalid")

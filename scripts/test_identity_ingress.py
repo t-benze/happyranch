@@ -155,6 +155,12 @@ def test_managed_listener_fixed_private_path(monkeypatch: pytest.MonkeyPatch) ->
             adapter.start()
 
 
+@pytest.mark.parametrize("profile", [False, None], ids=["boolean", "null"])
+def test_profile_type_refused(profile: object) -> None:
+    with pytest.raises(managed.ManagedProviderError):
+        managed.ManagedProviderConfig(profile=profile).validate()
+
+
 def test_exact_unit_hardening_parity() -> None:
     spec = ConnectorUnitSpec(user="happyranch", group="happyranch", release_verifier=True)
     legacy = render_connector_unit(spec).splitlines()
