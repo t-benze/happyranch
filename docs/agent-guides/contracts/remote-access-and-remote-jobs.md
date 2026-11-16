@@ -884,15 +884,16 @@ For managed Linux, the credential readiness gate also journals a closed
 `injection_unreadable`, `injection_permissions`, `injection_empty` or
 `unavailable` reason. Unknown provider failures become `unavailable`; no raw
 exception, path or credential is logged. Credential readers and acceptance
-checks remain unchanged; the managed unit's `LoadCredential` selects the existing
-systemd credential reader.
+checks and selection logic remain unchanged; the managed unit has no daemon
+`LoadCredential` and the staged `/etc/happyranch/daemon.token` configuration
+selects `FileDaemonCredentialProvider`, as on main.
 
 The root verifier reads no token and has no `LoadCredential`. The root installer
 copies the validated provisioning input (default `<data_home>/daemon.token`) to
 `/etc/happyranch/daemon.token`, owned by `happyranch:happyranch`, mode 0600.
-The connector unit renders `LoadCredential=daemon.token:/etc/happyranch/daemon.token`;
-it never loads the provisioning input directly. The injected file must separately
-meet the existing provider's owner-only mode check. File/PID hints alone are
+The connector reads this validated copy through the unchanged file provider;
+it never reads the provisioning input directly. Daemon-token custody is unchanged
+from main. File/PID hints alone are
 never authority. Bounds: request 64 bytes, response 80 bytes, one client at a
 time with one-second read timeout, two-second manager-query timeout (each),
 8192-byte manager output, 4096 process fds, 16384 TCP rows, 512 bytes per row.

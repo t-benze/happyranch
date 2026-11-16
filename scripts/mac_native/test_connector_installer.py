@@ -882,12 +882,12 @@ class ManagedLinuxDebInstaller(unittest.TestCase):
     def test_linux_unit_layout_bytes(self):
         # Published unit bytes are an independent installer drift contract.
         expected = {
-            'source': ('39fd3759ce2b433fb2bf6a22bb483f32aeec066ab908b73ea721f312bb1908cb',
+            'source': ('2911b3eca89178f3d56f4b217382a04161d6fdd33969e2cf18cd4a546dbbba6f',
                        '39b1590d41608b9c2f6bbbff5225d5fa4a2af0ba7761812dc68540b5da9be931',
                        'af7c83b16489a907a8b58f7a56f5153b3203aab8791df8290af847344375982f',
                        '8db88c53f4a00581009acc58e15cf70c00aabd07f707305242e2494c5d9b1351',
                        '6c837e4f6282fec002645e0e79503721ef098685c3d64611e0fb4bbfedcb7f13'),
-            'deb': ('099d87da872b3c2ca41b441788e5f47df35188d614e8d2a73ec7dc726ae39f30',
+            'deb': ('c0d4c6c8188bc3caf846337f2c076203218b59405bed1353272a39e42f4cf2ea',
                     '005c001b6ed75959782bee9d5ca08746e504db62371994a46745b1905d528aae',
                     'af7c83b16489a907a8b58f7a56f5153b3203aab8791df8290af847344375982f',
                     '8db88c53f4a00581009acc58e15cf70c00aabd07f707305242e2494c5d9b1351',

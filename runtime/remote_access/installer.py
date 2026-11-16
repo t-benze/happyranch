@@ -65,7 +65,6 @@ def managed_units(layout: str = "source") -> dict[str, str]:
     return {
         UNITS[0]: render_connector_unit(ConnectorUnitSpec(
             user="happyranch", group="happyranch", release_verifier=True,
-            daemon_token_path="/etc/happyranch/daemon.token",
             exec_start=(*python, "-m", "runtime.remote_access.cli",
                         "run", "--managed", "--config", "/etc/happyranch/connector.json"),
         )),
