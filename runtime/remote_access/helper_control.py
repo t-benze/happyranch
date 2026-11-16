@@ -14,7 +14,7 @@ import socket
 import struct
 import time
 from dataclasses import asdict, dataclass
-from typing import ContextManager, Protocol
+from typing import Callable, ContextManager, Protocol
 
 CONTROL_SOCKET = '/run/happyranch-connector/control.sock'
 MAX_FRAME = 32768
@@ -157,8 +157,16 @@ class ControlHandler:
                 method = request.get('method')
                 if method == 'status' and set(request) == {'method'}:
                     response = {'snapshot': asdict(current)}
-                elif method in MUTATIONS.values() and set(request) == {'method', 'snapshot', 'record'}:
+                elif method in MUTATIONS.values() and set(request) == {'method', 'snapshot', 'record', 'deadline'}:
                     captured, record = snapshot_from(request['snapshot']), _device(request['record'])
+                    deadline = request['deadline']
+                    if type(deadline) not in (int, float) or not math.isfinite(deadline):
+                        raise Refused('invalid-request')
+                    now = time.monotonic()
+                    if deadline <= now:
+                        raise Refused('expired')
+                    if deadline > now + 120:
+                        raise Refused('invalid-request')
                     target = (current.pending if method != 'revoke-selected' else
                               next((d for d in current.devices if d.record_id == record.record_id), None))
                     if not current.owned or current != captured or target != record:
@@ -168,6 +176,17 @@ class ControlHandler:
                     operation = {'approve-pending': self.operations.approve_pending,
                                  'reject-pending': self.operations.reject_pending,
                                  'revoke-selected': self.operations.revoke_device}[method]
+                    # Hold the store lock while root revalidates its live bus caller.
+                    _send(connection, {'result': 'ready'})
+                    commit = _receive(connection)
+                    if set(commit) != {'commit'} or commit['commit'] is not True:
+                        raise Refused('invalid-request')
+                    if time.monotonic() >= deadline:
+                        raise Refused('expired')
+                    if self.operations.status() != captured:
+                        raise Refused('changed')
+                    if record.expires_at <= time.time():
+                        raise Refused('expired')
                     operation(record, captured.generation)
                     response = {'result': 'ok'}
                 else:
@@ -185,13 +204,17 @@ class ControlClient:
     def __init__(self, path: str = CONTROL_SOCKET) -> None:
         self.path = path
 
-    def _call(self, request: dict) -> dict:
+    def _call(self, request: dict, before_commit: Callable[[], None] | None = None) -> dict:
         try:
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
                 connection.settimeout(2)
                 connection.connect(self.path)
                 _send(connection, request)
                 reply = _receive(connection)
+                if before_commit is not None and reply == {'result': 'ready'}:
+                    before_commit()
+                    _send(connection, {'commit': True})
+                    reply = _receive(connection)
                 if 'error' in reply:
                     raise Refused(reply['error'])
                 return reply
@@ -203,9 +226,11 @@ class ControlClient:
     def status(self) -> Snapshot:
         return snapshot_from(self._call({'method': 'status'}).get('snapshot'))
 
-    def mutate(self, method: str, snapshot: Snapshot, record: Device) -> None:
+    def mutate(self, method: str, snapshot: Snapshot, record: Device, deadline: float,
+               before_commit: Callable[[], None]) -> None:
         if method not in MUTATIONS:
             raise Refused('unknown-method')
-        reply = self._call({'method': MUTATIONS[method], 'snapshot': asdict(snapshot), 'record': asdict(record)})
+        reply = self._call({'method': MUTATIONS[method], 'snapshot': asdict(snapshot), 'record': asdict(record),
+                            'deadline': deadline}, before_commit)
         if reply != {'result': 'ok'}:
             raise Refused('unavailable')

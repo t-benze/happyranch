@@ -949,7 +949,8 @@ cover temp-root/fake-manager behavior; required PR checks remain lint/static.
 ApprovePending, RejectPending and RevokeSelected. Only the last three request
 fresh interactive polkit authorization. The protected release UID is a mandatory
 trusted constructor value; slice 3b must supply it from its validated root-owned
-release record. The root-only `serve()` uses system Gio; package activation and
+release record. The root-only `serve()` connects Gio to the fixed system-bus socket
+(`/run/dbus/system_bus_socket`), ignoring address environment overrides; package activation and
 installation of the source bus/polkit definitions remain pending. Run the fixed
 packaged entry with system Python `-I`, without user settings or argv overrides.
 
@@ -964,7 +965,8 @@ one-per-minute rate limit and policy-renewal installation belong to later slices
 `helper_control.OperationAPI` defines status, approve_pending, reject_pending,
 and revoke_device plus the shared trust mutation lock. The new root-only Unix
 request handler revalidates the captured snapshot under that same lock before
-calling the operation. The real binding to slice 2 is a serial integration leg
+calling the operation. A ready/commit handshake keeps the connector lock held
+while root rechecks the live caller UID and deadline. The real binding to slice 2 is a serial integration leg
 after both slices merge; no current connector listener installs this handler.
 It must preserve generation/ownership/expiry checks, transactional approval and
 revocation stream closure. Fixed production control path:
