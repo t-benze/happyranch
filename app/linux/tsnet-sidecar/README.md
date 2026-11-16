@@ -44,7 +44,12 @@ the exact DER fingerprint, root:happyranch and exact mode 0640) and
 Fixed parents must be real protected root-owned directories. Setup failure is
 an `ErrConfiguration` startup error before tsnet construction or a remote dial;
 the sidecar preserves that classification and does not consume enrollment.
-The unit supplies exactly those `SSL_CERT_FILE` and `SSL_CERT_DIR` paths.
+Only home-profile units (`SidecarUnitSpec.home_transport=True`) supply exactly
+those `SSL_CERT_FILE` and `SSL_CERT_DIR` paths. The flag defaults to false:
+legacy/non-home units remain byte-identical, with no SSL_CERT environment
+overrides, preserving OS system-root lookup. Slice 3b must set the flag when it
+generates the home profile. These lines locate the protected home trust files;
+the explicit upstream home-only verifier remains the authentication boundary.
 Inherited upper/lower `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY`,
 `SSLKEYLOGFILE`, `GODEBUG` and every `TS_` variable refuse startup without
 echoing their values. Refusing the whole `TS_` namespace covers the pinned

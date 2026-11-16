@@ -952,9 +952,14 @@ single-link, bounded exact-one-CA `/etc/happyranch/control-ca.pem` and protected
 empty `/etc/happyranch/empty-ca-directory` before constructing clients (exact
 root:happyranch 0640 CA file and root:root 0755 empty directory). Setup refuses
 with an `ErrConfiguration` error before tsnet construction/dial, preserved by
-the sidecar without consuming enrollment. The unit's
-only transport additions are those two fixed `SSL_CERT_FILE`/`SSL_CERT_DIR`
-Environment lines. All other hardening, including MDWE, is unchanged.
+the sidecar without consuming enrollment. Only home-profile units, selected with
+`SidecarUnitSpec.home_transport=True`, add the two fixed
+`SSL_CERT_FILE`/`SSL_CERT_DIR` Environment lines. The flag defaults to false;
+legacy/non-home units remain byte-identical and retain OS system-root lookup
+without SSL_CERT overrides. Slice 3b must set the flag when generating the home
+profile. These lines locate the home trust files; the explicit home-only
+upstream verifier supplies authentication. All other hardening, including MDWE,
+is unchanged.
 
 An ephemeral loopback CONNECT forwarder verifies upstream TLS with only the
 admitted home CA and fixed DNS identity, before returning 200. Its only targets
