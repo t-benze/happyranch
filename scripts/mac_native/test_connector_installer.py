@@ -7,6 +7,7 @@ import time
 import json
 import os
 import pwd
+import re
 import plistlib
 import stat
 import subprocess
@@ -839,7 +840,7 @@ class ManagedLinuxDebInstaller(unittest.TestCase):
 
     @contextmanager
     def host(self):
-        with tempfile.TemporaryDirectory(dir='/tmp') as folder:
+        with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parents[2]) as folder:
             root = Path(folder).resolve()
             prefix = root / 'opt/happyranch-desktop'
             for name in ('bin/happyranch-tsnet-sidecar', 'python/bin/python3.12'):
@@ -877,7 +878,71 @@ class ManagedLinuxDebInstaller(unittest.TestCase):
             inputs = dict(connector_config=operator / 'connector.json', sidecar_config=operator / 'sidecar.json',
                 policy_file=operator / 'policy.json', daemon_token_source=operator / 'daemon.token',
                 release_user=pwd.getpwuid(os.getuid()).pw_name, data_home=operator)
-            yield root, instance, inputs, manager, options
+            # The checkout can itself live beneath the operator's DEV home.
+            # Keep uid/gid real for isolated I/O, but model a separate release home.
+            release_user = list(pwd.getpwuid(os.getuid()))
+            release_user[5] = '/home/release-fixture'
+            with patch('runtime.remote_access.release_verifier.pwd.getpwuid', return_value=pwd.struct_passwd(release_user)):
+                yield root, instance, inputs, manager, options
+
+    @contextmanager
+    def data_home(self, instance, inputs, home):
+        # Model an existing target-owned directory without writing privileged
+        # host paths. All other input traversal and publication stays real.
+        original = instance._input_parent
+        @contextmanager
+        def parent(path):
+            actual = inputs['data_home'] / 'daemon.port' if path == home / 'daemon.port' else path
+            with original(actual) as descriptor:
+                yield descriptor
+        with patch.object(instance, '_input_parent', side_effect=parent):
+            yield inputs | dict(data_home=home)
+
+    def test_linux_provision_hidden_data_home_refusal(self):
+        for home in map(Path, ('/tmp', '/var/tmp', '/tmp/release', '/var/tmp/release')):
+            with self.subTest(home=home), self.host() as (root, instance, inputs, manager, _):
+                with self.data_home(instance, inputs, home) as mapped:
+                    with self.assertRaisesRegex(installer.InstallerError, re.escape(str(home)) + '.*PrivateTmp=yes'):
+                        instance.provision(**mapped)
+                self.assertFalse((root / 'etc/happyranch/release-daemon.json').exists())
+                self.assertFalse((root / 'etc/happyranch/daemon.token').exists())
+                self.assertEqual(manager.mock_calls, [])
+
+    def test_linux_provision_visible_data_home(self):
+        for home in map(Path, ('/home/release/.local/share/happyranch', '/tmp-adjacent/release')):
+            with self.subTest(home=home), self.host() as (root, instance, inputs, manager, _):
+                with self.data_home(instance, inputs, home) as mapped:
+                    instance.provision(**mapped)
+                record = json.loads((root / 'etc/happyranch/release-daemon.json').read_text())
+                self.assertEqual(record['data_home'], str(home))
+                self.assertEqual((root / 'etc/happyranch/daemon.token').read_bytes(), TOKEN)
+                self.assertEqual(manager.mock_calls, [])
+
+    def test_linux_verifier_namespace_coupling(self):
+        # Independent systemd.exec namespace semantics, exercised at provisioning.
+        # Read-only ProtectHome/System/ControlGroups do not hide host files.
+        hidden = {
+            'PrivateTmp=yes': ('/tmp', '/var/tmp'),
+            'PrivateDevices=yes': ('/dev',),
+            'ProtectKernelTunables=yes': ('/proc/kallsyms', '/proc/kcore'),
+            'ProtectKernelModules=yes': ('/usr/lib/modules',),
+            'ProtectKernelLogs=yes': ('/proc/kmsg', '/dev/kmsg'),
+        }
+        for layout in ('source', 'deb'):
+            unit = installer.managed_units(layout)['happyranch-release-verifier.service']
+            lines = set(unit.splitlines())
+            self.assertTrue(hidden.keys() <= lines)
+            self.assertIn('ProtectHome=read-only', lines)
+            for directive, paths in hidden.items():
+                for path in paths:
+                    for home in (Path(path), Path(path) / 'release'):
+                        with self.subTest(layout=layout, home=home, directive=directive), self.host() as (root, instance, inputs, _, _):
+                            with self.data_home(instance, inputs, home) as mapped:
+                                # /dev/kmsg is also covered by PrivateDevices.
+                                reason = 'PrivateDevices=yes' if home.is_relative_to('/dev') else directive
+                                with self.assertRaisesRegex(installer.InstallerError, re.escape(str(home)) + '.*' + re.escape(reason)):
+                                    instance.provision(**mapped)
+                            self.assertFalse((root / 'etc/happyranch/release-daemon.json').exists())
 
     def test_linux_unit_layout_bytes(self):
         # Published unit bytes are an independent installer drift contract.

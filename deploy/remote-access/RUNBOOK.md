@@ -101,7 +101,15 @@ actual `$XDG_DATA_HOME/happyranch` as `--data-home` when XDG is customized;
 sudo cannot read the login environment. Omission defaults to the passwd home
 plus `.local/share/happyranch`. The existing directory must belong to the release
 uid, have no symlink components or group/other write bits, and be outside
-`~/.happyranch`, `/etc` and `/var`. The token source defaults to
+`~/.happyranch`, `/etc` and `/var`. Provisioning and install also refuse paths
+hidden/inaccessible in the verifier's unchanged hardened namespace: `/tmp`,
+`/var/tmp`, `/dev`, `/usr/lib/modules`, `/proc/kallsyms`, `/proc/kcore`,
+`/proc/kmsg`, `/dev/kmsg`, and descendants. The renderer and installer share one
+directive/path table. The diagnostic names the path and hiding directive;
+choose a visible directory such as `/home/<user>/.local/share/happyranch`.
+Comparison follows no-follow traversal; symlinked parents refuse rather than
+being followed. Do not relax hardening or add a data-home bind mount.
+The token source defaults to
 `<data_home>/daemon.token`; `--daemon-token-source /absolute/path` can override it.
 Use the actual absolute token-source path as an input. It must be a literal,
 single-link regular 0600 file containing a nonempty UTF8 token. The installer

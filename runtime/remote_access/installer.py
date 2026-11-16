@@ -25,6 +25,7 @@ from urllib.parse import urlsplit
 
 from runtime.remote_access.service_manager import ServiceManagerError, SystemdServiceManager
 from runtime.remote_access.systemd_unit import (
+    VERIFIER_FILESYSTEM_HARDENING,
     ConnectorUnitSpec,
     SidecarUnitSpec,
     render_connector_unit,
@@ -432,11 +433,17 @@ class ManagedInstaller:
             user = self._lookup_user(user_name)
             home = data_home if data_home is not None else Path(user.pw_dir) / '.local/share/happyranch'
             record = dict(user=user_name, uid=user.pw_uid, data_home=str(home), unit=UNIT, fragment_path=FRAGMENT)
-            validate_record(record)
             with self._input_parent(home / 'daemon.port') as directory:
                 info = os.fstat(directory)
+                # No-follow traversal above rejects symlinked parents. Compare
+                # that literal path without resolving through a new alias.
+                for directive, hidden in VERIFIER_FILESYSTEM_HARDENING:
+                    if any(home.is_relative_to(path) for path in hidden):
+                        raise InstallerError(f'release data home {home} is hidden or inaccessible '
+                                             f'in the verifier namespace by {directive}')
                 if info.st_uid != user.pw_uid or info.st_mode & 0o022:
                     raise InstallerError('release data home must be owned by the target uid without group/other writes')
+            validate_record(record)
             return record
         except (OSError, ValueError, KeyError):
             raise InstallerError('invalid release user or data home (require existing absolute no-symlink target-owned directory)') from None

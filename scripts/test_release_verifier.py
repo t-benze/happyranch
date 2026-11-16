@@ -33,7 +33,7 @@ from runtime.remote_access.supervisor import ConnectorConfig, ConnectorConfigErr
 class ReleaseVerifierTests(unittest.TestCase):
     def setUp(self):
         # Isolated fixture paths; never use the real daemon home.
-        self.folder = tempfile.TemporaryDirectory(prefix='release-verifier-test-', dir='/tmp')
+        self.folder = tempfile.TemporaryDirectory(prefix='release-verifier-test-', dir=Path(__file__).resolve().parents[1])
         self.addCleanup(self.folder.cleanup)
         self.home = Path(self.folder.name)
         self.port_file = self.home / 'daemon.port'
@@ -42,6 +42,11 @@ class ReleaseVerifierTests(unittest.TestCase):
                            data_home=str(self.home), unit=rv.UNIT, fragment_path=rv.FRAGMENT)
         self.verifier = rv.ReleaseVerifier()
         self.addCleanup(patch.stopall)
+        # Model a release user's passwd home distinct from this checkout's DEV
+        # workspace; only the home changes, real filesystem uid/gid stay intact.
+        release_user = list(pwd.getpwuid(os.getuid()))
+        release_user[5] = '/home/release-fixture'
+        patch.object(rv.pwd, 'getpwuid', return_value=pwd.struct_passwd(release_user)).start()
         patch.object(self.verifier, '_configuration', return_value=(self.record, {8765})).start()
         self.properties = dict(MainPID=str(os.getpid()), ActiveState='active',
                                FragmentPath=rv.FRAGMENT, DropInPaths='')

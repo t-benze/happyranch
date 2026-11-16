@@ -836,8 +836,15 @@ Release data belongs in `$XDG_DATA_HOME/happyranch` (default
 through sudo: `--data-home` is the already-resolved absolute directory,
 defaulting to `<passwd-home>/.local/share/happyranch`. It must already exist,
 belong to the target uid, have no symlink components or group/other write bits,
-and be outside the DEV home `~/.happyranch`, `/etc` and `/var`. No shell
-expansion or login-environment lookup occurs. Provisioning writes root-owned
+and be outside the DEV home `~/.happyranch`, `/etc` and `/var`. Provisioning
+and install also reject paths hidden/inaccessible in the verifier namespace:
+`/tmp`, `/var/tmp`, `/dev`, `/usr/lib/modules`, `/proc/kallsyms`, `/proc/kcore`,
+`/proc/kmsg`, `/dev/kmsg`, and their descendants. One shared directive/path table
+owns both the rendered verifier hardening and installer rejection set; the
+failure names the data home and hiding directive. Comparison follows existing
+no-follow traversal (symlinked parents refuse); read-only `/home` stays valid.
+No hardening exception or data-home bind mount is added. No shell expansion or
+login-environment lookup occurs. Provisioning writes root-owned
 0644 `/etc/happyranch/release-daemon.json` with exactly `user`, `uid`,
 `data_home`, `unit` (`happyranch-daemon.service`) and `fragment_path`
 (`/usr/lib/systemd/user/happyranch-daemon.service`). The recorded uid must still

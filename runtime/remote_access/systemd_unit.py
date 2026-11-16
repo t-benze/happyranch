@@ -61,6 +61,20 @@ _DEFAULT_RESTART_SEC = 1
 _MANAGED_TARGET = "happyranch-managed.target"
 _START_LIMIT = ("StartLimitIntervalSec=300", "StartLimitBurst=5")
 
+# Keep the rendered verifier namespace and installer admission in one place.
+# Paths are hidden/inaccessible per systemd.exec; read-only mounts still allow
+# evidence reads. New filesystem directives must record their hidden paths here.
+VERIFIER_FILESYSTEM_HARDENING: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ('ProtectSystem=strict', ()),
+    ('ProtectHome=read-only', ()),
+    ('PrivateTmp=yes', ('/tmp', '/var/tmp')),
+    ('PrivateDevices=yes', ('/dev',)),
+    ('ProtectKernelTunables=yes', ('/proc/kallsyms', '/proc/kcore')),
+    ('ProtectKernelModules=yes', ('/usr/lib/modules',)),
+    ('ProtectKernelLogs=yes', ('/proc/kmsg', '/dev/kmsg')),
+    ('ProtectControlGroups=yes', ()),
+)
+
 
 def _hardening(*, system: bool, sidecar: bool = False) -> list[str]:
     # tsnet's Linux netmon subscribes to NETLINK_ROUTE for interface changes.
@@ -232,10 +246,8 @@ def render_verifier_unit(python: tuple[str, ...]) -> str:
         'ExecStart=' + ' '.join(_quote_systemd_arg(arg) for arg in
                               (*python, '-m', 'runtime.remote_access.release_verifier')),
         'Restart=on-failure', 'RestartSec=1', 'NoNewPrivileges=yes',
-        'ProtectSystem=strict', 'ProtectHome=read-only', 'PrivateTmp=yes',
-        'PrivateDevices=yes', 'ProtectKernelTunables=yes',
-        'ProtectKernelModules=yes', 'ProtectKernelLogs=yes',
-        'ProtectControlGroups=yes', 'RestrictSUIDSGID=yes',
+        *(directive for directive, _ in VERIFIER_FILESYSTEM_HARDENING),
+        'RestrictSUIDSGID=yes',
         'RestrictRealtime=yes', 'LockPersonality=yes',
         'MemoryDenyWriteExecute=yes', 'SystemCallArchitectures=native',
         'RestrictAddressFamilies=AF_UNIX', 'UMask=0077',
