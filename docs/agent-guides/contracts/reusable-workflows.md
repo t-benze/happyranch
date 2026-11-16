@@ -1964,8 +1964,10 @@ authority proof. Failure/unavailable/reporting loss never gates workflow loads,
 tasks or admission. The existing Audit action `workflow_integrity_check` and
 private external date/latest reports carry sanitized closed results; A3 owns
 later setup-status visibility. See [observability](observability.md#daily-workflow-physical-integrity-advisory-i1b).
-I2 still owns removal of inline load-time integrity; all current parts 2–7,
-FK, L32M, A/B/C2M, logical caps and five-second readers remain unchanged.
+I2 removes full `PRAGMA integrity_check` from loads; I1a install/upgrade-time
+full checks and this I1b daily advisory check remain. All current parts 2–7,
+FK, L32M, A/B/C2M, logical caps and five-second readers remain unchanged;
+the startup envelope is ≤10s.
 
 
 ## Independent workflow setup status (A3)

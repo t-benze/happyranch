@@ -5156,8 +5156,9 @@ The existing Workflows surface shows status independently of failed
 definition/settings reads. The task banner returns empty only after a real
 task, current authority and complete history prove sequential absence.
 Corrupt, partial, denied or exhausted reads retain their original errors,
-including when installation evidence reports success. No integrity reader,
-load-time physical check, FK check, logical/SQL cap or five-second policy changes.
+including when installation evidence reports success. A3 changes no integrity
+reader, FK check, logical/SQL cap or five-second policy; I2 separately removes
+load-time physical checks.
 
 The card exposes only `integrity_report` outcome, closed reason, original
 checked_at/scheduled_date and external/audit reporting. Stale results retain

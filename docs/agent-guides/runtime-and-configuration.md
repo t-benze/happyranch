@@ -4434,9 +4434,11 @@ bounded subprocess custody, without event-loop fsync or SQLite waits.
 
 See [observability](contracts/observability.md#daily-workflow-physical-integrity-advisory-i1b)
 for the durable audit/external report and reporting failure semantics. The result
-is advisory and never modifies business admission. Inline load integrity,
-complete logical/FK validation, L32M, A/B/C2M and five-second readers remain until
-I2. No live install, daemon restart or repair is authorized by source delivery.
+is advisory and never modifies business admission. I2 removes full
+`PRAGMA integrity_check` from loads; I1a install/upgrade-time full checks and
+this I1b daily advisory check remain. Complete logical/FK validation, L32M,
+A/B/C2M and five-second readers remain unchanged; the startup envelope is ≤10s.
+No live install, daemon restart or repair is authorized by source delivery.
 
 Attempt identity includes runtime key as well as slug/date, so an in-process
 runtime switch cannot consume another runtime's same-day attempt.
