@@ -7,9 +7,10 @@ hardening, with desktop buttons behind fresh polkit authentication. TASK-16362's
 are approved in principle. This proposal makes them part of pairing; C2 and the Go rewrite remain
 deferred. Round 5 records **R1 resolved to A, home-network access** (founder seq499/502) and
 **R2 APPROVED** (seq508, scope explained in seq506). Advanced-input **R3 remains FOUNDER-PENDING
-and disabled**. Round 6 (TASK-16730) supersedes Round 5's IP-URL trust proposal after TASK-16717/16720
-proved its SAN failure and exposed the Let's Encrypt fallback gap. **Recommend option A, a fixed private DNS name
-with process-local resolution; founder/security/Product decision pending.** R2 is not reopened.
+and disabled**. Round 7 (TASK-16744), addressing TASK-16733 F1, supersedes Round 6's direct-DNS
+recommendation: a matching-name public-root chain still passes its independent Let's Encrypt pool.
+**Recommend B, a same-process strict home-only TLS CONNECT forwarder on pinned v1.78.0, for both
+Linux and unsigned Mac; security/Product decision and implementation qualification pending.** R2 is not reopened.
 The revised trust/invite and unsigned-Keychain details require renewed review. This
 document itself authorizes no implementation or host operation.
 
@@ -264,7 +265,7 @@ matching hostname, address or old credential. Existing unpinned managed devices 
 
 ## 6. Invite, selected bootstrap and secret handling
 
-**Round-6 proposed home wire contract (pending approval):** one text string, `hrinvite2:` +
+**Round-7 proposed home wire contract (pending approval):** one text string, `hrinvite2:` +
 base64url strict JSON with `v=2`, ≤4096 decoded / 5500 encoded bytes including
 prefix; refuse oversize, never truncate. Exact fields: `v`, `mode`, `control_url`, `control_plane_id`,
 `control_tls`, `home_endpoint`, `home_id`, `connector_id`, `invite_id` (128 random bits), `join_key`,
@@ -301,7 +302,7 @@ no app-selected address, router DNS, mDNS daemon or Internet lookup is needed to
 The URL's DNS name is fixed; the per-home CA fingerprint and protected home/control-plane IDs,
 not the shared alias or LAN address, distinguish homes. Never collapse pins across homes.
 
-**Local trust, Round 6: decision pending.** TASK-16720's actual v1.78.0 `/key` and DERP probes
+**Local trust, Round 7: strict home-only authentication required.** TASK-16720's actual v1.78.0 `/key` and DERP probes
 accepted wrong-IP-SAN and no-SAN home leaves. In
 [`net/tlsdial/tlsdial.go:69,91,142–175`](https://github.com/tailscale/tailscale/blob/v1.78.0/net/tlsdial/tlsdial.go#L142),
 verification uses `ConnectionState.ServerName`; Go suppresses IP literals in SNI, leaving it empty.
@@ -320,81 +321,95 @@ fork, dependency change, root helper for Mac or additional infrastructure is aut
 
 | Option | Mechanism, Linux / unsigned Mac feasibility | LAN attacker, Noise and DERP outcome | Effort and slices 1b / 3b / 3c / 5 |
 | --- | --- | --- | --- |
-| **A — RECOMMEND: fixed `control.happyranch.invalid` DNS identity** | Home CA issues a DNS-SAN leaf. Both dedicated Go processes resolve the fixed name to their protected/invite-validated `dial_ip` using the existing exported DNS forwarder, detailed below. A root-written Linux `/etc/hosts` entry is possible but adds shared host lifecycle/conflicts and leaves unsigned Mac unresolved; **do not select that variant**. Mac needs no root, host edit, signing entitlement or CA trust installation. Invite v2 separates name from dial IP. | LE certificates for other names fail hostname checking in **both** root pools; wrong/no DNS SAN, forged CA and expired leaves refuse before `/key` or DERP admission. LAN spoofing/ARP/DNS can block, relay to the genuine host or observe timing; it cannot learn the authenticated Noise session/join key. Wrong Noise key still refuses registration. Public-CA misissuance for the reserved name, home CA/host compromise and local app/session compromise remain trust limits. | **5–8 days:** 1b resolver + scoped-root admission/transport proof (1–2); 3b DNS leaf/server_url/private map + refresh (1–2); 3c v2 schema/round-trip (0.5–1); 5 dedicated resolver, v2/recovery and native qualification (2–3). No new module/dependency or fork. |
-| **B — strict local TLS forwarder** | Same sidecar / home-bridge process serves a local `localhost` DNS-SAN leaf on loopback only. A second stdlib TLS connection to the literal LAN IP uses **explicit home-only `RootCAs`, normal IP-SAN/validity verification and the admitted CA fingerprint**. No insecure mode. Linux root provisions its local leaf/key; Mac generates its process-local issuer/leaf/key in private memory, without root/signing. tsnet's scoped pool must now include the local issuer (plus home CA if needed); keep remote forwarder roots separately home-only. | Every remote connection, including bootstrap, Noise underlay and DERP, must pass strict TLS before any bytes are forwarded. LE for any name, wrong/no IP SAN, forged/expired chains and pin mismatch refuse. Wrong Noise key refuses independently. LAN attacker retains denial/metadata risks, no bootstrap substitution. A local listener/custody bug adds attack surface. | **8–12 days:** 1b forwarder + leaf/pool lifecycle and upgrade-safe duplex relay; 3b local cert + **DERP map rewrite**; 3c invite can keep external IP URL but local-vs-external bindings need versioning; 5 repeats forwarder/cleanup/port qualification. Existing stdlib/pinned packages suffice, no new dependency/fork. See map/port limitation below; feasibility is not established by this spike. |
-| **C — upstream upgrade, founder-reserved** | Read-only source survey below finds **no IP-SAN fix** in sampled later releases. v1.104.7 can omit baked roots at build time, but this alone still needs explicit name enforcement, e.g. constrained home fallback roots on **both** OSes. Mac can use a dedicated process without root; Linux must change root loading too. | An upgrade alone fails the required refusal set. An approved upgrade + omitted LE roots + explicit IP constraint could refuse LE/wrong-SAN/no-SAN/forged/expired chains and wrong Noise key, for both control and DERP. Must prove this, never assume from the version. LAN denial/metadata and home CA/local compromise remain. | **1–2 days investigation; 5–10+ days qualification if approved:** 1b/5 new module/toolchain/build flags, constrained roots and transport matrix; 3b IP-leaf provisioning largely retained; 3c IP-URL envelope could be retained if unchanged semantics are proven. Dependency/toolchain/transitive inventory changes require founder approval; no manifests are changed here. |
-| **D — accept residual: REJECT** | Keep IP URL + scoped Linux OS roots / Mac constrained home fallback pool. No root/signing change; zero implementation days, but neither platform meets the contract. | **FAIL:** LE for an unrelated name passes independent fallback. Linux also accepts wrong/no-SAN home leaves; Mac's constraint only fixes that home-root branch. Forged/expired chains may refuse and wrong Noise key refuses **only relative to the key already accepted from `/key`**; attacker supplies both key and endpoint. DERP has the same fallback hole. No acceptable Noise-key binding remains against that attacker. | 1b/5 remain blocked; 3b/3c cannot release secure home enrollment. Accepting this would weaken the security contract; do not implement. Unchanged hardening/dependencies do not compensate. |
+| **A — conditional alternative, explicit founder rescope required** | Fixed `control.happyranch.invalid` DNS-SAN home leaf and process-local resolver to admitted `dial_ip`, with Linux scoped roots / Mac forced fallback roots. No root/signing/host trust-store installation on Mac. | Refuses unrelated names, but **accepts a valid matching-name public/LE chain independently of the home CA on both OSes**. Reserved-name issuance restrictions do not establish home-only authentication. This fails the unchanged requirement for `/key` and DERP; never select it without an explicit founder reduction of that requirement. | **5–8 days** across 1b/3b/3c/5, plus explicit security rescope and renewed review; lower relay/lifecycle cost purchases a weaker trust property. No rescope is supplied here. |
+| **B — RECOMMEND: strict in-process TLS CONNECT forwarder** | Each dedicated Go process binds `127.0.0.1:0` before tsnet. Existing HTTP proxy paths route control and DERP to it; stdlib TLS dials only admitted `dial_ip:8443`, with explicit **home-only** `RootCAs`, fixed DNS-name/validity verification. It re-presents a leaf from a per-process ephemeral CA held only in memory and in tsnet's isolated fallback pool. Same APIs on Linux and unsigned Mac; no root/signing/trust-store install on Mac. | **Remote public chains for any name, including the matching reserved name, refuse before `/key`, registration or DERP.** Wrong/no/IP-only SAN, forged and expired chains refuse. Noise still authenticates the bootstrapped key. The unchanged baked pool sees only the local re-presented leaf; it cannot authorize the remote connection. LAN interception gives denial/metadata risk. Local forwarder/process compromise remains within the existing host trust boundary. | **8–12 days:** 1b strict verifier + CONNECT/duplex/lifecycle/startup proof (2–3); 3b protected home CA/DNS leaf/private map + refresh (1–2); 3c v2 bindings (0.5–1); 5 dedicated-process proxy/root lifecycle, recovery and native qualification (3–5). Linux transport feasibility executed below; native Darwin/full tsnet/packaged acceptance NOT RUN. No dependency, upgrade, fork or new service/infrastructure. |
+| **C — upstream upgrade, founder-reserved** | Read-only survey below finds no IP-SAN fix in sampled later releases. v1.104.7 supplies `ts_omit_bakedroots`; an approved upgrade/build change must also enforce identity and home-only roots on both OSes. | An upgrade alone fails. Omitted baked roots plus a proven home-only/name verifier could meet the refusal set without B's relay; must qualify `/key` and DERP, never infer security from the version. | **1–2 days investigation; 5–10+ days qualification** across 1b/3b/3c/5; new module/toolchain/transitive/build inventory and compatibility cost. Founder approval required; no manifest or build flag changes here. |
+| **D — IP URL with scoped roots: REJECT** | Keep the old direct IP URL and Linux scoped OS / Mac constrained fallback pool. | LE for an unrelated name can authenticate bootstrap and DERP; Linux also accepts wrong/no-SAN home leaves. Attacker supplies both `/key` and its Noise endpoint; later Noise authentication does not repair it. | No acceptable delivery; 1b/5 remain held. Unchanged hardening cannot compensate. |
+| **E — fork or vendored verifier patch, founder-reserved** | Patch pinned tlsdial to remove baked fallback and bind the expected name for both clients, with upstream/security maintenance owned explicitly. | Could meet the property only after real bootstrap/DERP and both-platform qualification; source changes alone are not acceptance. | **2–4 days repair plus 4–8 days qualification**, recurring patch/rebase/security ownership. Explicit founder exception required; not selected. |
 
-**A: concrete transport and custody proposal.** Use the fixed name under
-[RFC 2606's reserved `.invalid` TLD](https://www.rfc-editor.org/rfc/rfc2606.html#section-2), which is
-not eligible for ordinary public LE issuance. Never use a purchasable domain or `.local`.
-The fixed Linux root helper generates the per-install private CA and DNS leaf in protected
-Headscale custody. The leaf needs exactly the intended DNS identity, server-auth EKU and a valid lifetime;
-IP SAN is no longer the identity contract. CA DER/fingerprint checks, same-CA renewal and
-explicit reapproval on CA change remain mandatory. Parse exact DER and compare its SHA-256
-fingerprint before network/root use; save it with home/control-plane identity. The pinned library
-still ignores caller `tls.Config.RootCAs` on these paths and retains its baked LE pool. A restores
-name binding for that pool; it is not universal CA-only verification or protection against public-CA
-misissuance for the reserved name. Such misissuance exceeds the ordinary LAN-certificate attacker
-model and must be explicit in the founder/security decision, never described as a proven refusal.
+**B: concrete transport and custody proposal.** Keep the v2 canonical remote URL
+`https://control.happyranch.invalid:8443` and `dial_ip` contract above. The root helper generates the
+per-home private CA and fixed DNS-SAN server leaf in protected Headscale custody. Check exact CA DER,
+CA constraints/validity and SHA-256 fingerprint before any network/root use; save the same
+home/control-plane binding. The reserved name is an identity label, **never a reason to accept a
+public chain**. Remote identity is established solely by the explicit home pool in the forwarder.
 
-- **Resolution on both OSes:** before constructing tsnet/control clients, install one immutable,
-  per-home `net.Resolver{PreferGo:true}` with `Dial` backed by an in-memory DNS responder
-  (`net.Pipe`, existing `golang.org/x/net/dns/dnsmessage`). Answer only the fixed name with the
-  admitted IPv4, no external forwarding/listening socket; return empty AAAA and negative other
-  names. Assign it to `dnscache.Get().Forward` (and the process default for standard lookups).
-  v1.78.0 [`controlclient/direct.go:249–253`](https://github.com/tailscale/tailscale/blob/v1.78.0/control/controlclient/direct.go#L249)
-  and [`controlhttp/client.go:427–438`](https://github.com/tailscale/tailscale/blob/v1.78.0/control/controlhttp/client.go#L427)
-  copy that forwarder. Merely changing `net.DefaultResolver` misses those copies. No concurrent
-  retargeting: new home/address means close/restart the dedicated process; keep the protected
-  profile's public URL/name stable and its mapping versioned. This changes no system resolver.
-  Upstream also has DNS fallback code; the successful fixed-name path needs none. This spike does
-  **not** prove zero fallback network I/O on all resolver failures. §8 requires that qualification;
-  no public control/relay fallback is permitted and any alternate resolution still faces the same
-  nonempty DNS identity and home trust checks. Failure never authorizes an IP-URL retry.
-- **Linux 1b:** fixed `Environment=SSL_CERT_FILE=/etc/happyranch/control-ca.pem` contains exactly
-  the root-written home CA; fixed `Environment=SSL_CERT_DIR=/etc/happyranch/empty-ca-directory`
-  points to a protected empty directory. Validate no-follow file/parents, ownership/write modes,
-  bounded exact-one-CA parsing, validity and DER SHA-256 fingerprint before any tsnet/root use.
-  Refuse missing/unsafe/extra trust and ambient overrides. No host trust-store write, connector/
-  verifier/agent environment change or new root helper operation. The unit delta may contain only
-  these two Environment lines; every existing hardening/MDWE byte remains identical.
-- **Mac 5b:** dedicated Go home-bridge process, `GODEBUG=x509usefallbackroots=1`, exactly one
-  `x509.SetFallbackRoots` call before tsnet/root use, with only the invite-validated home CA.
-  A home-root constraint must check the **fixed DNS name**, replacing the IP constraint proposed
-  in #1575; ordinary tlsdial DNS verification must also reject the independent LE branch.
-  No platform roots or system/Keychain CA installation. Resolve from saved `dial_ip`, never from
-  tailnet DNS before joining. No root/signing entitlement; Keychain bearer custody remains §6/7.
-  One home per process avoids mixed roots/mappings; test restart/rebuild and sequential homes.
-- **Headscale / DERP 3b:** configure `server_url=https://control.happyranch.invalid:8443`, bind
-  the actual listener to `dial_ip:8443`, and generate a protected private-only map with
+- **Pinned public API assessment:** v1.78.0 [`tsnet.Server`](https://github.com/tailscale/tailscale/blob/v1.78.0/tsnet/tsnet.go#L66)
+  has no exported control/DERP TLS-config or system-dialer injection field; its `dialer` is private.
+  `controlclient.Options.HTTPTestClient` is explicitly test-only and not exposed through tsnet;
+  DERP's `SetURLDialer` explicitly excludes region clients. Do not use either, reflection/linkname,
+  a hidden test hook or module-cache edits. Instead use the existing production proxy paths:
+  [`controlclient/direct.go:268–273`](https://github.com/tailscale/tailscale/blob/v1.78.0/control/controlclient/direct.go#L268),
+  [`controlhttp/client.go:509–522`](https://github.com/tailscale/tailscale/blob/v1.78.0/control/controlhttp/client.go#L509),
+  and [`derphttp_client.go:718–730,811–872`](https://github.com/tailscale/tailscale/blob/v1.78.0/derp/derphttp/derphttp_client.go#L718).
+- **Same-process routing on both OSes:** bind an ephemeral loopback-only listener before tsnet,
+  generate a fresh ephemeral CA and fixed-name server leaf/key in memory, then set process-owned
+  `HTTP_PROXY` and `HTTPS_PROXY` to that listener, before upstream proxy-cache initialization.
+  Clear/refuse inherited upper/lowercase proxy,
+  `ALL_PROXY`, `NO_PROXY`, debug/keylog and trust overrides before initialization; no caller proxy,
+  ambient bypass or direct retry is allowed. These derived loopback URLs contain no credentials.
+  Keep canonical URL and persistent node/consumed-marker identities remote, never the ephemeral
+  port/issuer. Retain the in-memory fixed-name resolver (`dnscache.Get().Forward` and process
+  resolver installed before clients) mapping only the admitted home name to `dial_ip`; it changes
+  no host DNS. It grants no trust or alternate endpoint. Proxy address lookup uses literal loopback;
+  remote verifier dials literal `dial_ip`, with explicit fixed `ServerName`.
+- **Closed CONNECT adapter:** accept only CONNECT authorities for the exact fixed name on 8443
+  (control) or 443 (pinned DERP proxy behavior). v1.78.0's DERP proxy path uses `HostName:443` even
+  when the map has `DERPPort=8443`; map both allowlisted authorities to the **same admitted
+  `dial_ip:8443`**, never to a client-supplied host/port. Reject absolute HTTP requests (including
+  Noise's HTTP/80 attempt), other methods/targets and malformed/oversize headers. Upstream's
+  existing HTTPS fallback then uses CONNECT; no HTTP/80 egress is opened. Open upstream with
+  standard `crypto/tls` using a separate `x509.NewCertPool` containing exactly the admitted home CA,
+  normal DNS-SAN/time/server-auth verification, no `InsecureSkipVerify`, custom acceptance callback,
+  platform/public/baked roots or redirect. Complete that handshake **before CONNECT 200 and before
+  forwarding any HTTP/Noise/DERP bytes**. Then terminate local TLS with the ephemeral leaf and relay
+  bytes over the verified TLS stream, preserving HTTP upgrade, Noise and DERP duplex streams.
+  No HTTP body parsing/logging or encrypted-map rewriting. Proxy/handshake failure closes; no
+  transparent/direct fallback or public relay. Setup obeys existing attempt/request deadlines;
+  owned stream cancellation/closure and resource bounds need implementation qualification.
+- **Isolated local roots on both OSes:** set the process-owned `GODEBUG=x509usefallbackroots=1`
+  **before** the single `x509.SetFallbackRoots` call, before any tsnet/root use, passing only the
+  ephemeral CA. Go 1.23.12 checks that setting during the call; setting it afterwards leaves a
+  nonempty system pool in place. Never add the home or public roots to this local pool. The
+  remote verifier always passes its separate explicit home pool. tlsdial's independent LE pool
+  remains unchanged; it cannot see the remote leaf because the forwarder verifies that connection
+  first and re-presents only its own local leaf. This composes strict remote authentication without
+  changing upstream verification or introducing a TLS bypass. One home per dedicated process;
+  new process/port/issuer on restart, while durable node/home/grant IDs remain unchanged.
+- **Linux 1b:** validate `/etc/happyranch/control-ca.pem` and protected empty CA directory no-follow,
+  root ownership/write modes, bounded exact-one-CA DER/fingerprint, and refuse unsafe/missing/extra
+  trust before creating clients. Retain the proposed fixed `SSL_CERT_FILE`/`SSL_CERT_DIR` unit
+  additions; they locate/protect the home profile, **not the authentication boundary**. Forced
+  ephemeral fallback roots isolate tsnet; explicit home roots authenticate upstream. Ephemeral
+  keys never go to disk. Proxy/GODEBUG values are set internally before library use, not supplied
+  by the desktop or inherited unit environment. Every other unit hardening/MDWE byte stays exact.
+- **Unsigned Mac 5b:** dedicated Go home-bridge validates invite/saved CA/dial-IP bindings, creates
+  its own in-memory local issuer/leaf and the same CONNECT/verifier/root setup. No Keychain/system
+  CA installation, root helper, signing identity or entitlement is needed for this transport.
+  Bearer custody still follows the separate login-Keychain requirements below. Native unsigned
+  bootstrap/DERP, save/reopen/rebuild and sequential homes remain **NOT RUN**, not inferred from Linux.
+- **Headscale / DERP 3b:** keep `server_url=https://control.happyranch.invalid:8443`, HTTPS/control
+  and embedded DERP on actual `dial_ip:8443`, and a protected private-only map with
   `HostName=control.happyranch.invalid`, explicit `IPv4=dial_ip`, IPv6 disabled, `DERPPort=8443`,
-  `STUNPort=3478`, no `CertName` override or `InsecureForTests`. v1.78.0 derphttp uses HostName
-  for SNI even when dialing explicit IPv4. Headscale v0.25.1 supports
-  [`automatically_add_embedded_derp_region=false` plus a local `derp.paths` map](https://github.com/juanfont/headscale/blob/v0.25.1/config-example.yaml#L102);
-  use that configuration if its automatic map does not produce the exact tuple. The relay is
-  still the embedded local server, not a new relay. No public map URLs/automatic updates/fallback.
+  `STUNPort=3478`, no `CertName`/`InsecureForTests`. Use v0.25.1's
+  [`automatically_add_embedded_derp_region=false` and `derp.paths`](https://github.com/juanfont/headscale/blob/v0.25.1/config-example.yaml#L102)
+  if needed for the exact tuple. **No loopback map entries or per-client map rewrite:** the existing
+  proxy path reaches the process-local listener on its own random port. STUN stays at the LAN IP;
+  no new relay/service. Empty public maps/updates/fallback remain mandatory.
+- **Lifecycle:** hold the bound listener for the process lifetime, never attach to an existing
+  port. A second process gets another ephemeral port without changing the shared map. On shutdown,
+  cancellation, home/address change or listener/verifier failure, close owned streams and tsnet
+  admission, discard keys/caches and restart only under the existing supervisor/recovery contract.
+  Never replace a failed verifier with direct A. No LAN listener, new account/service, privileged
+  Mac operation or hardening relaxation. Local process/root compromise remains a disclosed limit.
 
-The initial verified HTTPS **`/key` bootstrap fetch** authenticates the Noise public key. The Noise
-handshake then authenticates that exact key and encrypts/integrity-protects enrollment/control
-messages. Wrong-key handshake must not reach `/machine/register` or expose the join key.
-`control/controlhttp/client.go` deliberately makes outer Noise TLS failures nonfatal and may use
-HTTP/80 as encrypted Noise underlay; no join key/bearer may be plaintext there. Do not label that
-outer certificate fatal or add a HappyRanch verification bypass. WireGuard protects peer payload;
-DERP TLS separately protects relay transport/metadata. Runtime access still requires device pin,
-bearer, Linux approval and release-verifier/route gates, never Headscale membership alone.
-
-**B map/leaf limitation:** tsnet would use `https://localhost:18443`, with local leaf served by the
-same process. Its DERP map must also point to `HostName=localhost`, loopback IPv4 and port 18443;
-forward that relay connection to the same strict home endpoint. Keep STUN as a separate LAN-address
-`STUNOnly` node, not loopback. Headscale can publish a protected static map instead of its automatic
-entry; do not attempt to edit encrypted Noise map bytes in the forwarder. The fixed local port must
-be reserved before enrollment; collision refuses, never reuses an unknown listener. Multiple active
-home processes would conflict: serializing them changes product behavior, while per-client dynamic
-map rewriting needs a proven supported hook. Neither is decided here. Keys stay private to the
-Linux service / Mac helper; remove owned local material on shutdown/disable. No LAN-bound forwarder,
-new service/user or system trust-store write, no hardening exception. These extra lifecycle/map
-constraints are why B is not recommended.
+The verified HTTPS **`/key` fetch** authenticates the Noise public key; the Noise handshake then
+must authenticate that exact key before registration/join-key receipt. Pinned controlhttp demotes
+outer Noise TLS errors and can try HTTP/80; B's separate upstream verifier rejects a bad remote
+certificate even on that later connection, and its proxy rejects HTTP/80. Do not claim that
+upstream changed its error policy. WireGuard protects peer payload; **DERP TLS passes the same
+strict upstream home verifier independently of Noise**. Pins, bearers, Linux approval and release
+route/verifier gates still authorize runtime access; Headscale membership alone never does.
 
 **C upstream receipts (read-only, TASK-16730):** Go proxy returned releases through v1.104.7 at
 observation. Sampled exact tags v1.80.3 (`tlsdial.go:144,158`), v1.84.3 (`147,161`),
@@ -407,23 +422,35 @@ sets `HasBakedRoots=false` under build tag `ts_omit_bakedroots`; tlsdial checks 
 pool. This is a build-wide switch, not a per-home tsnet trust API or an IP-SAN fix. No upgrade,
 build-flag adoption, fork or dependency/toolchain change is selected/authorized by this document.
 
-**Spike evidence, not implementation acceptance:** TASK-16730 task-tmp copied/adapted TASK-16720's
-existing supported Go harness, pinned v1.78.0, without editing its worktree or module cache. Real
-controlclient `/key` + Noise registration and real DERP region-client Connect passed valid DNS home
-leaf and refused unrelated-domain **LE-style test-root-injected** chain, wrong/missing DNS SAN,
-forged CA, expired CA/leaf; wrong Noise key reached `/key` but not registration. The injected
-public-equivalent root was trusted alongside the home CA and its leaf independently verified for
-its own name/empty name, so failure was attributable to DNS binding. This does not claim a real LE
-private key/certificate or mutation of baked roots. Changing bootstrap/DERP names back to IP literals
-produced six intended failures; byte-exact restoration passed all 16 scenario cases again.
-Command: `GOTOOLCHAIN=go1.23.12 CGO_ENABLED=0 GOFLAGS=-mod=readonly GOWORK=off go test -count=1 -v .`
-(exit 0; intended IP regression exit 1). Receipts: dev_agent `output/TASK-16730/spike-{red,green}.txt`.
-Linux loopback fixtures do not prove full tsnet startup, protected-path admission, native Darwin,
-Headscale's generated map, fallback-I/O exclusion, MDWE runtime or packaged app acceptance; §8
-retains each gate. The spike supports A's transport premise, not permission to ship it.
+**Round-7 spike evidence, not implementation acceptance:** TASK-16744 task-tmp adapts the
+preserved TASK-16730/16720 Go harness without modifying either or the module cache. Pinned real
+v1.78.0 controlclient `/key` + Noise `/machine/register` and real DERP region Connect pass valid
+home DNS leaf and refuse **matching-name public-equivalent**, unrelated-name public-equivalent,
+wrong/no/IP-only SAN, forged CA, expired CA/leaf and unavailable proxy (22 named scenarios across
+two parent tests). Correct-key registration receives the synthetic join canary; all invalid
+bootstrap cases have zero `/key`, registration and canary receipts. Wrong advertised Noise key
+allows `/key` but no registration/canary. A forged outer certificate after valid `/key` also refuses
+at B's strict verifier. Each child runs its own CONNECT bridge, ephemeral local issuer and forced
+fallback-root setup; the fake upstream has independent request/canary counters.
+
+The public-equivalent fixture deliberately adds a second synthetic root to tsnet's process trust
+pool, modeling its independent permissive public/baked branch; the matching leaf verifies for the
+**exact expected reserved name** and empty name. The unrelated leaf verifies for its own/empty
+name. Neither root is in B's upstream home-only pool. No real LE private key/certificate is used,
+and actual baked roots are unchanged/source-inspected. Temporarily contaminating B's upstream
+pool with that public-equivalent root causes **both matching-name cases to fail their refusal
+assertions**: `/key=1`, registration=1, synthetic-canary receipt=1, DERP accepted. Restoring the
+spike file byte-exactly (`a428f4adb94526f3bfeac1672808b0ed6ed1c6336c4b17018e61d3de2fbe9f63`)
+passes the full matrix. Command:
+`GOTOOLCHAIN=go1.23.12 CGO_ENABLED=0 GOFLAGS=-mod=readonly GOWORK=off go test -count=1 -v .`
+(exit 0; focused intended pool-contamination regression exit 1). Receipts: dev_agent
+`output/TASK-16744/spike-{red,green}.txt`. Linux proves the two real transport paths and verifier
+composition, **not native Darwin**, complete tsnet startup/proxy-failure lifecycle, protected-path
+admission, generated Headscale maps, fallback-network-I/O exclusion, MDWE or packaged acceptance.
+Those remain §8 gates. Round 6's unrelated-name probe alone did not prove root exclusion.
 
 On address change, Linux shows **Home address changed — Refresh home address**; fresh auth runs
-RefreshHomeAddress, re-derives `dial_ip`, updates the protected resolver/DERP mapping and renews
+RefreshHomeAddress, re-derives `dial_ip`, updates the protected upstream dial-IP/resolver/DERP mapping and renews
 the fixed DNS-SAN leaf under the same CA when needed. Old invites are
 invalidated. Linux creates a new invite; accepting it explicitly updates saved `dial_ip` only
 for the same home/CA. With a valid saved grant this is metadata recovery only: do not redeem the
@@ -431,7 +458,7 @@ new pair secret or issue a credential; leave its unused key to local expiry/clea
 Linux approval apply if the grant/node is no longer valid. Ordinary app
 restart never needs an invite when saved trust/credential remain usable. For v2 DNS profiles,
 slices 1b/5 must transactionally update the versioned dial-IP metadata on both endpoints while retaining canonical control URL, protected home/control-plane IDs, consumed
-marker and same-node identity; restart the dedicated process to flush old DNS caches. Never
+marker and same-node identity; restart the dedicated process to flush old connections/DNS caches and regenerate its local issuer/proxy. Never
 rewrite a v1 marker into v2 or repin from the shared DNS alias. If identity cannot be retained,
 require new enrollment/approval. Leaf renewal uses the same authenticated refresh action and CA, needs no invite for unchanged address, and adds
 no timer; expired/mismatched certificates fail closed. CA change/loss means **Home identity changed
@@ -486,7 +513,8 @@ Never accept app-owned files, argv/env, general stdin/FDs, caller config, shell 
 arguments. Reject duplicate/extra fields, controls/whitespace, oversized URL (>2048 bytes), non-HTTPS,
 userinfo/query/fragment/non-root path. Accept a DNS host on HTTPS 443, plus the explicit reviewed
 non-443 case **`https://47-242-34-153.sslip.io:8443`** (Product seq511). No arbitrary-port allowance,
-IP-literal URL or `http:` URL follows; the derived home-mode LAN-IP exception is unchanged.
+IP-literal URL or `http:` URL follows. Home mode also rejects IP URLs: its fixed DNS URL and
+validated `control_tls.dial_ip` use B's separate home-only transport contract above.
 The reviewed DNS name must resolve only to public unicast addresses; pin validated resolution
 through the dial and verify TLS against the DNS SAN, including on 8443. Deny redirects/proxies and
 loopback/link-local/private/metadata targets to prevent root SSRF/rebinding. For v0.25.1 require the
@@ -570,9 +598,10 @@ security review and native tests; never claim Keychain defeats same-session comp
 
 ## 7. Mac, installation recovery and upgrades
 
-**Round-6 trust qualification:** slice 5b/#1575's fallback-root/IP-constraint proposal is not
+**Round-7 trust qualification:** slice 5b/#1575's fallback-root/IP-constraint proposal is not
 accepted as protection against LE fallback. After approval, replace its home transport design
-with §6 A's fixed DNS URL, v2 `dial_ip` and isolated resolver/root lifecycle; retain unsigned
+with §6 B's strict CONNECT/upstream home-only verifier, fixed DNS URL, v2 `dial_ip` and isolated
+ephemeral issuer/proxy/root lifecycle; retain unsigned
 Keychain requirements, single invite, Linux approval and every recovery state below. Do not edit
 or merge #1575 on the strength of the Linux spike. Native unsigned Mac bootstrap/DERP negatives,
 restart/rebuild/address refresh and home isolation remain acceptance gates.
@@ -642,10 +671,10 @@ over arbitrary user managers. No packaging edit in this design PR.
 ## 8. Sliced delivery and evidence (implementation requires approved briefs)
 
 Dependency order is 0 → 1a → 2 → 3a → 3b → 3c → 4 → 5 → 6, with **1b after renewed design/security
-approval of Round-6 A and before local-CA installation or home-mode acceptance**. Slice 1a's
+approval of Round-7 B and before local-CA installation or home-mode acceptance**. Slice 1a's
 identity frame and explicit Linux profile need not wait for 1b; 1a merged in #1572 without CA
 changes. R1 is resolved and R2 approved (seq508); R3 founder-gates the advanced input path, which stays disabled.
-Round-6 trust/invite changes also await their own decision. Home mode need not wait for R3;
+Round-7 trust/invite changes also await their own decision. Home mode need not wait for R3;
 trust/Keychain feasibility and independent review remain separate gates, not another R2 decision.
 No new required CI check or automatic M1/M2 trigger; use existing authorized manual hosted acceptance. Every implementation
 slice needs independent review, scoped QA, normal hooks and the two required lint/static checks at
@@ -655,29 +684,30 @@ its exact head.
 | --- | --- | --- |
 | 0 prerequisite | PT_GNU_STACK/MDWE PR #1568 merged at `1a8efca4`; upgrade-reload PR #1569 merged at `e1ff752d`. | Owner's packaged runtime evidence; actual installation/upgrade acceptance remains separate. Never remove MDWE to pass. |
 | 1a protected ingress (merged #1572) | `app/linux/tsnet-sidecar/{sidecar,engine_tsnet,health}.go`, `runtime/remote_access/managed_provider.py`, `systemd_unit.py` and connector Unix listener/parser; WhoIs identity frame and explicit new Linux profile only, **no CA changes**. | Supported Go tests and real temporary Unix sockets: forged HTTP identity, wrong UID, malformed frame, absent WhoIs; empty-peer READY and loss/watchdog; exact hardening parity. Native Mac hosting profile unchanged. |
-| 1b Linux fixed-name scoped trust (after Round-6 decision) | Sidecar startup/config + immutable in-process DNS forwarder before tsnet; fixed `SSL_CERT_FILE` + empty `SSL_CERT_DIR`; no dependency/fork or weakened units. | Execute the transport/admission matrix below against real pinned code; full tsnet startup/resolver lifecycle in addition to direct probes. Exact rendered-unit comparison allows only the two Environment lines; MDWE/all other directives identical. |
+| 1b Linux strict home-only transport (after Round-7 decision) | Sidecar startup/config + same-process CONNECT forwarder, explicit upstream home roots, ephemeral issuer/forced local fallback pool and immutable resolver before tsnet; fixed `SSL_CERT_FILE` + empty `SSL_CERT_DIR`; no dependency/fork or weakened units. | Execute the transport/admission matrix below against real pinned code; full tsnet proxy/root/resolver lifecycle and fail-closed teardown in addition to direct probes. Exact rendered-unit comparison allows only the two Environment lines; MDWE/all other directives identical. |
 | 2 trust ceremony | `pairing.py`, `authorization.py`, `state_store.py`, request/stream admission; no desktop or installer edits. | Retained standalone connector venue with synthetic state: two concurrent redeemers/approvals → exactly one grant; wrong node with valid bearer denied; A revoked closes A streams while B works; restart/torn/rollback/legacy cases refuse. |
 | 3a fixed helper | New helper module, system-bus/polkit definitions; status and guarded approval/revoke, no installation yet. | Standalone IPC plus disposable polkit: extra args refused, agent can prompt but not silently approve, actual target immutable across auth, fresh auth twice, wrong-UID and disconnect refusal; reserved R3 prompt input freeze/URL display, no files/FDs, SSRF/rebinding negatives. |
 | 3b generation/install | `installer.py` `_input()`/`_read_file()` source-UID/same-FD validation, generated config/transaction owner, package/helper wiring; after 3a/1b and merged packaging prerequisites. Coordinate renderer with 1a/1b; bundle pinned Headscale/notices, protected local CA/DB/admin socket, DNS-SAN leaf/server_url, fixed-name private DERP map and exact LAN bindings; R3 adds fixed advanced intake. | Temp-root/fake-manager clean/known FAILED/partial/foreign fixtures, foreign-owned 0600 token and parent/leaf swap or metadata-change refusal on enable/repair/replacement; safe `.deb` payload access, stop failure, interrupted replacement/disable, token rotation and exact unit/hardening parity. Assert generated DNS URL + explicit LAN DERP/STUN tuple, same-CA dial-IP refresh/old-cache teardown, CA/address recovery, port conflicts, full Headscale cleanup; R3 key-entry redaction and pending operator cleanup. |
 | 3c invite issuance | Local root-only Headscale mint + connector private invite IPC, v2 DNS URL + CA/fingerprint/dial_ip; after 2/3b, within approved R2. R3 adds operator-supplied per-device key, never API/admin minting or server deployment. | Synthetic local mint/idempotency/uncertainty/cleanup; fresh auth, v2 exact schema/CA size and round-trip, v1/IP-URL/unknown-field refusal, home_endpoint unchanged, effective countdown, no user mint capability, redaction/replay/expiry; R3 consumed key replacement, unverified TTL disclosure and no remote admin authority. |
 | 4 Linux UI/upgrade | `packaging/linux/desktop/happyranch_window.py`, package wiring after merged #1568/#1569; verify their installed behavior. | Existing standalone desktop checks; native GTK states/actions from §7, including prompt cancellation, countdown and partial cleanup. Separate fresh polkit prompts at enable, invite, actual-device comparison/approval, turn off and revoke; route-policy renewal paused + Retry. Home card/address refresh; R3 URL/key intake and per-device replacement; no admin-key prompt. No host service actions for maker. |
-| 5 Mac single invite | `app/mac/Sources/HappyRanchApp/{RemoteConnectionView,AppDelegate}.swift`, supervisor managed model/ClientBridge, `app/mac/tsnet-bridge` as needed; #1563. Dedicated-process fixed-name resolver + fallback-root trust, v2 parser/profile and unsigned login-Keychain ACL from §6, within approved R2; renewed security review/native feasibility required. R3 metadata only after approval. | Supported Swift/Go checks and actual unsigned build: join→pending→Connected; §7 cancellation/expiry/offline states; save/quit/reopen without invite, locked/denied Keychain, rebuilt code identity, signed migration and deletion failure. Linux revocation/turn off, lost delivery/new invite and partial-node cleanup/reuse; all §8 transport/admission negatives on native unsigned Mac, Noise-key mismatch, isolated homes, renewal/address recovery and secret-free diagnostics. #1564 stays queued. |
+| 5 Mac single invite | `app/mac/Sources/HappyRanchApp/{RemoteConnectionView,AppDelegate}.swift`, supervisor managed model/ClientBridge, `app/mac/tsnet-bridge` as needed; #1563. Dedicated-process strict CONNECT verifier + ephemeral local fallback roots/proxy/resolver, v2 parser/profile and unsigned login-Keychain ACL from §6, within approved R2; renewed security review/native feasibility required. R3 metadata only after approval. | Supported Swift/Go checks and actual unsigned build: join→pending→Connected; §7 cancellation/expiry/offline states; save/quit/reopen without invite, locked/denied Keychain, rebuilt code identity, signed migration and deletion failure. Linux revocation/turn off, lost delivery/new invite and partial-node cleanup/reuse; all §8 transport/admission negatives on native unsigned Mac, Noise-key mismatch, isolated homes, renewal/address recovery and secret-free diagnostics. #1564 stays queued. |
 | 6 hosted acceptance/docs | `scripts/ci/m1_install_ready_uninstall.sh`, `m2_tailnet_daemon.sh`, related fixtures/docs; builds on 1–5. | M1 uses helper-generated configs and no ExpectedPeer; clean plus known FAILED-manual fixture, exact hardening/READY/loaded units, disable residue, interrupted recovery and route-policy renewal failure closed. Separate home and neihoumacau-hk app acceptance below; M2 keeps real random-port daemon/verifier and squatter negative; adds two dynamically named stable-ID devices, one combined invite each, race/replay/expiry/wrong-node/revoke-survivor and join-success/delivery-loss recovery cases. |
 
-**Round-6 A falsifiable transport/admission matrix.** Required separately on Linux 1b and the
+**Round-7 B falsifiable transport/admission matrix.** Required separately on Linux 1b and the
 native unsigned Mac home-bridge 5b; client logs alone are not refusal evidence. Use synthetic
 certificates/secrets, fresh subprocesses per root profile, loopback fake control/embedded DERP
 with real pinned clients, then full startup/packaged venues. No live founder service.
 
 | Case / precondition | Required observable result |
 | --- | --- |
-| Valid admitted home CA + fixed DNS SAN, `dial_ip` routes to fake server | Real `/key` hit; correct bootstrapped Noise key reaches authenticated registration. Real DERP region Connect succeeds with explicit IP and fixed-name SNI. No host DNS edit or Mac root helper. |
-| LE-chained leaf for any ordinarily issuable public name, home-root branch cannot validate it | `/key` request count **zero**, registration count **zero**, DERP Connect refused. Use injected public-equivalent root for deterministic proof and show the same chain verifies for its own/empty name; separately inspect unchanged actual baked-root code/name options. Never claim synthetic proof used an LE private key. |
+| Valid admitted home CA + fixed DNS SAN, `dial_ip` routes to fake server | Both OSes: real `/key` hit, authenticated registration and synthetic join-key receipt; DERP Connect through B succeeds. Assert strict upstream TLS and ephemeral local leaf are distinct. Linux transport spike PASS; native Mac NOT RUN. No host DNS edit or Mac root helper. |
+| Public/LE-equivalent chain whose leaf **MATCHES `control.happyranch.invalid`** (including matching wildcard), valid in the baked/system-equivalent pool but outside the home CA | **Linux and Mac expected REFUSE:** zero `/key`, registration and join-key receipts; DERP refused by B before forwarding. Deterministic matching-leaf fixture must independently verify for the exact expected name and empty name in its public-equivalent pool. Linux exact-name transport case PASS; native Mac and wildcard execution NOT RUN. Actual baked LE source unchanged; no real LE private key claim. |
+| Public/LE-equivalent chain for an unrelated name | Both OSes: zero `/key`, registration/canary receipts; DERP refused. Show the injected chain verifies for its own/empty name and that upstream rejects its root as well as its SAN. Linux transport spike PASS; native Mac NOT RUN. No acceptance-property narrowing to issuable names. |
 | Home-CA leaf with wrong DNS SAN; no SAN; IP-only SAN for the actual dial address | Each: zero `/key`/registration, DERP refused. Assert nonempty expected DNS name; IP-only leaf must not regain the old IP-URL path. |
 | Forged CA; expired CA; expired leaf; mismatched CA DER fingerprint | Each: zero registration; transport-invalid leaves give zero `/key` and DERP refusal. Fingerprint/CA admission failures occur before client construction or any dial. Matching SAN alone grants no trust. |
-| Missing/unsafe bundle or parent, symlink/link/write-mode/extra-CA/PEM content; nonempty CA directory; ambient file/dir/proxy/keylog/debug override | Closed startup error before tsnet/dial; no secret echo. Linux default-directory contamination grants no trust; Mac platform/public roots never replace home profile. Exercise exact protected paths in an authorized disposable venue, not merely temporary SSL_CERT paths. |
-| Valid `/key`, server Noise key differs from advertised key; outer Noise cert invalid with correct key | Wrong key: `/key` succeeds but authenticated registration/join-key receipt is zero. Correct key with bad outer cert: document upstream nonfatal behavior; do not count it as a bad-bootstrap test. |
-| Fixed-name resolution, startup ordering, outage and multiple profiles | Full tsnet bootstrap/Noise resolve to admitted IP before tailnet DNS exists; in-memory responder never forwards externally. Observe DNS-fallback network I/O on forced resolver failure and prove no public control/DERP failover or IP-URL retry. Mixed homes/roots refuse; restart/address refresh discards old caches and retains canonical IDs/consumed authority. Unexpected fallback dependency or unsupported hook returns to EM. |
+| Missing/unsafe bundle or parent, symlink/link/write-mode/extra-CA/PEM content; nonempty CA directory; ambient file/dir/proxy/keylog/debug override | Closed startup error before tsnet/dial; no secret echo. Linux default-directory contamination grants no trust; Mac platform/public roots never replace either isolated local or explicit upstream profile. Exercise exact protected paths in an authorized disposable venue, not merely temporary SSL_CERT paths. |
+| Valid `/key`, server Noise key differs from advertised key; outer Noise cert invalid with correct key | Wrong key: `/key` succeeds but authenticated registration/join-key receipt is zero. Correct key with bad outer remote cert: B refuses its separate upstream TLS, with zero registration/receipt; document unchanged upstream nonfatal policy. Linux both cases PASS; native Mac NOT RUN. |
+| CONNECT/root/resolver startup, outage and multiple profiles | Both OSes: force proxy/root setup before any client, only local ephemeral issuer in tsnet pool, only home CA in upstream pool; inspect actual upstream dials and reject wrong targets/HTTP/80/redirects/bypass overrides. Listener/CONNECT/verifier failure must close admission/owned streams, with no direct/public fallback. Full tsnet bootstrap/Noise/DERP and DNS-fallback-I/O observation remain NOT RUN; isolated unavailable-proxy transport cases PASS on Linux. Two processes use different loopback ports without map rewrite; refresh flushes old caches/issuer while retaining canonical IDs/consumed authority. Native Mac NOT RUN; unsupported path returns to EM. |
 | Private embedded DERP map/config and renewal | Headscale v0.25.1 generated map has the exact §6 tuple, no other regions/CertName/insecure flags; real relay negatives above fail independently of WireGuard/Noise. Same-CA DNS-leaf renewal works, CA replacement requires approval; stale dial-IP/cache cannot silently retarget. |
 | Unit/rendered installation and native unsigned Mac | Only the two fixed Environment additions versus current-main sidecar unit; every other hardening/MDWE directive identical and packaged readiness verified separately. Mac bootstrap + DERP matrix, save/quit/reopen, rebuilt unsigned identity, address refresh and two sequential homes run on Darwin without root/signing/trust-store installation. Missing venue = NOT RUN. |
 
@@ -700,7 +730,7 @@ evidence.
 | Outside-home, Linux home + Mac on a genuinely different network through neihoumacau-hk, after R3 | Operator records ≤10-minute/non-reusable issuance evidence without secret artifacts, supplies Linux/Mac keys; advanced app enable/Add a device → one invite → Linux approval → release web UI; capture direct/private-DERP route evidence separately. Retain this server until the test settles; no removal authorized. |
 | Both flows: restart either app/daemon; add second Mac; revoke first; turn off/re-enable | Saved grant/membership reconnect without new invite after ordinary restart; daemon offline/restarting shown; A revocation cuts requests and live streams while B works; off invalidates both/invites, preserves release/org data; re-enable needs new invites. |
 | Both: cancel/expiry/replay, key consumed before approval/delivery, Keychain locked or update changes code identity, partial cleanup, policy renewal fails | §7's visible actions/countdown; clear retry/new-key/invite recovery, no restored spent authority; unsigned save/reopen and signed migration qualified separately; cleanup failures visible; expired policy pauses closed with Retry. |
-| Local trust/address recovery; cached approved client away | Full Round-6 refusal matrix above passes; fixed-name same-CA renewal/restart reconnects; changed dial IP needs explicit v2 refreshed invite, CA replacement reapproval; unavailable LAN state shown honestly; away cached success never advertised as supported outside-home acceptance. |
+| Local trust/address recovery; cached approved client away | Full Round-7 refusal matrix above passes; fixed-name same-CA renewal/restart reconnects; changed dial IP needs explicit v2 refreshed invite, CA replacement reapproval; unavailable LAN state shown honestly; away cached success never advertised as supported outside-home acceptance. |
 
 **Timeline / risk, as of 2026-11-16:** target decisions/security + trust/packaging feasibility by
 11-18; slices 1a/1b–3c through 11-23; Linux/Mac slices 4–5 through 11-27; separate home-network acceptance
@@ -708,9 +738,9 @@ by 11-28 and outside-home app/revocation test by **2026-12-01**, leaving 12-02 f
 The neihoumacau-hk term ends **2026-12-03**; outside-home acceptance must finish before that date,
 not merely join or start by then. These are targets, not a delivery commitment. R2 is approved;
 packaging #1568 and upgrade #1569 are merged,
-but installation/acceptance is unproven. R3, Round 6 trust/invite security/Product decision, slice 1b trust
+but installation/acceptance is unproven. R3, Round 7 strict trust/invite security/Product decision, slice 1b trust
 qualification and unsigned-Keychain/native acceptance remain unresolved. Slice 1a is merged;
-the TASK-16720 IP-SAN/LE failure and Round-6 work put the 11-23 integration target at risk.
+the TASK-16720 IP-SAN/LE failure and Round-7 forwarder/lifecycle work put the 11-23 integration target at risk.
 **The slice plan cannot currently guarantee that deadline.** EM must confirm feasibility by 11-25
 and flag a miss immediately if the 11-18 gate or integration milestones slip. Do not call same-LAN
 success outside-home readiness or silently extend the server term, skip gates or deploy to recover.
@@ -752,14 +782,17 @@ Linux settings/window edits with its owner before slices 4/5; do not merge both 
 - **Prerequisites MERGED:** packaging PR #1568 at `1a8efca4d5d7903701276d97ee6f66d1d5b85bdf` and
   upgrade-reload PR #1569 at `e1ff752dc59a0f953f6c5784f6727738335d2fcf`. Installing them and
   fresh/failed-install app acceptance remain separate, unperformed operations here.
-- **Round-6 trust recommendation — pending, not approval:** §6 A (fixed `.invalid` DNS identity,
-  process-local resolution on Linux and unsigned Mac, DNS-SAN leaf/private DERP map, v2 invite)
-  supersedes the failed Round-5 IP-URL proposal. Founder decision requested: approve this changed
-  trust/invite contract, reserved-name misissuance limit and v1 re-pair policy, or return a different
-  authorized direction. Renew
-  security/Product review and approve the affected §8 cases before implementation. R2 stays approved,
-  R3 disabled; hold 1b/5b trust acceptance including #1575. No change to #1575/#1573 in this PR.
-  No fork/dependency upgrade, host entry, new infrastructure or hardening exception is selected.
+- **Round-7 trust recommendation — pending, not approval:** §6 B qualifies an in-scope pinned-v1.78.0
+  mechanism: strict same-process home-only upstream TLS for `/key`, Noise underlay and DERP,
+  re-presented through an ephemeral local issuer/CONNECT proxy on Linux and unsigned Mac. Retain
+  fixed DNS/v2 `dial_ip`, private DERP and v1 re-pair policy. TASK-16733 F1 is addressed at Linux
+  transport-spike/design level; native Mac/full lifecycle acceptance remains NOT RUN. Renew
+  security/Product review and approve affected §8 cases before implementation, including #1575's
+  replacement design. R2 stays approved; R3 disabled. No changes to #1575/#1573 in this PR.
+  **A is only a conditional founder rescope**, accepting matching-name public-CA authentication;
+  no such approval exists. Upgrade/`ts_omit_bakedroots` and fork/patch alternatives remain
+  founder-reserved with costs above. No TLS bypass, dependency upgrade, host entry, new
+  infrastructure or hardening exception is selected.
 - **R3 FOUNDER-RESERVED — advanced root intake:** §6's URL/key prompt is caller-selected data and
   therefore outside the literal no-input/settings contract. Request this narrow exception explicitly;
   it affects 3a (prompt/auth), 3b (protected URL/Linux enrollment), 3c (Mac key/invite), 4 (UI), 5
