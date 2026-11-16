@@ -16,8 +16,8 @@ Verify with `sha256sum -c happyranch-<version>-linux-<arch>.tar.gz.sha256`.
 The tarball is an intermediate build input; the installable product is the .deb.
 
 To build locally on Linux x86_64 or aarch64, use a clean committed checkout,
-uv, Node 24/npm, Go 1.23.12+, git, GNU tar, gzip and sha256sum. No host
-Python is required; the builder installs its private pinned CPython 3.12.10
+uv, Node 24/npm, Go 1.23.12+, git, GNU tar, gzip, sha256sum and binutils
+(`readelf`). No host Python is required; the builder installs its private pinned CPython 3.12.10
 before running any Python helper, including project metadata reads.
 Network access to the pinned Python/dependency sources is required. Unset
 `VIRTUAL_ENV`, inherited `PYTHON*` and uv selection/configuration controls
@@ -36,6 +36,21 @@ HappyRanch wheel as real `.py` files. It builds production `web/dist` with
 `npm ci && npm run build` and the native Go sidecar with `CGO_ENABLED=0`.
 Its private Go module cache uses `-modcacherw` so build cleanup can remove it.
 Existing version/architecture outputs are refused; use a fresh destination.
+
+After copying the interpreter and runtime wheels,
+`python-elf-stack.py --fix --mdwe` checks every regular ELF in `python/`, regardless of name or mode.
+It reports each missing/executable `PT_GNU_STACK` and repairs it to a
+non-executable stack. Missing headers are added using an appended read-only
+program-header mapping; existing LOAD segments, code and data stay intact.
+This avoids patchelf's assertion failure on the pinned BOLT interpreter.
+`readelf -lW` independently verifies every resulting stack header.
+The bundled interpreter then starts and joins a thread under
+`systemd-run --user -p MemoryDenyWriteExecute=yes` when a user manager is
+available. Otherwise a separate Python helper sets and confirms
+`prctl(PR_SET_MDWE, PR_MDWE_REFUSE_EXEC_GAIN)` before exec. Only an unavailable
+user manager together with an unsupported kernel MDWE operation permits an
+explicit `SKIP MDWE` reason; actual thread/loader failures fail the build.
+These checks change no systemd hardening and install no host packages.
 
 The Go notice collector and `licenses/go-modules.json` exclude only the exact
 first-party `happyranch/tsnethealth => ../../shared/tsnethealth` local replacement
@@ -396,7 +411,8 @@ window itself or arbitrary daemon-launched workloads.
 
 ## Build the Debian package
 
-On Linux, install build-host `python3` (>= 3.10), `dpkg` and `coreutils`.
+On Linux, provide build-host `python3` (>= 3.10), `dpkg`, `coreutils` and
+binutils (`readelf`).
 The builder needs neither root nor system GI, executes no payload code, and
 downloads nothing. Supply the verified tarball from the preceding build:
 
@@ -408,6 +424,8 @@ dpkg-deb -I /tmp/linux-deb-output/happyranch_0.1.0-1_amd64.deb
 dpkg-deb -c /tmp/linux-deb-output/happyranch_0.1.0-1_amd64.deb
 # Focused native packaging checks; synthetic payload, real dpkg-deb:
 /usr/bin/python3 -B packaging/linux/test_build_deb.py -v
+# Check an extracted native payload without installing it:
+/usr/bin/python3 -B -I packaging/linux/python-elf-stack.py /absolute/payload/python --mdwe
 ```
 
 The payload's `build-info.json` records the installed HappyRanch distribution
@@ -418,6 +436,12 @@ archive members/escaping links and existing outputs, and calls
 host or execute a foreign interpreter: `x86_64` maps to Debian `amd64`, and
 `aarch64` maps to `arm64`. The manual workflow retains its original two native
 matrix rows and uploads the .deb alongside its intermediate inputs.
+The .deb builder rejects any ELF without exactly one non-executable stack
+header before packaging, including older unsafe tarballs; rebuild those through
+`build-payload.sh`. This check never executes a foreign interpreter. The native
+payload build and installed-package smoke perform the actual MDWE thread test.
+The installed smoke requires build-host `readelf` and retains its output in
+`python-stack-mdwe.log`, including any explicit unsupported-venue skip reason.
 The same build job then runs the installed-package smoke on **both** rows and
 uploads `happyranch-installed-deb-<arch>-<run>-<attempt>`, including on failure.
 This adds steps only: the manual trigger, matrix, read-only contents permission

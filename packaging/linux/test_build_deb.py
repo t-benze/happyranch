@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import runpy
 import shutil
+import struct
 import subprocess
 import sys
 import tarfile
@@ -113,6 +114,22 @@ class DebPackageTests(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         self.work = Path(self.temporary.name)
 
+    @staticmethod
+    def elf(arch: str, stack: str = 'safe', kind: int = 2) -> bytes:
+        # Minimal ELF64 program-header fixture, inspected but never executed.
+        count = 1 + (kind == 2) + (stack != 'missing')
+        size = 64 + count * 56 + 16
+        header = struct.pack('<16sHHIQQQIHHHHHH', b'\x7fELF\x02\x01\x01' + b'\0' * 9,
+                             kind, 62 if arch == 'x86_64' else 183, 1, 0, 64, 0, 0,
+                             64, 56, count, 64, 0, 0)
+        program = (struct.pack('<IIQQQQQQ', 6, 4, 64, 0x400040, 0x400040,
+                               count * 56, count * 56, 8) if kind == 2 else b'')
+        program += struct.pack('<IIQQQQQQ', 1, 5, 0, 0x400000, 0x400000, size, size, 0x1000)
+        if stack != 'missing':
+            program += struct.pack('<IIQQQQQQ', 0x6474e551, 7 if stack == 'executable' else 6,
+                                   0, 0, 0, 0, 0, 16)
+        return header + program + b'payload contents'
+
     def payload(self, arch: str = 'x86_64', version: str = '0.1.0') -> Path:
         root = f'happyranch-{version}-linux-{arch}'
         payload = self.work / root
@@ -141,6 +158,8 @@ class DebPackageTests(unittest.TestCase):
             path.write_text(text)
             path.chmod(0o755 if name.startswith('bin/') or name in (
                 'python/lib/libpython3.12.so.1.0', 'licenses/nested/NOTICE') else 0o644)
+        for name in ('python/bin/python3.12', 'python/lib/libpython3.12.so.1.0'):
+            (payload / name).write_bytes(self.elf(arch))
         (payload / 'python/bin/python3').symlink_to('python3.12')
         archive = self.work / (root + '.tar.gz')
         with tarfile.open(archive, 'w:gz') as stream:
@@ -173,6 +192,68 @@ class DebPackageTests(unittest.TestCase):
             '[Install]',
             'WantedBy=default.target',
         ])
+
+    def test_unsafe_elf_stacks_are_refused_before_output(self) -> None:
+        for index, (name, stack) in enumerate(
+            (name, stack) for name in ('python/bin/python3.12',
+                                      'python/lib/libpython3.12.so.1.0',
+                                      'python/lib/extensions/unusual-name')
+            for stack in ('missing', 'executable')
+        ):
+            with self.subTest(elf=name, stack=stack):
+                version = f'0.2.{index}'
+                archive = self.payload(version=version)
+                root = self.work / f'happyranch-{version}-linux-x86_64'
+                path = root / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(self.elf('x86_64', stack))
+                with tarfile.open(archive, 'w:gz') as stream:
+                    stream.add(root, arcname=root.name)
+                result = self.build(archive)
+                self.assertNotEqual(result.returncode, 0, 'unsafe ELF was packaged')
+                self.assertIn('unsafe GNU_STACK', result.stderr)
+                self.assertIn(name.removeprefix('python/'), result.stderr)
+                self.assertFalse(list((self.work / 'dist').glob('*.deb')))
+
+    def test_elf_stack_repair_preserves_loads_and_payload(self) -> None:
+        for arch in ('x86_64', 'aarch64'):
+            for kind in (2, 3):  # executable with PT_PHDR; shared object without it
+                for stack in ('missing', 'executable', 'safe'):
+                    with self.subTest(arch=arch, kind=kind, stack=stack):
+                        root = self.work / 'python'
+                        root.mkdir(exist_ok=True)
+                        path = root / 'elf'
+                        before = self.elf(arch, stack, kind)
+                        path.write_bytes(before)
+                        command = [sys.executable, '-B', '-I',
+                                   str(BUILDER.with_name('python-elf-stack.py')), str(root), '--fix']
+                        result = subprocess.run(command, text=True, capture_output=True)
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        output = subprocess.check_output(['readelf', '-lW', path], text=True)
+                        rows = [line.split() for line in output.splitlines()]
+                        stacks = [row for row in rows if row and row[0] == 'GNU_STACK']
+                        self.assertEqual(len(stacks), 1)
+                        self.assertEqual(''.join(stacks[0][6:-1]), 'RW')
+                        after = path.read_bytes()
+                        if stack == 'missing':
+                            self.assertEqual(after[64:len(before)], before[64:])
+                            # The existing LOAD's address, permissions and extent
+                            # survive; the additional LOAD maps only the table, R.
+                            loads = [row for row in rows if row and row[0] == 'LOAD']
+                            self.assertEqual(len(loads), 2)
+                            self.assertEqual(int(loads[0][2], 16), 0x400000)
+                            self.assertEqual(int(loads[0][4], 16), len(before))
+                            self.assertEqual(''.join(loads[0][6:-1]), 'RE')
+                            self.assertEqual(''.join(loads[1][6:-1]), 'R')
+                        elif stack == 'executable':
+                            self.assertEqual([i for i, (a, b) in enumerate(zip(before, after)) if a != b],
+                                             [64 + (1 + (kind == 2)) * 56 + 4])
+                            self.assertEqual(len(after), len(before))
+                        else:
+                            self.assertEqual(after, before)
+                        repeated = subprocess.run(command, text=True, capture_output=True)
+                        self.assertEqual(repeated.returncode, 0, repeated.stderr)
+                        self.assertEqual(path.read_bytes(), after, 'repair must be byte-idempotent')
 
     def test_installed_contract_and_architecture(self) -> None:
         for payload_arch, debarch in (('x86_64', 'amd64'), ('aarch64', 'arm64')):
