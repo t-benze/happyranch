@@ -699,9 +699,14 @@ class ServiceTests(unittest.TestCase):
 
     def test_gui_switch_partial_actions_fallback_and_restart(self) -> None:
         for scenario in ("off", "on", "partial-repair", "partial-off", "denied", "fallback", "restart",
-                         "reload-error", "reload-timeout", "restart-error", "restart-timeout"):
+                         "reload-error", "reload-timeout", "restart-error", "restart-timeout",
+                         "start-reload-error-en", "start-reload-error-zh",
+                         "start-reload-timeout-en", "start-reload-timeout-zh",
+                         "start-attach-timeout-en", "start-attach-timeout-zh"):
             with self.subTest(scenario=scenario):
                 restart_error = scenario in {"reload-error", "reload-timeout", "restart-error", "restart-timeout"}
+                startup_error = scenario.startswith("start-")
+                chinese = scenario.endswith("-zh")
                 callbacks = queue.Queue()
                 widgets = []
                 urls = []
@@ -710,7 +715,7 @@ class ServiceTests(unittest.TestCase):
                 self.service.attached = self.service.shutdown_pending = False
                 self.service.desktop_config.unlink(missing_ok=True)
                 self.state.update(UnitFileState="enabled" if restart_error or scenario in {"on", "partial-repair", "partial-off"} else "disabled",
-                                  NeedDaemonReload="yes" if restart_error or scenario == "restart" else "no",
+                                  NeedDaemonReload="yes" if startup_error or scenario == "restart" else "no",
                                   ExecMainStartTimestamp="1")
                 self.linger = "yes" if restart_error or scenario == "on" else "no"
                 self.manager = (1, "offline") if scenario == "fallback" else (0, "running")
@@ -766,7 +771,7 @@ class ServiceTests(unittest.TestCase):
                     root = shell.get_children()
                     def descendants(widget: Widget) -> list:
                         return [child for item in widget.children for child in [item, *descendants(item)]]
-                    return descendants(root[0].children[0]) if root and root[0].children else []
+                    return descendants(root[0]) if root else []
                 def switch() -> Switch | None:
                     return next((w for w in current() if isinstance(w, Switch)), None)
                 def click(label: str) -> None:
@@ -778,11 +783,12 @@ class ServiceTests(unittest.TestCase):
                     self.linger = "yes" if enabled else "no"
                 runner = self.service.runner
                 fail_stop = restart_error
+                fail_start = startup_error
                 def run(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess:
                     result = runner(argv, **kwargs)
-                    failure = "daemon-reload" if scenario.startswith("reload-") else "restart"
-                    if restart_error and argv[2] == failure:
-                        if scenario.endswith("timeout"):
+                    failure = "daemon-reload" if scenario.startswith(("reload-", "start-reload-")) else "restart"
+                    if (restart_error or fail_start) and argv[2] == failure:
+                        if "timeout" in scenario:
                             raise subprocess.TimeoutExpired(argv, 10)
                         result.returncode = 1
                     if argv[2] == "stop" and fail_stop:
@@ -792,11 +798,42 @@ class ServiceTests(unittest.TestCase):
                     if argv[2] == "restart":
                         self.state["ExecMainStartTimestamp"] = str(int((window.time.time()+1)*1_000_000))
                     return result
+                start = self.service.start
+                def start_service(cancel: threading.Event, **kwargs: object) -> str | None:
+                    if startup_error:
+                        kwargs["timeout"] = 0
+                    return start(cancel, **kwargs)
                 def run_app(_args: list) -> int:
-                    nonlocal fail_stop
+                    nonlocal fail_stop, fail_start
                     app.signals["activate"](app)
                     try:
+                        if startup_error:
+                            retry_label = "重试" if chinese else "Retry"
+                            heading = "HappyRanch 无法运行" if chinese else "HappyRanch could not run"
+                            pump(lambda: switch() is not None or any(w.label == heading for w in current()))
+                            self.assertTrue(any(w.label == retry_label for w in current()), "startup error needs Retry")
+                            detail = (("无法重新加载用户服务管理器。" if chinese else "Could not reload the user manager.")
+                                      if "reload" in scenario else
+                                      ("连接 HappyRanch 超时。" if chinese else "Timed out waiting to connect to HappyRanch."))
+                            self.assertEqual(sum(w.label == heading for w in current()), 1)
+                            self.assertTrue(any(w.label and detail in w.label for w in current()))
+                            self.assertEqual(urls, [])
+                            self.assertFalse(self.service.attached)
+                            self.assertFalse(self.service.shutdown_pending)
+                            self.assertEqual(self.verbs().count("start"), 0 if "reload" in scenario else 1)
+                            self.assertEqual(self.verbs().count("stop"), 0 if "reload" in scenario else 1)
+                            self.assertFalse(app.quit_called)
+                            self.assertIsNone(window.acquire_lock(self.home))
+                            fail_start = False
+                            self.healthy = True
+                            click(retry_label)
                         pump(lambda: switch() is not None)
+                        if startup_error:
+                            self.assertEqual(urls, ["http://127.0.0.1:43127/"])
+                            self.assertIn("reset-failed", self.verbs())
+                            shell.signals["delete-event"]()
+                            pump(lambda: app.quit_called)
+                            return 0
                         setting_row = shell.children[0].children[0].children[0]
                         self.assertEqual(setting_row.orientation, 1, "setting must be a horizontal row")
                         self.assertIn(switch(), setting_row.children)
@@ -826,6 +863,7 @@ class ServiceTests(unittest.TestCase):
                             self.assertNotIn("enable", self.verbs())
                         elif restart_error:
                             pump(lambda: any(w.label == "Update installed - restart HappyRanch" for w in current()))
+                            self.state["NeedDaemonReload"] = "yes"
                             self.assertTrue(self.service.attached)
                             click("Restart HappyRanch")
                             pump(lambda: any(w.label and "shutdown failed" in w.label for w in widgets))
@@ -872,14 +910,16 @@ class ServiceTests(unittest.TestCase):
                 repository.WebKit2 = SimpleNamespace(WebView=Widget)
                 child = SimpleNamespace(poll=lambda: None)
                 with patch.dict(sys.modules, {"gi": gi, "gi.repository": repository}), \
-                        patch.dict(os.environ, {"LANG": "en_US.UTF-8"}), \
+                        patch.dict(os.environ, {"LANG": "zh_CN.UTF-8" if chinese else "en_US.UTF-8"}), \
                         patch.object(window, "ServiceMode", return_value=self.service), \
+                        patch.object(self.service, "start", side_effect=start_service), \
                         patch.object(self.service, "set_linger", side_effect=linger), \
                         patch.object(self.service, "runner", side_effect=run), \
                         patch.object(window, "prepare_home"), \
                         patch.object(subprocess, "Popen", return_value=child) as popen, \
                         patch.object(window, "wait_for_health", return_value="http://127.0.0.1:12345/"), \
                         patch.object(window, "stop_child") as stop_child:
+                    self.healthy = not scenario.startswith("start-attach-timeout")
                     self.assertEqual(window.run_gui(prefix, self.home), 0)
                     self.assertEqual(popen.call_count, 1 if scenario == "fallback" else 0)
                     self.assertEqual(stop_child.call_count, 1 if scenario == "fallback" else 0)
@@ -1147,7 +1187,7 @@ class ServiceTests(unittest.TestCase):
                         self.service.start(threading.Event(), timeout=0.02)
                     self.assertEqual(str(caught.exception),
                                      "Release daemon ownership or health check failed; no web view was attached.")
-                    self.assertIsNone(caught.exception.action)
+                    self.assertEqual(caught.exception.action, "retry")
                     self.assertGreaterEqual(polls[0], 2, "invalid marker refused before deadline")
                     self.assertEqual(self.probes, [])
                     self.assertFalse(self.service.attached)
@@ -1159,6 +1199,24 @@ class ServiceTests(unittest.TestCase):
                                      [["systemctl", "--user", "stop", "happyranch-daemon"]])
                     self.assertFalse(self.service.shutdown_pending)
                     self.assertEqual((self.home / name).read_bytes(), raw)
+
+    def test_start_reloads_changed_unit_before_start_or_retry(self) -> None:
+        for reload in ("yes", "no"):
+            for retry in (False, True):
+                with self.subTest(reload=reload, retry=retry):
+                    self.calls.clear()
+                    self.state["NeedDaemonReload"] = reload
+                    self.assertEqual(self.start(retry=retry), "http://127.0.0.1:43127/")
+                    self.assertTrue(self.service.attached)
+                    expected = ["systemctl", "--user", "daemon-reload"]
+                    if reload == "yes":
+                        self.assertIn(expected, self.calls)
+                        self.assertEqual(self.calls.count(expected), 1)
+                        self.assertLess(self.verbs().index("daemon-reload"), self.verbs().index("start"))
+                        if retry:
+                            self.assertLess(self.verbs().index("daemon-reload"), self.verbs().index("reset-failed"))
+                    else:
+                        self.assertNotIn(expected, self.calls)
 
     def test_manager_fallback_and_degraded_manager(self) -> None:
         for rc, output in ((1, "offline"), (1, ""), (127, "")):

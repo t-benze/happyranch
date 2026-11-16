@@ -360,14 +360,24 @@ class ServiceMode:
             logging.getLogger(__name__).warning("Could not compare HappyRanch install and service start times.")
             return False
 
+    def reload_if_needed(self) -> dict[str, str]:
+        state = self.state()
+        if state.get("NeedDaemonReload") == "yes":
+            try:
+                result = self.command("systemctl", "--user", "daemon-reload")
+            except LaunchError as exc:
+                raise LaunchError("Could not reload the user manager.", "retry") from exc
+            if result.returncode:
+                raise LaunchError("Could not reload the user manager.", "retry")
+            state = self.state()
+        return state
+
     def restart(self, cancel: threading.Event, *, timeout: float = 60) -> str:
         try:
             # Revalidate the complete current ownership proof before restart as well.
             if self.start(cancel, timeout=timeout) is None:
                 raise LaunchError("The user manager is unavailable; restart HappyRanch manually.")
-            if self.state().get("NeedDaemonReload") == "yes":
-                if self.command("systemctl", "--user", "daemon-reload").returncode:
-                    raise LaunchError("Could not reload the user manager.")
+            self.reload_if_needed()
             self.state()
             self.attached = False
             self.control("restart")
@@ -479,7 +489,7 @@ class ServiceMode:
             return None
         self.check_legacy()
         self.validate_environment()
-        state = self.state()
+        state = self.reload_if_needed()
         pid = self.pid(state)
         self.refuse_external(pid)
         port = self.read_marker("daemon.port")
@@ -548,7 +558,7 @@ class ServiceMode:
                 raise LaunchError("Startup cancelled.")
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                raise LaunchError("Release daemon ownership or health check failed; no web view was attached.")
+                raise LaunchError("Release daemon ownership or health check failed; no web view was attached.", "retry")
             cancel.wait(min(0.1, remaining))
 
     def close(self, *, keep_running: bool = False) -> None:
@@ -686,8 +696,15 @@ def run_gui(prefix: Path, home: Path) -> int:
         window.show_all()
 
     def show_error(detail: str | LaunchError) -> bool:
+        diagnostic = str(detail)
+        if diagnostic == "Could not reload the user manager.":
+            diagnostic = tr("Could not reload the user manager. Retry to start HappyRanch again.",
+                            "无法重新加载用户服务管理器。请重试以启动 HappyRanch。")
+        elif diagnostic == "Release daemon ownership or health check failed; no web view was attached.":
+            diagnostic = tr("Timed out waiting to connect to HappyRanch. Retry to start again.",
+                            "连接 HappyRanch 超时。请重试以再次启动。")
         message(tr("HappyRanch could not run", "HappyRanch 无法运行"),
-                str(detail) + "\n\n" + tr("Fallback daemon log: ", "回退守护进程日志：") + str(log_path))
+                diagnostic + "\n\n" + tr("Fallback daemon log: ", "回退守护进程日志：") + str(log_path))
         action = getattr(detail, "action", None)
         if action is not None and not closing:
             label = {"remove": tr("Remove old unit", "移除旧服务单元"),
