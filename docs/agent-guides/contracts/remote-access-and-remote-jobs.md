@@ -946,9 +946,11 @@ cover temp-root/fake-manager behavior; required PR checks remain lint/static.
 
 The explicit `linux-managed-identity-v1` profile uses the fixed
 `/run/happyranch-connector/ingress.sock`, not a caller-selected endpoint. Go
-`Profile` and Python `managed.profile` select it; omitted/empty profiles retain
-legacy ExpectedPeer/TCP behavior and Mac/DIY hosting is unchanged. Unknown
-profiles refuse; the identity profile is Linux-only. `ExpectedPeer` and
+`Profile` and Python `managed.profile` select it; only omission or an empty
+string retains legacy ExpectedPeer/TCP behavior and Mac/DIY hosting is unchanged.
+Non-string values (including null) and unknown strings refuse; the Go command
+returns configuration exit 2 before state or credential handling. The identity
+profile is Linux-only. `ExpectedPeer` and
 `ConnectorAddr` are omitted in the new sidecar profile. Enrollment/restart retain
 durable state/consumption, private-only config, connector liveness, listener and
 watchdog gates; no peer is required for READY. Health makes no expected-peer

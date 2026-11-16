@@ -28,8 +28,10 @@ The renderer's matching `ConnectorUnitSpec.ingress_profile` adds only
 still admits legacy configs; generation/migration and profile/unit wiring belong
 to slice 3b, with no automatic migration or deployment in this change.
 
-An omitted/empty profile retains the legacy Linux and Darwin behavior below.
-Unknown profiles and this Linux profile on Darwin refuse.
+Only an omitted profile or an empty JSON string retains the legacy Linux and
+Darwin behavior below. Non-string values (including null) and unknown strings
+refuse at configuration admission, before state or credential handling, with
+command exit 2. This Linux profile on Darwin also refuses.
 
 `ConnectorAddr` must use literal `127.0.0.1`; literal port 8765 is always
 refused. Optional JSON `ExcludedDaemonPorts` is a list of integers in 1..65535;
