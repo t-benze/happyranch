@@ -2725,13 +2725,18 @@ def install_sequential_schema(conn: sqlite3.Connection, *, expected_org_slug: st
                               expected_path: str, source_identity: tuple,
                               source_inventory: tuple, offline_check: Callable[[], None],
                               allowance: SequentialInstallAllowance | None = None,
-                              integrity: IntegrityLedger | None = None) -> str:
-    """One explicit owning writer; no startup, adoption, backfill or live caller.
+                              integrity: IntegrityLedger | None = None,
+                              before_commit: Callable[[], None] | None = None) -> str:
+    """One explicit owning writer; no adoption or implicit migration.
 
     The original RO inventory/identity remain authoritative across RW reopen.
     A failed COMMIT is uncertain even if SQLite subsequently permits rollback.
     Physical checks share the caller's operation ledger; an omitted ledger
     creates only a physical allowance, never an ownership/inventory extension.
+    The automatic coordinator's callback owns default target qualification,
+    durable pre_commit and the original parent's permit. It runs only after
+    every existing target gate, while rollback is still positively available.
+    Offline callers omit it and retain their original guard/COMMIT behavior.
     """
 
     from runtime.infrastructure.workflow_sequential_schema import CANONICAL_WORKFLOW_SEQUENTIAL_DDL, SEQUENTIAL_TABLES
@@ -2814,6 +2819,12 @@ def install_sequential_schema(conn: sqlite3.Connection, *, expected_org_slug: st
         if _coding_org_identity(conn, expected_org_slug=expected_org_slug,
                                 expected_path=expected_path) != source_identity:
             raise ValueError('workflow_seq_install_source_identity_changed')
+        if before_commit is not None:
+            before_commit()
+            # Publication/permit acquisition consumes the SAME operation window.
+            # It cannot authorize a late COMMIT or replenish an exhausted owner.
+            if time.monotonic() >= operation_deadline:
+                raise ValueError('workflow_seq_install_deadline_exhausted')
         committing = True
         conn.commit()
         return 'installed'

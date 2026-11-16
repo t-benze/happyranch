@@ -69,7 +69,7 @@ if len(sys.argv) == 2 and sys.argv[1].startswith('--retained-corruption-phase=')
         uncommitted='between uncommitted')[sys.argv[1].split('=', 1)[1]]
     sys.argv[1:] = ['--retained-corruption']
 
-assert sys.argv[1:] in ([], ['--startup-isolation'], ['--fresh-catalog'], ['--org-access-fence'], ['--org-access-openers'], ['--org-access-native'], ['--org-access-guardian'], ['--org-access-profile'], ['--setup-status'], ['--daily-integrity'], ['--install-integrity'], ['--bounded-acquisition'], ['--trace-custody'], ['--sequential-reuse'], ['--sequential-load'], ['--sequential-freshness'], ['--sequential-faults'], ['--sequential-sql-exhaustion'], ['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--coding-authority-corruption'], ['--document-native-corruption'], ['--author-handoff-corruption'], ['--document-revision-corruption'], ['--coding-history-corruption'], ['--physical-corruption'], ['--sequential-uncommitted'], ['--i2-cutover'], ['--i2-native']), 'unknown schema-load selection'
+assert sys.argv[1:] in ([], ['--bootstrap-journal'], ['--bootstrap-precommit'], ['--startup-isolation'], ['--fresh-catalog'], ['--org-access-fence'], ['--org-access-openers'], ['--org-access-native'], ['--org-access-guardian'], ['--org-access-profile'], ['--setup-status'], ['--daily-integrity'], ['--install-integrity'], ['--bounded-acquisition'], ['--trace-custody'], ['--sequential-reuse'], ['--sequential-load'], ['--sequential-freshness'], ['--sequential-faults'], ['--sequential-sql-exhaustion'], ['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--coding-authority-corruption'], ['--document-native-corruption'], ['--author-handoff-corruption'], ['--document-revision-corruption'], ['--coding-history-corruption'], ['--physical-corruption'], ['--sequential-uncommitted'], ['--i2-cutover'], ['--i2-native']), 'unknown schema-load selection'
 
 
 print('SCHEMA_RUNTIME', json.dumps(dict(python=sys.version, executable=sys.executable, sqlite=sqlite3.sqlite_version,
@@ -2148,7 +2148,7 @@ runpy.run_module('runtime.daemon',run_name='__main__')
         raise SystemExit(0)
 
 # I1a extends this existing disposable venue, with no new execution lane.
-if sys.argv[1:] in ([], ['--install-integrity']):
+if sys.argv[1:] in ([], ['--install-integrity'], ['--bootstrap-precommit'], ['--bootstrap-journal']):
     from scripts import install_workflow_sequential_schema as installer
     from runtime.infrastructure import workflow_schema as schema
     from runtime.infrastructure import workflow_integrity as physical
@@ -2195,6 +2195,253 @@ if sys.argv[1:] in ([], ['--install-integrity']):
                        ['--runtime-root', str(runtime), '--org', 'scratch',
                         '--confirm-cooperative-offline', '--backup', str(backup),
                         '--backup-sha256', backup_hash])
+
+    # A4-J is the independently consumed event wire/storage contract, using
+    # synthetic phase inputs. It does not certify installation/owner closure.
+    if sys.argv[1:] in ([], ['--bootstrap-journal']):
+        from runtime.infrastructure import workflow_sequential_bootstrap as bootstrap
+        from runtime.infrastructure.org_access_fence import OrgAccessFence
+        from runtime.daemon.workflow_setup_status import read_setup_status
+        from runtime.runtime import daemon_home
+
+        for fault in ('none', 'pending', 'file_sync', 'directory_sync', 'reserve', 'replay', 'alias', 'terminal', 'descriptor_close'):
+            with install_integrity_fixture() as fixture:
+                path, inventory, original, before, backup, backup_hash, argv = fixture
+                fence = OrgAccessFence.acquire(path.parent, exclusive=True)
+                with closing(sqlite3.connect(path)) as connection:
+                    identity = schema._coding_org_identity(connection, expected_org_slug='scratch', expected_path=str(path))
+                def attempt():
+                    return bootstrap.BootstrapAttempt(home=daemon_home(), runtime_root=path.parents[2], slug='scratch',
+                        fence=fence, source_identity=identity,
+                        source_inventory_digest=hashlib.sha256(repr(original).encode()).hexdigest(),
+                        deadline=time.monotonic()+30)
+                owner = attempt()
+                extra = None
+                if fault == 'descriptor_close':
+                    native_close, failed_closes = os.close, []
+                    def refused_close(fd):
+                        if owner._descriptors and fd == owner._descriptors[0]['fd']:
+                            failed_closes.append(fd)
+                            raise OSError('synthetic original descriptor close uncertainty')
+                        native_close(fd)
+                    try:
+                        with patch.object(bootstrap.os, 'close', refused_close):
+                            try:
+                                owner.begin()
+                            except OSError:
+                                pass
+                            else:
+                                raise AssertionError('A4-J directory close failure accepted')
+                            assert len(owner._descriptors) == 2, 'A4-J lost partially constructed directory descriptor'
+                            for _ in range(2):
+                                try:
+                                    owner.close()
+                                except bootstrap.BootstrapEvidenceError as exc:
+                                    assert str(exc) == 'workflow_setup_descriptor_close_unknown'
+                                else:
+                                    raise AssertionError('A4-J invented original descriptor closure')
+                            assert len(failed_closes) == 1, 'A4-J retried unknown original descriptor close'
+                            assert owner._descriptors[1]['closed'] and not owner._descriptors[0]['closed']
+                            os.fstat(failed_closes[0])  # actual injected-open original remains retained
+                            assert owner.failed and not owner.closed
+                        print('PASS A4-J partially constructed original descriptor custody; no retry', flush=True)
+                    finally:
+                        if failed_closes:
+                            native_close(failed_closes[0])  # exact synthetic leak after custody observation
+                        fence.close()
+                    continue
+                try:
+                    # Real fsync calls and original descriptors; no success stub.
+                    syncs = []
+                    native_fsync = os.fsync
+                    def fsync(fd):
+                        info = os.fstat(fd)
+                        syncs.append((info.st_ino, stat.S_ISDIR(info.st_mode)))
+                        native_fsync(fd)
+                    import stat
+                    with patch.object(bootstrap.os, 'fsync', fsync):
+                        owner.begin()
+                    first = owner.root / '00.json'
+                    assert first.is_file() and first.stat().st_mode & 0o777 == 0o600
+                    assert (first.stat().st_ino, False) in syncs, 'A4-J intent file not fsynced'
+                    assert syncs[-1] == (owner.root.stat().st_ino, True), 'A4-J intent directory not fsynced'
+                    assert all(p.stat().st_mode & 0o777 == 0o700 for p in
+                        (owner.root, owner.namespace, owner.namespace.parent, owner.namespace.parent.parent,
+                         owner.namespace.parent.parent.parent)), 'A4-J nonprivate namespace'
+                    if fault == 'terminal':
+                        owner.publish('not_installed')
+                        assert json.loads((owner.root / '01.json').read_bytes())['state'] == 'not_installed'
+                        try:
+                            owner.publish('backup_verified', backup_sha256=backup_hash)
+                        except bootstrap.BootstrapEvidenceError:
+                            pass
+                        else:
+                            raise AssertionError('A4-J terminal attempt replayed')
+                    else:
+                        with owner.backup_path.open('xb') as target:
+                            target.write(backup.read_bytes())
+                            target.flush()
+                            os.fchmod(target.fileno(), 0o600)
+                            os.fsync(target.fileno())
+                        if fault == 'pending':
+                            (owner.root / '01.json.pending').write_bytes(b'incomplete')
+                        elif fault == 'alias':
+                            owner.backup_path.unlink()
+                            owner.backup_path.symlink_to(backup)
+                        if fault in ('file_sync', 'directory_sync'):
+                            def refused_fsync(fd):
+                                is_directory = stat.S_ISDIR(os.fstat(fd).st_mode)
+                                if is_directory == (fault == 'directory_sync'):
+                                    raise OSError('synthetic original fsync refusal')
+                                native_fsync(fd)
+                            with patch.object(bootstrap.os, 'fsync', refused_fsync):
+                                try:
+                                    owner.publish('backup_verified', backup_sha256=backup_hash)
+                                except OSError:
+                                    pass
+                                else:
+                                    raise AssertionError('A4-J failed fsync accepted')
+                        elif fault in ('pending', 'alias'):
+                            try:
+                                owner.publish('backup_verified', backup_sha256=backup_hash)
+                            except bootstrap.BootstrapEvidenceError:
+                                pass
+                            else:
+                                raise AssertionError('A4-J unsafe/incomplete namespace accepted')
+                        else:
+                            owner.publish('backup_verified', backup_sha256=backup_hash)
+                            if fault == 'reserve':
+                                with patch.object(bootstrap.time, 'monotonic', return_value=owner.deadline-19):
+                                    try:
+                                        owner.publish('pre_commit')
+                                    except bootstrap.BootstrapEvidenceError as exc:
+                                        assert str(exc) == 'workflow_setup_commit_reserve'
+                                    else:
+                                        raise AssertionError('A4-J bypassed original COMMIT reserve')
+                                assert not (owner.root / '02.json').exists(), 'A4-J published late COMMIT intent'
+                            elif fault == 'replay':
+                                extra = attempt()
+                                try:
+                                    extra.begin()
+                                except bootstrap.BootstrapEvidenceError as exc:
+                                    assert str(exc) == 'workflow_setup_attempt_latched'
+                                else:
+                                    raise AssertionError('A4-J automatically retried latched attempt')
+                                assert set(p.name for p in owner.namespace.iterdir()) == {owner.attempt_id}
+                            else:
+                                for phase in ('pre_commit', 'committed', 'verified', 'registered'):
+                                    owner.publish(phase)
+                                previous = None
+                                for seq, phase in enumerate(('intent', 'backup_verified', 'pre_commit', 'committed', 'verified', 'registered')):
+                                    raw = (owner.root / f'{seq:02}.json').read_bytes()
+                                    value = json.loads(raw)
+                                    assert value['sequence'] == seq and value['previous_digest'] == previous
+                                    assert value['phase'] == phase and value['source_inventory_digest'] == owner.source_inventory_digest
+                                    previous = hashlib.sha256(raw).hexdigest()
+                                status = read_setup_status(daemon_home(), path.parents[2], 'scratch')
+                                assert (status.state, status.reason, status.backup_path) == ('installed_verified', 'registered', str(owner.backup_path)), status
+                                assert {p.name for p in owner.root.iterdir()} == {'before.db', *(f'{seq:02}.json' for seq in range(6))}
+                        if owner.failed:
+                            frozen = {p.name: p.lstat() for p in owner.root.iterdir()}
+                            try:
+                                owner.publish('not_installed')
+                            except bootstrap.BootstrapEvidenceError as exc:
+                                assert str(exc) == 'workflow_setup_attempt_latched', 'A4-J failed publisher retried after uncertainty'
+                            else:
+                                raise AssertionError('A4-J failed publisher later emitted success/absence')
+                            assert {p.name: p.lstat() for p in owner.root.iterdir()} == frozen
+                    assert inventory() == original and hashlib.sha256(path.read_bytes()).hexdigest() == before, 'A4-J journal touched source'
+                    assert hashlib.sha256(backup.read_bytes()).hexdigest() == backup_hash, 'A4-J restored/modified independent backup'
+                    print('PASS A4-J original descriptor/fsync/event-chain/no-replay:', fault, flush=True)
+                finally:
+                    if extra is not None:
+                        extra.close()
+                    owner.close()
+                    owner.close()  # no second close syscall for any original fd
+                    assert all(record['closed'] for record in owner._descriptors)
+                    fence.close()
+        if sys.argv[1:] == ['--bootstrap-journal']:
+            raise SystemExit(0)
+
+    # A4-P uses the nearest I1a fixture and real primitive. All mutation,
+    # deadline, authorizer and trace observers stay on this side of the boundary.
+    if sys.argv[1:] in ([], ['--bootstrap-precommit']):
+        from runtime.workflows.sequential_history import read_sequential_history
+
+        for fault in ('none', 'permit', 'deadline', 'target', 'commit'):
+            with install_integrity_fixture() as fixture:
+                path, inventory, original, before, backup, backup_hash, argv = fixture
+                statements, stages, callbacks = [], [], []
+                conn = sqlite3.connect(path, timeout=0)
+                conn.row_factory = sqlite3.Row
+                conn.execute('PRAGMA foreign_keys=ON')
+                conn.set_trace_callback(statements.append)
+                allowance = schema.SequentialInstallAllowance(deadline=time.monotonic()+30)
+                with schema._schema_snapshot(conn):
+                    identity = schema._coding_org_identity(conn, expected_org_slug='scratch', expected_path=str(path))
+                statements.clear()
+
+                def physical_gate(connection, ledger, stage):
+                    physical.require_install_integrity(connection, ledger, stage)
+                    stages.append(stage)
+                    if stage == 'target' and fault == 'target':
+                        raise ValueError('synthetic target failure before permit')
+
+                def offline():
+                    assert schema._coding_org_identity(conn, expected_org_slug='scratch', expected_path=str(path)) == identity
+
+                with ExitStack() as stack:
+                    def permit():
+                        assert stages == ['writer_source', 'target'], 'A4-P permit preceded full target integrity'
+                        assert conn.in_transaction and 'COMMIT' not in statements, 'A4-P rehearsal/default gate after COMMIT'
+                        history = read_sequential_history(conn, expected_org_slug='scratch')
+                        assert history.layout.sequential and history.layout.ownership == 2
+                        callbacks.append('default-target')
+                        if fault == 'permit':
+                            raise ValueError('synthetic original parent withheld permit')
+                        if fault == 'deadline':
+                            stack.enter_context(patch.object(schema.time, 'monotonic', return_value=allowance.deadline+1))
+                        if fault == 'commit':
+                            conn.set_authorizer(lambda action, arg1, *_: sqlite3.SQLITE_DENY
+                                if action == sqlite3.SQLITE_TRANSACTION and arg1 == 'COMMIT' else sqlite3.SQLITE_OK)
+
+                    stack.enter_context(patch.object(schema, 'require_install_integrity', physical_gate))
+                    error = None
+                    try:
+                        result = schema.install_sequential_schema(conn, expected_org_slug='scratch', expected_path=str(path),
+                            source_identity=identity, source_inventory=original, offline_check=offline,
+                            allowance=allowance, before_commit=permit)
+                    except (ValueError, schema.SequentialCommitUncertain) as exc:
+                        error = exc
+                if error is not None and isinstance(error.__cause__, AssertionError):
+                    raise error.__cause__  # retain attribution from the real callback boundary
+                assert stages == ['writer_source', 'target'], ('A4-P integrity gates changed', fault, stages)
+                assert callbacks == ([] if fault == 'target' else ['default-target']), ('A4-P callback absent/repeated', fault, callbacks)
+                if fault == 'none':
+                    assert error is None and result == 'installed' and statements.count('COMMIT') == 1
+                    assert not conn.in_transaction
+                else:
+                    assert error is not None, ('A4-P refused permit/target/deadline accepted', fault)
+                    if fault == 'commit':
+                        assert isinstance(error, schema.SequentialCommitUncertain), 'A4-P lost COMMIT uncertainty'
+                    else:
+                        assert type(error) is ValueError and 'COMMIT' not in statements, ('A4-P premature COMMIT', fault)
+                    if fault == 'deadline':
+                        assert str(error) == 'workflow_seq_install_deadline_exhausted'
+                    assert 'ROLLBACK' in statements and not conn.in_transaction, ('A4-P lost owned rollback', fault)
+                conn.close()
+                if fault != 'none':
+                    assert inventory() == original, ('A4-P changed original typed cells/rowids/SQL', fault)
+                    assert hashlib.sha256(path.read_bytes()).hexdigest() == before, ('A4-P changed checkpointed fixture bytes', fault)
+                else:
+                    with closing(sqlite3.connect(path)) as reopened:
+                        reopened.execute('PRAGMA foreign_keys=ON')
+                        assert read_sequential_history(reopened, expected_org_slug='scratch').layout.sequential
+                assert hashlib.sha256(backup.read_bytes()).hexdigest() == backup_hash, 'A4-P modified retained backup'
+                print('PASS A4-P pre-COMMIT default target/gates/permit:', fault,
+                      'committed-once' if fault == 'none' else 'original-preserved', flush=True)
+        if sys.argv[1:] == ['--bootstrap-precommit']:
+            raise SystemExit(0)
 
     with tempfile.TemporaryDirectory(prefix='workflow-bad-integrity-') as scratch:
         bad_path = Path(scratch) / 'bad.db'

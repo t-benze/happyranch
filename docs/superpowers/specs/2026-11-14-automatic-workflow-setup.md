@@ -297,3 +297,33 @@ registration remain unchanged. This checkpoint contains no automatic backup or
 installer caller and supplies no first/next rehearsal or whole-startup timing
 acceptance. The complete A4 protocol and its remaining proof obligations are
 still required before source readiness or any separately authorized restart.
+
+### A4 phase-publication and COMMIT-boundary checkpoint
+
+`install_sequential_schema` now offers the approved optional `before_commit`
+callback after all original target, preservation, FK, physical-integrity and
+identity checks, immediately before its attempted-COMMIT boundary. The automatic
+coordinator must use it for the actual default target reader, durable pre_commit
+and original parent permit; returning from that callback never replenishes the
+original operation deadline. An exception remains pre-COMMIT and rolls back;
+attempted COMMIT retains the original uncertain disposition. Offline callers
+omit the callback and retain their existing behavior and guards.
+
+`workflow_sequential_bootstrap.BootstrapAttempt` owns private, descriptor-relative
+phase publication under an original EX description. It creates/fsyncs private
+parents and intent before later setup effects, writes exclusive 0600 pending
+records, fsyncs/closes them, publishes without overwrite and fsyncs the directory.
+Its bounded ordered records match the independent A3 reader. Any observed old
+attempt, partial namespace, publication error or insufficient original 20-second
+pre-COMMIT reserve latches the publisher. Original descriptor-close uncertainty
+is retained; neither new attempts nor success/absence records clear a failed
+publisher. Evidence and backups are never restored, overwritten or pruned.
+
+Focused `--bootstrap-precommit` observes actual target validation, permit/deadline
+refusal, rollback and attempted-COMMIT uncertainty. `--bootstrap-journal` checks
+the externally consumed wire/storage contract with synthetic phase inputs and
+real private files/fsync calls; it does not prove installation, native-owner
+qualification or closure. These owners are not yet mounted in an automatic
+startup caller. Verified backup construction, writable FIRST/NEXT rehearsal,
+parent supervision, final registration/status integration and the <=10s
+all-org/listener acceptance remain required before the A4 PR becomes ready.

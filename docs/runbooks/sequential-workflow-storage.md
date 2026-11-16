@@ -108,6 +108,12 @@ Keep stdout, stderr, exit status, source/backup inventory and original operation
 custody; reconcile with the original owner before any explicitly admitted retry.
 No automatic retry or success claim follows an ambiguous return.
 
+The A4 draft adds an optional pre-COMMIT coordinator callback to the owning
+primitive and a private durable phase publisher. The offline interface above
+does not select either automatically. See the [A4 checkpoint](../superpowers/specs/2026-11-14-automatic-workflow-setup.md#a4-phase-publication-and-commit-boundary-checkpoint)
+for their current boundary and unimplemented startup integration. These source
+owners grant no live install, restart, restore or retry authority.
+
 Every invocation starts with `resolve_org_database` and an immutable read-only
 SQLite connection (`mode=ro&immutable=1`, query-only, foreign keys enabled), one
 snapshot and before/after file observations. It never creates sidecars. Nonempty
