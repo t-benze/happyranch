@@ -204,7 +204,15 @@ func TestHomeEnvironmentAdmission(t *testing.T) {
 	}
 	for _, name := range []string{"HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy", "SSLKEYLOGFILE", "GODEBUG", "TS_DEBUG_TLS_DIAL", "TS_DEBUG_USE_DERP_HTTP", "TS_DEBUG_DERP_WS_CLIENT", "TS_DEBUG_FAKE_PROXY_AUTH", "TS_FORCE_NOISE_443", "TS_USE_CONTROL_DIAL_PLAN", "TS_AUTHKEY", "TS_UNKNOWN_OVERRIDE", "SSL_CERT_FILE", "SSL_CERT_DIR"} {
 		t.Run(name, func(t *testing.T) {
-			err := admitHomeEnvironment(append(append([]string{}, base...), name+"=synthetic-secret-canary"))
+			env := append([]string{}, base...)
+			if name == "SSL_CERT_FILE" {
+				env[0] = name + "=synthetic-secret-canary"
+			} else if name == "SSL_CERT_DIR" {
+				env[1] = name + "=synthetic-secret-canary"
+			} else {
+				env = append(env, name+"=synthetic-secret-canary")
+			}
+			err := admitHomeEnvironment(env)
 			if err == nil {
 				t.Fatal("ambient override admitted")
 			}
