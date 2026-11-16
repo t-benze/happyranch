@@ -1013,6 +1013,82 @@ if sys.argv[1:] in ([], ['--fresh-catalog']):
                         historical.close()
                     print('PASS A2-R absent-DB startup remains historical; no fresh inference', flush=True)
 
+    if a2_case in (None, 'registration'):
+        from runtime.orchestrator.org_config import initialize_fresh_reviewer_agents
+        from runtime.workflows._coding_registered_release import read_registered_release
+
+        with tempfile.TemporaryDirectory(prefix='a2-retained-cutover-') as scratch:
+            home = Path(scratch).resolve()
+            root = home / 'runtime' / 'orgs' / 'scratch'
+            with patch.dict(os.environ, {'HAPPYRANCH_DAEMON_HOME': str(home)}):
+                # Real owners create J + Coding-absent + sequential + ownership2,
+                # then retain a genuine enable request behind pre-enable work.
+                _seed_skeleton(root, from_example=None)
+                db = initialize_fresh_org_database(OrgPaths(root).db_path, expected_org_slug='scratch')
+                try:
+                    install_pause_schema(db, org_slug='scratch')
+                    initialize_fresh_reviewer_agents(OrgPaths(root), db)
+                    db.insert_task(TaskRecord(id='TASK-a2-cutover', brief='Synthetic pre-enable work'))
+                    cutover = WorkflowCutoverStore(db, org_slug='scratch').request(
+                        action='enable', operation_key='a2-retained-enable', expected_generation=1)
+                    assert (cutover['state'], cutover['generation']) == ('enable_requested', 2)
+                    assert {row['code'] for row in cutover['blockers']} == {'cutover_pre_enable_work'}
+                    history = read_sequential_history(db._conn, expected_org_slug='scratch')
+                    assert history.layout.document == 'J' and history.layout.coding and history.layout.sequential and history.layout.ownership == 2
+                    with _schema_snapshot(db._conn):
+                        assert read_registered_release(db._conn, expected_org_slug='scratch') is None
+                finally:
+                    db.close()
+
+                original_registration = SequentialBuiltinStore.ensure_registered
+                observations = []
+                def a2_observe_registration(store):
+                    # Observe only registrar effects, not unrelated startup
+                    # publication. Always execute the real owner unchanged.
+                    conn = store.db._conn
+                    before, changes = a2_inventory(conn), conn.total_changes
+                    try:
+                        return original_registration(store)
+                    finally:
+                        assert conn.total_changes == changes and a2_inventory(conn) == before, 'A2 retained cutover registrar wrote on refusal'
+                        assert not conn.in_transaction
+                        observations.append(store.org.slug)
+
+                with patch.object(SequentialBuiltinStore, 'ensure_registered', a2_observe_registration):
+                    try:
+                        startup = OrgState.load(slug='scratch', root=root, settings=Settings())
+                    except ValueError as exc:
+                        raise AssertionError('A2 retained enable_requested gen2 cold load refused: ' + str(exc)) from exc
+                try:
+                    conn, db = startup.db._conn, startup.db
+                    assert observations == ['scratch'], 'A2 cold load omitted the real registrar'
+                    assert conn.execute('SELECT count(*) FROM workflow_seq_definitions').fetchone()[0] == 0
+                    with _schema_snapshot(conn):
+                        assert read_registered_release(conn, expected_org_slug='scratch') is None
+                    retained = WorkflowCutoverStore(db, org_slug='scratch').get()
+                    assert (retained['state'], retained['generation'], retained['blockers']) == (cutover['state'], cutover['generation'], cutover['blockers'])
+                    assert db.get_task('TASK-a2-cutover') is not None
+                    read_sequential_history(conn, expected_org_slug='scratch')
+                    print('PASS A2-C retained enable_requested gen2 cold load; Coding absent; real pre-enable blockers retained; registrar zero writes', flush=True)
+
+                    # Genuine native UNKNOWN in this same pending state must
+                    # still refuse, even though its rollback has no SQL effects.
+                    try:
+                        with native_writer(db, publisher='synthetic-a2-retained-owner'):
+                            raise RuntimeError('synthetic retained native interruption')
+                    except RuntimeError as exc:
+                        assert str(exc) == 'synthetic retained native interruption'
+                    try:
+                        a2_observe_registration(SequentialBuiltinStore(startup))
+                    except ValueError as exc:
+                        assert str(exc) == 'native_writer_unsettled', str(exc)
+                    else:
+                        raise AssertionError('A2 retained cutover genuine native UNKNOWN was accepted as safe deferral')
+                    assert observations == ['scratch', 'scratch']
+                    print('PASS A2-C retained enable_requested gen2 genuine native UNKNOWN refuses; zero writes', flush=True)
+                finally:
+                    startup.close()
+
     if a2_case in (None, 'route', 'registration'):
         asyncio.run(a2_route_registration())
     if sys.argv[1:] == ['--fresh-catalog']:

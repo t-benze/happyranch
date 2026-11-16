@@ -9,7 +9,7 @@ import sqlite3
 from typing import Any
 
 from runtime.orchestrator.producer_move import native_writer, owner_for
-from runtime.workflows.coding_builtin import _NativeCensusBudget
+from runtime.workflows.coding_builtin import _Deferred, _NativeCensusBudget, _RegistrationPhase
 from runtime.workflows.coding_authority_history import _Budget
 from runtime.workflows.sequential_definition import CompiledDefinition
 from runtime.workflows.sequential_engine import _engine_rows, _identity
@@ -71,73 +71,91 @@ class SequentialBuiltinStore:
         db, authority = self.db, self.org.workflow_authority
         budget = _ReadBudget()
         retained = _Budget()
-        with authority._publisher_lock, db._lock:
-            if db._conn.in_transaction:
-                raise ValueError('sequential_builtin_caller_transaction')
-            # Legacy orgs stay legacy; an absent DB/table never proves freshness.
-            if db._conn.execute("SELECT 1 FROM sqlite_schema WHERE name='workflow_seq_schema_versions'").fetchone() is None:
-                return
-            with db.workflow_schema_transaction() as conn, _sql_budget(conn, budget):
-                pending = [compiled for compiled in self.catalog
-                           if not inspect_definition(conn, compiled, budget)[1]]
-            if not pending:
-                return
-            if self.org._startup_publication_held or self.org._startup_authority_error is not None:
-                return
-            ready = authority.verify_admission_ready()
-            pointer = authority._pointer(db._conn, authority.namespace)
-            admission = owner_for(db)
-            if admission is None:
-                raise ValueError('sequential_builtin_native_owner_unavailable')
-            census, states = _NativeCensusBudget(), {}
-            native = self.org.workflow_coding_builtin
-            # No transaction/lease is open while the actual file/cache readiness
-            # is checked above. Subsequent qualification is SQL-only.
-            with _sql_budget(db._conn, budget):
-                after = native._native_suffix(db._conn, census, states, 0)
-                native._safety(db._conn, admission, states, census)
-            before = set(admission.writers)
-            with native_writer(db, publisher='builtin_sequential_registration', durable=False):
-                added = set(admission.writers) - before
-                if owner_for(db) is not admission or len(added) != 1:
-                    raise ValueError('sequential_builtin_native_owner_changed')
-                own = added.pop()
-                reservation = admission.writers[own]
-                if reservation != dict(owner_id=own, publisher='builtin_sequential_registration', agents=(), teams=()):
-                    raise ValueError('sequential_builtin_native_owner_changed')
-                with db.workflow_schema_transaction() as conn:
-                    history = read_sequential_history(conn, expected_org_slug=self.org.slug,
-                        retained_budget=retained, deadline=budget.deadline)
-                    if not history.layout.sequential or history.layout.ownership != 2:
-                        raise ValueError('sequential_builtin_storage_required')
-                    with _sql_budget(conn, budget):
-                        after = native._native_suffix(conn, census, states, after)
-                        native._safety(conn, admission, states, census, own=own)
-                        if (authority._pointer(conn, authority.namespace) != pointer
-                                or authority._cache.get(ready.namespace) != (ready.generation, ready.snapshot_digest)):
-                            raise ValueError('sequential_builtin_authority_changed')
-                        changes, inserted = conn.total_changes, 0
-                        for compiled in pending:
-                            definition, exists = inspect_definition(conn, compiled, budget)
-                            if not exists:
-                                columns = ','.join(definition)
-                                conn.execute(f'INSERT INTO workflow_seq_definitions ({columns}) '
-                                    f'VALUES ({",".join("?" for _ in definition)})', tuple(definition.values()))
-                                inserted += 1
-                        # Complete source qualification authenticated every
-                        # existing row and the literal INSERT trigger/schema.
-                        # Only compiled catalog bytes were appended. Verify that
-                        # exact delta, not another full retained-history scan on
-                        # the SAME bounded ledger (or a replenished allowance).
-                        for compiled in pending:
-                            if not inspect_definition(conn, compiled, budget)[1]:
-                                raise ValueError('sequential_builtin_target_missing')
-                        if (conn.total_changes - changes != inserted
-                                or conn.execute('PRAGMA foreign_key_check(workflow_seq_definitions)').fetchone() is not None):
-                            raise ValueError('sequential_builtin_target_mismatch')
-                        native._native_suffix(conn, census, states, after)
-                        native._safety(conn, admission, states, census, own=own)
-                        if (owner_for(db) is not admission or admission.writers.get(own) is not reservation
-                                or authority._pointer(conn, authority.namespace) != pointer):
-                            raise ValueError('sequential_builtin_qualification_changed')
-                        budget.check()
+        phase = _RegistrationPhase(authority, db)
+        try:
+            with phase.publisher, phase.database:
+                if db._conn.in_transaction:
+                    raise ValueError('sequential_builtin_caller_transaction')
+                phase.capture(db)
+                # Legacy orgs stay legacy; an absent DB/table never proves freshness.
+                if db._conn.execute("SELECT 1 FROM sqlite_schema WHERE name='workflow_seq_schema_versions'").fetchone() is None:
+                    return
+                with db.workflow_schema_transaction() as conn, _sql_budget(conn, budget):
+                    pending = [compiled for compiled in self.catalog
+                               if not inspect_definition(conn, compiled, budget)[1]]
+                if not pending:
+                    return
+                if self.org._startup_publication_held or self.org._startup_authority_error is not None:
+                    return
+                ready = authority.verify_admission_ready()
+                pointer = authority._pointer(db._conn, authority.namespace)
+                admission = owner_for(db)
+                if admission is None:
+                    raise ValueError('sequential_builtin_native_owner_unavailable')
+                census, states = _NativeCensusBudget(), {}
+                native = self.org.workflow_coding_builtin
+                # No transaction/lease is open while the actual file/cache readiness
+                # is checked above. Subsequent qualification is SQL-only.
+                with phase.transaction as conn, _sql_budget(conn, budget):
+                    if conn is not phase.conn:
+                        raise RuntimeError('sequential_builtin_connection_changed')
+                    try:
+                        after = native._native_suffix(conn, census, states, 0)
+                        native._safety(conn, admission, states, census)
+                    except _Deferred as exc:
+                        phase.refusal = exc
+                        raise
+                phase.committed = True
+                before = set(admission.writers)
+                with native_writer(db, publisher='builtin_sequential_registration', durable=False):
+                    added = set(admission.writers) - before
+                    if owner_for(db) is not admission or len(added) != 1:
+                        raise ValueError('sequential_builtin_native_owner_changed')
+                    own = added.pop()
+                    reservation = admission.writers[own]
+                    if reservation != dict(owner_id=own, publisher='builtin_sequential_registration', agents=(), teams=()):
+                        raise ValueError('sequential_builtin_native_owner_changed')
+                    with db.workflow_schema_transaction() as conn:
+                        history = read_sequential_history(conn, expected_org_slug=self.org.slug,
+                            retained_budget=retained, deadline=budget.deadline)
+                        if not history.layout.sequential or history.layout.ownership != 2:
+                            raise ValueError('sequential_builtin_storage_required')
+                        with _sql_budget(conn, budget):
+                            after = native._native_suffix(conn, census, states, after)
+                            native._safety(conn, admission, states, census, own=own)
+                            if (authority._pointer(conn, authority.namespace) != pointer
+                                    or authority._cache.get(ready.namespace) != (ready.generation, ready.snapshot_digest)):
+                                raise ValueError('sequential_builtin_authority_changed')
+                            changes, inserted = conn.total_changes, 0
+                            for compiled in pending:
+                                definition, exists = inspect_definition(conn, compiled, budget)
+                                if not exists:
+                                    columns = ','.join(definition)
+                                    conn.execute(f'INSERT INTO workflow_seq_definitions ({columns}) '
+                                        f'VALUES ({",".join("?" for _ in definition)})', tuple(definition.values()))
+                                    inserted += 1
+                            # Complete source qualification authenticated every
+                            # existing row and the literal INSERT trigger/schema.
+                            # Only compiled catalog bytes were appended. Verify that
+                            # exact delta, not another full retained-history scan on
+                            # the SAME bounded ledger (or a replenished allowance).
+                            for compiled in pending:
+                                if not inspect_definition(conn, compiled, budget)[1]:
+                                    raise ValueError('sequential_builtin_target_missing')
+                            if (conn.total_changes - changes != inserted
+                                    or conn.execute('PRAGMA foreign_key_check(workflow_seq_definitions)').fetchone() is not None):
+                                raise ValueError('sequential_builtin_target_mismatch')
+                            native._native_suffix(conn, census, states, after)
+                            native._safety(conn, admission, states, census, own=own)
+                            if (owner_for(db) is not admission or admission.writers.get(own) is not reservation
+                                    or authority._pointer(conn, authority.namespace) != pointer):
+                                raise ValueError('sequential_builtin_qualification_changed')
+                            budget.check()
+        except _Deferred as exc:
+            # Only the original preflight cutover refusal may leave ordinary
+            # loading available. Reuse CodingBuiltinStore's positive proof of
+            # cursor closure, rollback, connection identity and BOTH lock exits.
+            # Native uncertainty and every later writer-phase refusal propagate.
+            if str(exc) != 'cutover_in_progress' or not phase.rolled_back(db, exc):
+                raise
+            native._warn_deferred(exc)

@@ -1263,8 +1263,9 @@ with reason noncurrent_successor after return; current assignment replacement
 retains all historical tasks/results/evidence/contributors and receipts.
 Layout I changes only the draft admission enum and adds ONE
 workflow_document_revision_operations table. F/E/G/H independent readers remain;
-H literal r1/unique intent and every old schema/data byte are preserved. Proven
-fresh org creation initializes I. Existing startup/reopen/enable only validates.
+H literal r1/unique intent and every old schema/data byte are preserved. A2 fresh
+POST `/orgs` creates J + Coding + sequential storage + ownership-2; startup
+with an absent DB stays historical. Existing startup/reopen/enable only validates.
 Explicit owned idle H→I operator source is
 `scripts/migrate_workflow_document_revision_schema.py --org-root ABSOLUTE_ORG_ROOT
 --org-slug ORG [--check]`. No live migration was executed. Even empty I needs a
