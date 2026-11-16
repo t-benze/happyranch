@@ -840,7 +840,11 @@ class AtomicFileTrustStateStore:
 
     @contextlib.contextmanager
     def _open_parent(self, path: Path) -> Iterator[int]:
-        """Open literal parents without symlinks; never repair existing modes."""
+        """No-follow parents; tighten only an effective-user-owned directory.
+
+        Legacy installers create this directory as 0755. Retain their
+        chmod-to-0700 lifecycle without repairing foreign owners or leaf files.
+        """
         absolute = path.absolute()
         fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY)
         try:
@@ -853,8 +857,10 @@ class AtomicFileTrustStateStore:
                 os.close(fd)
                 fd = child
             metadata = os.fstat(fd)
-            if metadata.st_uid != os.geteuid() or stat.S_IMODE(metadata.st_mode) != _STATE_DIR_MODE:
+            if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != os.geteuid():
                 raise OSError("unsafe trust state parent")
+            if stat.S_IMODE(metadata.st_mode) != _STATE_DIR_MODE:
+                os.fchmod(fd, _STATE_DIR_MODE)
             yield fd
         finally:
             os.close(fd)

@@ -1173,6 +1173,12 @@ restart. Unknown/missing/mistyped fields, duplicate keys, torn state and anchor
 rollback fail closed. There are at most 32 devices. Legacy anchored unpinned
 records load as re-pair-required and cannot pass pinned admission.
 
+Literal no-follow traversal requires a real final parent owned by the effective
+UID and tightens its mode to exactly 0700, including the shipped owned-0755
+installer layout. Symlinked/non-directory/foreign-owned parents refuse. Existing
+unsafe snapshot/anchor/lock metadata refuses without chmod/chown repair; stricter
+installer layout remains owned by slice 3b.
+
 The pure authorization.admit function reloads current anchored trust and requires
 credential digest/epoch/expiry/revocation/audience plus exact control-plane/StableID
 pin equality. StableID enters as a trusted plain argument from ingress; the

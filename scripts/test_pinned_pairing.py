@@ -21,6 +21,44 @@ def store_at(path: Path) -> AtomicFileTrustStateStore:
     return AtomicFileTrustStateStore(path, TrustState(IDENTITY, 0, 0))
 
 
+@pytest.mark.parametrize("mode", [0o755, 0o775])
+def test_owned_legacy_parent_is_tightened(tmp_path: Path, mode: int) -> None:
+    from runtime.remote_access.state_store import StateStoreError
+    parent = tmp_path / "state"
+    parent.mkdir(mode=mode)
+    parent.chmod(mode)
+    path = parent / "trust.json"
+    try:
+        state = store_at(path).load()
+    except StateStoreError:
+        state = None
+    assert state is not None, "owned legacy parent must load on first run"
+    assert parent.stat().st_mode & 0o7777 == 0o700
+    store_at(path).save(state)
+    parent.chmod(mode)
+    assert store_at(path).load().connector_identity == IDENTITY
+    assert parent.stat().st_mode & 0o7777 == 0o700
+
+
+    # Compatibility tightening cannot repair an alias or an unsafe leaf file.
+    alias = tmp_path / "alias"
+    alias.symlink_to(parent, target_is_directory=True)
+    parent.chmod(mode)
+    with pytest.raises(StateStoreError):
+        store_at(alias / "trust.json").load()
+    assert parent.stat().st_mode & 0o7777 == mode
+    parent.chmod(0o700)
+    path.chmod(0o644)
+    with pytest.raises(StateStoreError):
+        store_at(path).load()
+    assert path.stat().st_mode & 0o7777 == 0o644
+    non_directory = tmp_path / "file-parent"
+    non_directory.write_text("synthetic")
+    with pytest.raises(StateStoreError):
+        store_at(non_directory / "trust.json").load()
+    assert non_directory.read_text() == "synthetic"
+
+
 def rewrite_payload(path: Path, change) -> None:
     envelope = json.loads(path.read_bytes())
     change(envelope)

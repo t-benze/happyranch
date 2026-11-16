@@ -960,7 +960,10 @@ records remain readable without inventing pins; pinned admission reports them as
 re-pair-required and denies them. Missing/unknown/mistyped v3 fields, duplicate JSON
 keys, torn publication and snapshot/anchor rollback refuse. Literal no-follow
 parents, bounded regular owner-only single-link files and descriptor-relative
-atomic publication apply; unsafe existing metadata is never repaired into acceptance.
+atomic publication apply. The final parent must be a directory owned by the effective
+UID; its mode is tightened to exactly 0700, preserving the shipped owned-0755
+installer lifecycle. Symlinked/non-directory/foreign-owned parents refuse; existing
+unsafe snapshot, anchor and lock metadata is never repaired into acceptance.
 The local anchor cannot detect replacement of both files by a trusted store writer.
 
 Redemption consumes the invitation into the actual node's pending record in one
