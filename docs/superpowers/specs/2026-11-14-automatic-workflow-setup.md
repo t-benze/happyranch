@@ -9,6 +9,12 @@ install gates (I1a) from the daily read-only advisory report (I1b).
 
 ## I1a: mandatory full integrity during offline installation
 
+A2 adds a distinct fresh-org owner: POST `/orgs` first creates its skeleton,
+then exclusively creates the database file and initializes J, Coding, sequential
+storage and ownership-2. The native historical initializer and its G default
+remain unchanged. Startup absence is never positive freshness evidence. This
+source change does not install existing orgs; A4 remains separate.
+
 `runtime/infrastructure/workflow_integrity.py` owns the explicit native full
 `PRAGMA integrity_check`. Success requires exactly one single-cell text `ok`
 row followed by normal cursor completion. Non-ok results and corruption errors
