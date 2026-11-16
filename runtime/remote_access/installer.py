@@ -432,6 +432,8 @@ class ManagedInstaller:
         try:
             user = self._lookup_user(user_name)
             home = data_home if data_home is not None else Path(user.pw_dir) / '.local/share/happyranch'
+            if home.anchor != '/':
+                raise InstallerError(f'release data home {home} must use a canonical absolute path')
             record = dict(user=user_name, uid=user.pw_uid, data_home=str(home), unit=UNIT, fragment_path=FRAGMENT)
             with self._input_parent(home / 'daemon.port') as directory:
                 info = os.fstat(directory)

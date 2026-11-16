@@ -899,13 +899,27 @@ class ManagedLinuxDebInstaller(unittest.TestCase):
             yield inputs | dict(data_home=home)
 
     def test_linux_provision_hidden_data_home_refusal(self):
-        for home in map(Path, ('/tmp', '/var/tmp', '/tmp/release', '/var/tmp/release')):
-            with self.subTest(home=home), self.host() as (root, instance, inputs, manager, _):
+        for spelling in ('/tmp', '/var/tmp', '/tmp/release', '/var/tmp/release',
+                         '//tmp/release', '//var/tmp/release'):
+            home = Path(spelling)
+            reason = 'canonical absolute path' if home.anchor == '//' else 'PrivateTmp=yes'
+            with self.subTest(home=home, phase='provision'), self.host() as (root, instance, inputs, manager, _):
                 with self.data_home(instance, inputs, home) as mapped:
-                    with self.assertRaisesRegex(installer.InstallerError, re.escape(str(home)) + '.*PrivateTmp=yes'):
+                    with self.assertRaisesRegex(installer.InstallerError, re.escape(str(home)) + '.*' + re.escape(reason)):
                         instance.provision(**mapped)
                 self.assertFalse((root / 'etc/happyranch/release-daemon.json').exists())
                 self.assertFalse((root / 'etc/happyranch/daemon.token').exists())
+                self.assertEqual(manager.mock_calls, [])
+            with self.subTest(home=home, phase='install'), self.host() as (root, instance, inputs, manager, _):
+                instance.provision(**inputs)
+                path = root / 'etc/happyranch/release-daemon.json'
+                record = json.loads(path.read_text())
+                record['data_home'] = spelling
+                path.write_text(json.dumps(record))
+                with self.data_home(instance, inputs, home):
+                    with self.assertRaises(installer.InstallerError):
+                        instance.install(enrollment_key_file=root / 'operator/enrollment.key')
+                self.assertFalse((root / 'etc/systemd/system').exists())
                 self.assertEqual(manager.mock_calls, [])
 
     def test_linux_provision_visible_data_home(self):

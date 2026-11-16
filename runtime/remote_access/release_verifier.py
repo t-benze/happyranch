@@ -94,7 +94,8 @@ def validate_record(record: dict) -> None:
             or not isinstance(record['data_home'], str)):
         _refuse('invalid_record')
     home = Path(record['data_home'])
-    if (not home.is_absolute() or '..' in home.parts or home == Path('/')
+    if (home.anchor != '/' or str(home) != record['data_home']
+            or '..' in home.parts or home == Path('/')
             or home.parts[1] in ('etc', 'var')
             or home.is_relative_to(Path(pwd.getpwuid(record['uid']).pw_dir) / '.happyranch')
             or any(ord(c) < 32 for c in str(home))):
