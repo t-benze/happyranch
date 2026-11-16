@@ -71,9 +71,12 @@ from runtime.remote_access.managed_provider import (
     ManagedProviderAdapter,
     ManagedProviderConfig,
     ManagedProviderError,
+    LINUX_IDENTITY_PROFILE,
+    make_pinned_context_factory,
 )
 from runtime.remote_access.network import NetworkAddressError, NetworkConfig
-from runtime.remote_access.pairing import PairingManager
+from runtime.remote_access.pairing import PairingManager, PinnedPairingManager
+from runtime.remote_access.revocation import RevocationIncomplete
 from runtime.remote_access.policy import PolicyEnvelope, PolicyError, RoutePolicyConsumer
 from runtime.remote_access.readiness import ConnectorReadiness, ReadinessReport
 from runtime.remote_access.service_manager import (
@@ -299,6 +302,7 @@ class ConnectorSupervisor:
         # reviewer [CRITICAL] finding 2).
         self._registry: StreamRegistry | None = None
         self._pairing_manager: PairingManager | None = None
+        self._pinned_pairing_manager: PinnedPairingManager | None = None
         # The revocation epoch the run loop has already reconciled (streams
         # closed): cross-process revoke/remove from the CLI is closed here
         # within one poll interval.
@@ -535,12 +539,31 @@ class ConnectorSupervisor:
     def build_managed_provider(self) -> ManagedProviderAdapter | None:
         if self.config.managed is None:
             return None
+        if self.config.managed.profile == LINUX_IDENTITY_PROFILE:
+            if self._pinned_pairing_manager is None:
+                self._pinned_pairing_manager = PinnedPairingManager(
+                    state_store=self.state_store, identity=self._configured_identity(),
+                    registry=self.registry, now_fn=self._now_fn,
+                )
+            pairing = self._pinned_pairing_manager
+            ctx_factory = make_pinned_context_factory(
+                identity=self._configured_identity(), pairing=pairing,
+                control_plane_id=self.config.managed.control_plane_id,
+                policy=self.load_policy(), credential_provider=self.credential_provider(),
+                forwarder=HttpLoopbackForwarder(
+                    LoopbackTarget(LOOPBACK_HOST, self.config.daemon_port or 0),
+                    verifier=VerifierClient() if self.config.uses_release_verifier() else None,
+                ), registry=self.registry,
+            )
+        else:
+            pairing = self.pairing_manager()
+            ctx_factory = self.build_diy_ctx_factory()
         return ManagedProviderAdapter(
             config=self.config.managed,
             readiness=self.build_readiness(),
-            pairing=self.pairing_manager(),
+            pairing=pairing,
             identity=self._configured_identity(),
-            ctx_factory=self.build_diy_ctx_factory(),
+            ctx_factory=ctx_factory,
         )
 
     # ── readiness / diagnostics ───────────────────────────────────────────
@@ -1101,7 +1124,13 @@ class ConnectorSupervisor:
         return thread is None or thread.is_alive()
 
     def _reconcile_revocation(self) -> None:
-        """Cross-process revocation closure at the REAL shipping seam
+        """Reconcile durable revocation with this process's live streams.
+
+        Managed HRID registrations carry device/epoch attribution: fence and
+        close only revoked devices, preserving the listener and other devices.
+        Legacy un-attributed providers retain the conservative rotation below.
+
+        Cross-process revocation closure at the REAL shipping seam
         (TASK-6039 reviewer [CRITICAL] finding 2 / TASK-6044 reviewer [HIGH]
         finding 2): the operator's ``revoke``/``remove-device`` CLI runs in a
         SEPARATE process and persists the revocation epoch; the connector
@@ -1138,6 +1167,21 @@ class ConnectorSupervisor:
         if state.revocation_epoch <= self._reconciled_revocation_epoch:
             return
         registry = self.registry
+        if (self.config.managed is not None
+                and self.config.managed.profile == LINUX_IDENTITY_PROFILE):
+            failures: list[str] = []
+            for device in state.devices.values():
+                if device.revoked:
+                    try:
+                        registry.close_device(device.device_id, max(
+                            state.revocation_epoch, device.authorization_epoch,
+                        ))
+                    except StreamCloseError as exc:
+                        failures.extend(exc.stream_ids)
+            if failures:
+                raise RevocationIncomplete(state.revocation_epoch, failures)
+            self._reconciled_revocation_epoch = state.revocation_epoch
+            return
         sealed = registry.sealed
         open_count = registry.open_count()
         needs_rotation = sealed or open_count > 0
@@ -1183,6 +1227,7 @@ class ConnectorSupervisor:
         # by the old ctx factory and provider: rebuild them all from scratch.
         self._registry = None
         self._pairing_manager = None
+        self._pinned_pairing_manager = None
         if was_running and self.readiness_report().ready:
             # Rebuild the provider (fresh registry + pairing manager + ctx
             # factory) and reopen the listener. On any failure the loop
@@ -1203,6 +1248,7 @@ class ConnectorSupervisor:
                     pass  # sealed fail closed; shutdown still drops runtime residue
                 self._registry = None
                 self._pairing_manager = None
+                self._pinned_pairing_manager = None
             self._notify_fn("STOPPING=1\n")
 
     def _start_provider(self) -> bool:
@@ -1241,6 +1287,7 @@ class ConnectorSupervisor:
             self._provider_running = False
             self._registry = None
             self._pairing_manager = None
+            self._pinned_pairing_manager = None
             # fail-closed: readiness passed but the provider refused to bind
             # (e.g. bind conflict) — keep the loop re-evaluating; no listener.
             self._notify_fn("STATUS=provider failed to start; no listener\n")

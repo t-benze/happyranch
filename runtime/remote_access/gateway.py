@@ -101,6 +101,7 @@ class GatewayContext:
     stream_registry: StreamRegistry
     scanner: CredentialScanner
     now: datetime
+    pinned_admission: AuthorizationVerdict | None = None
 
 
 @dataclass
@@ -356,7 +357,17 @@ class ConnectorGateway:
                 target.method, target.path, target.query, state.headers, request.body, bearer, stream_id
             )
             try:
-                tracked = ctx.stream_registry.open(stream_id, handle)
+                if ctx.pinned_admission is None:
+                    tracked = ctx.stream_registry.open(stream_id, handle)
+                else:
+                    admitted = ctx.pinned_admission
+                    if not admitted.ok or admitted.device_id is None or admitted.authorization_epoch is None:
+                        _close_partial(handle)
+                        return self._redact(_deny("identity", "identity_denied", "binding"))
+                    tracked = ctx.stream_registry.open(
+                        stream_id, handle, device_id=admitted.device_id,
+                        epoch=admitted.authorization_epoch,
+                    )
             except StreamClosed:
                 # The seal already linearized: the admission was NOT fully
                 # registered before it, so the registry failed it closed —

@@ -155,9 +155,14 @@ def admit(
     """
     import hashlib
     import hmac
-    from runtime.remote_access.state_store import StateStoreError
+    from runtime.remote_access.state_store import StateStoreError, _require_identity_text
 
     denied = AuthorizationVerdict(False, "identity_unestablished")
+    try:
+        _require_identity_text(stable_node_id)
+        _require_identity_text(control_plane_id)
+    except StateStoreError:
+        return denied
     if (not isinstance(credential, str) or len(credential) > 256
             or not isinstance(stable_node_id, str) or not stable_node_id
             or not isinstance(control_plane_id, str) or not control_plane_id

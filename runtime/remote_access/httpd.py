@@ -20,13 +20,17 @@ from contextvars import ContextVar
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler
 from socketserver import ThreadingUnixStreamServer
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from runtime.remote_access.pairing import PinnedPairingManager
 
 from runtime.remote_access.models import Decision, Header, RemoteRequest
 
 _DENY_STATUS = 403
 
 # Trusted connection metadata, scoped to the current handler/request thread.
-# HTTP fields can neither set nor override this context. No authorization uses it.
+# HTTP fields can neither set nor override this context.
 ingress_node_identity: ContextVar[str | None] = ContextVar("ingress_node_identity", default=None)
 _IDENTITY_PREFIXES = ("x-happyranch-", "x-tailscale-", "tailscale-", "x-tailnet-")
 
@@ -36,8 +40,12 @@ class IdentityUnixServer(ThreadingUnixStreamServer):
 
     daemon_threads = True
 
-    def __init__(self, path: str, handler: type[BaseHTTPRequestHandler], expected_uid: int) -> None:
+    def __init__(self, path: str, handler: type[BaseHTTPRequestHandler], expected_uid: int,
+                 *, pairing: PinnedPairingManager | None = None,
+                 control_plane_id: str | None = None) -> None:
         self.expected_uid = expected_uid
+        self.pairing = pairing
+        self.control_plane_id = control_plane_id
         self._socket_identity: tuple[int, int] | None = None
         super().__init__(path, handler, bind_and_activate=False)
         try:

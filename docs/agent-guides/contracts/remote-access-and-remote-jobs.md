@@ -969,8 +969,8 @@ Initial frame/request-line reads have a two-second socket timeout. The socket is
 being overwritten. Identity lives only in the handler's request-local
 `ingress_node_identity` context; reserved HappyRanch/Tailscale identity headers
 are stripped, including duplicates, while the existing device-credential header
-continues to serve the unchanged pairing pipeline. Identity is not yet used for
-pairing or authorization (slice 2).
+continues to carry the device bearer. In the managed identity profile, slice
+2b-1 uses this verified frame for pinned pairing and every-request admission.
 
 `ConnectorUnitSpec.ingress_profile` adds only `RuntimeDirectoryMode=0700` for the
 fixed system service. Existing hardening, MDWE, AF_UNIX allowance, capabilities,
@@ -1028,8 +1028,8 @@ registration. Identity comes only from trusted plain arguments: WhoIs StableID a
 connector-configured control-plane ID, never headers, hostname or address. Labels
 currently use bounded escaped identity text and a StableID fingerprint because this
 slice has no OS-label transport. Headscale membership grants no product authority.
-Request/WebSocket/SSE wiring remains deferred to slice 2b after PR #1572; existing
-DIY and legacy transport paths keep their versioned behavior.
+The managed identity listener wires this verdict into request/stream admission
+(slice 2b-1); existing DIY and legacy transport paths keep their versioned behavior.
 
 Attributed registrations use StreamRegistry.open with device_id and epoch.
 Per-device revocation persists invalidation before closing/acknowledging that device's
@@ -1037,7 +1037,60 @@ registries, fences stale registrations and retains RevocationIncomplete on clean
 failure. Other devices remain open. Unattributed legacy revocation keeps its existing
 conservative closure semantics. Focused synthetic checks use the retained standalone
 script venue: uv run --frozen pytest scripts/test_pinned_pairing.py -v --tb=short.
-This slice adds no UI, helper, polkit/control socket, ingress wiring or installer.
+The core slice adds no UI, helper, polkit/control socket or installer.
+
+### Managed request and stream admission (slice 2b-1)
+
+Protected connector JSON uses the additive optional key
+`managed.control_plane_id`, matching the design's `control_plane_id` identity.
+The later root-helper installation slice writes it. Old configurations without
+the key still load; the identity listener refuses pairing and product requests
+with HTTP 503 `control_plane_id_missing`. It never infers a control plane from
+headers, HRID, hostname, address, URL, tenant/home/connector IDs, or falls back
+to the legacy pairing manager. The supervisor constructs one cached
+PinnedPairingManager for `linux-managed-identity-v1` and supplies it and the
+configured control-plane identity to the protected Unix listener.
+
+`POST /pair/invite` takes the raw UTF-8 pairing secret and redeems against that
+configured control plane plus the HRID StableID. It returns `state:
+pending-approval`, a private `completion_handle`, `comparison_phrase` and
+`expires_at`; no product credential is issued before local approval.
+`POST /pair/complete` takes the raw UTF-8 completion handle and returns the
+one-use `credential` only for the same tuple after durable approval. Failures
+return HTTP 403 `pairing_denied`. These exact paths accept no query string.
+The legacy `POST /pair` ceremony grants no authority on this listener.
+
+Framing and pin validation have different bounds: HRID accepts at most 1017
+UTF-8 bytes, rejects blank identity and CR/LF/NUL; pins accept at most 256
+characters and reject every C0 character, DEL and surrogate. A frame-valid
+identity that pins refuse (for example 257 ASCII characters or a nonblank
+identity containing TAB) receives a clean 403, without identity/secret echo or
+500. A matched invalid redemption consumes its invite, following the core's
+consume-before-validation rule. Malformed framing still closes the connection.
+
+Every ordinary request, SSE or WebSocket admission calls authorization.admit
+through the pinned manager using the device bearer and this exact node tuple.
+Wrong-node/valid-bearer requests deny, regardless of forged identity headers.
+The device credential is consumed before forwarding. Successful verdicts carry
+device ID and epoch through the existing route/policy/readiness and release
+verification gates to StreamRegistry.open, including in-flight HTTP. The
+shipped route policy still denies unsupported upgrades (currently all
+WebSocket routes); this wiring adds no allowed route.
+
+Supervisor reconciliation of persisted managed revocation fences and closes
+the revoked device's attributed epochs without stopping the listener or
+rotating/sealing the entire registry. Other devices retain their streams and
+can open new requests. Stale admissions racing transport allocation fail at
+registration; cleanup failures retain RevocationIncomplete rather than
+acknowledging success. DIY/legacy reconciliation keeps its existing whole-registry
+closure and rotation. Completed pinned grants survive connector restart;
+unfinished ceremonies still burn. Standalone verification:
+`PYTHONPATH=$PWD uv run --frozen pytest scripts/test_pinned_pairing.py scripts/test_identity_ingress.py scripts/test_managed_admission.py -v`.
+These tests use real temporary Unix sockets, synthetic protected state and
+controlled upstream handles. The WS attribution case supplies a synthetic
+permitted template to reach registration, separately from the shipped policy's
+deny gate. Native WS protocol behavior, live Headscale, helper binding,
+installation and service recovery remain separate acceptance work.
 
 ## Fixed Linux helper source (THR-327 slice 3a)
 
