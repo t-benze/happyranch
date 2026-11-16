@@ -87,16 +87,16 @@ async def list_orgs(request: Request) -> dict:
     }
 
 
-def _is_reclaimable_partial(org_root: Path) -> bool:
+def _is_reclaimable_partial(org_root: Path, *, access_owner: dict | None = None) -> bool:
     from runtime.infrastructure.org_access_fence import org_access
     try:
         with org_access(org_root):
-            return _is_reclaimable_partial_fenced(org_root)
+            return _is_reclaimable_partial_fenced(org_root, access_owner=access_owner)
     except (OSError, ValueError):
         return False
 
 
-def _is_reclaimable_partial_fenced(org_root: Path) -> bool:
+def _is_reclaimable_partial_fenced(org_root: Path, *, access_owner: dict | None = None) -> bool:
     """Return True ONLY when `org_root` is a pristine runtime-seeded skeleton
     with zero real org data — safe to `rmtree` without dataloss risk.
 
@@ -112,6 +112,8 @@ def _is_reclaimable_partial_fenced(org_root: Path) -> bool:
     db_path = org_root / "happyranch.db"
     if db_path.exists():
         try:
+            if access_owner is not None:
+                access_owner["resources_started"] = True
             conn = sqlite3.connect(str(db_path))
             tables = conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table'"
@@ -125,8 +127,12 @@ def _is_reclaimable_partial_fenced(org_root: Path) -> bool:
                 )
                 if cursor.fetchone()[0] > 0:
                     conn.close()
+                    if access_owner is not None:
+                        access_owner["resources_started"] = False
                     return False
             conn.close()
+            if access_owner is not None:
+                access_owner["resources_started"] = False
         except Exception:
             # Can't read the DB — assume it holds data, do NOT touch.
             return False
@@ -168,7 +174,7 @@ async def init_org(body: InitOrgBody, request: Request) -> dict:
                 return await _init_org_fenced(body, request, access_owner=access_owner)
             except BaseException:
                 if not access_owner["resources_started"]:
-                    # Skeleton/input refusal preceded every SQL/native owner.
+                    # No SQL/native owner began, or the original probe positively closed.
                     fence.close()
                 raise
     except OrgAccessHeld as exc:
@@ -192,12 +198,10 @@ async def _init_org_fenced(body: InitOrgBody, request: Request, *,
         )
     org_root = state.runtime.orgs_dir / body.slug
     if org_root.exists():
-        if access_owner is not None:
-            access_owner["resources_started"] = True
         # The org is not loaded. Two paths:
         #  a) Pristine skeleton (no real data) → reclaim silently.
         #  b) Data-bearing dir → protective 409, do NOT touch.
-        if _is_reclaimable_partial(org_root):
+        if _is_reclaimable_partial(org_root, access_owner=access_owner):
             logger.warning(
                 "init_org: reclaiming stale pristine skeleton for slug %r",
                 body.slug,

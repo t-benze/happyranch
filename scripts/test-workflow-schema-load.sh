@@ -285,6 +285,98 @@ if sys.argv[1:] in ([], ['--org-access-fence'], ['--org-access-openers'], ['--or
                         state.direct_connect_authority_store.close()
         asyncio.run(refused_before_open_case())
 
+        async def existing_directory_refusal_case(kind):
+            with tempfile.TemporaryDirectory(prefix='a1-existing-refusal-') as scratch:
+                home = Path(scratch).resolve()
+                with patch.dict(os.environ, {'HAPPYRANCH_DAEMON_HOME': str(home)}):
+                    runtime = RuntimeDir.init(home / 'runtime')
+                    state = DaemonState(runtime=runtime, settings=Settings())
+                    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(daemon=state)))
+                    root = runtime.orgs_dir / 'retained'
+                    root.mkdir()
+                    db_path = root / 'happyranch.db'
+                    if kind == 'workspace-only':
+                        (root / 'workspaces').mkdir()
+                        user_file = root / 'workspaces' / 'user-data'
+                        user_file.write_bytes(b'preserve original workspace bytes')
+                    else:
+                        with closing(sqlite3.connect(db_path)) as seed:
+                            seed.execute('CREATE TABLE durable(value)')
+                            seed.execute('INSERT INTO durable VALUES (42)')
+                            seed.commit()
+                    before_db = file_state(db_path)
+                    fd_dir = Path('/proc/self/fd' if sys.platform == 'linux' else '/dev/fd')
+                    baseline_fds = len(list(fd_dir.iterdir()))
+                    baseline_fences = set(access_fences._uncertain)
+                    opened, closed = [], []
+                    real_connect = sqlite3.connect
+
+                    class ObservedConnection(sqlite3.Connection):
+                        def execute(self, *args, **kwargs):
+                            if kind == 'probe-error':
+                                raise sqlite3.OperationalError('private probe failure after real open')
+                            return super().execute(*args, **kwargs)
+
+                        def close(self):
+                            super().close()
+                            closed.append(self)
+
+                    def observe_connect(*args, **kwargs):
+                        conn = real_connect(*args, **kwargs, factory=ObservedConnection)
+                        opened.append(conn)
+                        return conn
+
+                    try:
+                        with patch('sqlite3.connect', observe_connect):
+                            for attempt in range(1 if kind == 'probe-error' else 3):
+                                try:
+                                    await init_org(InitOrgBody(slug='retained'), request)
+                                except Exception as exc:
+                                    assert getattr(exc, 'status_code', None) == 409, exc
+                                    assert exc.detail['code'] == 'org_dir_has_data', exc.detail
+                                else:
+                                    raise AssertionError('A1 existing data unexpectedly reclaimed')
+                                assert root.is_dir() and not state.orgs
+                                assert file_state(db_path) == before_db, 'A1 refusal changed durable DB bytes/identity'
+                                if kind == 'workspace-only':
+                                    assert user_file.read_bytes() == b'preserve original workspace bytes'
+                                    assert not opened, 'A1 workspace-only refusal opened SQLite'
+                                elif kind == 'closed-db':
+                                    assert len(opened) == attempt + 1 and opened == closed, 'A1 probe did not positively close every connection'
+                                else:
+                                    assert len(opened) == 1 and not closed, 'A1 probe error lost unknown connection'
+                                    assert len(set(access_fences._uncertain) - baseline_fences) == 1
+                                    assert len(list(fd_dir.iterdir())) > baseline_fds and not acquire_ex(root)
+                                    print('PASS A1 existing-directory probe-error retains original route HOLD without closure proof', flush=True)
+                                    continue
+                                assert access_fences._uncertain == baseline_fences, f'A1 {kind} refusal retained fence'
+                                assert len(list(fd_dir.iterdir())) == baseline_fds, f'A1 {kind} refusal leaked FD'
+                                assert acquire_ex(root), f'A1 {kind} refusal retained SH'
+                                print(f'PASS A1 existing-directory {kind} HTTP409 preserves data and restores FD/fence/EX (attempt {attempt + 1})', flush=True)
+                        if kind != 'workspace-only':
+                            with closing(real_connect(db_path)) as verify:
+                                assert verify.execute('SELECT value FROM durable').fetchall() == [(42,)]
+                    finally:
+                        # Close only these private original resources after observations.
+                        for conn in opened:
+                            if conn not in closed:
+                                conn.close()
+                        for fence in set(access_fences._uncertain) - baseline_fences:
+                            fence.close()
+                        assert access_fences._uncertain == baseline_fences
+                        assert len(list(fd_dir.iterdir())) == baseline_fds and acquire_ex(root)
+                        state.metrics_store.close()
+                        state.direct_connect_authority_store.close()
+
+        refusal_failures = []
+        for refusal_kind in ('workspace-only', 'closed-db', 'probe-error'):
+            try:
+                asyncio.run(existing_directory_refusal_case(refusal_kind))
+            except AssertionError as exc:
+                refusal_failures.append(f'{refusal_kind}: {exc}')
+                print(f'FAIL A1 existing-directory {refusal_kind}: {exc}', flush=True)
+        assert not refusal_failures, refusal_failures
+
     if sys.argv[1:] in ([], ['--org-access-fence'], ['--org-access-profile']):
         from runtime.workflows.profile_coordinator import ProfileCoordinator
         with tempfile.TemporaryDirectory(prefix='a1-profile-order-') as scratch:
