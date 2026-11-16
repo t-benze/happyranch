@@ -3,14 +3,15 @@
 F is the unchanged inert version-one foundation. OrgState.load atomically adds
 the unchanged four-table coding extension beside any supported document layout;
 fresh F and coding share the same transaction. I plus coding retains J identity.
-Explicit new-org creation still initializes I; only operator scripts upgrade
-document layouts. Generic Database/runtime-audit construction stays workflow-free.
+Positively fresh new-org creation uses a distinct combined initializer; historical
+initializers keep their defaults. Generic Database/runtime-audit stays workflow-free.
 """
 from __future__ import annotations
 
 import base64
 import hashlib
 import json
+import os
 import re
 import sqlite3
 import time
@@ -20,6 +21,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from functools import lru_cache
+from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 from runtime.infrastructure.workflow_integrity import (
@@ -1485,6 +1487,48 @@ def initialize_complete_org_schema(database: Database, *, expected_org_slug: str
         if owner_indexed:
             _install_owner_indexes(conn, layout, coding_extension=layout == "J")
         validate_workflow_schema(conn, expected_org_slug=expected_org_slug)
+
+
+def initialize_fresh_org_database(path: Path, *, expected_org_slug: str) -> Database:
+    """Create a NEW file for the route's exclusively created skeleton only.
+
+    An absent DB observed by startup is never creation authority. O_EXCL proves
+    this invocation created the file; native J initialization independently
+    refuses any work. Historical initializers and their defaults stay unchanged.
+    The caller owns the returned Database and its original close.
+    """
+    from runtime.infrastructure.database import Database
+    from runtime.infrastructure.workflow_sequential_schema import CANONICAL_WORKFLOW_SEQUENTIAL_DDL
+    from runtime.infrastructure.workflow_task_ownership import initialize_fresh_sequential_ownership
+    from runtime.workflows.sequential_history import SequentialLayout, read_sequential_history
+
+    fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    try:
+        created = os.fstat(fd)
+    finally:
+        os.close(fd)
+    database = Database(path)
+    try:
+        current = path.lstat()
+        if (current.st_dev, current.st_ino) != (created.st_dev, created.st_ino):
+            raise ValueError('workflow_fresh_creation_database_changed')
+        initialize_complete_org_schema(database, expected_org_slug=expected_org_slug, layout='J')
+        with database.workflow_schema_transaction() as conn:
+            _execute_ddl(conn, CANONICAL_WORKFLOW_SEQUENTIAL_DDL)
+            conn.execute('INSERT INTO workflow_seq_schema_versions VALUES (1)')
+            initialize_fresh_sequential_ownership(conn)
+            history = read_sequential_history(conn, expected_org_slug=expected_org_slug)
+            if history.layout != SequentialLayout('J', True, True, 2, True):
+                raise ValueError('workflow_fresh_creation_target_mismatch')
+            require_install_integrity(conn, IntegrityLedger(deadline=time.monotonic() + 5), 'target')
+        database._task_ownership_org = expected_org_slug
+        return database
+    except BaseException as primary:
+        try:
+            database.close()
+        except BaseException as cleanup:
+            primary.add_note('fresh database close failed: ' + type(cleanup).__name__)
+        raise
 
 
 def submission_migration_guidance(*, org_slug: str, runtime_root: str = '<absolute-root>') -> str:

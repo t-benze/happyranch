@@ -1313,8 +1313,9 @@ with reason noncurrent_successor after return; current assignment replacement
 retains all historical tasks/results/evidence/contributors and receipts.
 Layout I changes only the draft admission enum and adds ONE
 workflow_document_revision_operations table. F/E/G/H independent readers remain;
-H literal r1/unique intent and every old schema/data byte are preserved. Proven
-fresh org creation initializes I. Existing startup/reopen/enable only validates.
+H literal r1/unique intent and every old schema/data byte are preserved. A2 fresh
+POST `/orgs` creates J + Coding + sequential storage + ownership-2; startup
+with an absent DB stays historical. Existing startup/reopen/enable only validates.
 Explicit owned idle H→I operator source is
 `scripts/migrate_workflow_document_revision_schema.py --org-root ABSOLUTE_ORG_ROOT
 --org-slug ORG [--check]`. No live migration was executed. Even empty I needs a
@@ -5413,9 +5414,10 @@ retain their F/E/G/H/I paths; old families keep their construction and digests.
 The strict fresh-J initializer still requires empty native operational storage
 and valid remote markers; it correctly refuses this retained sequence row.
 Neither that guard nor any real migration changes; calling the real coding
-migration here would recurse through reference validation. Actual create-org
-still explicitly initializes I. Startup/reopen/
-enable validate, never install J; I remains usable for document work and gives
+migration here would recurse through reference validation. A2 fresh POST
+`/orgs` creates J + Coding + sequential storage + ownership-2; startup
+with an absent DB stays historical. Existing startup/reopen/enable only validates.
+I remains usable for document work and gives
 actionable offline guidance. Empty J uses the existing I draft/submission/handoff/
 revision and document drain readers. Any J, even empty, blocks pre-J downgrade;
 retain compatible J code or a separately approved verified pre-J backup. No

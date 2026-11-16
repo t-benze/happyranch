@@ -1669,7 +1669,14 @@ cancellation, source return/thread association and all existing FINAL callback
 rules. Genuine report-completion remains the FINAL action; no notification or
 live activation is authorized by U7d source delivery.
 
-Sequential Coding U9b’s inert setup split (TASK-15616) supplies only human-owned
+Automatic-setup A2 (2026-11-17) adds positively fresh POST /orgs combined storage
+and storage/native/authority-qualified registration of the literal Coding v2
+definition only. Historical initializer defaults remain unchanged; startup DB
+absence never proves freshness. Exact existing definitions write zero; mismatches
+refuse. Registration creates no settings, roles, admission, runs or tasks:
+missing defaults remain Disabled/unset and saved state stays exact. Existing-org
+storage bootstrap remains A4. This supplies no agent self-setup authority.
+Sequential Coding U9b’s inert setup split (TASK-15616) supplies human-owned
 cooperative offline `scripts/setup_sequential_coding.py` registration and a
 separate admission action. Agents must not invoke it on real orgs or self-install,
 configure or allow runs. Initial new defaults remain Disabled; Save preserves

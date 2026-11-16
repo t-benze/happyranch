@@ -13,8 +13,7 @@ from pydantic import BaseModel
 from runtime.daemon.auth import require_token
 from runtime.daemon.org_state import OrgState, _OrgBusyError
 from runtime.daemon.state import DaemonState
-from runtime.infrastructure.database import Database
-from runtime.infrastructure.workflow_schema import initialize_complete_org_schema
+from runtime.infrastructure.workflow_schema import initialize_fresh_org_database
 from runtime.orchestrator._paths import OrgPaths
 
 logger = logging.getLogger(__name__)
@@ -240,9 +239,8 @@ async def _init_org_fenced(body: InitOrgBody, request: Request, *,
             raise ValueError("fresh_org_database_already_exists")
         if access_owner is not None:
             access_owner["resources_started"] = True
-        database = Database(db_path)
+        database = initialize_fresh_org_database(db_path, expected_org_slug=body.slug)
         try:
-            initialize_complete_org_schema(database, expected_org_slug=body.slug, layout="I")
             from runtime.infrastructure.task_pause_controls import install_pause_schema
             install_pause_schema(database, org_slug=body.slug)
             from runtime.orchestrator.org_config import initialize_fresh_reviewer_agents

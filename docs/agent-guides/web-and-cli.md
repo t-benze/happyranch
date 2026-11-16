@@ -1166,8 +1166,9 @@ with reason noncurrent_successor after return; current assignment replacement
 retains all historical tasks/results/evidence/contributors and receipts.
 Layout I changes only the draft admission enum and adds ONE
 workflow_document_revision_operations table. F/E/G/H independent readers remain;
-H literal r1/unique intent and every old schema/data byte are preserved. Proven
-fresh org creation initializes I. Existing startup/reopen/enable only validates.
+H literal r1/unique intent and every old schema/data byte are preserved. A2 fresh
+POST `/orgs` creates J + Coding + sequential storage + ownership-2; startup
+with an absent DB stays historical. Existing startup/reopen/enable only validates.
 Explicit owned idle H→I operator source is
 `scripts/migrate_workflow_document_revision_schema.py --org-root ABSOLUTE_ORG_ROOT
 --org-slug ORG [--check]`. No live migration was executed. Even empty I needs a
@@ -2398,8 +2399,11 @@ existing500 category `draft_schema_migration_required`; GET's existing blocker
 `required_action` names `python scripts/migrate_workflow_draft_schema.py
 --runtime-root <absolute-root> --org <slug>`. The operator runs that script
 explicitly; `--check` exits3 when needed, 0 ready, 1 refusal, 2 parser. Existing F
-history remains visible without recovery advancement. New `orgs init`/POST /orgs
-creation initializes complete G directly. Preflight is read-only and permits only
+history remains visible without recovery advancement. A2 fresh `orgs init`/POST
+`/orgs` creation initializes J + Coding + sequential storage + ownership-2 and
+registers the Coding v2 definition only, with runs Disabled and admission
+unset/Disabled. Startup with an absent DB stays historical.
+Preflight is read-only and permits only
 pristine F initial history with no workflow data; every E/G needs a compatible
 reader, including empty new/migrated orgs; even empty drained or template-only stores refuse.
 The faf40744 reader accepts pristine F and refuses E/G; the b0b55e9f
@@ -3776,10 +3780,10 @@ retain their F/E/G/H/I paths; old families keep their construction and digests.
 The strict fresh-J initializer still requires empty native operational storage
 and valid remote markers; it correctly refuses this retained sequence row.
 Neither that guard nor any real migration changes; calling the real coding
-migration here would recurse through reference validation. Actual create-org
-still explicitly initializes I. Normal OrgState.load subsequently adds coding
-beside the actual document foundation; I plus coding is J. Enable performs no
-document upgrade. Empty J uses the existing I draft/submission/handoff/
+migration here would recurse through reference validation. A2 fresh POST
+`/orgs` creates J + Coding + sequential storage + ownership-2; startup
+with an absent DB stays historical. Existing startup/reopen/enable only validates.
+Empty J uses the existing I draft/submission/handoff/
 revision and document drain readers. Any J, even empty, blocks pre-J downgrade;
 retain compatible J code or a separately approved verified pre-J backup. No
 stripping, automatic migration or old-reader downgrade claim follows.
