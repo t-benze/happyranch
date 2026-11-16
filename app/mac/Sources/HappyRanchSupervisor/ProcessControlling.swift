@@ -19,6 +19,9 @@ import Foundation
 /// runs, making handler registration and launch atomic — no exit callback can
 /// be dropped by a fast-exiting child.
 public protocol ProcessControlling: AnyObject, Sendable {
+    /// Private helper IPC; callers supply pipe endpoints, never secret argv/env.
+    func launchPiped(executableURL: URL, arguments: [String], environment: [String: String],
+                     input: FileHandle, output: FileHandle) throws -> any ProcessHandle
     /// Launch the daemon process with the given configuration.
     /// Returns a fresh ProcessHandle per call.
     ///
@@ -33,4 +36,11 @@ public protocol ProcessControlling: AnyObject, Sendable {
         environment: [String: String]?,
         terminationHandler: (@Sendable (any ProcessHandle) -> Void)?
     ) throws -> any ProcessHandle
+}
+
+public extension ProcessControlling {
+    func launchPiped(executableURL: URL, arguments: [String], environment: [String: String],
+                     input: FileHandle, output: FileHandle) throws -> any ProcessHandle {
+        throw ManagedNetworkError.unavailable
+    }
 }

@@ -16,6 +16,20 @@ import HappyRanchSupervisor
 /// No exit callback can be dropped by a fast-exiting child.
 final class RealProcessController: ProcessControlling, @unchecked Sendable {
 
+    func launchPiped(executableURL: URL, arguments: [String], environment: [String: String],
+                     input: FileHandle, output: FileHandle) throws -> any ProcessHandle {
+        let process = Process()
+        process.executableURL = executableURL
+        process.arguments = arguments
+        process.environment = environment
+        process.standardInput = input
+        process.standardOutput = output
+        process.standardError = FileHandle.nullDevice
+        let handle = PipedProcessHandle(process)
+        try process.run()
+        return handle
+    }
+
     func launch(
         executableURL: URL,
         arguments: [String],
@@ -51,6 +65,22 @@ final class RealProcessController: ProcessControlling, @unchecked Sendable {
         handle.startAsyncDrain()
 
         return handle
+    }
+}
+
+private final class PipedProcessHandle: ProcessHandle, @unchecked Sendable {
+    private let process: Process
+    init(_ process: Process) { self.process = process }
+    var processIdentifier: Int32 { process.processIdentifier }
+    var isRunning: Bool { process.isRunning }
+    var terminationStatus: Int32 { process.terminationStatus }
+    var terminationReason: Process.TerminationReason { process.terminationReason }
+    var capturedStandardOutput: String? { nil }
+    var capturedStandardError: String? { nil }
+    func terminate() { if process.isRunning { process.terminate() } }
+    func forceKill() -> Int32? {
+        guard process.isRunning else { return nil }
+        return kill(process.processIdentifier, SIGKILL) == 0 ? nil : errno
     }
 }
 

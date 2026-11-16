@@ -34,6 +34,28 @@ final class RemoteInviteTests: XCTestCase {
         catch { XCTFail("Non-closed failure: \(name)") }
     }
 
+    func testSANLessCAAndCAValidity() throws {
+        // Public synthetic CA only; generated private key was never written.
+        let ca = Data(base64Encoded: "MIIBcDCCARegAwIBAgIBAzAKBggqhkjOPQQDAjAgMR4wHAYDVQQDExVTeW50aGV0aWMgU0FOLWxlc3MgQ0EwHhcNMjMxMTE0MjIxMzIwWhcNMzMwNTE4MDMzMzIwWjAgMR4wHAYDVQQDExVTeW50aGV0aWMgU0FOLWxlc3MgQ0EwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAAQn+y+9zcuDcMqqUHzKu60sYl6vJtfgX8DR1VfNh6XtkNUwTmInfcpYhOhYzq94Nc4xe87GBk1JAN43UK9cLaDAo0IwQDAOBgNVHQ8BAf8EBAMCAgQwDwYDVR0TAQH/BAUwAwEB/zAdBgNVHQ4EFgQUyJSU09xAckvJECBK6NS3R58e9wswCgYIKoZIzj0EAwIDRwAwRAIgSGTa05eLWaPEQa9fYBwp979EMWXfu6F1aLr+IlLxlqMCIAv6++jkLKpTs+XT4vP9ETW/CdjHrUHv1hqkirv2ErYF")!
+        var fields = fixture(); fields["control_tls"] = tls(ca)
+        XCTAssertNoThrow(try RemoteInvite.parse(encode(fields), now: Self.now))
+        // Change the typed CA boolean while retaining parseable DER. Signature
+        // verification is live-chain responsibility; offline CA:TRUE is required.
+        var nonCA = ca
+        let marker = Data([0x30, 0x03, 0x01, 0x01, 0xff])
+        let range = try XCTUnwrap(nonCA.range(of: marker))
+        nonCA[range.upperBound - 1] = 0
+        fields["control_tls"] = tls(nonCA)
+        refusal(try encode(fields), .certificate, name: "CA must have CA:TRUE")
+        // A time within the invite but beyond the CA validity must refuse.
+        fields = fixture(); fields["control_tls"] = tls(ca)
+        fields["issued_at"] = 2_000_000_000; fields["expires_at"] = 2_000_000_300
+        do {
+            _ = try RemoteInvite.parse(encode(fields), now: Date(timeIntervalSince1970: 2_000_000_010))
+            XCTFail("Expired CA accepted")
+        } catch { XCTAssertTrue(error as? RemoteInviteError == .certificate) }
+    }
+
     func testValidFixtureRoundTrip() throws {
         let encoded = try encode(fixture())
         let invite = try RemoteInvite.parse(encoded, now: Self.now)
@@ -97,7 +119,7 @@ final class RemoteInviteTests: XCTestCase {
             refusal(try encode(fields), .url, name: "runtime endpoint")
         }
         var fields = fixture(); fields["control_url"] = "https://192.168.1.41:8443/"
-        refusal(try encode(fields), .san, name: "IP SAN mismatch")
+        XCTAssertNoThrow(try RemoteInvite.parse(encode(fields), now: Self.now)) // SAN belongs to live leaf
         var trust = fixture()["control_tls"] as! [String: Any]
         trust["sha256"] = String(repeating: "0", count: 64); fields = fixture(); fields["control_tls"] = trust
         refusal(try encode(fields), .fingerprint, name: "fingerprint mismatch")

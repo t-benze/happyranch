@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 import HappyRanchSupervisor
 
 /// Error thrown by FakeProcessController when a single-use constraint is violated.
@@ -141,6 +142,16 @@ final class FakeProcessController: ProcessControlling, @unchecked Sendable {
     /// auto-increment.
     func setNextPID(_ pid: Int32) {
         nextPID = pid
+    }
+
+    var lastPipedInput: FileHandle?
+    func launchPiped(executableURL: URL, arguments: [String], environment: [String: String],
+                     input: FileHandle, output: FileHandle) throws -> any ProcessHandle {
+        lastPipedInput = FileHandle(fileDescriptor: dup(input.fileDescriptor), closeOnDealloc: true)
+        let handle = try launch(executableURL: executableURL, arguments: arguments,
+            currentDirectoryURL: nil, environment: environment, terminationHandler: nil)
+        try output.write(contentsOf: Data("0\n".utf8))
+        return handle
     }
 
     // MARK: - ProcessControlling

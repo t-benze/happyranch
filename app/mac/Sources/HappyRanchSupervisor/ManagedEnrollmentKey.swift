@@ -55,11 +55,13 @@ public enum ManagedNetworkError: Int32, Error, Equatable, Sendable, LocalizedErr
     case stateFailure = -16
     case targetNotPeer = -17
     case peerChanged = -18
+    case homeTrust = -20
 
     static func result(_ code: Int32) -> Self { Self(rawValue: code) ?? .backend }
 
     public var errorDescription: String? {
         switch self {
+        case .homeTrust: return "Home TLS trust could not be verified — create a new invite on Linux"
         case .invalidConfiguration: return "Managed network configuration or ambient enrollment override refused"
         case .busy: return "A managed network operation is still settling"
         case .canceled: return "Join canceled. Enrollment may have completed; the key may be consumed"

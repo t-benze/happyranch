@@ -284,6 +284,9 @@ go list -mod=readonly -deps -json . > "$OUTPUT/diagnostics/go-deps.json"
 go list -mod=readonly -m -json all > "$OUTPUT/diagnostics/go-modules.json"
 go build -mod=readonly -buildmode=c-archive -o libtsnet.a .
 test -s libtsnet.a && test -s libtsnet.h
+# Same existing module/toolchain; process isolation keeps fallback roots out of Swift.
+go build -mod=readonly -o "$OUTPUT/scratch/happyranch-home-bridge" .
+test -x "$OUTPUT/scratch/happyranch-home-bridge"
 shasum -a 256 libtsnet.a libtsnet.h go.mod go.sum > "$OUTPUT/diagnostics/go-inputs.sha256"
 ar -t libtsnet.a > "$OUTPUT/diagnostics/go-members.txt"
 nm -m libtsnet.a > "$OUTPUT/diagnostics/go-symbols.txt"
@@ -313,6 +316,8 @@ test -x "$BIN_DIR/HappyRanchApp" || { echo RELEASE_BINARY_MISSING >&2; exit 1; }
 STAGE=assembly
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/web" "$APP/Contents/Resources/licenses"
 mkdir "$APP/Contents/Helpers"
+cp "$OUTPUT/scratch/happyranch-home-bridge" "$APP/Contents/Helpers/happyranch-home-bridge"
+chmod 755 "$APP/Contents/Helpers/happyranch-home-bridge"
 cp "$OUTPUT/scratch/happyranch-tsnet-sidecar" "$APP/Contents/Helpers/happyranch-tsnet-sidecar"
 chmod 755 "$APP/Contents/Helpers/happyranch-tsnet-sidecar"
 cp "$BIN_DIR/HappyRanchApp" "$APP/Contents/MacOS/HappyRanch"

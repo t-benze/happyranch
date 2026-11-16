@@ -20,8 +20,8 @@ Retained historical source is nonshipping; it is not invoked indirectly.
 `RemoteInvite.parse(_:now:)` is an offline, home-only parser for the merged
 [one-click contract](../../docs/superpowers/specs/2026-11-16-one-click-remote-access.md).
 It refuses oversized/noncanonical base64url, duplicate/extra/missing keys,
-unsupported versions/modes/trust, malformed certificates, fingerprint/SAN
-mismatches and invalid times. Clock skew is **zero**: issued <= now < expires;
+unsupported versions/modes/trust, malformed/non-CA/expired certificates,
+fingerprint mismatches and invalid times. Clock skew is **zero**: issued <= now < expires;
 expiry must be within 300 seconds of issuance. Secret display, debug and mirror
 representations are redacted. `withSecrets` is an explicit memory-only transport
 handoff; Swift/Data copies cannot promise cryptographic memory erasure.
@@ -39,12 +39,9 @@ are **provisional questions for the issuer/spec owner**, not new envelope fields
 - Are `issued_at`/`expires_at` integer Unix seconds (not RFC3339 or floats)?
 - Is `home_endpoint` tailnet `host:443`, distinct from the RFC1918 control URL
   `https://IP:8443[/]`? That is the interpretation implemented here.
-- The brief requests an offline certificate IP-SAN check, but the envelope
-  carries only the CA while the spec describes an IP-SAN **leaf**. Provisionally
-  the invite CA must itself carry the matching IP SAN and CA basic constraint.
-  A normal SAN-less CA therefore refuses. Reconcile this with slice 3c before
-  integration; do not add a leaf field or silently relax the guard. This check
-  does not replace the live leaf validity/chain/SAN check in slice 5b.
+- The CA must have CA:TRUE and be valid now; it need not have a SAN. The URL
+  IP SAN belongs to the live server leaf and is enforced by the helper's trust
+  pool during TLS verification (EM TASK-16704 ruling). No leaf field is added.
 
 `SavedDeviceCredentialStore` separates custody from UI/network work.
 `LoginKeychainDeviceStore` uses a separate local login-Keychain generic password,
@@ -90,6 +87,70 @@ including paths with spaces. Darwin `-u` roots each unchanged ABI export against
 SwiftPM release dead stripping. Retained native sources can inspect ABI exports; the simplified shipping build
 uses basic bundle checks. Native tests remain separate from automated lint/static
 merge checks.
+
+## THR-327 slice 5b: isolated home trust process
+
+`build-app.sh` builds `Contents/Helpers/happyranch-home-bridge` from the existing
+`tsnet-bridge` Go module, alongside its C archive. Only the separate executable's
+fixed `--home-bridge-v1` mode installs fallback roots; the archive never runs
+`main`. No dependency, entitlement, CA installation, public-root mode or R3
+intake is added. Optional signing inventories include the helper; signing is
+not needed for this milestone.
+
+`HomeBridgeProcess` uses the existing `ProcessControlling` injection and only
+`GODEBUG=x509usefallbackroots=1` in the child environment. A bounded, length-
+prefixed stdin frame carries CA DER/pin, control URL, join key (empty for saved
+membership), state directory and immutable runtime target. No secret enters
+argv/env or an IPC file. EOF/cancellation ends the helper. It validates exactly
+one current CA and pin, then calls `x509.SetFallbackRoots` exactly once before
+managed engine admission. One process owns one profile; changed trust stops and
+reaps it before replacement. Uncertain stop retains ownership.
+
+The pool's standard `AddCertWithConstraint` enforces leaf `VerifyHostname`
+against the URL IP. Pinned tailscale v1.78.0 `tlsdial.Config` uses
+`ConnectionState.ServerName`, empty for IP-literal SNI: real `/key` and DERP
+negative tests fail without this constraint. The constraint only refuses
+chains; it adds no TLS acceptance/bypass callback. Upstream baked-in Let's
+Encrypt roots remain, so this is not universal CA-only verification. Noise's
+outer TLS failures remain nonfatal; the fetched key authenticates the Noise
+handshake. WireGuard and product approval remain separate boundaries.
+
+After membership readiness, a 0600 Unix socket in a newly allocated 0700 private
+temporary directory carries streams to the single configured runtime on 443.
+It calls existing peer-only `managedDialPeer`, retains its node pin and rechecks
+before every write; there is no arbitrary host/port dial command.
+`ClientBridge.joinManagedNetwork` / `resumeManagedNetwork` select the process
+only when passed both `homeTrust` and `helper`; inconsistent selection refuses.
+Pairing, HTTP, SSE and upgrade I/O use this same helper. Monotonic handle IDs
+prevent stale stream IDs from reusing new FDs. Stop closes streams and confirms
+process exit before releasing the profile. Readiness never means Connected.
+
+Slice 5c must wire validated invites/saved records into this seam and settle
+approval/delivery/UI. Same-CA endpoint recovery still needs explicit saved-grant
+validation and protected URL/consumed-marker migration from section 6; this
+trust leg does not implement that migration. Changed URLs still refuse existing
+state; no marker rewrite, hostname repin or automatic CA change is provided.
+Signed credential migration and native acceptance remain separate.
+
+Supported commands with the existing readonly Go graph:
+
+```sh
+cd app/mac/tsnet-bridge
+GOTOOLCHAIN=local go build -mod=readonly -o /tmp/happyranch-home-bridge .
+GOTOOLCHAIN=local go test -mod=readonly -v ./...
+GOTOOLCHAIN=local go vet -mod=readonly ./...
+```
+
+The new Go tests drive actual upstream controlclient `/key`/Noise registration
+and a separate embedded DERP server using synthetic TLS certificates. Startup
+subprocesses prove exactly-once roots before engine admission and reject empty,
+multiple, invalid, non-CA, expired and pin-mismatched input. Synthetic secret
+canaries stay out of output. The PR records intended-failure/restored-pass
+proof. Launcher tests use the existing fake process controller. Swift build and
+XCTest are NOT RUN on this Linux host; the existing exact-reviewed-SHA/tree
+packaging workflow compiles Swift without XCTest, while ci.yml and managed-m4
+provide no Swift test job. Actual unsigned Mac/Keychain acceptance remains
+NOT RUN, owed to slice 6. No live Headscale or Mac-mini operation is authorized.
 
 ## Daemon child environment
 

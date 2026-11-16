@@ -563,7 +563,7 @@ def basic(app, **selection):
     for name in required:
         notices['read'](app / name, app, notices['MAX_JSON'])
     binaries = ('Contents/MacOS/HappyRanch', 'Contents/Resources/daemon/happyranch-daemon',
-                'Contents/Resources/daemon/happyranch', 'Contents/Helpers/happyranch-tsnet-sidecar',
+                'Contents/Resources/daemon/happyranch', 'Contents/Helpers/happyranch-tsnet-sidecar', 'Contents/Helpers/happyranch-home-bridge',
                 'Contents/Frameworks/Sparkle.framework/Versions/B/Sparkle',
                 'Contents/Frameworks/Sparkle.framework/Versions/B/Autoupdate',
                 'Contents/Frameworks/Sparkle.framework/Versions/B/Updater.app/Contents/MacOS/Updater')

@@ -63,7 +63,7 @@ public struct RemoteInvite: Sendable, CustomStringConvertible, CustomDebugString
         guard kind == "local_ca" else { throw RemoteInviteError.unsupported }
         guard Set(tls.keys) == Set(["kind", "ca_der", "sha256"]) else { throw RemoteInviteError.schema }
         let control = try fields.text("control_url")
-        let host = try homeControlHost(control)
+        _ = try homeControlHost(control)
         let endpoint = try fields.text("home_endpoint")
         // The runtime endpoint is tailnet host:443, never the LAN control endpoint.
         guard let target = URLComponents(string: "https://" + endpoint),
@@ -78,7 +78,7 @@ public struct RemoteInvite: Sendable, CustomStringConvertible, CustomDebugString
               SHA256.hash(data: ca).map({ String(format: "%02x", $0) }).joined() == fingerprint else {
             throw RemoteInviteError.fingerprint
         }
-        try InviteCertificate.validate(ca, ip: host)
+        try InviteCertificate.validate(ca, now: now)
         guard case .number(let issued) = fields["issued_at"], case .number(let expires) = fields["expires_at"],
               issued >= 0, expires > issued, expires - issued <= 300,
               Double(issued) <= now.timeIntervalSince1970, now.timeIntervalSince1970 < Double(expires) else {
@@ -209,7 +209,7 @@ private struct InviteJSON {
 /// Security parses the certificate; this DER reader locates typed X.509
 /// extensions, never a substring or localized certificate-property label.
 private enum InviteCertificate {
-    static func validate(_ data: Data, ip: [UInt8]) throws {
+    static func validate(_ data: Data, now: Date) throws {
         guard let certificate = SecCertificateCreateWithData(nil, data as CFData),
               SecCertificateCopyData(certificate) as Data == data else { throw RemoteInviteError.certificate }
         var root = DER(bytes: Array(data))
@@ -220,7 +220,14 @@ private enum InviteCertificate {
         if tbs.peek == 0xa0 { _ = try tbs.read(0xa0) }
         // serial, signature, issuer, validity, subject, subjectPublicKeyInfo
         _ = try tbs.read(0x02)
-        for _ in 0..<5 { _ = try tbs.read(0x30) }
+        _ = try tbs.read(0x30)
+        _ = try tbs.read(0x30)
+        var validity = DER(bytes: try tbs.read(0x30))
+        let notBefore = try validity.date()
+        let notAfter = try validity.date()
+        guard validity.empty, notBefore <= now, now < notAfter else { throw RemoteInviteError.certificate }
+        _ = try tbs.read(0x30)
+        _ = try tbs.read(0x30)
         while tbs.peek == 0x81 || tbs.peek == 0x82 { _ = try tbs.read(tbs.peek!) }
         var wrapper = DER(bytes: try tbs.read(0xa3))
         guard tbs.empty else { throw RemoteInviteError.certificate }
@@ -228,7 +235,6 @@ private enum InviteCertificate {
         guard wrapper.empty else { throw RemoteInviteError.certificate }
         var seen: Set<Data> = []
         var isCA = false
-        var matchesIP = false
         while !extensions.empty {
             var ext = DER(bytes: try extensions.read(0x30))
             let oid = try ext.read(0x06)
@@ -242,22 +248,26 @@ private enum InviteCertificate {
                 if constraints.peek == 0x01 { isCA = try constraints.read(0x01) == [0xff] }
                 guard outer.empty else { throw RemoteInviteError.certificate }
             }
-            if oid == [0x55, 0x1d, 0x11] {
-                var outer = DER(bytes: content)
-                var names = DER(bytes: try outer.read(0x30))
-                guard outer.empty else { throw RemoteInviteError.certificate }
-                while let tag = names.peek {
-                    let value = try names.read(tag)
-                    if tag == 0x87 && value == ip { matchesIP = true }
-                }
-            }
         }
         guard isCA else { throw RemoteInviteError.certificate }
-        guard matchesIP else { throw RemoteInviteError.san }
     }
     private struct DER {
         let bytes: [UInt8]
         var index = 0
+        mutating func date() throws -> Date {
+            guard let tag = peek, tag == 0x17 || tag == 0x18 else { throw RemoteInviteError.certificate }
+            let value = try read(tag)
+            guard value.count == (tag == 0x17 ? 13 : 15), value.last == 90,
+                  value.dropLast().allSatisfy({ (48...57).contains($0) }) else { throw RemoteInviteError.certificate }
+            let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: "en_US_POSIX")
+            formatter.timeZone = TimeZone(secondsFromGMT: 0)
+            formatter.dateFormat = tag == 0x17 ? "yyMMddHHmmss'Z'" : "yyyyMMddHHmmss'Z'"
+            formatter.twoDigitStartDate = Date(timeIntervalSince1970: -631152000)
+            formatter.isLenient = false
+            guard let date = formatter.date(from: String(decoding: value, as: UTF8.self)) else { throw RemoteInviteError.certificate }
+            return date
+        }
         var empty: Bool { index == bytes.count }
         var peek: UInt8? { index < bytes.count ? bytes[index] : nil }
         mutating func read(_ tag: UInt8) throws -> [UInt8] {
