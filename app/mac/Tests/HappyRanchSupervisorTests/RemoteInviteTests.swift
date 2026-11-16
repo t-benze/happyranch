@@ -41,7 +41,8 @@ final class RemoteInviteTests: XCTestCase {
         XCTAssertEqual(invite.trust.homeEndpoint, "100.64.0.10:443")
         XCTAssertEqual(invite.expiresAt.timeIntervalSince(invite.issuedAt), 300)
         let correctSecrets = invite.withSecrets { id, key, pair in
-            id.count == 16 && key == Data(joinCanary.utf8) && pair.count == 32
+            id == Data("INVITE-CANARY-12".utf8) && key == Data(joinCanary.utf8) &&
+                pair == Data(String(repeating: "PAIR-CANARY-1234", count: 2).utf8)
         }
         XCTAssertTrue(correctSecrets, "Fixture transport bytes must survive validation")
         let decoded = try JSONSerialization.jsonObject(with: JSONSerialization.data(withJSONObject: fixture())) as! [String: Any]
