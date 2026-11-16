@@ -33,6 +33,8 @@ from pathlib import Path
 # A direct script invocation must use this checkout's release code.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from runtime.infrastructure.org_access_fence import OrgAccessFence  # noqa: E402
+
 from runtime.infrastructure.producer_admission import (
     NativeWriterLifecycle,
 )
@@ -153,12 +155,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--apply", action="store_true", help="commit; default is a read-only dry run")
     args = parser.parse_args(argv)
     conn = None
+    fence = None
     try:
         if any(_WRITER_ID.fullmatch(w) is None for w in args.writer_ids) or len(set(args.writer_ids)) != len(args.writer_ids):
             raise SettlementRefused("writer IDs must be distinct 32-character lowercase hex")
         if len(args.justification.strip()) < 20:
             raise SettlementRefused("justification must explain the verification (>= 20 chars)")
         path = resolve_org_database(args.runtime_root, args.org)
+        fence = OrgAccessFence.acquire(path.parent, exclusive=args.apply)
         if args.apply and _database_open_elsewhere(path):
             raise SettlementRefused("database is open in another process; stop the daemon first")
         conn = sqlite3.connect(path.as_uri() + ("?mode=rw" if args.apply else "?mode=ro"), uri=True, timeout=1.0)
@@ -184,6 +188,8 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         if conn is not None:
             conn.close()
+        if fence is not None:
+            fence.close()
 
 
 if __name__ == "__main__":

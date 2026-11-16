@@ -1290,7 +1290,13 @@ class Evidence:
         """One consistent read; caller never carries it across filesystem work."""
         check(self.deadline)
         # Opening mode=ro cannot create/upgrade a production database.
-        conn = sqlite3.connect((self.org / 'happyranch.db').as_uri() + '?mode=ro', uri=True, timeout=.1)
+        from runtime.infrastructure.org_access_fence import OrgAccessFence
+        fence = OrgAccessFence.acquire(self.org, deadline=self.deadline)
+        try:
+            conn = sqlite3.connect((self.org / 'happyranch.db').as_uri() + '?mode=ro', uri=True, timeout=.1)
+        except BaseException:
+            fence.close()
+            raise
         conn.row_factory = sqlite3.Row
         conn.set_progress_handler(lambda: int(time.monotonic() >= self.deadline), 1000)
         try:
@@ -1304,6 +1310,7 @@ class Evidence:
             yield conn
         finally:
             conn.close()
+            fence.close()
 
     def _ownership(self, conn: sqlite3.Connection, workspace: Path, task_id: str, records: dict) -> None:
         """Same evaluator for refusal inventory and fresh, independent admission."""
@@ -2604,11 +2611,18 @@ def _manual_audit(report: dict, roots: list[str], summary: Path) -> None:
 
     for root in roots:
         item = next((o for o in report.get('orgs', []) if o['org'] == Path(root).name), None)
-        conn = sqlite3.connect((Path(root) / 'happyranch.db').as_uri() + '?mode=rw', uri=True, timeout=.1)
+        from runtime.infrastructure.org_access_fence import OrgAccessFence
+        fence = OrgAccessFence.acquire(Path(root))
+        try:
+            conn = sqlite3.connect((Path(root) / 'happyranch.db').as_uri() + '?mode=rw', uri=True, timeout=.1)
+        except BaseException:
+            fence.close()
+            raise
         try:
             SummaryWriter(conn).insert_audit_log('', 'daemon', 'disk_sweep_summary', _audit_payload(report, item, summary))
         finally:
             conn.close()
+            fence.close()
 
 
 def main() -> int:
