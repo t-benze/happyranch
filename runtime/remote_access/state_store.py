@@ -287,11 +287,14 @@ def _state_from_payload(payload: dict[str, Any], *, legacy: bool = False) -> Tru
         missing_identity = _IDENTITY_KEYS - set(identity_raw)
         if missing_identity:
             raise CorruptTrustStateError("trust state connector_identity incomplete")
-        connector_identity = ConnectorIdentity(
-            tenant_id=_require_str(identity_raw, "tenant_id"),
-            home_id=_require_str(identity_raw, "home_id"),
-            connector_id=_require_str(identity_raw, "connector_id"),
-        )
+        try:
+            connector_identity = ConnectorIdentity(
+                tenant_id=_require_str(identity_raw, "tenant_id"),
+                home_id=_require_str(identity_raw, "home_id"),
+                connector_id=_require_str(identity_raw, "connector_id"),
+            )
+        except ValueError as exc:
+            raise CorruptTrustStateError("trust state connector identity invalid") from exc
 
     devices_raw = payload["devices"]
     if not isinstance(devices_raw, dict):
@@ -334,6 +337,8 @@ def _state_from_payload(payload: dict[str, Any], *, legacy: bool = False) -> Tru
         if (control_plane_id is None) != (stable_node_id is None):
             raise CorruptTrustStateError("trust state pin incomplete")
         if control_plane_id is not None:
+            if credential_digest is None:
+                raise CorruptTrustStateError("trust state pinned credential missing")
             _require_identity_text(control_plane_id)
             _require_identity_text(stable_node_id)
         epoch = _require_int(raw, "authorization_epoch")
@@ -352,6 +357,8 @@ def _state_from_payload(payload: dict[str, Any], *, legacy: bool = False) -> Tru
         )
 
     pending_raw = payload.get("pending_pairings")
+    if not legacy and not isinstance(pending_raw, dict):
+        raise CorruptTrustStateError("trust state pending_pairings must be an object")
     pending_pairings: dict[str, PendingPairing] = {}
     if pending_raw is not None:
         if not isinstance(pending_raw, dict):
@@ -654,7 +661,7 @@ class AtomicFileTrustStateStore:
         anchor = self._parse_anchor(self._read_owner_only(anchor_path, "trust state anchor"))
         try:
             envelope = json.loads(raw, object_pairs_hook=_unique_object)
-        except (ValueError, TypeError) as exc:
+        except (ValueError, TypeError, RecursionError) as exc:
             raise CorruptTrustStateError("trust state file is not valid JSON") from exc
         if not isinstance(envelope, dict):
             raise CorruptTrustStateError("trust state envelope must be an object")
@@ -794,7 +801,7 @@ class AtomicFileTrustStateStore:
         """Strictly validate the companion anchor; any violation fails closed."""
         try:
             anchor = json.loads(raw, object_pairs_hook=_unique_object)
-        except (ValueError, TypeError) as exc:
+        except (ValueError, TypeError, RecursionError) as exc:
             raise CorruptTrustStateError("trust state anchor is not valid JSON") from exc
         if not isinstance(anchor, dict):
             raise CorruptTrustStateError("trust state anchor must be an object")

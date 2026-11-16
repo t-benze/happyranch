@@ -322,12 +322,18 @@ def test_revoke_closes_only_device_and_persists_first(tmp_path: Path, fails: boo
         registry.open("stale", Handle("stale"), device_id=device_a, epoch=epoch_a)
 
 
-@pytest.mark.parametrize("case", ["pending-missing", "pending-unknown", "pin-missing", "pin-half", "device-limit", "generation-rollback"])
+@pytest.mark.parametrize("case", ["pending-missing", "pending-unknown", "pin-missing", "pin-half", "device-limit", "generation-rollback", "pending-list-null", "identity-invalid", "pinned-digest-null"])
 def test_nested_state_shape_refuses(tmp_path: Path, case: str) -> None:
     path = tmp_path / "trust.json"
     manager = manager_at(path)
     pending = pending_for(manager)
-    if case.startswith("pending"):
+    if case == "pending-list-null":
+        def change(envelope):
+            envelope["payload"]["pending_pairings"] = None
+    elif case == "identity-invalid":
+        def change(envelope):
+            envelope["payload"]["connector_identity"]["home_id"] = ""
+    elif case.startswith("pending"):
         def change(envelope):
             record = envelope["payload"]["pending_approval"]
             if case == "pending-missing":
@@ -342,7 +348,9 @@ def test_nested_state_shape_refuses(tmp_path: Path, case: str) -> None:
         assert manager.complete(pending.completion_handle, "node-a", "control", NOW) is not None
         def change(envelope):
             devices = envelope["payload"]["devices"]
-            if case == "pin-missing":
+            if case == "pinned-digest-null":
+                devices[device_id]["credential_digest"] = None
+            elif case == "pin-missing":
                 devices[device_id].pop("stable_node_id")
             elif case == "pin-half":
                 devices[device_id]["stable_node_id"] = None
