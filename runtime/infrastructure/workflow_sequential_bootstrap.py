@@ -18,6 +18,7 @@ import stat
 import tempfile
 import time
 import uuid
+from collections.abc import Callable
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -892,3 +893,286 @@ class BootstrapRehearsal:
             self._cleanup_attempted = True
             shutil.rmtree(self.root)
         self.closed = True
+
+
+def require_bootstrap_space(source: BootstrapSource, attempt: BootstrapAttempt) -> None:
+    """Sum original backup/DB/temp/rehearsal reservations by actual device.
+
+    The supervised helper selects SQLITE_TMPDIR before SQLite work. An unset,
+    aliased or unavailable temp volume is not permission to guess a location.
+    This is headroom policy, not a guarantee against a later ENOSPC.
+    """
+    source._check()
+    attempt._check(reserve=True)
+    temporary = os.environ.get('SQLITE_TMPDIR')
+    if not temporary or not Path(temporary).is_absolute():
+        raise BootstrapEvidenceError('workflow_setup_temp_volume_unavailable')
+    rehearsal = Path(tempfile.gettempdir()).resolve(strict=True)
+    if (rehearsal.is_relative_to(attempt.runtime_root)
+            or rehearsal.is_relative_to(attempt.home/'backups')
+            or set(rehearsal.parts) & {'output', 'artifacts', 'task-attachments'}):
+        raise BootstrapEvidenceError('workflow_setup_rehearsal_location_unsafe')
+    size = source.image_bytes
+    if not 0 < size <= 32 * 1024**3 or source.observation is None:
+        raise BootstrapEvidenceError('workflow_setup_backup_bytes_exhausted')
+    sidecars = sum(value[5] for value in source.observation[1:] if value is not None)
+    database_required = 2*size + 64*1048576 + 1024**3 + sidecars
+    requirements: dict[int, int] = {}
+    available: dict[int, int] = {}
+    database_devices = set()
+    for path, category, required in (
+            (source.path.parent, 'database', database_required),
+            (Path(temporary), 'database', database_required),
+            (attempt.root, 'backup', size+1024**3),
+            (rehearsal, 'rehearsal', size+64*1048576)):
+        source._check()
+        parent = _directory(path, source.descriptors)
+        try:
+            if path == Path(temporary):
+                _private_directory(parent['fd'])
+                if not os.access(path, os.W_OK | os.X_OK):
+                    raise BootstrapEvidenceError('workflow_setup_temp_volume_unavailable')
+            info, space = os.fstat(parent['fd']), os.fstatvfs(parent['fd'])
+            available[info.st_dev] = min(available.get(info.st_dev, math.inf),
+                                         space.f_bavail*space.f_frsize)
+            if category != 'database' or info.st_dev not in database_devices:
+                requirements[info.st_dev] = requirements.get(info.st_dev, 0) + required
+            if category == 'database':
+                database_devices.add(info.st_dev)
+        finally:
+            _close_descriptor(parent)
+    if any(available[device] < required for device, required in requirements.items()):
+        raise BootstrapEvidenceError('workflow_setup_volume_space_unavailable')
+    source._check()
+
+
+class BootstrapInstall:
+    """One original writer after positively closed writable rehearsal.
+
+    The coordinator retains this object before run(). Its parent-permit callable
+    is the real supervisor protocol, not a deadline override. This stage neither
+    qualifies live native owners nor registers definitions or publishes ready.
+    No failure restores a backup, repeats COMMIT or retries an unknown close.
+    """
+
+    def __init__(self, source: BootstrapSource, attempt: BootstrapAttempt,
+                 rehearsal: BootstrapRehearsal) -> None:
+        self.source, self.attempt, self.rehearsal = source, attempt, rehearsal
+        self.writer: sqlite3.Connection | None = None
+        self.started = self.committed = self.verified = self.failed = False
+        self.close_attempted = self.closed = self.unchanged = False
+        self.commit_uncertain = False
+        self.primary: BaseException | None = None
+        self.close_error: BaseException | None = None
+        self._permit_requested = False
+
+    def _check(self, *, reserve: bool = True) -> None:
+        self.attempt._check(reserve=reserve)
+        self.source._check()
+        if (self.source.fence is not self.attempt.fence
+                or self.source.deadline != self.attempt.deadline
+                or self.rehearsal.source is not self.source
+                or self.rehearsal.attempt is not self.attempt
+                or not self.rehearsal.completed or self.rehearsal.failed
+                or not self.rehearsal.closed or self.rehearsal.receipt is None
+                or self.rehearsal.receipt['source_inventory_digest'] != self.source.inventory_digest
+                or self.rehearsal.receipt['backup_sha256'] != self.source.backup_sha256
+                or self.rehearsal.receipt['target_version'] != 1
+                or self.attempt._backup_sha256 != self.source.backup_sha256
+                or self.attempt.source_identity != self.source.source_identity
+                or self.attempt.source_inventory_digest != self.source.inventory_digest
+                or _file(self.source.path)[:5] != self.source.observation[0][:5]):
+            raise BootstrapEvidenceError('workflow_setup_writer_owner_invalid')
+
+    def _inputs(self) -> None:
+        """Revalidate original canonical metadata and the entire verified image."""
+        self._check()
+        from runtime.workflows.sequential_builtin import preset_catalog
+        pins = tuple(compiled.pin.model_dump(mode='json') for compiled in preset_catalog())
+        if pins != self.rehearsal.receipt['catalog']:
+            raise BootstrapEvidenceError('workflow_setup_rehearsal_candidate_changed')
+        for path, original in self.rehearsal.metadata:
+            self._check()
+            try:
+                info = path.lstat()
+            except FileNotFoundError:
+                if original is None:
+                    continue
+                raise BootstrapEvidenceError('workflow_setup_rehearsal_input_changed') from None
+            current = (info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_nlink,
+                       info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+            if current != original:
+                raise BootstrapEvidenceError('workflow_setup_rehearsal_input_changed')
+        assert self.attempt._parent is not None
+        descriptor = dict(fd=os.open('before.db', os.O_RDONLY | os.O_NOFOLLOW,
+                                    dir_fd=self.attempt._parent), attempted=False, closed=False)
+        self.source.descriptors.append(descriptor)
+        before = self.source._backup_file(self.attempt, descriptor['fd'])
+        if (self.source._hash(descriptor['fd']) != self.source.backup_sha256
+                or self.source._backup_file(self.attempt, descriptor['fd']) != before):
+            raise BootstrapEvidenceError('workflow_setup_backup_changed')
+        _close_descriptor(descriptor)
+        self._check()
+
+    def _checkpoint(self, conn: sqlite3.Connection) -> None:
+        self._check(reserve=not self.committed)
+        # Known committed WAL only, under the ORIGINAL EX. A journal/alias is
+        # refused before SQLite can recover it, never unlinked or repaired.
+        _companions(self.source.path)
+        if conn.execute('PRAGMA journal_mode').fetchone()[0] == 'wal':
+            result = tuple(conn.execute('PRAGMA wal_checkpoint(TRUNCATE)').fetchone())
+            if result[0] != 0 or result[1] != result[2]:
+                raise BootstrapEvidenceError('workflow_setup_checkpoint_unavailable')
+        self._check(reserve=not self.committed)
+
+    def _default_target(self, conn: sqlite3.Connection) -> None:
+        from runtime.workflows.sequential_history import read_sequential_history
+        self._check(reserve=not self.committed)
+        history = read_sequential_history(conn, expected_org_slug=self.attempt.slug,
+            deadline=min(time.monotonic()+5, self.source.allowance.deadline))
+        if (not history.layout.sequential or history.layout.ownership != 2
+                or (history.layout.document, history.layout.coding, history.layout.owner_indexed)
+                != (self.source.layout.document, self.source.layout.coding, self.source.layout.owner_indexed)):
+            raise BootstrapEvidenceError('workflow_setup_target_mismatch')
+        self._check(reserve=not self.committed)
+
+    def _preserved(self, conn: sqlite3.Connection) -> None:
+        from runtime.infrastructure.workflow_sequential_schema import SEQUENTIAL_TABLES
+        schema, tables = self.source._inventory(conn)
+        old_schema, old_tables = self.source.source_inventory
+        replacements = {'workflow_task_ownership', 'workflow_task_owner_bindings'}
+        objects = {(row[0], row[1]): row for row in schema}
+        if (set(tables) != set(old_tables) | set(SEQUENTIAL_TABLES)
+                or any(tables[name] != rows for name, rows in old_tables.items())
+                or any(tables[name][0] != (1 if name == SEQUENTIAL_TABLES[0] else 0)
+                       for name in SEQUENTIAL_TABLES)
+                or any(objects.get((row[0], row[1])) != row for row in old_schema
+                       if row[1] not in replacements)):
+            raise BootstrapEvidenceError('workflow_setup_retained_inventory_changed')
+
+    def run(self, permit: Callable[[BootstrapAttempt], bool]) -> None:
+        """Verify target, fsync pre_commit, obtain ONE permit, commit, reopen.
+
+        The source/backup/rehearsal and actual writer all retain the same install
+        ledgers. Target and independent reopen use original default 32M/A-B-C/5s.
+        The supervising owner must still bound native/fsync/close and cancellation.
+        """
+        from runtime.infrastructure.workflow_schema import install_sequential_schema, SequentialInstallUncertain
+        if self.started or self.failed or self.closed:
+            raise BootstrapEvidenceError('workflow_setup_writer_latched')
+        try:
+            self.started = True
+            self._check()
+            if self.attempt._phase != 'backup_verified':
+                raise BootstrapEvidenceError('workflow_setup_writer_phase_invalid')
+            self.source._unchanged()
+            self._inputs()
+            require_bootstrap_space(self.source, self.attempt)
+            assert self.source.source is not None
+            self.source._close_connection(self.source.source)
+            self.writer = self.source._connection(self.source.path, readonly=False)
+            self.writer.execute('PRAGMA synchronous=FULL')
+            if self.writer.execute('PRAGMA synchronous').fetchone()[0] != 2:
+                raise BootstrapEvidenceError('workflow_setup_durability_unavailable')
+            self._checkpoint(self.writer)
+            # Reentry after checkpoint uses the same identity/inventory under
+            # BEGIN IMMEDIATE, and the primitive repeats writer-source integrity.
+            def guard():
+                self._inputs()
+                if _coding_org_identity(self.writer, expected_org_slug=self.attempt.slug,
+                                       expected_path=str(self.source.path)) != self.source.source_identity:
+                    raise BootstrapEvidenceError('workflow_setup_source_changed')
+            def before_commit():
+                self._default_target(self.writer)
+                self._preserved(self.writer)
+                guard()
+                self.attempt.publish('pre_commit')
+                self._check()
+                if self._permit_requested:
+                    raise BootstrapEvidenceError('workflow_setup_commit_permit_repeated')
+                self._permit_requested = True
+                if permit(self.attempt) is not True:
+                    raise BootstrapEvidenceError('workflow_setup_commit_permit_refused')
+                # Parent may spend time deciding. No permit replenishes the
+                # absolute deadline or waives the final twenty-second reserve.
+                self._check()
+            result = install_sequential_schema(self.writer, expected_org_slug=self.attempt.slug,
+                expected_path=str(self.source.path), source_identity=self.source.source_identity,
+                source_inventory=self.source.source_inventory, offline_check=guard,
+                allowance=self.source.allowance, integrity=self.source.integrity, before_commit=before_commit)
+            if result != 'installed':
+                raise BootstrapEvidenceError('workflow_setup_writer_target_changed')
+            self.committed = True
+            # Durable committed BEFORE any fallible original writer close.
+            self.attempt.publish('committed')
+            self.source._close_connection(self.writer)
+            checkpoint = self.source._connection(self.source.path, readonly=False)
+            self._checkpoint(checkpoint)
+            self.source._close_connection(checkpoint)
+            reopened = self.source._connection(self.source.path, readonly=True)
+            reopened.execute('BEGIN')
+            self._default_target(reopened)
+            self._preserved(reopened)
+            self.source._close_connection(reopened)
+            self.close_attempted = True
+            self.source.close()
+            self.closed = True
+            self.attempt.publish('verified')
+            self.verified = True
+        except BaseException as exc:
+            self.failed, self.primary = True, exc
+            self.commit_uncertain = self.committed or isinstance(exc, SequentialInstallUncertain)
+            raise
+
+    def close(self) -> None:
+        """Close originals once; record unchanged only after independent proof.
+
+        COMMIT/rollback/close uncertainty never enters the unchanged branch.
+        A terminal phase is not an automatic retry or legacy-load instruction.
+        """
+        if self.close_attempted:
+            if not self.closed:
+                raise BootstrapEvidenceError('workflow_setup_writer_close_unknown')
+            return
+        self.close_attempted = True
+        proof_error = None
+        original_equal = False
+        try:
+            # Do not reuse a failed writer/snapshot as the preservation oracle.
+            errors = []
+            for record in reversed(self.source.connections):
+                try:
+                    self.source._close_connection(record['connection'])
+                except BaseException as exc:
+                    errors.append(exc)
+            if errors:
+                raise BootstrapEvidenceError('workflow_setup_writer_close_unknown') from errors[0]
+            if self.failed and not self.commit_uncertain:
+                self._check()
+                _companions(self.source.path)
+                proof = self.source._connection(self.source.path, readonly=True)
+                proof.execute('BEGIN')
+                if (_coding_org_identity(proof, expected_org_slug=self.attempt.slug,
+                        expected_path=str(self.source.path)) != self.source.source_identity
+                        or inspect_sequential_install(proof, expected_org_slug=self.attempt.slug,
+                            allowance=self.source.allowance) != self.source.layout
+                        or self.source._inventory(proof) != self.source.source_inventory):
+                    raise BootstrapEvidenceError('workflow_setup_rollback_unproven')
+                self.source._close_connection(proof)
+                original_equal = True
+        except BaseException as exc:
+            proof_error = exc
+        try:
+            # Even failed equality/identity/reader proof must close all other
+            # original handles. Unknown native closes remain latched in their
+            # records; this method never repeats the actual close behind them.
+            self.source.close()
+            self.closed = True
+            if proof_error is not None:
+                raise proof_error
+            if original_equal:
+                self.attempt.publish('not_installed')
+                self.unchanged = True
+        except BaseException as exc:
+            self.close_error = exc
+            raise

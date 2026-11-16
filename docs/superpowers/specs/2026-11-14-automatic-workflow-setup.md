@@ -421,3 +421,71 @@ source checkpoint/writer/target/COMMIT composition, parent permit/kill custody,
 post-COMMIT closure/registration/audit/status and continuous all-org/listener
 acceptance remain required. No live installation, restart, deployment, Allow,
 role assignment or task execution is authorized by this source checkpoint.
+
+### A4 original writer and independent reopen checkpoint
+
+`BootstrapInstall` now composes the source writer stage but remains unmounted.
+It requires the SAME original EX/source/attempt, exact verified-backup digest,
+reviewed catalog pin and positively closed actual writable FIRST/NEXT rehearsal.
+Original canonical metadata and complete backup bytes are revalidated before
+source effects and at writer guards. No private success establishes original
+live host/native/producer/Pause/preparation/profile/remote/registry clearance.
+
+`require_bootstrap_space` requires the supervised helper's explicitly selected
+absolute private writable `SQLITE_TMPDIR`, literal no-follow source/backup/temp
+parents and the actual Python rehearsal-temp volume. With checkpoint-equivalent
+B<=32GiB, backup reserves B+1GiB; DB/temp reserves 2B+64MiB+1GiB+observed sidecar
+bytes once on each distinct DB/temp device; rehearsal adds B+64MiB. Additional
+backup/rehearsal requirements sum even when devices are shared. All observations
+charge the original pre-COMMIT deadline. The coordinator must call this before
+backup; writer admission repeats it after rehearsal. Headroom is policy, not a
+block reservation or protection against subsequent ENOSPC.
+
+The stage positively closes the original coherent reader, retains its native
+writer BEFORE PRAGMA, requires synchronous FULL and zero busy waiting, and
+checkpoints only committed WAL under original EX. No journal/alias is recovered
+or deleted to force admission. The original primitive rechecks identity, exact
+source inventory and full writer-source integrity under BEGIN IMMEDIATE. Its
+unchanged target/preservation/FK/full-integrity checks precede the callback's
+actual default target reader (L32M, separate A/B/C2M and original logical/5s),
+retained inventory and original metadata/backup revalidation. No load reuse
+certificate or installer-sized default-read override is used.
+
+Only then does the stage fsync pre_commit and request ONE same-attempt parent
+permission. A non-True reply refuses. The original twenty-second reserve is
+rechecked after the parent's reply, and the primitive independently rechecks
+its unchanged operation deadline immediately before COMMIT. SQLite COMMIT
+success is followed by committed publication BEFORE fallible original writer
+close/checkpoint/reopen. Independent query-only reopen repeats the actual
+default target and exact old SQL/types/values/rowids inventory checks. All
+original owned connections/descriptors must close before verified publication.
+The stage does not register a definition or publish registered/readiness.
+
+Failure keeps the original cause. Known pre-COMMIT failure first closes every
+original connection once, acquires a new query-only proof snapshot, independently
+checks original layout/identity/inventory equality, and closes all owned handles
+before not_installed. Missing proof is unknown, never a legacy-load grant.
+COMMIT or rollback uncertainty, a successful COMMIT followed by any error, or
+unknown original closure cannot record unchanged. No restore or second COMMIT
+occurs; repeated run/close preserves original cause/custody without native retry.
+Failed proof still attempts every other owned close. A phase-publication error
+retains its original failed latch and external evidence.
+
+Focused `--bootstrap-install[=CASE]` extends the same native J/Pause/reviewer/
+ownership/private skeleton venue: normal target/reopen, incomplete or unclosed
+rehearsal, changed verified backup/metadata, summed shared-volume headroom,
+unavailable/aliased/nonprivate explicit temp volume, actual writer-source/target full-integrity
+refusals, default target exhaustion, negative parent permission, reserve expiry
+after a positive reply, native COMMIT denial, original writer-close uncertainty,
+reopen-read refusal, retained-data drift and post-COMMIT checkpoint refusal.
+Independent inventory, native installed schema and external phase records are
+the oracles; faults/clocks/observers stay test-side. No retired unit or skipped
+integration suite is added. Full matrix/mutation execution status belongs to
+actual task receipts, not this implementation description.
+
+Original-owner qualification, cheap installed selection, supervised helper/
+parent cancellation/deadline/kill custody, actual coordinator mount, separately
+qualified registration/audit/final status, remaining docs and continuous
+production-shaped all-org/listener acceptance remain incomplete. Required hosted
+checks stay Source Boundary Lint and Web Lint (Node24). No live installation,
+restart, deployment, Allow/roles, genuine Coding scratch or PR1252 release follows.

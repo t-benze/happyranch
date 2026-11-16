@@ -27,6 +27,18 @@ private close retains its original owner and scratch, without retry or deletion.
 This is capacity evidence only, never live native-owner qualification. See the
 [rehearsal boundary](../superpowers/specs/2026-11-14-automatic-workflow-setup.md#a4-private-writable-rehearsal-checkpoint).
 
+The unmounted `BootstrapInstall` stage now requires that rehearsal's positive
+closure, revalidates its original metadata/image and combined volume headroom,
+and composes the real source checkpoint/writer. Actual default target validation
+precedes durable pre_commit and one parent COMMIT permission; original twenty-
+second reserve and install ledgers remain binding after the parent's reply.
+It records committed before fallible close/checkpoint/reopen, independently
+checks default target and retained inventory, then closes before verified.
+Known pre-COMMIT failure needs independent original equality and positive closure
+before not_installed; COMMIT/rollback/close uncertainty never grants fallback or
+retry. Registration, original-owner qualification, supervision and startup mount
+remain incomplete. See the [writer boundary](../superpowers/specs/2026-11-14-automatic-workflow-setup.md#a4-original-writer-and-independent-reopen-checkpoint).
+
 POST `/orgs` now creates J + Coding + sequential storage and ownership-2 through
 a distinct owner after exclusive skeleton creation and exclusive DB-file
 creation. It retains A1's pre-open org-access fence, Default human-managed team

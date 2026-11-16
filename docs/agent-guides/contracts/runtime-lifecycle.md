@@ -53,6 +53,21 @@ acceptance remain incomplete. The existing shell's `--bootstrap-rehearsal[=CASE]
 observes the actual loads, native progress exhaustion, metadata/image drift,
 original authority refusal and closure custody.
 
+The unmounted `BootstrapInstall` requires the same original source/attempt and
+positively closed FIRST/NEXT rehearsal. It retains the native writer before
+PRAGMA, uses zero busy wait, checkpoints only excluded committed WAL, and calls
+the preservation primitive with the original install/integrity ledgers. Actual
+default target validation and durable pre_commit precede one parent permission;
+the same twenty-second reserve is checked again after that reply. committed is
+durable before fallible writer close, checkpoint and independent default reopen/
+inventory proof. All owned handles must close before verified. Known pre-COMMIT
+failures need independent original equality plus positive closure before the
+terminal not_installed event. Unknown COMMIT/rollback/close remains latched;
+repeat run/close does not erase its original cause or reattempt native effects.
+The existing shell's `--bootstrap-install[=CASE]` observes these boundaries in a
+private fixture. This stage does not mount startup, qualify live owners, register
+definitions, publish readiness or prove launcher/listener timing.
+
 > Moved verbatim from the repository-root `AGENTS.md` on 2026-10-30. Sections keep
 > their original relative order. Where a later section says it supersedes or
 > extends an earlier one, the later section controls; sections marked

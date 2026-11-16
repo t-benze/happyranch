@@ -133,6 +133,18 @@ checks. No source restore, live native-owner inference or automatic caller is
 added. See the [current rehearsal boundary](../superpowers/specs/2026-11-14-automatic-workflow-setup.md#a4-private-writable-rehearsal-checkpoint);
 the offline commands and their explicit guards remain unchanged.
 
+The draft's unmounted `BootstrapInstall` composes original source checkpoint,
+native writer, default target and post-COMMIT independent reopen/preservation.
+It accepts one parent permission only after durable pre_commit and rechecks the
+original twenty-second reserve. All original handles close before verified;
+uncertain COMMIT/rollback/close never becomes unchanged or replay authority.
+Known refusal needs independent original equality before not_installed. Combined
+backup/DB/temp/rehearsal headroom is checked by device; the future supervised
+helper must select its private writable SQLITE_TMPDIR before SQLite work.
+This is a source stage, not an added command or live migration authorization.
+Original-owner qualification, parent supervision, registration/audit/status and
+automatic startup integration remain required. See the [writer boundary](../superpowers/specs/2026-11-14-automatic-workflow-setup.md#a4-original-writer-and-independent-reopen-checkpoint).
+
 Every invocation starts with `resolve_org_database` and an immutable read-only
 SQLite connection (`mode=ro&immutable=1`, query-only, foreign keys enabled), one
 snapshot and before/after file observations. It never creates sidecars. Nonempty

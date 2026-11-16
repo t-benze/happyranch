@@ -16,7 +16,7 @@ import os
 import tempfile
 import time
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import DEFAULT, patch
 from contextlib import redirect_stdout, redirect_stderr
 import hashlib
 import io
@@ -72,6 +72,14 @@ if len(sys.argv) == 2 and sys.argv[1].startswith('--bootstrap-rehearsal='):
                              'metadata_changed', 'backup_changed', 'space', 'scratch_location', 'deadline', 'load_init', 'authority', 'close')
     sys.argv[1:] = ['--bootstrap-rehearsal']
 
+install_case = None
+if len(sys.argv) == 2 and sys.argv[1].startswith('--bootstrap-install='):
+    install_case = sys.argv[1].split('=', 1)[1]
+    assert install_case in ('none', 'rehearsal', 'rehearsal_close', 'backup_changed', 'metadata_changed',
+                            'space', 'temp', 'temp_alias', 'temp_mode', 'writer_source', 'target_integrity', 'target_budget',
+                            'permit', 'reserve', 'commit', 'writer_close', 'reopen', 'preservation', 'checkpoint')
+    sys.argv[1:] = ['--bootstrap-install']
+
 startup_case = None
 if len(sys.argv) == 2 and sys.argv[1].startswith('--startup-isolation='):
     startup_case = sys.argv[1].split('=', 1)[1]
@@ -85,7 +93,7 @@ if len(sys.argv) == 2 and sys.argv[1].startswith('--retained-corruption-phase=')
         uncommitted='between uncommitted')[sys.argv[1].split('=', 1)[1]]
     sys.argv[1:] = ['--retained-corruption']
 
-assert sys.argv[1:] in ([], ['--bootstrap-rehearsal'], ['--bootstrap-backup'], ['--bootstrap-journal'], ['--bootstrap-precommit'], ['--startup-isolation'], ['--fresh-catalog'], ['--org-access-fence'], ['--org-access-openers'], ['--org-access-native'], ['--org-access-guardian'], ['--org-access-profile'], ['--setup-status'], ['--daily-integrity'], ['--install-integrity'], ['--bounded-acquisition'], ['--trace-custody'], ['--sequential-reuse'], ['--sequential-load'], ['--sequential-freshness'], ['--sequential-faults'], ['--sequential-sql-exhaustion'], ['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--coding-authority-corruption'], ['--document-native-corruption'], ['--author-handoff-corruption'], ['--document-revision-corruption'], ['--coding-history-corruption'], ['--physical-corruption'], ['--sequential-uncommitted'], ['--i2-cutover'], ['--i2-native']), 'unknown schema-load selection'
+assert sys.argv[1:] in ([], ['--bootstrap-install'], ['--bootstrap-rehearsal'], ['--bootstrap-backup'], ['--bootstrap-journal'], ['--bootstrap-precommit'], ['--startup-isolation'], ['--fresh-catalog'], ['--org-access-fence'], ['--org-access-openers'], ['--org-access-native'], ['--org-access-guardian'], ['--org-access-profile'], ['--setup-status'], ['--daily-integrity'], ['--install-integrity'], ['--bounded-acquisition'], ['--trace-custody'], ['--sequential-reuse'], ['--sequential-load'], ['--sequential-freshness'], ['--sequential-faults'], ['--sequential-sql-exhaustion'], ['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--coding-authority-corruption'], ['--document-native-corruption'], ['--author-handoff-corruption'], ['--document-revision-corruption'], ['--coding-history-corruption'], ['--physical-corruption'], ['--sequential-uncommitted'], ['--i2-cutover'], ['--i2-native']), 'unknown schema-load selection'
 
 
 print('SCHEMA_RUNTIME', json.dumps(dict(python=sys.version, executable=sys.executable, sqlite=sqlite3.sqlite_version,
@@ -2160,6 +2168,309 @@ runpy.run_module('runtime.daemon',run_name='__main__')
             else:
                 raise AssertionError('hardlinked report accepted')
         daily_case('PASS')
+    if sys.argv[1:]:
+        raise SystemExit(0)
+
+# A4-W observes the actual original source writer, durable phases and independent
+# reopened storage. Native faults and progress/phase observers remain test-side.
+if sys.argv[1:] in ([], ['--bootstrap-install']):
+    from runtime.infrastructure import workflow_sequential_bootstrap as bootstrap
+    from runtime.infrastructure import workflow_schema as schema
+    from runtime.infrastructure.org_access_fence import OrgAccessFence
+    from runtime.infrastructure.workflow_integrity import InstallIntegrityError
+    from runtime.daemon.routes.orgs import _seed_skeleton
+    from runtime.orchestrator.org_config import initialize_fresh_reviewer_agents
+    from runtime.workflows import sequential_history as history
+
+    writer_cases = ('none', 'rehearsal', 'rehearsal_close', 'backup_changed', 'metadata_changed',
+                    'space', 'temp', 'temp_alias', 'temp_mode', 'writer_source', 'target_integrity', 'target_budget',
+                    'permit', 'reserve', 'commit', 'writer_close', 'reopen', 'preservation', 'checkpoint')
+    for fault in writer_cases:
+        if install_case is not None and install_case != fault:
+            continue
+        with tempfile.TemporaryDirectory(prefix='a4-source-install-') as scratch:
+            private = Path(scratch).resolve()
+            home, runtime = private/'home', private/'runtime'
+            home.mkdir(mode=0o700)
+            temporary = private/'sqlite-temp'
+            temporary.mkdir(mode=0o700)
+            root = runtime/'orgs/scratch'
+            _seed_skeleton(root, from_example=None)
+            path = root/'happyranch.db'
+            db = Database(path)
+            try:
+                schema.initialize_complete_org_schema(db, expected_org_slug='scratch', layout='J')
+                install_pause_schema(db, org_slug='scratch')
+                initialize_fresh_reviewer_agents(OrgPaths(root), db)
+                install_task_ownership(db, org_slug='scratch')
+                db.insert_task(TaskRecord(id='TASK-preserved', brief='synthetic retained task'))
+                db._conn.execute('CREATE TABLE a4_writer_sentinel(id INTEGER PRIMARY KEY,v BLOB)')
+                db._conn.execute('INSERT INTO a4_writer_sentinel VALUES (37,?)', (b'original\0typed',))
+                db._conn.commit()
+            finally:
+                db.close()
+            def inventory():
+                with closing(sqlite3.connect(path.as_uri()+'?mode=ro', uri=True, timeout=0)) as conn:
+                    conn.execute('PRAGMA query_only=ON')
+                    conn.execute('BEGIN')
+                    return schema.sequential_storage_inventory(conn)
+            original = inventory()
+            with patch.dict(os.environ, {'HAPPYRANCH_DAEMON_HOME': str(home), 'SQLITE_TMPDIR': str(temporary)}):
+                fence = OrgAccessFence.acquire(root, exclusive=True)
+                source = bootstrap.BootstrapSource(fence=fence, deadline=time.monotonic()+119)
+                attempt = rehearsal = stage = None
+                events, permits, injected, close_faults, commits = [], [], [], [], []
+                backup_bytes = None
+                actual_connection = bootstrap.BootstrapSource._connection
+                actual_close = bootstrap.BootstrapSource._close_connection
+                actual_checkpoint = bootstrap.BootstrapInstall._checkpoint
+                actual_target = bootstrap.BootstrapInstall._default_target
+                actual_integrity = schema.require_install_integrity
+                actual_progress = history._ReadBudget.progress
+                actual_load = OrgState.load
+                current_default = [False]
+                def observed_load(**kwargs):
+                    events.append(('private_load', kwargs['root']))
+                    return actual_load(**kwargs)
+                def connected(owner, target, *, readonly):
+                    conn = actual_connection(owner, target, readonly=readonly)
+                    if target == path:
+                        def traced(sql):
+                            operation = sql.split()[0].upper()
+                            events.append(('source_sql', operation))
+                            if operation == 'COMMIT':
+                                commits.append((attempt._phase, len(permits), time.monotonic() < source.deadline-20))
+                        conn.set_trace_callback(traced)
+                        def authorize(action, first, second, *_):
+                            if (fault == 'commit' and action == sqlite3.SQLITE_TRANSACTION
+                                    and first == 'COMMIT' and attempt is not None and attempt._phase == 'pre_commit'):
+                                injected.append(fault)
+                                return sqlite3.SQLITE_DENY
+                            if (fault == 'reopen' and readonly and stage is not None and stage.committed
+                                    and action == sqlite3.SQLITE_READ and first == 'workflow_seq_schema_versions'):
+                                injected.append(fault)
+                                return sqlite3.SQLITE_DENY
+                            return sqlite3.SQLITE_OK
+                        conn.set_authorizer(authorize)
+                    return conn
+                def integrity(conn, ledger, label):
+                    events.append(('integrity', label))
+                    main = conn.execute('PRAGMA database_list').fetchone()[2]
+                    if main == str(path) and fault in ('writer_source', 'target_integrity') and label == (
+                            'writer_source' if fault == 'writer_source' else 'target'):
+                        injected.append(fault)
+                        conn.set_authorizer(lambda action, a, b, *_: sqlite3.SQLITE_DENY
+                            if action == sqlite3.SQLITE_PRAGMA and a.lower() == 'integrity_check' else sqlite3.SQLITE_OK)
+                    return actual_integrity(conn, ledger, label)
+                def progress(budget):
+                    if fault == 'target_budget' and current_default[0] and budget.sql_limit == 32000000:
+                        injected.append(fault)
+                        budget.sql_steps = budget.sql_limit
+                    return actual_progress(budget)
+                def default_target(owner, conn):
+                    events.append(('default_target', owner.committed))
+                    current_default[0] = True
+                    try:
+                        return actual_target(owner, conn)
+                    finally:
+                        current_default[0] = False
+                def closed(owner, conn):
+                    if (fault == 'writer_close' and stage is not None and stage.committed
+                            and conn is stage.writer and not close_faults):
+                        record = next(row for row in owner.connections if row['connection'] is conn)
+                        record['attempted'] = True
+                        close_faults.append(conn)
+                        injected.append(fault)
+                        raise OSError('synthetic original source close uncertainty')
+                    return actual_close(owner, conn)
+                def checkpoint(owner, conn):
+                    events.append(('checkpoint', owner.committed))
+                    if not owner.committed:
+                        record = json.loads((attempt.root/'01.json').read_bytes())
+                        assert record['phase'] == 'backup_verified' and record['backup_sha256'] == hashlib.sha256(
+                            attempt.backup_path.read_bytes()).hexdigest(), 'A4-W checkpoint before durable verified backup'
+                        assert rehearsal.completed and rehearsal.closed, 'A4-W checkpoint before positive rehearsal closure'
+                        try:
+                            source.source.execute('SELECT 1')
+                        except sqlite3.ProgrammingError:
+                            pass
+                        else:
+                            raise AssertionError('A4-W checkpoint before original source reader closed')
+                    if fault == 'checkpoint' and owner.committed:
+                        injected.append(fault)
+                        conn.set_authorizer(lambda action, a, b, *_: sqlite3.SQLITE_DENY
+                            if action == sqlite3.SQLITE_PRAGMA and a.lower() == 'wal_checkpoint' else sqlite3.SQLITE_OK)
+                    result = actual_checkpoint(owner, conn)
+                    if fault == 'preservation' and owner.committed:
+                        injected.append(fault)
+                        conn.execute('UPDATE a4_writer_sentinel SET v=? WHERE id=37', (b'synthetic drift',))
+                        conn.commit()
+                    return result
+                def permit(owner):
+                    permits.append(owner.attempt_id)
+                    assert owner is attempt and attempt._phase == 'pre_commit', 'A4-W permit before durable pre_commit'
+                    record = json.loads((attempt.root/'02.json').read_bytes())
+                    assert record['phase'] == 'pre_commit' and record['backup_sha256'] == source.backup_sha256
+                    assert rehearsal.completed and rehearsal.closed, 'A4-W permit before positive rehearsal closure'
+                    assert [item[0] for item in events].count('private_load') == 2, 'A4-W rehearsal after source COMMIT'
+                    if fault == 'permit':
+                        injected.append(fault)
+                        return False
+                    if fault == 'reserve':
+                        injected.append(fault)
+                        # Clock only moves AFTER the positive parent permission.
+                        clock.return_value = source.deadline-19
+                    return True
+                failure = cleanup = None
+                try:
+                    with ExitStack() as stack:
+                        stack.enter_context(patch.object(OrgState, 'load', side_effect=observed_load))
+                        stack.enter_context(patch.object(bootstrap.BootstrapSource, '_connection', connected))
+                        stack.enter_context(patch.object(bootstrap.BootstrapSource, '_close_connection', closed))
+                        stack.enter_context(patch.object(bootstrap.BootstrapInstall, '_checkpoint', checkpoint))
+                        stack.enter_context(patch.object(bootstrap.BootstrapInstall, '_default_target', default_target))
+                        stack.enter_context(patch.object(schema, 'require_install_integrity', integrity))
+                        stack.enter_context(patch.object(history._ReadBudget, 'progress', progress))
+                        source.open()
+                        attempt = bootstrap.BootstrapAttempt(home=home, runtime_root=runtime, slug='scratch',
+                            fence=fence, source_identity=source.source_identity,
+                            source_inventory_digest=source.inventory_digest, deadline=source.deadline)
+                        attempt.begin()
+                        bootstrap.require_bootstrap_space(source, attempt)
+                        source.backup(attempt)
+                        backup_bytes = attempt.backup_path.read_bytes()
+                        rehearsal = bootstrap.BootstrapRehearsal(source, attempt)
+                        rehearsal.run(Settings())
+                        rehearsal.close()
+                        stage = bootstrap.BootstrapInstall(source, attempt, rehearsal)
+                        events.append(('writer_stage', None))
+                        if fault == 'rehearsal':
+                            rehearsal.completed = False
+                            injected.append(fault)
+                        elif fault == 'rehearsal_close':
+                            rehearsal.closed = False
+                            injected.append(fault)
+                        elif fault == 'backup_changed':
+                            attempt.backup_path.write_bytes(backup_bytes+b'synthetic drift')
+                            injected.append(fault)
+                        elif fault == 'metadata_changed':
+                            (root/'org/config.yaml').write_text('name: synthetic changed metadata\n')
+                            injected.append(fault)
+                        elif fault == 'space':
+                            # Each individual reservation fits; only the SUM
+                            # on this shared volume refuses before source work.
+                            free = 2*source.image_bytes+64*1048576+1024**3+sum(
+                                value[5] for value in source.observation[1:] if value is not None)+4096
+                            stack.enter_context(patch.object(bootstrap.os, 'fstatvfs', return_value=SimpleNamespace(f_bavail=free, f_frsize=1)))
+                            injected.append(fault)
+                        elif fault == 'temp':
+                            stack.enter_context(patch.dict(os.environ, {'SQLITE_TMPDIR': ''}))
+                            injected.append(fault)
+                        elif fault == 'temp_alias':
+                            alias = private/'sqlite-temp-alias'
+                            alias.symlink_to(temporary, target_is_directory=True)
+                            stack.enter_context(patch.dict(os.environ, {'SQLITE_TMPDIR': str(alias)}))
+                            injected.append(fault)
+                        elif fault == 'temp_mode':
+                            temporary.chmod(0o500)
+                            injected.append(fault)
+                        clock = stack.enter_context(patch.object(bootstrap.time, 'monotonic', wraps=time.monotonic))
+                        try:
+                            stage.run(permit)
+                        except BaseException as exc:
+                            failure = exc
+                        # The forward-clock test observes refusal first. Restore
+                        # the clock before independent rollback/closure proof.
+                        clock.side_effect = None
+                        clock.return_value = DEFAULT
+                        try:
+                            stage.close()
+                        except BaseException as exc:
+                            cleanup = exc
+                        assert (fault == 'none') == (failure is None), ('A4-W intended fault missed', fault, failure)
+                        if fault != 'none':
+                            assert injected, ('A4-W fault not reached', fault)
+                        if fault in ('rehearsal', 'rehearsal_close'):
+                            assert not stage.committed and not permits, 'A4-W admitted unclosed or incomplete rehearsal'
+                            assert not any(item[0] == 'checkpoint' for item in events), 'A4-W source effects before positive rehearsal closure'
+                        if fault in ('backup_changed', 'metadata_changed', 'space', 'temp', 'temp_alias', 'temp_mode'):
+                            assert not any(item[0] == 'checkpoint' for item in events), 'A4-W source effects before input/volume qualification'
+                            assert inventory() == original, 'A4-W changed unqualified source'
+                        if fault in ('writer_source', 'target_integrity'):
+                            assert isinstance(failure, InstallIntegrityError), ('A4-W replaced physical cause', type(failure))
+                            assert failure.stage == ('writer_source' if fault == 'writer_source' else 'target')
+                        if fault in ('target_budget', 'permit', 'reserve', 'writer_source', 'target_integrity'):
+                            assert not stage.committed and stage.unchanged and cleanup is None, ('A4-W lost pre-COMMIT unchanged proof', fault, cleanup)
+                            assert not commits, 'A4-W attempted COMMIT after pre-COMMIT refusal'
+                            assert inventory() == original, 'A4-W changed original SQL/types/cells/rowids'
+                            assert attempt._phase == 'not_installed', 'A4-W missing positively unchanged terminal event'
+                        if fault == 'target_budget':
+                            assert not permits, 'A4-W default target budget failure reached parent permit'
+                            from runtime.workflows._read_exhaustion import exhausted
+                            assert exhausted(failure), 'A4-W lost causal default target exhaustion'
+                        if fault in ('permit', 'reserve'):
+                            assert len(permits) == 1, 'A4-W repeated parent COMMIT request'
+                            assert str(failure) == ('workflow_setup_commit_permit_refused' if fault == 'permit'
+                                                    else 'workflow_setup_commit_reserve'), 'A4-W lost parent refusal/reserve cause'
+                        if fault == 'commit':
+                            assert stage.commit_uncertain and not stage.unchanged, 'A4-W COMMIT uncertainty became unchanged'
+                            assert attempt._phase == 'pre_commit', 'A4-W retried or cleared uncertain COMMIT'
+                        if fault in ('writer_close', 'reopen', 'preservation', 'checkpoint'):
+                            assert stage.committed and not stage.verified and not stage.unchanged, 'A4-W post-COMMIT failure became unchanged/verified'
+                            assert attempt._phase == 'committed', 'A4-W lost durable committed before fallible close/reopen'
+                            with closing(sqlite3.connect(path.as_uri()+'?mode=ro', uri=True, timeout=0)) as conn:
+                                conn.execute('PRAGMA query_only=ON')
+                                try:
+                                    installed = conn.execute('SELECT version FROM workflow_seq_schema_versions').fetchall()
+                                except sqlite3.DatabaseError:
+                                    installed = None
+                                assert installed == [(1,)], 'A4-W automatically restored a committed source'
+                        if fault == 'writer_close':
+                            assert cleanup is not None and len(close_faults) == 1, 'A4-W unknown original close retried'
+                            assert close_faults[0].execute('SELECT 1').fetchone()[0] == 1, 'A4-W lost unclosed original writer'
+                        if fault == 'none':
+                            assert stage.verified and stage.closed and source.closed and attempt._phase == 'verified', 'A4-W target not independently verified/closed'
+                            assert commits == [('pre_commit', 1, True)], 'A4-W COMMIT without durable phase/one permission/reserve'
+                            assert len(permits) == 1 and [value for name, value in events if name == 'default_target'] == [False, True], 'A4-W missing actual default target/reopen gate'
+                            assert [value for name, value in events if name == 'integrity'][-2:] == ['writer_source', 'target']
+                            with closing(sqlite3.connect(path)) as conn:
+                                assert conn.execute('SELECT id,typeof(v),hex(v) FROM a4_writer_sentinel').fetchall() == [(37, 'blob', '6F726967696E616C007479706564')]
+                                assert conn.execute('SELECT count(*) FROM workflow_seq_definitions').fetchone()[0] == 0, 'A4-W registered before separate qualified owner'
+                                assert conn.execute('SELECT count(*) FROM workflow_seq_settings').fetchone()[0] == 0, 'A4-W allocated settings/admission'
+                        if fault != 'backup_changed':
+                            assert attempt.backup_path.read_bytes() == backup_bytes, 'A4-W restored/changed original backup'
+                        close_error, count = stage.close_error, len(close_faults)
+                        before_close = len(events)
+                        try:
+                            stage.close()
+                        except bootstrap.BootstrapEvidenceError:
+                            assert not stage.closed, 'A4-W positive original close became unknown'
+                        assert (stage.close_error is close_error and len(close_faults) == count
+                                and len(events) == before_close), 'A4-W retried original close/proof or replaced original uncertainty'
+                        before, primary, uncertainty = len(events), stage.primary, stage.commit_uncertain
+                        try:
+                            stage.run(permit)
+                        except bootstrap.BootstrapEvidenceError:
+                            pass
+                        else:
+                            raise AssertionError('A4-W replayed original writer')
+                        assert len(events) == before, 'A4-W replay performed SQLite/checkpoint work'
+                        assert stage.primary is primary and stage.commit_uncertain == uncertainty, 'A4-W replay replaced original failure/uncertainty'
+                        print('PASS A4-W original writer/phase/default/preservation/closure:', fault, flush=True)
+                finally:
+                    # Exact synthetic handles only, AFTER all custody assertions.
+                    # No product retry/restore or live DB is involved in teardown.
+                    for record in source.connections:
+                        record['connection'].close()
+                    for record in source.descriptors:
+                        if not record['attempted']:
+                            os.close(record['fd'])
+                            record['attempted'] = record['closed'] = True
+                    if attempt is not None:
+                        attempt.close()
+                    if rehearsal is not None and not rehearsal.closed:
+                        rehearsal.closed = True  # synthetic negative flag only; actual close already proved
+                    fence.close()
     if sys.argv[1:]:
         raise SystemExit(0)
 
