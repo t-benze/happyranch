@@ -1153,3 +1153,38 @@ Swift build/tests, signed ACL/locked behavior, actual deletion-failure/wipe proo
 and live join/relaunch/revocation remain **NOT RUN** pending a separately chosen
 native venue. See the Mac README for the real-state capture checklist; no test-only
 production state injection is provided. PR3 still owns release binding/signing.
+
+## Pinned pairing and per-device authorization (slice 2)
+
+THR-327's managed ceremony core extends the existing anchored transaction to v3;
+there is no second trust file. PinnedPairingManager exposes fixed in-process
+status, digest-only invite issuance, captured-generation/tuple approval and rejection,
+and device revocation for future helper wiring. It does not authenticate a helper
+or install an IPC endpoint. The authoritative design is PR #1565 at
+e11ad4a5ffabc99b88244b9fbb27168a81c50a39, §§2, 4, 5 and slice 2 in §8.
+
+An invitation becomes the sole pending actual (control_plane_id, stable_node_id)
+in one serialized transaction. Approval durably commits an internal device ID,
+pin, credential digest, monotonic epoch, expiry and revoked flag before the
+credential is deliverable. The same-node handle-bound completion is one-use;
+unfinished invitation/pending/delivery authority burns on restart, and a lost
+undelivered grant requires a new invitation/approval. Completed grants survive
+restart. Unknown/missing/mistyped fields, duplicate keys, torn state and anchor
+rollback fail closed. There are at most 32 devices. Legacy anchored unpinned
+records load as re-pair-required and cannot pass pinned admission.
+
+The pure authorization.admit function reloads current anchored trust and requires
+credential digest/epoch/expiry/revocation/audience plus exact control-plane/StableID
+pin equality. StableID enters as a trusted plain argument from ingress; the
+control-plane ID is fixed connector configuration. Headers, names, IPs, membership
+and old credentials cannot supply or change a pin. Status is secret-free, with
+bounded escaped identity labels, StableID fingerprint and comparison phrase;
+OS-derived friendly-label transport is not part of this core slice.
+
+Attributed stream registration carries internal device ID and epoch. Pinned revoke
+persists invalidation, fences old registrations and closes only the selected device's
+streams before success. Physical cleanup failure remains RevocationIncomplete;
+other devices remain usable. Existing unattributed/DIY paths keep their versioned
+semantics. Request, WebSocket and SSE admission wiring is explicitly deferred to
+slice 2b after PR #1572. No UI/helper/socket/installer, live Headscale or host change
+is delivered or authorized by this subsection.

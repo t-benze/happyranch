@@ -106,10 +106,12 @@ class _TrackedStream:
     and must still fail closed.
     """
 
-    __slots__ = ("stream_id", "_inner", "_sealed", "_cleanup_failed", "_registry")
+    __slots__ = ("stream_id", "_inner", "_sealed", "_cleanup_failed", "_registry", "device_id", "authorization_epoch")
 
     def __init__(self, stream_id: str, inner: StreamHandle, registry: "StreamRegistry") -> None:
         self.stream_id = stream_id
+        self.device_id: str | None = None
+        self.authorization_epoch: int | None = None
         self._inner = inner
         self._registry = registry
         self._sealed = False
@@ -233,6 +235,10 @@ class StreamRegistry:
 
     def __init__(self) -> None:
         self._streams: dict[str, _TrackedStream] = {}
+        # Each device/epoch owns an existing one-shot registry, retaining its
+        # acknowledgement, re-entrancy and persistent cleanup-failure semantics.
+        self._device_registries: dict[tuple[str, int], StreamRegistry] = {}
+        self._device_revocations: dict[str, int] = {}
         self._revoked = False
         # ── cleanup lifecycle (one-shot; terminal result shared/persisted) ──
         # ONE lock = the atomic lifecycle boundary: guards the sealed flag AND
@@ -317,7 +323,7 @@ class StreamRegistry:
         except Exception:
             pass
 
-    def open(self, stream_id: str, handle: StreamHandle) -> _TrackedStream:
+    def open(self, stream_id: str, handle: StreamHandle, *, device_id: str | None = None, epoch: int | None = None) -> _TrackedStream:
         """Admit ``handle`` under ``stream_id`` and return the registry-owned
         wrapper — the raw handle is never handed out.
 
@@ -337,6 +343,19 @@ class StreamRegistry:
         - a pre-seal registration is included in ``close_all``'s snapshot and
           revoked with it.
         """
+        if device_id is not None or epoch is not None:
+            child = None
+            if isinstance(device_id, str) and device_id and type(epoch) is int and epoch > 0:
+                with self._lock:
+                    if not self._revoked and epoch > self._device_revocations.get(device_id, 0):
+                        child = self._device_registries.setdefault((device_id, epoch), StreamRegistry())
+            if child is None:
+                self._close_unexposed(handle)
+                raise StreamClosed(stream_id)
+            tracked = child.open(stream_id, handle)
+            tracked.device_id = device_id
+            tracked.authorization_epoch = epoch
+            return tracked
         tracked = _TrackedStream(stream_id, handle, self)  # construction: no callbacks
         replace: _TrackedStream | None = None
         doomed: StreamHandle | None = None
@@ -395,6 +414,10 @@ class StreamRegistry:
                 tracked.seal()  # atomic with membership removal (TASK-5888)
                 self._begin_inflight_close()
         if tracked is None:
+            with self._lock:
+                children = tuple(self._device_registries.values())
+            for child in children:
+                child.close(stream_id)
             return
         try:
             tracked._close_inner()
@@ -447,7 +470,12 @@ class StreamRegistry:
         every required physical-cleanup outcome is terminal and acknowledged,
         and no post-seal admission can return usable.
         """
-        if getattr(self._self_inflight, "count", 0) > 0 or getattr(
+        with self._lock:
+            children_inflight = any(
+                getattr(child._self_inflight, "count", 0) > 0 or getattr(child._in_cleanup, "active", False)
+                for child in self._device_registries.values()
+            )
+        if children_inflight or getattr(self._self_inflight, "count", 0) > 0 or getattr(
             self._in_cleanup, "active", False
         ):
             # Same-thread re-entrancy from within an UNFINISHED transport
@@ -465,6 +493,15 @@ class StreamRegistry:
             raise RuntimeError(
                 "re-entrant close_all from a transport cleanup callback rejected"
             )
+        with self._lock:
+            self._revoked = True
+            children = tuple(self._device_registries.values())
+        child_failures: list[str] = []
+        for child in children:
+            try:
+                child.close_all()
+            except StreamCloseError as exc:
+                child_failures.extend(exc.stream_ids)
         pending: list[tuple[str, _TrackedStream]] = []
         role = "observe"
         failures: tuple[str, ...] = ()
@@ -512,7 +549,7 @@ class StreamRegistry:
                     # result — never publish an incomplete failed-id set, and
                     # never erase a callback failure that became terminal
                     # after a re-entrant rejection (REV-008).
-                    self._cleanup_failed_ids = tuple(failed) + tuple(
+                    self._cleanup_failed_ids = tuple(child_failures) + tuple(failed) + tuple(
                         sorted(self._inflight_failed_ids)
                     )
                     self._inflight_failed_ids.clear()
@@ -528,11 +565,35 @@ class StreamRegistry:
         if failures:
             raise StreamCloseError(failures)
 
+    def close_device(self, device_id: str, through_epoch: int) -> None:
+        """Fence old registrations atomically, then acknowledge their cleanup.
+
+        Other devices and later explicitly approved epochs retain admission.
+        Repeated/concurrent calls share the child registries' terminal failures.
+        """
+        with self._lock:
+            children = tuple(child for (owner, epoch), child in self._device_registries.items()
+                             if owner == device_id and epoch <= through_epoch)
+            if any(getattr(child._self_inflight, "count", 0) > 0
+                   or getattr(child._in_cleanup, "active", False) for child in children):
+                raise RuntimeError("re-entrant device cleanup rejected")
+            self._device_revocations[device_id] = max(through_epoch, self._device_revocations.get(device_id, 0))
+        failures: list[str] = []
+        for child in children:
+            try:
+                child.close_all()
+            except StreamCloseError as exc:
+                failures.extend(exc.stream_ids)
+        if failures:
+            raise StreamCloseError(failures)
+
     def is_open(self, stream_id: str) -> bool:
         """Derived membership read — synchronized on the lifecycle lock so the
         reported truth is a real linearization point of the atomic boundary."""
         with self._lock:
-            return stream_id in self._streams
+            own = stream_id in self._streams
+            children = tuple(self._device_registries.values())
+        return own or any(child.is_open(stream_id) for child in children)
 
     def open_count(self) -> int:
         """Number of live registered streams — a real linearization point on
@@ -541,7 +602,9 @@ class StreamRegistry:
         WITHOUT sealing an empty registry (sealing an empty registry would
         refuse future streams for legitimately re-paired devices)."""
         with self._lock:
-            return len(self._streams)
+            own = len(self._streams)
+            children = tuple(self._device_registries.values())
+        return own + sum(child.open_count() for child in children)
 
     @property
     def sealed(self) -> bool:
@@ -558,6 +621,5 @@ class StreamRegistry:
         """Fail closed when the stream is NOT a member of the registry (a
         closed/never-registered stream must not be used). Synchronized on the
         lifecycle lock like ``is_open``."""
-        with self._lock:
-            if stream_id not in self._streams:
-                raise StreamClosed(stream_id)
+        if not self.is_open(stream_id):
+            raise StreamClosed(stream_id)

@@ -199,7 +199,7 @@ def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
 
 
 def _require_identity_text(value: Any) -> str:
-    if not isinstance(value, str) or not value or len(value) > 256 or any(ord(c) < 32 or ord(c) == 127 for c in value):
+    if not isinstance(value, str) or not value or len(value) > 256 or any(ord(c) < 32 or ord(c) == 127 or 0xD800 <= ord(c) <= 0xDFFF for c in value):
         raise CorruptTrustStateError("trust state identity invalid")
     return value
 
@@ -259,7 +259,8 @@ def _state_from_payload(payload: dict[str, Any], *, legacy: bool = False) -> Tru
     current_device_id references to unknown devices all fail closed as
     corruption — a present-but-invalid state is never guessed.
     """
-    unknown = set(payload) - _PAYLOAD_KEYS
+    allowed = _PAYLOAD_KEYS - {"invite_record", "pending_approval", "delivery"} if legacy else _PAYLOAD_KEYS
+    unknown = set(payload) - allowed
     if unknown:
         raise CorruptTrustStateError("trust state payload has unknown keys")
     required = ({"pairing_epoch", "revocation_epoch", "devices"} if legacy else _PAYLOAD_KEYS)
@@ -299,7 +300,8 @@ def _state_from_payload(payload: dict[str, Any], *, legacy: bool = False) -> Tru
             raise CorruptTrustStateError("trust state device id must be a string")
         if not isinstance(raw, dict):
             raise CorruptTrustStateError("trust state device record must be an object")
-        unknown_device = set(raw) - _DEVICE_KEYS
+        allowed_device = _DEVICE_KEYS - {"control_plane_id", "stable_node_id"} if legacy else _DEVICE_KEYS
+        unknown_device = set(raw) - allowed_device
         if unknown_device:
             raise CorruptTrustStateError("trust state device record has unknown keys")
         missing_device = (_DEVICE_REQUIRED_KEYS if legacy else _DEVICE_KEYS) - set(raw)
@@ -385,7 +387,7 @@ def _state_from_payload(payload: dict[str, Any], *, legacy: bool = False) -> Tru
             raise CorruptTrustStateError(
                 "trust state current_device_id references an unknown device"
             )
-    if len([d for d in devices.values() if not d.re_pair_required]) > MAX_PINNED_DEVICES:
+    if len(devices) > MAX_PINNED_DEVICES:
         raise CorruptTrustStateError("trust state device limit exceeded")
     invite = _invite_from_payload(payload.get("invite_record"))
     pending = _approval_from_payload(payload.get("pending_approval"), delivery=False)
@@ -849,6 +851,13 @@ class AtomicFileTrustStateStore:
             os.close(fd)
 
     @staticmethod
+    def _file_signature(metadata: os.stat_result) -> tuple[int, ...]:
+        # Reading may advance atime; identity/authority/content must stay fixed.
+        return (metadata.st_dev, metadata.st_ino, metadata.st_mode,
+                metadata.st_uid, metadata.st_gid, metadata.st_nlink,
+                metadata.st_size, metadata.st_mtime_ns, metadata.st_ctime_ns)
+
+    @staticmethod
     def _safe_file(metadata: os.stat_result) -> bool:
         return (stat.S_ISREG(metadata.st_mode) and metadata.st_nlink == 1
                 and metadata.st_uid == os.geteuid()
@@ -863,7 +872,7 @@ class AtomicFileTrustStateStore:
                 try:
                     before = os.fstat(fd)
                     named = os.stat(path.name, dir_fd=parent_fd, follow_symlinks=False)
-                    if not self._safe_file(before) or before != named:
+                    if not self._safe_file(before) or self._file_signature(before) != self._file_signature(named):
                         raise OSError("unsafe trust state inode")
                     chunks: list[bytes] = []
                     remaining = MAX_STATE_BYTES + 1
@@ -875,7 +884,8 @@ class AtomicFileTrustStateStore:
                         remaining -= len(chunk)
                     after = os.fstat(fd)
                     named_after = os.stat(path.name, dir_fd=parent_fd, follow_symlinks=False)
-                    if before != after or after != named_after or remaining == 0:
+                    if (self._file_signature(before) != self._file_signature(after)
+                            or self._file_signature(after) != self._file_signature(named_after) or remaining == 0):
                         raise OSError("trust state inode changed or oversized")
                     return b"".join(chunks)
                 finally:
@@ -907,7 +917,9 @@ class AtomicFileTrustStateStore:
                         current = os.stat(path.name, dir_fd=parent_fd, follow_symlinks=False)
                     except FileNotFoundError:
                         current = None
-                    if current != previous:
+                    if (current is None) != (previous is None) or (
+                        current is not None and self._file_signature(current) != self._file_signature(previous)
+                    ):
                         raise OSError("trust state destination changed")
                     os.replace(temporary, path.name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
                     os.fsync(parent_fd)

@@ -55,12 +55,14 @@ from __future__ import annotations
 import hashlib
 import secrets
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from typing import Callable
 
 from runtime.remote_access.authorization import (
+    AuthorizationVerdict,
     DeviceAuthorization,
+    PendingApproval,
     PendingPairing,
     RevocationSignal,
     TrustState,
@@ -72,7 +74,7 @@ from runtime.remote_access.identity import (
 )
 from runtime.remote_access.revocation import RevocationCoordinator, RevocationIncomplete
 from runtime.remote_access.state import TrustStateStore
-from runtime.remote_access.state_store import StateStoreError
+from runtime.remote_access.state_store import AtomicFileTrustStateStore, MAX_PINNED_DEVICES, StateStoreError
 from runtime.remote_access.streams import StreamRegistry
 
 # THR-034 wire contract constants (match the legacy Swift store so the
@@ -484,3 +486,238 @@ class PairingCredentialVerifier:
         if device.tenant_id != proof.tenant_id or device.home_id != proof.home_id:
             return ProofVerdict(ok=False, reason="identity_unestablished")
         return ProofVerdict(ok=True)
+
+
+@dataclass(frozen=True)
+class RedeemedInvite:
+    """Private one-use handle; excluded from ordinary repr/diagnostics."""
+
+    generation: int
+    completion_handle: str = field(repr=False)
+    comparison_phrase: str
+    expires_at: datetime
+
+
+class PinnedPairingManager:
+    """Connector-owned managed ceremony; construct ONCE at connector startup.
+
+    The future root helper calls only status/issue_invite_record/approve_pending/
+    reject_pending/revoke_device. Authentication and root-peer IPC belong to 3a;
+    this in-process object is never an app, HTTP or bearer-admin surface.
+    Store paths and identity are connector-owned constructor configuration.
+    """
+
+    def __init__(
+        self, *, state_store: "AtomicFileTrustStateStore", identity: ConnectorIdentity,
+        registry: StreamRegistry, now_fn: Callable[[], datetime] | None = None,
+    ) -> None:
+        self._store = state_store
+        self._identity = identity
+        self._registry = registry
+        self._now_fn = now_fn or (lambda: datetime.now(timezone.utc))
+        self._lock = threading.RLock()
+        self._in_revoke = threading.local()
+        self._delivery: dict[str, str] = {}
+        # Restart cannot recover a private handle or undelivered bearer. Burn
+        # unfinished authority durably; a grant awaiting delivery is revoked.
+        with self._store.transaction() as tx:
+            state = tx.state
+            if state.connector_identity != identity:
+                raise PairingError("identity_unestablished")
+            if state.delivery is not None:
+                epoch = max(state.pairing_epoch, state.revocation_epoch) + 1
+                state._revoke_device(state.delivery.device_id, epoch)
+            if any(x is not None for x in (state.invite_record, state.pending_approval, state.delivery)):
+                state.invite_record = state.pending_approval = state.delivery = None
+            else:
+                tx.abort()
+
+    @staticmethod
+    def _tuple(stable_node_id: str, control_plane_id: str) -> tuple[str, str]:
+        from runtime.remote_access.state_store import _require_identity_text
+        return (_require_identity_text(control_plane_id), _require_identity_text(stable_node_id))
+
+    def _burn(self, state: TrustState) -> None:
+        if state.delivery is not None:
+            epoch = max(state.pairing_epoch, state.revocation_epoch) + 1
+            state._revoke_device(state.delivery.device_id, epoch)
+        state.invite_record = state.pending_approval = state.delivery = None
+        self._delivery.clear()
+
+    def issue_invite_record(self, invite_secret_digest: str, expires_at: datetime) -> int:
+        """Replace the active ceremony; only the received digest is persisted."""
+        from runtime.remote_access.authorization import InviteRecord
+        from runtime.remote_access.state_store import _digest
+        _digest(invite_secret_digest)
+        now = self._now_fn()
+        if not isinstance(expires_at, datetime) or expires_at.tzinfo is None or not now < expires_at <= now + timedelta(minutes=5):
+            raise PairingError("invite_denied")
+        with self._lock, self._store.transaction() as tx:
+            self._burn(tx.state)
+            tx.state.invite_record = InviteRecord(invite_secret_digest, expires_at, tx.generation)
+            return tx.generation
+
+    def redeem(
+        self, invite_secret: str, stable_node_id: str, control_plane_id: str, now: datetime,
+    ) -> RedeemedInvite | None:
+        """Consume first, then bind the actual identity. Never restore an invite."""
+        import hmac
+        if not isinstance(invite_secret, str) or not invite_secret or len(invite_secret) > 256:
+            return None
+        try:
+            invite_digest = _sha256(invite_secret)
+        except UnicodeError:
+            return None
+        try:
+            with self._lock, self._store.transaction() as tx:
+                state = tx.state
+                invite = state.invite_record
+                if invite is None or not hmac.compare_digest(invite.secret_digest, invite_digest):
+                    tx.abort()
+                    return None
+                state.invite_record = None
+                try:
+                    pin = self._tuple(stable_node_id, control_plane_id)
+                except StateStoreError:
+                    tx.commit()
+                    return None
+                if (not isinstance(now, datetime) or now.tzinfo is None or now >= invite.expires_at
+                        or state.pending_approval is not None or state.delivery is not None
+                        or len(state.devices) >= MAX_PINNED_DEVICES):
+                    tx.commit()
+                    return None
+                handle = secrets.token_hex(32)
+                phrase_digest = _sha256(control_plane_id + "\0" + stable_node_id + "\0" + handle)
+                phrase = "pair-" + "-".join(phrase_digest[i:i+4] for i in range(0, 16, 4))
+                state.pending_approval = PendingApproval(
+                    tx.generation, pin[0], pin[1], _sha256(handle), phrase, invite.expires_at,
+                )
+                tx.commit()  # no handle escapes before the anchored write succeeds
+                return RedeemedInvite(tx.generation, handle, phrase, invite.expires_at)
+        except StateStoreError:
+            return None
+
+    @staticmethod
+    def _matches(pending: "PendingApproval | None", generation: int, pin: tuple[str, str]) -> bool:
+        return (pending is not None and type(generation) is int
+                and pending.generation == generation
+                and type(pin) is tuple and len(pin) == 2
+                and (pending.control_plane_id, pending.stable_node_id) == pin)
+
+    def approve_pending(self, expected_pending_generation: int, expected_tuple: tuple[str, str]) -> str | None:
+        """Approve only the tuple captured BEFORE fresh human authentication."""
+        with self._lock, self._store.transaction() as tx:
+            state = tx.state
+            pending = state.pending_approval
+            if not self._matches(pending, expected_pending_generation, expected_tuple):
+                tx.abort()
+                return None
+            now = self._now_fn()
+            if now >= pending.expires_at or len(state.devices) >= MAX_PINNED_DEVICES:
+                self._burn(state)
+                tx.commit()
+                return None
+            epoch = max(state.pairing_epoch, state.revocation_epoch) + 1
+            device_id = secrets.token_hex(16)
+            credential = f"hrpin_{epoch}_{secrets.token_hex(32)}"
+            state.apply_pairing(DeviceAuthorization(
+                device_id=device_id, tenant_id=self._identity.tenant_id, home_id=self._identity.home_id,
+                authorization_epoch=epoch, expires_at=now + timedelta(days=DEFAULT_CREDENTIAL_TTL_DAYS),
+                credential_digest=_sha256(credential), control_plane_id=pending.control_plane_id,
+                stable_node_id=pending.stable_node_id,
+            ))
+            state.current_device_id = None
+            state.pending_approval = None
+            state.delivery = replace(pending, device_id=device_id)
+            tx.commit()  # durability BEFORE the bearer can become deliverable
+            self._delivery[device_id] = credential
+            return device_id
+
+    def reject_pending(self, expected_pending_generation: int, expected_tuple: tuple[str, str]) -> bool:
+        with self._lock, self._store.transaction() as tx:
+            if not self._matches(tx.state.pending_approval, expected_pending_generation, expected_tuple):
+                tx.abort()
+                return False
+            self._burn(tx.state)
+            return True
+
+    def complete(self, completion_handle: str, stable_node_id: str, control_plane_id: str, now: datetime) -> str | None:
+        """One-use fetch, same node/control-plane and private handle; no recovery."""
+        import hmac
+        if (not isinstance(completion_handle, str) or len(completion_handle) != 64
+                or any(c not in "0123456789abcdef" for c in completion_handle)
+                or not isinstance(now, datetime) or now.tzinfo is None):
+            return None
+        try:
+            with self._lock, self._store.transaction() as tx:
+                state = tx.state
+                delivery = state.delivery
+                if (delivery is None or not hmac.compare_digest(delivery.handle_digest, _sha256(completion_handle))
+                        or (delivery.control_plane_id, delivery.stable_node_id) != (control_plane_id, stable_node_id)):
+                    tx.abort()
+                    return None
+                device = state.devices[delivery.device_id]
+                credential = self._delivery.get(delivery.device_id)
+                if now >= delivery.expires_at or device.revoked or credential is None:
+                    self._burn(state)
+                    tx.commit()
+                    return None
+                state.delivery = None
+                tx.commit()  # consume fetch BEFORE exposing the credential
+                self._delivery.pop(delivery.device_id, None)
+                return credential
+        except StateStoreError:
+            return None
+
+    def revoke_device(self, device_id: str) -> RevokeOutcome:
+        """Persist invalidation, then close ONLY this device before success."""
+        if getattr(self._in_revoke, "active", False):
+            raise RuntimeError("re-entrant revocation transaction rejected")
+        with self._lock, self._store.transaction() as tx:
+            state = tx.state
+            if device_id not in state.devices:
+                raise PairingError("device_denied")
+            epoch = max(state.pairing_epoch, state.revocation_epoch) + 1
+            if state.delivery is not None and state.delivery.device_id == device_id:
+                state.delivery = None
+                self._delivery.pop(device_id, None)
+            self._in_revoke.active = True
+            try:
+                RevocationCoordinator(state, self._registry).revoke_device(device_id, epoch, persist=tx.commit)
+            finally:
+                self._in_revoke.active = False
+            return RevokeOutcome(epoch, True, device_id)
+
+    def admit(self, credential: str, stable_node_id: str, control_plane_id: str, now: datetime) -> "AuthorizationVerdict":
+        from runtime.remote_access.authorization import admit
+        return admit(self._store, credential, stable_node_id, control_plane_id, now)
+
+    def status(self) -> dict:
+        """Secret-free labels/tuple/fingerprint/phrase; never digests or handles."""
+        import html
+        state = self._store.load()
+        pending = state.pending_approval
+        now = self._now_fn()
+        def labels(control_plane_id: str | None, stable_node_id: str | None) -> dict:
+            return {
+                "control_plane_label": html.escape(control_plane_id or ""),
+                "device_label": html.escape(stable_node_id or ""),
+                "stable_id_fingerprint": _sha256(stable_node_id) if stable_node_id is not None else None,
+            }
+        return {
+            "pending": None if pending is None else {
+                "generation": pending.generation,
+                "tuple": (pending.control_plane_id, pending.stable_node_id),
+                **labels(pending.control_plane_id, pending.stable_node_id),
+                "comparison_phrase": pending.comparison_phrase,
+                "expires_at": pending.expires_at.isoformat(),
+                "state": "expired" if now >= pending.expires_at else "pending-approval",
+            },
+            "devices": [{
+                "device_id": d.device_id, **labels(d.control_plane_id, d.stable_node_id),
+                "epoch": d.authorization_epoch, "expires_at": d.expires_at.isoformat(),
+                "state": ("re-pair-required" if d.re_pair_required else "revoked" if d.revoked
+                          else "expired" if now >= d.expires_at else "paired"),
+            } for d in sorted(state.devices.values(), key=lambda d: d.device_id)],
+            "re_pair_required_count": sum(d.re_pair_required for d in state.devices.values()),
+        }

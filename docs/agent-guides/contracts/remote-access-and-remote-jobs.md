@@ -941,3 +941,52 @@ loopback `/auth/bootstrap` exposes the daemon token. No
 installation, daemon/service restart, package build or Mac acceptance was
 performed by this source slice. The retained standalone installer-script tests
 cover temp-root/fake-manager behavior; required PR checks remain lint/static.
+
+### Pinned pairing and per-device authorization (slice 2)
+
+PinnedPairingManager is the connector-owned in-process core for THR-327's new
+managed profile. Construct it once at connector startup. Its fixed helper-facing
+operations are status, issue_invite_record, approve_pending, reject_pending and
+revoke_device; helper transport/authentication is separate. Constructor configuration
+supplies the anchored store and connector identity; no operation accepts a path, URL
+or settings. Approval/rejection requires the exact captured (control_plane_id,
+stable_node_id) tuple and pending generation.
+
+The version-3 snapshot extends the existing snapshot/anchor/lock transaction with
+one digest-only invitation, one pending approval or unfinished delivery, and at most
+32 device records. Each new device has an internal ID, credential digest, monotonic
+epoch, expiry, revoked flag and exact control-plane/StableID pin. Anchored v2
+records remain readable without inventing pins; pinned admission reports them as
+re-pair-required and denies them. Missing/unknown/mistyped v3 fields, duplicate JSON
+keys, torn publication and snapshot/anchor rollback refuse. Literal no-follow
+parents, bounded regular owner-only single-link files and descriptor-relative
+atomic publication apply; unsafe existing metadata is never repaired into acceptance.
+The local anchor cannot detect replacement of both files by a trusted store writer.
+
+Redemption consumes the invitation into the actual node's pending record in one
+transaction. It returns a private completion handle and comparison phrase, granting
+no runtime access. Approval persists the pin/digest/epoch before making a bearer
+available in connector memory. Completion consumes delivery durably and requires
+that handle and the same control-plane/node tuple; it returns the bearer once.
+Expired/failed/replayed attempts never restore invitations. Replacement burns the
+old pending/delivery handle. Startup burns unfinished invitations, pending approval
+and delivery; undelivered devices are revoked, while completed grants survive.
+The invitation deadline is at most five minutes and also bounds approval/delivery.
+
+authorization.admit(store, credential, stable_node_id, control_plane_id, now) loads
+current anchored trust and checks digest, credential epoch, expiry, revocation,
+connector audience and exact pin. Its verdict carries device ID and epoch for stream
+registration. Identity comes only from trusted plain arguments: WhoIs StableID and
+connector-configured control-plane ID, never headers, hostname or address. Labels
+currently use bounded escaped identity text and a StableID fingerprint because this
+slice has no OS-label transport. Headscale membership grants no product authority.
+Request/WebSocket/SSE wiring remains deferred to slice 2b after PR #1572; existing
+DIY and legacy transport paths keep their versioned behavior.
+
+Attributed registrations use StreamRegistry.open with device_id and epoch.
+Per-device revocation persists invalidation before closing/acknowledging that device's
+registries, fences stale registrations and retains RevocationIncomplete on cleanup
+failure. Other devices remain open. Unattributed legacy revocation keeps its existing
+conservative closure semantics. Focused synthetic checks use the retained standalone
+script venue: uv run --frozen pytest scripts/test_pinned_pairing.py -v --tb=short.
+This slice adds no UI, helper, polkit/control socket, ingress wiring or installer.
