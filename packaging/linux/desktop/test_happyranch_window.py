@@ -721,6 +721,8 @@ class ServiceTests(unittest.TestCase):
                 class Widget:
                     def __init__(self, **kwargs: object) -> None:
                         self.children, self.signals = [], {}
+                        self.orientation = kwargs.get("orientation")
+                        self.packing = {}
                         self.label = kwargs.get("label")
                         self.active, self.sensitive = False, True
                         widgets.append(self)
@@ -730,7 +732,8 @@ class ServiceTests(unittest.TestCase):
                         return self.children[:]
                     def add(self, child: object) -> None:
                         self.children.append(child)
-                    def pack_start(self, child: object, *_args: object) -> None:
+                    def pack_start(self, child: object, *args: object) -> None:
+                        self.packing[child] = args
                         self.add(child)
                     def remove(self, child: object) -> None:
                         self.children.remove(child)
@@ -761,7 +764,9 @@ class ServiceTests(unittest.TestCase):
                     self.fail("GUI did not reach expected state")
                 def current() -> list:
                     root = shell.get_children()
-                    return root[0].children[0].children if root and root[0].children else []
+                    def descendants(widget: Widget) -> list:
+                        return [child for item in widget.children for child in [item, *descendants(item)]]
+                    return descendants(root[0].children[0]) if root and root[0].children else []
                 def switch() -> Switch | None:
                     return next((w for w in current() if isinstance(w, Switch)), None)
                 def click(label: str) -> None:
@@ -792,6 +797,16 @@ class ServiceTests(unittest.TestCase):
                     app.signals["activate"](app)
                     try:
                         pump(lambda: switch() is not None)
+                        setting_row = shell.children[0].children[0].children[0]
+                        self.assertEqual(setting_row.orientation, 1, "setting must be a horizontal row")
+                        self.assertIn(switch(), setting_row.children)
+                        self.assertEqual(setting_row.packing[switch()], (False, False, 0))
+                        for child in current():
+                            if child.label in {"Repair", "Turn off", "Restart HappyRanch"}:
+                                self.assertTrue(any(row.orientation == 1 and child in row.children
+                                                    and row.packing[child] == (False, False, 0)
+                                                    for row in shell.children[0].children[0].children),
+                                                "action must share a horizontal row without stretching")
                         self.assertTrue(any(w.label == "Keep HappyRanch running when I'm logged out" for w in current()))
                         self.assertEqual(switch().active, restart_error or scenario == "on")
                         if scenario == "fallback":
@@ -852,7 +867,8 @@ class ServiceTests(unittest.TestCase):
                     idle_add=lambda callback, *args: callbacks.put((callback, args)))
                 repository.Gtk = SimpleNamespace(Application=lambda **_kwargs: app,
                     ApplicationWindow=lambda **_kwargs: shell, Box=Widget, Label=Widget, Button=Widget,
-                    Switch=Switch, Orientation=SimpleNamespace(VERTICAL=0))
+                    Switch=Switch, Separator=Widget, Orientation=SimpleNamespace(VERTICAL=0, HORIZONTAL=1),
+                    Align=SimpleNamespace(CENTER=0))
                 repository.WebKit2 = SimpleNamespace(WebView=Widget)
                 child = SimpleNamespace(poll=lambda: None)
                 with patch.dict(sys.modules, {"gi": gi, "gi.repository": repository}), \

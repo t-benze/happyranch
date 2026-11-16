@@ -308,6 +308,10 @@ permits exit and lock release. No process is signaled directly in service mode.
 
 ### Keep running after logout
 
+The native controls sit above the web view with 12px margins and a separator.
+The setting label and compact switch share a horizontal row; partial-state and
+update actions each share a row with their label. Diagnostics wrap below the setting.
+
 **Keep HappyRanch running when I'm logged out** defaults OFF. Turning it ON
 calls logind's system-bus `SetUserLinger(own uid, true, interactive=true)` via
 system Python's existing Gio/GLib bindings, then
