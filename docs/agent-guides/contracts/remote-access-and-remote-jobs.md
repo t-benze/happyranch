@@ -1049,7 +1049,10 @@ with HTTP 503 `control_plane_id_missing`. It never infers a control plane from
 headers, HRID, hostname, address, URL, tenant/home/connector IDs, or falls back
 to the legacy pairing manager. The supervisor constructs one cached
 PinnedPairingManager for `linux-managed-identity-v1` and supplies it and the
-configured control-plane identity to the protected Unix listener.
+configured control-plane identity to the protected Unix listener at serving
+startup. Read-only managed diagnostics inspect the existing provider and trust
+store without constructing this owner or running startup recovery; active
+invites, pending approvals and undelivered credentials remain usable.
 
 `POST /pair/invite` takes the raw UTF-8 pairing secret and redeems against that
 configured control plane plus the HRID StableID. It returns `state:
@@ -1078,11 +1081,16 @@ shipped route policy still denies unsupported upgrades (currently all
 WebSocket routes); this wiring adds no allowed route.
 
 Supervisor reconciliation of persisted managed revocation fences and closes
-the revoked device's attributed epochs without stopping the listener or
+the revoked or removed device's attributed epochs without stopping the listener or
 rotating/sealing the entire registry. Other devices retain their streams and
-can open new requests. Stale admissions racing transport allocation fail at
-registration; cleanup failures retain RevocationIncomplete rather than
-acknowledging success. DIY/legacy reconciliation keeps its existing whole-registry
+can open new requests. Removal through the shipped CLI deletes the device row;
+reconciliation also closes attributed owners absent from the trust snapshot and
+fences their old epochs, including a delayed first registration. Stale admissions
+racing transport allocation fail at registration; later approved epochs remain
+eligible. Cleanup failures retain RevocationIncomplete rather than acknowledging
+success. The serving loop reports that incomplete result and retries reconciliation
+on each pass while keeping unaffected devices serving. Other exceptions retain
+their existing handling. DIY/legacy reconciliation keeps its existing whole-registry
 closure and rotation. Completed pinned grants survive connector restart;
 unfinished ceremonies still burn. Standalone verification:
 `PYTHONPATH=$PWD uv run --frozen pytest scripts/test_pinned_pairing.py scripts/test_identity_ingress.py scripts/test_managed_admission.py -v`.

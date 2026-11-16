@@ -626,15 +626,14 @@ class ConnectorSupervisor:
                 "pairing": pairing_status,
             }
         elif self.config.managed is not None:
-            try:
-                adapter = self.build_managed_provider()
-            except PolicyLoadError:
-                adapter = None
+            # A diagnostic must not construct the serving ceremony owner:
+            # PinnedPairingManager construction performs startup recovery.
+            adapter = self._provider
             provider = {
                 "type": "managed",
                 "listening": bool(adapter and adapter.listening),
                 "bound_port": adapter.bound_port if adapter else None,
-                "bind_address": "loopback" if adapter else None,
+                "bind_address": "loopback",
             }
         return {
             "role": "happyranch-connector",
@@ -1078,7 +1077,15 @@ class ConnectorSupervisor:
                             print(message, file=sys.stderr, flush=True)
                             waiting_gates = failures
                     self._notify_fn(f"STATUS={message}\n")
-                self._reconcile_revocation()
+                try:
+                    self._reconcile_revocation()
+                except RevocationIncomplete as exc:
+                    # The device remains denied/fenced and the epoch remains
+                    # unacknowledged. Retry next pass without dropping peers.
+                    self._notify_fn(
+                        f"STATUS=device revocation cleanup incomplete; epoch={exc.applied_epoch}; "
+                        f"streams={len(exc.stream_ids)}\n"
+                    )
                 if self._shutdown:
                     break
                 if notified_ready and not self._listener_running():
@@ -1178,6 +1185,12 @@ class ConnectorSupervisor:
                         ))
                     except StreamCloseError as exc:
                         failures.extend(exc.stream_ids)
+            try:
+                # CLI removal deletes the row after advancing the epoch.
+                # Fence missing owners as well as the tombstones above.
+                registry.close_removed_devices(set(state.devices), state.revocation_epoch)
+            except StreamCloseError as exc:
+                failures.extend(exc.stream_ids)
             if failures:
                 raise RevocationIncomplete(state.revocation_epoch, failures)
             self._reconciled_revocation_epoch = state.revocation_epoch

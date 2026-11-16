@@ -286,7 +286,8 @@ def read_all(client):
     return b"".join(chunks)
 
 
-def test_supervisor_revoke_preserves_other_device_http_ws_sse(monkeypatch):
+@pytest.mark.parametrize("operation", ["revoke", "remove"])
+def test_supervisor_revoke_preserves_other_device_http_ws_sse(monkeypatch, operation):
     transport = ControlledForwarder()
     monkeypatch.setattr(supervisor_module, "HttpLoopbackForwarder", lambda *a, **kw: transport)
     with running(monkeypatch) as (path, supervisor):
@@ -311,12 +312,19 @@ def test_supervisor_revoke_preserves_other_device_http_ws_sse(monkeypatch):
             assert transport.delayed.wait(3)
             # Real external core persists revocation with a different registry;
             # only the shipping supervisor reconciliation can close these sockets.
-            external = PinnedPairingManager(state_store=supervisor.state_store,
-                identity=supervisor._configured_identity(), registry=StreamRegistry())
-            assert external.revoke_device(device_a).complete
+            if operation == "remove":
+                # The shipped CLI accessor deletes the row in another process.
+                external = ConnectorSupervisor(config=supervisor.config)
+                external.pairing_manager().remove_device(device_a)
+                assert device_a not in supervisor.state_store.load().devices
+            else:
+                external = PinnedPairingManager(state_store=supervisor.state_store,
+                    identity=supervisor._configured_identity(), registry=StreamRegistry())
+                assert external.revoke_device(device_a).complete
             assert not any(handle.closed for handle in handles.values())
             supervisor._reconcile_revocation()
             assert all(handles["a-" + kind].closed for kind in ("http", "websocket", "sse")), "all revoked-device transports must close"
+            assert supervisor._reconciled_revocation_epoch == supervisor.state_store.load().revocation_epoch
             transport.release.set()
             assert result(read_all(clients["a-late"]))[0] == 403, "stale in-flight registration must be fenced"
             assert result(read_all(clients["a-http"]))[0] == 403
@@ -343,26 +351,119 @@ def test_supervisor_revoke_preserves_other_device_http_ws_sse(monkeypatch):
                 client.close()
 
 
+def test_removed_device_first_registration_is_fenced(monkeypatch):
+    transport = ControlledForwarder()
+    monkeypatch.setattr(supervisor_module, "HttpLoopbackForwarder", lambda *a, **kw: transport)
+    with running(monkeypatch) as (path, supervisor):
+        device_a, credential_a = grant(supervisor, path)
+        _, credential_b = grant(supervisor, path, "node-b", "synthetic-invite-b")
+        client_b = connect(path, "node-b", credential_b, "sse", "b-sse")
+        handle_b = transport.handles.get(timeout=3)
+        assert handle_b.started.wait(3) and b"200 OK" in client_b.recv(4096)
+        client_a = connect(path, "node-a", credential_a, "http", "a-late")
+        try:
+            assert transport.delayed.wait(3)
+            handle_a = transport.handles.get(timeout=3)
+            assert supervisor.registry.open_count() == 1, "A has no registered owner yet"
+            external = ConnectorSupervisor(config=supervisor.config)
+            external.pairing_manager().remove_device(device_a)
+            supervisor._reconcile_revocation()
+            handle_a.events.put(None)
+            transport.release.set()
+            assert result(read_all(client_a))[0] == 403, "removed first registration must be fenced"
+            assert handle_a.closed
+            assert not handle_b.closed
+            handle_b.events.put(b"data: survivor\n\n")
+            assert b"survivor" in client_b.recv(4096)
+            assert b"200 OK" in call(path, "node-b", credential=credential_b)
+        finally:
+            transport.release.set()
+            supervisor.shutdown()
+            client_a.close()
+            client_b.close()
+
+
+@pytest.mark.parametrize("phase", ["invite", "pending", "delivery"])
+def test_diagnose_preserves_live_pairing_ceremony(monkeypatch, phase):
+    monkeypatch.setattr(supervisor_module, "HttpLoopbackForwarder", lambda *a, **kw: ForwardingHarness())
+    with running(monkeypatch) as (path, supervisor):
+        manager = supervisor._provider._pairing
+        secret = "synthetic-diagnostic-invite"
+        manager.issue_invite_record(hashlib.sha256(secret.encode()).hexdigest(),
+                                    datetime.now(timezone.utc) + timedelta(minutes=4))
+        if phase != "invite":
+            status, pending = result(call(path, "node-a", "/pair/invite", body=secret.encode()))
+            assert status == 200
+        if phase == "delivery":
+            record = supervisor.state_store.load().pending_approval
+            assert manager.approve_pending(record.generation, ("protected-control", "node-a"))
+        state_path = Path(supervisor.config.state_path)
+        anchor_path = Path(str(state_path) + ".anchor")
+        before = (state_path.read_bytes(), anchor_path.read_bytes())
+        observer = ConnectorSupervisor(config=supervisor.config, policy=policy_now(),
+            readiness=SimpleNamespace(evaluate=lambda now: SimpleNamespace(ready=True, gates={})),
+            manager=SimpleNamespace(status=lambda unit: SimpleNamespace(
+                active_state="active", sub_state="running", running=True)))
+        assert observer.diagnose()["provider"]["type"] == "managed"
+        assert (state_path.read_bytes(), anchor_path.read_bytes()) == before, "diagnose must not recover live ceremony state"
+        if phase == "invite":
+            status, pending = result(call(path, "node-a", "/pair/invite", body=secret.encode()))
+            assert status == 200, "the original invite must still redeem"
+        if phase != "delivery":
+            record = supervisor.state_store.load().pending_approval
+            assert manager.approve_pending(record.generation, ("protected-control", "node-a")), "pending approval must remain usable"
+        status, completed = result(call(path, "node-a", "/pair/complete", body=pending["completion_handle"].encode()))
+        assert status == 200, "the original delivery handle must still complete"
+        assert b"200 OK" in call(path, "node-a", credential=completed["credential"])
+
+
 def test_supervisor_reconcile_reports_incomplete_cleanup(monkeypatch):
     transport = ControlledForwarder()
     transport.fail_close = True
     monkeypatch.setattr(supervisor_module, "HttpLoopbackForwarder", lambda *a, **kw: transport)
     with running(monkeypatch) as (path, supervisor):
         device, credential = grant(supervisor, path)
+        _, credential_b = grant(supervisor, path, "node-b", "synthetic-invite-b")
         client = connect(path, "node-a", credential, "sse", "a-sse")
+        client_b = None
         try:
             assert transport.handles.get(timeout=3).started.wait(3)
             assert b"200 OK" in client.recv(4096)
+            transport.fail_close = False
+            client_b = connect(path, "node-b", credential_b, "sse", "b-sse")
+            handle_b = transport.handles.get(timeout=3)
+            assert handle_b.started.wait(3) and b"200 OK" in client_b.recv(4096)
             external = PinnedPairingManager(state_store=supervisor.state_store,
                 identity=supervisor._configured_identity(), registry=StreamRegistry())
             external.revoke_device(device)
             for _ in range(2):
                 with pytest.raises(RevocationIncomplete):
                     supervisor._reconcile_revocation()
+            epoch = supervisor.state_store.load().revocation_epoch
+            provider, registry = supervisor._provider, supervisor.registry
+            notifications = []
+            supervisor._notify_fn = notifications.append
+
+            def serving_pass(seconds):
+                assert not handle_b.closed
+                handle_b.events.put(b"data: survivor\n\n")
+                assert b"survivor" in client_b.recv(4096)
+                assert b"200 OK" in call(path, "node-b", credential=credential_b)
+                assert result(call(path, "node-a", credential=credential))[0] == 403
+
+            assert supervisor.run(max_iterations=2, wait_fn=serving_pass) == 0, "per-device cleanup must not escape the serving loop"
+            assert supervisor._provider is provider and supervisor.registry is registry
+            assert supervisor._reconciled_revocation_epoch < epoch, "failed cleanup must remain unacknowledged"
+            assert sum("cleanup incomplete" in message for message in notifications) == 2, "each serving pass must retry and report incomplete cleanup"
+            with pytest.raises(RevocationIncomplete):
+                supervisor._reconcile_revocation()
             assert supervisor.state_store.load().devices[device].revoked
             assert read_all(client) == b""
         finally:
+            supervisor.shutdown()
             client.close()
+            if client_b is not None:
+                client_b.close()
 
 
 def test_legacy_diy_credential_unaffected(monkeypatch):

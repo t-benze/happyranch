@@ -239,6 +239,8 @@ class StreamRegistry:
         # acknowledgement, re-entrancy and persistent cleanup-failure semantics.
         self._device_registries: dict[tuple[str, int], StreamRegistry] = {}
         self._device_revocations: dict[str, int] = {}
+        self._device_snapshot_epoch = 0
+        self._device_snapshot_ids: frozenset[str] = frozenset()
         self._revoked = False
         # ── cleanup lifecycle (one-shot; terminal result shared/persisted) ──
         # ONE lock = the atomic lifecycle boundary: guards the sealed flag AND
@@ -347,7 +349,8 @@ class StreamRegistry:
             child = None
             if isinstance(device_id, str) and device_id and type(epoch) is int and epoch > 0:
                 with self._lock:
-                    if not self._revoked and epoch > self._device_revocations.get(device_id, 0):
+                    if (not self._revoked and epoch > self._device_revocations.get(device_id, 0)
+                            and (epoch > self._device_snapshot_epoch or device_id in self._device_snapshot_ids)):
                         child = self._device_registries.setdefault((device_id, epoch), StreamRegistry())
             if child is None:
                 self._close_unexposed(handle)
@@ -582,6 +585,28 @@ class StreamRegistry:
         for child in children:
             try:
                 child.close_all()
+            except StreamCloseError as exc:
+                failures.extend(exc.stream_ids)
+        if failures:
+            raise StreamCloseError(failures)
+
+    def close_removed_devices(self, present_device_ids: set[str], through_epoch: int) -> None:
+        """Fence absent owners, including their delayed first registration.
+
+        The snapshot shares the admission lock, so an old attributed admission
+        is either included in cleanup or refused at registration. Later grants
+        have newer epochs. Retained child registries preserve cleanup failures.
+        """
+        with self._lock:
+            if through_epoch >= self._device_snapshot_epoch:
+                self._device_snapshot_epoch = through_epoch
+                self._device_snapshot_ids = frozenset(present_device_ids)
+            removed = {owner for owner, epoch in self._device_registries
+                       if owner not in present_device_ids and epoch <= through_epoch}
+        failures: list[str] = []
+        for owner in removed:
+            try:
+                self.close_device(owner, through_epoch)
             except StreamCloseError as exc:
                 failures.extend(exc.stream_ids)
         if failures:
