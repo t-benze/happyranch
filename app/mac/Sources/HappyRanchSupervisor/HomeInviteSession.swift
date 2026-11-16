@@ -98,7 +98,9 @@ public struct HomePairingInvitation: Sendable, CustomStringConvertible, CustomDe
     private let secret: Data
     public init(_ invite: RemoteInvite) {
         expiresAt = invite.expiresAt
-        (inviteID, secret) = invite.withSecrets { id, _, pair in (id, pair) }
+        let material = invite.withSecrets { id, _, pair in (id, pair) }
+        inviteID = material.0
+        secret = material.1
     }
     public var description: String { "HomePairingInvitation(<redacted>)" }
     public var debugDescription: String { description }

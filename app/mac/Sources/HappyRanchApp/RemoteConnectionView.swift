@@ -171,6 +171,8 @@ private struct HomeInviteForm: View {
     @ObservedObject var model: HomeInviteModel
     @State private var draft = ""
     @State private var replacementConsent = false
+    @State private var connectConsent = false
+    @State private var pendingInvite = ""
     @State private var removalConsent = false
 
     var body: some View {
@@ -205,10 +207,18 @@ private struct HomeInviteForm: View {
                     Button("Connect") {
                         let input = draft
                         draft = ""
-                        model.accept(input)
+                        if model.needsReplacementConsent { pendingInvite = input; connectConsent = true }
+                        else { model.accept(input) }
                     }
                     .buttonStyle(.borderedProminent)
                     .disabled(draft.isEmpty)
+                    .confirmationDialog("Saved access could not be opened. Create new local access after fresh Linux approval? The obsolete host grant remains revocable on Linux; the old item is never silently replaced.", isPresented: $connectConsent) {
+                        Button("Continue with fresh approval") {
+                            let input = pendingInvite; pendingInvite = ""
+                            model.accept(input, replacementConsent: true)
+                        }
+                        Button("Cancel", role: .cancel) { pendingInvite = "" }
+                    }
                     Text(model.retryGuidance).font(.caption)
                     Button("Retry") { draft = ""; model.retry() }
                 }
@@ -256,9 +266,9 @@ private struct HomeInviteForm: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .task { model.prepare() }
-        .onDisappear { draft = "" }
+        .onDisappear { draft = ""; pendingInvite = "" }
         .onChange(of: model.phase) { _, phase in
-            if phase == .connected || phase == .failed(.expiredInvite) || phase == .stopping { draft = "" }
+            if phase == .connected || phase == .failed(.expiredInvite) || phase == .stopping { draft = ""; pendingInvite = "" }
         }
     }
 }

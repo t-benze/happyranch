@@ -55,6 +55,7 @@ final class HomeInviteModel: ObservableObject {
     private var needsNewInvite = false
     private var rePairHomeIDs: Set<UUID> = []
     private var unfinishedMembership: (trust: SavedHomeTrust, id: UUID)?
+    private(set) var needsReplacementConsent = false
 
     init(store: any SavedHomeCredentialStore = LoginKeychainDeviceStore(),
          makeSession: @escaping @Sendable () -> any HomeInviteSession = {
@@ -94,14 +95,16 @@ final class HomeInviteModel: ObservableObject {
                 if savedHomes.count == 1 { reconnect() }
             } catch {
                 phase = .keychain((error as? SavedAccessFailure) ?? .unavailable)
+                needsReplacementConsent = true
                 operation = nil
             }
         }
     }
 
     /// SecureField caller clears its binding synchronously before calling.
-    func accept(_ raw: String) {
+    func accept(_ raw: String, replacementConsent: Bool = false) {
         guard !busy, session == nil else { return }
+        guard !needsReplacementConsent || replacementConsent else { return }
         let token = UUID(); attemptID = token
         phase = .validating; needsNewInvite = true; removalFailures = []
         var draft = raw
@@ -191,6 +194,7 @@ final class HomeInviteModel: ObservableObject {
                 do { credential = try await store.load(binding: metadata.binding, trust: metadata.trust) }
                 catch {
                     guard attemptID == token else { return }
+                    needsReplacementConsent = true
                     phase = .keychain((error as? SavedAccessFailure) ?? .unavailable); return
                 }
                 try check(token)
@@ -214,6 +218,7 @@ final class HomeInviteModel: ObservableObject {
             savedHomes.removeAll { $0.id == id }
             savedHomes.append(SavedHome(id: id, trust: credential.trust))
             selectedHomeID = id; saveFailure = nil; unsaved = nil
+            needsReplacementConsent = false
         } catch {
             guard attemptID == token else { return }
             saveFailure = (error as? SavedAccessFailure) == .identityChanged ? .identityChanged : .saveFailed
