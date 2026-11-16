@@ -449,6 +449,31 @@ These focused cases do not replace the entire v3 corruption/fault matrix or
 current-data writable sizing. Run full schema-load3.12/3.14 plus local_ci all as
 an exact-clean-head durable job; required hosted checks remain lint/static only.
 
+I2 extends the same keeper: `--sequential-load` observes native SQL from before
+Database construction through real recovery, projection, profile reconciliation
+and all currently eligible selectors, including auxiliary/reference connections.
+Each complete candidate executes one whole FK check and one native queued-result
+and metadata-result scan. The separate `workflow_task_results` metadata scan is
+also observed by its exact table and connection. `--sequential-freshness` selects
+the retained freshness, cumulative-counter, refusal and transaction-custody table
+plus these load cases, without the separate fault/corruption matrices.
+For short focused runs, `--retained-corruption-phase=first`, `=local`, `=external`
+and `=uncommitted` partition the same retained corruption table into its four
+original phases; running all four covers the unchanged full table.
+
+`--i2-cutover` selects C1 enable_requested, C2 compatibility_verified,
+C3 disable_requested, C4 draining and C5 drained. Real requests/advances create
+the history; test-side interruption happens after real commits. Public reads,
+cold recovery, repeated request replay, stale generation/conflict refusal and
+downgrade keep their original event identities. `--i2-native` selects N1 absent
+native creation, N2 exact-old retrofit source/target/postcommit and N3 T2 reopen,
+including typed parent/nonempty-child/gapped-rowid preservation and actual
+COMMIT/ROLLBACK refusal/uncertainty. The full selection includes both tables.
+These are private schema-venue cases, with no physical SQL on load, production
+seam, new CI lane or operating qualification. Use the existing
+`WORKFLOW_SCHEMA_PYTHON=3.12 bash scripts/test-workflow-schema-load.sh` command
+with the named selector, and repeat with 3.14.
+
 `--sequential-faults` selects the same venue's added sequential metadata-denial,
 native configuration/limit/factory, restored main/TEMP CREATE/DROP and wrong
 connection/org/transaction ownership tables, borrowed-source/target acquisition
