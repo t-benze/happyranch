@@ -3417,7 +3417,8 @@ async def add_learning(
     slug: str, agent_name: str, body: LearningAddBody, org: OrgDep,
 ) -> dict:
     store = _workspace_memory_store(org, agent_name)
-    async with org.db_lock:
+
+    async def write_and_audit() -> dict:
         new_id = store.next_id()
         entry = MemoryItem(
             id=new_id,
@@ -3432,7 +3433,8 @@ async def add_learning(
             salience=body.salience,
         )
         try:
-            written = store.write_entry(entry, agent=agent_name)
+            # write_entry can run the automatic compaction sweep.
+            written = await asyncio.to_thread(store.write_entry, entry, agent=agent_name)
         except InvalidLearningEntry as e:
             raise _invalid_entry_to_http(e)
         except LearningIdExists as e:
@@ -3441,7 +3443,7 @@ async def add_learning(
             raise HTTPException(status_code=409, detail={"error": "slug_exists", "slug": e.slug})
         # THR-032 P3b: audit supersede lifecycle transition if it occurred
         sup_target = getattr(written, '_superseded_target_id', None)
-        store.regenerate_index()
+        await asyncio.to_thread(store.regenerate_index)
         if sup_target is not None:
             AuditLogger(org.db).log_memory_lifecycle_changed(
                 agent=agent_name,
@@ -3459,8 +3461,12 @@ async def add_learning(
             tags=written.tags,
             source_task=written.source_task,
         )
-    rel_path = f"memory/{written.id}-{written.slug}.md"
-    return {"id": written.id, "path": rel_path, "authored_at": written.authored_at}
+        rel_path = f"memory/{written.id}-{written.slug}.md"
+        return {"id": written.id, "path": rel_path, "authored_at": written.authored_at}
+
+    async with org.db_lock:
+        # Cancellation must not release serialization before writes and audits.
+        return await _finish_consumer_write(write_and_audit())
 
 
 @router.put("/agents/{agent_name}/memory/entries/{id}")
@@ -3656,8 +3662,9 @@ async def compact_memory(
         max_evictions_per_run=body.max_evictions_per_run if body.max_evictions_per_run is not None else cc.max_evictions_per_run,
     )
     store = _workspace_memory_store(org, agent_name)
-    async with org.db_lock:
-        result = store.compact(dry_run=body.dry_run, policy=policy)
+
+    async def compact_and_audit() -> dict:
+        result = await asyncio.to_thread(store.compact, dry_run=body.dry_run, policy=policy)
         # Audit each eviction
         if not body.dry_run:
             for evicted_id in result.evicted:
@@ -3681,6 +3688,9 @@ async def compact_memory(
             "skipped": result.skipped,
             "errors": result.errors,
         }
+
+    async with org.db_lock:
+        return await _finish_consumer_write(compact_and_audit())
 
 
 def _validate_reasoning_selection(executor: str, model: str | None, effort: str | None) -> None:

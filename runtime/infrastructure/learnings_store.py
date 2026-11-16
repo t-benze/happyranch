@@ -9,6 +9,7 @@ import logging
 import os
 import re
 import tempfile
+from collections import Counter
 from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
@@ -248,6 +249,49 @@ def _lrn_numeric_suffix(s: "LearningSummary") -> int:
     if not isinstance(s.id, str) or ID_RE.fullmatch(s.id) is None:
         return -1
     return int(s.id.split("-", 1)[1])
+
+
+class _CompactionReferences:
+    """Run-local non-evicted reference sources, including self references."""
+
+    def __init__(self) -> None:
+        self.entries: dict[Path, MemoryItem] = {}
+        self.references: Counter[str] = Counter()
+        self.supersedes: Counter[str] = Counter()
+        self.contributions: dict[Path, tuple[set[str], set[str]]] = {}
+
+    def replace(self, path: Path, entry: MemoryItem) -> None:
+        self.discard(path)
+        refs: set[str] = set()
+        supersedes: set[str] = set()
+        if entry.lifecycle != "evicted":
+            refs.update(ref for ref in entry.related_to if isinstance(ref, str))
+            refs.update(re.findall(r"\b(?:MEM|LRN)-\d{3,}\b", entry.body))
+            if isinstance(entry.supersedes, str):
+                supersedes.add(entry.supersedes)
+        self.references.update(refs)
+        self.supersedes.update(supersedes)
+        self.entries[path] = entry
+        self.contributions[path] = refs, supersedes
+
+    def discard(self, path: Path) -> None:
+        old_refs, old_supersedes = self.contributions.pop(path, (set(), set()))
+        self.references.subtract(old_refs)
+        self.supersedes.subtract(old_supersedes)
+        self.entries.pop(path, None)
+
+    def is_referenced(self, entry_id: str, *, ignore_supersedes: bool) -> bool:
+        variants = _id_variants(entry_id)
+        if any(self.references[v] > 0 or (not ignore_supersedes and self.supersedes[v] > 0)
+               for v in variants):
+            return True
+        # The permissive reader also accepts historical non-ID strings. Keep
+        # their original literal body matching without reparsing entry files.
+        if ID_RE.fullmatch(entry_id) is None:
+            return any(re.search(rf"\b{re.escape(v)}\b", entry.body)
+                       for entry in self.entries.values() if entry.lifecycle != "evicted"
+                       for v in variants)
+        return False
 
 
 class MemoryStore:
@@ -1137,7 +1181,9 @@ class MemoryStore:
                     return True
         return False
 
-    def _compact_protected(self, entry: MemoryItem) -> str | None:
+    def _compact_protected(
+        self, entry: MemoryItem, references: _CompactionReferences | None = None,
+    ) -> str | None:
         """Return a reason string if an entry is protected from auto-eviction,
         or None if it is eligible."""
         if entry.promoted_to is not None:
@@ -1148,7 +1194,8 @@ class MemoryStore:
             return "already_evicted"
         if entry.scope in ("team", "org"):
             return f"scope:{entry.scope}"
-        if self._is_referenced_by(entry.id, ignore_supersedes=entry.lifecycle == "superseded"):
+        is_referenced = self._is_referenced_by if references is None else references.is_referenced
+        if is_referenced(entry.id, ignore_supersedes=entry.lifecycle == "superseded"):
             return "referenced_by_others"
         return None
 
@@ -1157,13 +1204,15 @@ class MemoryStore:
         entry: MemoryItem,
         policy: MemoryCompactionPolicy,
         now_dt: datetime,
+        *,
+        references: _CompactionReferences | None = None,
     ) -> MemoryCompactionCandidate | None:
         """Evaluate a single entry for compaction eligibility.
 
         Returns a candidate with reason, or None if not eligible.
         """
         # Protection checks first
-        protected = self._compact_protected(entry)
+        protected = self._compact_protected(entry, references)
         if protected is not None:
             return None
 
@@ -1223,26 +1272,39 @@ class MemoryStore:
         if now is None:
             now = datetime.now(timezone.utc)
 
-        # Phase 1: scan all entries and compute candidates
-        candidates: list[MemoryCompactionCandidate] = []
-        skipped: list[dict] = []
-
+        # Phase 1: parse each entry once and index its reference contributions.
+        # Callers serialize the whole run. Other files use this run snapshot;
+        # apply refreshes each candidate and removes evicted source references.
+        entries: list[tuple[Path, MemoryItem | None]] = []
+        references = _CompactionReferences()
         for path in self._entry_paths():
             try:
                 entry = self._parse(path.read_text())
             except InvalidLearningEntry:
+                entries.append((path, None))
+                continue
+            entries.append((path, entry))
+            references.replace(path, entry)
+
+        candidates: list[MemoryCompactionCandidate] = []
+        candidate_paths: list[Path] = []
+        skipped: list[dict] = []
+
+        for path, entry in entries:
+            if entry is None:
                 skipped.append({"id": path.name, "reason": "parse_error"})
                 continue
 
-            protected = self._compact_protected(entry)
+            protected = self._compact_protected(entry, references)
             if protected is not None:
                 skipped.append({"id": entry.id, "reason": protected})
                 continue
 
-            cand = self._compact_candidate(entry, policy, now)
+            cand = self._compact_candidate(entry, policy, now, references=references)
             if cand is not None:
                 if len(candidates) < policy.max_evictions_per_run:
                     candidates.append(cand)
+                    candidate_paths.append(path)
                 else:
                     skipped.append({"id": entry.id, "reason": "cap_reached"})
             else:
@@ -1259,23 +1321,26 @@ class MemoryStore:
         evicted: list[str] = []
         errors: list[str] = []
 
-        for cand in candidates:
+        for cand, candidate_path in zip(candidates, candidate_paths):
             existing_path = self._find_by_id(cand.id)
             if existing_path is None:
+                references.discard(candidate_path)
                 errors.append(f"{cand.id}: not_found_on_apply")
                 skipped.append({"id": cand.id, "reason": "not_found_on_apply"})
                 continue
             try:
                 existing = self._parse(existing_path.read_text())
             except InvalidLearningEntry:
+                references.discard(existing_path)
                 errors.append(f"{cand.id}: parse_error_on_apply")
                 skipped.append({"id": cand.id, "reason": "parse_error_on_apply"})
                 continue
             # Re-check protection and eligibility under write boundary
-            if self._compact_protected(existing) is not None:
+            references.replace(existing_path, existing)
+            if self._compact_protected(existing, references) is not None:
                 skipped.append({"id": cand.id, "reason": "became_protected"})
                 continue
-            recheck = self._compact_candidate(existing, policy, now)
+            recheck = self._compact_candidate(existing, policy, now, references=references)
             if recheck is None:
                 skipped.append({"id": cand.id, "reason": "no_longer_eligible"})
                 continue
@@ -1289,6 +1354,7 @@ class MemoryStore:
             stamped.updated_at = now_str
             target = self.path_for(existing.id, existing.slug)
             self._atomic_write(target, self._serialize(stamped))
+            references.replace(target, stamped)
             evicted.append(cand.id)
 
         # Regenerate index after all writes

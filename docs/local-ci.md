@@ -1,6 +1,6 @@
 # Local CI
 
-## Focused memory compaction and writer salience (THR-366 PR-B)
+## Focused memory compaction and writer salience (THR-366 PR-B/C)
 
 ```sh
 python -B -m unittest scripts.test_memory_compaction scripts.test_memory_payload scripts.test_memory_digest -v
@@ -13,6 +13,12 @@ both supersession paths and grace, protections, caps, dry-run and restoration.
 The timestamp table includes YAML datetime/date/integer values, UTC boundaries
 and conservative fallback/retention. Auto-trigger cases assert persisted notes,
 index entries and exact add audits, including when the sweep raises an error.
+The 300-entry cost check bounds selection to one parse per entry and apply to
+two passes plus fresh candidate reads (the second pass regenerates the index).
+Reference cases cover aliases, body boundaries, self references, retired sources
+and fresh apply changes. Manual dry-run/apply and auto-add cases require another
+coroutine to progress while compaction runs with the lock held; cancellation
+must retain serialization through writes and audits.
 The CLI checks intercept HTTP transport; no server, provider or live org is used.
 This existing standalone venue is outside retired Python units, skipped general
 integration and Product E2E, and adds no required check or trigger.

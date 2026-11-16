@@ -525,6 +525,24 @@ explicitly retires a note immediately; `--set valid` restores either superseded
 or evicted notes. Restoration does not reset creation age or salience: an old
 low-salience note can qualify again, so raise salience when retaining it.
 
+THR-366 PR-C bounds entry parsing to one selection pass, fresh candidate reads
+on apply and the existing fresh index-regeneration pass. One run-local reference
+index covers related links, supersedes links and body tokens from non-evicted
+sources, with permanent MEM/LRN aliases and the same word boundaries. Historical
+non-ID strings retain literal body matching over parsed entries. No policy,
+candidate ordering, cap, skip reason or audit payload changes.
+
+Callers must serialize the whole run with the existing write boundary. Apply
+rereads each candidate and refreshes its own reference contributions before
+rechecking protections and eligibility; successful evictions remove that source's
+contributions. Other entries use the run's reference snapshot, justified by that
+serialization; uncoordinated filesystem writers are outside this contract.
+There is no persistent cache. The manual route offloads compaction with
+`asyncio.to_thread`; the add route likewise offloads `write_entry`, including
+its inline automatic sweep, and index regeneration. Both keep `org.db_lock`
+through writes and unchanged audits, draining admitted work on cancellation.
+Update does not call the automatic sweep; the dream writer is unchanged.
+
 Org `org/config.yaml` supports this opt-in block (shown with all defaults):
 
 ```yaml
