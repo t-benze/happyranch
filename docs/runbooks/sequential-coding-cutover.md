@@ -16,12 +16,14 @@ shape/size is measured once, and ownership's exceptional-text scan follows its
 complete type/size prerequisite in the same snapshot. Payload withholding,
 logical charges, full FK/domain checks and runtime/operator budgets remain exact.
 The SQL reductions add no setup/cutover caller. Automatic setup still requires
-complete owner acceptance/sizing and subsequent reviewed stages. Historically, A0b-2 retained
-part1 and records installed happyranch's fail-closed default FIRST/attempted NEXT
+complete owner acceptance/sizing and subsequent reviewed stages. Historically,
+A0b-2 retained part1 and recorded installed happyranch's fail-closed default
+FIRST/attempted NEXT
 as **EXPECTED REFUSAL - part 1 retained until I2**, with zero changes/certificate/
 observer leaks and an original-base comparison of the same private image.
 Successful installed happyranch FIRST/NEXT/Pause/all-org-tail capacity acceptance
-moves to I2's fresh base/capture. Installed danze/family/genuine fresh FIRST/NEXT
+uses I2's fresh base/capture and current 10s all-org envelope. Installed
+danze/family/genuine fresh FIRST/NEXT
 returns on both runtimes and every other A0b-2 case remain required; see the
 [storage capacity contract](sequential-workflow-storage.md).
 
@@ -346,8 +348,8 @@ Sanitized refusal is `install_integrity_failed` with its stage, or
 `install_integrity_unavailable` with its stage/cause. Only independently proved
 pre-COMMIT preservation is `not_installed`; rollback/close/equality uncertainty
 is `unknown`. No post-COMMIT physical veto or restore is added. This changes no
-Coding setup/admission authority. Inline load checks remain until I2, and the
-daily report belongs to I1b. See the
+Coding setup/admission authority. I2 removes inline physical checks; full FKs
+and parts 2–7 remain on complete reads. The daily report belongs to I1b. See the
 [I1a contract](../superpowers/specs/2026-11-14-automatic-workflow-setup.md).
 
 
@@ -361,5 +363,6 @@ not suspend integrity, and daemon downtime creates no catch-up. Audit action
 sanitized outcomes. Missing, failed, stale or unavailable reports never grant
 or revoke Coding admission and cause no repair/restore/hold/cancellation.
 See [report semantics](../agent-guides/contracts/observability.md#daily-workflow-physical-integrity-advisory-i1b).
-Inline integrity and complete logical/native checks remain unchanged until I2;
-A3's setup-status projection and A4's automatic setup remain separately owned.
+I2 removes inline physical integrity checks while retaining complete FK,
+logical and native validation under unchanged limits. A3's setup-status
+projection and A4's automatic setup remain separately owned.

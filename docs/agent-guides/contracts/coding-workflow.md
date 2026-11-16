@@ -165,7 +165,7 @@ authority/history readers or audit column/type metadata checks. The scan's
 nonnegative shared-budget charges are removed; the limit constants and
 release/imported/mappings/queued values stay unchanged. Supported histories may
 move from exhaustion refusal to acceptance, never the reverse from these charges.
-Tasks, task_results, workflow tables and structural/integrity/FK checks retain
+Tasks, task_results, workflow tables and structural/full FK checks retain
 their validation. No marker, replacement scan or budget reconstruction is added.
 `startup_timing` and `startup_workflow_validation` remain; after a Founder restart,
 read `startup_partition outcome=serving` and require `launcher_to_serving < 10s`.
@@ -394,7 +394,7 @@ role/import/template readers retain their existing defaults and provenance.
 Independent installed/metadata readers retain source/naming/team/document
 checks, including validate_data=False with coding present. The generic wrapper
 omits only duplicate source/team checks proven by its own same-snapshot coding
-inventory; absent/unproven coding retains them. Physical/FK, native/mutable and
+inventory; absent/unproven coding retains them. Full FK/domain, native/mutable and
 direct complete history checks remain. The generic audit scan and watermark
 were removed per THR-308 seq403; its accepted detection and budget changes
 are described in the current coding validation contract.

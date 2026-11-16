@@ -139,13 +139,14 @@ New specs should include a short status block near the top:
 | [`2026-11-11-sequential-coding-u7.md`](2026-11-11-sequential-coding-u7.md) | current U7 design; U7a–U7d source delivered | Common reads/settings, selected transport/Final acceptance/redaction and ordinary completion intake. Atomic U9b now mounts public Coding selection and old-fresh refusal. |
 | [`2026-11-12-sequential-coding-u8.md`](2026-11-12-sequential-coding-u8.md) | current U8 design; U8a read journey + U8b Setup source | Recorded U7 facts, three locked corrections, en/zh-CN; Setup/Save custody and Settings → Coding original-save recovery. U9 repairs host pointers and mounts atomic Coding cutover source. |
 | [`2026-11-12-sequential-coding-u9.md`](2026-11-12-sequential-coding-u9.md) | current U9 contract; U9a + complete atomic U9b source | Offline v2 registration/separate admission; paired public Coding selection + old-fresh fence, original-pin continuation and retained V3 fixture fence. |
-| [`2026-11-14-automatic-workflow-setup.md`](2026-11-14-automatic-workflow-setup.md) | I1a source | Mandatory offline install-time full integrity gates; inline load checks remain until I2. Daily read-only reporting is I1b; automatic bootstrap is A4. |
+| [`2026-11-14-automatic-workflow-setup.md`](2026-11-14-automatic-workflow-setup.md) | I1a/I1b/I2 source | Mandatory offline install-time full integrity gates and independent daily advisory reporting; I2 removes inline physical checks while retaining full FKs and parts 2–7. Automatic bootstrap is A4. |
 
 - **current**: [Sequential Coding U4c](2026-11-12-sequential-coding-u4c.md) — own-current Developer resolve/bind transport; original service replay/Held semantics.
 
 
 I1b adds the independent daily read-only advisory owner to
 [`2026-11-14-automatic-workflow-setup.md`](2026-11-14-automatic-workflow-setup.md#i1b-daily-read-only-advisory-report).
-It reuses the future 03:00 wake; business/load validation remains unchanged until I2.
+It reuses the future 03:00 wake; I2 changes only the physical-check venue,
+retaining complete logical load validation and original limits.
 
 I2 (2026-11-16) supersedes historical every-load physical integrity wording across workflow/native/cutover designs; [current physical-check venue policy](2026-11-14-automatic-workflow-setup.md#i2-load-and-revalidation-policy) retains whole FKs, parts 2–7 and all original limits.

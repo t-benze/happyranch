@@ -22,7 +22,8 @@ the native check after a temp-store reset invalidates cached native metadata.
 Hits pin main inside the original snapshot, compare outside/inside/exit bookends, preserve
 borrowed transactions, and refuse a replaced file. Public/nondefault/arbitrary
 snapshots and later loads remain fresh. Each compatible caller imports retained
-charges once; changed targets debit its original cumulative ledger. Full FK and parts 2–7, caps and deadlines remain. Whole current-data sizing and the
+charges once; changed targets debit its original cumulative ledger. Full FK and
+parts 2–7, caps and deadlines remain. Whole current-data sizing and the
 complete acceptance matrix remain gates before automatic setup.
 For A0b-2 specifically, installed danze/family/genuine fresh FIRST/NEXT must
 return on both runtimes; installed happyranch FIRST/attempted NEXT must refuse
@@ -202,7 +203,7 @@ authority/history readers or audit column/type metadata checks. The scan's
 nonnegative shared-budget charges are removed; the limit constants and
 release/imported/mappings/queued values stay unchanged. Supported histories may
 move from exhaustion refusal to acceptance, never the reverse from these charges.
-Tasks, task_results, workflow tables and structural/integrity/FK checks retain
+Tasks, task_results, workflow tables and structural/full FK checks retain
 their validation. No marker, replacement scan or budget reconstruction is added.
 `startup_timing` and `startup_workflow_validation` remain; after a Founder restart,
 read `startup_partition outcome=serving` and require `launcher_to_serving < 10s`.
@@ -808,7 +809,7 @@ import while exact saved replay remains readable. Any partial/foreign/malformed/
 extra/orphan/incorrectly typed relation refuses; failures roll back all new rows.
 
 The existing-layout installer retains its Database lock and transaction ownership.
-Complete J/inventory/mapping/queued/source/data=False/FK/integrity checks remain.
+Complete J/inventory/mapping/queued/source/data=False/full FK/domain checks remain.
 The generic audit scan and watermark publication were removed per THR-308 seq403.
 
 Central J validation, including validate_data=False, source-data validation,
@@ -1924,7 +1925,7 @@ python scripts/migrate_workflow_draft_schema.py --runtime-root <absolute-root> -
 ```
 
 The script validates the schema-v2 runtime and actual org path, full F/E SQL,
-markers/history/integrity and stored source/draft closure without running generic
+markers/history/full FKs and stored source/draft closure without running generic
 migrations. One bounded SQLite writer transaction installs only the exact three
 draft tables/six indexes and version1 marker, validates E, then commits. Partial,
 unknown/corrupt layouts and nonorg/missing/symlink targets refuse; complete E/G
@@ -4403,8 +4404,9 @@ single cumulative integrity ledger (at most 640M VM steps, original 900s ceiling
 is independent of ownership, inventory and complete-reader limits. Sanitized
 stage/cause refusals publish `not_installed` only with proved preservation;
 rollback/close/independent original-inventory uncertainty stays `unknown`.
-No post-COMMIT physical veto or automatic restore is added. Inline load checks
-remain until I2; daily read-only reporting is I1b and bootstrap calling is A4.
+No post-COMMIT physical veto or automatic restore is added. I2 removes inline
+physical checks while retaining full FK/domain validation; daily read-only
+reporting is I1b and bootstrap calling is A4.
 No daemon scheduling, startup or activation changes land here. See the
 [I1a contract](../superpowers/specs/2026-11-14-automatic-workflow-setup.md).
 

@@ -625,7 +625,7 @@ extra/orphan/incorrectly typed relation refuses; failures roll back all new rows
 Independent installed/metadata readers retain source/naming/team/document
 checks, including validate_data=False with coding present. The generic wrapper
 omits only duplicate source/team checks proven by its own same-snapshot coding
-inventory; absent/unproven coding retains them. Physical/FK, native/mutable and
+inventory; absent/unproven coding retains them. Full FK/domain, native/mutable and
 direct complete history checks remain. The generic audit scan and watermark
 were removed per THR-308 seq403; its accepted detection and budget changes
 are described in the current coding validation contract.

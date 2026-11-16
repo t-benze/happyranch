@@ -341,7 +341,7 @@ in the shared `_bounded_rows` query, computing whole-row validity once per
 keyset candidate. Candidate ORDER/LIMIT/WHERE, payload CASE expressions, original
 storage classes, raw byte lengths, nullable-NULL/refusal sentinel, rowid bounds,
 cursor custody and all row/byte/work/SQL/deadline allowances remain unchanged.
-It neither caches validation nor removes integrity/FK checks or adds an
+It neither caches validation nor removes full FK/domain checks or adds an
 install/startup caller. The existing schema-load case table observes these
 contracts on supported Python3.12/3.14 SQLite runtimes.
 Decision 2 (THR336 msg102; accepted TASK-14643 rev4) separates
@@ -540,7 +540,7 @@ only after its complete whole-table type/size gate passes in the same snapshot
 may the private exceptional-text scan omit redundant `typeof` tests. That scan
 still uses bounded acquisition and the original decoder. This finite component
 does not extend load reuse; the complete owner/observer/ledger prerequisite is
-still required before automatic setup can ship. Full integrity/FK checks and
+still required before automatic setup can ship. Full FK/domain checks and
 the 32M ordinary SQL, separate A/B/C 2M and original 5s deadline remain intact.
 
 THR308seq426 Decision 4 leaves these guard semantics unchanged: only the cold
@@ -1944,7 +1944,8 @@ original offline 900s operation, separate from all logical/ownership/inventory
 budgets. Non-ok and unavailable results refuse with sanitized stage/cause;
 owned rollback, close and independent original-inventory equality are required
 for `not_installed`, otherwise disposition is `unknown`. There is no new
-post-COMMIT physical veto or restore. I2 removes inline physical checks; the daily advisory report is I1b, and automatic bootstrap is A4. See the
+post-COMMIT physical veto or restore. I2 removes inline physical checks; the
+daily advisory report is I1b, and automatic bootstrap is A4. See the
 [I1a contract](../../superpowers/specs/2026-11-14-automatic-workflow-setup.md).
 
 
@@ -1983,8 +1984,9 @@ The existing Workflows surface shows status independently of failed
 definition/settings reads. The task banner returns empty only after a real
 task, current authority and complete history prove sequential absence.
 Corrupt, partial, denied or exhausted reads retain their original errors,
-including when installation evidence reports success. No integrity reader,
-load-time physical check, FK check, logical/SQL cap or five-second policy changes.
+including when installation evidence reports success. A3 changes no integrity
+reader, FK check, logical/SQL cap or five-second policy; I2 separately removes
+load-time physical checks.
 
 The card exposes only `integrity_report` outcome, closed reason, original
 checked_at/scheduled_date and external/audit reporting. Stale results retain
