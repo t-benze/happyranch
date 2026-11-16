@@ -52,9 +52,12 @@ export interface Connected {
 }
 
 /** Shared field styling — mirrors the Input primitive so the native <select>
- *  matches the design system exactly. */
+ *  matches the design system exactly. Vertical padding is 0 (not py-2): the
+ *  fixed h-9 already sets the height, and WebKitGTK (the Linux desktop app)
+ *  adds its own internal menulist padding, so py-2 left too little room and
+ *  pushed the text down and clipped it. Chromium/Safari centre the text either way. */
 export const FIELD_CLASS =
-  'flex h-9 w-full rounded-md border border-border-default bg-surface-raised px-3 py-2 text-sm text-text-primary focus:border-accent-default focus:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50';
+  'flex h-9 w-full rounded-md border border-border-default bg-surface-raised px-3 py-0 text-sm text-text-primary focus:border-accent-default focus:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50';
 
 /** Build the copy-paste prompt (no `/connect` link). `target` picks the
  *  register route + body while the conformance challenge stays identical:
