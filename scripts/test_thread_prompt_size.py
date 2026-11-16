@@ -16,6 +16,7 @@ from runtime.models import ThreadInvocationStatus, ThreadMessage, ThreadMessageK
 from runtime.orchestrator import executors
 from runtime.orchestrator.executors import ExecutorResult
 from runtime.orchestrator.thread_move import current_thread_preparation
+from runtime.orchestrator.workspace_adapters import write_canonical_instruction_pair
 
 BOUND = 16_000
 
@@ -79,6 +80,7 @@ def delivery_note(start: int, end: int) -> str:
 async def org(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[OrgState]:
     # Same standalone synthetic-org venue as test_task_cancel; no lifespan.
     async with fixture(tmp_path / "org") as (state, _client):
+        write_canonical_instruction_pair(state.root / "workspaces" / "worker", "Synthetic initialized prompt.\n")
         monkeypatch.setattr(runner, "materialize_workspace_skills", lambda *a, **k: [])
         monkeypatch.setattr(runner, "validate_workspace_skills_integrity", lambda *a, **k: None)
         monkeypatch.setattr(runner, "refresh_workspace_repos", lambda *a, **k: [])

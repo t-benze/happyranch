@@ -25,6 +25,7 @@ from runtime.orchestrator.host_supervisor import (
     LaunchResult,
     TerminalReason,
 )
+from runtime.orchestrator.context_builder import refresh_session_instructions
 from runtime.orchestrator._paths import OrgPaths
 from runtime.orchestrator.prompt_loader import is_terminated, load_agent
 from runtime.orchestrator.org_config import (
@@ -245,6 +246,10 @@ async def _run_dream(
     session_id = _move_owner.session_id if _move_owner is not None else f"sess-{uuid.uuid4().hex}"
     try:
         with producer_preparation_effects(_move_owner):
+            refresh_session_instructions(
+                workspace, settings, paths, agent_def,
+                slug=org_state.slug, provider=_prov,
+            )
             skills_root = settings.project_root / "runtime" / "skills"
             expected_specs = materialize_workspace_skills(
                 workspace, settings,

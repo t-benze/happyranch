@@ -6,7 +6,7 @@ from pathlib import Path
 
 from runtime.config import Settings
 from runtime.orchestrator._paths import OrgPaths
-from runtime.orchestrator.agent_def import validate_repo_key
+from runtime.orchestrator.agent_def import AgentDef, validate_repo_key
 from runtime.orchestrator.executor_registry import get_registry
 from runtime.orchestrator.workspace_adapters import (
     ClaudeWorkspaceAdapter,
@@ -132,3 +132,51 @@ class ContextBuilder:
         }
         for dirname in agent_dirs.get(agent_name, []):
             (workspace / dirname).mkdir(parents=True, exist_ok=True)
+
+
+def refresh_session_instructions(
+    workspace: Path,
+    settings: Settings,
+    paths: OrgPaths,
+    agent_def: AgentDef,
+    *,
+    slug: str,
+    provider: str,
+) -> None:
+    """Refresh only an already canonical instruction pair before session setup.
+
+    Use the invocation's current AgentDef snapshot (also used for executor
+    selection). Do not bootstrap/repair missing or foreign instruction paths,
+    initialize persistent files, or regenerate settings/permissions/skills.
+    """
+    from runtime.orchestrator.workspace_adapters import (
+        _workspace_skills_transaction,
+        instruction_pair_refusal,
+    )
+
+    with _workspace_skills_transaction(workspace):
+        refusal = instruction_pair_refusal(workspace)
+        if refusal is not None:
+            raise RuntimeError(
+                f"workspace for {agent_def.name!r} does not have the canonical "
+                f"AGENTS.md/CLAUDE.md instruction pair ({refusal}). Run "
+                f"`happyranch init-agent {agent_def.name}` to complete it."
+            )
+        try:
+            builder = ContextBuilder(settings, paths, slug=slug)
+            profile = get_registry().get_profile(provider)
+            if profile is None:
+                raise ValueError(f"unknown executor profile: {provider}")
+            adapter_id = profile.workspace_adapter_id
+            if adapter_id == "claude":
+                builder.write_claude_md(workspace, agent_def.name, agent_def.system_prompt)
+            elif adapter_id in {"codex", "opencode", "pi"}:
+                # These three adapters share Codex's instruction text. Their
+                # permission/bootstrap writers must never run at session spawn.
+                builder.write_agents_md(workspace, agent_def.name, agent_def.system_prompt)
+            else:
+                raise ValueError(f"unknown workspace adapter: {adapter_id}")
+        except Exception as exc:
+            raise RuntimeError(
+                f"instruction_refresh_failed for {agent_def.name!r}: {exc}"
+            ) from exc

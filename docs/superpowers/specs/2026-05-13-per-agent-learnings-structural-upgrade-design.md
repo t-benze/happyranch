@@ -320,11 +320,14 @@ This lets us land the new code path without breaking unmigrated workspaces; each
 > present index, repairing stale entry metadata through the existing atomic
 > writer and declared bootstrap rollback target. Historical malformed IDs remain
 > readable: prompt sorting uses string keys, and index ordering puts them after
-> valid numeric IDs without rewriting entry files. It does not refresh prompt
-> files at spawn: launch still verifies the existing canonical instruction pair
-> and readiness marker without repair. Topic counts can age until the next
-> prompt rewrite, but no growing list of experiential titles can crowd out the
-> commands or later instructions. The overview reads store metadata directly,
+> valid numeric IDs without rewriting entry files. THR-366 PR-A now refreshes
+> the prompt at every task/thread/wake/schedule/dream spawn from the invocation's
+> current agent definition, before existing integrity/readiness checks. A prior
+> read-only pair check refuses missing/broken instruction paths without repair;
+> unchanged content retains its mtime and failures refuse launch. Only prompt
+> bytes are refreshed: index repair remains a bootstrap operation. No growing
+> list of experiential titles can crowd out the commands or later instructions.
+> The overview reads store metadata directly,
 > so an independently stale index cannot affect a newly rendered overview.
 > The bundled start-task step 6 uses `memory/` and `happyranch memory add`;
 > `learning` remains a deprecated alias. The bare `memory --text` route is only

@@ -37,6 +37,13 @@ retired Python units, general integration or Product E2E are exercised.
 uv run --frozen pytest scripts/test_workspace_memory.py -v --tb=short
 ```
 
+The same command also drives the shipping task, thread, wake, schedule and dream
+producer prefixes against temporary synthetic orgs, stopping at the existing
+skill-materialization seam. It checks stale instructions refresh without any
+manage-agent call, unchanged file/link mtimes, refusal on render failure or
+missing/broken pairs, and retained permission/settings bytes. Provider process
+creation is forbidden; this proves prelaunch preparation, not provider adoption.
+
 These standalone no-launch checks exercise the real store and prompt renderer
 on temporary workspaces: UTF-8 byte limits, deterministic whole-line topic and
 directive truncation, retained commands and later Codex instructions, stale or
