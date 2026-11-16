@@ -106,7 +106,12 @@ uid, have no symlink components or group/other write bits, and be outside
 Use the actual absolute token-source path as an input. It must be a literal,
 single-link regular 0600 file containing a nonempty UTF8 token. The installer
 copies it to `/etc/happyranch/daemon.token`, mode 0600, owned by
-`happyranch:happyranch`. Configs are root-owned, group `happyranch`, mode 0640.
+`happyranch:happyranch`. The managed connector unit loads this copy with
+`LoadCredential=daemon.token:/etc/happyranch/daemon.token`, never the provisioning
+input in the release data home. The injected credential must meet the existing
+provider's owner-only mode check; provisioning-source mode alone does not prove
+that. The root verifier has no `LoadCredential` and reads no bearer.
+Configs are root-owned, group `happyranch`, mode 0640.
 The root-owned 0600 `/etc/happyranch/provision.json` records the layout, exact
 source path, token SHA-256 and config digests. No token value enters that record,
 units, argv or diagnostics. Provision never starts services; it refuses existing
@@ -170,7 +175,8 @@ For `credential_permissions:credential_unreadable`, the connector also journals
 `daemon credential refused: <reason>` with a closed injection reason (not
 configured, missing, symlink, unreadable, permissions or empty), or `unavailable`
 for unknown failures. Inspect that reason before changing provisioning or
-service setup; credential selection and permission checks are unchanged.
+service setup. Credential readers and permission checks are unchanged; the
+managed unit's `LoadCredential` selects the existing systemd credential reader.
 
 Verifier hardening (the separate root service only):
 
