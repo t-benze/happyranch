@@ -299,7 +299,7 @@ def test_revoke_closes_only_device_and_persists_first(tmp_path: Path, fails: boo
     epoch_a = manager.admit(bearer_a, "node-a", "control", NOW).authorization_epoch
     epoch_b = manager.admit(bearer_b, "node-b", "control", NOW).authorization_epoch
     def close_a():
-        assert manager._store.load().devices[device_a].revoked  # real current anchored state
+        assert store_at(path).load().devices[device_a].revoked  # real current anchored state
         if fails:
             raise OSError("synthetic cleanup failure")
     stream_a = registry.open("a", Handle("a", close_a), device_id=device_a, epoch=epoch_a)
@@ -320,3 +320,79 @@ def test_revoke_closes_only_device_and_persists_first(tmp_path: Path, fails: boo
     assert stream_b.receive() == b"working"
     with pytest.raises(StreamClosed):
         registry.open("stale", Handle("stale"), device_id=device_a, epoch=epoch_a)
+
+
+@pytest.mark.parametrize("case", ["pending-missing", "pending-unknown", "pin-missing", "pin-half", "device-limit", "generation-rollback"])
+def test_nested_state_shape_refuses(tmp_path: Path, case: str) -> None:
+    path = tmp_path / "trust.json"
+    manager = manager_at(path)
+    pending = pending_for(manager)
+    if case.startswith("pending"):
+        def change(envelope):
+            record = envelope["payload"]["pending_approval"]
+            if case == "pending-missing":
+                record.pop("handle_digest")
+            else:
+                record["caller_path"] = "/synthetic"
+    elif case == "generation-rollback":
+        def change(envelope):
+            envelope["payload"]["pending_approval"]["generation"] = envelope["generation"] + 1
+    else:
+        device_id = manager.approve_pending(pending.generation, ("control", "node-a"))
+        assert manager.complete(pending.completion_handle, "node-a", "control", NOW) is not None
+        def change(envelope):
+            devices = envelope["payload"]["devices"]
+            if case == "pin-missing":
+                devices[device_id].pop("stable_node_id")
+            elif case == "pin-half":
+                devices[device_id]["stable_node_id"] = None
+            else:
+                for index in range(32):
+                    copied = dict(devices[device_id])
+                    copied["device_id"] = f"synthetic-{index}"
+                    devices[copied["device_id"]] = copied
+    rewrite_payload(path, change)
+    with pytest.raises(CorruptTrustStateError):
+        store_at(path).load()
+
+
+def test_completed_grants_survive_restart_and_delivery_expiry_burns(tmp_path: Path) -> None:
+    path = tmp_path / "trust.json"
+    manager = manager_at(path)
+    _, bearer = grant_for(manager)
+    restarted = manager_at(path)
+    assert restarted.admit(bearer, "node-a", "control", NOW).ok
+    pending = pending_for(restarted, "node-b", "synthetic-b")
+    device_id = restarted.approve_pending(pending.generation, ("control", "node-b"))
+    assert restarted.complete(pending.completion_handle, "node-b", "control", NOW + timedelta(minutes=5)) is None
+    state = store_at(path).load()
+    assert state.delivery is None and state.devices[device_id].revoked
+    assert restarted.admit(bearer, "node-a", "control", NOW).ok
+
+
+def test_device_revoke_waits_for_close_and_fences_racing_admission(tmp_path: Path) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+    from runtime.remote_access.streams import StreamClosed, StreamRegistry
+    path = tmp_path / "trust.json"
+    registry = StreamRegistry()
+    manager = manager_at(path, registry)
+    device_id, bearer = grant_for(manager)
+    epoch = manager.admit(bearer, "node-a", "control", NOW).authorization_epoch
+    entered, release = Event(), Event()
+    def close():
+        entered.set()
+        assert release.wait(5)
+    stream = registry.open("live", Handle("live", close), device_id=device_id, epoch=epoch)
+    with ThreadPoolExecutor(1) as pool:
+        revoked = pool.submit(manager.revoke_device, device_id)
+        try:
+            assert entered.wait(5)
+            assert stream.closed
+            assert not revoked.done()
+            with pytest.raises(StreamClosed):
+                registry.open("racer", Handle("racer"), device_id=device_id, epoch=epoch)
+        finally:
+            release.set()
+        assert revoked.result(timeout=5).complete
+    assert store_at(path).load().devices[device_id].revoked

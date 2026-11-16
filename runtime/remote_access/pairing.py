@@ -673,17 +673,31 @@ class PinnedPairingManager:
         """Persist invalidation, then close ONLY this device before success."""
         if getattr(self._in_revoke, "active", False):
             raise RuntimeError("re-entrant revocation transaction rejected")
-        with self._lock, self._store.transaction() as tx:
-            state = tx.state
+        with self._lock:
+            state = self._store.load()
             if device_id not in state.devices:
                 raise PairingError("device_denied")
-            epoch = max(state.pairing_epoch, state.revocation_epoch) + 1
-            if state.delivery is not None and state.delivery.device_id == device_id:
-                state.delivery = None
+            captured_epochs = (state.pairing_epoch, state.revocation_epoch)
+            epoch = max(captured_epochs) + 1
+
+            def persist() -> None:
+                # Do not hold the file lock across transport callbacks. Recheck
+                # the captured epoch under EX; a concurrent writer cannot lose
+                # its update or turn this snapshot into mutation authority.
+                with self._store.transaction() as tx:
+                    current = tx.state
+                    if ((current.pairing_epoch, current.revocation_epoch) != captured_epochs
+                            or device_id not in current.devices):
+                        raise PairingError("trust_changed")
+                    current._revoke_device(device_id, epoch)
+                    if current.delivery is not None and current.delivery.device_id == device_id:
+                        current.delivery = None
+                    tx.commit()
                 self._delivery.pop(device_id, None)
+
             self._in_revoke.active = True
             try:
-                RevocationCoordinator(state, self._registry).revoke_device(device_id, epoch, persist=tx.commit)
+                RevocationCoordinator(state, self._registry).revoke_device(device_id, epoch, persist=persist)
             finally:
                 self._in_revoke.active = False
             return RevokeOutcome(epoch, True, device_id)

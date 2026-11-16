@@ -130,6 +130,10 @@ class RevocationCoordinator:
         application, then signal subscribers. Other devices remain
         authorized. Raises ``RevocationIncomplete`` exactly like ``revoke``
         when a stream failed to close (the deny side is still applied).
+
+        The pinned managed lane supplies persist: commit the targeted deny
+        first, release the store transaction, then acknowledge only this
+        device's attributed streams. A failed persist never reports success.
         """
         if getattr(self._in_revoke, "active", False):
             raise RuntimeError("re-entrant revocation transaction rejected")
@@ -151,8 +155,8 @@ class RevocationCoordinator:
                         self.registry.close_device(device_id, epoch)
                 except StreamCloseError as exc:
                     failures = exc.stream_ids
-                # Private by contract: per-device revocation is applied only
-                # through this transaction, after stream closure (§9 order).
+                # Legacy applies after conservative closure; the pinned lane
+                # has already persisted its targeted deny before cleanup.
                 if persist is None:
                     self.state._revoke_device(device_id, epoch)
                 if self.signal is not None:

@@ -91,6 +91,8 @@ from runtime.remote_access.policy import canonical_json
 # v2 adds the monotonic ``generation`` field (envelope-level) bound to the
 # companion anchor. v1 envelopes (no generation, no anchor) are rejected as
 # unsupported — a v1 snapshot can no longer be trusted without an anchor.
+# v3 adds strict pins/invite/pending/delivery records. Anchored v2 remains
+# readable for explicit re-pairing; no legacy device acquires a pin.
 ENVELOPE_VERSION = 3
 LEGACY_ENVELOPE_VERSION = 2
 MAX_PINNED_DEVICES = 32
