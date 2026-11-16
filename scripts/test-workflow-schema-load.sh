@@ -2228,7 +2228,7 @@ if sys.argv[1:] in ([], ['--bootstrap-discovery']):
                     offset[0] = 181 if fault == 'installed_expired' else 121
                 route = startup.discover(root)
                 assert route.deadline == min(route.started_at+120, startup.deadline), 'A4-D original org/total deadlines'
-                acquisitions, closes, injected, native = [], [], [], []
+                acquisitions, acquisition_intervals, closes, injected, native = [], [], [], [], []
                 actual_acquire = OrgAccessFence.acquire
                 actual_close = OrgAccessFence.close
                 actual_select = bootstrap.BootstrapDiscovery._select
@@ -2238,9 +2238,14 @@ if sys.argv[1:] in ([], ['--bootstrap-discovery']):
                     blocker = actual_acquire(root)
                 def acquire(selected_root, **kwargs):
                     acquisitions.append((selected_root, dict(kwargs)))
-                    if fault == 'busy' and len(acquisitions) == 1:
-                        time.sleep(.3)
-                    fence = actual_acquire(selected_root, **kwargs)
+                    interval = [actual_clock(), None]
+                    acquisition_intervals.append(interval)
+                    try:
+                        if fault == 'busy' and len(acquisitions) == 1:
+                            time.sleep(.3)
+                        fence = actual_acquire(selected_root, **kwargs)
+                    finally:
+                        interval[1] = actual_clock()
                     if fault == 'ex_acquire' and kwargs.get('exclusive'):
                         def unavailable():
                             injected.append('ex_acquire')
@@ -2255,6 +2260,10 @@ if sys.argv[1:] in ([], ['--bootstrap-discovery']):
                     return actual_close(fence)
                 def select(discovery, fence, end):
                     result = actual_select(discovery, fence, end)
+                    if fault == 'busy' and len(discovery.selections) == 1:
+                        # Work between acquisitions consumes the original org
+                        # deadline, but is not another native admission wait.
+                        time.sleep(.04)
                     if fault == 'org' and len(discovery.selections) == 1:
                         offset[0] = 101
                     return result
@@ -2347,9 +2356,18 @@ if sys.argv[1:] in ([], ['--bootstrap-discovery']):
                     if fault == 'busy':
                         assert route.reason == 'writer_exclusion_unproven' and route.exclusion_error is not None, 'A4-D contention omitted visible hold'
                         assert .45 <= elapsed < .85, ('A4-D replenished cumulative busy wait', elapsed)
-                        assert acquisitions[1][1]['deadline'] - acquisitions[0][1]['deadline'] < .02, 'A4-D renewed admission deadline'
+                        first_start, first_end = acquisition_intervals[0]
+                        second_start, _ = acquisition_intervals[1]
+                        # These independently observed native intervals are a
+                        # LOWER bound on the production ledger's charges. The
+                        # next requested wait cannot exceed its remaining .5s.
+                        requested = acquisitions[1][1]['deadline'] - second_start
+                        assert requested <= max(0, .5-(first_end-first_start)), 'A4-D renewed admission deadline'
                         assert 'deadline' not in acquisitions[2][1], 'A4-D exhausted wait was replenished'
                         assert not route.fence.exclusive and len(route.selections) == 2, 'A4-D contention bypassed fresh ordinary SH'
+                        print('A4-D admission', json.dumps(dict(first=first_end-first_start,
+                            second_requested=requested, elapsed=elapsed,
+                            charged=startup.admission_seconds), sort_keys=True))
                     if fault == 'deadlines':
                         original_deadline = startup.deadline
                         offset[0] = 100
