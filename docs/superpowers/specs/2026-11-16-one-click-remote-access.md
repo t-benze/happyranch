@@ -17,8 +17,9 @@ showing the device that actually redeemed it (TASK-16298/seq419). One prompt mea
 not a standing grant for future pairing. Turn off removes this installation's remote-access
 configuration and authority. The user writes no JSON and runs no terminal/sudo commands.
 
-Assumptions: one release owner per Linux installation; existing self-hosted Headscale/private DERP
-remains the control plane; a healthy packaged release daemon is available. The root helper derives
+Assumptions: one release owner per Linux installation; Headscale/private DERP remains the control
+plane (R1 selects Linux-local LAN-only or the existing remote deployment); a healthy packaged release
+daemon is available. The root helper derives
 the owner from authenticated bus credentials, never an app-supplied username. It uses a validated
 existing root-owned release record, otherwise passwd-home + `.local/share/happyranch`. An arbitrary
 custom XDG home cannot be accepted from the desktop environment; unsupported locations fail visibly
@@ -73,7 +74,7 @@ kernel/control-group protections, address-family restrictions, SUID/realtime/per
 restrictions, `MemoryDenyWriteExecute`, native syscall architecture and `UMask=0077`. Keep
 notify/watchdog, restart/start-limit and target/bind/uphold relationships. The verifier retains its
 separate existing root capability budget and read-only home/proc proof. No user-mode substitution,
-broad filesystem access, new LAN listener or weakening for Python is permitted. Item D (bundled
+broad filesystem access, new connector LAN listener or weakening for Python is permitted. Item D (bundled
 Python PT_GNU_STACK/MDWE) is an **external prerequisite in the parallel packaging PR**; this spec
 neither designs nor edits it.
 
@@ -128,6 +129,17 @@ temporary writes, fsync + descriptor-relative rename. Existing unsafe metadata r
 chmod/chown a foreign tree into acceptance. `root:hr` means root:`happyranch`; `hr:hr` means
 `happyranch:happyranch`.
 
+On enable, authenticated repair/token rotation and failed-install replacement, the opened fixed
+release-home token inode must have `st_uid` equal to the authenticated/recorded release UID. Require
+exact 0600 mode, regular type, one link, nonempty UTF-8 and a bounded read (at most 64 KiB).
+Traverse every parent and the leaf descriptor-relatively with no-follow; compare named/opened
+device + inode identity and recheck named/opened identity, owner, mode, link count, size, mtime and
+ctime after reading. Copy only bytes read from that same validated FD, never reopen for copying;
+foreign ownership or changed/unsafe metadata refuses before publication or service effects, without
+copying its bytes. Slice 3b must change `ManagedInstaller._input()` → `_read_file()` in
+`runtime/remote_access/installer.py`: `_input()` currently leaves `owner=None`, so fixed paths and
+the existing 0600 check do not establish source UID ownership. Preserve TASK-16298 rev2's H2 rule.
+
 | Fixed object | Owner / mode; generation and writer |
 | --- | --- |
 | `/opt/happyranch-desktop` payload, helper, system-bus and polkit definitions in `/usr/share` | root:root, dirs/executables 0755, definitions 0644; dpkg only, never copied from the app or a checkout. |
@@ -136,7 +148,7 @@ chmod/chown a foreign tree into acceptance. `root:hr` means root:`happyranch`; `
 | `/etc/happyranch/release-daemon.json` | root:root 0644; exact existing verifier fields, derived owner/home and packaged fragment. |
 | `/etc/happyranch/daemon.token` | hr:hr 0600; helper copies only the validated fixed release-home token; existing file provider, no change to daemon bearer custody. |
 | `/etc/happyranch/enrollment.key`, reserved `/etc/credstore/happyranch-tsnet-enrollment` link | root:root 0600 source and existing exact-target link; helper stages home-only key, existing LoadCredential handoff deletes source/link after durable enrollment/READY. |
-| `/etc/happyranch/invite-issuer.json`, `invite-issuer.credential` | root:root 0600 under protected parent; conditional issuer endpoint/trust anchor and scoped machine credential from founder-reserved provisioning, never supplied by app IPC. |
+| `/etc/happyranch/invite-issuer.json`, `invite-issuer.credential` | root:root 0600 under protected parent; R1-dependent local Headscale binding, full Headscale API key (B) or scoped machine credential/trust anchor (C), never supplied by app IPC. |
 | Existing five connector/sidecar/target/verifier unit files in `/etc/systemd/system` | root:root 0644; shared renderer, exact unit names, helper only. Add separate bus-helper unit/definition with bounded lifecycle; no authority added to connector units. |
 | `/var/lib/happyranch-connector/trust-state.json`, `.anchor`, `.lock` | hr:hr 0600, parent explicit 0700; extend existing transactional trust store with pins and pending invitation digests. Connector writes only, helper invokes fixed operations over private control IPC. |
 | `/var/lib/happyranch-tsnet-sidecar` | hr:hr 0700; persistent non-ephemeral tsnet identity and consumed marker, existing enrollment rules. |
@@ -240,20 +252,22 @@ by the issuer, or reported as pending operator cleanup. No claim of instant netw
 Headscale is unreachable.
 
 **Missing shipped capability:** the RUNBOOK uses operator Headscale commands; there is no protected
-desktop join-key issuer or machine-entitlement bootstrap. Proposed, **FOUNDER-RESERVED R1**, is an
-issuer beside the existing self-hosted Headscale: authenticated root-only home credential, fixed
-server-side tenant, tags/control/TTL, separate home-enroll and away-invite purposes, idempotent
-issuance/expire/cleanup, no general Headscale admin API forwarded to clients. Headscale admin
-material remains server-side. Do not assume its current API credential is narrowly scoped; the
-broker must enforce scope itself. The root helper gets the join key over pinned HTTPS/mTLS;
+desktop join-key issuer or machine-entitlement bootstrap. **FOUNDER-RESERVED R1** in §9 compares
+local home-network minting (A), a root-only full Headscale API key on Linux (B), and a scoped issuer
+beside remote Headscale (C). No option is selected here. All require fixed tenant/control/tags/TTL,
+separate home-enroll and device-invite purposes, idempotent issuance/expire/cleanup and no general
+admin API exposed to agents or devices. A mints locally as root; B uses the protected API key;
+C keeps Headscale admin material server-side and must enforce scope itself, not assume its current
+API credential is narrowly scoped. Remote issuer transport uses pinned HTTPS/mTLS. The helper
 generates the pairing secret itself; asks the connector to persist only its digest; returns the
 combined invite to the initiating desktop caller only after fresh authentication. Agents get neither
 the issuer credential nor an unauthenticated mint API.
 
-R1 must also choose a GUI bootstrap for a fresh home (e.g. helper-generated machine key + one-time
-human account approval at the issuer, bound to that key). It must require fresh human server-side
-approval, not a reusable browser session or a code an agent can silently approve. Endpoint/trust
-metadata is packaged or operator-provisioned root-only, never caller-selected. **Until the founder
+R1 must also choose the option's authenticated GUI bootstrap/recovery: local setup for A, founder
+API-key provisioning once through authenticated enable for B, or machine entitlement with fresh
+human server-side approval for C (never a reusable browser session or silently approved code).
+Secret entry/transport must not pass through agent-readable app IPC. Endpoint/trust metadata is
+packaged or operator-provisioned root-only, never caller-selected. **Until the founder
 picks and approves that provisioning mechanism, initial enable/invite is gated and the
 no-terminal/one-prompt product goal is not fully implementable.** Shipping a Headscale
 admin/reusable join key in the app/package, an agent-readable key pool, or asking the user for
@@ -268,7 +282,10 @@ hashes/prefixes or public node keys in public logs. Device fingerprints are priv
 only. Keep the existing no-logtail/private-DERP policy. Desktop/Mac drafts are memory-only, no state
 restoration; clear on completion, expiry/cancel. Clipboard copying is explicit and best-effort
 cleared on expiry; screenshots/clipboard history/agent memory reads remain a disclosed residual.
-Device bearer uses existing Mac secure storage; tailnet state stays owner-only.
+The current Mac device bearer is memory-only in `ClientBridge.swift`; relaunch requires re-pairing.
+`EnrollmentKeyStore.swift` uses Keychain only to stage/delete join-key material, not persist the
+device bearer. Any durable bearer store is a new R2 decision and, if approved, slice 5 work;
+tailnet state stays owner-only.
 
 ## 7. Mac, installation recovery and upgrades
 
@@ -334,10 +351,10 @@ its exact head.
 | 1 protected ingress | `app/linux/tsnet-sidecar/{sidecar,engine_tsnet,health}.go`, `runtime/remote_access/managed_provider.py`, `systemd_unit.py`; C1/D frame and explicit new Linux profile. | Supported Go tests and real temporary Unix sockets: forged HTTP identity, wrong UID, malformed frame, absent WhoIs; empty-peer READY and loss/watchdog. Native Mac hosting profile unchanged. |
 | 2 trust ceremony | `pairing.py`, `authorization.py`, `state_store.py`, request/stream admission; no desktop or installer edits. | Retained standalone connector venue with synthetic state: two concurrent redeemers/approvals → exactly one grant; wrong node with valid bearer denied; A revoked closes A streams while B works; restart/torn/rollback/legacy cases refuse. |
 | 3a fixed helper | New helper module, system-bus/polkit definitions; status and guarded approval/revoke, no installation yet. | Standalone IPC plus disposable polkit: extra args refused, agent can prompt but not silently approve, actual target immutable across auth, fresh auth twice, wrong-UID and disconnect refusal. |
-| 3b generation/install | `installer.py`, generated config/transaction owner, package/helper wiring; after 3a and parallel packaging PR. Coordinate renderer after 1. | Temp-root/fake-manager clean/known FAILED/partial/foreign fixtures, safe `.deb` payload access, stop failure, interrupted replacement/disable, token rotation and exact unit/hardening parity. |
-| 3c invite issuance | Helper issuer client + connector private invite IPC; after approved/provisioned R1, 2 and 3b. Broker source/deployment requires its own assigned-repository brief. | Synthetic issuer/idempotency/uncertain-response/cleanup tests, fresh-auth mint, QR size/round-trip, no standing user mint capability, redaction canaries and expired/replayed invitation refusal. |
+| 3b generation/install | `installer.py` `_input()`/`_read_file()` source-UID/same-FD validation, generated config/transaction owner, package/helper wiring; after 3a and parallel packaging PR. Coordinate renderer after 1. | Temp-root/fake-manager clean/known FAILED/partial/foreign fixtures, foreign-owned 0600 token and parent/leaf swap or metadata-change refusal on enable/repair/replacement; safe `.deb` payload access, stop failure, interrupted replacement/disable, token rotation and exact unit/hardening parity. |
+| 3c invite issuance | R1-selected local mint/API client or scoped issuer client + connector private invite IPC; after approved/provisioned R1, 2 and 3b. New server source/deployment requires its own assigned-repository brief. | Synthetic issuer/idempotency/uncertain-response/cleanup tests, fresh-auth mint, QR size/round-trip, no standing user mint capability, redaction canaries and expired/replayed invitation refusal. |
 | 4 Linux UI/upgrade | `packaging/linux/desktop/happyranch_window.py`, package wiring only after parallel packaging PR; #1562. | Existing standalone desktop checks; synthetic reload-needed/failure/timeout; native GTK screenshots for off/starting/ready/conflict/error/approval/revoke and one-password enable. No host service actions for maker. |
-| 5 Mac single invite | `app/mac/Sources/HappyRanchApp/{RemoteConnectionView,AppDelegate}.swift`, supervisor managed model/ClientBridge, `app/mac/tsnet-bridge` only as needed; #1563. | Supported Swift/Go checks, unsigned build, native join→pending→Connected and TLS-close/deny/expiry/cancel/retry. Check secret-free diagnostics, persistence/reopen and re-enrollment. #1564 stays queued. |
+| 5 Mac single invite | `app/mac/Sources/HappyRanchApp/{RemoteConnectionView,AppDelegate}.swift`, supervisor managed model/ClientBridge, `app/mac/tsnet-bridge` only as needed; #1563. Durable bearer custody only if separately approved under R2. | Supported Swift/Go checks, unsigned build, native join→pending→Connected and TLS-close/deny/expiry/cancel/retry. Check secret-free diagnostics, memory-only bearer/re-pair after relaunch; any R2-approved durable store needs its own persistence/reopen/revocation checks. #1564 stays queued. |
 | 6 hosted acceptance/docs | `scripts/ci/m1_install_ready_uninstall.sh`, `m2_tailnet_daemon.sh`, related fixtures/docs; builds on 1–5. | M1 uses helper-generated configs and no ExpectedPeer; clean plus known FAILED-manual fixture, exact hardening/READY/loaded units, disable residue and interrupted recovery. M2 keeps real random-port daemon/verifier and squatter negative; adds two dynamically named stable-ID devices, one combined invite each, race/replay/expiry/wrong-node/revoke-survivor cases. |
 
 Hosted harness fixtures may provision a root-owned local test issuer and a test-side polkit
@@ -368,19 +385,31 @@ Linux settings/window edits with its owner before slices 4/5; do not merge both 
 
 ## 9. FOUNDER-RESERVED gates and explicit exclusions
 
-- **R1 — new issuer infrastructure and home bootstrap:** choose/approve the
-  scoped Headscale broker, deployment/cost/credential custody, human GUI bootstrap
-  and recovery. No available code proves a no-terminal fresh bootstrap today.
+- **R1 — issuer choice and home bootstrap: FOUNDER-RESERVED.** EM asked the founder
+  in THR-327 seq496; this document does not answer it. A's home-network topology
+  was already founder-approved at seq354; choosing the product mode and its
+  bootstrap/recovery remains reserved. No code proves a no-terminal fresh bootstrap today.
+
+| Option | Custody, reach and agent threat model | Effect on slices |
+| --- | --- | --- |
+| A — home-network mode | Headscale on the Linux box; fixed helper mints locally as root. LAN-only, no away access. Agents have no local issuer/admin access or silent mint authority; fresh authentication, actual-device approval and protected pins remain. Root compromise controls local Headscale. | 3b adds local Headscale setup; 3c uses root-local minting; 4/5 present LAN-only reach; 6 checks LAN operation and unavailable away access. 0–2 and 3a are unaffected. |
+| B — root-only Headscale API key on Linux | Founder provisions the key once through authenticated enable; helper mints single-use keys valid for ≤5 minutes. Agents cannot read the protected key or silently mint. Residual risk: anyone with root on that Linux box gets full tailnet administration; this key is not scoped. Existing remote Headscale supports away access. | 3b adds protected key bootstrap/custody/recovery; 3c uses the fixed Headscale API; 6 checks key isolation, mint bounds and failure/cleanup. 0–2, 3a, 4 and 5 are unaffected. |
+| C — scoped issuer beside Headscale | New infrastructure on `neihoumacau-hk`; server term ends **2026-12-03**, so continuity/cost needs a founder decision. Linux holds only a scoped home entitlement; agents cannot read it or silently mint. Linux root compromise gets that scope; issuer/Headscale compromise retains tailnet-admin risk. Supports away access. | 3b adds entitlement/bootstrap custody; 3c needs the scoped service and its own infrastructure brief; 6 adds broker scope/idempotency/offline acceptance. 0–2, 3a, 4 and 5 are unaffected. |
+
+All options retain separate UID, hardening, verifier, credential-plus-pin checks and fresh auth;
+none gives agents issuer custody. R1 must approve the selected bootstrap/recovery and provisioning.
+
 - **R2 — additions beyond the seq421 install wrapper:** approve the specific
   fixed bus-helper lifecycle, approval protocol/store version, transactional
   failed-install replacement/purge semantics and root-owned policy-renewal timer.
   C1/D are approved in principle; this document does not grant implementation or
   production migration authority. A no-input cursor is proposed to satisfy
   per-device revoke without caller-supplied peer IDs; native usability is unproven.
+  Any new durable Mac device-bearer store also requires this decision, in slice 5.
 - **Not selected; founder-only if reopened:** dropping the separate UID/system
   services, trusting Headscale alone, loosening any hardening/verifier proof,
   new network/agent containment, public relay/control fallback, connector-daemon
-  merge/plain daemon socket, Go rewrite, LAN ingress, independent end-to-end
+  merge/plain daemon socket, Go rewrite, connector LAN ingress, independent end-to-end
   device crypto, alternate custom-home authority or new top-level dependencies.
   None is necessary to the proposed approved-boundary path.
 
