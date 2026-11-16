@@ -158,7 +158,8 @@ async def init_org(body: InitOrgBody, request: Request) -> dict:
     from runtime.infrastructure.org_access_fence import org_access, OrgAccessHeld
     state: DaemonState = request.app.state.daemon
     _require_runtime(state)
-    if not _SLUG_RE.match(body.slug) or body.slug in _RESERVED:
+    if (not _SLUG_RE.match(body.slug) or body.slug in _RESERVED
+            or body.slug in state.orgs):
         return await _init_org_fenced(body, request)
     try:
         with org_access(state.runtime.orgs_dir / body.slug):
