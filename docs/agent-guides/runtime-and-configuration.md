@@ -18,6 +18,15 @@ backup_verified event. Failure latches the original connections/attempt, with
 no source checkpoint, restore or retry. See the [current source/backup boundary](../superpowers/specs/2026-11-14-automatic-workflow-setup.md#a4-coherent-source-and-verified-backup-checkpoint);
 this checkpoint still does not invoke automatic setup at daemon startup.
 
+The next unmounted stage, `BootstrapRehearsal`, copies the independently verified
+image and bounded canonical org metadata into private scratch. It runs the real
+candidate installer and actual writable default FIRST/NEXT loads on the same
+image, including A2's qualified catalog tail. Original install ledgers and the
+pre-COMMIT deadline remain shared; ordinary load budgets stay unchanged. A failed
+private close retains its original owner and scratch, without retry or deletion.
+This is capacity evidence only, never live native-owner qualification. See the
+[rehearsal boundary](../superpowers/specs/2026-11-14-automatic-workflow-setup.md#a4-private-writable-rehearsal-checkpoint).
+
 POST `/orgs` now creates J + Coding + sequential storage and ownership-2 through
 a distinct owner after exclusive skeleton creation and exclusive DB-file
 creation. It retains A1's pre-open org-access fence, Default human-managed team

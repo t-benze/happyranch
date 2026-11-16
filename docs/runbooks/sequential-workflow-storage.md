@@ -123,6 +123,16 @@ checkpoint](../superpowers/specs/2026-11-14-automatic-workflow-setup.md#a4-coher
 states the remaining volume, rehearsal and startup integration gates. The offline
 commands below still require their own explicit checkpointed image and guards.
 
+`BootstrapRehearsal` now provides the separate unmounted capacity stage: exact
+verified-backup hash, no-follow canonical metadata copy, real private install,
+then writable default FIRST/NEXT on that same image. Metadata/backup drift,
+original read exhaustion, insufficient rehearsal-volume headroom or pre-COMMIT
+time refuse before any source writer. Scratch is outside backup/output storage
+and is disposable only after positive original closure and directory identity
+checks. No source restore, live native-owner inference or automatic caller is
+added. See the [current rehearsal boundary](../superpowers/specs/2026-11-14-automatic-workflow-setup.md#a4-private-writable-rehearsal-checkpoint);
+the offline commands and their explicit guards remain unchanged.
+
 Every invocation starts with `resolve_org_database` and an immutable read-only
 SQLite connection (`mode=ro&immutable=1`, query-only, foreign keys enabled), one
 snapshot and before/after file observations. It never creates sidecars. Nonempty

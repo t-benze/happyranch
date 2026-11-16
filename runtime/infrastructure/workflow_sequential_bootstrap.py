@@ -12,14 +12,17 @@ import json
 import math
 import os
 import re
+import shutil
 import sqlite3
 import stat
+import tempfile
 import time
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
+from runtime.config import Settings
 from runtime.infrastructure.org_access_fence import OrgAccessFence
 from runtime.infrastructure.workflow_integrity import IntegrityLedger, require_install_integrity
 from runtime.infrastructure.workflow_schema import (
@@ -596,4 +599,291 @@ class BootstrapSource:
         if errors:
             self.failed = True
             raise BootstrapEvidenceError('workflow_setup_source_close_unknown') from errors[0]
+        self.closed = True
+
+
+class BootstrapRehearsal:
+    """One never-served writable FIRST/NEXT image, before source effects.
+
+    The coordinator retains this owner before run(), and must positively close
+    it before source writer admission. Private load success proves capacity on
+    this candidate only; it cannot settle an original live native owner. No
+    copied task is queued, no listener is started, and no validator is replaced.
+    """
+
+    def __init__(self, source: BootstrapSource, attempt: BootstrapAttempt) -> None:
+        self.source, self.attempt = source, attempt
+        self.root: Path | None = None
+        self._scratch_identity: tuple | None = None
+        self.descriptors: list[dict] = []
+        self.connections: list[dict] = []
+        self.attachments: list[dict] = []
+        self.metadata: list[tuple[Path, tuple | None]] = []
+        self._entries = self._bytes = 0
+        self.started = self.failed = self.completed = self.closed = False
+        self._cleanup_attempted = False
+        self.receipt: dict | None = None
+
+    def _check(self) -> None:
+        if self.failed or self.closed:
+            raise BootstrapEvidenceError('workflow_setup_rehearsal_latched')
+        self.source._unchanged()
+        self.attempt._check(reserve=True)
+        if (self.attempt.fence is not self.source.fence
+                or self.attempt.deadline != self.source.deadline
+                or self.attempt._phase != 'backup_verified'
+                or self.attempt._backup_sha256 != self.source.backup_sha256):
+            raise BootstrapEvidenceError('workflow_setup_rehearsal_owner_invalid')
+
+    def _own(self, fd: int) -> dict:
+        record = dict(fd=fd, attempted=False, closed=False)
+        self.descriptors.append(record)
+        return record
+
+    def _copy_file(self, path: Path, destination: Path, *, image: bool = False) -> None:
+        self._check()
+        parent = _directory(path.parent, self.descriptors)
+        original = _file(path)
+        limit = 32 * 1024**3 if image else 1048576
+        if original[5] > limit:
+            raise BootstrapEvidenceError('workflow_setup_rehearsal_copy_exhausted')
+        incoming = self._own(os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=parent['fd']))
+        outgoing = self._own(os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600))
+        if (os.fstat(incoming['fd']).st_dev, os.fstat(incoming['fd']).st_ino) != original[:2]:
+            raise BootstrapEvidenceError('workflow_setup_rehearsal_input_changed')
+        digest, copied = hashlib.sha256(), 0
+        while True:
+            self._check()
+            raw = os.read(incoming['fd'], min(1048576, limit-copied+1))
+            if not raw:
+                break
+            copied += len(raw)
+            if copied > limit:
+                raise BootstrapEvidenceError('workflow_setup_rehearsal_copy_exhausted')
+            if not image:
+                self._bytes += len(raw)
+                if self._bytes > 16 * 1048576:
+                    raise BootstrapEvidenceError('workflow_setup_rehearsal_copy_exhausted')
+            digest.update(raw)
+            remaining = memoryview(raw)
+            while remaining:
+                self._check()
+                written = os.write(outgoing['fd'], remaining)
+                if written <= 0:
+                    raise BootstrapEvidenceError('workflow_setup_short_write')
+                remaining = remaining[written:]
+        if (_file(path) != original or copied != original[5]
+                or (image and digest.hexdigest() != self.source.backup_sha256)):
+            raise BootstrapEvidenceError('workflow_setup_rehearsal_input_changed')
+        _close_descriptor(outgoing)
+        _close_descriptor(incoming)
+        _close_descriptor(parent)
+        self.metadata.append((path, original))
+
+    def _copy_metadata(self, path: Path, destination: Path, *, depth: int = 0) -> None:
+        self._check()
+        if depth > 32:
+            raise BootstrapEvidenceError('workflow_setup_rehearsal_copy_exhausted')
+        parent = _directory(path, self.descriptors)
+        info = os.fstat(parent['fd'])
+        signature = (info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_nlink,
+                     info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+        if info.st_uid != os.getuid():
+            raise BootstrapEvidenceError('workflow_setup_rehearsal_input_unsafe')
+        self.metadata.append((path, signature))
+        destination.mkdir(mode=0o700)
+        for name in sorted(_names(parent['fd'], 8192, self.source.allowance.deadline)):
+            self._entries += 1
+            if self._entries > 8192:
+                raise BootstrapEvidenceError('workflow_setup_rehearsal_copy_exhausted')
+            entry = os.stat(name, dir_fd=parent['fd'], follow_symlinks=False)
+            if stat.S_ISDIR(entry.st_mode):
+                self._copy_metadata(path/name, destination/name, depth=depth+1)
+            else:
+                self._copy_file(path/name, destination/name)
+        _close_descriptor(parent)
+
+    def _inputs_unchanged(self) -> None:
+        self._check()
+        for path, original in self.metadata:
+            self._check()
+            try:
+                info = path.lstat()
+            except FileNotFoundError:
+                if original is None:
+                    continue
+                raise BootstrapEvidenceError('workflow_setup_rehearsal_input_changed') from None
+            current = (info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_nlink,
+                       info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+            if current != original:
+                raise BootstrapEvidenceError('workflow_setup_rehearsal_input_changed')
+
+    def _connect(self, path: Path) -> sqlite3.Connection:
+        self._check()
+        conn = sqlite3.connect(path.as_uri()+'?mode=rw', uri=True, timeout=0)
+        self.connections.append(dict(connection=conn, attempted=False, closed=False))
+        conn.row_factory = sqlite3.Row
+        conn.execute('PRAGMA foreign_keys=ON')
+        return conn
+
+    def _close_connection(self, record: dict) -> None:
+        if record['attempted']:
+            if not record['closed']:
+                raise BootstrapEvidenceError('workflow_setup_rehearsal_close_unknown')
+            return
+        record['attempted'] = True
+        try:
+            record['connection'].close()
+        except BaseException as exc:
+            record['error'] = exc
+            raise
+        record['closed'] = True
+
+    def _close_attachment(self, owner: dict) -> None:
+        if owner.get('rehearsal_close_attempted'):
+            if not owner.get('rehearsal_closed'):
+                raise BootstrapEvidenceError('workflow_setup_rehearsal_close_unknown')
+            return
+        owner['rehearsal_close_attempted'] = True
+        try:
+            if owner.get('returned') is not None:
+                owner['returned'].close()
+            elif not owner.get('load_db_closed'):
+                # OrgState.load already attempted its original close. Never
+                # retry a failed construction/close or infer closure from GC.
+                raise BootstrapEvidenceError('workflow_setup_rehearsal_close_unknown')
+        except BaseException as exc:
+            owner['rehearsal_close_error'] = exc
+            raise
+        owner['rehearsal_closed'] = True
+
+    def run(self, settings: Settings) -> dict:
+        """Install the exact candidate, then actually load writable FIRST/NEXT.
+
+        The original install ledgers/deadline are shared. Both loads use their
+        unchanged default budgets, without installer allowances or ready-cache
+        seeding. The supervising worker owns the absolute operation deadline;
+        all local work is also checked against the pre-COMMIT reserve.
+        """
+        from runtime.daemon.org_state import OrgState
+        from runtime.infrastructure.workflow_schema import install_sequential_schema
+        from runtime.workflows.sequential_builtin import inspect_definition, preset_catalog
+        from runtime.workflows.sequential_history import _ReadBudget
+
+        try:
+            self._check()
+            if self.started:
+                raise BootstrapEvidenceError('workflow_setup_rehearsal_latched')
+            self.started = True
+            catalog = tuple(compiled.pin for compiled in preset_catalog())
+            # Retain the actual scratch location before any fallible setup. No
+            # TemporaryDirectory finalizer can delete unknown live handles.
+            self.root = Path(tempfile.mkdtemp(prefix='happyranch-workflow-rehearsal-'))
+            parent = _directory(self.root, self.descriptors)
+            _private_directory(parent['fd'])
+            info = os.fstat(parent['fd'])
+            self._scratch_identity = info.st_dev, info.st_ino
+            space = os.fstatvfs(parent['fd'])
+            if space.f_bavail * space.f_frsize < self.source.image_bytes + 64 * 1048576:
+                raise BootstrapEvidenceError('workflow_setup_rehearsal_space_unavailable')
+            _close_descriptor(parent)
+            root = self.root/'runtime/orgs'/self.attempt.slug
+            root.mkdir(parents=True, mode=0o700)
+            self._copy_metadata(self.source.fence.root/'org', root/'org')
+            for name in ('.org_settings_seeded', '.hr_review_renamed'):
+                path = self.source.fence.root/name
+                try:
+                    path.lstat()
+                except FileNotFoundError:
+                    self.metadata.append((path, None))
+                else:
+                    self._copy_file(path, root/name)
+            path = root/'happyranch.db'
+            self._copy_file(self.attempt.backup_path, path, image=True)
+            self._inputs_unchanged()
+            conn = self._connect(path)
+            identity = _coding_org_identity(conn, expected_org_slug=self.attempt.slug, expected_path=str(path))
+            result = install_sequential_schema(conn, expected_org_slug=self.attempt.slug,
+                expected_path=str(path), source_identity=identity,
+                source_inventory=self.source.source_inventory, offline_check=self._inputs_unchanged,
+                allowance=self.source.allowance, integrity=self.source.integrity)
+            if result != 'installed':
+                raise BootstrapEvidenceError('workflow_setup_rehearsal_candidate_invalid')
+            self._close_connection(self.connections[-1])
+            timings = []
+            for phase in ('first', 'next'):
+                self._inputs_unchanged()
+                owner = dict(startup_acquisition=True, phase=phase)
+                self.attachments.append(owner)
+                started = time.monotonic()
+                org = OrgState.load(slug=self.attempt.slug, root=root,
+                                    settings=settings, attachment_owner=owner)
+                owner['returned'] = org
+                self._check()
+                if org._startup_authority_error is not None:
+                    raise org._startup_authority_error
+                if org._startup_publication_held or org.naming_readiness != 'ready':
+                    raise BootstrapEvidenceError('workflow_setup_rehearsal_authority_unavailable')
+                # Registration is the actual A2 tail, never a direct fixture
+                # INSERT or a success stub. Recheck the same reviewed catalog.
+                budget = _ReadBudget(deadline=min(time.monotonic()+5, self.source.allowance.deadline))
+                candidates = preset_catalog()
+                if tuple(compiled.pin for compiled in candidates) != catalog:
+                    raise BootstrapEvidenceError('workflow_setup_rehearsal_candidate_changed')
+                for compiled in candidates:
+                    if not inspect_definition(org.db._conn, compiled, budget)[1]:
+                        raise BootstrapEvidenceError('workflow_setup_rehearsal_catalog_unavailable')
+                self._close_attachment(owner)
+                timings.append(time.monotonic()-started)
+                self._inputs_unchanged()
+            self.completed = True
+            self.receipt = dict(source_inventory_digest=self.source.inventory_digest,
+                backup_sha256=self.source.backup_sha256, target_version=1,
+                catalog=tuple(pin.model_dump(mode='json') for pin in catalog),
+                first_seconds=timings[0], next_seconds=timings[1])
+            return dict(self.receipt)
+        except BaseException:
+            self.failed = True
+            raise
+
+    def close(self) -> None:
+        """One original close each; remove scratch only after positive closure."""
+        errors = []
+        if self.root is not None and not self.closed:
+            try:
+                parent = _directory(self.root, self.descriptors)
+                _private_directory(parent['fd'])
+                info = os.fstat(parent['fd'])
+                if (info.st_dev, info.st_ino) != self._scratch_identity:
+                    raise BootstrapEvidenceError('workflow_setup_rehearsal_scratch_changed')
+            except BaseException as exc:
+                errors.append(exc)
+        for owner in reversed(self.attachments):
+            try:
+                self._close_attachment(owner)
+            except BaseException as exc:
+                errors.append(exc)
+        for record in reversed(self.connections):
+            try:
+                self._close_connection(record)
+            except BaseException as exc:
+                errors.append(exc)
+        for record in reversed(self.descriptors):
+            if record['attempted']:
+                if not record['closed']:
+                    errors.append(BootstrapEvidenceError('workflow_setup_descriptor_close_unknown'))
+                continue
+            try:
+                _close_descriptor(record)
+            except BaseException as exc:
+                record['error'] = exc
+                errors.append(exc)
+        if errors:
+            self.failed = True
+            raise BootstrapEvidenceError('workflow_setup_rehearsal_close_unknown') from errors[0]
+        if self.root is not None and not self.closed:
+            if self._cleanup_attempted:
+                raise BootstrapEvidenceError('workflow_setup_rehearsal_cleanup_unknown')
+            self._cleanup_attempted = True
+            shutil.rmtree(self.root)
         self.closed = True

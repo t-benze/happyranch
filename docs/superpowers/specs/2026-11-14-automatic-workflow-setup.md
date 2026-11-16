@@ -366,3 +366,54 @@ coordinator. Combined DB/temp/rehearsal volume reservations and writer rechecks,
 positive original-owner qualification, writable FIRST/NEXT rehearsal, parent
 supervision, final registration/status integration and whole-startup acceptance
 remain required. The offline interface and its explicit guards are unchanged.
+
+### A4 private writable rehearsal checkpoint
+
+`BootstrapRehearsal` now composes the verified-image capacity stage. Its original
+`BootstrapSource` and `BootstrapAttempt` must still hold the same EX descriptor,
+deadline, source fingerprint and backup_verified hash. Construction is effect-free;
+the caller retains the owner before `run`. It creates a private never-served
+scratch directory, checks free space >=B+64MiB, and copies only canonical `org/`
+metadata plus the original settings-seed/reviewer-rename sentinels and verified
+`before.db` bytes. Literal no-follow traversal, regular single-link file checks,
+hash/identity revalidation, <=8192 metadata entries, <=32 directory depth,
+<=1MiB per metadata file and <=16MiB aggregate metadata bound acquisition. These
+are rehearsal refusal boundaries, not increases to any runtime read limit.
+No workspaces, task outputs, caches, task attachments or live user home are copied.
+
+The private installer uses the SAME original cumulative install allowance and
+physical ledger/deadline. Actual writable `OrgState.load` FIRST then NEXT runs on
+the same installed image, without ownership_sql_limit overrides, preseeded ready
+caches or successful validator stubs. Both loads perform their real recovery,
+naming, native and A2 catalog tails. The exact reviewed catalog pins and source/
+backup fingerprints accompany the local receipt; metadata drift, original
+authority refusal or default read exhaustion cannot become successful capacity.
+The caller still owns classification of causal exhaustion versus native/authority
+failure and visible holds. A count or RO timing is never qualification.
+
+Every private native connection is retained before PRAGMA; each OrgState load's
+original construction/attachment owner is retained before the call. Each close
+is attempted once. Unknown closure keeps the original object/descriptor and
+scratch, never a blind retry or automatic deletion. Positively closed scratch is
+removed only at its original directory identity. All work charges the original
+pre-COMMIT deadline; parent supervision must still bound uninterruptible native
+work. A completed private rehearsal cannot authorize source effects until that
+private owner closes positively and the coordinator rechecks original owners,
+space, source/backup, target default reader, phase and COMMIT reserve.
+
+Focused `--bootstrap-rehearsal[=CASE]` uses a genuine `_seed_skeleton(None)` plus
+native J/Pause/reviewer/ownership fixture. It observes same-image writable
+FIRST/NEXT and actual default 32M/A-B-C budgets; first/next native SQL exhaustion;
+real private install-integrity refusal; metadata alias/drift and changed verified
+backup; space/deadline refusal; partial constructor closure; original authority
+failure; and unknown private-close retention without replay. Source SQL/types/
+cells/rowids and main-file bytes stay exact, and no source phase advances to
+pre_commit. This is the commissioned standalone shell venue, not the retired
+Python unit or skipped general integration suite.
+
+The automatic caller remains unmounted. Positive original host/native/producer/
+Pause/preparation/profile/remote/registry qualification, combined volume policy,
+source checkpoint/writer/target/COMMIT composition, parent permit/kill custody,
+post-COMMIT closure/registration/audit/status and continuous all-org/listener
+acceptance remain required. No live installation, restart, deployment, Allow,
+role assignment or task execution is authorized by this source checkpoint.

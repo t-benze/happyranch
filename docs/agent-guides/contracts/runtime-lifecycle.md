@@ -41,6 +41,18 @@ source checkpoint; they supply no native-owner qualification or installed result
 Automatic startup integration and installation remain incomplete; see the
 [source/backup checkpoint](../../superpowers/specs/2026-11-14-automatic-workflow-setup.md#a4-coherent-source-and-verified-backup-checkpoint).
 
+The unmounted `BootstrapRehearsal` retains each private raw connection and
+OrgState construction owner before fallible setup, then performs actual writable
+default FIRST/NEXT on one installed private image. Each original close is
+attempted once. Unknown private closure retains the attachment, fence and scratch;
+only positively closed, identity-matching scratch can be removed. No producer or
+listener is started and no copied uncertainty is cleared. All rehearsal/copy/
+close work charges the original pre-COMMIT window. Private success never proves
+original live host/native closure; automatic coordinator and whole-startup
+acceptance remain incomplete. The existing shell's `--bootstrap-rehearsal[=CASE]`
+observes the actual loads, native progress exhaustion, metadata/image drift,
+original authority refusal and closure custody.
+
 > Moved verbatim from the repository-root `AGENTS.md` on 2026-10-30. Sections keep
 > their original relative order. Where a later section says it supersedes or
 > extends an earlier one, the later section controls; sections marked

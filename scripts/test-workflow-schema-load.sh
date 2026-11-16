@@ -65,6 +65,13 @@ if len(sys.argv) == 2 and sys.argv[1].startswith('--bootstrap-backup='):
                            'space', 'deadline', 'close', 'alias')
     sys.argv[1:] = ['--bootstrap-backup']
 
+rehearsal_case = None
+if len(sys.argv) == 2 and sys.argv[1].startswith('--bootstrap-rehearsal='):
+    rehearsal_case = sys.argv[1].split('=', 1)[1]
+    assert rehearsal_case in ('none', 'first_budget', 'next_budget', 'install', 'metadata_alias',
+                             'metadata_changed', 'backup_changed', 'space', 'deadline', 'load_init', 'authority', 'close')
+    sys.argv[1:] = ['--bootstrap-rehearsal']
+
 startup_case = None
 if len(sys.argv) == 2 and sys.argv[1].startswith('--startup-isolation='):
     startup_case = sys.argv[1].split('=', 1)[1]
@@ -78,7 +85,7 @@ if len(sys.argv) == 2 and sys.argv[1].startswith('--retained-corruption-phase=')
         uncommitted='between uncommitted')[sys.argv[1].split('=', 1)[1]]
     sys.argv[1:] = ['--retained-corruption']
 
-assert sys.argv[1:] in ([], ['--bootstrap-backup'], ['--bootstrap-journal'], ['--bootstrap-precommit'], ['--startup-isolation'], ['--fresh-catalog'], ['--org-access-fence'], ['--org-access-openers'], ['--org-access-native'], ['--org-access-guardian'], ['--org-access-profile'], ['--setup-status'], ['--daily-integrity'], ['--install-integrity'], ['--bounded-acquisition'], ['--trace-custody'], ['--sequential-reuse'], ['--sequential-load'], ['--sequential-freshness'], ['--sequential-faults'], ['--sequential-sql-exhaustion'], ['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--coding-authority-corruption'], ['--document-native-corruption'], ['--author-handoff-corruption'], ['--document-revision-corruption'], ['--coding-history-corruption'], ['--physical-corruption'], ['--sequential-uncommitted'], ['--i2-cutover'], ['--i2-native']), 'unknown schema-load selection'
+assert sys.argv[1:] in ([], ['--bootstrap-rehearsal'], ['--bootstrap-backup'], ['--bootstrap-journal'], ['--bootstrap-precommit'], ['--startup-isolation'], ['--fresh-catalog'], ['--org-access-fence'], ['--org-access-openers'], ['--org-access-native'], ['--org-access-guardian'], ['--org-access-profile'], ['--setup-status'], ['--daily-integrity'], ['--install-integrity'], ['--bounded-acquisition'], ['--trace-custody'], ['--sequential-reuse'], ['--sequential-load'], ['--sequential-freshness'], ['--sequential-faults'], ['--sequential-sql-exhaustion'], ['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--coding-authority-corruption'], ['--document-native-corruption'], ['--author-handoff-corruption'], ['--document-revision-corruption'], ['--coding-history-corruption'], ['--physical-corruption'], ['--sequential-uncommitted'], ['--i2-cutover'], ['--i2-native']), 'unknown schema-load selection'
 
 
 print('SCHEMA_RUNTIME', json.dumps(dict(python=sys.version, executable=sys.executable, sqlite=sqlite3.sqlite_version,
@@ -2154,6 +2161,225 @@ runpy.run_module('runtime.daemon',run_name='__main__')
                 raise AssertionError('hardlinked report accepted')
         daily_case('PASS')
     if sys.argv[1:]:
+        raise SystemExit(0)
+
+# A4-R extends the same private venue. Source/backup are genuine native images;
+# only faults, clocks and observations are test-side. No successful owner is faked.
+if sys.argv[1:] in ([], ['--bootstrap-rehearsal']):
+    import shutil
+    from runtime.infrastructure import workflow_sequential_bootstrap as bootstrap
+    from runtime.infrastructure import workflow_schema as schema
+    from runtime.infrastructure.org_access_fence import OrgAccessFence
+    from runtime.daemon.routes.orgs import _seed_skeleton
+    from runtime.orchestrator.org_config import initialize_fresh_reviewer_agents
+    from runtime.workflows.sequential_history import _ReadBudget
+    from runtime.workflows._read_exhaustion import exhausted
+    from runtime.infrastructure import remote_job_schema
+    from runtime.workflows.authority import WorkflowAuthorityCoordinator, WorkflowAuthorityError
+
+    rehearsal_cases = ('none', 'first_budget', 'next_budget', 'install', 'metadata_alias',
+                       'metadata_changed', 'backup_changed', 'space', 'deadline', 'load_init', 'authority', 'close')
+    for fault in rehearsal_cases:
+        if rehearsal_case is not None and rehearsal_case != fault:
+            continue
+        with tempfile.TemporaryDirectory(prefix='a4-writable-rehearsal-') as scratch:
+            private = Path(scratch).resolve()
+            home = private/'home'
+            home.mkdir(mode=0o700)
+            runtime = private/'runtime'
+            root = runtime/'orgs/scratch'
+            _seed_skeleton(root, from_example=None)
+            path = root/'happyranch.db'
+            db = Database(path)
+            try:
+                schema.initialize_complete_org_schema(db, expected_org_slug='scratch', layout='J')
+                install_pause_schema(db, org_slug='scratch')
+                initialize_fresh_reviewer_agents(OrgPaths(root), db)
+                install_task_ownership(db, org_slug='scratch')
+                db._conn.execute('CREATE TABLE a4_rehearsal_sentinel(id INTEGER PRIMARY KEY,v BLOB)')
+                db._conn.execute('INSERT INTO a4_rehearsal_sentinel VALUES (37,?)', (b'original\0typed',))
+                db._conn.commit()
+            finally:
+                db.close()
+            with patch.dict(os.environ, {'HAPPYRANCH_DAEMON_HOME': str(home)}):
+                fence = OrgAccessFence.acquire(root, exclusive=True)
+                source = bootstrap.BootstrapSource(fence=fence, deadline=time.monotonic()+119)
+                attempt = rehearsal = None
+                actual_load, actual_close = OrgState.load, OrgState.close
+                actual_install = schema.install_sequential_schema
+                actual_progress = _ReadBudget.progress
+                load_calls, install_calls, budget_calls, injections, close_calls = [], [], [], [], []
+                current = [None]
+                authority_error = WorkflowAuthorityError('authority_pointer_not_ready')
+                def current_inventory():
+                    with closing(sqlite3.connect(path.as_uri()+'?mode=ro', uri=True)) as conn:
+                        conn.execute('PRAGMA query_only=ON')
+                        conn.execute('BEGIN')
+                        return schema.sequential_storage_inventory(conn)
+                original = current_inventory()
+                def observed_install(conn, **kwargs):
+                    assert kwargs['allowance'] is source.allowance and kwargs['integrity'] is source.integrity, 'A4-R replenished install ledger'
+                    assert kwargs['expected_path'] != str(path), 'A4-R wrote original source'
+                    assert kwargs['source_inventory'] == original
+                    install_calls.append(kwargs['expected_path'])
+                    if fault == 'install':
+                        injections.append(fault)
+                        # Real target integrity refusal on this native writer.
+                        conn.set_authorizer(lambda action, a, b, *_: sqlite3.SQLITE_DENY
+                            if action == sqlite3.SQLITE_PRAGMA and a.lower() == 'integrity_check' else sqlite3.SQLITE_OK)
+                    return actual_install(conn, **kwargs)
+                def observed_progress(budget):
+                    if current[0] is not None:
+                        budget_calls.append((current[0], budget.sql_limit))
+                        if (fault == current[0]+'_budget' and budget.sql_limit == 32000000):
+                            injections.append(fault)
+                            # Consume the original native progress allowance;
+                            # the production hook raises its own causal refusal.
+                            budget.sql_steps = budget.sql_limit
+                    return actual_progress(budget)
+                def observed_close(org):
+                    close_calls.append(org)
+                    if fault == 'close':
+                        injections.append(fault)
+                        raise OSError('synthetic original private close uncertainty')
+                    return actual_close(org)
+                def observed_load(**kwargs):
+                    assert 'ownership_sql_limit' not in kwargs and 'deadline' not in kwargs, 'A4-R nondefault writable load'
+                    private_path = kwargs['root']/'happyranch.db'
+                    with closing(sqlite3.connect(private_path)) as probe:
+                        assert probe.execute("SELECT version FROM workflow_seq_schema_versions").fetchone()[0] == 1, 'A4-R load before private candidate install'
+                        value = probe.execute('SELECT v FROM a4_rehearsal_sentinel WHERE id=37').fetchone()[0]
+                    index = len(load_calls)
+                    assert value == (b'original\0typed' if index == 0 else b'writable-FIRST-survives-NEXT'), 'A4-R NEXT replaced the FIRST image'
+                    identity = private_path.stat()
+                    load_calls.append((str(private_path), identity.st_dev, identity.st_ino))
+                    current[0] = 'first' if index == 0 else 'next'
+                    try:
+                        with ExitStack() as faults:
+                            if fault == 'load_init':
+                                injections.append(fault)
+                                faults.enter_context(patch.object(remote_job_schema,
+                                    'validate_identity_enrollment_schema_preflight', side_effect=ValueError('synthetic private constructor refusal')))
+                            if fault == 'authority':
+                                injections.append(fault)
+                                faults.enter_context(patch.object(WorkflowAuthorityCoordinator,
+                                    'recover_or_publish', side_effect=authority_error))
+                            org = actual_load(**kwargs)
+                        assert org.db._conn.execute('PRAGMA query_only').fetchone()[0] == 0, 'A4-R used read-only capacity instead of writable load'
+                        # A real first-load transaction is independently visible
+                        # to NEXT on the very same candidate. Source stays exact.
+                        org.db._conn.execute('UPDATE a4_rehearsal_sentinel SET v=? WHERE id=37', (b'writable-FIRST-survives-NEXT',))
+                        org.db._conn.commit()
+                        if fault == 'metadata_changed':
+                            injections.append(fault)
+                            (root/'org/teams.yaml').write_text('teams: {}\n# source metadata changed during private load\n')
+                        return org
+                    finally:
+                        current[0] = None
+                try:
+                    source.open()
+                    attempt = bootstrap.BootstrapAttempt(home=home, runtime_root=runtime, slug='scratch',
+                        fence=fence, source_identity=source.source_identity,
+                        source_inventory_digest=source.inventory_digest, deadline=source.deadline)
+                    attempt.begin()
+                    source.backup(attempt)
+                    before = hashlib.sha256(path.read_bytes()).hexdigest()
+                    backup_before = hashlib.sha256(attempt.backup_path.read_bytes()).hexdigest()
+                    rehearsal = bootstrap.BootstrapRehearsal(source, attempt)
+                    if fault == 'metadata_alias':
+                        (root/'org/alias.yaml').symlink_to(root/'org/teams.yaml')
+                        injections.append(fault)
+                    if fault == 'backup_changed':
+                        with closing(sqlite3.connect(attempt.backup_path)) as conn:
+                            conn.execute('UPDATE a4_rehearsal_sentinel SET v=? WHERE id=37', (b'wrong-unverified-image',))
+                            conn.commit()
+                        injections.append(fault)
+                    error = None
+                    with ExitStack() as faults:
+                        faults.enter_context(patch.object(schema, 'install_sequential_schema', side_effect=observed_install))
+                        faults.enter_context(patch.object(OrgState, 'load', side_effect=observed_load))
+                        faults.enter_context(patch.object(OrgState, 'close', observed_close))
+                        faults.enter_context(patch.object(_ReadBudget, 'progress', observed_progress))
+                        if fault == 'space':
+                            injections.append(fault)
+                            faults.enter_context(patch.object(bootstrap.os, 'fstatvfs', return_value=SimpleNamespace(f_bavail=0, f_frsize=4096)))
+                        if fault == 'deadline':
+                            injections.append(fault)
+                            faults.enter_context(patch.object(bootstrap.time, 'monotonic', return_value=source.deadline-19))
+                        try:
+                            receipt = rehearsal.run(Settings())
+                        except BaseException as exc:
+                            error = exc
+                        if fault == 'none':
+                            assert error is None, ('A4-R unexpected private rehearsal failure', type(error).__name__, error)
+                            assert len(load_calls) == 2 and load_calls[0] == load_calls[1], 'A4-R did not run writable FIRST/NEXT on the same image'
+                            assert len(install_calls) == 1 and all(v == load_calls[0][0] for v in install_calls), 'A4-R repeated private installation'
+                            assert {'first', 'next'} == {v[0] for v in budget_calls} and {32000000, 2000000} <= {v[1] for v in budget_calls}, 'A4-R skipped default complete budgets'
+                            assert rehearsal.completed and receipt['backup_sha256'] == backup_before and receipt['source_inventory_digest'] == source.inventory_digest
+                        else:
+                            assert error is not None and injections, ('A4-R intended fault missed', fault)
+                            assert rehearsal.failed and not rehearsal.completed, 'A4-R failed rehearsal accepted or not latched'
+                            if fault in ('first_budget', 'next_budget'):
+                                assert exhausted(error), 'A4-R exhaustion lost original causal dimension'
+                                assert len(load_calls) == (1 if fault == 'first_budget' else 2), 'A4-R wrong default load exhausted'
+                            elif fault == 'metadata_changed':
+                                assert str(error) == 'workflow_setup_rehearsal_input_changed', 'A4-R source metadata drift accepted'
+                            elif fault == 'backup_changed':
+                                assert not install_calls and str(error) == 'workflow_setup_rehearsal_input_changed', 'A4-R unverified candidate installed'
+                            elif fault == 'space':
+                                assert not install_calls and str(error) == 'workflow_setup_rehearsal_space_unavailable', 'A4-R ignored rehearsal headroom'
+                            elif fault == 'deadline':
+                                assert not install_calls and rehearsal.root is None, 'A4-R used reserved COMMIT time for rehearsal'
+                            elif fault == 'authority':
+                                assert error is authority_error and not exhausted(error), 'A4-R replaced original authority refusal with size or generic failure'
+                        # Successful and failed rehearsals are never replayed.
+                        try:
+                            rehearsal.run(Settings())
+                        except bootstrap.BootstrapEvidenceError:
+                            pass
+                        else:
+                            raise AssertionError('A4-R repeated original rehearsal')
+                        scratch_root = rehearsal.root
+                        close_error = None
+                        try:
+                            rehearsal.close()
+                        except BaseException as exc:
+                            close_error = exc
+                        if fault == 'close':
+                            assert close_error is not None and scratch_root.exists(), 'A4-R deleted unknown original private owner'
+                            assert len(rehearsal.attachments) == 1 and rehearsal.attachments[0]['returned'] is close_calls[0], 'A4-R lost original private attachment'
+                            assert close_calls[0].db._conn.execute('SELECT 1').fetchone()[0] == 1
+                            try:
+                                rehearsal.close()
+                            except bootstrap.BootstrapEvidenceError:
+                                pass
+                            else:
+                                raise AssertionError('A4-R invented unknown private closure')
+                            assert len(close_calls) == 1, 'A4-R retried unknown private close'
+                        else:
+                            assert close_error is None and rehearsal.closed, ('A4-R private close failed', fault, close_error)
+                            assert scratch_root is None or not scratch_root.exists(), 'A4-R positively closed scratch retained'
+                    assert current_inventory() == original and hashlib.sha256(path.read_bytes()).hexdigest() == before, 'A4-R changed or auto-restored source before qualification'
+                    if fault != 'backup_changed':
+                        assert hashlib.sha256(attempt.backup_path.read_bytes()).hexdigest() == backup_before, 'A4-R modified verified backup'
+                    assert attempt._phase == 'backup_verified' and not (attempt.root/'02.json').exists(), 'A4-R advanced source COMMIT before qualification'
+                    print('PASS A4-R actual writable same-image FIRST/NEXT/default budgets/source preservation/original custody:', fault, flush=True)
+                finally:
+                    if rehearsal is not None:
+                        # Test-side rescue only AFTER retained unknown/no-retry
+                        # assertions; never production clearance or replay.
+                        rescued = set()
+                        for org in [owner.get('returned') for owner in rehearsal.attachments] + close_calls:
+                            if org is not None and id(org) not in rescued and not org._local_close_complete:
+                                actual_close(org)
+                                rescued.add(id(org))
+                        if rehearsal.root is not None and rehearsal.root.exists():
+                            rehearsal.close() if not rehearsal.failed else shutil.rmtree(rehearsal.root)
+                    source.close()
+                    if attempt is not None:
+                        attempt.close()
+                    fence.close()
+    if sys.argv[1:] == ['--bootstrap-rehearsal']:
         raise SystemExit(0)
 
 # I1a extends this existing disposable venue, with no new execution lane.
