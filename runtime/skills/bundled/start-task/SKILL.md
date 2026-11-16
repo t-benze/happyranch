@@ -769,9 +769,12 @@ logs/screenshots/review packets to Shared Artifacts as an ownership workaround.
    enablement. A positive auto-trigger count plus enablement runs compaction
    inline after ordinary adds at/above that many files (including evicted
    files); zero disables the trigger, and updates do not trigger it. Inherited
-   imports bypass it. There is no scheduled sweep.
+   imports bypass it. Sweep errors after the note write log a warning without
+   aborting the add or preventing its `memory_added` audit. There is no scheduled sweep.
    Staleness uses local creation `authored_at`, preserved by updates (legacy
-   missing stamps fall back to `updated_at`). Lowering salience on an old note
+   missing/unusable stamps fall back to `updated_at`; neither usable retains the
+   note). ISO strings and YAML datetime/date values normalize to UTC; naive
+   timestamps and date-only midnight mean UTC. Lowering salience on an old note
    therefore need not wait another 45 days. At default thresholds, 0–10 is
    eligible after 45 days; existing decay subtracts up to 30, so stored values
    through 40 can also qualify. Default 50 stays above the floor.

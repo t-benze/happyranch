@@ -488,8 +488,10 @@ and stamp `updated_at`. Promoted entries remain locked.
 
 Stale-note eligibility uses the existing **`authored_at` local creation stamp**,
 preserved through all updates, rather than the displayed last-update age. Legacy
-notes without that stamp fall back to `updated_at`; absent/unparseable dates do
-not qualify. Content edits and salience edits both leave creation age intact.
+notes with a missing or unusable stamp fall back to `updated_at`; if neither is
+usable, the entry is retained. Compaction accepts ISO strings and YAML-loaded
+datetime/date values, normalizes them to aware UTC, and treats naive timestamps
+and date-only midnight as UTC. Content and salience edits leave creation age intact.
 This deliberately lets lowering an old note's salience make it eligible now.
 To retain a useful old note, raise its salience above the effective floor or
 replace it with current guidance. Recall's `age_days` still means last-update
@@ -539,8 +541,11 @@ available. `salience_floor` is the inclusive effective-salience ceiling (0–100
 `auto_trigger_entry_count` (0–100000) disables automatic triggering at zero;
 when positive and enabled, ordinary adds run compaction inline after reaching
 that many entry files, including superseded/evicted files. It triggers on each
-subsequent add, not just the threshold crossing. Updates and inherited imports
-do not trigger it. There is no scheduled sweep. The existing manual API accepts
+subsequent add, not just the threshold crossing. This sweep is best effort:
+after the note is written, a sweep exception logs a warning and does not propagate
+to the add caller, allowing the route to complete its existing `memory_added`
+audit. Already applied sweep effects are not rolled back. Updates and inherited
+imports do not trigger it. There is no scheduled sweep. The existing manual API accepts
 policy overrides without changing config. This PR does not enable live config
 or curate live memories.
 

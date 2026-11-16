@@ -67,6 +67,79 @@ class MemoryCompactionTests(unittest.IsolatedAsyncioTestCase):
         return [row["payload"] for row in self.db.get_audit_logs("AGENT-synthetic")
                 if row["action"] == "memory_lifecycle_changed"]
 
+    def legacy_note(self, authored: str, *, updated: str = '"2026-11-16T00:00:00Z"') -> str:
+        mid = self.store.next_id()
+        self.store.path_for(mid, "legacy").write_text(
+            f"---\nid: {mid}\nslug: legacy\ntitle: Legacy\ntopic: curation\n"
+            f"authored_at: {authored}\nupdated_at: {updated}\nsalience: 0\n"
+            "---\nSynthetic legacy note.\n")
+        return mid
+
+    async def test_yaml_timestamp_compaction_table(self) -> None:
+        cases = (
+            ("datetime", "2026-10-02T00:00:00Z", '"2026-11-16T00:00:00Z"', True),
+            ("naive", "2026-10-02T00:00:00", '"2026-11-16T00:00:00Z"', True),
+            ("date", "2026-10-02", '"2026-11-16T00:00:00Z"', True),
+            ("offset-old", "2026-10-02T01:00:00+02:00", '"2026-11-16T00:00:00Z"', True),
+            ("offset-young", "2026-10-02T00:00:00-02:00", '"2026-11-16T00:00:00Z"', False),
+            ("integer-recent", "42", '"2026-11-16T00:00:00Z"', False),
+            ("integer-old", "42", '"2026-01-01T00:00:00Z"', True),
+            ("invalid-old", "unusable", '"2026-01-01T00:00:00Z"', True),
+            ("missing-old", "null", '"2026-01-01T00:00:00Z"', True),
+            ("neither-usable", "42", "unusable", False),
+        )
+        for label, authored, updated, eligible in cases:
+            with self.subTest(case=label):
+                sentinel = await self.add(f"eligible-{label}", salience=0)
+                mid = self.legacy_note(authored, updated=updated)
+                try:
+                    before = self.store.path_for(mid, "legacy").read_bytes()
+                    preview = await self.compact(dry_run=True)
+                    candidate_ids = [c["id"] for c in preview["candidates"]]
+                    self.assertEqual(mid in candidate_ids, eligible)
+                    self.assertIn(sentinel, candidate_ids)
+                    self.assertEqual(self.store.path_for(mid, "legacy").read_bytes(), before)
+                    result = await self.compact(dry_run=False)
+                    self.assertEqual(result["errors"], [])
+                    self.assertEqual(mid in result["evicted"], eligible)
+                    self.assertIn(sentinel, result["evicted"])
+                    self.assertEqual(self.store.read_entry(mid).lifecycle, "evicted" if eligible else "valid")
+                finally:
+                    self.store.path_for(mid, "legacy").unlink()
+
+    async def test_auto_trigger_add_audits_with_yaml_timestamps(self) -> None:
+        (self.root / "org/config.yaml").write_text(
+            "memory_compaction:\n  enabled: true\n  auto_trigger_entry_count: 1\n")
+        for label, authored, eligible in (("datetime", "2026-01-01T00:00:00Z", True),
+                                         ("date", "2026-01-01", True),
+                                         ("integer", "42", False)):
+            with self.subTest(case=label):
+                prior = self.legacy_note(authored)
+                try:
+                    mid = await self.add(f"new-{label}", at=NOW)
+                    self.assertTrue(self.store.path_for(mid, f"new-{label}").is_file())
+                    self.assertEqual(self.store.read_entry(prior).lifecycle, "evicted" if eligible else "valid")
+                    self.assertEqual(self.store.read_entry(mid).lifecycle, "valid")
+                    added = [row["payload"] for row in self.db.get_audit_logs("AGENT-synthetic")
+                             if row["action"] == "memory_added" and row["payload"]["id"] == mid]
+                    self.assertEqual(added, [{"id": mid, "slug": f"new-{label}", "topic": "curation",
+                                              "tags": [], "source_task": None}])
+                    self.assertIn(mid, (self.store.root / "_index.md").read_text())
+                finally:
+                    self.store.path_for(prior, "legacy").unlink()
+
+    async def test_auto_trigger_sweep_failure_does_not_prevent_add_audit(self) -> None:
+        (self.root / "org/config.yaml").write_text(
+            "memory_compaction:\n  enabled: true\n  auto_trigger_entry_count: 1\n")
+        with patch.object(MemoryStore, "compact", side_effect=OSError("Synthetic sweep failure")):
+            mid = await self.add("surviving-add", at=NOW)
+        self.assertTrue(self.store.path_for(mid, "surviving-add").is_file())
+        self.assertIn(mid, (self.store.root / "_index.md").read_text())
+        added = [row["payload"] for row in self.db.get_audit_logs("AGENT-synthetic")
+                 if row["action"] == "memory_added"]
+        self.assertEqual(added, [{"id": mid, "slug": "surviving-add", "topic": "curation",
+                                  "tags": [], "source_task": None}])
+
     async def test_old_note_lowered_salience_evicts_and_restores(self) -> None:
         mid = await self.add("old-note")
         await self.update(mid, salience=5)

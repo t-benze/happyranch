@@ -5,12 +5,13 @@ Per-entry markdown under ``<workspace>/learnings/``; filename is
 """
 from __future__ import annotations
 
+import logging
 import os
 import re
 import tempfile
 from copy import deepcopy
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Optional
@@ -49,6 +50,21 @@ ID_RE = re.compile(r"^(?:LRN|MEM)-\d{3,}$")
 _ID_PARTS_RE = re.compile(r"^(LRN|MEM)-(\d{3,})$")
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 MAX_BODY_BYTES = 32 * 1024
+
+
+def _compaction_timestamp(value: object) -> datetime | None:
+    """Read ISO strings or YAML dates as UTC; naive values mean UTC."""
+    if isinstance(value, date):
+        value = value.isoformat()
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+    except (ValueError, OverflowError):
+        return None
 
 
 def _id_variants(id: str) -> list[str]:
@@ -441,16 +457,21 @@ class MemoryStore:
             and self._compaction_config.enabled
             and self._compaction_config.auto_trigger_entry_count > 0
         ):
-            entry_count = len(self._entry_paths())
-            if entry_count >= self._compaction_config.auto_trigger_entry_count:
-                cc = self._compaction_config
-                policy = MemoryCompactionPolicy(
-                    salience_floor=cc.salience_floor,
-                    stale_days=cc.stale_days,
-                    superseded_grace_days=cc.superseded_grace_days,
-                    max_evictions_per_run=cc.max_evictions_per_run,
-                )
-                self.compact(dry_run=False, policy=policy)
+            # The entry is already published. Optional retirement must not
+            # prevent callers from completing the add and its audit.
+            try:
+                entry_count = len(self._entry_paths())
+                if entry_count >= self._compaction_config.auto_trigger_entry_count:
+                    cc = self._compaction_config
+                    policy = MemoryCompactionPolicy(
+                        salience_floor=cc.salience_floor,
+                        stale_days=cc.stale_days,
+                        superseded_grace_days=cc.superseded_grace_days,
+                        max_evictions_per_run=cc.max_evictions_per_run,
+                    )
+                    self.compact(dry_run=False, policy=policy)
+            except Exception:
+                logging.getLogger(__name__).warning("Automatic memory compaction failed after memory write")
 
         return stamped
 
@@ -1148,52 +1169,36 @@ class MemoryStore:
 
         # Superseded beyond grace period
         if entry.lifecycle == "superseded":
-            if entry.updated_at:
-                try:
-                    ts = entry.updated_at
-                    if ts.endswith("Z"):
-                        ts = ts[:-1] + "+00:00"
-                    updated = datetime.fromisoformat(ts)
-                    if updated.tzinfo is None:
-                        updated = updated.replace(tzinfo=timezone.utc)
-                    age_days = (now_dt - updated).days
-                    if age_days >= policy.superseded_grace_days:
-                        return MemoryCompactionCandidate(
-                            id=entry.id,
-                            title=entry.title,
-                            reason=f"superseded_{age_days}d (>={policy.superseded_grace_days}d grace)",
-                            current_lifecycle="superseded",
-                        )
-                except (ValueError, TypeError):
-                    pass
+            updated = _compaction_timestamp(entry.updated_at)
+            if updated is not None:
+                age_days = (now_dt - updated).days
+                if age_days >= policy.superseded_grace_days:
+                    return MemoryCompactionCandidate(
+                        id=entry.id,
+                        title=entry.title,
+                        reason=f"superseded_{age_days}d (>={policy.superseded_grace_days}d grace)",
+                        current_lifecycle="superseded",
+                    )
             return None
 
         # Staleness uses the immutable local creation stamp, not updated_at:
         # lowering salience on an old note must not restart its stale window.
-        # Legacy notes without authored_at retain the prior updated_at fallback.
+        # Missing/unusable authored_at falls back to updated_at; if neither is
+        # usable, retain the entry rather than guessing an age.
         # Compute effective salience at read time (never write back).
         effective = entry.salience
-        stale_since = entry.authored_at or entry.updated_at
-        if stale_since:
-            try:
-                ts = stale_since
-                if ts.endswith("Z"):
-                    ts = ts[:-1] + "+00:00"
-                updated = datetime.fromisoformat(ts)
-                if updated.tzinfo is None:
-                    updated = updated.replace(tzinfo=timezone.utc)
-                age_days = max(0, (now_dt - updated).days)
-                age_penalty = min(age_days * self._AGE_DECAY_PER_DAY, self._AGE_DECAY_CAP)
-                effective -= age_penalty
-                if effective <= policy.salience_floor and age_days >= policy.stale_days:
-                    return MemoryCompactionCandidate(
-                        id=entry.id,
-                        title=entry.title,
-                        reason=f"stale_{age_days}d_salience_{effective}_<=_{policy.salience_floor}",
-                        current_lifecycle="valid",
-                    )
-            except (ValueError, TypeError):
-                pass
+        stale_since = _compaction_timestamp(entry.authored_at) or _compaction_timestamp(entry.updated_at)
+        if stale_since is not None:
+            age_days = max(0, (now_dt - stale_since).days)
+            age_penalty = min(age_days * self._AGE_DECAY_PER_DAY, self._AGE_DECAY_CAP)
+            effective -= age_penalty
+            if effective <= policy.salience_floor and age_days >= policy.stale_days:
+                return MemoryCompactionCandidate(
+                    id=entry.id,
+                    title=entry.title,
+                    reason=f"stale_{age_days}d_salience_{effective}_<=_{policy.salience_floor}",
+                    current_lifecycle="valid",
+                )
 
         return None
 
