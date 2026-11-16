@@ -2399,8 +2399,11 @@ existing500 category `draft_schema_migration_required`; GET's existing blocker
 `required_action` names `python scripts/migrate_workflow_draft_schema.py
 --runtime-root <absolute-root> --org <slug>`. The operator runs that script
 explicitly; `--check` exits3 when needed, 0 ready, 1 refusal, 2 parser. Existing F
-history remains visible without recovery advancement. New `orgs init`/POST /orgs
-creation initializes complete G directly. Preflight is read-only and permits only
+history remains visible without recovery advancement. A2 fresh `orgs init`/POST
+`/orgs` creation initializes J + Coding + sequential storage + ownership-2 and
+registers the Coding v2 definition only, with runs Disabled and admission
+unset/Disabled. Startup with an absent DB stays historical.
+Preflight is read-only and permits only
 pristine F initial history with no workflow data; every E/G needs a compatible
 reader, including empty new/migrated orgs; even empty drained or template-only stores refuse.
 The faf40744 reader accepts pristine F and refuses E/G; the b0b55e9f
