@@ -525,6 +525,37 @@ explicitly retires a note immediately; `--set valid` restores either superseded
 or evicted notes. Restoration does not reset creation age or salience: an old
 low-salience note can qualify again, so raise salience when retaining it.
 
+THR-366 PR-C bounds entry parsing to one selection pass, fresh candidate reads
+on apply and the existing fresh index-regeneration pass. One run-local reference
+index covers related links, supersedes links and body tokens from non-evicted
+sources, with permanent MEM/LRN aliases and the same word boundaries. Historical
+non-ID strings retain literal body matching over parsed entries. No policy,
+candidate ordering, cap, skip reason or audit payload changes.
+
+Callers must serialize the whole run with the existing write boundary. Apply
+rereads each candidate and refreshes its own reference contributions before
+rechecking protections and eligibility; successful evictions remove that source's
+contributions. Other entries use the run's reference snapshot, justified by that
+serialization; uncoordinated filesystem writers are outside this contract.
+There is no persistent cache. The manual route offloads compaction with
+`asyncio.to_thread`; the add route likewise offloads `write_entry`, including
+its inline automatic sweep, and index regeneration. Both keep `org.db_lock`
+through writes and unchanged audits, draining admitted work on cancellation.
+The store calls in both workers additionally hold the existing canonical
+workspace RLock. `PersistentWorkspaceSetup.ensure` holds that same lock around
+migration, summary reads and index publication, covering existing/new-memory
+bootstrap for every adapter. Executor switching acquires the authority interval,
+then teams lock, then `org.db_lock`, retaining them from the pre-mutation rollback
+capture through asynchronous materialization and synchronous bootstrap/compensation.
+This keeps the captured index current relative to compaction and prevents rollback
+from restoring an index captured before a completed eviction. The teams-before-DB
+order matches knowledge import; there is no nested teams acquisition. No workspace
+RLock spans an await: store workers acquire/release it themselves, and bootstrap
+uses it synchronously. A worker releases it before returning to the loop and never
+waits for the loop, authority or teams lock while holding it. This is process-local
+coordination; direct offline store callers and external filesystem edits are not
+fenced. Update does not call the automatic sweep; the dream writer is unchanged.
+
 Org `org/config.yaml` supports this opt-in block (shown with all defaults):
 
 ```yaml
