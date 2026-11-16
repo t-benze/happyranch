@@ -18,7 +18,14 @@ two passes plus fresh candidate reads (the second pass regenerates the index).
 Reference cases cover aliases, body boundaries, self references, retired sources
 and fresh apply changes. Manual dry-run/apply and auto-add cases require another
 coroutine to progress while compaction runs with the lock held; cancellation
-must retain serialization through writes and audits.
+must retain serialization through writes and audits. The competing bootstrap
+case drives real `PersistentWorkspaceSetup.ensure` against the compact route,
+using events and the existing lock only to choose a deterministic writer order;
+it asserts evicted/audited entries stay out of the final index. The executor-switch
+case drives real journal capture/bootstrap/compensation across its materialization
+await and verifies rollback cannot re-advertise a concurrently evicted entry.
+Authority/materialization/provider setup is isolated on the test side, with no
+production test hook.
 The CLI checks intercept HTTP transport; no server, provider or live org is used.
 This existing standalone venue is outside retired Python units, skipped general
 integration and Product E2E, and adds no required check or trigger.

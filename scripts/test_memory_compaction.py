@@ -2,18 +2,22 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager, nullcontext
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import tempfile
 import threading
 from types import SimpleNamespace
+from typing import Any, AsyncIterator, Callable
 import unittest
 from unittest.mock import patch
 
 from runtime.daemon.routes import agents
+from runtime.config import Settings
 from runtime.infrastructure import learnings_store
 from runtime.infrastructure.database import Database
-from runtime.infrastructure.learnings_store import MemoryItem, MemoryStore
+from runtime.infrastructure.learnings_store import LearningSummary, MemoryItem, MemoryStore
+from runtime.orchestrator.workspace_adapters import PersistentWorkspaceSetup, _get_workspace_lock
 
 
 NOW = datetime(2026, 11, 16, tzinfo=timezone.utc)
@@ -67,6 +71,115 @@ class MemoryCompactionTests(unittest.IsolatedAsyncioTestCase):
     def lifecycle_payloads(self) -> list[dict]:
         return [row["payload"] for row in self.db.get_audit_logs("AGENT-synthetic")
                 if row["action"] == "memory_lifecycle_changed"]
+
+    async def test_bootstrap_index_cannot_overwrite_compact_evictions(self) -> None:
+        mid = await self.add("bootstrap-target", salience=0)
+        workspace = self.store.root.parent
+        lock = _get_workspace_lock(workspace)
+        entered, captured, publish = threading.Event(), threading.Event(), threading.Event()
+        loop_thread = threading.get_ident()
+        offload, listing = asyncio.to_thread, MemoryStore.list_entries
+
+        async def competing_worker(func: Callable[..., Any], /, *args: Any, **kwargs: Any) -> Any:
+            def run() -> Any:
+                entered.set()
+                self.assertTrue(captured.wait(3), "bootstrap did not read summaries")
+                # Only control scheduling: if bootstrap owns the real lock it
+                # must publish first; otherwise let compact finish first, as in
+                # the reviewer's stale-summary overwrite probe.
+                available = lock.acquire(blocking=False)
+                if available:
+                    lock.release()
+                else:
+                    publish.set()
+                try:
+                    return func(*args, **kwargs)
+                finally:
+                    publish.set()
+            return await offload(run)
+
+        def capture_summaries(store: MemoryStore, **kwargs: Any) -> list[LearningSummary]:
+            summaries = listing(store, **kwargs)
+            if threading.get_ident() == loop_thread and store.root == self.store.root:
+                self.assertEqual(summaries[0].lifecycle, "valid")
+                self.assertTrue(self.org.db_lock.locked())
+                captured.set()
+                self.assertTrue(publish.wait(3), "competing writer did not reach publication")
+            return summaries
+
+        with patch.object(asyncio, "to_thread", competing_worker), \
+                patch.object(MemoryStore, "list_entries", capture_summaries):
+            task = asyncio.create_task(self.compact(dry_run=False))
+            try:
+                self.assertTrue(await offload(entered.wait, 3))
+                PersistentWorkspaceSetup(Settings()).ensure(workspace, "synthetic")
+                result = await task
+            finally:
+                captured.set()
+                publish.set()
+                await asyncio.gather(task, return_exceptions=True)
+        self.assertEqual(result["evicted"], [mid])
+        self.assertEqual(self.store.read_entry(mid).lifecycle, "evicted")
+        self.assertIn(mid, [p["id"] for p in self.lifecycle_payloads()])
+        self.assertNotIn(mid, (self.store.root / "_index.md").read_text())
+
+    async def test_executor_bootstrap_compensation_cannot_restore_evicted_index(self) -> None:
+        mid = await self.add("compensation-target", salience=0)
+        workspace = self.store.root.parent
+        agent_path = self.root / "org/agents/synthetic.md"
+        agent_path.parent.mkdir()
+        agent_path.write_text("---\nname: synthetic\nteam: engineering\nrole: worker\n"
+                              "executor: claude\n---\nSynthetic role.\n")
+        original = agent_path.read_bytes()
+        self.org.settings = Settings()
+        self.org.slug = "synthetic"
+        self.org.teams_lock = asyncio.Lock()
+        entered, release = threading.Event(), threading.Event()
+
+        @asynccontextmanager
+        async def authority(*args: Any, **kwargs: Any) -> AsyncIterator[SimpleNamespace]:
+            yield SimpleNamespace(validation=nullcontext, canonical_change=nullcontext)
+
+        def materialize(*args: Any, **kwargs: Any) -> list[str]:
+            entered.set()
+            self.assertTrue(release.wait(3), "materialization was not released")
+            return []
+
+        def fail_after_index(
+            ctx: agents.ContextBuilder, target: Path, name: str, *args: Any, **kwargs: Any,
+        ) -> None:
+            PersistentWorkspaceSetup(ctx._settings).ensure(target, name)
+            raise RuntimeError("synthetic failure after index publication")
+
+        with patch.object(agents, "_consumer_writer_interval", authority), \
+                patch.object(agents, "_executor_switch_materialize", materialize), \
+                patch.object(agents.ContextBuilder, "ensure_workspace_ready", fail_after_index):
+            switch = asyncio.create_task(agents.set_agent_executor(
+                "synthetic", "synthetic", agents.SetExecutorBody(executor="codex"), self.org))
+            compact = None
+            try:
+                self.assertTrue(await asyncio.to_thread(entered.wait, 3))
+                compact = asyncio.create_task(self.compact(dry_run=False))
+                # If the switch excludes memory writers, let its real rollback
+                # finish first. Otherwise reproduce eviction between the real
+                # journal capture and the real bootstrap compensation.
+                if not self.org.db_lock.locked():
+                    await compact
+                release.set()
+                with self.assertRaises(agents.HTTPException) as error:
+                    await switch
+                self.assertEqual(error.exception.detail["code"], "executor_bootstrap_failed")
+                result = await compact
+            finally:
+                release.set()
+                await asyncio.gather(switch, *([compact] if compact else []), return_exceptions=True)
+        self.assertEqual(result["evicted"], [mid])
+        self.assertEqual(self.store.read_entry(mid).lifecycle, "evicted")
+        self.assertIn(mid, [p["id"] for p in self.lifecycle_payloads()])
+        self.assertNotIn(mid, (self.store.root / "_index.md").read_text())
+        self.assertEqual(agent_path.read_bytes(), original)
+        self.assertFalse(self.org.db_lock.locked())
+        self.assertFalse(self.org.teams_lock.locked())
 
     def legacy_note(self, authored: str, *, updated: str = '"2026-11-16T00:00:00Z"') -> str:
         mid = self.store.next_id()

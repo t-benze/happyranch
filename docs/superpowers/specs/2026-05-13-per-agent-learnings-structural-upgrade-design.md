@@ -541,7 +541,20 @@ There is no persistent cache. The manual route offloads compaction with
 `asyncio.to_thread`; the add route likewise offloads `write_entry`, including
 its inline automatic sweep, and index regeneration. Both keep `org.db_lock`
 through writes and unchanged audits, draining admitted work on cancellation.
-Update does not call the automatic sweep; the dream writer is unchanged.
+The store calls in both workers additionally hold the existing canonical
+workspace RLock. `PersistentWorkspaceSetup.ensure` holds that same lock around
+migration, summary reads and index publication, covering existing/new-memory
+bootstrap for every adapter. Executor switching acquires the authority interval,
+then teams lock, then `org.db_lock`, retaining them from the pre-mutation rollback
+capture through asynchronous materialization and synchronous bootstrap/compensation.
+This keeps the captured index current relative to compaction and prevents rollback
+from restoring an index captured before a completed eviction. The teams-before-DB
+order matches knowledge import; there is no nested teams acquisition. No workspace
+RLock spans an await: store workers acquire/release it themselves, and bootstrap
+uses it synchronously. A worker releases it before returning to the loop and never
+waits for the loop, authority or teams lock while holding it. This is process-local
+coordination; direct offline store callers and external filesystem edits are not
+fenced. Update does not call the automatic sweep; the dream writer is unchanged.
 
 Org `org/config.yaml` supports this opt-in block (shown with all defaults):
 
