@@ -949,7 +949,10 @@ The Linux identity profile accepts a protected sidecar `control_tls` record with
 only with `ControlURL=https://control.happyranch.invalid:8443`. The canonical home
 name requires that record. The dedicated process admits the fixed root-owned,
 single-link, bounded exact-one-CA `/etc/happyranch/control-ca.pem` and protected
-empty `/etc/happyranch/empty-ca-directory` before constructing clients. The unit's
+empty `/etc/happyranch/empty-ca-directory` before constructing clients (exact
+root:happyranch 0640 CA file and root:root 0755 empty directory). Setup refuses
+with an `ErrConfiguration` error before tsnet construction/dial, preserved by
+the sidecar without consuming enrollment. The unit's
 only transport additions are those two fixed `SSL_CERT_FILE`/`SSL_CERT_DIR`
 Environment lines. All other hardening, including MDWE, is unchanged.
 
@@ -962,15 +965,22 @@ ephemeral-only forced fallback pool. Internally owned proxy/root/resolver setup
 precedes clients. Ambient proxy/bypass/keylog/GODEBUG and all `TS_` overrides
 refuse without value echo. There is no direct/public retry or host trust/DNS
 change. Upstream verification/dial or listener failure closes owned streams;
-shutdown/cancellation closes transport and tsnet. Home/address changes require
+shutdown/cancellation closes transport and tsnet. Malformed local TLS after
+CONNECT also seals admission; a cancelled losing controlhttp attempt closes its
+own stream. Closed home engines cannot create new listeners. Home/address changes require
 a new dedicated process, retaining canonical durable identities.
 
 The supported Go tests exercise synthetic CA/environment admission, real pinned
 control `/key` + Noise registration/canary and independent DERP region clients
-in fresh subprocesses, plus CONNECT rejection/closure. Slice 3b owns protected
-config/CA/leaf/map generation. Full tsnet startup/lifecycle, exact installed
-protected paths, packaged hardening and native Darwin are separate acceptance
-gates. See the [sidecar README](../../../app/linux/tsnet-sidecar/README.md) and
+in fresh subprocesses, plus CONNECT rejection/closure, same-CA renewal, redirects
+and an independent loopback direct-TCP fallback decoy. Synthetic full tsnet
+compositions reach Running/map/private DERP and close admission on failure or
+cancellation. Two processes isolate ports/issuers; a renewed-endpoint restart
+retains node identity and consumed authority while replacing local issuer/DNS
+state. Slice 3b owns protected config/CA/leaf/map generation and transactional
+protected dial-IP publication. Successful installed-path startup, full packaged
+lifecycle/MDWE, generated Headscale maps, packet-wide public/DNS egress exclusion
+and native Darwin remain NOT RUN. See the [sidecar README](../../../app/linux/tsnet-sidecar/README.md) and
 [Round-7 specification](../../superpowers/specs/2026-11-16-one-click-remote-access.md#6-invite-selected-bootstrap-and-secret-handling).
 
 ### Linux managed identity ingress v1 (THR-327 slice 1a)

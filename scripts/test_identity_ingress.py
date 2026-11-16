@@ -168,12 +168,16 @@ def test_exact_unit_hardening_parity() -> None:
     assert [line for line in modern if line != "RuntimeDirectoryMode=0700"] == legacy
     assert modern.count("RuntimeDirectoryMode=0700") == 1
     assert tuple(line for line in modern if "=" in line and line != "RuntimeDirectoryMode=0700") == _BASE_CONNECTOR_DIRECTIVES
-    sidecar = render_sidecar_unit(SidecarUnitSpec()).splitlines()
+    rendered_sidecar = render_sidecar_unit(SidecarUnitSpec())
+    sidecar = rendered_sidecar.splitlines()
     home_environment = (
         "Environment=SSL_CERT_FILE=/etc/happyranch/control-ca.pem",
         "Environment=SSL_CERT_DIR=/etc/happyranch/empty-ca-directory",
     )
     assert all(sidecar.count(line) == 1 for line in home_environment)
+    assert rendered_sidecar == _BASE_SIDECAR_UNIT.replace(
+        "Group=happyranch\n", "Group=happyranch\n" + "\n".join(home_environment) + "\n", 1
+    )
     assert tuple(line for line in sidecar if "=" in line and line not in home_environment) == _BASE_SIDECAR_DIRECTIVES
     # The independent directive contract includes the easy-to-miss MDWE line.
     for directive in ("MemoryDenyWriteExecute=yes", "NoNewPrivileges=yes", "ProtectSystem=strict",
@@ -267,3 +271,6 @@ _BASE_SIDECAR_DIRECTIVES = ('Description=HappyRanch embedded tsnet sidecar',
  'RuntimeDirectoryPreserve=yes',
  'LogsDirectory=happyranch-tsnet-sidecar',
  'WantedBy=happyranch-managed.target')
+
+# Complete current-main rendered bytes, including sections, order and whitespace.
+_BASE_SIDECAR_UNIT = '[Unit]\nDescription=HappyRanch embedded tsnet sidecar\nAfter=network-online.target happyranch-connector.service\nWants=network-online.target\nStartLimitIntervalSec=300\nStartLimitBurst=5\nBindsTo=happyranch-connector.service\nPartOf=happyranch-managed.target\n\n[Service]\nExecStart=/opt/happyranch/bin/happyranch-tsnet-sidecar --config /etc/happyranch/sidecar.json --credential-file ${CREDENTIALS_DIRECTORY}/enrollment-key\nLoadCredential=enrollment-key:happyranch-tsnet-enrollment\nUser=happyranch\nGroup=happyranch\nNotifyAccess=main\nRestartSec=1\nWatchdogSec=30\nTimeoutStartSec=120\nTimeoutStopSec=35\nType=notify\nRestart=on-failure\nNoNewPrivileges=yes\nPrivateTmp=yes\nProtectSystem=strict\nProtectHome=yes\nProtectKernelTunables=yes\nProtectControlGroups=yes\nRestrictSUIDSGID=yes\nRestrictRealtime=yes\nLockPersonality=yes\nMemoryDenyWriteExecute=yes\nSystemCallArchitectures=native\nUMask=0077\nRestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK\nPrivateDevices=yes\nProtectKernelModules=yes\nCapabilityBoundingSet=\nAmbientCapabilities=\nStateDirectory=happyranch-tsnet-sidecar\nStateDirectoryMode=0700\nRuntimeDirectory=happyranch-tsnet-sidecar\nRuntimeDirectoryPreserve=yes\nLogsDirectory=happyranch-tsnet-sidecar\n\n[Install]\nWantedBy=happyranch-managed.target\n'

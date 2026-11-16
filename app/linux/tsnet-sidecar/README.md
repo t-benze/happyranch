@@ -39,9 +39,11 @@ those persistent objects. Existing non-home configs retain their transport.
 
 Before constructing tsnet, Linux admits the fixed no-follow root-owned
 `/etc/happyranch/control-ca.pem` (single-link, at most 64 KiB, one valid CA with
-the exact DER fingerprint, root:happyranch and no group/other writes) and
-`/etc/happyranch/empty-ca-directory` (root:root, empty and not writable by
-group/other). Fixed parents must be real protected root-owned directories.
+the exact DER fingerprint, root:happyranch and exact mode 0640) and
+`/etc/happyranch/empty-ca-directory` (root:root, empty and exact mode 0755).
+Fixed parents must be real protected root-owned directories. Setup failure is
+an `ErrConfiguration` startup error before tsnet construction or a remote dial;
+the sidecar preserves that classification and does not consume enrollment.
 The unit supplies exactly those `SSL_CERT_FILE` and `SSL_CERT_DIR` paths.
 Inherited upper/lower `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY`,
 `SSLKEYLOGFILE`, `GODEBUG` and every `TS_` variable refuse startup without
@@ -63,16 +65,35 @@ owned HTTP/HTTPS proxy and in-memory fixed-name resolver before clients. No
 host DNS or trust-store change occurs. Upstream and local root pools stay
 separate; pinned baked roots never authenticate a remote leaf. Listener,
 verifier or upstream dial failure closes the listener and owned streams;
-engine cancellation/shutdown closes both transport and tsnet. The dedicated
+engine cancellation/shutdown closes both transport and tsnet. Malformed local
+TLS after an accepted CONNECT also seals admission; EOF from a cancelled losing
+controlhttp connection attempt closes only that attempt. Closed home engines
+reject new listeners, including after pinned tsnet's own Close. The dedicated
 process cannot initialize another home in place: address/home change requires
 a supervisor-owned process restart. Canonical URL/node/consumed identity never
 includes the random port or local issuer. Darwin home transport remains slice 5b.
 
 `hometransport_linux_test.go` uses synthetic temporary certificates and separate
 processes for real pinned `/key`/Noise registration and DERP region clients,
-including matching-name/wildcard public-equivalent chains and receipt counters.
-Temporary admission and socket tests do not establish packaged fixed-path,
-full-tsnet, MDWE, generated-map or native Darwin acceptance.
+including matching-name/wildcard public-equivalent chains, same-CA leaf renewal,
+redirects and receipt counters. An independent loopback TCP decoy detects direct
+fallback to the resolved control/DERP address, including with the proxy down.
+`hometransport_lifecycle_linux_test.go` composes synthetic temporary trust with
+the real tsnet server and shipping engine lifecycle: /key, Noise registration,
+map, Running and private DERP, then cancellation/shutdown/listener/verifier/local
+TLS failure and refusal to reopen admission. Separate simultaneous processes
+use distinct local ports/issuers; a restart on a renewed endpoint retains node
+identity and exact consumed-marker bytes, drops the enrollment key and observes
+the new resolver mapping without requests to the old endpoint.
+
+Run from this module:
+`GOTOOLCHAIN=go1.23.12 CGO_ENABLED=0 GOFLAGS=-mod=readonly GOWORK=off go test -count=1 ./...`.
+The module's language declaration remains Go 1.23.1; execution uses 1.23.12.
+These component compositions do not execute successful protected-path admission
+through TSNetEngine.Start on an installed system. Exact root-owned installed
+paths, full packaged lifecycle/MDWE, generated Headscale map, packet-wide absence
+of public/DNS fallback traffic and native Darwin acceptance require their
+authorized venues and remain NOT RUN here.
 
 Only an omitted profile or an empty JSON string retains the legacy Linux and
 Darwin behavior below. Non-string values (including null) and unknown strings

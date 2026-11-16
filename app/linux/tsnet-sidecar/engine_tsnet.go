@@ -27,6 +27,8 @@ type TSNetEngine struct {
 	server         *tsnet.Server
 	identityClient whoIsClient
 	home           *homeForwarder
+	admissionMu    sync.Mutex
+	closed         bool
 	closeOnce      sync.Once
 	closeErr       error
 }
@@ -39,6 +41,9 @@ func (e *TSNetEngine) Start(ctx context.Context, c EngineConfig, credential []by
 	// never mutate process-wide inputs or include their values in errors.
 	for _, name := range []string{"TS_AUTHKEY", "TS_AUTH_KEY", "TSNET_FORCE_LOGIN", "TS_DEBUGSYSPOLICY_AUTH_KEY"} {
 		if _, set := os.LookupEnv(name); set {
+			if c.ControlTLS != nil || c.ControlURL == homeURL {
+				return RedemptionReceipt{}, errHomeTransport
+			}
 			return RedemptionReceipt{}, fmt.Errorf("sidecar: unset %s; ambient tsnet authentication is forbidden", name)
 		}
 	}
@@ -57,13 +62,7 @@ func (e *TSNetEngine) Start(ctx context.Context, c EngineConfig, credential []by
 		return RedemptionReceipt{}, ErrEngine
 	}
 	if e.home != nil {
-		go func() {
-			select {
-			case <-ctx.Done():
-			case <-e.home.done:
-			}
-			_ = e.Close()
-		}()
+		go e.watchHomeTransport(ctx)
 	}
 	e.server.AuthKey = ""
 	// Start only launches the backend. Joining can legitimately pass through
@@ -78,11 +77,20 @@ func (e *TSNetEngine) Start(ctx context.Context, c EngineConfig, credential []by
 	if c.Profile == LinuxIdentityProfile {
 		client, err := e.server.LocalClient()
 		if err != nil {
+			_ = e.Close()
 			return RedemptionReceipt{}, ErrEngine
 		}
 		e.identityClient = client
 	}
 	return RedemptionReceipt{Redeemed: true, Durable: true, ExpectedPeerVisible: expectedPeerVisible(c, status)}, nil
+}
+
+func (e *TSNetEngine) watchHomeTransport(ctx context.Context) {
+	select {
+	case <-ctx.Done():
+	case <-e.home.done:
+	}
+	_ = e.Close()
 }
 
 func expectedPeerVisible(c EngineConfig, status *ipnstate.Status) bool {
@@ -147,6 +155,20 @@ func clearTSNetLogSpool(stateDir string) error {
 }
 
 func (e *TSNetEngine) Listen(addr string) (net.Listener, error) {
+	e.admissionMu.Lock()
+	defer e.admissionMu.Unlock()
+	// Pinned Server.Listen can create a listener even after Server.Close.
+	// Serialize home admission with teardown rather than reopening a dead engine.
+	if e.home != nil {
+		select {
+		case <-e.home.done:
+			return nil, ErrEngine
+		default:
+		}
+		if e.closed {
+			return nil, ErrEngine
+		}
+	}
 	if e.server == nil {
 		return nil, ErrEngine
 	}
@@ -154,6 +176,9 @@ func (e *TSNetEngine) Listen(addr string) (net.Listener, error) {
 }
 func (e *TSNetEngine) Close() error {
 	e.closeOnce.Do(func() {
+		e.admissionMu.Lock()
+		defer e.admissionMu.Unlock()
+		e.closed = true
 		if e.home != nil {
 			_ = e.home.Close()
 		}

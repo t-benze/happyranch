@@ -9,6 +9,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"errors"
+	"fmt"
 	"io"
 	"math/big"
 	"net"
@@ -23,7 +24,7 @@ const homeURL = "https://control.happyranch.invalid:8443"
 const homeCAFile = "/etc/happyranch/control-ca.pem"
 const homeCADirectory = "/etc/happyranch/empty-ca-directory"
 
-var errHomeTransport = errors.New("sidecar: home transport unavailable")
+var errHomeTransport = fmt.Errorf("%w: home transport unavailable", ErrConfiguration)
 
 // HomeControlTLS binds the protected home configuration to its upstream identity.
 // The installer, not the desktop, supplies this record. Keys are never config.
@@ -218,7 +219,13 @@ func (f *homeForwarder) forward(local net.Conn) {
 		return
 	}
 	down := tls.Server(local, &tls.Config{Certificates: []tls.Certificate{f.leaf}, MinVersion: tls.VersionTLS12})
-	if down.HandshakeContext(ctx) != nil {
+	if err := down.HandshakeContext(ctx); err != nil {
+		// Pinned controlhttp races connection attempts and closes losing
+		// sockets before TLS. That caller cancellation ends only its stream;
+		// malformed TLS or an actual handshake failure seals the transport.
+		if !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, net.ErrClosed) {
+			go f.Close()
+		}
 		return
 	}
 	_ = local.SetDeadline(time.Time{})

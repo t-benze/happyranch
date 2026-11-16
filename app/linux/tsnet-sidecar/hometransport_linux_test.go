@@ -101,7 +101,7 @@ func homeFingerprint(c *x509.Certificate) string {
 }
 
 func TestHomeCAAdmission(t *testing.T) {
-	for _, scenario := range []string{"valid", "missing", "symlink", "parent-symlink", "hardlink", "write-mode", "parent-write", "extra-ca", "extra-pem", "leading-text", "fingerprint", "nonempty-dir", "dir-symlink", "dir-write", "expired-ca", "not-ca", "oversize"} {
+	for _, scenario := range []string{"valid", "missing", "symlink", "parent-symlink", "hardlink", "write-mode", "world-readable", "private-mode", "parent-write", "extra-ca", "extra-pem", "leading-text", "fingerprint", "nonempty-dir", "dir-symlink", "dir-write", "dir-private-mode", "expired-ca", "not-ca", "oversize"} {
 		t.Run(scenario, func(t *testing.T) {
 			dir := t.TempDir()
 			if err := os.Chmod(dir, 0o700); err != nil {
@@ -160,6 +160,14 @@ func TestHomeCAAdmission(t *testing.T) {
 				if err := os.Chmod(bundle, 0o660); err != nil {
 					t.Fatal(err)
 				}
+			case "world-readable":
+				if err := os.Chmod(bundle, 0o644); err != nil {
+					t.Fatal(err)
+				}
+			case "private-mode":
+				if err := os.Chmod(bundle, 0o600); err != nil {
+					t.Fatal(err)
+				}
 			case "parent-write":
 				if err := os.Chmod(dir, 0o770); err != nil {
 					t.Fatal(err)
@@ -175,6 +183,10 @@ func TestHomeCAAdmission(t *testing.T) {
 					t.Fatal(err)
 				}
 				if err := os.Symlink(dir, empty); err != nil {
+					t.Fatal(err)
+				}
+			case "dir-private-mode":
+				if err := os.Chmod(empty, 0o700); err != nil {
 					t.Fatal(err)
 				}
 			case "dir-write":
@@ -247,7 +259,7 @@ func TestHomeTransportMatrix(t *testing.T) {
 		runHomeTransportProfile(t, profile, os.Getenv("HR_HOME_TEST_PATH"))
 		return
 	}
-	for _, profile := range []string{"valid", "public-matching", "public-wildcard", "public-unrelated", "wrong-san", "no-san", "ip-only", "forged-ca", "expired-ca", "expired-leaf", "wrong-noise", "outer-forged", "proxy-unavailable"} {
+	for _, profile := range []string{"valid", "renewed-leaf", "redirect", "public-matching", "public-wildcard", "public-unrelated", "wrong-san", "no-san", "ip-only", "forged-ca", "expired-ca", "expired-leaf", "wrong-noise", "outer-forged", "proxy-unavailable"} {
 		for _, path := range []string{"bootstrap", "derp"} {
 			if path == "derp" && (profile == "wrong-noise" || profile == "outer-forged") {
 				continue
@@ -283,6 +295,8 @@ func runHomeTransportProfile(t *testing.T, profile, path string) {
 		issuer = makeHomeCA(t, false)
 	}
 	leaf := issuer.leaf(t, profile)
+	renewed := issuer.leaf(t, "valid")
+	valid := profile == "valid" || profile == "renewed-leaf"
 	if strings.HasPrefix(profile, "public-") {
 		pool := x509.NewCertPool()
 		pool.AddCert(public.cert)
@@ -328,6 +342,10 @@ func runHomeTransportProfile(t *testing.T, profile, path string) {
 		switch r.URL.Path {
 		case "/key":
 			keyHits.Add(1)
+			if profile == "redirect" {
+				http.Redirect(w, r, "https://unrelated.invalid:8443/key", http.StatusFound)
+				return
+			}
 			_ = json.NewEncoder(w).Encode(tailcfg.OverTLSPublicKeyResponse{PublicKey: advertised})
 		case "/ts2021":
 			noiseAttempts.Add(1)
@@ -338,6 +356,10 @@ func runHomeTransportProfile(t *testing.T, profile, path string) {
 			defer conn.Close()
 			h2.ServeConn(conn, &http2.ServeConnOpts{BaseConfig: &http.Server{Handler: register}})
 		case "/derp":
+			if profile == "redirect" {
+				http.Redirect(w, r, "https://unrelated.invalid:8443/derp", http.StatusFound)
+				return
+			}
 			derpHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
@@ -347,6 +369,9 @@ func runHomeTransportProfile(t *testing.T, profile, path string) {
 	server.TLS = &tls.Config{GetCertificate: func(*tls.ClientHelloInfo) (*tls.Certificate, error) {
 		if profile == "outer-forged" && keyHits.Load() > 0 {
 			return &forged, nil
+		}
+		if profile == "renewed-leaf" && keyHits.Load() > 0 {
+			return &renewed, nil
 		}
 		return &leaf, nil
 	}}
@@ -360,7 +385,30 @@ func runHomeTransportProfile(t *testing.T, profile, path string) {
 	// Model a public-equivalent issuer in the local client pool only. The
 	// production constructor contains exactly the ephemeral issuer.
 	f.localRoots.AddCert(public.cert)
-	if err := installHomeProcess(f, netip.MustParseAddr("192.168.4.5")); err != nil {
+	trapIP := netip.AddrFrom4([4]byte{127, byte(os.Getpid() >> 16), byte(os.Getpid() >> 8), byte(os.Getpid())})
+	trapListener, err := net.Listen("tcp4", net.JoinHostPort(trapIP.String(), "8443"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var directDials atomic.Int32
+	trap := httptest.NewUnstartedServer(http.NotFoundHandler())
+	trap.Listener.Close()
+	trap.Listener = trapListener
+	trap.TLS = &tls.Config{Certificates: []tls.Certificate{leaf}}
+	trap.Config.ErrorLog = log.New(io.Discard, "", 0)
+	trap.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+		if state == http.StateNew {
+			directDials.Add(1)
+		}
+	}
+	trap.StartTLS()
+	defer trap.Close()
+	defer func() {
+		if directDials.Load() != 0 {
+			t.Errorf("direct fallback reached independent TCP decoy: %d", directDials.Load())
+		}
+	}()
+	if err := installHomeProcess(f, trapIP); err != nil {
 		t.Fatal(err)
 	}
 	if profile == "proxy-unavailable" {
@@ -377,7 +425,7 @@ func runHomeTransportProfile(t *testing.T, profile, path string) {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		_, loginErr := client.TryLogin(ctx, controlclient.LoginDefault)
 		cancel()
-		if profile == "valid" {
+		if valid {
 			if loginErr != nil || keyHits.Load() != 1 || registrations.Load() != 1 || canaries.Load() != 1 {
 				t.Fatalf("valid login err=%v key=%d registration=%d canary=%d", loginErr, keyHits.Load(), registrations.Load(), canaries.Load())
 			}
@@ -386,7 +434,7 @@ func runHomeTransportProfile(t *testing.T, profile, path string) {
 				t.Fatal("wrong Noise key never reached the Noise handshake")
 			}
 			wantKey := int32(0)
-			if profile == "wrong-noise" || profile == "outer-forged" {
+			if profile == "wrong-noise" || profile == "outer-forged" || profile == "redirect" {
 				wantKey = 1
 			}
 			if loginErr == nil || keyHits.Load() != wantKey || registrations.Load() != 0 || canaries.Load() != 0 {
@@ -397,16 +445,25 @@ func runHomeTransportProfile(t *testing.T, profile, path string) {
 		return
 	}
 
-	region := &tailcfg.DERPRegion{RegionID: 1, Nodes: []*tailcfg.DERPNode{{Name: "home", RegionID: 1, HostName: homeName, IPv4: "192.168.4.5", IPv6: "none", DERPPort: 8443, STUNPort: -1}}}
+	region := &tailcfg.DERPRegion{RegionID: 1, Nodes: []*tailcfg.DERPNode{{Name: "home", RegionID: 1, HostName: homeName, IPv4: trapIP.String(), IPv6: "none", DERPPort: 8443, STUNPort: -1}}}
 	dc := derphttp.NewRegionClient(key.NewNode(), func(string, ...any) {}, netmon.NewStatic(), func() *tailcfg.DERPRegion { return region })
 	defer dc.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	derpErr := dc.Connect(ctx)
 	cancel()
-	if (derpErr == nil) != (profile == "valid" || profile == "wrong-noise") {
+	if profile == "renewed-leaf" && derpErr == nil {
+		dc.Close()
+		keyHits.Store(1) // Switch the served leaf under the same admitted CA.
+		dc = derphttp.NewRegionClient(key.NewNode(), func(string, ...any) {}, netmon.NewStatic(), func() *tailcfg.DERPRegion { return region })
+		defer dc.Close()
+		ctx, cancel = context.WithTimeout(context.Background(), 3*time.Second)
+		derpErr = dc.Connect(ctx)
+		cancel()
+	}
+	if (derpErr == nil) != (valid || profile == "wrong-noise") {
 		t.Fatalf("DERP outcome profile=%s err=%v", profile, derpErr)
 	}
-	if profile == "valid" {
+	if valid {
 		up, _ := x509.ParseCertificate(leaf.Certificate[0])
 		local, _ := x509.ParseCertificate(f.leaf.Certificate[0])
 		_, verifyErr := local.Verify(x509.VerifyOptions{Roots: f.localRoots, DNSName: homeName})

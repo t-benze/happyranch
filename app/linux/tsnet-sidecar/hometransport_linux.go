@@ -77,7 +77,7 @@ func (p homeTrustPolicy) admit(bundle, directory, fingerprint string) (*x509.Cer
 	f := os.NewFile(uintptr(fd), name)
 	defer f.Close()
 	var before, after, named unix.Stat_t
-	if unix.Fstat(fd, &before) != nil || before.Mode&unix.S_IFMT != unix.S_IFREG || before.Nlink != 1 || before.Uid != p.uid || before.Gid != p.caGID || before.Mode&0o022 != 0 || before.Size < 1 || before.Size > 64<<10 {
+	if unix.Fstat(fd, &before) != nil || before.Mode&unix.S_IFMT != unix.S_IFREG || before.Nlink != 1 || before.Uid != p.uid || before.Gid != p.caGID || before.Mode&0o7777 != 0o640 || before.Size < 1 || before.Size > 64<<10 {
 		return nil, errHomeTransport
 	}
 	b, err := io.ReadAll(io.LimitReader(f, (64<<10)+1))
@@ -113,7 +113,7 @@ func (p homeTrustPolicy) admit(bundle, directory, fingerprint string) (*x509.Cer
 	d := os.NewFile(uintptr(dfd), dn)
 	defer d.Close()
 	var ds, dsAfter, dsNamed unix.Stat_t
-	if unix.Fstat(dfd, &ds) != nil || !p.safeDirectory(&ds) || ds.Gid != p.directoryGID {
+	if unix.Fstat(dfd, &ds) != nil || !p.safeDirectory(&ds) || ds.Mode&0o7777 != 0o755 {
 		return nil, errHomeTransport
 	}
 	entries, err := d.ReadDir(1)

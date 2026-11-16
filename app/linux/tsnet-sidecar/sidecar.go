@@ -154,6 +154,9 @@ func (s *Sidecar) Start(ctx context.Context) error {
 	}
 	if err != nil || !receipt.Redeemed || !receipt.Durable || (s.cfg.Profile == "" && !receipt.ExpectedPeerVisible) {
 		s.closeEngine()
+		if errors.Is(err, ErrConfiguration) {
+			return err
+		}
 		return ErrCredential
 	}
 	// Empty input means an already-consumed enrollment. Its marker must stay
