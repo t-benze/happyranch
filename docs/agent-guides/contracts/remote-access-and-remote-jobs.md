@@ -879,6 +879,12 @@ While managed Linux waits for initial readiness, STATUS and the journal name
 the failing gates and categories; unchanged failures are journaled only once.
 The root verifier journals only closed refusal reasons, never raw evidence or
 exception text. These startup diagnostics survive installer rollback.
+For managed Linux, the credential readiness gate also journals a closed
+`injection_not_configured`, `injection_missing`, `injection_symlink`,
+`injection_unreadable`, `injection_permissions`, `injection_empty` or
+`unavailable` reason. Unknown provider failures become `unavailable`; no raw
+exception, path or credential is logged. Credential readers, selection and
+acceptance checks remain unchanged.
 
 The root verifier reads no token. The copied `/etc/happyranch/daemon.token` and
 connector `LoadCredential` handling remain unchanged. File/PID hints alone are

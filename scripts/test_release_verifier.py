@@ -89,6 +89,44 @@ class ReleaseVerifierTests(unittest.TestCase):
         self.assertEqual(stderr.getvalue(), message)  # unchanged failures logged once
         self.assertEqual(notifications, ['STATUS=' + message] * 2)
 
+    def test_credential_refusal_diagnostics_are_closed(self):
+        from runtime.remote_access.credentials import CredentialUnavailable
+        from runtime.remote_access.readiness import ConnectorReadiness
+
+        provider = SimpleNamespace(read_bearer=lambda: None)
+        readiness = ConnectorReadiness(
+            daemon_port=None, release_verifier=rv.VerifierClient(),
+            credential_provider=provider, policy=None, configured_identity=None,
+            state_store=None,
+        )
+        cases = (
+            ('CREDENTIALS_DIRECTORY not set (not running under LoadCredential=)', 'injection_not_configured'),
+            ('daemon credential not injected', 'injection_missing'),
+            ('daemon credential must not be a symlink', 'injection_symlink'),
+            ('daemon credential unreadable', 'injection_unreadable'),
+            ('daemon credential permissions too loose', 'injection_permissions'),
+            ('daemon credential empty', 'injection_empty'),
+            ('synthetic-secret /private/path', 'unavailable'),
+        )
+        for message, reason in cases:
+            with self.subTest(reason=reason):
+                with patch.object(provider, 'read_bearer', side_effect=CredentialUnavailable(message)), \
+                        self.assertLogs('runtime.remote_access.readiness', level='WARNING') as logs:
+                    gate = readiness._gate_credential_permissions()
+                    self.assertFalse(gate.ok)
+                    self.assertEqual(gate.category, 'credential_unreadable')
+                self.assertEqual([entry.getMessage() for entry in logs.records],
+                                 ['daemon credential refused: ' + reason])
+        with patch.object(provider, 'read_bearer', side_effect=RuntimeError('synthetic-secret')), \
+                self.assertLogs('runtime.remote_access.readiness', level='WARNING') as logs:
+            self.assertFalse(readiness._gate_credential_permissions().ok)
+        self.assertEqual([entry.getMessage() for entry in logs.records],
+                         ['daemon credential refused: unavailable'])
+        readiness._release_verifier = None
+        with patch.object(provider, 'read_bearer', side_effect=CredentialUnavailable('synthetic-secret')), \
+                self.assertNoLogs('runtime.remote_access.readiness', level='WARNING'):
+            self.assertFalse(readiness._gate_credential_permissions().ok)
+
     def test_unsafe_port_files(self):
         for data in (b'', b'0', b'65536', b'-2', b'True', b' 123', b'1\n2', b'9' * 17):
             with self.subTest(data=data):

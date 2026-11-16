@@ -166,6 +166,11 @@ categories and the verifier journal's closed refusal reason. An installer
 rollback stops the units; a later `verifier_unavailable` probe alone does not
 identify the original startup failure. Unchanged waiting gates are logged once;
 raw evidence and exception text are never logged by the verifier.
+For `credential_permissions:credential_unreadable`, the connector also journals
+`daemon credential refused: <reason>` with a closed injection reason (not
+configured, missing, symlink, unreadable, permissions or empty), or `unavailable`
+for unknown failures. Inspect that reason before changing provisioning or
+service setup; credential selection and permission checks are unchanged.
 
 Verifier hardening (the separate root service only):
 

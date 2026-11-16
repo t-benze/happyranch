@@ -27,6 +27,7 @@ binds no listener.
 """
 from __future__ import annotations
 
+import logging
 import socket
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -150,9 +151,24 @@ class ConnectorReadiness:
     def _gate_credential_permissions(self) -> GateResult:
         try:
             self._credential_provider.read_bearer()
-        except CredentialUnavailable:
+        except CredentialUnavailable as exc:
+            if self._release_verifier is not None:
+                # Only these existing provider messages select a closed reason;
+                # never journal an arbitrary exception, path, or credential.
+                reasons = {
+                    'CREDENTIALS_DIRECTORY not set (not running under LoadCredential=)': 'injection_not_configured',
+                    'daemon credential not injected': 'injection_missing',
+                    'daemon credential must not be a symlink': 'injection_symlink',
+                    'daemon credential unreadable': 'injection_unreadable',
+                    'daemon credential permissions too loose': 'injection_permissions',
+                    'daemon credential empty': 'injection_empty',
+                }
+                message = exc.args[0] if len(exc.args) == 1 and isinstance(exc.args[0], str) else ''
+                logging.getLogger(__name__).warning('daemon credential refused: %s', reasons.get(message, 'unavailable'))
             return GateResult(False, "credential_unreadable", "daemon credential missing or unreadable")
         except Exception:  # noqa: BLE001 — any provider failure fails closed
+            if self._release_verifier is not None:
+                logging.getLogger(__name__).warning('daemon credential refused: unavailable')
             return GateResult(False, "credential_unreadable", "daemon credential unavailable")
         return GateResult(True, "credential_ok", "daemon credential readable with safe permissions")
 
