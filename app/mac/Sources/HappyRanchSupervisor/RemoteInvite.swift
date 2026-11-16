@@ -167,7 +167,7 @@ public struct RemoteInvite: Sendable, CustomStringConvertible, CustomDebugString
     static func homeDialIP(_ text: String) throws -> [UInt8] {
         let parts = text.split(separator: ".", omittingEmptySubsequences: false)
         let ip = parts.compactMap { UInt8($0) }
-        guard ip.count == 4, zip(parts, ip).allSatisfy({ String($0.1) == $0.0 }),
+        guard parts.count == 4, ip.count == 4, zip(parts, ip).allSatisfy({ String($0.1) == $0.0 }),
               ip[0] == 10 || (ip[0] == 172 && (16...31).contains(ip[1])) || (ip[0] == 192 && ip[1] == 168) else {
             throw RemoteInviteError.url
         }

@@ -193,7 +193,7 @@ final class RemoteInviteTests: XCTestCase {
 
     func testDialIPIsCanonicalRFC1918AndCannotSelectControlURL() throws {
         for ip in ["127.0.0.1", "100.64.0.1", "169.254.1.1", "172.15.0.1", "172.32.0.1", "8.8.8.8",
-                   "::1", "::ffff:192.168.1.40", "192.168.001.40", "192.168.1.40:8443", "192.168.1.40\n"] {
+                   "::1", "::ffff:192.168.1.40", "192.168.001.40", "192.168.1.40.", "192.168.1.40..", "192.168.1.40:8443", "192.168.1.40\n"] {
             var fields = fixture(); var trust = tls(Data(base64Encoded: Self.certificate)!)
             trust["dial_ip"] = ip; fields["control_tls"] = trust
             refusal(try encode(fields), .url, name: "non-RFC1918/canonical dial IP")
