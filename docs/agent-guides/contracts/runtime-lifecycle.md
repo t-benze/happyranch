@@ -68,6 +68,22 @@ The existing shell's `--bootstrap-install[=CASE]` observes these boundaries in a
 private fixture. This stage does not mount startup, qualify live owners, register
 definitions, publish readiness or prove launcher/listener timing.
 
+The unmounted `BootstrapSelection` is a separate preconstructor routing owner.
+It retains each read-only connection before its first PRAGMA, debits one original
+deadline (at most five seconds), reads prior evidence within one second and uses
+zero SQLite busy wait. Existing sequential prefixes, including partial storage,
+route to normal complete validation without source/integrity/inventory/backup/
+installer work. Absence grants no native or capacity qualification; a new EX
+owner must rediscover independently. Every original handle closes before a
+result escapes; failed close latches with its original handle/error and never
+retries. Failed/unfinished/malformed attempts forbid another attempt; registered
+evidence also requires present storage and the exact original DB identity.
+The shell's `--bootstrap-selection[=CASE]` observes native SQLite and original
+closure, source bytes/typed inventory, absence/presence, prior-phase latches,
+SH-to-EX rediscovery, zero busy wait/deadline and backend/TS hold-reason parity.
+Ordinary complete validation, original-owner qualification, actual writable
+rehearsal, supervised installation and startup/listener acceptance remain required.
+
 > Moved verbatim from the repository-root `AGENTS.md` on 2026-10-30. Sections keep
 > their original relative order. Where a later section says it supersedes or
 > extends an earlier one, the later section controls; sections marked

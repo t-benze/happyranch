@@ -18,7 +18,9 @@ from runtime.daemon.org_integrity_monitor import latest_report, runtime_key
 
 SetupState = Literal['not_installed', 'installed_unverified', 'installed_verified', 'unknown']
 SetupReason = Literal['evidence_unavailable', 'registered', 'not_installed', 'install_incomplete',
-                      'commit_uncertain', 'installation_unverified']
+                      'commit_uncertain', 'installation_unverified', 'default_load_budget_exceeded',
+                      'default_load_qualification_unavailable', 'writer_exclusion_unproven',
+                      'startup_upgrade_budget_unavailable']
 
 
 class Closed(BaseModel):
@@ -98,7 +100,7 @@ def _names(parent: int, limit: int, deadline: float) -> list[str]:
     return sorted(result)
 
 
-def _attempt(home: Path, runtime_root: Path, key: str, slug: str, deadline: float) -> dict:
+def _attempt_record(home: Path, runtime_root: Path, key: str, slug: str, deadline: float) -> dict:
     """Bounded complete namespace/chain read; missing evidence proves no state.
 
     A4 owns publication. Unrecognized or unfinished evidence stays unknown.
@@ -189,7 +191,12 @@ def _attempt(home: Path, runtime_root: Path, key: str, slug: str, deadline: floa
     # timestamps alone do not select an authoritative attempt.
     if len(outcomes) != 1:
         raise ValueError('attempt_selection_unavailable')
-    return {key: outcomes[0][key] for key in ('state', 'reason', 'attempt_time', 'backup_path')}
+    return outcomes[0]
+
+
+def _attempt(home: Path, runtime_root: Path, key: str, slug: str, deadline: float) -> dict:
+    value = _attempt_record(home, runtime_root, key, slug, deadline)
+    return {field: value[field] for field in ('state', 'reason', 'attempt_time', 'backup_path')}
 
 
 def read_setup_status(home: Path, runtime_root: Path, slug: str) -> WorkflowSetupStatus:

@@ -39,6 +39,18 @@ before not_installed; COMMIT/rollback/close uncertainty never grants fallback or
 retry. Registration, original-owner qualification, supervision and startup mount
 remain incomplete. See the [writer boundary](../superpowers/specs/2026-11-14-automatic-workflow-setup.md#a4-original-writer-and-independent-reopen-checkpoint).
 
+The unmounted `BootstrapSelection` supplies the preconstructor routing stage.
+Under the original SH (or later EX) it reads bounded prior attempt evidence and
+opens SQLite read-only/query-only with zero busy waiting. Any reserved sequential
+object routes to ordinary complete validation, without installer, backup, full
+integrity or inventory work. An absent result grants no installation authority;
+the coordinator must rediscover under EX and qualify original owners. Failed,
+unfinished or malformed attempt evidence latches before SQL. Registered evidence
+requires present storage and the exact original path/device/inode. Results escape
+only after positive original handle closure. The four A4 hold reasons now have
+backend/TypeScript parity; existing status rendering is unchanged. This stage
+still has no automatic startup caller. See the [selection boundary](../superpowers/specs/2026-11-14-automatic-workflow-setup.md#a4-read-only-startup-selection-checkpoint).
+
 POST `/orgs` now creates J + Coding + sequential storage and ownership-2 through
 a distinct owner after exclusive skeleton creation and exclusive DB-file
 creation. It retains A1's pre-open org-access fence, Default human-managed team

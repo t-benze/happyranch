@@ -318,6 +318,145 @@ def _companions(path: Path) -> tuple:
     return tuple(result)
 
 
+class BootstrapSelection:
+    """Bounded RO routing before construction, under the caller's original fence.
+
+    'present' only routes to normal complete validation; partial reserved objects
+    never authorize repair or installation. 'absent' grants no source/native
+    qualification. The coordinator must close SH, acquire EX, and rediscover
+    everything with a new owner before considering any absent-org effects.
+    Neither result replaces ordinary parts 2-7 or the actual writable rehearsal.
+    """
+
+    def __init__(self, *, home: Path, fence: OrgAccessFence, deadline: float) -> None:
+        if type(deadline) not in (int, float) or not math.isfinite(deadline):
+            raise BootstrapEvidenceError('workflow_setup_owner_invalid')
+        self.home, self.fence = Path(home), fence
+        self.deadline = min(deadline, time.monotonic()+5)
+        self.path = fence.root / 'happyranch.db'
+        self.connections: list[dict] = []
+        self.descriptors: list[dict] = []
+        self.source_identity: tuple | None = None
+        self.attempt: dict | None = None
+        self.result: str | None = None
+        self.started = self.failed = self.closed = False
+        self.primary: BaseException | None = None
+        self.close_error: BaseException | None = None
+
+    def _check(self) -> None:
+        self.fence.assert_held()
+        if time.monotonic() >= self.deadline:
+            raise BootstrapEvidenceError('workflow_setup_selection_deadline')
+
+    def _prior(self) -> dict | None:
+        from runtime.daemon.workflow_setup_status import _attempt_record
+        self._check()
+        evidence_deadline = min(self.deadline, time.monotonic()+1)
+        home = _directory(self.home, self.descriptors)
+        _close_descriptor(home)
+        runtime_root = self.fence.root.parent.parent
+        key = hashlib.sha256(str(runtime_root).encode('utf8')).hexdigest()
+        namespace = self.home / 'backups/workflow-sequential' / key / self.fence.root.name
+        try:
+            parent = _directory(namespace, self.descriptors)
+        except FileNotFoundError:
+            return None
+        try:
+            _private_directory(parent['fd'])
+            names = _names(parent['fd'], 64, evidence_deadline)
+            if not names:
+                return None
+            value = _attempt_record(self.home, runtime_root, key, self.fence.root.name,
+                                    evidence_deadline)
+            if (value['state'], value['reason'], value['phase']) != (
+                    'installed_verified', 'registered', 'registered'):
+                raise BootstrapEvidenceError('workflow_setup_attempt_latched')
+            return value
+        except (OSError, ValueError, TimeoutError, TypeError, KeyError, RecursionError) as exc:
+            raise BootstrapEvidenceError('workflow_setup_attempt_latched') from exc
+        finally:
+            _close_descriptor(parent)
+
+    def read(self) -> str:
+        """No constructor, full source/integrity/inventory, backup or installer.
+
+        Retain every original handle before PRAGMA/identity/evidence work. A
+        result escapes only after positive closure; unknown close never retries.
+        Prior failures (even positively not_installed) forbid another attempt.
+        """
+        from runtime.infrastructure.workflow_schema_load import sequential_storage_present
+        from runtime.workflows.sequential_history import _ReadBudget
+        if self.started or self.failed or self.closed:
+            raise BootstrapEvidenceError('workflow_setup_selection_latched')
+        self.started = True
+        try:
+            self._check()
+            self.attempt = self._prior()
+            parent = _directory(self.path.parent, self.descriptors)
+            _companions(self.path)
+            before = _file(self.path)
+            conn = sqlite3.connect(self.path.as_uri()+'?mode=ro', uri=True, timeout=0)
+            self.connections.append(dict(connection=conn, attempted=False, closed=False))
+            conn.execute('PRAGMA query_only=ON')
+            conn.row_factory = sqlite3.Row
+            self.source_identity = _coding_org_identity(conn, expected_org_slug=self.fence.root.name,
+                                                        expected_path=str(self.path))
+            conn.execute('BEGIN')
+            budget = _ReadBudget(deadline=self.deadline)
+            present = sequential_storage_present(conn, budget=budget)
+            budget.check()
+            self._check()
+            if _file(self.path) != before or _coding_org_identity(conn,
+                    expected_org_slug=self.fence.root.name, expected_path=str(self.path)) != self.source_identity:
+                raise BootstrapEvidenceError('workflow_setup_source_changed')
+            if self.attempt is not None:
+                identity = self.attempt['db_identity']
+                if not present or (identity['path'], identity['device'], identity['inode']) != self.source_identity[:3]:
+                    raise BootstrapEvidenceError('workflow_setup_attempt_latched')
+            _close_descriptor(parent)
+            self.close()
+            self._check()
+            self.result = 'present' if present else 'absent'
+            return self.result
+        except BaseException as exc:
+            self.failed, self.primary = True, exc
+            try:
+                self.close()
+            except BaseException as close_error:
+                self.close_error = close_error
+            raise
+
+    def close(self) -> None:
+        errors = []
+        for record in reversed(self.connections):
+            if record['attempted']:
+                if not record['closed']:
+                    errors.append(record['error'])
+                continue
+            record['attempted'] = True
+            try:
+                record['connection'].close()
+            except BaseException as exc:
+                record['error'] = exc
+                errors.append(exc)
+            else:
+                record['closed'] = True
+        for record in reversed(self.descriptors):
+            if record['attempted']:
+                if not record['closed']:
+                    errors.append(record['error'])
+                continue
+            try:
+                _close_descriptor(record)
+            except BaseException as exc:
+                errors.append(exc)
+        if errors:
+            self.failed = True
+            self.close_error = errors[0]
+            raise BootstrapEvidenceError('workflow_setup_selection_close_unknown') from errors[0]
+        self.closed = True
+
+
 class BootstrapSource:
     """Original read snapshot and independent backup, before source effects.
 

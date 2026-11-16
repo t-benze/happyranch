@@ -12,7 +12,7 @@ export interface WorkflowSetupStatus {
   format: 'workflow-setup-status@1';
   org_slug: string;
   state: 'not_installed' | 'installed_unverified' | 'installed_verified' | 'unknown';
-  reason: 'evidence_unavailable' | 'registered' | 'not_installed' | 'install_incomplete' | 'commit_uncertain' | 'installation_unverified';
+  reason: 'evidence_unavailable' | 'registered' | 'not_installed' | 'install_incomplete' | 'commit_uncertain' | 'installation_unverified' | 'default_load_budget_exceeded' | 'default_load_qualification_unavailable' | 'writer_exclusion_unproven' | 'startup_upgrade_budget_unavailable';
   attempt_time: string | null;
   backup_path: string | null;
   integrity_report: {

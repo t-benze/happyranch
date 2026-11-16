@@ -72,6 +72,15 @@ if len(sys.argv) == 2 and sys.argv[1].startswith('--bootstrap-rehearsal='):
                              'metadata_changed', 'backup_changed', 'space', 'scratch_location', 'deadline', 'load_init', 'authority', 'close')
     sys.argv[1:] = ['--bootstrap-rehearsal']
 
+selection_case = None
+if len(sys.argv) == 2 and sys.argv[1].startswith('--bootstrap-selection='):
+    selection_case = sys.argv[1].split('=', 1)[1]
+    assert selection_case in ('absent', 'present', 'partial', 'empty_namespace', 'registered', 'registered_absent',
+                              'registered_identity', 'intent', 'backup_verified', 'pre_commit', 'committed',
+                              'verified', 'not_installed', 'malformed', 'namespace_alias', 'source_init',
+                              'connection_close', 'descriptor_close', 'busy', 'deadline', 'ex_reselect', 'reason_parity')
+    sys.argv[1:] = ['--bootstrap-selection']
+
 install_case = None
 if len(sys.argv) == 2 and sys.argv[1].startswith('--bootstrap-install='):
     install_case = sys.argv[1].split('=', 1)[1]
@@ -93,7 +102,7 @@ if len(sys.argv) == 2 and sys.argv[1].startswith('--retained-corruption-phase=')
         uncommitted='between uncommitted')[sys.argv[1].split('=', 1)[1]]
     sys.argv[1:] = ['--retained-corruption']
 
-assert sys.argv[1:] in ([], ['--bootstrap-install'], ['--bootstrap-rehearsal'], ['--bootstrap-backup'], ['--bootstrap-journal'], ['--bootstrap-precommit'], ['--startup-isolation'], ['--fresh-catalog'], ['--org-access-fence'], ['--org-access-openers'], ['--org-access-native'], ['--org-access-guardian'], ['--org-access-profile'], ['--setup-status'], ['--daily-integrity'], ['--install-integrity'], ['--bounded-acquisition'], ['--trace-custody'], ['--sequential-reuse'], ['--sequential-load'], ['--sequential-freshness'], ['--sequential-faults'], ['--sequential-sql-exhaustion'], ['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--coding-authority-corruption'], ['--document-native-corruption'], ['--author-handoff-corruption'], ['--document-revision-corruption'], ['--coding-history-corruption'], ['--physical-corruption'], ['--sequential-uncommitted'], ['--i2-cutover'], ['--i2-native']), 'unknown schema-load selection'
+assert sys.argv[1:] in ([], ['--bootstrap-selection'], ['--bootstrap-install'], ['--bootstrap-rehearsal'], ['--bootstrap-backup'], ['--bootstrap-journal'], ['--bootstrap-precommit'], ['--startup-isolation'], ['--fresh-catalog'], ['--org-access-fence'], ['--org-access-openers'], ['--org-access-native'], ['--org-access-guardian'], ['--org-access-profile'], ['--setup-status'], ['--daily-integrity'], ['--install-integrity'], ['--bounded-acquisition'], ['--trace-custody'], ['--sequential-reuse'], ['--sequential-load'], ['--sequential-freshness'], ['--sequential-faults'], ['--sequential-sql-exhaustion'], ['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--coding-authority-corruption'], ['--document-native-corruption'], ['--author-handoff-corruption'], ['--document-revision-corruption'], ['--coding-history-corruption'], ['--physical-corruption'], ['--sequential-uncommitted'], ['--i2-cutover'], ['--i2-native']), 'unknown schema-load selection'
 
 
 print('SCHEMA_RUNTIME', json.dumps(dict(python=sys.version, executable=sys.executable, sqlite=sqlite3.sqlite_version,
@@ -2168,6 +2177,226 @@ runpy.run_module('runtime.daemon',run_name='__main__')
             else:
                 raise AssertionError('hardlinked report accepted')
         daily_case('PASS')
+    if sys.argv[1:]:
+        raise SystemExit(0)
+
+# A4-S routes before constructor/source effects; presence alone is not validity.
+# Native phase fixtures use the real publisher. They prove only routing evidence,
+# not source installation/native closure, which remain the full coordinator's duty.
+if sys.argv[1:] in ([], ['--bootstrap-selection']):
+    from runtime.infrastructure import workflow_sequential_bootstrap as bootstrap
+    from runtime.infrastructure import workflow_schema as schema
+    from runtime.infrastructure.org_access_fence import OrgAccessFence
+    from runtime.daemon import workflow_setup_status as setup_status
+    from typing import get_args
+    import re
+
+    selection_cases = ('absent', 'present', 'partial', 'empty_namespace', 'registered', 'registered_absent',
+                       'registered_identity', 'intent', 'backup_verified', 'pre_commit', 'committed',
+                       'verified', 'not_installed', 'malformed', 'namespace_alias', 'source_init',
+                       'connection_close', 'descriptor_close', 'busy', 'deadline', 'ex_reselect', 'reason_parity')
+    for fault in selection_cases:
+        if selection_case is not None and selection_case != fault:
+            continue
+        if fault == 'reason_parity':
+            backend = set(get_args(setup_status.SetupReason))
+            codes = {'default_load_budget_exceeded', 'default_load_qualification_unavailable',
+                     'writer_exclusion_unproven', 'startup_upgrade_budget_unavailable'}
+            text = Path('web/src/lib/api/types.ts').read_text().split('export interface WorkflowSetupStatus {', 1)[1]
+            mirror = set(re.findall("'([^']+)'", text.split('  reason:', 1)[1].split(';', 1)[0]))
+            assert codes <= backend and mirror == backend, 'A4-S closed hold-reason parity'
+            for code in codes:
+                assert setup_status.WorkflowSetupStatus(org_slug='scratch', reason=code).reason == code
+            print('PASS A4-S read-only startup routing/closure:', fault, flush=True)
+            continue
+        with tempfile.TemporaryDirectory(prefix='a4-selection-') as scratch:
+            private = Path(scratch).resolve()
+            home, runtime = private/'home', private/'runtime'
+            home.mkdir(mode=0o700)
+            root = runtime/'orgs/scratch'
+            root.mkdir(parents=True)
+            path = root/'happyranch.db'
+            installed_fixture = fault in ('present', 'registered', 'registered_identity')
+            db = schema.initialize_fresh_org_database(path, expected_org_slug='scratch') if installed_fixture else Database(path)
+            try:
+                if not installed_fixture:
+                    schema.initialize_complete_org_schema(db, expected_org_slug='scratch', layout='J')
+                if fault == 'partial':
+                    db._conn.execute('CREATE TABLE workflow_seq_partial(v TEXT)')
+                    db._conn.commit()
+                identity = schema._coding_org_identity(db._conn, expected_org_slug='scratch', expected_path=str(path))
+                db._conn.execute('BEGIN')
+                original_inventory = schema.sequential_storage_inventory(db._conn)
+                db._conn.rollback()
+            finally:
+                db.close()
+            with patch.dict(os.environ, {'HAPPYRANCH_DAEMON_HOME': str(home)}):
+                phases = ('intent', 'backup_verified', 'pre_commit', 'committed', 'verified', 'registered')
+                namespace = home/'backups/workflow-sequential'/hashlib.sha256(str(runtime).encode()).hexdigest()/'scratch'
+                if fault in phases or fault in ('not_installed', 'registered_absent', 'registered_identity'):
+                    ex = OrgAccessFence.acquire(root, exclusive=True)
+                    original = json.dumps(original_inventory, sort_keys=True, separators=(',', ':'), ensure_ascii=False).encode()
+                    recorded_identity = identity if fault != 'registered_identity' else (*identity[:2], identity[2]+1, identity[3])
+                    attempt = bootstrap.BootstrapAttempt(home=home, runtime_root=runtime, slug='scratch', fence=ex,
+                        source_identity=recorded_identity, source_inventory_digest=hashlib.sha256(original).hexdigest(),
+                        deadline=time.monotonic()+119)
+                    try:
+                        attempt.begin()
+                        if fault == 'not_installed':
+                            attempt.publish('not_installed')
+                        else:
+                            last = 'registered' if fault in ('registered_absent', 'registered_identity') else fault
+                            if last != 'intent':
+                                # The independent status reader validates chain/file shape;
+                                # it does not read/authorize using this synthetic backup.
+                                attempt.backup_path.write_bytes(b'synthetic phase-fixture only')
+                                attempt.backup_path.chmod(0o600)
+                                digest = hashlib.sha256(attempt.backup_path.read_bytes()).hexdigest()
+                                for phase in phases[1:phases.index(last)+1]:
+                                    attempt.publish(phase, backup_sha256=digest if phase == 'backup_verified' else None)
+                    finally:
+                        attempt.close()
+                        ex.close()
+                elif fault in ('empty_namespace', 'malformed'):
+                    namespace.mkdir(mode=0o700, parents=True)
+                    if fault == 'malformed':
+                        bad = namespace/'bad'
+                        bad.mkdir(mode=0o700)
+                        (bad/'00.json').write_bytes(b'{}')
+                        (bad/'00.json').chmod(0o600)
+                elif fault == 'namespace_alias':
+                    other = private/'aliased-backups'
+                    other.mkdir(mode=0o700)
+                    (home/'backups').symlink_to(other, target_is_directory=True)
+                locker = None
+                if fault == 'busy':
+                    locker = sqlite3.connect(path)
+                    locker.execute('PRAGMA journal_mode=DELETE')
+                    locker.execute('BEGIN EXCLUSIVE')
+                source_bytes = path.read_bytes()
+                fence = OrgAccessFence.acquire(root)
+                selected = bootstrap.BootstrapSelection(home=home, fence=fence,
+                    deadline=time.monotonic()+(-1 if fault == 'deadline' else 4))
+                real_connect, real_close_fd = sqlite3.connect, os.close
+                native, events, injected, close_calls, descriptor_calls, physical, timeouts = [], [], [], [], [], [], []
+                root_inode = root.stat().st_ino
+                class ObservedSelection(sqlite3.Connection):
+                    def execute(self, sql, *args, **kwargs):
+                        events.append(sql.split()[0].upper())
+                        if fault == 'source_init' and sql == 'PRAGMA query_only=ON':
+                            injected.append('source_init')
+                            raise sqlite3.OperationalError('synthetic selector initialization')
+                        return super().execute(sql, *args, **kwargs)
+                    def close(self):
+                        close_calls.append(self)
+                        if fault == 'connection_close' and not injected:
+                            injected.append('connection_close')
+                            raise OSError('synthetic original selector close')
+                        return super().close()
+                def connected(target, *args, **kwargs):
+                    assert str(target) == path.as_uri()+'?mode=ro', 'A4-S non-RO selector'
+                    timeouts.append(kwargs.get('timeout'))
+                    kwargs['factory'] = ObservedSelection
+                    connection = real_connect(target, *args, **kwargs)
+                    native.append(connection)
+                    def traced(sql):
+                        if re.search(r'(?i)\b(integrity_check|quick_check|checkpoint)\b', sql):
+                            physical.append(sql.split()[0])
+                    connection.set_trace_callback(traced)
+                    return connection
+                def closed_fd(fd):
+                    if fault == 'descriptor_close' and selected.connections and os.fstat(fd).st_ino == root_inode:
+                        descriptor_calls.append(fd)
+                        if not injected:
+                            injected.append('descriptor_close')
+                            raise OSError('synthetic original selector descriptor close')
+                    return real_close_fd(fd)
+                started, error, result = time.monotonic(), None, None
+                try:
+                    with ExitStack() as stack:
+                        stack.enter_context(patch.object(bootstrap.sqlite3, 'connect', side_effect=connected))
+                        stack.enter_context(patch.object(bootstrap.os, 'close', side_effect=closed_fd))
+                        forbidden = []
+                        for owner, symbol in ((bootstrap, 'require_install_integrity'), (bootstrap, 'inspect_sequential_install'),
+                                (bootstrap, 'sequential_storage_inventory'), (bootstrap.BootstrapAttempt, 'begin'),
+                                (bootstrap.BootstrapSource, 'open'), (bootstrap.BootstrapSource, 'backup'),
+                                (bootstrap.BootstrapRehearsal, 'run'), (bootstrap.BootstrapInstall, 'run'),
+                                (Database, '__init__')):
+                            forbidden.append(stack.enter_context(patch.object(owner, symbol,
+                                side_effect=AssertionError('A4-S installer/source work in selector'))))
+                        try:
+                            result = selected.read()
+                        except BaseException as exc:
+                            error = exc
+                        assert all(call.call_count == 0 for call in forbidden), 'A4-S installer/source work in selector'
+                    assert not physical, 'A4-S physical/install work in selector'
+                    passing = fault in ('absent', 'present', 'partial', 'empty_namespace', 'registered', 'ex_reselect')
+                    if passing:
+                        expected = 'present' if fault in ('present', 'partial', 'registered') else 'absent'
+                        assert error is None and result == expected and selected.result == expected, 'A4-S wrong presence routing'
+                        assert selected.closed and not selected.failed, 'A4-S success before positive closure'
+                    else:
+                        assert error is not None and result is None and selected.result is None, 'A4-S unproven selector escaped'
+                    assert len(native) == len(selected.connections), 'A4-S lost partially constructed selector connection'
+                    assert all(record['attempted'] for record in selected.connections+selected.descriptors), 'A4-S lost selector handle'
+                    assert path.read_bytes() == source_bytes, 'A4-S changed original source bytes'
+                    if fault in ('intent', 'backup_verified', 'pre_commit', 'committed', 'verified', 'not_installed', 'malformed', 'namespace_alias', 'deadline'):
+                        assert not native, 'A4-S latched evidence/deadline opened source'
+                    if fault == 'source_init':
+                        assert injected == ['source_init'] and selected.closed and len(close_calls) == 1, 'A4-S original initialization closure'
+                    if fault in ('connection_close', 'descriptor_close'):
+                        assert injected == [fault] and not selected.closed and selected.close_error is not None, 'A4-S unknown closure lost'
+                        counts = len(close_calls), len(descriptor_calls)
+                        for _ in range(2):
+                            try:
+                                selected.close()
+                            except bootstrap.BootstrapEvidenceError:
+                                pass
+                            else:
+                                raise AssertionError('A4-S unknown close retried as success')
+                        assert counts == (len(close_calls), len(descriptor_calls)), 'A4-S retried original unknown close'
+                    if fault == 'busy':
+                        assert isinstance(error, sqlite3.OperationalError) and time.monotonic()-started < .5, 'A4-S busy replenished wait'
+                    assert all(timeout == 0 for timeout in timeouts), 'A4-S nonzero busy timeout'
+                    if fault == 'registered':
+                        try:
+                            public = setup_status.read_setup_status(home, runtime, 'scratch').model_dump(mode='json')
+                        except Exception as exc:
+                            raise AssertionError('A4-S independent status projection changed') from exc
+                        assert set(public) == {'format', 'org_slug', 'state', 'reason', 'attempt_time', 'backup_path',
+                            'integrity_report'} and public['state'] == 'installed_verified', 'A4-S independent status projection changed'
+                    if fault == 'ex_reselect':
+                        fence.close()
+                        fence = OrgAccessFence.acquire(root, exclusive=True)
+                        with closing(real_connect(path)) as writer:
+                            writer.execute('CREATE TABLE workflow_seq_arrival(v TEXT)')
+                            writer.commit()
+                        new = bootstrap.BootstrapSelection(home=home, fence=fence, deadline=time.monotonic()+4)
+                        assert new.read() == 'present' and new.closed, 'A4-S reused stale SH absence under EX'
+                    if fault != 'ex_reselect' and locker is None:
+                        with closing(real_connect(path)) as check:
+                            check.execute('BEGIN')
+                            assert schema.sequential_storage_inventory(check) == original_inventory, 'A4-S changed original typed inventory'
+                    before = len(native), len(events)
+                    original_error = selected.primary
+                    try:
+                        selected.read()
+                    except bootstrap.BootstrapEvidenceError:
+                        pass
+                    else:
+                        raise AssertionError('A4-S replayed selector owner')
+                    assert before == (len(native), len(events)) and selected.primary is original_error, 'A4-S replay lost original outcome'
+                    print('PASS A4-S read-only startup routing/closure:', fault, flush=True)
+                finally:
+                    # Exact disposable native objects only; no production retry.
+                    for connection in native:
+                        sqlite3.Connection.close(connection)
+                    for record in selected.descriptors:
+                        if not record['closed']:
+                            real_close_fd(record['fd'])
+                    if locker is not None:
+                        locker.close()
+                    fence.close()
     if sys.argv[1:]:
         raise SystemExit(0)
 

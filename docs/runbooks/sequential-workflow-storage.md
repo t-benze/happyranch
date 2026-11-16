@@ -145,6 +145,16 @@ This is a source stage, not an added command or live migration authorization.
 Original-owner qualification, parent supervision, registration/audit/status and
 automatic startup integration remain required. See the [writer boundary](../superpowers/specs/2026-11-14-automatic-workflow-setup.md#a4-original-writer-and-independent-reopen-checkpoint).
 
+The unmounted `BootstrapSelection` adds no command or setup action. Its bounded
+read-only routing honors prior attempt latches before SQL and closes its original
+handles before returning. Sequential objects route directly to ordinary complete
+validation without installer/backup/inventory/full-integrity work. Presence is
+not a validity claim; an absent result still requires new EX discovery and full
+original-owner qualification. A failed/uncertain attempt is never automatically
+retried, including after not_installed. Registered evidence must name the same
+present DB path/device/inode. Nothing here restores a backup or authorizes live
+maintenance; the automatic startup caller and acceptance remain incomplete.
+
 Every invocation starts with `resolve_org_database` and an immutable read-only
 SQLite connection (`mode=ro&immutable=1`, query-only, foreign keys enabled), one
 snapshot and before/after file observations. It never creates sidecars. Nonempty

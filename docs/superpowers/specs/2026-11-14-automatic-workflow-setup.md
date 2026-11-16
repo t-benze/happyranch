@@ -422,6 +422,47 @@ post-COMMIT closure/registration/audit/status and continuous all-org/listener
 acceptance remain required. No live installation, restart, deployment, Allow,
 role assignment or task execution is authorized by this source checkpoint.
 
+### A4 read-only startup selection checkpoint
+
+`BootstrapSelection` is the unmounted preconstructor routing owner under the
+caller's original SH/EX. One original at-most-five-second deadline bounds its
+operation, with one at-most-one-second complete prior-attempt acquisition and
+zero SQLite busy wait. The same independent A3 chain reader now also exposes its
+fully validated final record internally, so selection can bind registered
+evidence to the exact source path/device/inode. The existing browser projection
+remains unchanged and discloses no extra native fields.
+
+No evidence or a positively empty namespace permits schema discovery only.
+Failed, incomplete, unknown, malformed or multiple attempts latch before any org
+DB open; even a not_installed terminal is not retry authority. A registered final
+record requires reserved storage present on the exact original DB. All reserved
+prefixes (including partial/corrupt layouts) route to ordinary full validation;
+they never trigger installation, repair, backup, inventory or full integrity.
+Absence means routing only, never original-owner or size qualification. The
+coordinator must release SH, obtain EX and discover afresh before source effects.
+
+Each original raw connection is retained before its first PRAGMA, and every
+descriptor before fallible traversal/close. All must close positively before a
+result escapes. Failed close retains its error/handle, forbids reuse and never
+reattempts the original native close. No result grants attachment or fallback
+permission while custody is unknown. Native file/SQLite-path identity brackets
+schema selection; ordinary parts 2-7 still run after normal attachment.
+
+`SetupReason` and only `WorkflowSetupStatus.reason` in the TS mirror gain
+default_load_budget_exceeded, default_load_qualification_unavailable,
+writer_exclusion_unproven and startup_upgrade_budget_unavailable. This is the
+manager TASK-16625 step16 closed-set ruling; no component, locale or OpenAPI
+snapshot change is needed. Mounting visible holds remains coordinator work.
+
+The existing shell's `--bootstrap-selection[=CASE]` adds 22 routing/closure/parity
+rows. Actual native images, native initialization/lock/close faults, external
+phase-chain fixtures, exact main bytes/typed inventory, forbidden source work
+and fresh SH-to-EX observation are its oracles. Phase-chain fixtures prove routing
+only, not native closure or completed installation. No successful validator is
+stubbed and no test-only production hook, new venue or CI requirement is added.
+Automatic startup, original-owner qualification, helper supervision, registration/
+audit and continuous all-org/listener timing remain incomplete; keep A4 draft.
+
 ### A4 original writer and independent reopen checkpoint
 
 `BootstrapInstall` now composes the source writer stage but remains unmounted.
