@@ -396,8 +396,6 @@ def _state_from_payload(payload: dict[str, Any], *, legacy: bool = False) -> Tru
             raise CorruptTrustStateError(
                 "trust state current_device_id references an unknown device"
             )
-    if len(devices) > MAX_PINNED_DEVICES:
-        raise CorruptTrustStateError("trust state device limit exceeded")
     invite = _invite_from_payload(payload.get("invite_record"))
     pending = _approval_from_payload(payload.get("pending_approval"), delivery=False)
     delivery = _approval_from_payload(payload.get("delivery"), delivery=True)

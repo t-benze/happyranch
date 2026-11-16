@@ -1170,8 +1170,11 @@ credential is deliverable. The same-node handle-bound completion is one-use;
 unfinished invitation/pending/delivery authority burns on restart, and a lost
 undelivered grant requires a new invitation/approval. Completed grants survive
 restart. Unknown/missing/mistyped fields, duplicate keys, torn state and anchor
-rollback fail closed. There are at most 32 devices. Legacy anchored unpinned
-records load as re-pair-required and cannot pass pinned admission.
+rollback fail closed. Approval refuses a new managed grant when 32 pinned device
+records already exist, including revoked pins; parsing does not cap historical/DIY
+records. Legacy anchored unpinned records, including more than 32 devices, remain
+DIY-usable/revocable/removable, load as re-pair-required for managed, and cannot pass
+pinned admission or spend the pinned grant budget.
 
 Literal no-follow traversal requires a real final parent owned by the effective
 UID and tightens its mode to exactly 0700, including the shipped owned-0755

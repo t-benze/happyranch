@@ -953,10 +953,13 @@ or settings. Approval/rejection requires the exact captured (control_plane_id,
 stable_node_id) tuple and pending generation.
 
 The version-3 snapshot extends the existing snapshot/anchor/lock transaction with
-one digest-only invitation, one pending approval or unfinished delivery, and at most
-32 device records. Each new device has an internal ID, credential digest, monotonic
+one digest-only invitation and one pending approval or unfinished delivery. Approval
+limits new managed grants to 32 pinned device records (including revoked pins);
+this is not a parse-time limit on historical or DIY records. Each new managed device
+has an internal ID, credential digest, monotonic
 epoch, expiry, revoked flag and exact control-plane/StableID pin. Anchored v2
-records remain readable without inventing pins; pinned admission reports them as
+records, including more than 32 base-written DIY devices, remain readable and
+DIY-usable/revocable/removable without inventing pins; pinned admission reports them as
 re-pair-required and denies them. Missing/unknown/mistyped v3 fields, duplicate JSON
 keys, torn publication and snapshot/anchor rollback refuse. Literal no-follow
 parents, bounded regular owner-only single-link files and descriptor-relative

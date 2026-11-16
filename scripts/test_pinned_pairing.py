@@ -39,7 +39,6 @@ def test_owned_legacy_parent_is_tightened(tmp_path: Path, mode: int) -> None:
     assert store_at(path).load().connector_identity == IDENTITY
     assert parent.stat().st_mode & 0o7777 == 0o700
 
-
     # Compatibility tightening cannot repair an alias or an unsafe leaf file.
     alias = tmp_path / "alias"
     alias.symlink_to(parent, target_is_directory=True)
@@ -114,6 +113,80 @@ def test_legacy_unpinned_loads_for_repair(tmp_path: Path) -> None:
     device = store_at(path).load().devices["old"]
     assert device.re_pair_required
     assert device.stable_node_id is None
+
+
+def test_base_written_33_diy_devices_remain_usable(tmp_path: Path) -> None:
+    import io
+    import subprocess
+    import sys
+    import tarfile
+    from runtime.remote_access.identity import DeviceProof
+    from runtime.remote_access.pairing import PairingManager
+    from runtime.remote_access.state_store import StateStoreError
+
+    # Use the actual pre-slice production writer, not a JSON migration imitation.
+    base = "768163ad32e1442f79589ebb7f0dd494d64501c9"
+    source = tmp_path / "base-source"
+    source.mkdir()
+    archive = subprocess.run(
+        ["git", "archive", base, "runtime/__init__.py", "runtime/remote_access"],
+        check=True, capture_output=True,
+    )
+    with tarfile.open(fileobj=io.BytesIO(archive.stdout)) as bundle:
+        bundle.extractall(source, filter="data")
+    path = tmp_path / "state" / "trust.json"
+    writer = '''
+from datetime import datetime, timezone
+from pathlib import Path
+import sys
+from unittest.mock import patch
+from runtime.remote_access.authorization import TrustState
+from runtime.remote_access.identity import ConnectorIdentity
+from runtime.remote_access.pairing import PairingManager
+from runtime.remote_access.state_store import AtomicFileTrustStateStore
+now = datetime(2026, 11, 16, tzinfo=timezone.utc)
+identity = ConnectorIdentity(tenant_id="tenant", home_id="home", connector_id="connector")
+store = AtomicFileTrustStateStore(Path(sys.argv[1]), TrustState(identity, 0, 0))
+manager = PairingManager(state_store=store, identity=identity, now_fn=lambda: now)
+with patch("runtime.remote_access.pairing.generate_device_credential",
+           side_effect=[f"hrpair_{i:032x}" for i in range(33)]):
+    for i in range(33):
+        issued = manager.issue_pairing_code(f"legacy-{i}")
+        assert manager.redeem_pairing(issued.code) is not None
+assert len(store.load().devices) == 33
+'''
+    written = subprocess.run([sys.executable, "-c", writer, str(path)], cwd=source, capture_output=True)
+    assert written.returncode == 0, "actual base PairingManager fixture writer failed"
+    assert json.loads(path.read_bytes())["version"] == 2
+    try:
+        state = store_at(path).load()
+    except StateStoreError:
+        state = None
+    assert state is not None, "33 base-written DIY devices must remain loadable"
+    assert len(state.devices) == 33
+    diy = PairingManager(state_store=store_at(path), identity=IDENTITY, now_fn=lambda: NOW)
+    managed = manager_at(path)
+    assert managed.status()["re_pair_required_count"] == 33
+    for index in range(33):
+        credential = f"hrpair_{index:032x}"
+        device = diy.find_device_by_credential(credential)
+        assert device is not None and device.device_id == f"legacy-{index}"
+        proof = DeviceProof(device_id=device.device_id, tenant_id="tenant", home_id="home",
+                            nonce="synthetic", issued_at=NOW, expires_at=NOW + timedelta(minutes=1))
+        assert diy.credential_verifier().verify(proof, IDENTITY, NOW).ok
+        assert not managed.admit(credential, f"node-{index}", "control", NOW).ok
+    # Historical unpinned records do not spend the managed grant budget.
+    device_id, credential = grant_for(managed)
+    assert managed.admit(credential, "node-a", "control", NOW).ok
+    assert len(store_at(path).load().devices) == 34
+    assert diy.revoke("legacy-0").complete
+    assert diy.find_device_by_credential(f"hrpair_{0:032x}") is None
+    diy.remove_device("legacy-1")
+    state = store_at(path).load()
+    assert state.devices["legacy-0"].revoked
+    assert "legacy-1" not in state.devices
+    assert diy.find_device_by_credential(f"hrpair_{2:032x}") is not None
+    assert managed.status()["re_pair_required_count"] == 32
 
 
 def manager_at(path: Path, registry=None, now_fn=None):
@@ -301,7 +374,12 @@ def test_redemption_denial_never_restores_invite(tmp_path: Path, case: str) -> N
     node = "" if case == "bad-identity" else "node-a"
     if case == "corrupt":
         path.write_bytes(b'{"torn":')
-    assert manager.redeem("synthetic-invite", node, "control", now) is None
+    if case == "capacity":
+        pending = manager.redeem("synthetic-invite", node, "control", now)
+        assert pending is not None, "capacity is enforced at managed approval"
+        assert manager.approve_pending(pending.generation, ("control", node)) is None
+    else:
+        assert manager.redeem("synthetic-invite", node, "control", now) is None
     assert manager.redeem("synthetic-invite", "node-a", "control", now) is None
     if case == "corrupt":
         with pytest.raises(CorruptTrustStateError):
@@ -361,7 +439,7 @@ def test_revoke_closes_only_device_and_persists_first(tmp_path: Path, fails: boo
 
 
 @pytest.mark.parametrize("case", ["pending-missing", "pending-unknown", "pin-missing", "pin-half", "device-limit", "generation-rollback", "pending-list-null", "identity-invalid", "pinned-digest-null"])
-def test_nested_state_shape_refuses(tmp_path: Path, case: str) -> None:
+def test_nested_state_shape_and_grant_capacity(tmp_path: Path, case: str) -> None:
     path = tmp_path / "trust.json"
     manager = manager_at(path)
     pending = pending_for(manager)
@@ -398,6 +476,18 @@ def test_nested_state_shape_refuses(tmp_path: Path, case: str) -> None:
                     copied["device_id"] = f"synthetic-{index}"
                     devices[copied["device_id"]] = copied
     rewrite_payload(path, change)
+    if case == "device-limit":
+        from runtime.remote_access.state_store import StateStoreError
+        try:
+            state = store_at(path).load()
+        except StateStoreError:
+            state = None
+        assert state is not None, "record count must not make a snapshot corrupt"
+        assert len(state.devices) == 33
+        pending = pending_for(manager, "overflow", "synthetic-overflow")
+        assert manager.approve_pending(pending.generation, ("control", "overflow")) is None
+        assert len(store_at(path).load().devices) == 33
+        return
     with pytest.raises(CorruptTrustStateError):
         store_at(path).load()
 

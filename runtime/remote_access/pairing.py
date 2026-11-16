@@ -582,8 +582,7 @@ class PinnedPairingManager:
                     tx.commit()
                     return None
                 if (not isinstance(now, datetime) or now.tzinfo is None or now >= invite.expires_at
-                        or state.pending_approval is not None or state.delivery is not None
-                        or len(state.devices) >= MAX_PINNED_DEVICES):
+                        or state.pending_approval is not None or state.delivery is not None):
                     tx.commit()
                     return None
                 handle = secrets.token_hex(32)
@@ -613,7 +612,8 @@ class PinnedPairingManager:
                 tx.abort()
                 return None
             now = self._now_fn()
-            if now >= pending.expires_at or len(state.devices) >= MAX_PINNED_DEVICES:
+            pinned_count = sum(not device.re_pair_required for device in state.devices.values())
+            if now >= pending.expires_at or pinned_count >= MAX_PINNED_DEVICES:
                 self._burn(state)
                 tx.commit()
                 return None
