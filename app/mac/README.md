@@ -210,6 +210,55 @@ SwiftPM release dead stripping. Retained native sources can inspect ABI exports;
 uses basic bundle checks. Native tests remain separate from automated lint/static
 merge checks.
 
+## THR-327 slice 5e: strict home-only transport (not wired yet)
+
+`tsnet-bridge/home_transport.go` implements section 6 B as a separately owned
+transport. `newHomeTransport` validates exactly one current CA DER/fingerprint
+and an RFC1918 IPv4, binds its own `127.0.0.1:0` listener, and creates an
+in-memory ephemeral CA and fixed `control.happyranch.invalid` DNS leaf. `Addr`
+exposes the owned proxy address; `LocalCA` returns only public issuer DER for
+5f's isolated fallback pool. The caller must call `Close`; it cancels setup,
+closes the listener and both sides of all owned streams, then waits for handlers.
+Keys are never serialized, installed or logged.
+
+Only CONNECT for that exact name on 443 or 8443 is admitted; both use the same
+validated literal `dial_ip:8443`. Absolute HTTP (including Noise HTTP/80), other
+methods/authorities, bodies and malformed/oversize headers refuse before dialing.
+Headers are capped at 8 KiB, concurrent streams at 128 and setup at 10 seconds.
+An explicit upstream pool contains only the admitted home CA. Standard TLS
+checks the fixed DNS name, validity and server-auth purpose before CONNECT 200
+or any application byte. Then local TLS presents only the ephemeral leaf;
+the duplex relay preserves arbitrary upgrade/Noise/DERP bytes and TLS half-close.
+There is no public-root, redirect or direct retry path in this transport.
+
+This leg leaves `home_helper.go` and Swift unchanged. **The running 5b helper
+below still uses the rejected IP/fallback-root mechanism; strict home trust is
+not delivered to the app until 5f wires proxy/roots/resolver/v2 profile lifecycle.**
+The transport itself needs no root, signing, entitlement or trust-store install.
+Real pinned tsnet startup/bootstrap/Noise/DERP, v2 invite/profile/address recovery,
+Darwin unsigned/Keychain/UI and sequential-home acceptance remain separate gates.
+
+Socket tests use synthetic CAs and owned loopback upstream fakes, checking the
+constructor's fixed RFC1918:8443 target independently before test-side endpoint
+isolation. Matching-name and wildcard public-equivalent chains independently
+verify in a separate synthetic public pool and are refused by the home verifier.
+No real public-CA private keys or production test hooks are used.
+
+```sh
+cd app/mac/tsnet-bridge
+GOTOOLCHAIN=go1.23.12 CGO_ENABLED=0 GOFLAGS=-mod=readonly GOWORK=off go test -count=1 home_transport.go home_transport_test.go
+GOTOOLCHAIN=go1.23.12 CGO_ENABLED=1 GOFLAGS=-mod=readonly GOWORK=off go test -count=1 ./...
+GOTOOLCHAIN=go1.23.12 CGO_ENABLED=1 GOFLAGS=-mod=readonly GOWORK=off go vet ./...
+```
+
+The module declares Go 1.23.1; the existing documented verification pin is
+Go 1.23.12. `CGO_ENABLED=0 go test ./...` cannot compile this module because
+existing `bridge.go` C exports supply symbols used by `health.go` and the
+helper. The PR records that failed command separately; no cgo stubs were added.
+The two self-contained transport files also run directly with cgo disabled.
+Swift build/XCTest and actual unsigned Mac transport acceptance are NOT RUN on
+this Linux host. No hosted Mac/managed-m4 build is dispatched.
+
 ## THR-327 slice 5b: isolated home trust process
 
 `build-app.sh` builds `Contents/Helpers/happyranch-home-bridge` from the existing
