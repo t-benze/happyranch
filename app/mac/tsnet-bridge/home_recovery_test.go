@@ -32,7 +32,7 @@ func recoveryFixture(t *testing.T, status int) (*managedProfile, homeLaunch, *ht
 	requests := new(atomic.Int32)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests.Add(1)
-		if r.Method != "GET" || r.URL.Path != "/api/v1/health" || r.Host != cfg.Target || r.Header.Get("Authorization") != "Bearer "+recoveryCanary {
+		if r.Method != "GET" || r.URL.Path != "/api/v1/health" || r.Host != cfg.Target || r.Header.Get("X-HappyRanch-Device-Credential") != recoveryCanary || r.Header.Get("Authorization") != "" {
 			t.Error("saved-grant request escaped its fixed route, target or authorization")
 		}
 		if status == 302 {

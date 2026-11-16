@@ -37,7 +37,7 @@ func completeHomeAddressRecovery(ctx context.Context, cfg homeLaunch, node strin
 	if err != nil {
 		return errManagedState
 	}
-	req.Header.Set("Authorization", "Bearer "+r.Bearer)
+	req.Header.Set("X-HappyRanch-Device-Credential", r.Bearer)
 	response, err := client.Do(req)
 	if err != nil {
 		return errManagedState
