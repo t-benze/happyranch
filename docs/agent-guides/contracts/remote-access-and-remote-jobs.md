@@ -979,3 +979,62 @@ The legacy installer still validates legacy configs; slice 3b owns generated
 profile/unit selection and migration. No service was installed or restarted.
 CA/TLS/control/DERP trust changes belong to slice 1b. Real Headscale v0.25.1 WhoIs
 and native recovery acceptance remain M2/later-slice work.
+
+### Pinned pairing and per-device authorization (slice 2)
+
+PinnedPairingManager is the connector-owned in-process core for THR-327's new
+managed profile. Construct it once at connector startup. Its fixed helper-facing
+operations are status, issue_invite_record, approve_pending, reject_pending and
+revoke_device; helper transport/authentication is separate. Constructor configuration
+supplies the anchored store and connector identity; no operation accepts a path, URL
+or settings. Approval/rejection requires the exact captured (control_plane_id,
+stable_node_id) tuple and pending generation.
+
+The version-3 snapshot extends the existing snapshot/anchor/lock transaction with
+one digest-only invitation and one pending approval or unfinished delivery. Approval
+limits new managed grants to 32 pinned device records (including revoked pins);
+this is not a parse-time limit on historical or DIY records. Each new managed device
+has an internal ID, credential digest, monotonic
+epoch, expiry, revoked flag and exact control-plane/StableID pin. Anchored v2
+records, including more than 32 base-written DIY devices, remain readable and
+DIY-usable/revocable/removable without inventing pins; pinned admission reports them as
+re-pair-required and denies them. Missing/unknown/mistyped v3 fields, duplicate JSON
+keys, torn publication and snapshot/anchor rollback refuse. Literal no-follow
+parents, bounded regular owner-only single-link files and descriptor-relative
+atomic publication apply. The final parent must be a directory owned by the effective
+UID; its mode is tightened to exactly 0700, preserving the shipped owned-0755
+installer lifecycle. Symlinked/non-directory/foreign-owned parents refuse; existing
+unsafe snapshot, anchor and lock metadata is never repaired into acceptance.
+The local anchor cannot detect replacement of both files by a trusted store writer.
+
+Redemption consumes the invitation into the actual node's pending record in one
+transaction. It returns a private completion handle and comparison phrase, granting
+no runtime access. Approval persists the pin/digest/epoch before making a bearer
+available in connector memory. Completion consumes delivery durably and requires
+that handle and the same control-plane/node tuple; it returns the bearer once.
+Expired/failed/replayed attempts never restore invitations. A matched invite's
+digest/generation is fenced in-process before
+publication; write failure attempts a durable burn without burning a newer invite.
+If storage remains unavailable, the fence denies retries and startup burns the
+persisted unfinished invite before serving. Only fresh explicit issuance supersedes
+the fence and burns the old pending/delivery handle. Startup burns unfinished invitations, pending approval
+and delivery; undelivered devices are revoked, while completed grants survive.
+The invitation deadline is at most five minutes and also bounds approval/delivery.
+
+authorization.admit(store, credential, stable_node_id, control_plane_id, now) loads
+current anchored trust and checks digest, credential epoch, expiry, revocation,
+connector audience and exact pin. Its verdict carries device ID and epoch for stream
+registration. Identity comes only from trusted plain arguments: WhoIs StableID and
+connector-configured control-plane ID, never headers, hostname or address. Labels
+currently use bounded escaped identity text and a StableID fingerprint because this
+slice has no OS-label transport. Headscale membership grants no product authority.
+Request/WebSocket/SSE wiring remains deferred to slice 2b after PR #1572; existing
+DIY and legacy transport paths keep their versioned behavior.
+
+Attributed registrations use StreamRegistry.open with device_id and epoch.
+Per-device revocation persists invalidation before closing/acknowledging that device's
+registries, fences stale registrations and retains RevocationIncomplete on cleanup
+failure. Other devices remain open. Unattributed legacy revocation keeps its existing
+conservative closure semantics. Focused synthetic checks use the retained standalone
+script venue: uv run --frozen pytest scripts/test_pinned_pairing.py -v --tb=short.
+This slice adds no UI, helper, polkit/control socket, ingress wiring or installer.
