@@ -324,6 +324,45 @@ refusal, rollback and attempted-COMMIT uncertainty. `--bootstrap-journal` checks
 the externally consumed wire/storage contract with synthetic phase inputs and
 real private files/fsync calls; it does not prove installation, native-owner
 qualification or closure. These owners are not yet mounted in an automatic
-startup caller. Verified backup construction, writable FIRST/NEXT rehearsal,
-parent supervision, final registration/status integration and the <=10s
+startup caller. The following checkpoint implements verified-backup construction;
+writable FIRST/NEXT rehearsal, parent supervision, final registration/status
+integration and the <=10s
 all-org/listener acceptance remain required before the A4 PR becomes ready.
+
+### A4 coherent source and verified-backup checkpoint
+
+`BootstrapSource` now owns the pre-checkpoint stage under the caller's original
+EX descriptor. Effect-free construction precedes fallible opens; original native
+connections are retained before their first PRAGMA and closed once. A close
+failure retains the original cause and handle; failed owners cannot retry.
+This stage grants no original-host/producer qualification or source write.
+
+The source is a native mode=ro/query_only coherent snapshot, including committed
+WAL. It uses the original complete install reader, streaming SQL/storage-type/
+cell/rowid inventory and full source physical check. Main/WAL observations remain
+fixed; SQLite's own snapshot admission may update its SHM read marks while
+retaining its inode/type/size. A cleanly closed WAL-mode image may acquire only
+an empty WAL and a regular 32KiB SHM during that native admission. No existing
+companion may disappear or change identity. All signatures are fixed afterwards.
+Hot journals, unexplained sidecars or drift refuse without checkpoint/repair.
+
+After durable intent, the owner checks B<=32GiB and backup-volume free>=B+1GiB,
+creates an exclusive independent 0600 file and uses native online backup. Only
+the backup is normalized to DELETE journal mode, positively closed, fsynced,
+hashed and closed again before independent RO reopening. Full backup integrity
+shares the original cumulative physical ledger; complete readers and exact
+source inventory must match. A second descriptor/hash observation, positive
+closure and directory fsync precede backup_verified publication. Any failure
+retains the partial backup/attempt and refuses further work. No automatic
+restore, overwrite, unlink or retry is added.
+
+Focused `--bootstrap-backup[=CASE]` extends the existing shell fixture with actual
+committed WAL, exact typed native canaries, independent inventory mismatch,
+source/destination initialization failures, source/backup physical refusals,
+file/directory fsync failures, space/deadline refusal, original close uncertainty
+and a backup symlink. These cases observe no source COMMIT/checkpoint/mutation
+and no installed claim. This owner remains unmounted with the rest of the A4
+coordinator. Combined DB/temp/rehearsal volume reservations and writer rechecks,
+positive original-owner qualification, writable FIRST/NEXT rehearsal, parent
+supervision, final registration/status integration and whole-startup acceptance
+remain required. The offline interface and its explicit guards are unchanged.

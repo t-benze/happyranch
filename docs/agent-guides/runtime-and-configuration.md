@@ -12,6 +12,12 @@ sanitized; original exceptions remain with their owned state. This A4 custody
 checkpoint adds no automatic installer caller. See the
 [lifecycle contract](contracts/runtime-lifecycle.md#a4-startup-attachment-custody).
 
+The unmounted A4 source/backup owner now takes a coherent RO WAL snapshot and
+independently verifies an exclusive, fsynced private backup before its durable
+backup_verified event. Failure latches the original connections/attempt, with
+no source checkpoint, restore or retry. See the [current source/backup boundary](../superpowers/specs/2026-11-14-automatic-workflow-setup.md#a4-coherent-source-and-verified-backup-checkpoint);
+this checkpoint still does not invoke automatic setup at daemon startup.
+
 POST `/orgs` now creates J + Coding + sequential storage and ownership-2 through
 a distinct owner after exclusive skeleton creation and exclusive DB-file
 creation. It retains A1's pre-open org-access fence, Default human-managed team

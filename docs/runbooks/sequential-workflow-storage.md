@@ -114,6 +114,15 @@ does not select either automatically. See the [A4 checkpoint](../superpowers/spe
 for their current boundary and unimplemented startup integration. These source
 owners grant no live install, restart, restore or retry authority.
 
+The draft also contains the unmounted `BootstrapSource` pre-checkpoint owner:
+native coherent RO WAL snapshot, exact preservation inventory, exclusive native
+online backup, file/directory fsync and independent RO full-integrity/inventory/
+hash verification before backup_verified. Its failed/partial backup is retained;
+original close uncertainty never becomes retry authority. The [source/backup
+checkpoint](../superpowers/specs/2026-11-14-automatic-workflow-setup.md#a4-coherent-source-and-verified-backup-checkpoint)
+states the remaining volume, rehearsal and startup integration gates. The offline
+commands below still require their own explicit checkpointed image and guards.
+
 Every invocation starts with `resolve_org_database` and an immutable read-only
 SQLite connection (`mode=ro&immutable=1`, query-only, foreign keys enabled), one
 snapshot and before/after file observations. It never creates sidecars. Nonempty

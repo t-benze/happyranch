@@ -33,8 +33,13 @@ A4-C3 database/post-load/selector/profile failure containment with a later real
 OrgState and independent ASGI health response, including SQLite/filesystem
 profile errors and failure to acquire the profile inventory itself. Unknown
 classification never retries that failed reader. Cold/listener timing and
-backup/install acceptance remain unverified by these cases. Automatic existing-org
-backup, qualification and installation remain a separate A4 checkpoint.
+backup/install acceptance remain unverified by these cases. The unmounted
+`BootstrapSource` now retains coherent RO source and independent verified-backup
+connections before PRAGMA and attempts each original close once. Its focused
+`--bootstrap-backup` cases cover WAL/preservation/fsync/failure custody before any
+source checkpoint; they supply no native-owner qualification or installed result.
+Automatic startup integration and installation remain incomplete; see the
+[source/backup checkpoint](../../superpowers/specs/2026-11-14-automatic-workflow-setup.md#a4-coherent-source-and-verified-backup-checkpoint).
 
 > Moved verbatim from the repository-root `AGENTS.md` on 2026-10-30. Sections keep
 > their original relative order. Where a later section says it supersedes or

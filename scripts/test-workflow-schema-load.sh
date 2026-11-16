@@ -9,6 +9,7 @@ from contextvars import copy_context
 from itertools import product
 import json
 import sqlite3
+import stat
 import sys
 import logging
 import os
@@ -56,6 +57,14 @@ if len(sys.argv) == 2 and sys.argv[1].startswith('--fresh-catalog='):
     assert a2_case in ('route', 'historical', 'registration')
     sys.argv[1:] = ['--fresh-catalog']
 
+backup_case = None
+if len(sys.argv) == 2 and sys.argv[1].startswith('--bootstrap-backup='):
+    backup_case = sys.argv[1].split('=', 1)[1]
+    assert backup_case in ('none', 'wal', 'checkpointed_wal', 'source_init', 'destination_init', 'source_integrity',
+                           'backup_integrity', 'inventory', 'file_sync', 'directory_sync',
+                           'space', 'deadline', 'close', 'alias')
+    sys.argv[1:] = ['--bootstrap-backup']
+
 startup_case = None
 if len(sys.argv) == 2 and sys.argv[1].startswith('--startup-isolation='):
     startup_case = sys.argv[1].split('=', 1)[1]
@@ -69,7 +78,7 @@ if len(sys.argv) == 2 and sys.argv[1].startswith('--retained-corruption-phase=')
         uncommitted='between uncommitted')[sys.argv[1].split('=', 1)[1]]
     sys.argv[1:] = ['--retained-corruption']
 
-assert sys.argv[1:] in ([], ['--bootstrap-journal'], ['--bootstrap-precommit'], ['--startup-isolation'], ['--fresh-catalog'], ['--org-access-fence'], ['--org-access-openers'], ['--org-access-native'], ['--org-access-guardian'], ['--org-access-profile'], ['--setup-status'], ['--daily-integrity'], ['--install-integrity'], ['--bounded-acquisition'], ['--trace-custody'], ['--sequential-reuse'], ['--sequential-load'], ['--sequential-freshness'], ['--sequential-faults'], ['--sequential-sql-exhaustion'], ['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--coding-authority-corruption'], ['--document-native-corruption'], ['--author-handoff-corruption'], ['--document-revision-corruption'], ['--coding-history-corruption'], ['--physical-corruption'], ['--sequential-uncommitted'], ['--i2-cutover'], ['--i2-native']), 'unknown schema-load selection'
+assert sys.argv[1:] in ([], ['--bootstrap-backup'], ['--bootstrap-journal'], ['--bootstrap-precommit'], ['--startup-isolation'], ['--fresh-catalog'], ['--org-access-fence'], ['--org-access-openers'], ['--org-access-native'], ['--org-access-guardian'], ['--org-access-profile'], ['--setup-status'], ['--daily-integrity'], ['--install-integrity'], ['--bounded-acquisition'], ['--trace-custody'], ['--sequential-reuse'], ['--sequential-load'], ['--sequential-freshness'], ['--sequential-faults'], ['--sequential-sql-exhaustion'], ['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--coding-authority-corruption'], ['--document-native-corruption'], ['--author-handoff-corruption'], ['--document-revision-corruption'], ['--coding-history-corruption'], ['--physical-corruption'], ['--sequential-uncommitted'], ['--i2-cutover'], ['--i2-native']), 'unknown schema-load selection'
 
 
 print('SCHEMA_RUNTIME', json.dumps(dict(python=sys.version, executable=sys.executable, sqlite=sqlite3.sqlite_version,
@@ -2148,7 +2157,7 @@ runpy.run_module('runtime.daemon',run_name='__main__')
         raise SystemExit(0)
 
 # I1a extends this existing disposable venue, with no new execution lane.
-if sys.argv[1:] in ([], ['--install-integrity'], ['--bootstrap-precommit'], ['--bootstrap-journal']):
+if sys.argv[1:] in ([], ['--install-integrity'], ['--bootstrap-backup'], ['--bootstrap-precommit'], ['--bootstrap-journal']):
     from scripts import install_workflow_sequential_schema as installer
     from runtime.infrastructure import workflow_schema as schema
     from runtime.infrastructure import workflow_integrity as physical
@@ -2195,6 +2204,246 @@ if sys.argv[1:] in ([], ['--install-integrity'], ['--bootstrap-precommit'], ['--
                        ['--runtime-root', str(runtime), '--org', 'scratch',
                         '--confirm-cooperative-offline', '--backup', str(backup),
                         '--backup-sha256', backup_hash])
+
+    # A4-B owns the actual source/backup snapshot and pre-checkpoint gate.
+    # It does not claim original-host qualification or an installed outcome.
+    if sys.argv[1:] in ([], ['--bootstrap-backup']):
+        from runtime.infrastructure import workflow_sequential_bootstrap as bootstrap
+        from runtime.infrastructure.org_access_fence import OrgAccessFence
+        from runtime.daemon.workflow_setup_status import read_setup_status
+        from runtime.runtime import daemon_home
+
+        backup_cases = ('none', 'wal', 'checkpointed_wal', 'source_init', 'destination_init', 'source_integrity',
+                        'backup_integrity', 'inventory', 'file_sync', 'directory_sync',
+                        'space', 'deadline', 'close', 'alias')
+        for fault in backup_cases:
+            if backup_case is not None and fault != backup_case:
+                continue
+            with install_integrity_fixture() as fixture:
+                path, _, _, _, _, _, _ = fixture
+                native_connect = sqlite3.connect
+                keeper = native_connect(path)
+                keeper.execute('CREATE TABLE a4_native_preservation(id INTEGER PRIMARY KEY,i INTEGER,t TEXT,b BLOB,r REAL,n)')
+                keeper.execute('INSERT INTO a4_native_preservation VALUES(77,42,?,?,0.5,NULL)', ('typed\0é', b'\0blob'))
+                keeper.commit()
+                if fault in ('wal', 'checkpointed_wal'):
+                    assert keeper.execute('PRAGMA journal_mode=WAL').fetchone()[0] == 'wal'
+                    keeper.execute('PRAGMA wal_autocheckpoint=0')
+                    keeper.execute("UPDATE a4_native_preservation SET t='committed WAL sentinel' WHERE id=77")
+                    keeper.commit()
+                    assert path.with_name(path.name+'-wal').stat().st_size > 0
+                    if fault == 'checkpointed_wal':
+                        keeper.close()
+                        keeper = None
+                        assert not any(Path(str(path)+suffix).exists() for suffix in ('-wal', '-shm'))
+                else:
+                    assert keeper.execute('PRAGMA journal_mode=DELETE').fetchone()[0] == 'delete'
+                    keeper.close()
+                    keeper = None
+                def current_inventory():
+                    # The fixture alone knows its positively closed WAL image
+                    # is checkpointed; preserve companion absence until the
+                    # production native snapshot admission being exercised.
+                    uri = path.as_uri()+'?mode=ro'+('&immutable=1' if fault == 'checkpointed_wal' else '')
+                    with closing(native_connect(uri, uri=True, timeout=0)) as c:
+                        c.execute('PRAGMA query_only=ON')
+                        c.execute('BEGIN')
+                        return schema.sequential_storage_inventory(c)
+                original = current_inventory()
+                observed = {name: hashlib.sha256(Path(str(path)+name).read_bytes()).hexdigest()
+                            for name in ('', '-wal') if Path(str(path)+name).exists()}
+                statements, events, stages, created, injections = [], [], [], [], []
+                attempt = None
+                with closing(OrgAccessFence.acquire(path.parent, exclusive=True)) as fence:
+                    deadline = time.monotonic()+110
+                    owner = bootstrap.BootstrapSource(fence=fence, deadline=deadline)
+                    gate = bootstrap.require_install_integrity
+                    close_connection = bootstrap.BootstrapSource._close_connection
+                    sync = os.fsync
+                    close_fd = os.close
+                    primary = OSError('synthetic private backup close failure')
+                    def connect(filename, *args, **kwargs):
+                        text = str(filename)
+                        conn = native_connect(filename, *args, **kwargs)
+                        if text.startswith(path.as_uri()+'?') or '/before.db?' in text:
+                            created.append(conn)
+                        if text.startswith(path.as_uri()+'?'):
+                            conn.set_trace_callback(statements.append)
+                        if text.endswith('/before.db?mode=ro'):
+                            events.append('independent-backup-open')
+                        if (fault == 'source_init' and text.startswith(path.as_uri()+'?')
+                                or fault == 'destination_init' and text.endswith('/before.db?mode=rw')):
+                            conn.set_authorizer(lambda op, one, two, db, trigger:
+                                sqlite3.SQLITE_DENY if op == sqlite3.SQLITE_PRAGMA and one == 'foreign_keys'
+                                else sqlite3.SQLITE_OK)
+                            injections.append(fault)
+                        return conn
+                    def physical_gate(conn, ledger, stage):
+                        start = ledger.consumed
+                        assert conn.in_transaction and conn.execute('PRAGMA query_only').fetchone()[0] == 1
+                        if stage == 'backup':
+                            events.append('independent-backup-integrity')
+                            assert Path(conn.execute('PRAGMA database_list').fetchone()[2]) == attempt.backup_path
+                        if fault == stage+'_integrity':
+                            conn.set_authorizer(lambda op, one, two, db, trigger:
+                                sqlite3.SQLITE_DENY if op == sqlite3.SQLITE_PRAGMA and one == 'integrity_check'
+                                else sqlite3.SQLITE_OK)
+                            injections.append(fault)
+                        try:
+                            gate(conn, ledger, stage)
+                        finally:
+                            stages.append((stage, id(ledger), start, ledger.consumed))
+                            conn.set_authorizer(None)
+                    def owned_close(current, conn):
+                        record = next(r for r in current.connections if r['connection'] is conn)
+                        name = Path(conn.execute('PRAGMA database_list').fetchone()[2]).name if not record['attempted'] else None
+                        if fault == 'close' and name == 'before.db' and not record['attempted']:
+                            record['attempted'], record['error'] = True, primary
+                            injections.append('close')
+                            raise primary
+                        close_connection(current, conn)
+                        if name == 'before.db':
+                            events.append('backup-connection-closed')
+                            if fault == 'inventory' and 'inventory' not in injections:
+                                # A valid but wrong native image BEFORE hashing:
+                                # only independent exact inventory can catch it.
+                                with closing(native_connect(attempt.backup_path)) as changed:
+                                    changed.execute("UPDATE a4_native_preservation SET i=43 WHERE id=77")
+                                    changed.commit()
+                                injections.append('inventory')
+                    def fsync(fd):
+                        info = os.fstat(fd)
+                        if attempt is not None and attempt.backup_path.exists():
+                            backup_inode = attempt.backup_path.stat().st_ino
+                            if info.st_ino == backup_inode:
+                                events.append('backup-file-fsync')
+                                if fault == 'file_sync':
+                                    injections.append(fault)
+                                    raise OSError('synthetic private file sync failure')
+                            elif fd == attempt._parent:
+                                events.append('backup-directory-fsync')
+                                if fault == 'directory_sync':
+                                    injections.append(fault)
+                                    raise OSError('synthetic private directory sync failure')
+                            else:
+                                events.append('phase-file-fsync')
+                        return sync(fd)
+                    def descriptor_close(fd):
+                        info = os.fstat(fd)
+                        if attempt is not None and attempt.backup_path.exists() and info.st_ino == attempt.backup_path.stat().st_ino:
+                            events.append('backup-descriptor-close')
+                        return close_fd(fd)
+                    error = None
+                    with ExitStack() as stack:
+                        stack.enter_context(patch.object(bootstrap.sqlite3, 'connect', connect))
+                        stack.enter_context(patch.object(bootstrap, 'require_install_integrity', physical_gate))
+                        stack.enter_context(patch.object(bootstrap.BootstrapSource, '_close_connection', owned_close))
+                        stack.enter_context(patch.object(bootstrap.os, 'fsync', fsync))
+                        stack.enter_context(patch.object(bootstrap.os, 'close', descriptor_close))
+                        try:
+                            owner.open()
+                            attempt = bootstrap.BootstrapAttempt(home=daemon_home(), runtime_root=path.parents[2],
+                                slug='scratch', fence=fence, source_identity=owner.source_identity,
+                                source_inventory_digest=owner.inventory_digest, deadline=deadline)
+                            attempt.begin()
+                            if fault == 'alias':
+                                attempt.backup_path.symlink_to(path)
+                                injections.append(fault)
+                            if fault == 'space':
+                                stack.enter_context(patch.object(bootstrap.os, 'fstatvfs',
+                                    return_value=SimpleNamespace(f_bavail=0, f_frsize=4096)))
+                                injections.append(fault)
+                            if fault == 'deadline':
+                                stack.enter_context(patch.object(bootstrap.time, 'monotonic', return_value=deadline-19))
+                                injections.append(fault)
+                            owner.backup(attempt)
+                        except (ValueError, sqlite3.Error, OSError) as exc:
+                            error = exc
+                        # Drop clock/space faults before independent cleanup.
+                    if fault in ('none', 'wal', 'checkpointed_wal'):
+                        assert error is None, ('A4-B unexpected backup failure', fault, error)
+                        assert [s[0] for s in stages] == ['source', 'backup'], 'A4-B mandatory backup physical gate omitted'
+                        assert len({s[1] for s in stages}) == 1 and stages[1][2] == stages[0][3] > 0, 'A4-B physical allowance replenished'
+                        assert owner.backup_sha256 == hashlib.sha256(attempt.backup_path.read_bytes()).hexdigest()
+                        assert os.stat(attempt.backup_path).st_ino != path.stat().st_ino
+                        assert stat.S_IMODE(attempt.backup_path.stat().st_mode) == 0o600
+                        ordered = ('backup-file-fsync', 'backup-descriptor-close', 'independent-backup-open',
+                                   'independent-backup-integrity', 'backup-connection-closed',
+                                   'backup-directory-fsync', 'phase-file-fsync')
+                        # The destination close precedes the first fsync; the
+                        # next close after the independent read is required here.
+                        try:
+                            cursor = events.index('backup-file-fsync')
+                            for event in ordered[1:]:
+                                cursor = events.index(event, cursor+1)
+                        except ValueError as exc:
+                            raise AssertionError('A4-B backup durability order missing') from exc
+                        assert events[-1] == 'backup-directory-fsync', 'A4-B backup_verified directory not fsynced'
+                        assert (attempt.root/'01.json').is_file(), 'A4-B verified phase missing'
+                        status = read_setup_status(daemon_home(), path.parents[2], 'scratch')
+                        assert status.state == 'unknown' and status.reason == 'install_incomplete', 'A4-B backup claimed installation'
+                        if fault in ('wal', 'checkpointed_wal'):
+                            with closing(native_connect(attempt.backup_path.as_uri()+'?mode=ro', uri=True)) as b:
+                                assert b.execute('SELECT t FROM a4_native_preservation WHERE id=77').fetchone()[0] == 'committed WAL sentinel', 'A4-B lost committed WAL data'
+                    else:
+                        assert error is not None and injections, ('A4-B intended fault missed', fault, error)
+                        assert owner.failed, 'A4-B failed source owner not latched'
+                        if fault.endswith('_init'):
+                            assert all(any(r['connection'] is conn for r in owner.connections) for conn in created), 'A4-B lost partially initialized native connection'
+                        if fault in ('source_integrity', 'backup_integrity'):
+                            assert isinstance(error, physical.InstallIntegrityError) and error.stage == fault.split('_')[0], ('A4-B wrong integrity boundary', error)
+                        if fault == 'inventory':
+                            assert str(error) == 'workflow_setup_backup_inventory_changed', ('A4-B wrong preservation boundary', error)
+                        if attempt is not None:
+                            assert not (attempt.root/'01.json').exists(), 'A4-B unverified backup published'
+                            try:
+                                owner.backup(attempt)
+                            except bootstrap.BootstrapEvidenceError as exc:
+                                assert str(exc) == 'workflow_setup_source_latched', 'A4-B failed source retried'
+                            else:
+                                raise AssertionError('A4-B failed source replayed backup')
+                    retained_backup = None
+                    if attempt is not None and attempt.backup_path.is_file() and not attempt.backup_path.is_symlink():
+                        retained_backup = hashlib.sha256(attempt.backup_path.read_bytes()).hexdigest()
+                    try:
+                        owner.close()
+                    except bootstrap.BootstrapEvidenceError as exc:
+                        assert fault == 'close' and str(exc) == 'workflow_setup_source_close_unknown'
+                        held = [r for r in owner.connections if r.get('error') is primary]
+                        assert len(held) == 1 and not held[0]['closed'], 'A4-B lost unknown original connection'
+                        assert held[0]['connection'].execute('SELECT 1').fetchone()[0] == 1
+                        try:
+                            owner.close()
+                        except bootstrap.BootstrapEvidenceError:
+                            pass
+                        else:
+                            raise AssertionError('A4-B invented original close after unknown')
+                        # Test-only final disposal after observing retained custody.
+                        held[0]['connection'].close()
+                    else:
+                        assert fault != 'close' and owner.closed and all(r['closed'] for r in owner.connections), 'A4-B invented successful close'
+                        for record in owner.connections:
+                            try:
+                                record['connection'].execute('SELECT 1')
+                            except sqlite3.ProgrammingError:
+                                pass
+                            else:
+                                raise AssertionError('A4-B positive close left native handle usable')
+                    assert all(r['attempted'] for r in owner.connections), 'A4-B unattempted original close'
+                    if attempt is not None:
+                        attempt.close()
+                    assert current_inventory() == original, 'A4-B source typed cells/rowids/SQL changed or auto-restored'
+                    assert not any(s.upper().startswith(('COMMIT', 'INSERT ', 'UPDATE ', 'DELETE ', 'CREATE ', 'DROP ', 'PRAGMA WAL_CHECKPOINT'))
+                                   for s in statements), 'A4-B source effects before independently verified backup'
+                    assert observed == {name: hashlib.sha256(Path(str(path)+name).read_bytes()).hexdigest()
+                                        for name in observed}, 'A4-B source/sidecar bytes changed'
+                    if retained_backup is not None:
+                        assert attempt.backup_path.is_file() and hashlib.sha256(attempt.backup_path.read_bytes()).hexdigest() == retained_backup, 'A4-B retained backup deleted or modified'
+                    print('PASS A4-B coherent source/WAL/fsync/independent inventory/original custody:', fault, flush=True)
+                if keeper is not None:
+                    keeper.close()
+        if sys.argv[1:] == ['--bootstrap-backup']:
+            raise SystemExit(0)
 
     # A4-J is the independently consumed event wire/storage contract, using
     # synthetic phase inputs. It does not certify installation/owner closure.

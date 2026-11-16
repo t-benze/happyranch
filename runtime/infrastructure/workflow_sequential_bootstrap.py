@@ -12,13 +12,20 @@ import json
 import math
 import os
 import re
+import sqlite3
 import stat
 import time
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
 from runtime.infrastructure.org_access_fence import OrgAccessFence
+from runtime.infrastructure.workflow_integrity import IntegrityLedger, require_install_integrity
+from runtime.infrastructure.workflow_schema import (
+    SequentialInstallAllowance, _coding_org_identity, inspect_sequential_install,
+    sequential_storage_inventory,
+)
 
 
 class BootstrapEvidenceError(ValueError):
@@ -39,7 +46,11 @@ _STATES = {
 
 def _close_descriptor(record: dict) -> None:
     record['attempted'] = True
-    os.close(record['fd'])
+    try:
+        os.close(record['fd'])
+    except BaseException as exc:
+        record['error'] = exc
+        raise
     record['closed'] = True
 
 
@@ -272,4 +283,317 @@ class BootstrapAttempt:
         if errors:
             self.failed = True
             raise BootstrapEvidenceError('workflow_setup_descriptor_close_unknown')
+        self.closed = True
+
+
+def _file(path: Path) -> tuple:
+    value = path.lstat()
+    if (not stat.S_ISREG(value.st_mode) or value.st_uid != os.getuid()
+            or value.st_nlink != 1):
+        raise BootstrapEvidenceError('workflow_setup_file_unsafe')
+    return (value.st_dev, value.st_ino, value.st_mode, value.st_uid, value.st_nlink,
+            value.st_size, value.st_mtime_ns, value.st_ctime_ns)
+
+
+def _companions(path: Path) -> tuple:
+    result = []
+    for suffix in ('', '-wal', '-shm', '-journal'):
+        candidate = path.with_name(path.name + suffix)
+        try:
+            value = _file(candidate)
+        except FileNotFoundError:
+            if not suffix:
+                raise
+            value = None
+        result.append(value)
+    if result[3] is not None:
+        # Recovery/old-owner residue is never checkpoint or unlink authority.
+        raise BootstrapEvidenceError('workflow_setup_journal_unresolved')
+    if (result[1] is None) != (result[2] is None):
+        raise BootstrapEvidenceError('workflow_setup_sidecars_unresolved')
+    return tuple(result)
+
+
+class BootstrapSource:
+    """Original read snapshot and independent backup, before source effects.
+
+    EX supplies cooperative exclusion only. The coordinator must independently
+    qualify original native/host/producer owners BEFORE allocating an attempt.
+    Construction performs no opens so custody survives partial open()/backup().
+    No method checkpoints, repairs, installs, restores, replays or releases EX.
+    """
+
+    def __init__(self, *, fence: OrgAccessFence, deadline: float) -> None:
+        if (not fence.exclusive or type(deadline) not in (int, float)
+                or not math.isfinite(deadline) or not 20 < deadline-time.monotonic() <= 120):
+            raise BootstrapEvidenceError('workflow_setup_owner_invalid')
+        self.fence, self.deadline = fence, deadline
+        self.path = fence.root / 'happyranch.db'
+        # Both stages and later writer/target full checks share THIS ledger.
+        self.integrity = IntegrityLedger(deadline=deadline-20)
+        self.allowance = SequentialInstallAllowance(deadline=deadline-20)
+        self.connections: list[dict] = []
+        self.descriptors: list[dict] = []
+        self.source: sqlite3.Connection | None = None
+        self.source_identity: tuple | None = None
+        self.source_inventory: tuple | None = None
+        self.inventory_digest: str | None = None
+        self.layout = None
+        self.image_bytes = 0
+        self.page_size = 0
+        self.observation: tuple | None = None
+        self.backup_sha256: str | None = None
+        self._inventory_steps = 0
+        self._backup_started = False
+        self.failed = self.closed = False
+
+    def _check(self) -> None:
+        if self.failed or self.closed:
+            raise BootstrapEvidenceError('workflow_setup_source_latched')
+        self.fence.assert_held()
+        self.allowance.check()
+
+    def _connection(self, path: Path, *, readonly: bool) -> sqlite3.Connection:
+        self._check()
+        parent = _directory(path.parent, self.descriptors)
+        before = _file(path)
+        conn = sqlite3.connect(path.as_uri() + ('?mode=ro' if readonly else '?mode=rw'),
+                               uri=True, timeout=0)
+        # Retain before PRAGMA, native cursor work or any other fallible setup.
+        self.connections.append(dict(connection=conn, attempted=False, closed=False))
+        conn.row_factory = sqlite3.Row
+        if readonly:
+            conn.execute('PRAGMA query_only=ON')
+        conn.execute('PRAGMA foreign_keys=ON')
+        databases = [tuple(row) for row in conn.execute('PRAGMA database_list')]
+        if (databases != [(0, 'main', str(path))] or _file(path) != before):
+            raise BootstrapEvidenceError('workflow_setup_connection_identity_changed')
+        _close_descriptor(parent)
+        return conn
+
+    def _close_connection(self, conn: sqlite3.Connection) -> None:
+        record = next(value for value in self.connections if value['connection'] is conn)
+        if record['attempted']:
+            if not record['closed']:
+                raise BootstrapEvidenceError('workflow_setup_connection_close_unknown')
+            return
+        record['attempted'] = True
+        try:
+            conn.close()
+        except BaseException as exc:
+            record['error'] = exc
+            raise
+        record['closed'] = True
+
+    @contextmanager
+    def _inventory_budget(self, conn: sqlite3.Connection):
+        """Bound inventory SQL as well as its original Python row/byte limits."""
+        def progress():
+            self._inventory_steps += 1000
+            return int(self._inventory_steps > 640000000 or time.monotonic() >= self.allowance.deadline)
+        self._inventory_steps += 1000
+        if self._inventory_steps > 640000000:
+            raise BootstrapEvidenceError('workflow_setup_inventory_exhausted')
+        try:
+            conn.set_progress_handler(progress, 1000)
+            yield
+        finally:
+            conn.set_progress_handler(None, 0)
+        self._check()
+
+    def _inventory(self, conn: sqlite3.Connection) -> tuple:
+        with self._inventory_budget(conn):
+            return sequential_storage_inventory(conn, allowance=self.allowance)
+
+    def _unchanged(self) -> None:
+        self._check()
+        if self.observation != _companions(self.path):
+            raise BootstrapEvidenceError('workflow_setup_source_changed')
+        if (self.source is None or _coding_org_identity(self.source,
+                expected_org_slug=self.fence.root.name, expected_path=str(self.path)) != self.source_identity):
+            raise BootstrapEvidenceError('workflow_setup_source_changed')
+
+    def open(self) -> None:
+        """Retain one coherent WAL-aware read snapshot; do no source writes."""
+        try:
+            self._check()
+            if self.connections or self.descriptors:
+                raise BootstrapEvidenceError('workflow_setup_source_latched')
+            parent = _directory(self.path.parent, self.descriptors)
+            self.observation = _companions(self.path)
+            conn = self._connection(self.path, readonly=True)
+            self.source = conn
+            self.source_identity = _coding_org_identity(conn, expected_org_slug=self.fence.root.name,
+                                                        expected_path=str(self.path))
+            conn.execute('BEGIN')
+            # Pin the snapshot before measuring its checkpoint-equivalent B.
+            conn.execute('SELECT count(*) FROM sqlite_schema').fetchone()
+            admitted = _companions(self.path)
+            # A cleanly closed WAL-mode image has no companions. Native RO
+            # snapshot admission may create its empty WAL and SHM; this is not
+            # a checkpoint or stored-cell change. Never accept pre-existing
+            # companion disappearance/replacement or any committed WAL drift.
+            created_empty = (self.observation[1:3] == (None, None)
+                             and admitted[1] is not None and admitted[1][5] == 0
+                             and admitted[2] is not None and admitted[2][5] == 32768)
+            if (admitted[0] != self.observation[0]
+                    or (not created_empty and (admitted[1] != self.observation[1]
+                        or (admitted[2] is None) != (self.observation[2] is None)
+                        or (admitted[2] is not None and admitted[2][:6] != self.observation[2][:6])))):
+                raise BootstrapEvidenceError('workflow_setup_source_changed')
+            # SQLite's own WAL snapshot admission updates SHM read marks. Only
+            # that bounded admission may change its times; main/WAL and SHM
+            # inode/type/size remain pinned. Thereafter ALL signatures are exact.
+            self.observation = admitted
+            pages, size = conn.execute('PRAGMA page_count').fetchone()[0], conn.execute('PRAGMA page_size').fetchone()[0]
+            self.image_bytes = pages * size
+            self.page_size = size
+            if not 0 < self.image_bytes <= 32 * 1024**3:
+                raise BootstrapEvidenceError('workflow_setup_backup_bytes_exhausted')
+            require_install_integrity(conn, self.integrity, 'source')
+            self.layout = inspect_sequential_install(conn, expected_org_slug=self.fence.root.name,
+                                                      allowance=self.allowance)
+            self.source_inventory = self._inventory(conn)
+            raw = json.dumps(self.source_inventory, sort_keys=True, separators=(',', ':'), ensure_ascii=False).encode('utf8')
+            self.inventory_digest = hashlib.sha256(raw).hexdigest()
+            self._unchanged()
+            _close_descriptor(parent)
+        except BaseException:
+            self.failed = True
+            raise
+
+    def _backup_file(self, attempt: BootstrapAttempt, fd: int) -> tuple:
+        attempt._check(reserve=True)
+        assert attempt._parent is not None
+        info = os.fstat(fd)
+        observed = _file(attempt.backup_path)
+        if ((info.st_dev, info.st_ino) != observed[:2]
+                or observed[:2] == self.observation[0][:2]
+                or stat.S_IMODE(info.st_mode) != 0o600
+                or not 0 < info.st_size <= 32 * 1024**3):
+            raise BootstrapEvidenceError('workflow_setup_backup_unsafe')
+        for suffix in ('-wal', '-shm', '-journal'):
+            try:
+                os.stat('before.db' + suffix, dir_fd=attempt._parent, follow_symlinks=False)
+            except FileNotFoundError:
+                continue
+            raise BootstrapEvidenceError('workflow_setup_backup_sidecar')
+        return observed
+
+    def _hash(self, fd: int) -> str:
+        value = hashlib.sha256()
+        count = 0
+        os.lseek(fd, 0, os.SEEK_SET)
+        while True:
+            self._check()
+            raw = os.read(fd, 1048576)
+            if not raw:
+                break
+            count += len(raw)
+            if count > 32 * 1024**3:
+                raise BootstrapEvidenceError('workflow_setup_backup_bytes_exhausted')
+            value.update(raw)
+        return value.hexdigest()
+
+    def backup(self, attempt: BootstrapAttempt) -> str:
+        """Create/fsync/close/reopen/verify before durable backup_verified.
+
+        The complete DB/temp/rehearsal volume policy is additionally required at
+        coordinator admission and writer reentry. This owner enforces backup
+        volume headroom; it grants no writer or checkpoint permission itself.
+        """
+        try:
+            self._unchanged()
+            if (self._backup_started or self.layout is None or self.layout.sequential
+                    or attempt.fence is not self.fence or attempt._phase != 'intent'
+                    or attempt.source_identity != self.source_identity
+                    or attempt.source_inventory_digest != self.inventory_digest
+                    or attempt.deadline != self.deadline):
+                raise BootstrapEvidenceError('workflow_setup_backup_owner_invalid')
+            self._backup_started = True
+            attempt._check(reserve=True)
+            assert attempt._parent is not None and self.source is not None
+            space = os.fstatvfs(attempt._parent)
+            if space.f_bavail * space.f_frsize < self.image_bytes + 1024**3:
+                raise BootstrapEvidenceError('workflow_setup_backup_space_unavailable')
+            fd = os.open('before.db', os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                         0o600, dir_fd=attempt._parent)
+            descriptor = dict(fd=fd, attempted=False, closed=False)
+            self.descriptors.append(descriptor)
+            os.fchmod(fd, 0o600)
+            inode = os.fstat(fd)
+            if (_file(attempt.backup_path)[:2] != (inode.st_dev, inode.st_ino)
+                    or (inode.st_dev, inode.st_ino) == self.observation[0][:2]):
+                raise BootstrapEvidenceError('workflow_setup_backup_changed')
+            destination = self._connection(attempt.backup_path, readonly=False)
+            if _file(attempt.backup_path)[:2] != (inode.st_dev, inode.st_ino):
+                raise BootstrapEvidenceError('workflow_setup_backup_changed')
+            def progress(status, remaining, total):
+                self._unchanged()
+                attempt._check(reserve=True)
+                # No per-call sleep/retry allowance or hidden replenished wait.
+                if status in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED):
+                    raise BootstrapEvidenceError('workflow_setup_database_busy')
+                if status not in (sqlite3.SQLITE_OK, sqlite3.SQLITE_DONE):
+                    raise BootstrapEvidenceError('workflow_setup_backup_unavailable')
+                if total * self.page_size > 32 * 1024**3:
+                    raise BootstrapEvidenceError('workflow_setup_backup_bytes_exhausted')
+            self.source.backup(destination, pages=256, progress=progress, sleep=0)
+            # A native backup can inherit the WAL header. Normalize only this
+            # independent image so its subsequent RO verification needs no
+            # sidecar or recovery; never change the source's journal mode.
+            if destination.execute('PRAGMA journal_mode=DELETE').fetchone()[0] != 'delete':
+                raise BootstrapEvidenceError('workflow_setup_backup_sidecar')
+            self._close_connection(destination)
+            if (os.fstat(fd).st_dev, os.fstat(fd).st_ino) != (inode.st_dev, inode.st_ino):
+                raise BootstrapEvidenceError('workflow_setup_backup_changed')
+            os.fsync(fd)
+            before = self._backup_file(attempt, fd)
+            digest = self._hash(fd)
+            _close_descriptor(descriptor)
+            # Independent native open, physical and complete logical readers.
+            backup = self._connection(attempt.backup_path, readonly=True)
+            backup.execute('BEGIN')
+            require_install_integrity(backup, self.integrity, 'backup')
+            layout = inspect_sequential_install(backup, expected_org_slug=self.fence.root.name,
+                                                allowance=self.allowance)
+            if layout != self.layout or self._inventory(backup) != self.source_inventory:
+                raise BootstrapEvidenceError('workflow_setup_backup_inventory_changed')
+            self._close_connection(backup)
+            check = dict(fd=os.open('before.db', os.O_RDONLY | os.O_NOFOLLOW,
+                                    dir_fd=attempt._parent), attempted=False, closed=False)
+            self.descriptors.append(check)
+            if self._backup_file(attempt, check['fd']) != before or self._hash(check['fd']) != digest:
+                raise BootstrapEvidenceError('workflow_setup_backup_changed')
+            _close_descriptor(check)
+            self._unchanged()
+            os.fsync(attempt._parent)
+            attempt.publish('backup_verified', backup_sha256=digest)
+            self.backup_sha256 = digest
+            return digest
+        except BaseException:
+            self.failed = True
+            raise
+
+    def close(self) -> None:
+        """Attempt each original connection/descriptor once, preserving causes."""
+        errors = []
+        for record in reversed(self.connections):
+            try:
+                self._close_connection(record['connection'])
+            except BaseException as exc:
+                errors.append(exc)
+        for record in reversed(self.descriptors):
+            if record['attempted']:
+                if not record['closed']:
+                    errors.append(BootstrapEvidenceError('workflow_setup_descriptor_close_unknown'))
+                continue
+            try:
+                _close_descriptor(record)
+            except BaseException as exc:
+                record['error'] = exc
+                errors.append(exc)
+        if errors:
+            self.failed = True
+            raise BootstrapEvidenceError('workflow_setup_source_close_unknown') from errors[0]
         self.closed = True
