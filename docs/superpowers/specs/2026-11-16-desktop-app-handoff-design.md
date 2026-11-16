@@ -74,8 +74,9 @@ All [V] unless marked.
   master bearer (`runtime/daemon/routes/auth.py:97-176`), are single-use, live 30
   minutes and are held in memory (`runtime/daemon/registration_token.py:29-33`).
   `require_registration_token()` (`runtime/daemon/auth.py:104`) guards the scoped
-  routes. Purposes today are `binary` and `adapter` only
-  (`registration_token.py:391-427`).
+  routes. The runtime mint's purposes today are `binary` and `adapter` only
+  (`registration_token.py:391-427`); the separately mounted org mint issues
+  `org-scoped` tokens (`registration_token.py:167`).
 - **Audit scope prefixes.** Non-task actors use a mandatory prefix in
   `audit_log.task_id`: `artifact:<name>`, `config:<section>`, thread ids for thread
   actions; runtime-level executor events go to `<daemon-home>/runtime-audit.db`
@@ -95,7 +96,9 @@ All [V] unless marked.
   configured or ephemeral.
 - **Thread messages.** `ThreadMessageKind` has `message`, `decline`, `system`
   (`runtime/models.py:4001-4004`); task follow-ups are already posted as system
-  messages (`runtime/orchestrator/run_step.py:6115`).
+  messages by `runtime/orchestrator/task_thread_posting.py:10`. That writer by
+  default also mints a follow-up invocation; the handoff notice must use it
+  message-only, so posting the notice never wakes an agent.
 
 ## 4. User experience [D]
 
@@ -174,7 +177,7 @@ usual. To the manager loop this is an ordinary worker completion.
 | B. New `BlockKind` (`handed_off`) under `in_progress` | Stored discriminant, `run_step_impl`, the three resume callers, zombie reaper, pause, cancellation, authority-v2 eligibility | Yes | Native, no agent wake | Large |
 | C. Escalation (`escalated`) | None in code, but the task would read as "needs a founder decision" and resume through resolve-escalation | No | Native | Small, wrong meaning: a handoff is not a decision request, and resolution has no place for a result |
 | D. Child task for a pull-executor pseudo-agent | New executor kind, lease liveness, registry and reaper rules (the 2026-11-14 memo) | Yes | Needs a durable claims table | Largest; about three weeks |
-| **E. Waiter job on the existing job wait** | **No status, block kind or transition change.** A new record type and a daemon-shipped waiter entrypoint | Not for lifecycle (schema and auth are gated separately) | Waiter is killed on shutdown; task resumes once and re-waits | Smallest |
+| **E. Waiter job on the existing job wait** | **No status, block kind or transition change.** A new record type and a daemon-shipped waiter entrypoint | Not for lifecycle (schema and auth are gated separately) | After a clean shutdown the task resumes once and re-waits; after a crash the task can stay parked until the founder acts (section 5.2) | Smallest |
 
 **Recommendation: E for v1.** The handed-off task is `in_progress` with
 `block_kind=blocked_on_job`, which already means "parked, no subprocess, waiting
@@ -196,15 +199,34 @@ code:
 | `reclaimed` (founder took it back) | 12 | Continue without the app |
 | `revoked` (app credential revoked) | 13 | As reclaimed |
 
-The handoff record is the durable thing; the waiter is disposable. If the waiter
-dies (daemon restart, Stop), the task resumes through the existing job-terminal
-path, the agent sees a non-terminal handoff, and it submits a new waiter for the
-same handoff with `happyranch tasks handoff TASK-123 --rewait`. No handoff state
-is lost.
+The handoff record is the durable thing; the waiter is disposable. No handoff
+state is lost when a waiter dies, but what happens to the parked task depends on
+how the waiter ended:
 
-**Known cost of E:** each daemon restart while a handoff is open costs one short
-agent session per parked task. If handoffs become routine and that churn matters,
-option B is the upgrade; it is listed as a later decision.
+- **The waiter's terminal status was committed** (Stop, or a clean daemon
+  shutdown in which the runner persisted `daemon_shutdown`). The task resumes
+  through the existing job-terminal path or the startup scan, the agent sees a
+  handoff that is still open, and it submits a new waiter for the same handoff
+  with `happyranch tasks handoff TASK-123 --rewait`.
+- **The waiter's terminal status was not committed** (daemon crash, interrupted
+  persistence, unattributable shutdown). The job row stays `running` with unknown
+  liveness: `recover_orphaned_running_jobs` (`runtime/infrastructure/db/jobs.py:438`)
+  only reports such jobs and writes nothing, and the all-terminal check
+  (`runtime/orchestrator/run_step.py:5972`) then leaves the task parked. The task
+  does **not** wake, even if the app later completes the handoff or it expires.
+  The handoff record still closes correctly and keeps the result. v1 adds no
+  automatic clearance and does not replace or clear the original job: the
+  `handoffs` read and the web panel show "result ready, task not resumed: waiter
+  state unknown", and the founder resolves it with the controls that exist today
+  for any task stuck on an unknown-liveness job (for example cancel the task and
+  dispatch a fresh one that reads the saved result). This is the same unresolved
+  outcome every job wait has today; the handoff design inherits it and does not
+  fix it.
+
+**Known costs of E:** a clean daemon restart while a handoff is open costs one
+short agent session per parked task. A crash while a handoff is open can strand
+the parked task until the founder acts, as above. If handoffs become routine and
+either cost matters, option B is the upgrade; it is listed as a later decision.
 
 ### 5.3 Handoff states
 
@@ -220,15 +242,26 @@ immutable.
   closes the handoff as `reclaimed`. Later tool calls with the old lease are
   refused with a clear "stop" answer.
 - **Founder cancel.** The existing task cancel. The job is killed with
-  `task_ended` as today. The tool server checks the parent task on every call and
-  closes the handoff as `cancelled` when the task is no longer
-  `in_progress(blocked_on_job)` waiting on this handoff's job, or `handoffs`
-  reads observe the same thing. No new hook in the terminal tail.
+  `task_ended` as today. The handoff is owned by its task id from creation until
+  it closes, whatever the task's block kind and whether or not a waiter is
+  running. The tool server and `handoffs` reads close it as `cancelled` only when
+  the owning task has reached a **terminal status**. They do not test the block
+  kind or the current waiter: the task is legitimately `in_progress` with no
+  block kind between handoff creation and the blocked report
+  (`runtime/orchestrator/run_step.py:3005-3027`), and again between a waiter
+  ending and the agent re-waiting, because the resume claim clears the block kind
+  (`runtime/infrastructure/db/tasks.py:2816`). An app call in either interval is
+  served normally. No new hook in the terminal tail.
+- **Agent stops waiting.** A resumed agent that decides to carry on without the
+  app closes the handoff itself with `happyranch tasks handoff TASK-123 --withdraw`
+  (closed as `reclaimed`, cause `agent`). If it does neither, the handoff stays
+  open until its deadline or until the task ends.
 - **App reports failure.** `complete` with `status="failed"` and a reason closes
   the handoff as `failed`. The task is not failed; the agent decides.
 - **One open handoff per task.** A second `handoff` while one is open is refused.
 - **Repeated claim.** A claim with the right code from the same app instance
-  returns the same lease, so a restarted chat can carry on. A wrong code is
+  issues a fresh lease and invalidates the previous one, so a restarted chat can
+  carry on and only a lease hash needs storing. A wrong code is
   counted; five wrong codes lock the handoff until the founder reclaims it.
 
 ## 6. Storage and routes [D]
@@ -242,10 +275,15 @@ founder-gated):
   `token_sha256`, `folder_path`, `created_at`, `revoked_at`, `last_seen_at`,
   `client_info` (what the MCP client reported).
 - `task_handoffs`: `id` (`HO-n`), `task_id`, `app_id`, `state`, `instructions`,
-  `result_shape`, `pickup_code_sha256`, `wrong_code_count`, `lease_sha256`,
+  `result_shape`, `pickup_code`, `wrong_code_count`, `lease_sha256`,
   `created_by_agent`, `created_session_id`, `job_ids` (waiters), `created_at`,
   `expires_at`, `claimed_at`, `last_seen_at`, `closed_at`, `result_summary`,
   `result_json`, `failure_reason`, `files` (name, size, sha256).
+
+The pickup code is stored in the clear because the founder-facing read must show
+it again after a restart. It is a short-lived, single-handoff code, useless
+without the app credential, and anyone who can read the org database can already
+read the task. The lease is stored as a hash only and is never shown again.
 
 Both are new tables created in the fresh-schema block with their indexes; no
 existing table gains a column, so the "index on a newly added column" upgrade
@@ -264,6 +302,7 @@ Under `/api/v1/orgs/{slug}`:
 | `GET /handoffs`, `GET /handoffs/{task_id}` | Master bearer (founder CLI, web, the waiter) | List and show; the founder-facing read includes the pickup line |
 | `GET /handoffs/{task_id}/result` | `(task_id + session_id)` of the owning task, or master bearer | Result text, JSON and file download |
 | `POST /handoffs/{task_id}/reclaim` | Founder (human-only gate, as other founder controls) | Close as `reclaimed` |
+| `POST /handoffs/{task_id}/withdraw` | `(task_id + session_id)` of the owning task | The agent closes its own handoff as `reclaimed` (cause `agent`) |
 | `POST /desktop/apps/{app_id}/connect` | Loopback **and** master bearer, the same gate as the registration-token mint | Mint or rotate the app credential, write the folder |
 | `POST /desktop/apps/{app_id}/revoke` | Founder | Revoke the credential; close its claimed handoffs as `revoked` |
 | `GET /desktop/apps` | Master bearer | Connected apps and last-seen times |
@@ -385,7 +424,10 @@ with an attended check after the founder installs the app.
   for the app's work, and the handoff record and its audit rows carry
   `"metering": "unavailable"`. A zero row would read as "free"; no row plus an
   explicit marker reads as "unknown". The agent sessions before and after the
-  handoff are metered as usual.
+  handoff are metered as usual. The marker is shown only where handoffs are
+  shown (the `handoffs` read and the task-detail handoff panel in slice 4). The
+  existing token and efficiency views do not discover desktop work and are not
+  changed, so they will simply not include it.
 - **Trust.** The result is data produced by another model after browsing. The
   resumed agent treats it as untrusted input, as it treats a web page.
 
@@ -405,7 +447,10 @@ In the org `audit_log`, keyed by the **real task id** (no new overloading of
 
 Claim and complete are attributed to `founder` because the app acts for the
 founder who started it; the desktop app is not an agent and gets no agent
-identity. (Alternative for review: a literal `desktop:<app_id>` actor string.)
+identity. Because this is the app credential and not the founder's own bearer,
+every app-originated row also carries `via: "desktop_app"` and the app-instance
+credential fingerprint in its payload, so it can be told apart from a direct
+founder action. (Alternative: a literal `desktop:<app_id>` actor string.)
 `progress` calls are not audited; they only stamp `last_seen_at`.
 
 App-instance events (`desktop_app_connected`, `desktop_app_revoked`,
@@ -455,7 +500,7 @@ rounds, excluding waiting time.
 |---|---|---|
 | 1 | Org setting; `desktop_app_instances` + `task_handoffs` tables; `connect` / `revoke` / app list; handoff create / list / show / result / reclaim routes; audit rows; CLI `happyranch desktop …` and `happyranch handoffs …`; contract files; docs | 4–5 |
 | 2 | `POST /desktop/mcp` with `claim` / `progress` / `complete`; credential check; folder provisioning (Codex); file intake. **Starts with a 20-minute founder-attended check** of the static header and of file writing in the Codex app | 3–4 |
-| 3 | Waiter entrypoint; `happyranch tasks handoff` (create + submit waiter + `--rewait`); bundled skill text for handing off and resuming; agent-guide sections; end-to-end QA with the founder doing one real pickup | 2–3 |
+| 3 | Waiter entrypoint; `happyranch tasks handoff` (create + submit waiter + `--rewait` + `--withdraw`); bundled skill text for handing off and resuming; agent-guide sections; end-to-end QA with the founder doing one real pickup | 2–3 |
 | 4 | Web: task-detail handoff panel, Settings connect/revoke, thread system notice | 2–3 |
 | Later | Claude Desktop leg (attended check first, then provisioning) | 1–2 plus founder time |
 
@@ -476,7 +521,7 @@ skills under `runtime/skills/bundled/`.
 | # | Decision | Recommendation |
 |---|---|---|
 | 1 | Build this at all, at about 11–15 days? | Yes, slices 1–3 first, web after one real handoff has worked |
-| 2 | Lifecycle: waiter job on the existing job wait (no status or block-kind change) vs a new `block_kind` | Waiter job. Accept one short agent wake per daemon restart while a handoff is open |
+| 2 | Lifecycle: waiter job on the existing job wait (no status or block-kind change) vs a new `block_kind` | Waiter job. Accept one short agent wake per clean daemon restart, and that a daemon crash while a handoff is open can leave the task parked until the founder acts (the result is kept) |
 | 3 | New durable credential class `hrdesk_` and the new routes (auth boundary) | Approve as scoped in section 7: loopback only, MCP route only, hashed at rest, revocable |
 | 4 | MCP inside the daemon as one loopback route, reversing the April "MCP rejected" note for this purpose only | Approve |
 | 5 | Two additive tables in the org database (schema) | Approve |
@@ -492,7 +537,7 @@ skills under `runtime/skills/bundled/`.
 | # | Decision | Note |
 |---|---|---|
 | 12 | Claude Desktop leg | Needs the Linux beta installed (sudo) and the founder's login; everything on that side is unverified |
-| 13 | Native parking (`block_kind=handed_off`) to avoid restart wakes | Only if handoffs become routine |
+| 13 | Native parking (`block_kind=handed_off`) to avoid restart wakes and the stranded-after-crash case | Only if handoffs become routine |
 | 14 | Unattended or scheduled pickup | Not recommended while the browser is unavailable in timer runs |
 | 15 | Mac or other remote app instances | Needs a remote-access decision; `connect` and the MCP route are loopback-only in v1 |
 | 16 | Vendor terms for using subscription-login apps this way | Attended use is the mild case; revisit before any unattended mode |
