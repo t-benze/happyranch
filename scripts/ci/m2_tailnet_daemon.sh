@@ -211,6 +211,16 @@ EOF
   sudo "$python" -m runtime.remote_access.installer provision \
     --connector-config "$M2_BUILD/connector.json" --sidecar-config "$M2_BUILD/sidecar.json" \
     --policy-file "$M2_BUILD/policy.json" --release-user "$(id -un)" --data-home "$release_home"
+  # TASK-16570 temporary observation only: never print credential contents.
+  echo 'M2 credential metadata: provisioning input, then installed LoadCredential source'
+  sudo stat -c '%U %G %a' "$release_home/daemon.token" /etc/happyranch/daemon.token
+  if command -v getfacl >/dev/null; then
+    sudo getfacl --absolute-names "$release_home/daemon.token" /etc/happyranch/daemon.token
+  fi
+  sudo systemd-run --unit=happyranch-m2-credential-metadata --wait --pipe --collect \
+    --property=User=happyranch --property=Group=happyranch \
+    --property=LoadCredential=daemon.token:/etc/happyranch/daemon.token \
+    /bin/sh -ec 'echo "M2 injected credential metadata"; stat -c "%U %G %a" "$CREDENTIALS_DIRECTORY/daemon.token"; if command -v getfacl >/dev/null; then getfacl --absolute-names "$CREDENTIALS_DIRECTORY/daemon.token"; fi'
   sudo "$python" "$M2_WORK/fixture_daemon_probe.py" "$(cat "$release_home/daemon.port")" /etc/happyranch/daemon.token
 }
 negative_ownership() {
