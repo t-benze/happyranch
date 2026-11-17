@@ -37,6 +37,7 @@ from runtime.workflows.sequential_history import (  # noqa: E402
     SequentialHistory, StorageSettings, _ReadBudget, _bytes, _decode, _sql_budget, read_sequential_history,
 )
 from runtime.workflows.sequential_release import read_coding_release  # noqa: E402
+from runtime.workflows.sequential_builtin import inspect_definition  # noqa: E402
 
 # The existing offline operator, separate from Founder PUT/lookup's namespace.
 # This is operation provenance, not a runtime principal or permission grant.
@@ -221,22 +222,11 @@ def _inspect(conn: sqlite3.Connection, *, org: str, action: str, command: Admiss
         raise ValueError('sequential_coding_storage_not_installed')
     pin = compiled.pin
     with _sql_budget(conn, budget):
-        definitions = _engine_rows(conn, 'workflow_seq_definitions', budget,
-            'definition_digest=? OR (identity=? AND version=?)',
-            (pin.definition_digest, pin.identity, pin.version))
-        definition = dict(id=_record_id('definition', pin.definition_digest), identity=pin.identity,
-            version=pin.version, definition_bytes=compiled.raw, definition_digest=pin.definition_digest,
-            source_digest=pin.source_digest, compiler_pin=pin.compiler, validator_pin=pin.validator,
-            interpreter_pin=pin.interpreter, capability_pin=pin.capabilities)
-        if definitions:
-            # Existing immutable ID may come from another compatible publisher.
-            definition['id'] = definitions[0]['id']
-            if len(definitions) != 1 or definitions[0] != definition:
-                raise ValueError('sequential_coding_definition_conflict')
-        result = dict(definition=pin.model_dump(mode='json'), registered=bool(definitions))
+        definition, registered = inspect_definition(conn, compiled, budget)
+        result = dict(definition=pin.model_dump(mode='json'), registered=registered)
         if action == 'register':
-            return dict(result, write=None if definitions else definition)
-        if not definitions or (command is not None and command.definition != pin):
+            return dict(result, write=None if registered else definition)
+        if not registered or (command is not None and command.definition != pin):
             raise ValueError('sequential_coding_definition_conflict')
         settings = _engine_rows(conn, 'workflow_seq_settings', budget,
             'org_slug=? AND definition_identity=?', (org, pin.identity))

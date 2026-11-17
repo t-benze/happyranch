@@ -14,7 +14,7 @@ import threading
 import time
 import uuid
 import xml.etree.ElementTree as ET
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any
@@ -580,3 +580,449 @@ def test_deadline_uncertain_cancellation(venue: Any, late_completion: Any) -> No
         assert Call(client).finish() == 'ok'
         assert len(authority.calls) == 2 and len({row[-1] for row in authority.calls}) == 2
         assert operations.effects == [('approve', 'pending-c', 1)]
+
+
+@contextmanager
+def bound_control(monkeypatch: Any) -> Any:
+    from runtime.remote_access import helper_control as control
+    from scripts.test_managed_admission import running
+    with running(monkeypatch, helper=True) as (path, supervisor):
+        assert Path(control.CONTROL_SOCKET).is_socket(), 'supervisor must bind the private control listener'
+        listener = supervisor._control_listener
+        # Only emulate the unavailable root credential. The accepted stream,
+        # framing, adapter, manager, anchored store and registry are real.
+        original = listener.handler.handle
+        monkeypatch.setattr(listener.handler, 'handle', lambda connection: original(RootPeer(connection)))
+        yield control.ControlClient(control.CONTROL_SOCKET), supervisor, path
+
+
+def pending_real(supervisor: Any, node: str = 'node-a') -> Any:
+    import hashlib
+    from datetime import datetime, timedelta, timezone
+    manager = supervisor._pinned_pairing_manager
+    now = datetime.now(timezone.utc)
+    manager.issue_invite_record(hashlib.sha256(b'synthetic-bound-invite').hexdigest(), now + timedelta(minutes=4))
+    pending = manager.redeem('synthetic-bound-invite', node, 'protected-control', now)
+    assert pending is not None
+    return pending
+
+
+def mutate_real(client: Any, method: str, *, before: Any = lambda: None) -> Any:
+    snapshot = client.status()
+    target = snapshot.devices[0] if method == 'RevokeSelected' else snapshot.pending
+    client.mutate(method, snapshot, target, time.monotonic() + 60, before)
+    return target
+
+
+@pytest.mark.parametrize('operation', ['ApprovePending', 'RejectPending'])
+def test_bound_pending_translation_and_delivery(monkeypatch: Any, operation: str) -> None:
+    from datetime import datetime, timezone
+    with bound_control(monkeypatch) as (client, supervisor, path):
+        pending = pending_real(supervisor)
+        # An unrelated anchored write makes snapshot generation DIFFERENT
+        # from the PendingApproval generation before capture.
+        supervisor.state_store.save(supervisor.state_store.load())
+        before = client.status()
+        assert before.generation != pending.generation
+        mutate_real(client, operation)
+        state = supervisor.state_store.load()
+        assert state.pending_approval is None
+        if operation == 'ApprovePending':
+            assert len(state.devices) == 1
+            credential = supervisor._pinned_pairing_manager.complete(
+                pending.completion_handle, 'node-a', 'protected-control', datetime.now(timezone.utc))
+            assert credential and supervisor._pinned_pairing_manager.admit(
+                credential, 'node-a', 'protected-control', datetime.now(timezone.utc)).ok
+        else:
+            assert not state.devices and state.delivery is None
+        reply = json.dumps(asdict(client.status()))
+        assert pending.completion_handle not in reply and 'hrpin_' not in reply and 'digest' not in reply
+
+
+@pytest.mark.parametrize('phase', ['invite', 'pending', 'delivery'])
+def test_bound_status_reads_preserve_ceremony(monkeypatch: Any, phase: str) -> None:
+    from pathlib import Path
+    with bound_control(monkeypatch) as (client, supervisor, path):
+        pending_real(supervisor)
+        manager = supervisor._pinned_pairing_manager
+        if phase == 'invite':
+            from datetime import datetime, timedelta, timezone
+            import hashlib
+            manager.issue_invite_record(hashlib.sha256(b'synthetic-second').hexdigest(),
+                                        datetime.now(timezone.utc) + timedelta(minutes=4))
+        elif phase == 'delivery':
+            mutate_real(client, 'ApprovePending')
+        store_path = Path(supervisor.config.state_path)
+        before = (store_path.read_bytes(), Path(str(store_path) + '.anchor').read_bytes())
+        for _ in range(3):
+            assert client.status().owned
+        assert before == (store_path.read_bytes(), Path(str(store_path) + '.anchor').read_bytes())
+        assert supervisor._pinned_pairing_manager is manager
+
+
+@pytest.mark.parametrize('change', ['replace', 'cross-writer', 'expired'])
+def test_bound_changed_pending_refuses_after_ready(monkeypatch: Any, change: str) -> None:
+    from runtime.remote_access import helper_control as control
+    from datetime import datetime, timedelta, timezone
+    with bound_control(monkeypatch) as (client, supervisor, path):
+        pending_real(supervisor)
+        snapshot = client.status()
+        def change_state() -> None:
+            if change == 'replace':
+                # Different manager/process cannot be excluded by the local RLock.
+                from runtime.remote_access.pairing import PinnedPairingManager
+                other = PinnedPairingManager(state_store=supervisor.state_store,
+                    identity=supervisor._configured_identity(), registry=supervisor.registry)
+                import hashlib
+                other.issue_invite_record(hashlib.sha256(b'new').hexdigest(),
+                                         datetime.now(timezone.utc) + timedelta(minutes=4))
+                assert other.redeem('new', 'node-b', 'protected-control', datetime.now(timezone.utc))
+            elif change == 'cross-writer':
+                completed = subprocess.run([sys.executable, '-c',
+                    'import sys; from pathlib import Path; '
+                    'from runtime.remote_access.state_store import AtomicFileTrustStateStore; '
+                    'from runtime.remote_access.authorization import TrustState; '
+                    'from runtime.remote_access.identity import ConnectorIdentity; '
+                    's=AtomicFileTrustStateStore(Path(sys.argv[1]), '
+                    'TrustState(ConnectorIdentity(tenant_id="tenant",home_id="home",connector_id="connector"),0,0)); '
+                    's.save(s.load())', supervisor.config.state_path], capture_output=True)
+                assert completed.returncode == 0, completed.stderr
+            else:
+                with supervisor.state_store.transaction() as tx:
+                    tx.state.pending_approval = replace(tx.state.pending_approval,
+                        expires_at=datetime.now(timezone.utc) - timedelta(seconds=1))
+        with pytest.raises(control.Refused, match='changed'):
+            client.mutate('ApprovePending', snapshot, snapshot.pending, time.monotonic() + 60, change_state)
+        assert not supervisor.state_store.load().devices
+
+
+@pytest.mark.parametrize('fails', [False, True])
+def test_bound_revoke_only_selected_and_retains_incomplete(monkeypatch: Any, fails: bool) -> None:
+    from runtime.remote_access import helper_control as control
+    from scripts.test_managed_admission import grant, ControlledHandle
+    from runtime.remote_access.revocation import RevocationIncomplete
+    with bound_control(monkeypatch) as (client, supervisor, path):
+        a, _ = grant(supervisor, path, 'node-a', 'invite-a')
+        b, _ = grant(supervisor, path, 'node-b', 'invite-b')
+        state = supervisor.state_store.load()
+        class Handle:
+            closed = False
+            def close(self) -> None:
+                # The real durable deny must precede the callback; SH/EX can
+                # be acquired by another store here (no flock held in callback).
+                from runtime.remote_access.state_store import AtomicFileTrustStateStore
+                other = AtomicFileTrustStateStore(Path(supervisor.config.state_path), supervisor.initial_state())
+                assert other.load().devices[a].revoked
+                self.closed = True
+                if fails:
+                    raise OSError('synthetic-secret-must-not-escape')
+        ha, hb = Handle(), ControlledHandle('b')
+        supervisor.registry.open('a-stream', ha, device_id=a, epoch=state.devices[a].authorization_epoch)
+        survivor = supervisor.registry.open('b-stream', hb, device_id=b, epoch=state.devices[b].authorization_epoch)
+        snapshot = client.status()
+        target = next(d for d in snapshot.devices if d.record_id == a)
+        if fails:
+            with pytest.raises(control.Refused, match='unavailable'):
+                client.mutate('RevokeSelected', snapshot, target, time.monotonic() + 60, lambda: None)
+            assert client.status().phase == 'failed'
+            with pytest.raises(RevocationIncomplete, match='revocation epoch'):
+                supervisor._reconcile_revocation()
+            assert client.status().phase == 'failed'
+        else:
+            client.mutate('RevokeSelected', snapshot, target, time.monotonic() + 60, lambda: None)
+            supervisor._reconcile_revocation()
+        assert ha.closed and not survivor.closed
+        assert supervisor.state_store.load().devices[a].revoked
+        assert not supervisor.state_store.load().devices[b].revoked
+        assert supervisor._listener_running()
+
+
+@pytest.mark.parametrize('boundary', ['helper', 'control'])
+def test_bound_revoke_expired_grant_closes_only_selected(venue: Any, monkeypatch: Any, boundary: str) -> None:
+    from datetime import datetime, timedelta, timezone
+    from scripts.test_managed_admission import (
+        ControlledForwarder, ControlledHandle, call, connect, grant, read_all, result, supervisor_module,
+    )
+    helper, authority, _, caller, _ = venue
+    transport = ControlledForwarder()
+    monkeypatch.setattr(supervisor_module, 'HttpLoopbackForwarder', lambda *a, **kw: transport)
+    with bound_control(monkeypatch) as (client, supervisor, path):
+        helper.control = HELPER.ControlClient(client.path)
+        device_a, credential_a = grant(supervisor, path)
+        device_b, credential_b = grant(supervisor, path, 'node-b', 'synthetic-invite-b')
+        with supervisor.state_store.transaction() as tx:
+            tx.state.devices[device_a] = replace(tx.state.devices[device_a],
+                expires_at=datetime.now(timezone.utc) + timedelta(seconds=2))
+        expiry = supervisor.state_store.load().devices[device_a].expires_at
+        denied_before_close = set()
+        checking_deny = False
+        original_close = ControlledHandle.close
+        def close(handle: Any) -> None:
+            if checking_deny and handle.label.startswith('a-'):
+                # Observe the real persisted deny at the transport callback.
+                assert supervisor.state_store.load().devices[device_a].revoked
+                denied_before_close.add(handle.label)
+            original_close(handle)
+        monkeypatch.setattr(ControlledHandle, 'close', close)
+        clients, handles = {}, {}
+        try:
+            for owner, node, credential in [('a', 'node-a', credential_a), ('b', 'node-b', credential_b)]:
+                for kind in ('http', 'websocket', 'sse'):
+                    label = owner + '-' + kind
+                    clients[label] = connect(path, node, credential, kind, label)
+                    handle = transport.handles.get(timeout=3)
+                    assert handle.label == label and handle.started.wait(3)
+                    handles[label] = handle
+                    if kind != 'http':
+                        assert b'200 OK' in clients[label].recv(4096)
+            assert datetime.now(timezone.utc) < expiry, 'all streams must open before credential expiry'
+            while datetime.now(timezone.utc) <= expiry:
+                time.sleep(.02)
+            assert not any(handle.closed for handle in handles.values())
+            snapshot = client.status()
+            target = next(d for d in snapshot.devices if d.record_id == device_a)
+            assert target.expires_at == expiry.timestamp() < time.time()
+            assert snapshot.ready and snapshot.phase == 'ready'
+            checking_deny = True
+            if boundary == 'helper':
+                for _ in snapshot.devices:
+                    shown = Call(caller, 'NextDevice').finish()
+                    if shown['selected']['label'] == 'node-a':
+                        break
+                assert shown['selected']['label'] == 'node-a', 'expired grant must remain selectable'
+                authority.mode = 'delay'
+                revoke = Call(caller, 'RevokeSelected')
+                eventually(lambda: len(authority.waiting) == 1 or revoke.done.is_set())
+                if revoke.done.is_set():
+                    revoke.finish()  # Surface an early refusal at the Gio boundary.
+                assert len(authority.calls) == 1 and 'node-a' in authority.calls[0][2]['polkit.message']
+                assert not supervisor.state_store.load().devices[device_a].revoked
+                authority.grant()
+                assert revoke.finish() == 'ok'
+            else:
+                # Exercise the listener's own expiry checks independently of Gio.
+                client.mutate('RevokeSelected', snapshot, target, time.monotonic() + 60, lambda: None)
+            state = supervisor.state_store.load()
+            assert state.devices[device_a].revoked and not state.devices[device_b].revoked
+            assert denied_before_close == {'a-http', 'a-websocket', 'a-sse'}
+            for kind in ('http', 'websocket', 'sse'):
+                assert handles['a-' + kind].closed and not handles['b-' + kind].closed
+                closed = read_all(clients['a-' + kind])
+                assert result(closed)[0] == 403 if kind == 'http' else closed == b''
+                handles['b-' + kind].events.put(b'data: survivor-after-expired-revoke\n\n')
+                if kind == 'http':
+                    handles['b-http'].events.put(None)
+                    assert b'survivor-after-expired-revoke' in read_all(clients['b-http'])
+                else:
+                    assert b'survivor-after-expired-revoke' in clients['b-' + kind].recv(4096)
+            assert result(call(path, 'node-a', credential=credential_a))[0] == 403
+            assert b'200 OK' in call(path, 'node-b', credential=credential_b)
+        finally:
+            checking_deny = False
+            supervisor.shutdown()
+            for wire in clients.values():
+                wire.close()
+
+
+@pytest.mark.parametrize('method', ['ApprovePending', 'RejectPending', 'RevokeSelected'])
+def test_bound_generation_cas_at_actual_mutation(monkeypatch: Any, method: str) -> None:
+    from runtime.remote_access import helper_control as control
+    with bound_control(monkeypatch) as (client, supervisor, path):
+        if method == 'RevokeSelected':
+            from scripts.test_managed_admission import grant
+            device_id, _ = grant(supervisor, path)
+        else:
+            pending_real(supervisor)
+        manager = supervisor._pinned_pairing_manager
+        name = {'ApprovePending': 'approve_pending', 'RejectPending': 'reject_pending',
+                'RevokeSelected': 'revoke_device'}[method]
+        original = getattr(manager, name)
+        def racing(*args: Any, **kwargs: Any) -> Any:
+            # A separate store writer lands AFTER the handler's final read.
+            supervisor.state_store.save(supervisor.state_store.load())
+            return original(*args, **kwargs)
+        monkeypatch.setattr(manager, name, racing)
+        with pytest.raises(control.Refused, match='changed'):
+            mutate_real(client, method)
+        state = supervisor.state_store.load()
+        if method == 'RevokeSelected':
+            assert not state.devices[device_id].revoked
+        else:
+            assert not state.devices
+
+
+@pytest.mark.parametrize('case', ['legacy-33', 'unicode-bound'])
+def test_bound_projection_preserves_store_bounds(monkeypatch: Any, case: str) -> None:
+    from runtime.remote_access.authorization import DeviceAuthorization
+    from datetime import datetime, timedelta, timezone
+    with bound_control(monkeypatch) as (client, supervisor, path):
+        if case == 'legacy-33':
+            with supervisor.state_store.transaction() as tx:
+                for i in range(33):
+                    tx.state.apply_pairing(DeviceAuthorization(device_id=f'legacy-{i}', tenant_id='tenant',
+                        home_id='home', authorization_epoch=i + 1,
+                        expires_at=datetime.now(timezone.utc) + timedelta(days=1)))
+            assert client.status().devices == ()
+            assert len(supervisor.state_store.load().devices) == 33
+        else:
+            pending_real(supervisor, '\U0001f60a' * 256)
+            assert len(client.status().pending.stable_id) == 256
+            mutate_real(client, 'ApprovePending')
+            assert len(client.status().devices) == 1
+
+
+def test_bound_helper_dialog_cursor_and_real_target(venue: Any, monkeypatch: Any) -> None:
+    helper, authority, _, caller, _ = venue
+    with bound_control(monkeypatch) as (client, supervisor, path):
+        helper.control = HELPER.ControlClient(client.path)
+        pending_real(supervisor)
+        shown = Call(caller, 'Status').finish()
+        assert shown['pending']['label'] == 'node-a'
+        authority.mode = 'delay'
+        call = Call(caller, 'ApprovePending')
+        eventually(lambda: len(authority.waiting) == 1)
+        assert 'node-a' in authority.calls[0][2]['polkit.message']
+        pending_real(supervisor, 'node-b')
+        authority.grant()
+        call.finish('changed')
+        assert not supervisor.state_store.load().devices
+        # A new explicit call raises its own prompt and approves only the new node.
+        call = Call(caller, 'ApprovePending')
+        eventually(lambda: len(authority.waiting) == 1)
+        authority.grant()
+        assert call.finish() == 'ok'
+        assert len(authority.calls) == 2
+        assert {d.stable_node_id for d in supervisor.state_store.load().devices.values()} == {'node-b'}
+        store = Path(supervisor.config.state_path)
+        before = store.read_bytes()
+        selected = Call(caller, 'NextDevice').finish()
+        assert selected['selected']['label'] == 'node-b'
+        Call(caller, 'Status').finish()
+        assert store.read_bytes() == before
+        authority.mode = 'grant'
+        assert Call(caller, 'RevokeSelected').finish() == 'ok'
+        assert all(d.revoked for d in supervisor.state_store.load().devices.values())
+
+
+@pytest.mark.parametrize('case', ['wrong-uid', 'extra-args', 'oversize', 'expired', 'unsafe-record'])
+def test_bound_control_refusals_are_read_only(monkeypatch: Any, case: str) -> None:
+    from runtime.remote_access import helper_control as control, release_verifier
+    with bound_control(monkeypatch) as (client, supervisor, path):
+        pending_real(supervisor)
+        store = Path(supervisor.config.state_path)
+        before = store.read_bytes()
+        listener = supervisor._control_listener
+        if case == 'wrong-uid':
+            monkeypatch.setattr(listener.handler, 'handle',
+                                control.ControlHandler(listener.handler.operations).handle)
+            with pytest.raises(control.Refused, match='wrong-uid'):
+                client.status()
+        elif case == 'unsafe-record':
+            def refused(*args: Any, **kwargs: Any) -> Any:
+                raise OSError('synthetic-secret')
+            monkeypatch.setattr(release_verifier, '_read', refused)
+            with pytest.raises(control.Refused, match='unavailable'):
+                client.status()
+        elif case == 'expired':
+            snapshot = client.status()
+            with pytest.raises(control.Refused, match='expired'):
+                client.mutate('ApprovePending', snapshot, snapshot.pending, time.monotonic() - 1, lambda: None)
+        else:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+                connection.connect(client.path)
+                raw = (json.dumps({'method': 'status', 'args': []}).encode() + b'\n'
+                       if case == 'extra-args' else b'x' * (control.MAX_FRAME + 1))
+                connection.sendall(raw)
+                assert control._receive(connection) == {'error': 'invalid-request'}
+        assert store.read_bytes() == before
+        assert not supervisor.state_store.load().devices
+
+
+def test_bound_projection_over_frame_refuses_without_store_veto(monkeypatch: Any) -> None:
+    from datetime import datetime, timedelta, timezone
+    from runtime.remote_access import helper_control as control
+    from runtime.remote_access.authorization import DeviceAuthorization
+    with bound_control(monkeypatch) as (client, supervisor, path):
+        with supervisor.state_store.transaction() as tx:
+            for i in range(32):
+                tx.state.apply_pairing(DeviceAuthorization(device_id=f'pinned-{i}', tenant_id='tenant',
+                    home_id='home', authorization_epoch=i + 1,
+                    expires_at=datetime.now(timezone.utc) + timedelta(days=1),
+                    credential_digest='a' * 64, control_plane_id='protected-control',
+                    stable_node_id='\U0001f60a' * 256))
+        before = Path(supervisor.config.state_path).read_bytes()
+        with pytest.raises(control.Refused, match='unavailable'):
+            client.status()
+        assert len(supervisor.state_store.load().devices) == 32
+        assert Path(supervisor.config.state_path).read_bytes() == before
+
+
+@pytest.mark.parametrize('method', ['ApprovePending', 'RejectPending'])
+def test_bound_null_core_result_is_refused(monkeypatch: Any, method: str) -> None:
+    from runtime.remote_access import helper_control as control
+    with bound_control(monkeypatch) as (client, supervisor, path):
+        pending_real(supervisor)
+        before = Path(supervisor.config.state_path).read_bytes()
+        name = 'approve_pending' if method == 'ApprovePending' else 'reject_pending'
+        monkeypatch.setattr(supervisor._pinned_pairing_manager, name, lambda *a, **kw: None)
+        with pytest.raises(control.Refused):
+            mutate_real(client, method)
+        assert Path(supervisor.config.state_path).read_bytes() == before
+
+
+def test_bound_expired_pending_remains_reported(monkeypatch: Any) -> None:
+    from datetime import datetime, timedelta, timezone
+    from runtime.remote_access import helper_control as control
+    with bound_control(monkeypatch) as (client, supervisor, path):
+        pending_real(supervisor)
+        with supervisor.state_store.transaction() as tx:
+            tx.state.pending_approval = replace(tx.state.pending_approval,
+                expires_at=datetime.now(timezone.utc) - timedelta(seconds=1))
+        before = Path(supervisor.config.state_path).read_bytes()
+        for _ in range(2):
+            assert client.status().phase == 'failed'
+            with pytest.raises(control.Refused, match='expired'):
+                mutate_real(client, 'ApprovePending')
+        assert supervisor.state_store.load().pending_approval is not None
+        assert Path(supervisor.config.state_path).read_bytes() == before
+
+
+def test_bound_socket_custody_and_cleanup(monkeypatch: Any) -> None:
+    from runtime.remote_access import helper_control as control
+    with bound_control(monkeypatch) as (client, supervisor, path):
+        socket_path = Path(client.path)
+        assert socket_path.stat().st_uid == os.geteuid()
+        assert socket_path.stat().st_mode & 0o777 == 0o600
+        operations = supervisor._control_listener.handler.operations
+        with pytest.raises(control.Refused, match='unavailable'):
+            control.ControlListener(operations)
+        assert client.status().owned  # failed second bind did not delete the live socket
+        supervisor.shutdown()
+        assert not socket_path.exists()
+        victim = socket_path.parent / 'victim'
+        victim.write_text('synthetic-untouched')
+        socket_path.symlink_to(victim)
+        with pytest.raises(control.Refused, match='unavailable'):
+            control.ControlListener(operations)
+        assert socket_path.is_symlink() and victim.read_text() == 'synthetic-untouched'
+
+
+@pytest.mark.parametrize('method', ['ApprovePending', 'RejectPending', 'RevokeSelected'])
+def test_bound_publication_uncertainty_stays_reported(monkeypatch: Any, method: str) -> None:
+    from runtime.remote_access import helper_control as control
+    from runtime.remote_access.state_store import StateStoreError
+    with bound_control(monkeypatch) as (client, supervisor, path):
+        if method == 'RevokeSelected':
+            from scripts.test_managed_admission import grant
+            grant(supervisor, path)
+        else:
+            pending_real(supervisor)
+        before = Path(supervisor.config.state_path).read_bytes()
+        def failed_write(*args: Any, **kwargs: Any) -> None:
+            raise StateStoreError('synthetic-secret-publication-fault')
+        monkeypatch.setattr(supervisor.state_store, '_write_pair', failed_write)
+        with pytest.raises(control.Refused, match='unavailable'):
+            mutate_real(client, method)
+        assert Path(supervisor.config.state_path).read_bytes() == before
+        for _ in range(2):
+            assert client.status().phase == 'failed' and not client.status().ready

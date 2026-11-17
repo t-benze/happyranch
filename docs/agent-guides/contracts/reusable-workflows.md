@@ -1,5 +1,19 @@
 # Reusable workflow contracts
 
+A2 (2026-11-17) adds positively fresh POST `/orgs` storage creation and qualified,
+definition-only registration of the literal reviewed Coding v2 catalog. The
+fresh owner exclusively creates the DB file, initializes J + Coding + sequential
+and ownership-2, and validates the independent combined reference. The current
+Default team remains human-managed with zero agents and reviewer configuration
+`none`. Historical initializers/defaults stay byte-unchanged; absent DBs on
+startup remain historical. Registration inserts an absent exact definition,
+does zero writes for an exact existing row and refuses mismatch. It creates no
+settings, admission, roles, runs or tasks; missing defaults remain Disabled and
+roles unset. Existing saved settings/admission/history stay exact. Native and
+authority qualification precede insertion, with original reader limits intact.
+See the [A2 contract](../../superpowers/specs/2026-11-14-automatic-workflow-setup.md#a2-fresh-creation-and-definition-only-catalog).
+Existing-org storage bootstrap remains A4; source delivery grants no live setup.
+
 Database-owned native trace registrations compose only through
 `Database.observe_trace`; the load observer and outer instrumentation never
 replace one another. Check the yielded sticky failure flag before relying on

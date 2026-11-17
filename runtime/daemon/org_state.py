@@ -606,6 +606,9 @@ class OrgState:
                 # A serving-before-recovery owner must defer this call with that tail.
                 with _startup_span("org_coding_builtin", org=slug):
                     state.workflow_coding_builtin.ensure_registered()
+                with _startup_span("org_sequential_builtin", org=slug):
+                    from runtime.workflows.sequential_builtin import SequentialBuiltinStore
+                    SequentialBuiltinStore(state).ensure_registered()
                 return state
         except BaseException as primary:
             if attachment_owner is not None:

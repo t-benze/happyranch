@@ -207,8 +207,16 @@ live/native/V3 acceptance. Before-COMMIT SIGKILL may retain a cold nonempty jour
 the unchanged checkpoint guard refuses until an explicitly assessed checkpointed
 image is available. Never remove recovery files to force a rerun.
 
-Existing org startup must not install this extension. Fresh-org initialization
-needs its own reviewed source/rollout authorization. Generic Database and the
+Existing org startup must not install this extension in A2; automatic existing-org
+bootstrap belongs to A4. A2's distinct POST `/orgs` owner now exclusively creates
+the DB in its new skeleton, installs J + Coding + sequential/ownership-2 and
+validates the literal independent combined reference plus install-time physical
+integrity. Historical initializer defaults stay byte-unchanged, and absent DBs
+on startup never establish freshness. Default stays human-managed with zero
+agents and current reviewer configuration `none`. Qualified catalog registration
+adds only Coding v2 definition bytes; no settings, admission, roles, runs or tasks.
+Missing defaults remain Disabled; existing saved state is preserved exactly.
+Generic Database and the
 machine runtime-audit remain excluded. MEM498: do not add a new-column index to
 an executescript block used by legacy upgrades. MEM374: unchanged old bytes do
 not by themselves prove a new constraint or migration safe.

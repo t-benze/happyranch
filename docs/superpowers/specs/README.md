@@ -139,7 +139,7 @@ New specs should include a short status block near the top:
 | [`2026-11-11-sequential-coding-u7.md`](2026-11-11-sequential-coding-u7.md) | current U7 design; U7a–U7d source delivered | Common reads/settings, selected transport/Final acceptance/redaction and ordinary completion intake. Atomic U9b now mounts public Coding selection and old-fresh refusal. |
 | [`2026-11-12-sequential-coding-u8.md`](2026-11-12-sequential-coding-u8.md) | current U8 design; U8a read journey + U8b Setup source | Recorded U7 facts, three locked corrections, en/zh-CN; Setup/Save custody and Settings → Coding original-save recovery. U9 repairs host pointers and mounts atomic Coding cutover source. |
 | [`2026-11-12-sequential-coding-u9.md`](2026-11-12-sequential-coding-u9.md) | current U9 contract; U9a + complete atomic U9b source | Offline v2 registration/separate admission; paired public Coding selection + old-fresh fence, original-pin continuation and retained V3 fixture fence. |
-| [`2026-11-14-automatic-workflow-setup.md`](2026-11-14-automatic-workflow-setup.md) | I1a/I1b/I2 source | Mandatory offline install-time full integrity gates and independent daily advisory reporting; I2 removes inline physical checks while retaining full FKs and parts 2–7. Automatic bootstrap is A4. |
+| [`2026-11-14-automatic-workflow-setup.md`](2026-11-14-automatic-workflow-setup.md) | I1a/I1b/I2/A1/A2 source | Install/daily physical checks, complete logical loads, A1 org-access fencing, positively fresh combined storage and qualified definition-only Coding v2 catalog. Existing-org bootstrap is A4. |
 
 - **current**: [Sequential Coding U4c](2026-11-12-sequential-coding-u4c.md) — own-current Developer resolve/bind transport; original service replay/Held semantics.
 
