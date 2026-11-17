@@ -429,7 +429,7 @@ class BootstrapSelection:
             try:
                 self.close()
             except BaseException as close_error:
-                self.close_error = close_error
+                self.close_error = self.close_error or close_error
             raise
 
     def close(self) -> None:
@@ -458,8 +458,8 @@ class BootstrapSelection:
                 errors.append(exc)
         if errors:
             self.failed = True
-            self.close_error = errors[0]
-            raise BootstrapEvidenceError('workflow_setup_selection_close_unknown') from errors[0]
+            self.close_error = self.close_error or errors[0]
+            raise BootstrapEvidenceError('workflow_setup_selection_close_unknown') from self.close_error
         self.closed = True
 
 
@@ -510,6 +510,17 @@ class BootstrapStartup:
         if any(not worker.reaped or not worker.closed and not worker.discovery.fence._closed
                for worker in self.workers):
             raise BootstrapEvidenceError('workflow_setup_original_worker_in_flight')
+        for discovery in self.discoveries.values():
+            # Pre-worker failures still own their original selectors and fences.
+            # Observe custody only: a failed native close is never retried here.
+            if (any(not record['closed'] for selected in discovery.selections
+                    for record in (*selected.connections, *selected.descriptors))
+                    or any(not record['transferred'] and not record['fence']._closed
+                           for record in discovery.fences)):
+                raise BootstrapEvidenceError('workflow_setup_original_discovery_in_flight') from discovery.close_error
+        for record in self.hold_descriptors:
+            if not record['closed']:
+                raise BootstrapEvidenceError('workflow_setup_original_descriptor_in_flight') from record.get('error')
 
     def _hold(self, slug: str, reason: str, state: str) -> None:
         """External pre-intent latch only; never obscure an existing attempt."""
@@ -555,10 +566,11 @@ class BootstrapStartup:
             raise BootstrapEvidenceError('workflow_setup_startup_latched')
         self.prepared = True
         for slug, root in roots:
-            discovery = self.discover(root)
+            discovery = None
             worker = None
             started = time.monotonic()
             try:
+                discovery = self.discover(root)
                 selected = discovery.read()
                 if selected == 'held':
                     raise BootstrapEvidenceError(discovery.reason)
@@ -600,15 +612,18 @@ class BootstrapStartup:
                     reason = 'install_incomplete'
                 self.holds[slug] = reason
                 try:
-                    state = ('not_installed' if discovery.result in ('absent', 'held')
-                             and (worker is None or worker.closed and not worker.permit_sent) else 'unknown')
-                    self._hold(slug, reason, state)
+                    if discovery is not None:
+                        state = ('not_installed' if discovery.result in ('absent', 'held')
+                                 and (worker is None or worker.closed and not worker.permit_sent) else 'unknown')
+                        self._hold(slug, reason, state)
+                    # Count exhaustion is visible in holds/broken_orgs, without
+                    # acquiring DB, fence or publication descriptors past the cap.
                 except Exception:
                     # Broken-org status remains visible even if external evidence
                     # cannot be published. Never infer a persisted latch here.
                     pass
                 try:
-                    if worker is None or worker.reaped and worker.closed:
+                    if discovery is not None and (worker is None or worker.reaped and worker.closed):
                         discovery.close()
                 except Exception:
                     pass  # Original unknown custody remains in this startup owner.
@@ -637,9 +652,10 @@ class BootstrapStartup:
         root = Path(root)
         if (root.parent != self.runtime_root/'orgs'
                 or re.fullmatch('[a-z0-9-]{1,40}', root.name) is None
-                or not root.is_absolute() or root in self.discoveries
-                or len(self.discoveries) >= 1024):
+                or not root.is_absolute() or root in self.discoveries):
             raise BootstrapEvidenceError('workflow_setup_discovery_owner_invalid')
+        if len(self.discoveries) >= 1024:
+            raise BootstrapEvidenceError('startup_upgrade_budget_unavailable')
         discovery = BootstrapDiscovery(self, root)
         self.discoveries[root] = discovery
         return discovery
@@ -667,8 +683,9 @@ class BootstrapStartup:
 class BootstrapDiscovery:
     """Owned SH selection, positive SH close and fresh EX rediscovery.
 
-    A hold retains SH for independent ordinary loading, if that loading itself
-    succeeds. Unknown closure never releases or transfers any original fence.
+    A hold retains SH until the startup coordinator closes known custody;
+    it never authorizes fallback writable loading. Unknown closure never
+    releases or transfers any original fence.
     A terminal/failed attempt is a refusal, never a new discovery permission.
     """
 
@@ -704,6 +721,7 @@ class BootstrapDiscovery:
             record['fence'].close()
         except BaseException as exc:
             record['error'] = exc
+            self.close_error = self.close_error or exc
             record['fence'].retain_unknown()
             raise
         record['closed'] = True
@@ -754,7 +772,7 @@ class BootstrapDiscovery:
             try:
                 self.close()
             except BaseException as close_error:
-                self.close_error = close_error
+                self.close_error = self.close_error or close_error
             raise
 
     def take_shared(self) -> OrgAccessFence:
@@ -775,7 +793,7 @@ class BootstrapDiscovery:
         if any(worker.discovery is self and worker.started and not worker.reaped
                for worker in self.startup.workers):
             self.failed = True
-            self.close_error = BootstrapEvidenceError('workflow_setup_original_worker_in_flight')
+            self.close_error = self.close_error or BootstrapEvidenceError('workflow_setup_original_worker_in_flight')
             if self.fence is not None:
                 self.fence.retain_unknown()
             raise self.close_error
@@ -784,6 +802,7 @@ class BootstrapDiscovery:
             try:
                 selected.close()
             except BaseException as exc:
+                self.close_error = self.close_error or selected.close_error or exc
                 errors.append(exc)
         # Unclosed SQLite/descriptor ownership keeps its ORIGINAL fence.
         if not errors:
@@ -798,7 +817,7 @@ class BootstrapDiscovery:
             for record in self.fences:
                 if not record['closed'] and not record['transferred']:
                     record['fence'].retain_unknown()
-            raise BootstrapEvidenceError('workflow_setup_discovery_close_unknown') from errors[0]
+            raise BootstrapEvidenceError('workflow_setup_discovery_close_unknown') from self.close_error
         self.closed = True
 
 

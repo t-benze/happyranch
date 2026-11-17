@@ -58,6 +58,15 @@ even after restart. Backups and records remain for separately authorized operato
 assessment. Missing evidence is never success. Existing machine-wide profile
 dependency uncertainty may also hold other consumers; A4 does not waive it.
 
+The unchanged 1,024-discovery bookkeeping cap is inside the per-org startup
+boundary. Exhaustion produces `startup_upgrade_budget_unavailable` in the
+org's visible HOLD without acquiring its DB, fence or publication resources;
+remaining orgs and listener startup continue. This in-memory refusal claims no
+persisted latch. Shutdown checks original pre-worker selection connections,
+untransferred fences and descriptor custody as well as workers. Unresolved
+originals prevent successful shutdown; the first close failure remains retained
+and its failed native close is never retried.
+
 The one-time **pre-serving upgrade window** is at most **120s/org, 180s total**,
 with a **20s final reserve**, **at least 60s remaining before another attempt**,
 **0.5s cumulative fence admission/busy wait**, and **100s pre-COMMIT work**
@@ -81,8 +90,8 @@ denial, killed child, uncertain registrar close and no replay. They are private
 synthetic evidence, not live-org or whole-listener timing qualification.
 
 Earlier A4 checkpoint sections below record delivery history; their unmounted,
-missing-positive-owner and unfinished registrar statements are superseded by
-this R2 amendment and startup contract. Offline manual-install requirements,
+legacy writable fallback, missing-positive-owner and unfinished registrar
+statements are superseded by this R2 amendment and startup contract. Offline manual-install requirements,
 Coding setup/roles/Allow, PR1252's hold, and deploy/restart authority are unchanged.
 
 ## I1a: mandatory full integrity during offline installation

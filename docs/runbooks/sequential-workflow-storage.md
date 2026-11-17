@@ -18,6 +18,13 @@ selects `writer_exclusion_unproven`; missing predecessor proof does not. No live
 DB observation is needed to state this policy. Existing profile dependency
 uncertainty may also hold other consumers.
 
+The original 1,024-discovery cap is unchanged. Exhaustion holds only the
+unselected org with `startup_upgrade_budget_unavailable`, before any of its DB,
+fence or publication resources are acquired; remaining orgs and serving proceed.
+Shutdown also requires positive closure of pre-worker selection connections,
+untransferred fences and descriptors. The first close failure stays retained;
+shutdown cannot claim success or retry that failed native close.
+
 Automatic backups stay at
 `<daemon_home>/backups/workflow-sequential/<runtime-key>/<org>/<attempt-id>/before.db`.
 Only a known COMMIT permits source checkpoint; verified storage, actual A2
@@ -124,16 +131,18 @@ The explicit, separately admitted operator transaction must:
    corrupt markers/history and original v1 marks. V3 acceptance has NOT RUN;
    disposable structural observations are distinct.
 
-A4's unmounted discovery composition now owns SH selection, positive SH close
-and fresh EX discovery under one original startup/admission ledger. It does no
-backup, installer, inventory or native-owner qualification. Budget expiry holds
-absent storage without an install attempt; installed selection stays ordinary.
-A contended EX can return through independently selected SH for legacy loading,
-with `writer_exclusion_unproven`; failed SH acquisition/closure quarantines.
-Only the original selected SH transfers once into the normal loader. Keep the
-same 120s/org, 180s-total, 60s admission, 20s reserve and cumulative0.5s waiting
-limits. These clocks are not a hard bound on filesystem I/O. Native qualification,
-supervision, startup mounting and acceptance remain incomplete. See the
+The earlier discovery-only checkpoint is historical and superseded by the
+mounted A4:2 contract above. Discovery owns SH selection, positive SH close and
+fresh EX selection under one original startup/admission ledger. Budget expiry
+holds absent storage without an install attempt; installed selection stays
+ordinary. A contended EX may reacquire SH to observe current storage, but absent
+storage HOLDs with `writer_exclusion_unproven` and never falls back to legacy
+writable loading. Failed acquisition/closure quarantines. Only installed
+selection transfers its original SH into the normal loader. The same
+120s/org, 180s-total, 60s admission, 20s reserve and cumulative0.5s waiting limits
+remain; these clocks are not a hard bound on filesystem I/O. Native supervision,
+registration and startup are mounted; whole-listener acceptance is separate.
+See the historical
 [discovery checkpoint](../superpowers/specs/2026-11-14-automatic-workflow-setup.md#a4-original-discovery-and-upgrade-window-checkpoint).
 
 ## Explicit check/install interface (isolated copies executed)

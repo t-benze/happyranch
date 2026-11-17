@@ -65,7 +65,8 @@ if len(sys.argv) == 2 and sys.argv[1].startswith('--fresh-catalog='):
 bootstrap_startup_case = None
 if len(sys.argv) == 2 and sys.argv[1].startswith('--bootstrap-startup='):
     bootstrap_startup_case = sys.argv[1].split('=', 1)[1]
-    assert bootstrap_startup_case in ('success', 'integrity', 'backup', 'ex', 'history', 'history_precommit', 'commit_uncertain', 'kill', 'close', 'late_spawn')
+    assert bootstrap_startup_case in ('success', 'integrity', 'backup', 'ex', 'history', 'history_precommit', 'commit_uncertain', 'kill', 'close', 'late_spawn',
+                                     'discovery_cap', 'discovery_close', 'discovery_fence_close', 'discovery_descriptor_close')
     sys.argv[1:] = ['--bootstrap-startup']
 
 worker_case = None
@@ -165,6 +166,138 @@ if sys.argv[1:] in ([], ['--bootstrap-startup']):
     from runtime.infrastructure import workflow_schema as schema
     from runtime.infrastructure.org_access_fence import OrgAccessFence
     from runtime.models import TaskStatus
+
+    # Mounted keepers for pre-worker count exhaustion and original close faults.
+    # The 1,024 missing-DB roots reproduce normal local refusals independently
+    # of the overflow org, whose real DB must never even be selected or opened.
+    for fault in ('discovery_cap', 'discovery_close', 'discovery_fence_close', 'discovery_descriptor_close'):
+        if bootstrap_startup_case is not None and bootstrap_startup_case != fault:
+            continue
+        with tempfile.TemporaryDirectory(prefix='a4-mounted-discovery-') as scratch, ExitStack() as stack:
+            import httpx
+            from runtime.daemon.app import create_app
+            home = Path(scratch).resolve()
+            runtime = RuntimeDir.init(home/'runtime')
+            (home/'runtimes.yaml').write_text(json.dumps(dict(active=str(runtime.root), registered=[str(runtime.root)])))
+            stack.enter_context(patch.dict(os.environ, {'HAPPYRANCH_DAEMON_HOME': str(home)}))
+            stack.enter_context(patch('runtime.platform.backend_factory.select_session_backend', return_value=PassthroughBackend()))
+            if fault == 'discovery_cap':
+                for n in range(1025):
+                    root = runtime.orgs_dir/f'org-{n:04}'
+                    (root/'org').mkdir(parents=True)
+                    (root/'org/teams.yaml').write_text('teams: {}\n')
+            else:
+                root = runtime.orgs_dir/'scratch'
+                _seed_skeleton(root, from_example=None)
+            path = root/'happyranch.db'
+            if fault == 'discovery_fence_close':
+                db = Database(path)
+                schema.initialize_complete_org_schema(db, expected_org_slug=root.name, layout='J')
+                db.close()
+            else:
+                schema.initialize_fresh_org_database(path, expected_org_slug=root.name).close()
+            original_bytes = path.read_bytes()
+            native_connect, native_fence_close, native_descriptor_close = sqlite3.connect, OrgAccessFence.close, os.close
+            first = OSError('synthetic FIRST original discovery close failure')
+            calls, connections, failed_descriptors, opened = [], [], [], []
+            class CloseFault(sqlite3.Connection):
+                def close(self):
+                    calls.append(self)
+                    raise first
+            def connect(*args, **kwargs):
+                if args[0] == path.as_uri()+'?mode=ro':
+                    opened.append(args[0])
+                    if fault == 'discovery_close':
+                        kwargs['factory'] = CloseFault
+                conn = native_connect(*args, **kwargs)
+                if isinstance(conn, CloseFault):
+                    connections.append(conn)
+                return conn
+            def fence_close(fence):
+                if fault == 'discovery_fence_close' and fence.root == root:
+                    calls.append(fence)
+                    raise first
+                return native_fence_close(fence)
+            def descriptor_close(record):
+                if fault == 'discovery_descriptor_close' and not failed_descriptors:
+                    # Real native close denial, before _directory can retire its
+                    # preceding original. Subsequent closes remain native.
+                    failed_descriptors.append(record)
+                    def deny(fd):
+                        assert fd == record['fd']
+                        calls.append(fd)
+                        raise first
+                    with patch.object(bootstrap.os, 'close', side_effect=deny):
+                        return original_close_descriptor(record)
+                return original_close_descriptor(record)
+            original_close_descriptor = bootstrap._close_descriptor
+            stack.enter_context(patch.object(bootstrap.sqlite3, 'connect', side_effect=connect))
+            stack.enter_context(patch.object(OrgAccessFence, 'close', fence_close))
+            stack.enter_context(patch.object(bootstrap, '_close_descriptor', descriptor_close))
+            state = None
+            try:
+                try:
+                    state = entry._build_state(Settings())
+                except bootstrap.BootstrapEvidenceError as exc:
+                    state = exc._attachment_owner['candidate']
+                    raise AssertionError('A4-M discovery cap escaped the per-org HOLD and aborted build') from exc
+                owner = state._workflow_bootstrap
+                assert not owner.workers, 'A4-M pre-worker failure spawned an installer'
+                assert path.read_bytes() == original_bytes, 'A4-M discovery refusal changed original DB'
+                if fault == 'discovery_cap':
+                    assert len(tuple(runtime.iter_org_roots())) == 1025
+                    assert len(owner.discoveries) == 1024 and root not in owner.discoveries, 'A4-M discovery cap removed or overflow acquired'
+                    assert owner.holds[root.name] == state.broken_orgs[root.name] == 'startup_upgrade_budget_unavailable', 'A4-M missing visible overflow HOLD'
+                    assert len(state.workflow_setup_roots) == 1025 and len(state.broken_orgs) == 1025, 'A4-M remaining org startup loop aborted'
+                    assert not opened, 'A4-M overflow org DB was opened'
+                    assert not (home/'backups/workflow-sequential'/hashlib.sha256(str(runtime.root).encode()).hexdigest()/root.name).exists(), 'A4-M overflow allocated filesystem custody'
+                    assert all(r['closed'] for r in owner.hold_descriptors), 'A4-M count refusal leaked descriptors'
+                else:
+                    route = owner.discoveries[root]
+                    selected = route.selections[0]
+                    assert route.close_error is not None and not route.closed and not route.fence._closed
+                    assert calls and len(calls) == 1, 'A4-M original close failure not reached exactly once'
+                    primary, close_error, selected_error = route.primary, route.close_error, selected.close_error
+                    for _ in range(2):
+                        try:
+                            asyncio.run(state.close_all())
+                        except bootstrap.BootstrapEvidenceError as exc:
+                            assert exc.__cause__ is close_error, 'A4-M shutdown lost FIRST discovery close failure'
+                        else:
+                            raise AssertionError('A4-M shutdown accepted unresolved original discovery custody')
+                        assert not state._shutdown_complete, 'A4-M unresolved discovery claimed successful shutdown'
+                        assert route.primary is primary and route.close_error is close_error and selected.close_error is selected_error, 'A4-M FIRST close cause replaced'
+                        assert len(calls) == 1, 'A4-M retried failed native close'
+                    assert close_error is first, 'A4-M FIRST native discovery close cause replaced'
+                    if fault == 'discovery_close':
+                        assert selected.close_error is first, 'A4-M FIRST native selection close cause replaced'
+                        assert connections[0].execute('SELECT 1').fetchone()[0] == 1, 'A4-M original SQLite custody lost'
+                    if fault == 'discovery_descriptor_close':
+                        assert selected.close_error is first and not failed_descriptors[0]['closed']
+                        os.fstat(failed_descriptors[0]['fd'])
+                async def health():
+                    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=create_app(state)), base_url='http://private') as client:
+                        assert (await client.get('/api/v1/health')).status_code == 200, 'A4-M discovery refusal prevented serving'
+                asyncio.run(health())
+                if fault == 'discovery_cap':
+                    asyncio.run(state.close_all())
+                    assert state._shutdown_complete, 'A4-M resolved discovery prevented shutdown'
+                print('PASS A4-M mounted discovery build/health/shutdown:', fault, flush=True)
+            finally:
+                # Dispose only exact private originals after the custody assertions;
+                # production never retries them or changes their failure records.
+                for conn in connections:
+                    sqlite3.Connection.close(conn)
+                for record in failed_descriptors:
+                    native_descriptor_close(record['fd'])
+                if state is not None:
+                    for route in state._workflow_bootstrap.discoveries.values():
+                        for record in route.fences:
+                            if not record['closed'] and not record['transferred']:
+                                native_fence_close(record['fence'])
+                    if fault == 'discovery_cap' and not state._shutdown_complete:
+                        asyncio.run(state.close_all())
+                    state.metrics_store.close()
 
     mounted_cases = ('success', 'integrity', 'backup', 'ex', 'history', 'history_precommit', 'commit_uncertain', 'kill', 'close', 'late_spawn')
     for fault in mounted_cases:
