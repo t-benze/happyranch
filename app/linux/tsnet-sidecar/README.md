@@ -38,10 +38,13 @@ All six files use the existing atomic writer; the generated v1 provision record
 contains actual fixed-file digests and phase `provisioned` (files staged only),
 never secrets or paths. No transaction is generated or consumed.
 Final or pending transaction inventory refuses all legacy installer operations;
-it supplies no recovery or helper action. Install/check-drift/unit publication
-and alternate supervisor install/start/restart/enable/run entries refuse the
-modern profile before writes/service calls: `home control binding not provisioned;
-requires slice 3b-2`. Inventory remains unchanged. The Go sidecar is unchanged
+it supplies no recovery or helper action. Install/uninstall (including purge),
+check-drift/unit publication and alternate supervisor install/uninstall/start/
+stop/restart/enable/disable/upgrade/rollback/run entries refuse the modern profile
+before unit writes, backup creation/restoration or service calls: `home control
+binding not provisioned; requires slice 3b-2`. Inventory remains unchanged.
+Legacy omitted/empty profiles retain upgrade/rollback behavior; read-only service
+status and diagnostics remain available. The Go sidecar is unchanged
 and never starts from this staged bundle. Render-only `managed_units` selection
 from the generated connector adds only the existing `RuntimeDirectoryMode=0700`
 line; legacy and sidecar unit bytes remain unchanged, including

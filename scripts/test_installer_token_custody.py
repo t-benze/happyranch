@@ -21,7 +21,10 @@ import pytest
 
 from runtime.remote_access import installer as module
 from runtime.remote_access import release_verifier
+from runtime.remote_access import cli as connector_cli
+from runtime.remote_access import supervisor as supervisor_module
 from runtime.remote_access.managed_provider import ManagedProviderConfig
+from runtime.remote_access.service_manager import SystemdServiceManager
 from runtime.remote_access.supervisor import ConnectorConfig, ConnectorConfigError, ConnectorSupervisor
 
 
@@ -805,13 +808,13 @@ def test_generated_bundle_identity_policy_metadata_and_real_record(
     assert fixture.manager.calls == []
 
 
-@pytest.mark.parametrize("operation", ["install", "install-without-key", "drift", "write-units"])
+@pytest.mark.parametrize("operation", ["install", "install-without-key", "drift", "write-units", "uninstall", "uninstall-purge"])
 @pytest.mark.parametrize("marker", ["connector", "sidecar-only"])
 def test_staged_identity_refuses_before_units_or_service_calls(fixture: Fixture, operation: str, marker: str) -> None:
     parent = generated_bundle(fixture)
     if marker == "sidecar-only":
         (parent / "connector.json").unlink()  # Even incomplete staged inventory cannot start the sidecar.
-    if operation == "drift":
+    if operation in {"drift", "uninstall", "uninstall-purge"}:
         units = fixture.root / "etc/systemd/system"
         units.mkdir(parents=True, mode=0o755)
         units.parent.chmod(0o755)
@@ -829,12 +832,92 @@ def test_staged_identity_refuses_before_units_or_service_calls(fixture: Fixture,
             fixture.installer.install(enrollment_key_file=fixture.key if operation == "install" else None)
         elif operation == "drift":
             fixture.installer.check_drift()
+        elif operation.startswith("uninstall"):
+            fixture.installer.uninstall(purge=operation == "uninstall-purge")
         else:
             fixture.installer._write_units()
     assert staged_inventory(fixture) == before
-    if operation != "drift":
+    if operation not in {"drift", "uninstall", "uninstall-purge"}:
         assert not (fixture.root / "etc/systemd").exists()
     assert fixture.manager.calls == []
+
+
+def lifecycle_cli_manager(fixture: Fixture, monkeypatch: pytest.MonkeyPatch) -> tuple[SystemdServiceManager, list]:
+    """Real unit/backup lifecycle with only subprocess transport replaced."""
+    units, backups = (fixture.root / name for name in ("lifecycle-units", "lifecycle-backups"))
+    for directory in (units, backups):
+        directory.mkdir(mode=0o700)
+    fixture.write(units / "happyranch-connector.service", b"existing unit\n")
+    fixture.write(backups / "happyranch-connector.service.1", b"previous unit\n")
+    fixture.write(units / "sibling.service", b"unrelated unit\n")
+    calls: list[tuple] = []
+
+    def run(argv: list[str], **kwargs: object) -> tuple[int, str]:
+        calls.append(tuple(argv))
+        return 0, "active\n"
+
+    manager = SystemdServiceManager(system=True, unit_dir=units, backup_dir=backups, run=run)
+    monkeypatch.setattr(supervisor_module, "service_manager", lambda **kwargs: manager)
+    return manager, calls
+
+
+@pytest.mark.parametrize("operation", ["upgrade", "rollback", "stop", "disable", "uninstall"])
+def test_staged_identity_cli_preserves_lifecycle_inventory(
+    fixture: Fixture, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], operation: str,
+) -> None:
+    parent = generated_bundle(fixture)
+    manager, service_calls = lifecycle_cli_manager(fixture, monkeypatch)
+    manager_calls: list[str] = []
+    method = getattr(manager, operation)
+
+    def observe(*args: object, **kwargs: object) -> object:
+        manager_calls.append(operation)
+        return method(*args, **kwargs)
+
+    monkeypatch.setattr(manager, operation, observe)
+    before = staged_inventory(fixture)
+    code = connector_cli.main([operation, "--config", str(parent / "connector.json")])
+    output = capsys.readouterr()
+    assert code == 1
+    assert output.err == "error: home control binding not provisioned; requires slice 3b-2\n"
+    assert output.out == ""
+    assert staged_inventory(fixture) == before
+    assert manager_calls == []
+    assert service_calls == []
+
+
+@pytest.mark.parametrize("operation", ["upgrade", "rollback"])
+@pytest.mark.parametrize("profile", ["omitted", "empty"])
+def test_legacy_cli_upgrade_rollback_keep_lifecycle(
+    fixture: Fixture, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+    operation: str, profile: str,
+) -> None:
+    path = fixture.inputs / "connector.json"
+    raw = json.loads(path.read_bytes())
+    if profile == "omitted":
+        raw["managed"].pop("profile", None)
+    else:
+        raw["managed"]["profile"] = ""
+    fixture.write(path, json.dumps(raw).encode())
+    manager, calls = lifecycle_cli_manager(fixture, monkeypatch)
+    before = {path.name: path.read_bytes() for path in manager.backup_dir.iterdir()}
+    assert connector_cli.main([operation, "--config", str(path)]) == 0
+    output = capsys.readouterr()
+    assert output.err == ""
+    assert json.loads(output.out)["ok"] is True
+    expected_calls = [("systemctl", "daemon-reload"), ("systemctl", "restart", "happyranch-connector.service")]
+    if operation == "upgrade":
+        expected_calls.append(("systemctl", "is-active", "happyranch-connector.service"))
+        installed = (manager.unit_dir / "happyranch-connector.service").read_text()
+        assert "ExecStart=" in installed and "RuntimeDirectoryMode=0700" not in installed
+        backups = {path.name: path.read_bytes() for path in manager.backup_dir.iterdir()}
+        assert backups.items() >= before.items()
+        assert len(backups) == 2 and b"existing unit\n" in backups.values()
+    else:
+        assert (manager.unit_dir / "happyranch-connector.service").read_bytes() == b"previous unit\n"
+        assert {path.name: path.read_bytes() for path in manager.backup_dir.iterdir()} == before
+    assert calls == expected_calls
+    assert (manager.unit_dir / "sibling.service").read_bytes() == b"unrelated unit\n"
 
 
 @pytest.mark.parametrize("operation", ["install", "start", "restart", "enable", "run"])

@@ -1037,6 +1037,7 @@ class ManagedInstaller:
 
     def uninstall(self, *, purge: bool = False) -> None:
         """Wait for services before unit removal. Only purge removes service state."""
+        self._refuse_staged_identity()
         try:
             self._service_owner = self._account(create=False)
             self._preflight()

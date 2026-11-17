@@ -514,10 +514,13 @@ v1 `provision.json` binds their actual SHA-256 bytes with phase `provisioned`
 (files staged, not installed); it contains no secret or path. Generation writes
 no install transaction and consumes/recovers none.
 
-Install admission, unit publication, check-drift and the alternate connector
-supervisor install/start/restart/enable/foreground-run entries refuse the modern
+Install/uninstall (including purge) admission, unit publication, check-drift and
+the alternate connector supervisor install/uninstall/start/stop/restart/enable/
+disable/upgrade/rollback/foreground-run entries refuse the modern
 profile with `home control binding not provisioned; requires slice 3b-2`, before
-unit writes or service calls. Inventory remains unchanged on refusal. Modern
+unit writes, backup creation/restoration or service calls. Inventory remains
+unchanged on refusal. Legacy omitted/empty profiles retain upgrade/rollback
+behavior; read-only service status and diagnostics remain available. Modern
 service admission stays unavailable even if a URL is supplied; a complete
 protected home binding belongs to 3b-2. `managed_units(connector_config=...)`
 can render the generated profile for inspection: its connector differs from the

@@ -1123,6 +1123,7 @@ class ConnectorSupervisor:
                 raise ConnectorConfigError(f"cannot chown {path}: {exc}") from exc
 
     def uninstall(self) -> None:
+        self._refuse_staged_identity()
         self.manager.uninstall(self.config.unit_name)
 
     def start(self) -> None:
@@ -1130,6 +1131,7 @@ class ConnectorSupervisor:
         self.manager.start(self.config.unit_name)
 
     def stop(self) -> None:
+        self._refuse_staged_identity()
         self.manager.stop(self.config.unit_name)
 
     def restart(self) -> None:
@@ -1148,6 +1150,7 @@ class ConnectorSupervisor:
             raise ConnectorConfigError("home control binding not provisioned; requires slice 3b-2")
 
     def disable(self) -> None:
+        self._refuse_staged_identity()
         self.manager.disable(self.config.unit_name)
 
     def _readiness_path(self) -> Path:
@@ -1166,6 +1169,7 @@ class ConnectorSupervisor:
         return process
 
     def upgrade(self, *, verify_start: bool = True) -> UpgradeOutcome:
+        self._refuse_staged_identity()
         if sys.platform == "darwin":
             return self.manager.upgrade(
                 self._launch_agent_text(), self.config.unit_name, verify_start=verify_start
@@ -1175,6 +1179,7 @@ class ConnectorSupervisor:
         )
 
     def rollback(self) -> UpgradeOutcome:
+        self._refuse_staged_identity()
         return self.manager.rollback(self.config.unit_name)
 
     # ── the foreground readiness loop (systemd Type=notify) ───────────────

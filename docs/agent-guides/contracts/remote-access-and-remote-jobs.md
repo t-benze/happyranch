@@ -849,10 +849,13 @@ The v1 provision record carries real fixed-file SHA-256 digests and the existing
 `provisioned` phase (staging only), with no secrets or paths. Generation creates
 no transaction file and grants no transaction consumption/recovery operation.
 
-Install, check-drift and unit publication refuse the modern profile before any
-unit write or service call with `home control binding not provisioned; requires
-slice 3b-2`, leaving inventory unchanged. Alternate supervisor install/start/
-restart/enable/run entries enforce the same refusal; modern service admission
+Install/uninstall (including purge), check-drift and unit publication refuse the
+modern profile before any unit write, backup creation/restoration or service
+call with `home control binding not provisioned; requires slice 3b-2`, leaving
+inventory unchanged. Alternate supervisor install/uninstall/start/stop/restart/
+enable/disable/upgrade/rollback/run entries enforce the same refusal. Legacy
+omitted/empty profiles retain upgrade/rollback behavior; read-only service status
+and diagnostics remain available. Modern service admission
 remains unavailable even with a supplied URL. Render-only
 `managed_units(connector_config=...)` selects the existing identity renderer
 profile, adding exactly `RuntimeDirectoryMode=0700` to the connector. Sidecar and
