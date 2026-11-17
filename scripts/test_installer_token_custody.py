@@ -2163,10 +2163,16 @@ def test_replacement_state_removal_interruption_resumes(
     observed = fixture.installer.replacement_inventory()
     assert observed.installation.detail == phase
     assert observed.journal_generation == hashlib.sha256(journal).hexdigest()
-    with pytest.raises(module.InstallerError, match=REMOVAL_BOUNDARY):
+    consumes_state = phase == "replacement-state-removed"
+    boundary = CONFIG_REMOVAL_BOUNDARY if consumes_state else REMOVAL_BOUNDARY
+    with pytest.raises(module.InstallerError, match=boundary):
         fixture.installer.replace_failed()
     assert all(not (fixture.root / r).exists() and not (fixture.root / r).is_symlink() for _, r in REMOVALS)
-    assert json.loads((parent / "install-transaction.json").read_bytes())["phase"] == "replacement-state-removed"
+    assert json.loads((parent / "install-transaction.json").read_bytes())["phase"] == (
+        "replacement-configs-removed" if consumes_state else "replacement-state-removed")
+    if consumes_state:
+        assert all(not (fixture.root / r).exists() for _, r in CONFIG_REMOVALS)
+    assert all(state == "inactive" for state in manager.states.values())
     assert all(call[0] in {"show", "stop"} and call[1] in module.UNITS for call in manager.calls)
 
 
