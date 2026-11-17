@@ -64,7 +64,8 @@ if len(sys.argv) == 2 and sys.argv[1].startswith('--bootstrap-owners='):
         'producer_quiescence', 'producer_rewrite', 'writer_settled', 'writer_active', 'writer_unknown',
         'writer_rewrite', 'pause_prepared', 'pause_unknown', 'thread_settled', 'thread_active',
         'thread_unknown', 'thread_missing', 'thread_orphan', 'thread_rewrite', 'acquisition',
-        'deadline', 'sql_budget', 'query_only')
+        'deadline', 'sql_budget', 'query_only', 'task_active', 'task_terminal',
+        'publication_lease', 'profile_lease', 'domain_acquisition')
     sys.argv[1:] = ['--bootstrap-owners']
 
 backup_case = None
@@ -2311,7 +2312,8 @@ if sys.argv[1:] in ([], ['--bootstrap-owners']):
         'producer_quiescence', 'producer_rewrite', 'writer_settled', 'writer_active', 'writer_unknown',
         'writer_rewrite', 'pause_prepared', 'pause_unknown', 'thread_settled', 'thread_active',
         'thread_unknown', 'thread_missing', 'thread_orphan', 'thread_rewrite', 'acquisition',
-        'deadline', 'sql_budget', 'query_only')
+        'deadline', 'sql_budget', 'query_only', 'task_active', 'task_terminal',
+        'publication_lease', 'profile_lease', 'domain_acquisition')
     for fault in cases:
         if owners_case is not None and owners_case != fault:
             continue
@@ -2328,6 +2330,19 @@ if sys.argv[1:] in ([], ['--bootstrap-owners']):
                 schema.initialize_complete_org_schema(db, expected_org_slug='scratch', layout='J')
                 install_pause_schema(db, org_slug='scratch')
                 install_task_ownership(db, org_slug='scratch')
+                if fault in ('task_active', 'task_terminal'):
+                    from runtime.models import TaskStatus
+                    db.insert_task(TaskRecord(id='TASK-synthetic-domain', brief='private domain owner',
+                        status=TaskStatus.COMPLETED if fault=='task_terminal' else TaskStatus.PENDING,
+                        assigned_agent='synthetic-agent'))
+                if fault in ('publication_lease', 'profile_lease'):
+                    table = 'workflow_publication_leases' if fault=='publication_lease' else 'workflow_profile_leases'
+                    # Even a definitely absent process supplies no release of
+                    # this original retained publication/profile ownership.
+                    db._conn.execute('INSERT INTO '+table+' VALUES (?,?,?)', ('synthetic-owner', 'original-token', 2147483647))
+                if fault == 'domain_acquisition':
+                    db._conn.executemany('INSERT INTO workflow_authority_pointers VALUES (?,0,NULL,NULL,\'ready\',0)',
+                        [('synthetic-namespace-'+str(n),) for n in range(4097)])
                 if fault.startswith('producer_'):
                     store = ProducerAdmissionStore(db, 'scratch')
                     first = ProducerLifecycle(org_slug='scratch', kind='cleanup', source_id='synthetic-source',
@@ -2436,7 +2451,7 @@ if sys.argv[1:] in ([], ['--bootstrap-owners']):
                             source.open()
                         except (ValueError, sqlite3.Error) as exc:
                             error = exc
-                    good = fault in ('empty', 'producer_settled', 'writer_settled', 'thread_settled')
+                    good = fault in ('empty', 'producer_settled', 'writer_settled', 'thread_settled', 'task_terminal')
                     assert reached == ['original-history'], ('A4-N original history gate missing', fault, reached)
                     assert (error is None) == good, ('A4-N accepted unclosed native history' if not good else 'A4-N rejected settled original history', fault, type(error).__name__)
                     if not good:
@@ -2445,7 +2460,15 @@ if sys.argv[1:] in ([], ['--bootstrap-owners']):
                             thread_missing='thread history missing', acquisition='workflow_setup_history_acquisition_exhausted',
                             deadline='workflow_setup_history_deadline', sql_budget='workflow_setup_inventory_exhausted',
                             query_only='workflow_setup_history_owner_invalid').get(fault, 'writer_exclusion_unproven')
-                        assert str(error) == expected, ('A4-N wrong native refusal cause', fault, type(error).__name__, str(error))
+                        if fault in ('task_active', 'publication_lease', 'profile_lease'):
+                            owner = dict(task_active='tasks:TASK-synthetic-domain',
+                                publication_lease='workflow_publication_leases', profile_lease='workflow_profile_leases')[fault]
+                            assert owner in str(error) and str(error).startswith(('workflow_coding_source_owner_unresolved:',
+                                'workflow_submission_source_owner_active:')), ('A4-N wrong current domain cause', fault, str(error))
+                        else:
+                            if fault == 'domain_acquisition':
+                                expected = 'workflow_setup_history_acquisition_exhausted'
+                            assert str(error) == expected, ('A4-N wrong native refusal cause', fault, type(error).__name__, str(error))
                     assert source.failed == (not good), 'A4-N failure did not latch source'
                     assert source.source is not None and source.source.in_transaction, 'A4-N original source lost'
                     if fault != 'query_only':
@@ -2998,7 +3021,8 @@ if sys.argv[1:] in ([], ['--bootstrap-install']):
                 install_pause_schema(db, org_slug='scratch')
                 initialize_fresh_reviewer_agents(OrgPaths(root), db)
                 install_task_ownership(db, org_slug='scratch')
-                db.insert_task(TaskRecord(id='TASK-preserved', brief='synthetic retained task'))
+                from runtime.models import TaskStatus
+                db.insert_task(TaskRecord(id='TASK-preserved', brief='synthetic retained task', status=TaskStatus.COMPLETED))
                 db._conn.execute('CREATE TABLE a4_writer_sentinel(id INTEGER PRIMARY KEY,v BLOB)')
                 db._conn.execute('INSERT INTO a4_writer_sentinel VALUES (37,?)', (b'original\0typed',))
                 db._conn.commit()
@@ -3516,7 +3540,7 @@ if sys.argv[1:] in ([], ['--install-integrity'], ['--bootstrap-backup'], ['--boo
     from runtime.infrastructure import workflow_integrity as physical
 
     @contextmanager
-    def install_integrity_fixture():
+    def install_integrity_fixture(*, idle: bool = False):
         with tempfile.TemporaryDirectory(prefix='workflow-install-integrity-') as scratch:
             root = Path(scratch)
             runtime = root / 'runtime'
@@ -3533,7 +3557,9 @@ if sys.argv[1:] in ([], ['--install-integrity'], ['--bootstrap-backup'], ['--boo
                 schema.initialize_complete_org_schema(db, expected_org_slug='scratch', layout='J')
                 install_pause_schema(db, org_slug='scratch')
                 install_task_ownership(db, org_slug='scratch')
-                db.insert_task(TaskRecord(id='TASK-integrity', brief='private preservation sentinel'))
+                from runtime.models import TaskStatus
+                db.insert_task(TaskRecord(id='TASK-integrity', brief='private preservation sentinel',
+                    status=TaskStatus.COMPLETED if idle else TaskStatus.PENDING))
             finally:
                 db.close()
             backup = root / 'verified-backup.db'
@@ -3572,7 +3598,7 @@ if sys.argv[1:] in ([], ['--install-integrity'], ['--bootstrap-backup'], ['--boo
         for fault in backup_cases:
             if backup_case is not None and fault != backup_case:
                 continue
-            with install_integrity_fixture() as fixture:
+            with install_integrity_fixture(idle=True) as fixture:
                 path, _, _, _, _, _, _ = fixture
                 native_connect = sqlite3.connect
                 keeper = native_connect(path)

@@ -613,6 +613,36 @@ qualification, supervised helper/parent permission, registration/audit/status,
 coordinator mount and whole-startup acceptance remain incomplete. Keep A4 draft;
 no automatic existing-org install caller or ordinary load cost is added here.
 
+### A4 current-domain prerequisite checkpoint
+
+`BootstrapSource.open` now composes the existing SELECT-only
+`_validate_coding_source_idle` after strict native history on the SAME coherent
+query-only source, before any intent or backup. Storage compatibility and a
+terminal native journal cannot qualify queued task/result/recovery work,
+publication/profile leases or remote operation ownership. The original owner
+retains every predicate and refusal, including pending-job attribution and
+terminal callback joins. No PID/port absence or fresh participation marker
+supplies release and no stored history is rewritten.
+
+Before the existing reader acquires its whole collections, scalar SQL charges
+both observation and validation against the same 8192-row/64MiB acquisition
+ledger with the original per-row bound. The current-domain read shares the
+native-history five-second deadline and original cumulative install SQL ledger;
+there is no reset, retry or ordinary default-load budget override. A refusal
+latches the original source and its original handles close once as before.
+
+The existing `--bootstrap-owners` table adds task_active/task_terminal,
+publication_lease/profile_lease and domain_acquisition. Real native rows observe
+unchanged source values, original causal refusal, no intent/backup and no replay.
+The installation fixture's preservation sentinel is now a terminal task, making
+it eligible for this prerequisite while retaining exact inventory comparison.
+The automatic backup table likewise selects a terminal sentinel through its
+test-side fixture argument; the shared offline fixture remains pending by default.
+These checks prove no live original host/process/preparation, registry or
+cooperating-host clearance. Supervisor/parent permission, final qualified
+registration/status, automatic mounting and whole-startup acceptance remain
+incomplete.
+
 ### A4 final entry startup isolation checkpoint
 
 The custody boundary also spans the actual daemon entry tail after

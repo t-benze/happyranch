@@ -2,6 +2,16 @@
 
 ### A4 startup attachment custody
 
+Before any automatic intent, `BootstrapSource.open` also invokes the existing
+SELECT-only current-domain idle reader on its original query-only snapshot.
+Queued tasks, callback/recovery claims, publication/profile leases and remote
+operations retain their original refusal rules; a dead PID does not release a
+lease. Whole collections are scalar-sized before payload acquisition and charged
+to the same 8192-row/64MiB native-history acquisition ledger, five-second read
+deadline and cumulative install SQL ledger. Terminal history can pass this
+prerequisite without granting original host/process/preparation or cooperating
+host clearance. No historical state is rewritten or reconciled by this read.
+
 `DaemonState.from_runtime` contains each org's construction and post-load binding
 before adding it to the runnable map. Expected SQLite/filesystem/data refusals
 and unexpected per-org exceptions produce closed sanitized reasons and allow

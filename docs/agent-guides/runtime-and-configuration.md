@@ -1,5 +1,14 @@
 # Runtime And Configuration
 
+A4's unmounted source prerequisite now composes strict native histories with the
+existing current-domain idle reader before any install intent. It reads the same
+query-only snapshot, bounds whole collections before acquisition and shares the
+original history/SQL/deadline allowances. Queued work, callback/recovery and
+publication/profile/remote ownership retain their original refusal causes;
+terminal labels or absent PIDs grant no original host closure. Automatic startup
+mounting and whole-listener acceptance remain incomplete; see the
+[current-domain checkpoint](../superpowers/specs/2026-11-14-automatic-workflow-setup.md#a4-current-domain-prerequisite-checkpoint).
+
 Startup attachment construction now records the original SQLite connection
 before its first PRAGMA. A failed constructor closes once, preserves its primary
 cause and retains any unclosed handle in the daemon's attachment owner. Startup
