@@ -699,7 +699,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, SPUU
     /// Launch the frozen daemon binary from inside the .app bundle (bundled mode).
     private func launchBundledDaemon(pc: ProcessControlling) {
         guard let daemonPath = Self.bundledDaemonPath() else {
-            stateText = "App bundle Resources directory could not be resolved; no bundled daemon path was checked"
+            let launchError = "App bundle Resources directory could not be resolved; no bundled daemon path was checked — rebuild the app with app/mac/scripts/build-app.sh; this build is incomplete."
+            stateText = launchError
+            diagnostics.recordLaunchLog(launchError)
             return
         }
 
