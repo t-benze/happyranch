@@ -12,7 +12,7 @@ import { IdentityName } from '@/shared/identities/IdentityName';
  * detail (within the drawer), "Open reflection thread" -> the dream's thread.
  *
  * Pasture vocabulary:
- *   Cards: bg-surface + border-border-default + shadow-pasture-sm + rounded-lg
+ *   Feed: one List card (THR-376 PR7), one Row per dream with hairline dividers
  *   Heading: DREAMS-03 Direction-A header — uppercase eyebrow (live night
  *     count) + font-display serif (Newsreader) statement title
  *   Dream ID / timestamps / counts: font-mono tabular-nums
@@ -36,6 +36,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useDreamsList } from '@/hooks/dreams';
 import { ContentWrap } from '@/design-system/layouts/ContentWrap/ContentWrap';
 import { PageTitle } from '@/design-system/patterns/PageTitle';
+import { List, Row, RowAction } from '@/design-system/patterns/List';
 import { Button } from '@/design-system/primitives/Button';
 import { CrescentMoonBadge } from '@/design-system/patterns/CrescentMoonBadge';
 import { EmptyState } from '@/design-system/patterns/EmptyState';
@@ -104,15 +105,10 @@ function DreamCard({
     dream.new_learnings_count > 0;
 
   return (
-    <li>
-      <button
-        type="button"
+    <Row padding="none">
+      <RowAction
         onClick={onClick}
-        className={cn(
-          'bg-surface border border-border-default shadow-pasture-sm hover:bg-surface-sunken',
-          'w-full text-left p-4 rounded-lg transition-colors',
-          active && 'ring-2 ring-accent-soft',
-        )}
+        className={cn(active && 'ring-2 ring-inset ring-accent-soft')}
       >
         {/* Header row — dream ID + agent + status pill */}
         <div className="mb-1.5 flex items-center gap-2">
@@ -181,23 +177,23 @@ function DreamCard({
             </span>
           )}
         </div>
-      </button>
-    </li>
+      </RowAction>
+    </Row>
   );
 }
 
 /* ------------------------------------------------------------------ */
-/*  Loading skeleton — Pasture card-shaped                             */
+/*  Loading skeleton — List rows, like the feed                        */
 /* ------------------------------------------------------------------ */
 
 function LoadingSkeleton(): JSX.Element {
   const { t } = useTranslation();
   return (
-    <div className="flex flex-col gap-3 p-4" aria-label={t('dreams.loading')}>
+    <List aria-label={t('dreams.loading')}>
       {[1, 2, 3].map((i) => (
-        <div
+        <Row
           key={i}
-          className="bg-surface border-border-default shadow-pasture-sm animate-pulse space-y-2 rounded-lg border p-4"
+          className="animate-pulse space-y-2"
         >
           <div className="flex items-center gap-2">
             <div className="bg-surface-sunken h-3.5 w-3.5 rounded-full" />
@@ -206,9 +202,9 @@ function LoadingSkeleton(): JSX.Element {
           </div>
           <div className="bg-surface-sunken h-3 w-3/4 rounded-sm" />
           <div className="bg-surface-sunken h-3 w-1/2 rounded-sm" />
-        </div>
+        </Row>
       ))}
-    </div>
+    </List>
   );
 }
 
@@ -338,7 +334,7 @@ export function DreamsPage(): JSX.Element {
                 <p className="text-text-secondary mb-1 px-1 text-xs font-semibold tracking-wider uppercase">
                   {t('dreams.feed.count', { count: dreams.length })}
                 </p>
-                <ul className="flex flex-col gap-3">
+                <List>
                   {dreams.map((d) => (
                     <DreamCard
                       key={d.dream_id}
@@ -352,7 +348,7 @@ export function DreamsPage(): JSX.Element {
                       }
                     />
                   ))}
-                </ul>
+                </List>
               </div>
             )}
           </main>

@@ -25,6 +25,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AlertCircle, Filter, Plus, RefreshCw } from 'lucide-react';
 import { Tabs, TabsList, TabsTrigger } from '@/design-system/primitives/Tabs';
 import { Button } from '@/design-system/primitives/Button';
+import { Card } from '@/design-system/primitives/Card';
 import { EmptyState } from '@/design-system/patterns/EmptyState';
 import { ContentWrap } from '@/design-system/layouts/ContentWrap/ContentWrap';
 import {
@@ -559,9 +560,11 @@ function TasksList({ groupBy, setGroupBy, filters, setFilters }: {
                       {attentionCount}
                     </span>
                   </div>
-                  <section
+                  <Card
+                    as="section"
+                    padding="none"
                     aria-labelledby="waiting-on-you-heading"
-                    className="border-border-default bg-surface-raised rounded-md border shadow-pasture-sm"
+                    className="overflow-hidden"
                   >
                     <ul>
                       {attentionTasks.map((task) => (
@@ -570,7 +573,7 @@ function TasksList({ groupBy, setGroupBy, filters, setFilters }: {
                         </li>
                       ))}
                     </ul>
-                  </section>
+                  </Card>
                   {attentionFailed && (
                     <div role="alert" className="border-feedback-danger bg-danger-soft mt-2 flex flex-wrap items-center justify-between gap-3 rounded-lg border p-3">
                       <p className="text-text-primary text-sm font-medium">{t('tasks.attention.partialError')}</p>
@@ -594,7 +597,7 @@ function TasksList({ groupBy, setGroupBy, filters, setFilters }: {
                     count={tasks.length}
                     dot={groupDot(key, groupBy)}
                   />
-                  <section className="border-border-default bg-surface-raised rounded-md border shadow-pasture-sm">
+                  <Card as="section" padding="none" className="overflow-hidden">
                     <ul>
                       {tasks.map((t) => (
                         <li key={t.task_id}>
@@ -606,7 +609,7 @@ function TasksList({ groupBy, setGroupBy, filters, setFilters }: {
                         </li>
                       ))}
                     </ul>
-                  </section>
+                  </Card>
                 </div>
               );
             })}

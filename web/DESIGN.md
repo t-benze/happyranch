@@ -38,6 +38,12 @@
 # typography.scale display is the Home greeting only; Pasture page titles
 # are --text-page-title (26/500 Newsreader) and eyebrows --text-eyebrow
 # (11/600, 0.07em, uppercase). See DESIGN_SYSTEM.md.
+# THR-376 PR7 adds: the "no drop shadows on resting cards" rule (elevation
+# level 0 for cards and the matching DON'T) is SUPERSEDED. A Pasture card
+# (ds.css .card) is surface + 1px --border + 18px radius + --shadow-sm
+# (shadow-pasture-sm), padding 20; lists are one card per group with
+# hairline-divided rows, not stacks of cards. Use the Card / CardHeader
+# primitives and the List / Row pattern (see DESIGN_SYSTEM.md).
 # The rest of this file is unchanged historical reference (Phase 4 rewrites it).
 
 name: HappyRanch Founder Console
@@ -319,6 +325,7 @@ layout:
 # -------------------------------------------------------------------- #
 
 elevation:
+  # SUPERSEDED (Pasture, THR-376 PR7): resting cards carry shadow-pasture-sm.
   # No drop shadows on resting cards. Depth is conveyed by surface tint
   # difference (sunken < raised < overlay). Shadows reserved for floating
   # surfaces (modal, popover, toast).
@@ -697,7 +704,7 @@ Shadows exist only for *floating* elements:
 
 | Level | Use | Visual |
 |---|---|---|
-| 0 | Resting cards, rows, message bubbles | No shadow; sits on parent surface |
+| 0 | Resting cards, rows, message bubbles | No shadow; sits on parent surface — SUPERSEDED (Pasture): cards use `shadow-pasture-sm`; rows inside a card stay flush |
 | 1 | Header bands (TopBar, ThreadHeader) | Single 1px ink line below |
 | 2 | Popovers, dropdowns, command palette | Soft 8/24 shadow + 1px halo |
 | 3 | Modals, drawers, toasts | Stronger 24/64 shadow + scrim backdrop |
@@ -792,6 +799,8 @@ Anything else gets `border.strong` or `text.secondary`.
 badges and inline text — full-bleed tier color makes neutral rows read
 as warnings.
 
+**SUPERSEDED (Pasture, THR-376 PR7) for cards:** a resting `Card` carries
+`shadow-pasture-sm`; rows and message bubbles stay flush.
 **DON'T** use drop shadows on resting cards, rows, or message bubbles. If
 something is floating, it's a popover/modal/toast and gets elevation
 2 or 3. Everything else uses surface tint.

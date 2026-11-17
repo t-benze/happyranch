@@ -18,6 +18,7 @@ import { Plus } from 'lucide-react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { NewThreadDialog } from '@/shared/threads/NewThreadDialog';
 import { useThreadRoutes } from '@/hooks/threads';
+import { List, Row, RowAction } from '@/design-system/patterns/List';
 import { PageTitle } from '@/design-system/patterns/PageTitle';
 import {
   Tabs,
@@ -198,63 +199,62 @@ export function AgentsPage(): JSX.Element {
                   />
                 </div>
               ) : (
-                <ul className="flex flex-col gap-1 p-2">
-                  {agents.map((a) => {
-                    const active = selectedAgent === a.name;
-                    return (
-                      <li key={a.name}>
-                        <button
-                          type="button"
-                          onClick={() => navigate(routes.detail(a.name))}
-                          className={`hover:bg-surface-hover relative w-full overflow-hidden px-3 ${rowPad} rounded-lg text-left transition-colors ${
-                            active
-                              ? 'bg-accent-muted border-accent-muted shadow-pasture-sm border'
-                              : 'bg-surface hover:border-border-default border border-transparent'
-                          }`}
-                        >
-                          {active && (
-                            <span
-                              aria-hidden="true"
-                              className="bg-accent absolute top-1 bottom-1 left-0 w-0.5 rounded-full"
-                            />
-                          )}
-                          <div className="flex items-start gap-2.5">
-                            {/* AGENTS-02: role-colored avatar-initial chip,
-                                mirroring the existing led-dot role logic. */}
-                            <AgentAvatar displayName={identityPresentation.name(a.name)} name={a.name} role={a.role} size="sm" />
-                            <div className="min-w-0 flex-1">
-                              <div className="flex items-center gap-2">
-                                <span className="font-display text-text-primary truncate text-sm font-medium">
-                                  <IdentityName canonicalId={a.name} />
-                                </span>
-                                {/* AGENTS-04: role dot on the row's right edge
-                                    (Direction-A `a-agents`), not crowding the
-                                    name. Role-colored — never an active/idle
-                                    status the roster payload doesn't carry. */}
-                                <span
-                                  aria-hidden="true"
-                                  className={`ml-auto inline-block h-1.5 w-1.5 shrink-0 rounded-full ${
-                                    a.role === 'manager'
-                                      ? 'bg-agent-manager'
-                                      : 'bg-agent-worker'
-                                  }`}
-                                />
+                <div className="p-2">
+                  <List>
+                    {agents.map((a) => {
+                      const active = selectedAgent === a.name;
+                      return (
+                        <Row key={a.name} padding="none">
+                          <RowAction
+                            onClick={() => navigate(routes.detail(a.name))}
+                            className={`relative overflow-hidden px-3 ${rowPad} ${
+                              active ? 'bg-accent-muted' : ''
+                            }`}
+                          >
+                            {active && (
+                              <span
+                                aria-hidden="true"
+                                className="bg-accent absolute top-1 bottom-1 left-0 w-0.5 rounded-full"
+                              />
+                            )}
+                            <div className="flex items-start gap-2.5">
+                              {/* AGENTS-02: role-colored avatar-initial chip,
+                                  mirroring the existing led-dot role logic. */}
+                              <AgentAvatar displayName={identityPresentation.name(a.name)} name={a.name} role={a.role} size="sm" />
+                              <div className="min-w-0 flex-1">
+                                <div className="flex items-center gap-2">
+                                  <span className="font-display text-text-primary truncate text-sm font-medium">
+                                    <IdentityName canonicalId={a.name} />
+                                  </span>
+                                  {/* AGENTS-04: role dot on the row's right edge
+                                      (Direction-A `a-agents`), not crowding the
+                                      name. Role-colored — never an active/idle
+                                      status the roster payload doesn't carry. */}
+                                  <span
+                                    aria-hidden="true"
+                                    className={`ml-auto inline-block h-1.5 w-1.5 shrink-0 rounded-full ${
+                                      a.role === 'manager'
+                                        ? 'bg-agent-manager'
+                                        : 'bg-agent-worker'
+                                    }`}
+                                  />
+                                </div>
+                                <div className="text-text-muted mt-0.5 text-xs">
+                                  {a.role ?? t('agents.role.none')}
+                                </div>
+                                {a.description && (
+                                  <p className="text-text-muted mt-0.5 truncate text-xs leading-relaxed">
+                                    {a.description}
+                                  </p>
+                                )}
                               </div>
-                              <div className="text-text-muted mt-0.5 text-xs">
-                                {a.role ?? t('agents.role.none')}
-                              </div>
-                              {a.description && (
-                                <p className="text-text-muted mt-0.5 truncate text-xs leading-relaxed">
-                                  {a.description}
-                                </p>
-                              )}
                             </div>
-                          </div>
-                        </button>
-                      </li>
-                    );
-                  })}
-                </ul>
+                          </RowAction>
+                        </Row>
+                      );
+                    })}
+                  </List>
+                </div>
               )}
             </TabsContent>
             <TabsContent value="terminated" className="mt-0">

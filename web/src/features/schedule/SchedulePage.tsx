@@ -14,7 +14,7 @@
  *
  * Pasture vocabulary:
  *   Cards: bg-surface + border-border-default + shadow-pasture-sm + rounded-lg
- *   Page heading: font-display serif (Newsreader) via PageHeader
+ *   Page heading: its own <h1> (font-display serif, text-display); PageHeader was removed in THR-376 PR6
  *   Agent names: font-display
  *   IDs / times / counts: font-mono tabular-nums
  *   Status pills: rounded-full bg-accent-soft/text-accent-text (completed/running),
