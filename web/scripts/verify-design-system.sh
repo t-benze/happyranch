@@ -345,6 +345,15 @@ static_values = {
 }
 
 
+def namespace_of(root: str) -> str:
+    """The @theme namespace a utility root reads its named values from."""
+    if root in radius_roots:
+        return "radius"
+    if root in spacing_roots:
+        return "spacing"
+    return root
+
+
 def namespace_defines(namespace: str, value: str) -> bool:
     return f"{namespace}-{value}" in defined
 
@@ -416,7 +425,11 @@ def unknown_utilities(text: str, suffix: str):
             if root is None:
                 continue
             value = candidate[len(root) + 1:]
-            if not value[0].isalpha():
+            # Numeric values (`p-4`, `ring-offset-2`) carry no token name. A digit
+            # followed by letters (`2xl`, `2xs`) is a named scale key, though: in a
+            # namespace cleared by tokens.css it must resolve like any other name.
+            if not value[0].isalpha() and not (
+                    namespace_of(root) in reset_namespaces and re.fullmatch(r"[0-9]+[a-z][a-z0-9-]*", value)):
                 continue
             # Bare side utilities (`border-b`, `rounded-tl`) carry no token name.
             if (root == "border" and value in side_keywords) or (root == "rounded" and value in corner_keywords):

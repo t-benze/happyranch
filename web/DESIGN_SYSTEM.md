@@ -35,7 +35,9 @@ Feature compositions keep using the stable `@/design-system/...` import paths.
   `tokens.css` imports does (for example `max-w-md`), unless a `tokens.css`
   `@theme` block clears that namespace (`--radius-*: initial`,
   `--shadow-*: initial`): then only the `tokens.css` names count, and bare
-  `rounded`/`shadow` fail too. Values declared only outside `@theme` (such as
+  `rounded`/`shadow` fail too. Numeric values (`p-4`) are not token names and
+  are skipped, but a digit-led scale name in a cleared namespace
+  (`rounded-2xl`, `shadow-2xs`) is checked like any other name. Values declared only outside `@theme` (such as
   the dark override block) do not count. Map a missing name to an existing semantic token; add a token only
   when none fits. `scripts/test-design-system-token-scanner.sh` is its fixture
   suite.

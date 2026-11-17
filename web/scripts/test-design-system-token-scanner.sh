@@ -122,6 +122,41 @@ if grep -F 'rounded-card' "$scratch/radius-reset.out"; then
 fi
 cp "$fixture/src/design-system/tokens/tokens.css" "$scratch/src/design-system/tokens/tokens.css"
 
+# Default scale names that start with a digit (`2xl`, `2xs`) are theme keys, not
+# numeric values: they resolve while the default theme declares them, and fail
+# once their namespace is cleared, while the re-declared Pasture scale passes.
+cat > "$scratch/src/App.tsx" <<'TSX'
+export const Probe = () => <div className="shadow-2xs shadow-2xl rounded-2xl rounded-3xl rounded-4xl rounded-sm rounded-md rounded-lg rounded-pill shadow-pasture-sm shadow-pasture shadow-pasture-lg p-4 gap-x-3" />;
+TSX
+cp "$fixture/src/styles.css" "$scratch/src/styles.css"
+{ cat "$fixture/tailwind-theme.css"; printf '@theme default {\n  --radius-2xl: 1rem;\n  --radius-3xl: 1.5rem;\n  --radius-4xl: 2rem;\n  --radius-sm: 0.25rem;\n  --shadow-2xs: 0 1px rgb(0 0 0 / 0.05);\n  --shadow-2xl: 0 25px 50px -12px rgb(0 0 0 / 0.25);\n}\n'; } > "$scratch/theme-scale.css"
+sed 's/^  --text-body: 0.875rem;$/  --text-body: 0.875rem;\n  --radius-md: 12px;\n  --radius-lg: 18px;\n  --radius-pill: 999px;\n  --shadow-pasture-sm: 0 1px 2px rgba(40, 30, 20, 0.05);\n  --shadow-pasture: 0 2px 6px rgba(40, 30, 20, 0.06);\n  --shadow-pasture-lg: 0 12px 32px rgba(40, 30, 20, 0.12);/' \
+  "$fixture/src/design-system/tokens/tokens.css" > "$scratch/scale-tokens.css"
+cp "$scratch/scale-tokens.css" "$scratch/src/design-system/tokens/tokens.css"
+sed -i 's/@theme {/@theme {\n  --radius-sm: 8px;/' "$scratch/src/design-system/tokens/tokens.css"
+expect_exit 4 'numeric-prefix scale before reset (styles.css only)' "$scratch/scale-default.out" run_scan "$scratch/src" "$scratch/theme-scale.css"
+grep -F 'hits=1' "$scratch/scale-default.out"
+grep -F 'unknown token utility: styles.css:3:17	text-nope' "$scratch/scale-default.out"
+sed 's/@theme {/@theme {\n  --radius-*: initial;\n  --radius-sm: 8px;\n  --shadow-*: initial;/' \
+  "$scratch/scale-tokens.css" > "$scratch/src/design-system/tokens/tokens.css"
+expect_exit 4 'numeric-prefix scale removed by reset' "$scratch/scale-reset.out" run_scan "$scratch/src" "$scratch/theme-scale.css"
+grep -F 'hits=6' "$scratch/scale-reset.out"
+for hit in \
+  'App.tsx:1:44	shadow-2xs' \
+  'App.tsx:1:55	shadow-2xl' \
+  'App.tsx:1:66	rounded-2xl' \
+  'App.tsx:1:78	rounded-3xl' \
+  'App.tsx:1:90	rounded-4xl' \
+  'styles.css:3:17	text-nope'; do
+  grep -F "unknown token utility: $hit" "$scratch/scale-reset.out"
+done
+if grep -E 'rounded-(sm|md|lg|pill)|shadow-pasture|p-4|gap-x-3' "$scratch/scale-reset.out"; then
+  echo 'a re-declared Pasture radius/shadow or a numeric spacing step failed after the reset' >&2
+  exit 1
+fi
+cp "$fixture/src/App.tsx" "$scratch/src/App.tsx"
+cp "$fixture/src/design-system/tokens/tokens.css" "$scratch/src/design-system/tokens/tokens.css"
+
 # A missing scan input is a hard failure, never a silent pass.
 expect_exit 1 'missing default theme' "$scratch/missing.out" run_scan "$scratch/src" "$scratch/absent-theme.css"
 grep -F 'unknown-token scan input missing' "$scratch/missing.out"
