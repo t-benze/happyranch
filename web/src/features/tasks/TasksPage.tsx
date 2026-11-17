@@ -23,7 +23,7 @@ import { renderThreadErrorDetail, type ThreadErrorDetail } from '@/lib/threadErr
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AlertCircle, Filter, Plus, RefreshCw } from 'lucide-react';
-import { Tabs, TabsList, TabsTrigger } from '@/design-system/primitives/Tabs';
+import { SegmentedControl } from '@/design-system/primitives/SegmentedControl';
 import { Button } from '@/design-system/primitives/Button';
 import { Card } from '@/design-system/primitives/Card';
 import { EmptyState } from '@/design-system/patterns/EmptyState';
@@ -443,26 +443,13 @@ function TasksList({ groupBy, setGroupBy, filters, setFilters }: {
           title={t('tasks.page.title')}
           actions={
           <div className="flex items-center gap-2.5">
-          <Tabs
+          <SegmentedControl
             className="shrink-0"
+            aria-label={t('tasks.page.groupBy')}
             value={groupBy}
-            onValueChange={(v) => setGroupBy(v as GroupBy)}
-          >
-            <TabsList
-              aria-label={t('tasks.page.groupBy')}
-              className="border-border-default bg-surface-sunken tasks-segment gap-0 rounded-full border"
-            >
-              {GROUP_BY_OPTIONS.map((opt) => (
-                <TabsTrigger
-                  key={opt.value}
-                  value={opt.value}
-                  className="data-[state=active]:bg-accent-soft data-[state=active]:text-accent-text tasks-segment-button rounded-full"
-                >
-                  {t(opt.label)}
-                </TabsTrigger>
-              ))}
-            </TabsList>
-          </Tabs>
+            onValueChange={setGroupBy}
+            options={GROUP_BY_OPTIONS.map((opt) => ({ value: opt.value, label: t(opt.label) }))}
+          />
           <Button variant="ghost" size="sm" aria-expanded={filterOpen} onClick={() => setFilterOpen(!filterOpen)}>
             <Filter size={14} aria-hidden /> {t('tasks.page.filter')}
           </Button>

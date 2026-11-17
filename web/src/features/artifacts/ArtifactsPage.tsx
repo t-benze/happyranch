@@ -55,6 +55,7 @@ import { formatCountFor, formatAttachmentSizeFor, type MessageKey } from '@/lib/
 import { Button } from '@/design-system/primitives/Button';
 import { PageTitle } from '@/design-system/patterns/PageTitle';
 import { Input } from '@/design-system/primitives/Input';
+import { SegmentedControl } from '@/design-system/primitives/SegmentedControl';
 import { Label } from '@/design-system/primitives/Label';
 import { ContentWrap } from '@/design-system/layouts/ContentWrap/ContentWrap';
 import { EmptyState } from '@/design-system/patterns/EmptyState';
@@ -620,31 +621,12 @@ export function ArtifactsPage(): JSX.Element {
 
             {/* Filter (segmented) + sort row (ART-02) */}
             <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
-              <div
-                role="tablist"
+              <SegmentedControl
                 aria-label={t('artifacts.filterLabel')}
-                className="flex flex-wrap items-center gap-1"
-              >
-                {FILTERS.map((f) => {
-                  const active = activeFilter === f.key;
-                  return (
-                    <button
-                      key={f.key}
-                      type="button"
-                      role="tab"
-                      aria-selected={active}
-                      onClick={() => setActiveFilter(f.key)}
-                      className={
-                        active
-                          ? 'bg-accent-muted text-accent-text rounded-full px-3 py-1 text-sm font-medium'
-                          : 'text-text-secondary hover:text-text-primary hover:bg-surface-hover rounded-full px-3 py-1 text-sm'
-                      }
-                    >
-                      {t(f.label)}
-                    </button>
-                  );
-                })}
-              </div>
+                value={activeFilter}
+                onValueChange={(v) => setActiveFilter(v)}
+                options={FILTERS.map((f) => ({ value: f.key, label: t(f.label) }))}
+              />
               <span className="text-text-muted text-sm">
                 {t(showFolders ? 'artifacts.sortFolders' : 'artifacts.sortRecent')}
               </span>

@@ -119,7 +119,7 @@ async function browserCase(page, cfg) {
   const links = () => page.locator('a[href^="/orgs/alpha/threads/THR-"]');
   const ids = () => links().evaluateAll(nodes => nodes.map(n => n.getAttribute('href').split('/').at(-1)));
   const shot = async name => page.screenshot({ path: `${cfg.out}/${cfg.tag}-${name}.png` });
-  const tabs = page.getByRole('tab');
+  const tabs = page.getByRole('radio');
   const owner = async (target = 'bottom') => page.evaluate(target => {
     const link = document.querySelector('a[href^="/orgs/alpha/threads/THR-"]');
     const el = link?.closest('.overflow-y-auto');

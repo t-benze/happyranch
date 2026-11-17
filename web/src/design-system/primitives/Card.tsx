@@ -8,6 +8,7 @@
  *   .card-head { display: flex; align-items: center; gap: 10px;
  *                padding: 16px 20px; border-bottom: 1px solid var(--border); }
  *   .card-title{ font-size: 13px; font-weight: 600; letter-spacing: -0.1px; }
+ *                (line-height is not set, so it inherits body 1.5 = 19.5px)
  *   .card-head .spacer { flex: 1 1 auto; }
  *
  * Token mapping: --surface = `bg-surface-raised`, --border =
@@ -101,7 +102,9 @@ export function CardHeader({
       )}
     >
       {/* Plain string, not cn(): tailwind-merge reads the custom `text-body-sm`
-          size as a text colour and would drop it next to `text-text-primary`. */}
+          size as a text colour and would drop it next to `text-text-primary`.
+          Title line-height is the `text-body-sm` token's 20px (1.25rem), not
+          the 19.5px ds.css `.card-title` inherits from body 1.5. */}
       <Title className="text-body-sm text-text-primary min-w-0 truncate font-semibold tracking-[-0.1px]">
         {title}
       </Title>

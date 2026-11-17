@@ -17,8 +17,8 @@
  */
 import { useMemo, useState } from 'react';
 import { useTopThreadTokens } from '@/hooks/tokens';
-import { cn } from '@/lib/utils';
 import { StatValue } from '@/design-system/patterns/StatValue';
+import { SegmentedControl } from '@/design-system/primitives/SegmentedControl';
 import { useTranslation } from '@/hooks/i18n';
 import type { MessageKey } from '@/lib/i18n';
 import { NO_THREAD_ID, toTopRows } from '../topTokens';
@@ -59,24 +59,13 @@ export function TopTokenThreadsPanel(): JSX.Element {
         <h2 className="text-text-secondary text-xs font-semibold tracking-wider uppercase">
           {t('dashboard.topTokens.title', { window: t(win.labelKey) })}
         </h2>
-        <div className="flex gap-1 font-mono text-xs" role="group" aria-label={t('dashboard.topTokens.windowGroup')}>
-          {WINDOWS.map((w, i) => (
-            <button
-              key={w.id}
-              type="button"
-              onClick={() => setWinIdx(i)}
-              aria-pressed={i === winIdx}
-              className={cn(
-                'rounded-sm px-1.5 py-0.5',
-                i === winIdx
-                  ? 'bg-surface-raised text-text-primary'
-                  : 'text-text-muted hover:text-text-primary',
-              )}
-            >
-              {t(w.labelKey)}
-            </button>
-          ))}
-        </div>
+        <SegmentedControl
+          size="sm"
+          aria-label={t('dashboard.topTokens.windowGroup')}
+          value={win.id}
+          onValueChange={(id) => setWinIdx(WINDOWS.findIndex((w) => w.id === id))}
+          options={WINDOWS.map((w) => ({ value: w.id, label: t(w.labelKey) }))}
+        />
       </header>
 
       {q.isLoading ? (

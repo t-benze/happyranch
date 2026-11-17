@@ -21,6 +21,7 @@ import { Link, useParams } from 'react-router-dom';
 import { Activity, Info, Package, Plus, Sparkles, TriangleAlert } from 'lucide-react';
 import { EmptyState } from '@/design-system/patterns/EmptyState';
 import { PageTitle } from '@/design-system/patterns/PageTitle';
+import { SegmentedControl } from '@/design-system/primitives/SegmentedControl';
 import { isCustomSkillForbidden, useCustomSkillsCatalog } from '@/hooks/custom-skills';
 import { useTranslation } from '@/hooks/i18n';
 import type { MessageKey } from '@/lib/i18n';
@@ -156,10 +157,16 @@ export function SkillsPage(): JSX.Element {
         </div>
 
         {customSelected && (
-          <div className="mb-4 flex gap-2" role="group" aria-label={t('skills.view.label')}>
-            <button type="button" aria-pressed={!removed} onClick={() => setRemoved(false)} className="border-border-default rounded-md border px-3 py-1.5 text-sm">{t('skills.view.current')}</button>
-            <button type="button" aria-pressed={removed} onClick={() => setRemoved(true)} className="border-border-default rounded-md border px-3 py-1.5 text-sm">{t('skills.view.removed')}</button>
-          </div>
+          <SegmentedControl
+            className="mb-4"
+            aria-label={t('skills.view.label')}
+            value={removed ? 'removed' : 'current'}
+            onValueChange={(v) => setRemoved(v === 'removed')}
+            options={[
+              { value: 'current', label: t('skills.view.current') },
+              { value: 'removed', label: t('skills.view.removed') },
+            ]}
+          />
         )}
 
         {customSelected && isCustomSkillForbidden(customQuery.error) ? (

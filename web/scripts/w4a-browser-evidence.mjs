@@ -711,7 +711,7 @@ const VIEW_ROUTES = [
   {
     id: 'artifacts-list', route: 'artifacts', path: `/orgs/${ORG}/artifacts`, ready: () => bodyHas('THR-042-Raw_Title.pdf'),
     keys: ['artifacts.pageTitle', 'artifacts.type.doc', 'artifacts.fromFilename', 'artifacts.download'],
-    checks: locale => [['localized filter accessible name', `document.querySelector('[role="tablist"]').getAttribute('aria-label')`, tr(locale, 'artifacts.filterLabel')]],
+    checks: locale => [['localized filter accessible name', `document.querySelector('[role="radiogroup"]').getAttribute('aria-label')`, tr(locale, 'artifacts.filterLabel')]],
     verbatim: ['Raw_Agent', 'Raw_Folder/', 'THR-042', 'THR-042-Raw_Title.pdf', '1.5 KB'],
   },
   {

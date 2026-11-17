@@ -7,8 +7,12 @@
  *
  * ds.css has no list-row rule. Row padding follows ds.css `.card-head`
  * (16px block / 20px inline = `py-4 px-5`) so rows line up with a CardHeader
- * and with the card's 20px padding. Interactive rows hover to `--surface-2`
- * (`bg-surface-hover`, the ds.css `.btn:hover` / `.org-opt:hover` fill).
+ * and with the card's 20px padding. Interactive rows hover with the existing
+ * `bg-surface-hover` token (the ds.css `.btn:hover` / `.org-opt:hover`
+ * `--surface-2` fill). Light matches ds.css `--surface-2` exactly; dark is the
+ * token's existing oklch(0.265 0.012 70), which differs from ds.css
+ * `--surface-2` dark oklch(0.225 0.011 70). That dark difference is an open
+ * token question; no token value was changed here.
  *
  *   <List aria-label="Jobs">
  *     <Row>static content</Row>
