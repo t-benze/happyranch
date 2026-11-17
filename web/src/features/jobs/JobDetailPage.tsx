@@ -254,7 +254,7 @@ function WaitingTasks({ slug, jobId }: { slug: string; jobId: string }): JSX.Ele
 function LegacyPendingNotice(): JSX.Element {
   const { t } = useTranslation();
   return (
-    <div className="bg-attention-soft mt-5 rounded-xl p-4">
+    <div className="bg-attention-soft mt-6 rounded-xl p-4">
       <div className="mb-2 flex items-center gap-2">
         <span className="bg-attention text-attention-text inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium">
           <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-current" />
@@ -312,7 +312,7 @@ export function JobDetailPage(): JSX.Element {
   // ── Error ──
   if (query.isError && !job) {
     return (
-      <div className="flex h-full flex-col items-center justify-center gap-3 p-8">
+      <div className="flex h-full flex-col items-center justify-center gap-3 p-16">
         <p className="text-text-muted">{t('jobs.detail.loadError', { jobId: jobId ?? '' })}</p>
         <Button variant="ghost" size="sm" onClick={handleRetry}>
           {t('common.retry')}
@@ -369,7 +369,7 @@ export function JobDetailPage(): JSX.Element {
 
         {/* Header — JOB id + status eyebrow row with actions top-right, then the
             serif job-TITLE headline (Direction-A). */}
-        <header className="mb-6">
+        <header className="mb-8">
           <div className="flex items-start justify-between gap-3">
             <span className="flex items-center gap-2">
               <span className="text-text-primary font-mono text-sm tabular-nums">{job.id}</span>
@@ -383,8 +383,8 @@ export function JobDetailPage(): JSX.Element {
         </header>
 
         {/* Two-column body: primary content + right-rail metadata card */}
-        <div className="flex flex-col gap-6 lg:flex-row lg:items-start">
-          <div className="min-w-0 flex-1 space-y-5">
+        <div className="flex flex-col gap-8 lg:flex-row lg:items-start">
+          <div className="min-w-0 flex-1 space-y-6">
             {/* Rationale */}
             {job.rationale && (
               <p className="text-text-primary text-sm leading-relaxed whitespace-pre-wrap">

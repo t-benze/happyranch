@@ -102,7 +102,7 @@ export function Shell({ sourceName, title, top, breadcrumb, onClose, footer, chi
   const Title = top ? DrawerTitle : 'h2';
   return (
     <>
-      <header className="border-border-subtle flex items-start gap-3 border-b px-5 py-4">
+      <header className="border-border-subtle flex items-start gap-3 border-b px-6 py-4">
         <div className="min-w-0 flex-1">
           {breadcrumb ?? <div className="text-text-muted truncate text-xs">{sourceName}</div>}
           <Title ref={heading} tabIndex={-1} className="text-text-primary mt-0.5 text-lg font-semibold focus:outline-none">
@@ -113,8 +113,8 @@ export function Shell({ sourceName, title, top, breadcrumb, onClose, footer, chi
           <X aria-hidden="true" />
         </Button>
       </header>
-      <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">{children}</div>
-      <footer className="border-border-subtle bg-surface-raised flex flex-col gap-3 border-t px-5 py-3 md:flex-row md:items-center md:justify-between">
+      <div className="min-h-0 flex-1 overflow-y-auto px-6 py-4">{children}</div>
+      <footer className="border-border-subtle bg-surface-raised flex flex-col gap-3 border-t px-6 py-3 md:flex-row md:items-center md:justify-between">
         {footer}
       </footer>
     </>
@@ -266,7 +266,7 @@ function ConfirmView({ source, start, canStart, onClose, top }: DrawerProps & { 
       <SectionLabel>{t('knowledge.coverage.heading')}</SectionLabel>
       <CoverageList coverage={source.coverage} mode="full" label={t('knowledge.coverage.heading')} />
       <SectionLabel>{t('knowledge.confirm.keepsHeading')}</SectionLabel>
-      <ul className="text-text-secondary list-disc space-y-1 pl-5 text-sm">
+      <ul className="text-text-secondary list-disc space-y-1 pl-6 text-sm">
         <li>{t('knowledge.confirm.keeps1')}</li>
         <li>{t('knowledge.confirm.keeps2')}</li>
         <li>{t('knowledge.confirm.keeps3')}</li>
@@ -293,7 +293,7 @@ export function LoadingBlock(): JSX.Element {
   const { t } = useTranslation();
   return (
     <div role="status" aria-label={t('knowledge.common.loading')} className="animate-pulse space-y-3">
-      <div className="bg-surface-sunken h-6 w-1/3 rounded" />
+      <div className="bg-surface-sunken h-8 w-1/3 rounded" />
       <div className="bg-surface-sunken h-20 w-full rounded-lg" />
       <div className="bg-surface-sunken h-40 w-full rounded-lg" />
     </div>

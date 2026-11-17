@@ -241,7 +241,7 @@ export function WorkloadSection({ compare }: { compare: boolean }): JSX.Element 
     body = <SectionError view={t('usage.workload')} onRetry={retry} retrying={q.isFetching} />;
   } else if (data.agents.length === 0) {
     body = (
-      <div className="bg-surface border-border-default shadow-pasture-sm rounded-lg border p-5">
+      <div className="bg-surface border-border-default shadow-pasture-sm rounded-lg border p-6">
         <p className="text-body text-text-primary font-medium">
           {t('usage.workloadEmpty')}
         </p>

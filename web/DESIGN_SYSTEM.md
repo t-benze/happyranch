@@ -37,6 +37,16 @@ Feature compositions keep using the stable `@/design-system/...` import paths.
   count. Map a missing name to an existing semantic token; add a token only
   when none fits. `scripts/test-design-system-token-scanner.sh` is its fixture
   suite.
+- Spacing is Tailwind's linear 4px scale: every numeric step `N` in
+  `p-N`/`m-N`/`gap-N`/`space-*-N`/`h-N`/`w-N`/`size-N`/inset/translate and
+  the other spacing utilities is `N x 0.25rem` (step 5 = 20px, step 6 = 24px,
+  `h-8` = 32px, `h-16` = 64px). There is no t-shirt remap: THR-376 PR4
+  removed the old `--spacing-5..8` overrides (24/32/48/64px) and rewrote every
+  use to the linear step with the same pixels (5->6, 6->8, 7->12, 8->16).
+  `tokens.css` may still declare named spacing tokens (`--spacing-rail`,
+  `--spacing-content`, button paddings) and linear-equal `--spacing-0..4`, but
+  the `--scan-tokens` gate fails (exit 5) on any numeric `--spacing-N` whose
+  value is not `N x 0.25rem`.
 - `StatusBadge` routes every task/thread status through `semanticTone`
   (`open`/`in_progress` info, `pending`/`escalated` attention, `completed`
   positive, `failed` danger, the rest neutral) in the body font; there is no

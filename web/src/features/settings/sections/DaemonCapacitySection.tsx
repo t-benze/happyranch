@@ -288,7 +288,7 @@ function classifySaveError(error: unknown): SaveOutcome {
 
 function SectionLabel({ children, note }: { children: string; note?: string }): JSX.Element {
   return (
-    <h3 className="text-text-secondary mt-8 mb-3 text-xs font-semibold tracking-wider uppercase">
+    <h3 className="text-text-secondary mt-16 mb-3 text-xs font-semibold tracking-wider uppercase">
       {children}
       {note ? <span className="text-text-secondary ml-2 font-normal tracking-normal normal-case">{note}</span> : null}
     </h3>
@@ -1153,7 +1153,7 @@ export function DaemonCapacitySection(): JSX.Element {
       <form onSubmit={submit} noValidate>
         <SectionLabel>{t('settings.capacity.change.title')}</SectionLabel>
 
-        <div className="border-border-default border-b pb-5">
+        <div className="border-border-default border-b pb-6">
           <label htmlFor="capacity-workers" className="text-text-primary text-sm font-semibold">
             {workersLabel}
           </label>
@@ -1189,7 +1189,7 @@ export function DaemonCapacitySection(): JSX.Element {
           </div>
         </div>
 
-        <div className="border-border-default border-b py-5">
+        <div className="border-border-default border-b py-6">
           <label htmlFor="capacity-cap" className="text-text-primary text-sm font-semibold">
             {capLabel}
           </label>
@@ -1228,13 +1228,13 @@ export function DaemonCapacitySection(): JSX.Element {
         {/* Draft consequence panel. 6.3: rationale-only dirty gets NO
             value-comparison/consequence panel — only the copy below. */}
         {consequence !== null && !rationaleOnlyDirty && (
-          <div className="border-border-default bg-surface-raised mt-5 rounded-md border">
+          <div className="border-border-default bg-surface-raised mt-6 rounded-md border">
             <p className="border-border-default text-text-primary border-b p-3 text-sm font-medium">
               {valuesChanged ? t('settings.capacity.draft.changes') : t('settings.capacity.draft.matches')}
             </p>
             {consequence.status === 'ok' && draftPair !== null ? (
               <>
-                <div className="flex flex-wrap gap-8 p-4">
+                <div className="flex flex-wrap gap-16 p-4">
                   <div>
                     <p className="text-text-secondary text-sm">{workersLabel}</p>
                     <p className="font-display text-text-primary mt-1 text-xl">{draftPair.queue_workers}</p>
@@ -1286,7 +1286,7 @@ export function DaemonCapacitySection(): JSX.Element {
         )}
 
         {/* Reason */}
-        <div className="mt-5">
+        <div className="mt-6">
           <div className="flex items-baseline justify-between">
             <label htmlFor="capacity-reason" className="text-text-primary text-sm font-semibold">
               {t('settings.capacity.reason.label')}
@@ -1329,7 +1329,7 @@ export function DaemonCapacitySection(): JSX.Element {
             16.6 order: W -> H -> reason -> acknowledgment -> Save -> Discard ->
             Refresh -> Capacity details. */}
         {shadowed && displayedSnapshot !== null && (
-          <div id="capacity-override" role="group" aria-labelledby="capacity-override-heading" className="border-border-default bg-attention-soft mt-5 rounded-md border p-4">
+          <div id="capacity-override" role="group" aria-labelledby="capacity-override-heading" className="border-border-default bg-attention-soft mt-6 rounded-md border p-4">
             <p id="capacity-override-heading" className="text-attention-text text-sm font-semibold">
               {t('settings.capacity.override.heading')}
             </p>
@@ -1381,7 +1381,7 @@ export function DaemonCapacitySection(): JSX.Element {
           </div>
         )}
 
-        <div className="border-border-default mt-5 flex flex-wrap items-center gap-3 border-t pt-5">
+        <div className="border-border-default mt-6 flex flex-wrap items-center gap-3 border-t pt-6">
           <Button
             type="submit"
             className={`${PRIMARY_TONE} ${FOCUS_RING}`}
@@ -1557,7 +1557,7 @@ export function DaemonCapacitySection(): JSX.Element {
       <details
         open={detailsOpen}
         onToggle={(event) => setDetailsOpen((event.target as HTMLDetailsElement).open)}
-        className="border-border-default bg-surface-raised mt-6 rounded-md border"
+        className="border-border-default bg-surface-raised mt-8 rounded-md border"
       >
         <summary className={`text-text-primary cursor-pointer p-4 text-sm font-medium ${FOCUS_RING_RAW}`}>{t('settings.capacity.details.summary')}</summary>
         {snapshot !== null && (

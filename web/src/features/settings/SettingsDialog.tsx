@@ -46,7 +46,7 @@ export function SettingsDialog({ open, onOpenChange }: Props): JSX.Element {
           </p>
         )}
         {q.data && (
-          <div className="mt-2 space-y-6">
+          <div className="mt-2 space-y-8">
             <SystemSection sys={q.data.system} />
             <EditableOrgSection org={q.data.org} />
           </div>
@@ -370,7 +370,7 @@ function BooleanToggle({
       role="switch"
       aria-checked={value}
       onClick={() => onChange(!value)}
-      className={`inline-flex h-5 w-9 items-center rounded-full transition-colors ${
+      className={`inline-flex h-6 w-9 items-center rounded-full transition-colors ${
         value ? 'bg-accent' : 'bg-bg-raised border-border border'
       }`}
     >
@@ -399,7 +399,7 @@ export function SettingsTriggerButton({
       aria-label={label}
       title={label}
       onClick={onClick}
-      className="text-fg-muted hover:bg-bg-raised hover:text-fg focus-visible:ring-accent inline-flex h-7 w-7 items-center justify-center rounded transition-colors focus-visible:ring-2 focus-visible:outline-none"
+      className="text-fg-muted hover:bg-bg-raised hover:text-fg focus-visible:ring-accent inline-flex h-12 w-12 items-center justify-center rounded transition-colors focus-visible:ring-2 focus-visible:outline-none"
     >
       <Settings size={16} aria-hidden="true" />
     </button>

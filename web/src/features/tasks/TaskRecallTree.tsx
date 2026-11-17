@@ -11,7 +11,7 @@ import { useTranslation } from '@/hooks/i18n';
 // time, so we cannot interpolate `pl-[${depth*16}px]`. Clamp at 10 levels —
 // deeper recall trees indent at the same step as level 10.
 const DEPTH_PL = [
-  'pl-0', 'pl-4', 'pl-8', 'pl-12', 'pl-16',
+  'pl-0', 'pl-4', 'pl-16', 'pl-12', 'pl-16',
   'pl-20', 'pl-24', 'pl-28', 'pl-32', 'pl-36', 'pl-40',
 ] as const;
 

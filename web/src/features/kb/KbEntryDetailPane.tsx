@@ -173,7 +173,7 @@ export function KbEntryDetailPane({
 
               {/* Source task badge */}
               {entry.source_task && (
-                <p className="text-text-muted mt-6 text-xs">
+                <p className="text-text-muted mt-8 text-xs">
                   {t('kb.sourceTaskLabel')}{' '}
                   <IdBadge
                     kind="task"
@@ -187,7 +187,7 @@ export function KbEntryDetailPane({
               {entry.related_entries && entry.related_entries.length > 0 && (
                 <div className="text-text-muted mt-3 text-xs">
                   <div>{t('kb.relatedEntriesLabel')}</div>
-                  <ul className="mt-1 list-disc pl-5">
+                  <ul className="mt-1 list-disc pl-6">
                     {entry.related_entries.map((slug) => (
                       <li key={slug}>
                         <Link

@@ -79,7 +79,7 @@ export function OnboardingPage(): JSX.Element {
   if (effectivePhase === 'connect') {
     return (
       <div className="bg-surface-canvas h-full overflow-y-auto">
-        <div className="max-w-content-form mx-auto p-6 sm:p-8">
+        <div className="max-w-content-form mx-auto p-8 sm:p-16">
           <ConnectRuntimeStep
             onContinue={() => setPhase('org')}
             onSkip={() => setPhase('org')}
@@ -91,7 +91,7 @@ export function OnboardingPage(): JSX.Element {
 
   return (
     <div className="bg-surface-canvas h-full overflow-y-auto">
-      <div className="max-w-content-form mx-auto p-6 sm:p-8">
+      <div className="max-w-content-form mx-auto p-8 sm:p-16">
         {step === 'welcome' && (
           <WelcomeStep
             existingCount={existingCount}
@@ -120,7 +120,7 @@ export function OnboardingPage(): JSX.Element {
         {/* Broken orgs are surfaced on the entry screens so they are never
             silently swallowed. Read-only: Copy-error only, Retry is gated. */}
         {step !== 'success' && broken.length > 0 && (
-          <div className="mt-8">
+          <div className="mt-16">
             <BrokenOrgList broken={broken} />
           </div>
         )}
@@ -143,9 +143,9 @@ function WelcomeStep({
   const { t, render } = useTranslation();
   const firstRun = existingCount === 0;
   return (
-    <section className="pt-6 sm:pt-10">
+    <section className="pt-8 sm:pt-10">
       <RanchLogo className="text-brand-foreground h-14 w-14" />
-      <p className="text-accent-text mt-5 text-xs font-semibold tracking-wider uppercase">
+      <p className="text-accent-text mt-6 text-xs font-semibold tracking-wider uppercase">
         {firstRun
           ? t('onboarding.welcome.eyebrow.firstRun')
           : t('onboarding.welcome.eyebrow.returning')}
@@ -173,7 +173,7 @@ function WelcomeStep({
             : t('onboarding.welcome.body.returning'),
         })}
       </p>
-      <div className="mt-7 flex flex-wrap items-center gap-4">
+      <div className="mt-12 flex flex-wrap items-center gap-4">
         <Button onClick={onStart}>
           <Plus />
           {firstRun
@@ -182,7 +182,7 @@ function WelcomeStep({
         </Button>
         <span className="text-text-muted text-xs">{t('onboarding.welcome.timing')}</span>
       </div>
-      <div className="border-border-default bg-surface-sunken mt-8 flex max-w-lg items-start gap-3 rounded-lg border p-4">
+      <div className="border-border-default bg-surface-sunken mt-16 flex max-w-lg items-start gap-3 rounded-lg border p-4">
         <Info
           aria-hidden="true"
           size={17}
@@ -351,7 +351,7 @@ function CreateStep({
   }
 
   return (
-    <section className="bg-surface border-border-default shadow-pasture-sm rounded-lg border p-8">
+    <section className="bg-surface border-border-default shadow-pasture-sm rounded-lg border p-16">
       <p className="text-accent-text text-xs font-semibold tracking-wider uppercase">
         {t('onboarding.create.eyebrow')}
       </p>
@@ -360,7 +360,7 @@ function CreateStep({
       </h1>
 
       <form
-        className="mt-6 space-y-2"
+        className="mt-8 space-y-2"
         onSubmit={(e) => {
           e.preventDefault();
           submit();
@@ -433,10 +433,10 @@ function CreatingState({ slug }: { slug: string }): JSX.Element {
   return (
     <section
       aria-label={t('onboarding.creating.aria')}
-      className="bg-surface border-border-default shadow-pasture-sm flex flex-col items-center rounded-lg border px-8 py-16 text-center"
+      className="bg-surface border-border-default shadow-pasture-sm flex flex-col items-center rounded-lg border px-16 py-16 text-center"
     >
-      <Spinner label={t('onboarding.loading')} className="text-accent h-8 w-8" />
-      <h1 className="font-display text-h2 text-text-primary mt-5 font-medium">
+      <Spinner label={t('onboarding.loading')} className="text-accent h-16 w-16" />
+      <h1 className="font-display text-h2 text-text-primary mt-6 font-medium">
         {render('onboarding.creating.heading', {
           slug: <span className="text-accent-text font-mono">{slug}</span>,
         })}
@@ -462,7 +462,7 @@ function SuccessStep({
   const { t, render } = useTranslation();
   const navigate = useNavigate();
   return (
-    <section className="bg-surface border-border-default shadow-pasture-sm rounded-lg border p-8">
+    <section className="bg-surface border-border-default shadow-pasture-sm rounded-lg border p-16">
       <span
         aria-hidden="true"
         className="bg-feedback-success/15 text-feedback-success inline-flex h-11 w-11 items-center justify-center rounded-full"
@@ -477,7 +477,7 @@ function SuccessStep({
       <p className="text-text-secondary mt-2 text-sm leading-relaxed">
         {t('onboarding.success.body')}
       </p>
-      <div className="mt-6 flex items-center gap-2">
+      <div className="mt-8 flex items-center gap-2">
         <Button onClick={() => navigate(`/orgs/${slug}/dashboard`)}>
           {t('onboarding.success.enter', { slug })}
           <ArrowRight aria-hidden="true" />
@@ -501,7 +501,7 @@ function BrokenOrgList({
 }): JSX.Element {
   const { t, render } = useTranslation();
   return (
-    <section className="border-feedback-warning/30 bg-feedback-warning/5 rounded-lg border p-5">
+    <section className="border-feedback-warning/30 bg-feedback-warning/5 rounded-lg border p-6">
       <div className="flex items-center gap-2">
         <AlertTriangle
           aria-hidden="true"
@@ -667,7 +667,7 @@ function PrereqRow({ prereq }: { prereq: ExecutorPrereq }): JSX.Element {
     <li className="border-border-default bg-surface-sunken/40 flex items-center gap-2.5 rounded-md border px-2.5 py-2">
       <span
         aria-hidden="true"
-        className={`inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md ${
+        className={`inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md ${
           present
             ? 'bg-feedback-success/15 text-feedback-success'
             : 'bg-feedback-danger/12 text-feedback-danger'

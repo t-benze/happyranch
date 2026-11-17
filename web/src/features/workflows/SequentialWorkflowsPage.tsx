@@ -130,12 +130,12 @@ function DefinitionBody({ def }: { def: DefView }): JSX.Element {
   const edgeText = useEdgeText();
   return <>
     <p className="text-text-primary mt-3">{def.description}</p>
-    <section className="mt-5" aria-labelledby="seqwf-process">
+    <section className="mt-6" aria-labelledby="seqwf-process">
       <h2 id="seqwf-process" className="text-h2 text-text-primary">{t('seqwf.process')}</h2>
       <ol className="mt-3 flex flex-col gap-3">{def.nodes.map((n, index) => <li key={n.id} className="border-border-default bg-bg-raised rounded-lg border p-4 text-sm wrap-anywhere">
         <h3 className="font-medium">{t('seqwf.nodeHeading', { index: index + 1, node: n.id, role: n.role })}{n.id === def.entry ? ` · ${t('seqwf.entry')}` : ''}</h3>
         <p className="text-text-muted mt-2 text-xs">{t('seqwf.responsibilities')}</p>
-        <ul className="ml-5 list-disc">{n.responsibilities.map((r, i) => <li key={i}>{r}</li>)}</ul>
+        <ul className="ml-6 list-disc">{n.responsibilities.map((r, i) => <li key={i}>{r}</li>)}</ul>
         <p className="text-text-muted mt-2 text-xs">{t('seqwf.inputs')}</p>
         <p className="font-mono text-xs">{n.inputs.map(i => `${i.name} ← ${i.source}${i.required ? '' : ` (${t('seqwf.optional')})`}`).join(' · ') || '—'}</p>
         <p className="text-text-muted mt-2 text-xs">{t('seqwf.output')}</p>
@@ -143,10 +143,10 @@ function DefinitionBody({ def }: { def: DefView }): JSX.Element {
         <p className="text-text-muted mt-2 text-xs">{t('seqwf.checks')}</p>
         <p className="font-mono text-xs">{n.checks.join(' · ')}</p>
         <p className="text-text-muted mt-2 text-xs">{t('seqwf.outcomes')}</p>
-        <ul className="ml-5 list-disc">{n.outcomes.map(o => <li key={o.outcome}>{edgeText(o.outcome, o.edge)}</li>)}</ul>
+        <ul className="ml-6 list-disc">{n.outcomes.map(o => <li key={o.outcome}>{edgeText(o.outcome, o.edge)}</li>)}</ul>
       </li>)}</ol>
     </section>
-    <section className="mt-5 grid grid-cols-1 gap-3 md:grid-cols-2">
+    <section className="mt-6 grid grid-cols-1 gap-3 md:grid-cols-2">
       <div className="border-border-default rounded-lg border p-4 text-sm wrap-anywhere">
         <h2 className="text-h2 text-text-primary">{t('seqwf.roles')}</h2>
         <ul className="mt-2 flex flex-col gap-1">{def.roles.map(r => <li key={r.name}><span className="font-medium">{r.name}</span> — {t('seqwf.roleLine', { eligibility: r.eligibility, independent: r.independentOf.join(', ') || '—' })}</li>)}</ul>

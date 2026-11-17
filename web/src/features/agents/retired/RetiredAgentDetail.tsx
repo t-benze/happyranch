@@ -93,7 +93,7 @@ export function RetiredAgentDetail({ sourceId }: { sourceId: string }): JSX.Elem
 
   if (sourceQuery.isLoading) {
     return (
-      <div role="status" aria-label={t('knowledge.common.loading')} className="animate-pulse space-y-4 p-5">
+      <div role="status" aria-label={t('knowledge.common.loading')} className="animate-pulse space-y-4 p-6">
         <div className="bg-surface-sunken h-14 w-2/3 rounded-lg" />
         <div className="bg-surface-sunken h-12 w-full rounded-lg" />
         <div className="bg-surface-sunken h-48 w-full rounded-lg" />
@@ -104,7 +104,7 @@ export function RetiredAgentDetail({ sourceId }: { sourceId: string }): JSX.Elem
     const error = sourceQuery.error;
     const code = error instanceof ApiError ? error.code : null;
     return (
-      <div className="space-y-3 p-5">
+      <div className="space-y-3 p-6">
         <BackLink onClick={() => navigate(`${routes.inbox()}?view=terminated`)} />
         <Notice tone="danger" role="alert" icon={<CircleAlert size={16} aria-hidden="true" />}>
           <p>{code && SOURCE_ERROR[code] ? t(SOURCE_ERROR[code]) : t('knowledge.sourceError.generic')}</p>
@@ -122,7 +122,7 @@ export function RetiredAgentDetail({ sourceId }: { sourceId: string }): JSX.Elem
 
   return (
     <div className="h-full overflow-y-auto">
-      <div className="space-y-5 px-6 py-4">
+      <div className="space-y-6 px-8 py-4">
         <BackLink onClick={() => navigate(`${routes.inbox()}?view=terminated`)} />
         <header className="border-border-subtle flex items-start gap-4 border-b pb-4">
           <span aria-hidden="true" className="bg-surface-sunken text-text-secondary flex h-12 w-12 shrink-0 items-center justify-center rounded-xl text-base font-semibold">

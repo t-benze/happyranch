@@ -283,7 +283,7 @@ export function SkillValidationPage(): JSX.Element {
       : endpointLabel;
 
   return (
-    <div className="mx-auto flex h-full w-full max-w-5xl flex-col overflow-y-auto px-4 py-5 md:px-7 md:py-6">
+    <div className="mx-auto flex h-full w-full max-w-5xl flex-col overflow-y-auto px-4 py-6 md:px-12 md:py-8">
       <header className="mb-4">
         <div className="text-fg-subtle text-overline mb-1 flex items-center gap-1.5 tracking-wider uppercase">
           <Activity size={13} aria-hidden="true" />
@@ -296,7 +296,7 @@ export function SkillValidationPage(): JSX.Element {
       </header>
 
       {/* Guidance-only strip — mirrors the catalog note-strip. */}
-      <div className="border-border-default bg-bg-subtle text-fg-muted text-body-sm mb-5 flex items-center gap-2.5 rounded-md border px-3 py-2.5">
+      <div className="border-border-default bg-bg-subtle text-fg-muted text-body-sm mb-6 flex items-center gap-2.5 rounded-md border px-3 py-2.5">
         <Info size={15} aria-hidden="true" className="text-fg-subtle shrink-0" />
         <span>
           <b className="text-fg font-semibold">{t('skills.guidanceOnly')}</b>{' '}
@@ -306,7 +306,7 @@ export function SkillValidationPage(): JSX.Element {
 
       {/* Desktop filter bar */}
       <div
-        className="mb-5 hidden flex-wrap items-end gap-3 md:flex"
+        className="mb-6 hidden flex-wrap items-end gap-3 md:flex"
         aria-label={t('skills.validation.filtersLabel')}
       >
         <FilterControls
@@ -328,7 +328,7 @@ export function SkillValidationPage(): JSX.Element {
       </div>
 
       {/* Mobile filter drawer — keeps the list on-canvas below md. */}
-      <details className="border-border-default bg-surface-raised mb-5 rounded-md border md:hidden">
+      <details className="border-border-default bg-surface-raised mb-6 rounded-md border md:hidden">
         <summary className="text-fg text-body-sm flex cursor-pointer list-none items-center gap-2 px-3 py-2.5 font-semibold">
           <SlidersHorizontal size={15} aria-hidden="true" className="shrink-0" />
           {t('skills.validation.filters')}

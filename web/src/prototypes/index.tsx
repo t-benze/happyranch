@@ -44,7 +44,7 @@ export function prototypeRoutes(): JSX.Element {
       <Route
         path="threads-v2"
         element={
-          <Suspense fallback={<div className="text-text-muted p-6">Loading prototype…</div>}>
+          <Suspense fallback={<div className="text-text-muted p-8">Loading prototype…</div>}>
             <ThreadsV2Screen />
           </Suspense>
         }
@@ -52,7 +52,7 @@ export function prototypeRoutes(): JSX.Element {
       <Route
         path="threads-v2/:thread_id"
         element={
-          <Suspense fallback={<div className="text-text-muted p-6">Loading prototype…</div>}>
+          <Suspense fallback={<div className="text-text-muted p-8">Loading prototype…</div>}>
             <ThreadsV2Screen />
           </Suspense>
         }
@@ -95,7 +95,7 @@ function PrototypeBanner(): JSX.Element {
 
 function PrototypesIndex(): JSX.Element {
   return (
-    <div className="text-text-primary p-6">
+    <div className="text-text-primary p-8">
       <h1 className="text-h2 mb-3">Prototypes</h1>
       <p className="text-body text-text-secondary mb-4">
         Designer-agent sandbox. Each entry is a real composition rendered against mock data.

@@ -84,7 +84,7 @@ export function SkillsPage(): JSX.Element {
       </aside>
 
       {/* Main column */}
-      <div className="min-h-0 min-w-0 flex-1 overflow-y-auto px-4 py-5 md:px-7 md:py-6">
+      <div className="min-h-0 min-w-0 flex-1 overflow-y-auto px-4 py-6 md:px-12 md:py-8">
         {/* Mobile filter chips — replace the rail below md */}
         <div className="mb-4 flex flex-wrap gap-2 md:hidden" aria-label={t('skills.catalog.sourceFilter')}>
           {FACETS.map((f) => {
@@ -147,7 +147,7 @@ export function SkillsPage(): JSX.Element {
         </div>
 
         {/* Guidance-only global warning */}
-        <div className="border-border-default bg-bg-subtle text-fg-muted text-body-sm mb-5 flex items-center gap-2.5 rounded-md border px-3 py-2.5">
+        <div className="border-border-default bg-bg-subtle text-fg-muted text-body-sm mb-6 flex items-center gap-2.5 rounded-md border px-3 py-2.5">
           <Info size={15} aria-hidden="true" className="text-fg-subtle shrink-0" />
           <span>
             <b className="text-fg font-semibold">{t('skills.guidanceOnly')}</b>{' '}
