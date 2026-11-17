@@ -54,6 +54,7 @@ def test_headscale_pinned_contract() -> None:
 
 def test_restrictive_defaults_and_no_extra_keys() -> None:
     value = config()
+    assert "extra_records_path" not in value["dns"]
     # These literals are the documented configuration contract, independent of
     # the renderer's data structure. Exact key sets catch added active surfaces.
     unpinned = {
@@ -70,7 +71,7 @@ def test_restrictive_defaults_and_no_extra_keys() -> None:
         },
         "prefixes": {"v4": "100.64.0.0/10", "v6": "", "allocation": "random"},
         "dns": {"magic_dns": False, "base_domain": "", "nameservers": {"global": [], "split": {}},
-                "search_domains": [], "extra_records": [], "extra_records_path": ""},
+                "search_domains": [], "extra_records": []},
         "oidc": {"issuer": "", "client_id": "", "client_secret": "", "client_secret_path": ""},
         "cli": {"address": "", "api_key": "", "insecure": False, "timeout": "5s"},
         "logtail": {"enabled": False}, "log": {"format": "json", "level": "disabled"},

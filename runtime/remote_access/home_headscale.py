@@ -151,7 +151,6 @@ def render_headscale_config(*, dial_ip: str, policy_path: str) -> str:
             "nameservers": {"global": [], "split": {}},
             "search_domains": [],
             "extra_records": [],
-            "extra_records_path": "",
         },
         "policy": {"mode": "file", "path": policy_path},
         "unix_socket": "/run/happyranch-headscale/headscale.sock",
