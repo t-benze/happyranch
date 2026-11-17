@@ -316,9 +316,6 @@ semantic_colours = set((os.environ.get("DESIGN_SYSTEM_SEMANTIC_COLOURS") or
     "border-default border-strong border-subtle "
     "accent-default accent-hover accent-soft accent-ring accent-text brand-foreground "
     "attention attention-soft attention-text info info-soft positive danger danger-soft").split())
-# Aliases with no matching semantic token, kept literal pending a decision.
-# Each entry needs a named reason in DESIGN_SYSTEM.md; keep this list empty.
-alias_literal_exempt = set((os.environ.get("DESIGN_SYSTEM_ALIAS_LITERAL_EXEMPT", "tier-slate-tint")).split())
 semantic_pattern = "|".join(re.escape(name) for name in sorted(semantic_colours, key=len, reverse=True))
 alias_value = re.compile(
     rf"var\(--color-(?:{semantic_pattern})\)"
@@ -329,7 +326,7 @@ tokens_lines = re.sub(r"/\*.*?\*/", lambda comment: re.sub(r"[^\n]", " ", commen
                       tokens_path.read_text(encoding="utf-8"), flags=re.S)
 for match in re.finditer(r"(?m)^[ \t]*--color-([a-z0-9-]+)\s*:\s*([^;]*?)\s*;", tokens_lines):
     name, value = match.group(1), match.group(2)
-    if name in semantic_colours or name in alias_literal_exempt:
+    if name in semantic_colours:
         continue
     if not alias_value.fullmatch(value):
         line = tokens_lines.count("\n", 0, match.start(1)) + 1

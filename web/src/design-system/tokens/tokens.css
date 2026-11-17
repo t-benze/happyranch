@@ -174,9 +174,6 @@
   /* Note: --color-accent-fg used by bg-accent text-accent-fg pattern in Settings */
   --color-accent-fg:       var(--color-text-inverse);
 
-  /* ---- v3 job-status / additional patterns ---- */
-  --color-tier-slate-tint:  oklch(0.94 0.008 75);    /* no semantic match and no consumers; open question (THR-376 PR10) */
-
   /* ====================================================================== */
   /* TYPOGRAPHY — Hanken Grotesk UI, Newsreader display, JetBrains Mono      */
   /* ====================================================================== */
@@ -465,8 +462,6 @@
 
   --color-accent:          var(--color-accent-default);
   --color-accent-fg:       var(--color-text-inverse);
-
-  --color-tier-slate-tint:  oklch(0.28 0.010 72);    /* no semantic match and no consumers; open question (THR-376 PR10) */
 
   /* ---- Semantic attention / info / danger soft + text companions (dark) ---- */
   --color-attention-soft: oklch(0.34 0.05 65);

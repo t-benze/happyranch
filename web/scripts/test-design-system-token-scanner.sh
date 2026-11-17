@@ -15,7 +15,6 @@ fixture_semantic='surface ink line'
 run_scan() {
   DESIGN_SYSTEM_SOURCE_ROOT="$1" DESIGN_SYSTEM_TAILWIND_THEME="$2" \
     DESIGN_SYSTEM_SEMANTIC_COLOURS="${SEMANTIC:-$fixture_semantic}" \
-    DESIGN_SYSTEM_ALIAS_LITERAL_EXEMPT="${EXEMPT:-}" \
     bash "$scanner" --scan-tokens
 }
 
@@ -209,14 +208,19 @@ if grep -F 'literal alias colour' "$scratch/alias-ok.out"; then
 fi
 
 # Only names in the semantic list may hold literals: dropping `ink` from it makes
-# its literal fail; a named exemption lets an unmatched alias stay literal.
+# its literal fail.
 SEMANTIC='surface line' expect_exit 6 'literal outside the semantic list' "$scratch/alias-semantic.out" \
   run_scan "$scratch/src" "$scratch/theme.css"
 grep -F -- '--color-ink: oklch(0.28 0.014 60)' "$scratch/alias-semantic.out"
-with_light '  --color-tier-slate-tint: oklch(0.94 0.008 75);' > "$scratch/src/design-system/tokens/tokens.css"
-EXEMPT='tier-slate-tint' expect_exit 4 'exempt alias literal' "$scratch/alias-exempt.out" \
+# There are no exemptions: any non-semantic name holding a literal fails with
+# the scanner's defaults, including the removed tier-slate-tint (THR-376 PR10).
+with_light '  --color-tier-slate-tint: oklch(0.94 0.008 75);\n  --color-anything-else: oklch(0.5 0.1 150);' \
+  > "$scratch/src/design-system/tokens/tokens.css"
+expect_exit 6 'no alias literal exemption' "$scratch/alias-no-exempt.out" \
   run_scan "$scratch/src" "$scratch/theme.css"
-grep -F 'hits=7' "$scratch/alias-exempt.out"
+grep -F -- '--color-tier-slate-tint: oklch(0.94 0.008 75)' "$scratch/alias-no-exempt.out"
+grep -F -- '--color-anything-else: oklch(0.5 0.1 150)' "$scratch/alias-no-exempt.out"
+grep -c 'literal alias colour' "$scratch/alias-no-exempt.out" | grep -qx 2
 cp "$tokens_fixture" "$scratch/src/design-system/tokens/tokens.css"
 
 # A missing scan input is a hard failure, never a silent pass.

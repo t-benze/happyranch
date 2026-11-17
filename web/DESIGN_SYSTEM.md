@@ -57,9 +57,9 @@ Feature compositions keep using the stable `@/design-system/...` import paths.
   utility classes to the semantic name, then delete the alias (v3 first).
   New code uses the semantic names. `--scan-tokens` fails (exit 6) when a
   non-semantic `--color-*` declaration holds a literal or aliases another
-  alias. The only exemption is `tier-slate-tint`: it has no semantic match and
-  no consumers, so it stays literal until its owner decides to map or delete
-  it. Alias map (light / dark target; one name when both themes agree):
+  alias. There are no exemptions: the unmapped, unused `tier-slate-tint` was
+  deleted rather than kept literal. Alias map (light / dark target; one name
+  when both themes agree):
 
   | Scheme | Alias | Semantic target |
   | --- | --- | --- |
