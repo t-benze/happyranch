@@ -14,31 +14,23 @@ from runtime.workflows.coding_authority_history import _Budget
 from runtime.workflows.sequential_definition import CompiledDefinition
 from runtime.workflows.sequential_engine import _engine_rows, _identity
 from runtime.workflows.sequential_history import _ReadBudget, _sql_budget, read_sequential_history
-from runtime.workflows.sequential_release import read_coding_release
+from runtime.workflows.sequential_release import MANIFEST, manifest_entry, select_bundled_release
 
-# Deliberately literal: package discovery cannot silently enlarge this catalog.
-PRESET_CATALOG = ((
-    'release/happyranch/coding', 2,
-    '5039e9eb60a03f8de110b40123a123d25962fbff48c39af5271a0666d679d065',
-    'a3b012d117c5905a1bac3c67a3158a8b1afa5a571acdba73c876ac7de24f790c',
-),)
+# Compatibility projection of the single reviewed manifest, not another catalog.
+PRESET_CATALOG = tuple((entry.pin.identity, entry.pin.version,
+    entry.pin.source_digest, entry.pin.definition_digest) for entry in MANIFEST.values())
 
 
 def preset_catalog() -> tuple[CompiledDefinition, ...]:
-    """Read the one fixed reviewed resource outside database scopes."""
-    compiled = read_coding_release()
-    pin = compiled.pin
-    if ((pin.identity, pin.version, pin.source_digest, pin.definition_digest),) != PRESET_CATALOG:
-        raise ValueError('sequential_builtin_catalog_mismatch')
-    return (compiled,)
+    """Read reviewed manifest resources outside database scopes."""
+    return tuple(select_bundled_release(entry.pin) for entry in MANIFEST.values())
 
 
 def inspect_definition(conn: sqlite3.Connection, compiled: CompiledDefinition,
                        budget: _ReadBudget) -> tuple[dict, bool]:
     """Shared live/offline exact immutable-row selection; no writes."""
     pin = compiled.pin
-    if (pin.identity, pin.version, pin.source_digest, pin.definition_digest) not in PRESET_CATALOG:
-        raise ValueError('sequential_builtin_catalog_mismatch')
+    manifest_entry(pin)
     definitions = _engine_rows(conn, 'workflow_seq_definitions', budget,
         'definition_digest=? OR (identity=? AND version=?)',
         (pin.definition_digest, pin.identity, pin.version))

@@ -21,6 +21,30 @@ PRD v1.0.4 Shared Artifact
 Founder THR-336 msg131 ACCESS-1 control. Source delivery is not installation,
 deployment, admission, loaded identity or genuine execution acceptance.
 
+## R1c bundled manifest supersession
+
+`sequential_release.MANIFEST` is now the single literal catalog, keyed by definition
+identity/version and carrying exact package/resource/size/source/definition/ABI
+pins. Generic `select_bundled_release` and both fresh admission boundaries select
+manifest membership, with installed registration, latest Allowed settings,
+current authority and actual native attachments still required. The sole shipped
+entry remains Coding v2 with the unchanged pins and 3795-byte resource documented
+below. Existing Coding accessors remain for setup callers. A2's registrar and
+A4/offline consumers use this same catalog; exact existing definitions write zero
+and conflicts refuse. No automatic setup state is changed.
+
+`coding.v1.json` remains retired grammar and fresh selection returns
+`coding_fresh_start_retired`; old Coding start@1/@2 remain fenced atomically.
+Known catalog identities cannot send unsupported versions into the disposable
+lane. Noncatalog fixtures retain the live-home/marker fence. A private second
+manifest entry/resource in the existing shell proof demonstrates genericity;
+it is not shipped catalog data or a production override.
+
+Start@1 retains one run, fixed assignments and old source-terminal semantics.
+This supplies no @2, R1b discovery/composer, S-unit or live operation authority.
+The U9a Coding-specific accessor description below records the original split;
+this section owns the current generic selection behavior.
+
 ## Historical U9a split declared before edits
 
 The U9a brief permitted a first coherent interface unit. At that checkpoint the only

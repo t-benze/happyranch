@@ -854,6 +854,28 @@ fixture, so it proves neither serving time nor production-size savings.
 It starts no daemon/worker and adds no CI selection, trigger or dependency;
 retired Python units, general integration and Product E2E are not executed.
 
+R1c bundled catalog selection uses this focused private venue on both runtimes:
+
+```bash
+WORKFLOW_SCHEMA_PYTHON=3.12 bash scripts/test-workflow-schema-load.sh --bundled-catalog=all
+WORKFLOW_SCHEMA_PYTHON=3.14 bash scripts/test-workflow-schema-load.sh --bundled-catalog=all
+# Focused groups: second_bundle, pins, refusals, admission, registration.
+WORKFLOW_SCHEMA_PYTHON=3.12 bash scripts/test-workflow-schema-load.sh --fresh-catalog=registration
+WORKFLOW_SCHEMA_PYTHON=3.14 bash scripts/test-workflow-schema-load.sh --fresh-catalog=registration
+```
+
+The production package reader, compiler, A2 registrar, settings writer, current
+profile/authority coordinator and public start precheck operate on private data.
+`second_bundle` overrides manifest/package data only inside the harness; it
+adds no shipped catalog file or production injection flag. The finite matrix
+observes unchanged Coding v2 pins; pin/size/provenance/resource refusal; unknown
+identity/version, Coding v1 and old-start refusal; fixture live-home isolation;
+missing registration, stale/Disabled settings, lost authority/native attachment;
+and exact-existing registration writing zero. No task execution is launched.
+Start@1 retains one run/fixed assignments/old source-terminal semantics. Run
+`boundary-lint` and normal hooks; observe the two hosted lints without waiting or
+rerunning. This focused procedure adds no Product E2E, V3 or full-suite run.
+
 The same schema-load script covers `returned_run_ids` and sequential
 `recovery.rediscover_returned`. Run only this focused selection for R1a:
 

@@ -22,7 +22,7 @@ from runtime.workflows.sequential_engine import (
     AdmissionIds, SequentialRefusal, _bound_agents, _engine_rows, _identity, _replay, admit_uncommitted,
 )
 from runtime.workflows.sequential_history import StorageSettings, _ReadBudget, _bytes, _decode, _parse, _sql_budget
-from runtime.workflows.sequential_release import select_coding_release
+from runtime.workflows.sequential_release import is_bundled_definition, select_bundled_release
 from runtime.workflows.sequential_run_validation import _pins, _selected_layout, validate_selected_run_uncommitted
 from runtime.workflows.sequential_venue import check_venue_start
 
@@ -94,8 +94,8 @@ def _require_runtime(org: Any) -> None:
 
 def _fresh_start(org: Any, command: StartCommand) -> CompiledDefinition | None:
     """Observe package/venue outside SQL; neither supplies admission authority."""
-    if command.definition.identity == 'release/happyranch/coding':
-        release = select_coding_release(command.definition)
+    if is_bundled_definition(command.definition):
+        release = select_bundled_release(command.definition)
         _require_runtime(org)
         return release
     check_venue_start(org_slug=org.slug, org_root=org.root, db_path=org.db.path)
@@ -306,7 +306,7 @@ def start_in_writer(conn: sqlite3.Connection, *, org: Any, claim: RetryClaim, de
         replay = _admitted_replay(conn, org, claim, command, budget)
         if replay is not None:
             return replay
-        if command.definition.identity == 'release/happyranch/coding':
+        if is_bundled_definition(command.definition):
             _require_runtime(org)
             _check(release is not None and release.pin == command.definition,
                    'sequential_release_pin_mismatch')

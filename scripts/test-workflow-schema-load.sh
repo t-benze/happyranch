@@ -61,6 +61,12 @@ if len(sys.argv) == 2 and sys.argv[1].startswith('--returned-storage='):
     returned_case = sys.argv[1].split('=', 1)[1]
     sys.argv[1:] = ['--returned-storage']
 
+bundled_case = None
+if len(sys.argv) == 2 and sys.argv[1].startswith('--bundled-catalog='):
+    bundled_case = sys.argv[1].split('=', 1)[1]
+    assert bundled_case in ('all', 'second_bundle', 'pins', 'refusals', 'admission', 'registration')
+    sys.argv[1:] = ['--bundled-catalog']
+
 a2_case = None
 if len(sys.argv) == 2 and sys.argv[1].startswith('--fresh-catalog='):
     a2_case = sys.argv[1].split('=', 1)[1]
@@ -152,7 +158,7 @@ if len(sys.argv) == 2 and sys.argv[1].startswith('--retained-corruption-phase=')
         uncommitted='between uncommitted')[sys.argv[1].split('=', 1)[1]]
     sys.argv[1:] = ['--retained-corruption']
 
-assert sys.argv[1:] in ([], ['--returned-storage'], ['--bootstrap-startup'], ['--bootstrap-worker'], ['--bootstrap-owners'], ['--bootstrap-discovery'], ['--bootstrap-selection'], ['--bootstrap-install'], ['--bootstrap-rehearsal'], ['--bootstrap-backup'], ['--bootstrap-journal'], ['--bootstrap-precommit'], ['--startup-isolation'], ['--fresh-catalog'], ['--org-access-fence'], ['--org-access-openers'], ['--org-access-native'], ['--org-access-guardian'], ['--org-access-profile'], ['--setup-status'], ['--daily-integrity'], ['--install-integrity'], ['--bounded-acquisition'], ['--trace-custody'], ['--sequential-reuse'], ['--sequential-load'], ['--sequential-freshness'], ['--sequential-faults'], ['--sequential-sql-exhaustion'], ['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--coding-authority-corruption'], ['--document-native-corruption'], ['--author-handoff-corruption'], ['--document-revision-corruption'], ['--coding-history-corruption'], ['--physical-corruption'], ['--sequential-uncommitted'], ['--i2-cutover'], ['--i2-native']), 'unknown schema-load selection'
+assert sys.argv[1:] in ([], ['--bundled-catalog'], ['--returned-storage'], ['--bootstrap-startup'], ['--bootstrap-worker'], ['--bootstrap-owners'], ['--bootstrap-discovery'], ['--bootstrap-selection'], ['--bootstrap-install'], ['--bootstrap-rehearsal'], ['--bootstrap-backup'], ['--bootstrap-journal'], ['--bootstrap-precommit'], ['--startup-isolation'], ['--fresh-catalog'], ['--org-access-fence'], ['--org-access-openers'], ['--org-access-native'], ['--org-access-guardian'], ['--org-access-profile'], ['--setup-status'], ['--daily-integrity'], ['--install-integrity'], ['--bounded-acquisition'], ['--trace-custody'], ['--sequential-reuse'], ['--sequential-load'], ['--sequential-freshness'], ['--sequential-faults'], ['--sequential-sql-exhaustion'], ['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--coding-authority-corruption'], ['--document-native-corruption'], ['--author-handoff-corruption'], ['--document-revision-corruption'], ['--coding-history-corruption'], ['--physical-corruption'], ['--sequential-uncommitted'], ['--i2-cutover'], ['--i2-native']), 'unknown schema-load selection'
 
 
 print('SCHEMA_RUNTIME', json.dumps(dict(python=sys.version, executable=sys.executable, sqlite=sqlite3.sqlite_version,
@@ -633,6 +639,235 @@ if sys.argv[1:] == ['--returned-storage']:
     returned_tail_cases(returned_case)
     raise SystemExit(0)
 
+
+
+# R1c uses private package data and real production readers/writers, with no launch.
+if sys.argv[1:] in ([], ['--bundled-catalog']):
+    import asyncio
+    from dataclasses import replace
+    from runtime.daemon.routes.orgs import _seed_skeleton
+    from runtime.runtime import RuntimeDir
+    from runtime.infrastructure.workflow_schema import initialize_fresh_org_database
+    from runtime.orchestrator.org_config import initialize_fresh_reviewer_agents
+    from runtime.orchestrator.host_supervisor import HostSessionSupervisor, canary_policy
+    from runtime.platform.passthrough_backend import PassthroughBackend
+    from runtime.workflows.profile_coordinator import ProfileCoordinator
+    from runtime.workflows import sequential_release as release, sequential_builtin as builtin, sequential_start as start
+    from runtime.workflows.sequential_definition import compile_definition, parse_start
+    from runtime.workflows.sequential_history import StorageSettings, _ReadBudget, _bytes
+    from runtime.workflows.sequential_venue import SequentialVenueUnavailable
+    from runtime.workflows.coding_start import require_start_ready
+    from scripts.setup_sequential_coding import _write
+
+    def r1c_refuses(label, action, expected):
+        try:
+            action()
+        except (ValueError, RuntimeError) as exc:
+            assert str(exc) == expected, (label, 'wrong refusal', str(exc), expected)
+        else:
+            raise AssertionError(label + ': unexpectedly admitted')
+        print('PASS R1c', label, expected, flush=True)
+
+    async def bundled_catalog_cases():
+        with tempfile.TemporaryDirectory(prefix='r1c-bundled-', dir='/tmp') as scratch:
+            home = Path(scratch).resolve()
+            runtime = RuntimeDir.init(home / 'runtime')
+            root = runtime.orgs_dir / 'scratch'
+            _seed_skeleton(root, from_example=None)
+            (root / 'org/config.yaml').write_text('reviewer_agents: []\n')
+            (root / 'org/teams.yaml').write_text('teams:\n  engineering:\n    manager: r1c_manager\n    workers: [r1c_dev, r1c_review, r1c_qa]\n')
+            for name, role in (('r1c_manager', 'manager'), ('r1c_dev', 'worker'),
+                               ('r1c_review', 'worker'), ('r1c_qa', 'worker')):
+                agent = AgentDef(name=name, team='engineering', role=role, executor='claude',
+                    allow_rules=(), repos={}, enrolled_by=None, enrolled_at_task=None,
+                    enrolled_at=None, system_prompt='Private no-launch catalog proof')
+                (root / 'org/agents' / (name + '.md')).write_text(render_agent_text(agent))
+            with patch.dict(os.environ, {'HAPPYRANCH_DAEMON_HOME': str(home)}):
+                db = initialize_fresh_org_database(OrgPaths(root).db_path, expected_org_slug='scratch')
+                initialize_fresh_reviewer_agents(OrgPaths(root), db)
+                db.close()
+                org = OrgState.load(slug='scratch', root=root, settings=Settings())
+                try:
+                    coordinator = ProfileCoordinator(daemon_home=home, orgs={'scratch': org})
+                    org._profile_coordinator = coordinator
+                    org.workflow_authority._profile_coordinator = coordinator
+                    coordinator.reconcile_startup()
+                    org.orchestrator._main_loop = asyncio.get_running_loop()
+                    org.orchestrator._queue = asyncio.Queue()
+                    org.orchestrator._host_supervisor = HostSessionSupervisor(backend=PassthroughBackend(),
+                        policy=canary_policy(), publisher=lambda receipt: None)
+                    db, conn = org.db, org.db._conn
+                    coding = release.read_coding_release()
+                    original_manifest = dict(getattr(release, 'MANIFEST', {}))
+                    selected = bundled_case or 'all'
+
+                    def command(compiled, *, generation=1, admission='Allowed'):
+                        bindings = [dict(role=role, principal=dict(developer='r1c_dev', reviewer='r1c_review',
+                            qa='r1c_qa', final_manager='r1c_manager')[role]) for role, _ in compiled.definition.roles]
+                        snapshot = StorageSettings(format='workflow-sequential-settings-storage@1',
+                            definition=compiled.pin, bindings=bindings, limits=compiled.definition.limits, admission=admission)
+                        raw = _bytes(snapshot.model_dump(mode='json'))
+                        return parse_start(_bytes(dict(format='workflow-sequential-start@1', operation_key='private-start',
+                            definition=compiled.pin.model_dump(mode='json'), settings=dict(generation=generation,
+                                snapshot_digest=hashlib.sha256(raw).hexdigest()), request='Private no-launch request',
+                            inputs=[], bindings=bindings, lower_limits=compiled.definition.limits.model_dump(mode='json')))), raw
+
+                    def save_settings(compiled, *, generation=1, admission='Allowed'):
+                        cmd, raw = command(compiled, generation=generation, admission=admission)
+                        definition_id = conn.execute('SELECT id FROM workflow_seq_definitions WHERE identity=? AND version=?',
+                            (compiled.pin.identity, compiled.pin.version)).fetchone()[0]
+                        _write(conn, 'scratch', 'admission', SimpleNamespace(operation_key=compiled.pin.identity + ':' + str(generation),
+                            expected_generation=generation-1, definition=compiled.pin),
+                            dict(write=dict(definition_id=definition_id, generation=generation, raw=raw)))
+                        conn.commit()
+                        return cmd
+
+                    def precheck(cmd):
+                        changes = conn.total_changes
+                        try:
+                            start.precheck_start(org, cmd.model_dump(mode='json'), source_task_id='private-source')
+                        finally:
+                            assert conn.total_changes == changes, 'R1c read-only precheck wrote'
+
+                    db.insert_task(TaskRecord(id='private-source', assigned_agent='r1c_manager', team='engineering',
+                        task_type='task', status='in_progress', brief='Private no-launch source'))
+
+                    if selected in ('all', 'second_bundle'):
+                        # Private package resource + manifest override ONLY in this
+                        # harness. The production reader, registrar, authority and
+                        # precheck remain real. Nothing is added to shipped data.
+                        document = json.loads(coding.raw)
+                        document.update(identity='release/synthetic/second', version=1)
+                        raw = _bytes(document) + b'\n'
+                        second = compile_definition(raw[:-1], source_digest=hashlib.sha256(raw).hexdigest())
+                        package = home / 'private-package'
+                        directory = package / 'workflows/builtin_templates'
+                        directory.mkdir(parents=True)
+                        (directory / 'second.json').write_bytes(raw)
+                        (directory / 'coding.v2.json').write_bytes(Path('runtime/workflows/builtin_templates/coding.v2.json').read_bytes())
+                        entry = SimpleNamespace(package='runtime', resource=('workflows', 'builtin_templates', 'second.json'),
+                            size=len(raw), pin=second.pin)
+                        manifest = dict(original_manifest)
+                        manifest[(second.pin.identity, second.pin.version)] = entry
+                        files = release.resources.files
+                        def private_files(name):
+                            return package if name == 'runtime' else files(name)
+                        with patch.object(release, 'MANIFEST', manifest, create=True), \
+                             patch.object(builtin, 'MANIFEST', manifest, create=True), \
+                             patch.object(release.resources, 'files', private_files):
+                            cmd, _ = command(second)
+                            try:
+                                chosen = start._fresh_start(org, cmd)
+                            except SequentialVenueUnavailable as exc:
+                                raise AssertionError('second_bundle: manifest definition diverted to disposable venue: ' + str(exc)) from exc
+                            assert chosen == second, 'second_bundle: generic selector did not select the second manifest pin'
+                            builtin.SequentialBuiltinStore(org).ensure_registered()
+                            cmd = save_settings(second)
+                            precheck(cmd)
+                            assert conn.execute('SELECT definition_bytes FROM workflow_seq_definitions WHERE identity=?',
+                                (second.pin.identity,)).fetchone()[0] == second.raw
+                            print('PASS R1c second_bundle real package reader/registrar/Allowed/current-authority/native precheck zero writes', flush=True)
+
+                    if selected in ('all', 'pins'):
+                        pin = coding.pin
+                        assert pin.model_dump(mode='json') == dict(identity='release/happyranch/coding', version=2,
+                            source_digest='5039e9eb60a03f8de110b40123a123d25962fbff48c39af5271a0666d679d065',
+                            definition_digest='a3b012d117c5905a1bac3c67a3158a8b1afa5a571acdba73c876ac7de24f790c',
+                            compiler='workflow-sequential-compiler@1', validator='workflow-sequential-validator@1',
+                            interpreter='workflow-sequential-interpreter@1', capabilities='workflow-sequential-capabilities@1')
+                        assert len(original_manifest) == 1 and release.select_bundled_release(pin) == coding
+                        entry = original_manifest[(pin.identity, pin.version)]
+                        assert entry.package == 'runtime' and entry.resource == ('workflows', 'builtin_templates', 'coding.v2.json') and entry.size == 3795
+                        print('PASS R1c coding_pins unchanged full manifest/source/definition/ABI/resource/size/provenance', flush=True)
+                        for field in ('source_digest', 'definition_digest', 'compiler', 'validator', 'interpreter', 'capabilities'):
+                            bad = pin.model_copy(update={field: '0' * 64 if field.endswith('digest') else 'unsupported@9'})
+                            r1c_refuses('requested_' + field, lambda: release.select_bundled_release(bad), 'sequential_release_pin_mismatch')
+                        for name, changed, expected in (
+                            ('size', replace(entry, size=entry.size-1), 'sequential_release_corrupt'),
+                            ('source', replace(entry, pin=pin.model_copy(update={'source_digest': '0'*64})), 'sequential_release_corrupt'),
+                            ('definition', replace(entry, pin=pin.model_copy(update={'definition_digest': '0'*64})), 'sequential_release_corrupt'),
+                            ('abi', replace(entry, pin=pin.model_copy(update={'compiler': 'unsupported@9'})), 'sequential_release_corrupt'),
+                            ('provenance', replace(entry, package='foreign'), 'sequential_release_pin_mismatch'),
+                            ('resource', replace(entry, resource=('workflows', 'builtin_templates', '../coding.v2.json')), 'sequential_release_pin_mismatch')):
+                            with patch.dict(release.MANIFEST, {(pin.identity, pin.version): changed}):
+                                r1c_refuses('tampered_' + name, lambda: release.select_bundled_release(changed.pin), expected)
+                        with patch.object(release.resources, 'files', side_effect=FileNotFoundError):
+                            r1c_refuses('missing_resource', lambda: release.select_bundled_release(pin), 'sequential_release_unavailable')
+
+                    if selected in ('all', 'refusals'):
+                        for identity, version in (('release/synthetic/unknown', 1), ('release/happyranch/coding', 99)):
+                            pin = coding.pin.model_copy(update=dict(identity=identity, version=version))
+                            r1c_refuses('nonmanifest_' + str(version), lambda: release.select_bundled_release(pin), 'sequential_release_pin_mismatch')
+                        old = coding.pin.model_copy(update={'version': 1})
+                        cmd, _ = command(coding)
+                        r1c_refuses('coding_v1', lambda: start._fresh_start(org, cmd.model_copy(update={'definition': old})), 'coding_fresh_start_retired')
+                        for version in (1, 2):
+                            r1c_refuses('legacy_start_' + str(version), lambda: require_start_ready(conn, org,
+                                dict(format='workflow-coding-start@' + str(version))), 'coding_fresh_start_retired')
+                        fixture = cmd.model_copy(update={'definition': coding.pin.model_copy(update={'identity': 'release/synthetic/fixture'})})
+                        # No live home is opened or changed: the production fence
+                        # classifies the real account home from metadata first.
+                        from runtime.workflows.sequential_venue import live_daemon_home
+                        with patch.dict(os.environ, {'HAPPYRANCH_DAEMON_HOME': str(live_daemon_home()[0])}):
+                            r1c_refuses('fixture_live_refused', lambda: start._fresh_start(org, fixture), 'sequential_venue_live_home')
+                        r1c_refuses('fixture_marker_missing', lambda: start._fresh_start(org, fixture), 'sequential_venue_marker_absent')
+
+                    def inventory():
+                        with _schema_snapshot(conn):
+                            return sequential_storage_inventory(conn)
+
+                    if selected in ('all', 'registration'):
+                        store = builtin.SequentialBuiltinStore(org)
+                        before, changes = inventory(), conn.total_changes
+                        store.ensure_registered()
+                        assert conn.total_changes == changes and inventory() == before
+                        print('PASS R1c exact_existing_zero_writes complete inventory/rowid/bytes', flush=True)
+
+                    if selected in ('all', 'admission'):
+                        # Missing registration is observed with a real compiled
+                        # private manifest entry before any registrar writes it.
+                        missing = json.loads(coding.raw)
+                        missing.update(identity='release/synthetic/missing', version=1)
+                        raw = _bytes(missing) + b'\n'
+                        compiled = compile_definition(raw[:-1], source_digest=hashlib.sha256(raw).hexdigest())
+                        package = home / 'missing-package/workflows/builtin_templates'
+                        package.mkdir(parents=True)
+                        (package / 'missing.json').write_bytes(raw)
+                        entry = SimpleNamespace(package='runtime', resource=('workflows', 'builtin_templates', 'missing.json'), size=len(raw), pin=compiled.pin)
+                        files = release.resources.files
+                        with patch.dict(release.MANIFEST, {(compiled.pin.identity, 1): entry}), \
+                             patch.object(release.resources, 'files', lambda name: package.parent.parent if name == 'runtime' else files(name)):
+                            cmd, _ = command(compiled)
+                            changes = conn.total_changes
+                            r1c_refuses('missing_registration', lambda: precheck(cmd), 'sequential_start_unavailable')
+                            assert conn.total_changes == changes
+                        cmd = save_settings(coding)
+                        precheck(cmd)
+                        print('PASS R1c coding_allowed native/current-authority/registered latest pins zero writes', flush=True)
+                        dispatcher = org.orchestrator._workflow_sequential_dispatch
+                        org.orchestrator._workflow_sequential_dispatch = None
+                        try:
+                            r1c_refuses('native_attachment_lost', lambda: precheck(cmd), 'sequential_host_unavailable')
+                        finally:
+                            org.orchestrator._workflow_sequential_dispatch = dispatcher
+                        cache = dict(org.workflow_authority._cache)
+                        org.workflow_authority._cache.clear()
+                        try:
+                            r1c_refuses('authority_lost', lambda: precheck(cmd), 'authority_pointer_not_ready')
+                        finally:
+                            org.workflow_authority._cache.update(cache)
+                        disabled = save_settings(coding, generation=2, admission='Disabled')
+                        r1c_refuses('stale_settings', lambda: precheck(cmd), 'workflow_seq_settings_generation_stale')
+                        r1c_refuses('disabled_settings', lambda: precheck(disabled), 'sequential_start_unavailable')
+                        assert conn.execute('SELECT count(*) FROM workflow_seq_runs').fetchone()[0] == 0
+                        assert conn.execute('SELECT count(*) FROM workflow_seq_visits').fetchone()[0] == 0
+                        assert conn.execute('SELECT count(*) FROM tasks').fetchone()[0] == 1
+                        print('PASS R1c refusal matrix creates zero runs/visits/tasks', flush=True)
+                finally:
+                    org.close()
+    asyncio.run(bundled_catalog_cases())
+    if sys.argv[1:] == ['--bundled-catalog']:
+        raise SystemExit(0)
 
 
 # A4-M drives the real daemon build before any listener, using only private orgs.

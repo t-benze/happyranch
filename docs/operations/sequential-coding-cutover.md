@@ -28,11 +28,17 @@ returns on both runtimes and every other A0b-2 case remain required; see the
 [storage capacity contract](sequential-workflow-storage.md).
 
 **SOURCE ONLY: atomic public Coding cutover and old-fresh fence delivered.**
-TASK-15624 attaches reviewed Coding v2 selection and unconditional old fresh
-refusal together. Public Coding requires compatible installed storage, registered
-reviewed v2, current authority/eligible bindings, mounted native engine and latest
-Allowed NEW settings. Noncatalog V3 fixtures retain `check_venue_start`; a marker
-never supplies Coding authority or bypasses release selection. Authenticated
+TASK-15624's atomic fence remains; R1c now selects public bundled definitions
+from one literal identity/version manifest shared with the A2 registrar and
+A4/offline consumers. Each entry pins the `runtime` package/resource, size,
+source/definition digests and all four ABI pins. Coding v2 is still the sole
+shipped entry, with byte-identical pins and registration. Exact existing rows
+write zero and mismatches refuse; no settings/Allow/roles are allocated.
+Every bundled start requires compatible installed registration, current
+authority/eligible bindings, mounted native engine and latest Allowed NEW
+settings. Coding v1 is retired grammar and refuses `coding_fresh_start_retired`;
+old fresh @1/@2 stay fenced. Noncatalog fixtures retain `check_venue_start`;
+a marker never supplies authority or bypasses manifest selection. Authenticated
 admitted replay precedes fresh gates and preserves original pins. Source delivery
 grants no live operation or genuine execution acceptance. See the
 [U9 compatibility table and caller inventory](../specs/2026-11-12-sequential-coding-u9.md).

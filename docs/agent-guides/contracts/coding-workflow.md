@@ -2692,7 +2692,10 @@ settings, compatible storage, mounted native runtime and current authority;
 supplies no authority and a marker cannot bypass Coding selection. There is no
 flag shortcut or historical engine fallback. Admitted old @1/@2, original return and
 source/thread association, U7a/U7b/U7c, Pause/U6 and LOCAL Final/receipt uncertainty
-are unchanged; thread sources still refuse, notifications remain excluded.
+are unchanged. R1a treats thread origin as metadata and admits eligible ordinary
+task ancestry. Its guarded terminal return tail follows the original thread
+only for a terminal root source; parked sources have no tail and non-root
+sources only wake their parent. Workflow hold/return notifications remain excluded.
 No new route/schema/credential/permission/access observer or daemon network I/O.
 See the [current U7 source and evidence limits](../../specs/2026-11-11-sequential-coding-u7.md#u7d-ordinary-source-completion-consumer-task-15578).
 
