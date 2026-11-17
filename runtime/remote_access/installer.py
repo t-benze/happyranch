@@ -19,7 +19,9 @@ import pwd
 import re
 import stat
 import sys
+import uuid
 from contextlib import contextmanager
+from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Iterator
@@ -58,16 +60,18 @@ class InstallerError(RuntimeError):
     """An unsafe path, incompatible account, command failure, or unit drift."""
 
 
-def managed_units(layout: str = "source") -> dict[str, str]:
+def managed_units(layout: str = "source", *, connector_config: dict | None = None) -> dict[str, str]:
     """Use the shared renderers verbatim, including sidecar credential injection."""
     if layout not in ("source", "deb"):
         raise InstallerError("unknown installation layout")
+    profile = (connector_config or {}).get("managed", {}).get("profile", "")
     python = (("/opt/happyranch-desktop/python/bin/python3", "-I") if layout == "deb"
               else ("/opt/happyranch/venv/bin/python",))
     sidecar = f"/opt/{'happyranch-desktop' if layout == 'deb' else 'happyranch'}/bin/happyranch-tsnet-sidecar"
     return {
         UNITS[0]: render_connector_unit(ConnectorUnitSpec(
             user="happyranch", group="happyranch", release_verifier=True,
+            ingress_profile=profile,
             exec_start=(*python, "-m", "runtime.remote_access.cli",
                         "run", "--managed", "--config", "/etc/happyranch/connector.json"),
         )),
@@ -352,6 +356,20 @@ class ManagedInstaller:
             policy = RoutePolicyConsumer.from_envelope(PolicyEnvelope(**self._json(files["policy.json"])))
             policy.require_current(datetime.now(timezone.utc))
             sidecar = self._json(files["sidecar.json"])
+            if cfg.managed.profile == "linux-managed-identity-v1":
+                # An inert staged bundle, not a runnable home transport. In
+                # particular, never publish a URL without its protected CA.
+                if (sidecar.keys() != {"Profile", "StateDir", "RoleIdentity", "DERPPolicy",
+                                      "ListenAddr", "ExcludedDaemonPorts"}
+                        or sidecar["Profile"] != cfg.managed.profile
+                        or sidecar["StateDir"] != "/var/lib/happyranch-tsnet-sidecar"
+                        or sidecar["RoleIdentity"] != f"home-sidecar-{cfg.home_id}"
+                        or sidecar["DERPPolicy"] != "private-only" or sidecar["ListenAddr"] != ":443"
+                        or cfg.excluded_daemon_ports != [8765]
+                        or sidecar["ExcludedDaemonPorts"] != [8765]
+                        or not cfg.managed.control_plane_id):
+                    raise ValueError
+                return
             required = {"StateDir", "ControlURL", "RoleIdentity", "ExpectedPeer", "DERPPolicy", "ListenAddr", "ConnectorAddr"}
             if (not required <= sidecar.keys() <= required | {"ExcludedDaemonPorts"}
                     or any(not isinstance(sidecar[key], str) for key in required)):
@@ -563,7 +581,7 @@ class ManagedInstaller:
         """Destination-bound v1 records, with the existing provenance kept verbatim.
 
         Publication alone supplies no service, transaction-update or recovery
-        authority. The future generator computes these fixed digests; no path
+        authority. The generator computes these fixed digests; no path
         manifest, secret field or later transaction phase is accepted here.
         """
         record = self._json(data)
@@ -632,14 +650,52 @@ class ManagedInstaller:
             raise InstallerError('invalid release install record') from None
         return record
 
-    def provision(self, *, connector_config: Path, sidecar_config: Path, policy_file: Path,
+    @staticmethod
+    def _generated_configs() -> dict[str, bytes]:
+        """Fixed identity/socket settings and the shipped deny-default artifact.
+
+        This is staging only. Helper/package selection and a complete protected
+        home control binding are separate slices; there is no URL input here.
+        """
+        from runtime.remote_access.managed_provider import ManagedProviderConfig
+        from runtime.remote_access.supervisor import ConnectorConfig
+
+        connector = asdict(ConnectorConfig(
+            tenant_id=uuid.uuid4().hex, home_id=uuid.uuid4().hex, connector_id=uuid.uuid4().hex,
+            system=True, service_user="happyranch", service_group="happyranch",
+            daemon_token_path="/etc/happyranch/daemon.token", policy_path="/etc/happyranch/policy.json",
+            state_path="/var/lib/happyranch-connector/trust-state.json", excluded_daemon_ports=[8765],
+            managed=ManagedProviderConfig(profile="linux-managed-identity-v1", control_plane_id=uuid.uuid4().hex),
+        ))
+        connector.pop("daemon_port")
+        sidecar = dict(Profile="linux-managed-identity-v1", StateDir="/var/lib/happyranch-tsnet-sidecar",
+                       RoleIdentity=f"home-sidecar-{connector['home_id']}", DERPPolicy="private-only",
+                       ListenAddr=":443", ExcludedDaemonPorts=[8765])
+        artifact = json.loads(Path(__file__).with_name("route_policy.json").read_bytes())
+        policy = dict(schema_version=1, artifact_version=int(artifact["version"]), artifact=artifact,
+                      issued_at=datetime.now(timezone.utc).isoformat(), max_age_seconds=3600,
+                      revision=1, state="active")
+        return {name: json.dumps(value, sort_keys=True).encode() for name, value in (
+            ("connector.json", connector), ("sidecar.json", sidecar), ("policy.json", policy))}
+
+    def provision(self, *, connector_config: Path | None = None, sidecar_config: Path | None = None,
+                  policy_file: Path | None = None,
                   release_user: str, data_home: Path | None = None,
                   daemon_token_source: Path | None = None) -> None:
-        """Fresh-host, no-service-start staging. Existing files always refuse."""
+        """Stage fresh files; omitted config inputs generate an inert identity bundle.
+
+        The operator CLI still requires its original three inputs. No helper
+        action selects this generator until the package/H2 slice ships.
+        """
         try:
+            generated = connector_config is None and sidecar_config is None and policy_file is None
+            if not generated and any(path is None for path in (connector_config, sidecar_config, policy_file)):
+                raise InstallerError("provide all three config inputs or omit all three for staged generation")
+            if generated and daemon_token_source is not None:
+                raise InstallerError("generated bundle requires the fixed release-home token source")
             release = self._release_record(release_user, data_home)
             daemon_token_source = daemon_token_source or Path(release['data_home']) / 'daemon.token'
-            files = {name: self._input(path) for name, path in (
+            files = self._generated_configs() if generated else {name: self._input(path) for name, path in (
                 ("connector.json", connector_config), ("sidecar.json", sidecar_config), ("policy.json", policy_file))}
             self._validate_configs(files)
             connector = self._json(files["connector.json"])
@@ -678,6 +734,12 @@ class ManagedInstaller:
             record = dict(layout=self.layout, token_source=str(daemon_token_source),
                           token_sha256=hashlib.sha256(token).hexdigest(),
                           configs={name: hashlib.sha256(data).hexdigest() for name, data in files.items()})
+            if generated:
+                record = dict(version=1, layout=self.layout, phase="provisioned", digests={
+                    **{name: hashlib.sha256(data).hexdigest() for name, data in files.items()},
+                    "release-daemon.json": hashlib.sha256(json.dumps(release, sort_keys=True).encode()).hexdigest(),
+                    "daemon.token": hashlib.sha256(token).hexdigest(),
+                })
             self._write_provision_file("provision.json", json.dumps(record, sort_keys=True).encode(), self.root_owner, 0o600)
             self._check_provisioning()
         except OSError:
@@ -688,6 +750,23 @@ class ManagedInstaller:
             release = self._check_release_record()
             with self._directory("etc/happyranch") as parent:
                 record = self._json(self._read_file(parent, "provision.json", owner=self.root_owner, mode=0o600))
+                if "version" in record:
+                    self._validate_install_record("provision.json", json.dumps(record).encode())
+                    if self._service_owner is None:
+                        raise InstallerError("provisioned service account is missing")
+                    files = {name: self._read_file(parent, name, owner=(self.root_owner[0], self._service_owner[1]), mode=0o640)
+                             for name in ("connector.json", "sidecar.json", "policy.json")}
+                    self._validate_configs(files, staged=True)
+                    if self._json(files["connector.json"])["managed"].get("profile") != "linux-managed-identity-v1":
+                        raise InstallerError("versioned provisioning requires the identity profile")
+                    files["release-daemon.json"] = self._read_file(parent, "release-daemon.json", owner=self.root_owner, mode=0o644)
+                    files["daemon.token"] = self._read_file(parent, "daemon.token", owner=self._service_owner, mode=0o600)
+                    if record["digests"] != {name: hashlib.sha256(data).hexdigest() for name, data in files.items()}:
+                        raise InstallerError("provisioned configuration drift")
+                    source = self._input(Path(release['data_home']) / "daemon.token", token=True, source_uid=release['uid'])
+                    if hashlib.sha256(source).hexdigest() != record["digests"]["daemon.token"]:
+                        raise InstallerError("daemon token drift; source rotation requires explicit reprovisioning")
+                    return
                 if record.keys() != {"layout", "token_source", "token_sha256", "configs"} or record["layout"] != self.layout:
                     raise InstallerError("provisioning layout mismatch or invalid record")
                 if self._service_owner is None:
@@ -736,7 +815,25 @@ class ManagedInstaller:
         except FileNotFoundError:
             pass
 
+    def _refuse_staged_identity(self) -> None:
+        for name in ("connector.json", "sidecar.json"):
+            try:
+                with self._directory("etc/happyranch") as parent:
+                    # This read can only deny service admission. Keep legacy
+                    # source installs' config modes; provisioned files still
+                    # undergo their exact ownership/mode checks separately.
+                    raw = self._json(self._read_file(parent, name))
+            except FileNotFoundError:
+                continue
+            managed = raw.get("managed")
+            profile = managed.get("profile") if isinstance(managed, dict) else None
+            if profile == "linux-managed-identity-v1" or raw.get("Profile") == "linux-managed-identity-v1":
+                # No modern install is selectable until the complete protected
+                # home binding ships. Never interpret a supplied URL as enough.
+                raise InstallerError("home control binding not provisioned; requires slice 3b-2")
+
     def _write_units(self) -> None:
+        self._refuse_staged_identity()
         with self._directory(_UNIT_DIR, create=True) as parent:
             for name, text in self.units.items():
                 try:
@@ -850,6 +947,7 @@ class ManagedInstaller:
 
     def install(self, *, enrollment_key_file: Path | None = None) -> dict[str, str]:
         """Start then verify READY/drift; always discard staged enrollment input."""
+        self._refuse_staged_identity()
         if enrollment_key_file is None:
             raise InstallerError("install requires --enrollment-key-file; obtain a fresh single-use Headscale key")
         data = bytearray()
@@ -906,6 +1004,7 @@ class ManagedInstaller:
         digests: dict[str, str] = {}
         try:
             self._refuse_install_transaction()
+            self._refuse_staged_identity()
             if self._has_provisioning():
                 with self._directory("etc/happyranch") as parent:
                     record = self._json(self._read_file(parent, "provision.json", owner=self.root_owner, mode=0o600))
@@ -938,6 +1037,7 @@ class ManagedInstaller:
 
     def uninstall(self, *, purge: bool = False) -> None:
         """Wait for services before unit removal. Only purge removes service state."""
+        self._refuse_staged_identity()
         try:
             self._service_owner = self._account(create=False)
             self._preflight()
