@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sqlite3
 import threading
 from contextlib import contextmanager
 from contextvars import copy_context
@@ -29,6 +30,21 @@ from runtime.runtime import RuntimeDir
 from runtime.workflows.profile_coordinator import ProfileCoordinator
 
 logger = logging.getLogger(__name__)
+
+
+def _startup_failure_reason(exc: Exception) -> str:
+    """Closed diagnostics: never expose SQLite cells, SQL or exception text."""
+    if isinstance(exc, sqlite3.Error):
+        code = getattr(exc, 'sqlite_errorcode', 0) & 255
+        return {sqlite3.SQLITE_BUSY: 'org_database_busy', sqlite3.SQLITE_LOCKED: 'org_database_busy',
+                sqlite3.SQLITE_CORRUPT: 'org_database_corrupt', sqlite3.SQLITE_NOTADB: 'org_database_corrupt',
+                sqlite3.SQLITE_FULL: 'org_database_full', sqlite3.SQLITE_INTERRUPT: 'org_database_interrupted',
+                sqlite3.SQLITE_IOERR: 'org_database_io'}.get(code, 'org_database_unavailable')
+    if isinstance(exc, OSError):
+        return 'org_filesystem_unavailable'
+    if isinstance(exc, (ValueError, OrgConsistencyError)):
+        return 'org_load_refused'
+    return 'org_startup_unavailable'
 
 
 @dataclass
@@ -86,6 +102,7 @@ class DaemonState:
     _attachment_swap_pending: bool = field(init=False, default=False, repr=False)
     _attachment_swap_failed: bool = field(init=False, default=False, repr=False)
     _startup_held_orgs: dict[str, OrgState] = field(init=False, default_factory=dict, repr=False)
+    _workflow_bootstrap: Any = field(init=False, default=None, repr=False)
     _attachment_closes: dict[int, dict] = field(init=False, default_factory=dict, repr=False)
     _org_readers: dict[int, int] = field(init=False, default_factory=dict, repr=False)
     _retiring_orgs: set[int] = field(init=False, default_factory=set, repr=False)
@@ -138,9 +155,9 @@ class DaemonState:
                 if org is not None:
                     org._runner_admission_closed = True
                     self._startup_held_orgs[slug] = org
-                    original = org._startup_authority_error
-                    detail = reason if original is None else reason + "; " + str(original)
-                    self.broken_orgs.setdefault(slug, detail[:1024])
+                    # The original exception stays on the owned OrgState.
+                    # Public broken-org status carries only the closed cause.
+                    self.broken_orgs.setdefault(slug, reason[:1024])
 
     @contextmanager
     def _capture_profile_orgs(self) -> Iterator[dict[str, OrgState]]:
@@ -369,6 +386,7 @@ class DaemonState:
 
     @classmethod
     def from_runtime(cls, runtime: RuntimeDir, settings: Settings, *, construction_owner: dict | None = None,
+                     automatic_workflow_setup: bool = False,
                      startup_lock_proof: LockProof | None = None) -> "DaemonState":
         state = cls(runtime=runtime, settings=settings)
         construction = construction_owner if construction_owner is not None else {}
@@ -447,43 +465,52 @@ class DaemonState:
                             exc,
                         )
 
-            for slug, root in runtime.iter_org_roots():
+            roots = tuple(runtime.iter_org_roots())
+            if automatic_workflow_setup:
+                from runtime.infrastructure.workflow_sequential_bootstrap import BootstrapStartup
+                state._workflow_bootstrap = BootstrapStartup(home=daemon_home(), runtime_root=runtime.root)
+                state._workflow_bootstrap.run(roots, settings)
+                state.broken_orgs.update(state._workflow_bootstrap.holds)
+            for slug, root in roots:
                 state.workflow_setup_roots[slug] = root
                 if slug in state.broken_orgs:
                     continue
-                owner = {"slug": slug, "root": root, "org": None, "published": False}
+                owner = {"slug": slug, "root": root, "org": None, "published": False,
+                         "startup_acquisition": True}
                 token = object()
                 state._attachment_owners[token] = owner
                 try:
+                    fence = (state._workflow_bootstrap.take_shared(root)
+                             if state._workflow_bootstrap is not None else None)
                     org = OrgState.load(slug=slug, root=root, settings=settings, attachment_owner=owner,
-                                        startup_lock_proof=startup_lock_proof)
+                                        access_fence=fence, startup_lock_proof=startup_lock_proof)
+                    owner['load_returned'] = True
                     owner["org"] = org
-                    # Strong custody and both coordinator bindings precede selectors
-                    # and any other fallible post-load work.
-                    state.orgs[slug] = org
                     org._profile_coordinator = state.profile_coordinator
                     org.workflow_authority._profile_coordinator = state.profile_coordinator
+                    org.orchestrator.attach_queue(state.queue)
+                    org.orchestrator.attach_sessions(org.sessions)
+                    org.orchestrator.attach_host_supervisor(state.host_supervisor)
+                    # Only a fully attached candidate enters the runnable map.
+                    state.orgs[slug] = org
                     del state._attachment_owners[token]
-                except (OrgConsistencyError, ValueError) as exc:
-                    # One broken org must not crash the daemon. Record the
-                    # error for GET /orgs and skip; the folder stays intact
-                    # on disk so the founder can fix teams.yaml and restart.
+                except Exception as exc:
                     owner["primary"] = exc
-                    if owner.get("load_db_closed") or not owner.get("db_construction_started"):
+                    candidate = owner.get("org")
+                    if candidate is not None and owner.get('load_returned'):
+                        candidate._runner_admission_closed = True
+                        candidate._startup_publication_held = True
+                        candidate._startup_authority_error = exc
+                        state._startup_held_orgs[slug] = candidate
+                        # A returned OrgState owns its intact open connection.
+                        # Transfer custody to the held attachment map; an
+                        # unfinished-construction token would prevent shutdown.
                         del state._attachment_owners[token]
-                    state.broken_orgs[slug] = str(exc)
-                    logger.error("org %r failed consistency check: %s", slug, exc)
+                    elif owner.get("load_db_closed"):
+                        del state._attachment_owners[token]
+                    state.broken_orgs[slug] = _startup_failure_reason(exc)
+                    logger.error("org %r startup held: %s", slug, state.broken_orgs[slug])
                     continue
-                # Attach the global queue + per-org sessions + daemon-wide host
-                # supervisor so the orchestrator can re-enqueue tasks (e.g. parent
-                # wake-up after a child resolves) and run task sessions through
-                # admission/containment. The lifespan wiring also does this, but
-                # `from_runtime` is used by tests that bypass lifespan, so we do
-                # it here too — idempotent.
-                org.orchestrator.attach_queue(state.queue)
-                org.orchestrator.attach_sessions(org.sessions)
-                org.orchestrator.attach_host_supervisor(state.host_supervisor)
-                state.orgs[slug] = org
             assert state.profile_coordinator is not None
             for org in state.orgs.values():
                 # Keep the established route-call signatures intact: org-scoped
@@ -499,18 +526,32 @@ class DaemonState:
             state.profile_coordinator.reconcile_startup()
             from runtime.orchestrator.active_authority_policy import is_eligible_policy_manager
             for org in state.orgs_snapshot().values():
-                for team in org.teams.teams():
-                    manager = org.teams.executable_manager_for_team(team)
-                    if manager is not None and is_eligible_policy_manager(
-                        root=org.root, agent_name=manager, team=team, teams=org.teams,
-                    ):
-                        org.workflow_authority.ensure_authority_selector(
-                            team=team, publisher="daemon-state-load:selector-initialization",
-                        )
+                try:
+                    for team in org.teams.teams():
+                        manager = org.teams.executable_manager_for_team(team)
+                        if manager is not None and is_eligible_policy_manager(
+                            root=org.root, agent_name=manager, team=team, teams=org.teams,
+                        ):
+                            org.workflow_authority.ensure_authority_selector(
+                                team=team, publisher="daemon-state-load:selector-initialization",
+                            )
+                except Exception as exc:
+                    reason = _startup_failure_reason(exc)
+                    state.broken_orgs[org.slug] = reason
+                    state._hold_startup_orgs({org.slug: reason})
+                    state.profile_coordinator._startup_unknown = True
+                    logger.error("org %r selector startup held: %s", org.slug, reason)
             # Supported publication can retain a prepared journal/native UNKNOWN
             # without raising. Renew complete classification after selectors so
             # no such failure is exposed as a runnable attachment.
             state.profile_coordinator.reconcile_startup()
+            for org in state.orgs_snapshot().values():
+                try:
+                    org.db._conn.execute('PRAGMA busy_timeout=5000')
+                except Exception as exc:
+                    reason = _startup_failure_reason(exc)
+                    state.broken_orgs[org.slug] = reason
+                    state._hold_startup_orgs({org.slug: reason})
             return state
         except BaseException as primary:
             state._fail_construction(construction, primary)
@@ -770,6 +811,8 @@ class DaemonState:
 
     async def close_all(self) -> None:
         self._stop_runner_admission()
+        if self._workflow_bootstrap is not None:
+            self._workflow_bootstrap.require_closed()
         await self._drain_attachments()
         captured = self._capture_attachments()
         await self._drain_thread_releases()

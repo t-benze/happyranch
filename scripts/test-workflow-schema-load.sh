@@ -9,13 +9,14 @@ from contextvars import copy_context
 from itertools import product
 import json
 import sqlite3
+import stat
 import sys
 import logging
 import os
 import tempfile
 import time
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import DEFAULT, patch
 from contextlib import redirect_stdout, redirect_stderr
 import hashlib
 import io
@@ -23,6 +24,11 @@ import io
 # All new fence filesystem effects, including legacy fixture loads, stay private.
 _schema_home = tempfile.TemporaryDirectory(prefix="workflow-schema-home-")
 os.environ["HAPPYRANCH_DAEMON_HOME"] = str(Path(_schema_home.name).resolve())
+# The real bootstrap helper must select SQLite's temp directory before its
+# first SQLite work. Every shell fixture uses this isolated literal directory.
+_schema_sqlite_temp = Path(_schema_home.name).resolve() / 'sqlite-temp'
+_schema_sqlite_temp.mkdir(mode=0o700)
+os.environ['SQLITE_TMPDIR'] = str(_schema_sqlite_temp)
 
 from runtime.infrastructure.database import Database
 from runtime.infrastructure.workflow_schema import install_or_recover, validate_workflow_schema, migrate_draft_schema
@@ -56,17 +62,1165 @@ if len(sys.argv) == 2 and sys.argv[1].startswith('--fresh-catalog='):
     assert a2_case in ('route', 'historical', 'registration')
     sys.argv[1:] = ['--fresh-catalog']
 
+bootstrap_startup_case = None
+if len(sys.argv) == 2 and sys.argv[1].startswith('--bootstrap-startup='):
+    bootstrap_startup_case = sys.argv[1].split('=', 1)[1]
+    assert bootstrap_startup_case in ('success', 'integrity', 'backup', 'ex', 'history', 'history_precommit', 'commit_uncertain', 'kill', 'close', 'late_spawn',
+                                     'discovery_cap', 'discovery_close', 'discovery_fence_close', 'discovery_descriptor_close', 'discovery_evidence_close',
+                                     'discovery_registered_close', 'evidence_custody')
+    sys.argv[1:] = ['--bootstrap-startup']
+
+worker_case = None
+if len(sys.argv) == 2 and sys.argv[1].startswith('--bootstrap-worker='):
+    worker_case = sys.argv[1].split('=', 1)[1]
+    assert worker_case in ('success', 'refuse_source', 'refuse_commit', 'cancel', 'kill',
+                           'reserve', 'late_spawn', 'source_error', 'source_eof', 'attempt_eof', 'unsolicited',
+                           'foreign_permit', 'duplicate_permit', 'qualification_false', 'late_spawn_after_timeout')
+    sys.argv[1:] = ['--bootstrap-worker']
+
+owners_case = None
+if len(sys.argv) == 2 and sys.argv[1].startswith('--bootstrap-owners='):
+    owners_case = sys.argv[1].split('=', 1)[1]
+    assert owners_case in ('empty', 'producer_settled', 'producer_active', 'producer_unknown',
+        'producer_quiescence', 'producer_rewrite', 'writer_settled', 'writer_active', 'writer_unknown',
+        'writer_rewrite', 'pause_prepared', 'pause_unknown', 'thread_settled', 'thread_active',
+        'thread_unknown', 'thread_missing', 'thread_orphan', 'thread_rewrite', 'acquisition',
+        'deadline', 'sql_budget', 'query_only', 'task_active', 'task_terminal',
+        'publication_lease', 'profile_lease', 'domain_acquisition', 'repository_opened',
+        'repository_started', 'repository_finished', 'repository_returned', 'repository_outer',
+        'repository_closed', 'repository_unsealed', 'repository_rewrite', 'repository_foreign', 'repository_acquisition')
+    sys.argv[1:] = ['--bootstrap-owners']
+
+backup_case = None
+if len(sys.argv) == 2 and sys.argv[1].startswith('--bootstrap-backup='):
+    backup_case = sys.argv[1].split('=', 1)[1]
+    assert backup_case in ('none', 'wal', 'checkpointed_wal', 'source_init', 'destination_init', 'source_integrity',
+                           'backup_integrity', 'inventory', 'file_sync', 'directory_sync',
+                           'space', 'deadline', 'close', 'alias', 'shared_space', 'shared_exact',
+                           'shared_minimum', 'database_space', 'temp_space', 'backup_space',
+                           'rehearsal_space', 'separate_exact', 'volume_io')
+    sys.argv[1:] = ['--bootstrap-backup']
+
+rehearsal_case = None
+if len(sys.argv) == 2 and sys.argv[1].startswith('--bootstrap-rehearsal='):
+    rehearsal_case = sys.argv[1].split('=', 1)[1]
+    assert rehearsal_case in ('none', 'first_budget', 'next_budget', 'install', 'metadata_alias',
+                             'metadata_changed', 'backup_changed', 'space', 'scratch_location', 'deadline', 'load_init', 'authority', 'close')
+    sys.argv[1:] = ['--bootstrap-rehearsal']
+
+discovery_case = None
+if len(sys.argv) == 2 and sys.argv[1].startswith('--bootstrap-discovery='):
+    discovery_case = sys.argv[1].split('=', 1)[1]
+    assert discovery_case in ('present', 'absent', 'ex_reselect', 'total', 'org', 'installed_expired',
+                              'deadlines', 'busy', 'shared_close', 'selection_close', 'ex_acquire',
+                              'transfer', 'load', 'load_fault', 'foreign_fence')
+    sys.argv[1:] = ['--bootstrap-discovery']
+
+selection_case = None
+if len(sys.argv) == 2 and sys.argv[1].startswith('--bootstrap-selection='):
+    selection_case = sys.argv[1].split('=', 1)[1]
+    assert selection_case in ('absent', 'present', 'partial', 'empty_namespace', 'registered', 'registered_absent',
+                              'registered_identity', 'intent', 'backup_verified', 'pre_commit', 'committed',
+                              'verified', 'not_installed', 'malformed', 'namespace_alias', 'source_init',
+                              'connection_close', 'descriptor_close', 'busy', 'deadline', 'ex_reselect', 'reason_parity')
+    sys.argv[1:] = ['--bootstrap-selection']
+
+install_case = None
+if len(sys.argv) == 2 and sys.argv[1].startswith('--bootstrap-install='):
+    install_case = sys.argv[1].split('=', 1)[1]
+    assert install_case in ('none', 'rehearsal', 'rehearsal_close', 'backup_changed', 'metadata_changed',
+                            'space', 'temp', 'temp_alias', 'temp_mode', 'writer_source', 'target_integrity', 'target_budget',
+                            'permit', 'reserve', 'commit', 'writer_close', 'reopen', 'preservation', 'checkpoint')
+    sys.argv[1:] = ['--bootstrap-install']
+
+startup_case = None
+if len(sys.argv) == 2 and sys.argv[1].startswith('--startup-isolation='):
+    startup_case = sys.argv[1].split('=', 1)[1]
+    assert startup_case in ('constructor', 'database', 'post_load', 'selector', 'profile',
+                            'profile_database', 'profile_filesystem', 'profile_capture',
+                            'main_owner', 'main_selector', 'main_sweep', 'main_unexpected', 'main_cancel', 'main_success', 'main_restore')
+    sys.argv[1:] = ['--startup-isolation']
+
 retained_phase = None
 if len(sys.argv) == 2 and sys.argv[1].startswith('--retained-corruption-phase='):
     retained_phase = dict(first='first', local='between local', external='between external',
         uncommitted='between uncommitted')[sys.argv[1].split('=', 1)[1]]
     sys.argv[1:] = ['--retained-corruption']
 
-assert sys.argv[1:] in ([], ['--fresh-catalog'], ['--org-access-fence'], ['--org-access-openers'], ['--org-access-native'], ['--org-access-guardian'], ['--org-access-profile'], ['--setup-status'], ['--daily-integrity'], ['--install-integrity'], ['--bounded-acquisition'], ['--trace-custody'], ['--sequential-reuse'], ['--sequential-load'], ['--sequential-freshness'], ['--sequential-faults'], ['--sequential-sql-exhaustion'], ['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--coding-authority-corruption'], ['--document-native-corruption'], ['--author-handoff-corruption'], ['--document-revision-corruption'], ['--coding-history-corruption'], ['--physical-corruption'], ['--sequential-uncommitted'], ['--i2-cutover'], ['--i2-native']), 'unknown schema-load selection'
+assert sys.argv[1:] in ([], ['--bootstrap-startup'], ['--bootstrap-worker'], ['--bootstrap-owners'], ['--bootstrap-discovery'], ['--bootstrap-selection'], ['--bootstrap-install'], ['--bootstrap-rehearsal'], ['--bootstrap-backup'], ['--bootstrap-journal'], ['--bootstrap-precommit'], ['--startup-isolation'], ['--fresh-catalog'], ['--org-access-fence'], ['--org-access-openers'], ['--org-access-native'], ['--org-access-guardian'], ['--org-access-profile'], ['--setup-status'], ['--daily-integrity'], ['--install-integrity'], ['--bounded-acquisition'], ['--trace-custody'], ['--sequential-reuse'], ['--sequential-load'], ['--sequential-freshness'], ['--sequential-faults'], ['--sequential-sql-exhaustion'], ['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--coding-authority-corruption'], ['--document-native-corruption'], ['--author-handoff-corruption'], ['--document-revision-corruption'], ['--coding-history-corruption'], ['--physical-corruption'], ['--sequential-uncommitted'], ['--i2-cutover'], ['--i2-native']), 'unknown schema-load selection'
 
 
 print('SCHEMA_RUNTIME', json.dumps(dict(python=sys.version, executable=sys.executable, sqlite=sqlite3.sqlite_version,
     source=sys.modules[Database.__module__].__file__)), flush=True)
+
+# A4-M drives the real daemon build before any listener, using only private orgs.
+if sys.argv[1:] in ([], ['--bootstrap-startup']):
+    import asyncio
+    import signal
+    from runtime.daemon import __main__ as entry
+    from runtime.daemon.routes.orgs import _seed_skeleton
+    from runtime.runtime import RuntimeDir
+    from runtime.platform.passthrough_backend import PassthroughBackend
+    from runtime.orchestrator.org_config import initialize_fresh_reviewer_agents
+    from runtime.daemon.workflow_setup_status import read_setup_status
+    from runtime.infrastructure import workflow_sequential_bootstrap as bootstrap
+    from runtime.infrastructure import workflow_schema as schema
+    from runtime.infrastructure.org_access_fence import OrgAccessFence
+    from runtime.models import TaskStatus
+
+    if bootstrap_startup_case in (None, 'evidence_custody'):
+        import ast
+        source = ast.parse(Path(bootstrap.__file__).read_text())
+        attempt_names = {'_attempt_record'} | {
+            alias.asname for node in ast.walk(source) if isinstance(node, ast.ImportFrom)
+            for alias in node.names if alias.name == '_attempt_record' and alias.asname}
+        evidence_calls = [node for node in ast.walk(source) if isinstance(node, ast.Call)
+                          and (isinstance(node.func, ast.Name) and node.func.id in attempt_names
+                               or isinstance(node.func, ast.Attribute) and node.func.attr == '_attempt_record')]
+        assert evidence_calls, 'A4-M missing startup evidence reader'
+        assert all(any(keyword.arg == 'directory_reader' and isinstance(keyword.value, (ast.Name, ast.Attribute))
+                       for keyword in node.keywords)
+                   for node in evidence_calls), 'A4-M startup evidence call omits custodied reader'
+        assert len(evidence_calls) == 1, 'A4-M startup evidence reads bypass the single custody path'
+        print('PASS A4-M mechanical startup evidence custody', flush=True)
+
+    # Mounted keepers for discovery count and pre/post-worker close faults.
+    # The 1,024 missing-DB roots reproduce normal local refusals independently
+    # of the overflow org, whose real DB must never even be selected or opened.
+    for fault in ('discovery_cap', 'discovery_close', 'discovery_fence_close', 'discovery_descriptor_close', 'discovery_evidence_close', 'discovery_registered_close'):
+        if bootstrap_startup_case is not None and bootstrap_startup_case != fault:
+            continue
+        with tempfile.TemporaryDirectory(prefix='a4-mounted-discovery-') as scratch, ExitStack() as stack:
+            import httpx
+            from runtime.daemon.app import create_app
+            home = Path(scratch).resolve()
+            runtime = RuntimeDir.init(home/'runtime')
+            (home/'runtimes.yaml').write_text(json.dumps(dict(active=str(runtime.root), registered=[str(runtime.root)])))
+            stack.enter_context(patch.dict(os.environ, {'HAPPYRANCH_DAEMON_HOME': str(home)}))
+            stack.enter_context(patch('runtime.platform.backend_factory.select_session_backend', return_value=PassthroughBackend()))
+            if fault == 'discovery_cap':
+                for n in range(1025):
+                    root = runtime.orgs_dir/f'org-{n:04}'
+                    (root/'org').mkdir(parents=True)
+                    (root/'org/teams.yaml').write_text('teams: {}\n')
+            else:
+                root = runtime.orgs_dir/'scratch'
+                _seed_skeleton(root, from_example=None)
+            path = root/'happyranch.db'
+            if fault in ('discovery_fence_close', 'discovery_registered_close'):
+                db = Database(path)
+                schema.initialize_complete_org_schema(db, expected_org_slug=root.name, layout='J')
+                if fault == 'discovery_registered_close':
+                    install_pause_schema(db, org_slug=root.name)
+                    install_task_ownership(db, org_slug=root.name)
+                    initialize_fresh_reviewer_agents(OrgPaths(root), db)
+                db.close()
+                if fault == 'discovery_registered_close':
+                    org = OrgState.load(slug=root.name, root=root, settings=Settings())
+                    org.close()
+            else:
+                schema.initialize_fresh_org_database(path, expected_org_slug=root.name).close()
+            if fault == 'discovery_evidence_close':
+                # Use the real durable publisher, not a hand-built reader fixture.
+                seed = bootstrap.BootstrapStartup(home=home, runtime_root=runtime.root)
+                seed._hold(root.name, 'install_incomplete', 'unknown')
+                for record in reversed(seed.hold_descriptors):
+                    if not record['attempted']:
+                        bootstrap._close_descriptor(record)
+            original_bytes = path.read_bytes()
+            namespace = home/'backups/workflow-sequential'/hashlib.sha256(str(runtime.root).encode()).hexdigest()/root.name
+            native_connect, native_fence_close, native_descriptor_close = sqlite3.connect, OrgAccessFence.close, os.close
+            first = OSError('synthetic FIRST original discovery close failure')
+            calls, connections, failed_descriptors, opened, evidence_children = [], [], [], [], []
+            evidence_child_records = []
+            committed = {}
+            class CloseFault(sqlite3.Connection):
+                def close(self):
+                    calls.append(self)
+                    raise first
+            def connect(*args, **kwargs):
+                if args[0] == path.as_uri()+'?mode=ro':
+                    opened.append(args[0])
+                    if fault == 'discovery_close':
+                        kwargs['factory'] = CloseFault
+                conn = native_connect(*args, **kwargs)
+                if isinstance(conn, CloseFault):
+                    connections.append(conn)
+                return conn
+            def fence_close(fence):
+                if fault == 'discovery_fence_close' and fence.root == root:
+                    calls.append(fence)
+                    raise first
+                return native_fence_close(fence)
+            def descriptor_close(record):
+                if fault == 'discovery_descriptor_close' and not failed_descriptors:
+                    # Real native close denial, before _directory can retire its
+                    # preceding original. Subsequent closes remain native.
+                    failed_descriptors.append(record)
+                    def deny(fd):
+                        assert fd == record['fd']
+                        calls.append(fd)
+                        raise first
+                    with patch.object(bootstrap.os, 'close', side_effect=deny):
+                        return original_close_descriptor(record)
+                return original_close_descriptor(record)
+            def evidence_close(fd):
+                # Fault the actual startup evidence traversal, including the old
+                # shared opener on RED; earlier discovery traversal stays native.
+                from runtime.daemon import workflow_setup_status as status, _disk_sweep_fs as fs
+                frame = sys._getframe(1)
+                traversal = None
+                in_evidence = False
+                while frame is not None:
+                    if frame.f_code in (bootstrap._directory.__code__, fs.directory.__wrapped__.__code__):
+                        traversal = frame
+                    if frame.f_code is status._attempt_record.__code__:
+                        in_evidence = True
+                    frame = frame.f_back
+                if in_evidence and traversal is not None and not failed_descriptors:
+                    local = traversal.f_locals
+                    child = local['child']
+                    evidence_children.append(child['fd'] if isinstance(child, dict) else child)
+                    evidence_child_records.append(child if isinstance(child, dict) else None)
+                    failed_descriptors.append(dict(fd=fd))
+                    if fault == 'discovery_registered_close':
+                        # Snapshot at the actual post-worker native fault. No
+                        # fixture substitutes for the helper's committed result.
+                        committed.update(database=path.read_bytes(), evidence={
+                            p: p.read_bytes() for p in namespace.rglob('*') if p.is_file()})
+                if failed_descriptors and fd == failed_descriptors[0]['fd']:
+                    calls.append(fd)
+                    raise first
+                return native_descriptor_close(fd)
+            original_close_descriptor = bootstrap._close_descriptor
+            stack.enter_context(patch.object(bootstrap.sqlite3, 'connect', side_effect=connect))
+            stack.enter_context(patch.object(OrgAccessFence, 'close', fence_close))
+            stack.enter_context(patch.object(bootstrap, '_close_descriptor', descriptor_close))
+            if fault in ('discovery_evidence_close', 'discovery_registered_close'):
+                stack.enter_context(patch.object(os, 'close', evidence_close))
+            state = None
+            try:
+                try:
+                    state = entry._build_state(Settings())
+                except bootstrap.BootstrapEvidenceError as exc:
+                    state = exc._attachment_owner['candidate']
+                    raise AssertionError('A4-M discovery cap escaped the per-org HOLD and aborted build') from exc
+                owner = state._workflow_bootstrap
+                if fault == 'discovery_registered_close':
+                    assert len(owner.workers) == 1, 'A4-M registered read did not follow exactly one real installer'
+                    worker = owner.workers[0]
+                    assert worker.result['state'] == 'verified' and worker.closed and worker.reaped and worker.permit_sent, 'A4-M helper did not commit/register/close/reap'
+                    assert committed and committed['database'] != original_bytes, 'A4-M registered read fault missed committed install'
+                    assert path.read_bytes() == committed['database'], 'A4-M registered read fault changed committed DB'
+                    assert {p: p.read_bytes() for p in namespace.rglob('*') if p.is_file()} == committed['evidence'], 'A4-M registered read fault changed committed evidence/backup'
+                    events = [json.loads(raw) for p, raw in committed['evidence'].items() if p.suffix == '.json']
+                    assert sorted(event['phase'] for event in events) == sorted(('intent', 'backup_verified', 'pre_commit', 'committed', 'verified', 'registered')), 'A4-M missing committed registration phases'
+                    assert read_setup_status(home, runtime.root, root.name).state == 'installed_verified', 'A4-M committed registration was undone'
+                else:
+                    assert not owner.workers, 'A4-M pre-worker failure spawned an installer'
+                    assert path.read_bytes() == original_bytes, 'A4-M discovery refusal changed original DB'
+                if fault == 'discovery_cap':
+                    assert len(tuple(runtime.iter_org_roots())) == 1025
+                    assert len(owner.discoveries) == 1024 and root not in owner.discoveries, 'A4-M discovery cap removed or overflow acquired'
+                    assert owner.holds[root.name] == state.broken_orgs[root.name] == 'startup_upgrade_budget_unavailable', 'A4-M missing visible overflow HOLD'
+                    assert len(state.workflow_setup_roots) == 1025 and len(state.broken_orgs) == 1025, 'A4-M remaining org startup loop aborted'
+                    assert not opened, 'A4-M overflow org DB was opened'
+                    assert not (home/'backups/workflow-sequential'/hashlib.sha256(str(runtime.root).encode()).hexdigest()/root.name).exists(), 'A4-M overflow allocated filesystem custody'
+                    assert all(r['closed'] for r in owner.hold_descriptors), 'A4-M count refusal leaked descriptors'
+                else:
+                    route = owner.discoveries[root]
+                    selected = route.selections[-1] if fault == 'discovery_registered_close' else route.selections[0]
+                    if fault == 'discovery_registered_close':
+                        print('A4-M post-registration close observation', json.dumps(dict(
+                            native_close_attempts=len(calls), child_retained=any(
+                                r is evidence_child_records[0] for r in selected.descriptors) if evidence_children else False,
+                            discovery_closed=route.closed, fence_closed=route.fence._closed,
+                            first_error=route.close_error is first, held=state.broken_orgs,
+                            worker_result=worker.result)), flush=True)
+                    assert calls and len(calls) == 1, 'A4-M original close failure not reached exactly once'
+                    assert route.close_error is not None and not route.closed and not route.fence._closed
+                    if fault in ('discovery_evidence_close', 'discovery_registered_close'):
+                        assert owner.holds[root.name] == state.broken_orgs[root.name] == 'install_incomplete', 'A4-M prior evidence lacks visible HOLD'
+                        failed = [r for r in selected.descriptors if r['fd'] == failed_descriptors[0]['fd'] and r.get('error') is first]
+                        assert len(failed) == 1 and failed[0]['attempted'] and not failed[0]['closed'], 'A4-M prior evidence lost original descriptor custody'
+                        assert any(r['fd'] == evidence_children[0] for r in selected.descriptors[selected.descriptors.index(failed[0])+1:]), 'A4-M prior evidence lost newly opened child custody'
+                        assert selected.close_error is first, 'A4-M prior evidence lost FIRST native close cause'
+                        os.fstat(failed[0]['fd'])
+                        if fault == 'discovery_registered_close':
+                            assert route.fence.exclusive, 'A4-M registered read lost original EX'
+                            assert any(r is evidence_child_records[0] for r in selected.descriptors), 'A4-M registered read lost exact child record'
+                    primary, close_error, selected_error = route.primary, route.close_error, selected.close_error
+                    for _ in range(2):
+                        try:
+                            asyncio.run(state.close_all())
+                        except bootstrap.BootstrapEvidenceError as exc:
+                            assert exc.__cause__ is close_error, 'A4-M shutdown lost FIRST discovery close failure'
+                        else:
+                            raise AssertionError('A4-M shutdown accepted unresolved original discovery custody')
+                        assert not state._shutdown_complete, 'A4-M unresolved discovery claimed successful shutdown'
+                        assert route.primary is primary and route.close_error is close_error and selected.close_error is selected_error, 'A4-M FIRST close cause replaced'
+                        assert len(calls) == 1, 'A4-M retried failed native close'
+                        if fault == 'discovery_registered_close':
+                            assert path.read_bytes() == committed['database'] and len(owner.workers) == 1, 'A4-M shutdown reran/undid installation'
+                            assert {p: p.read_bytes() for p in namespace.rglob('*') if p.is_file()} == committed['evidence'], 'A4-M shutdown rewrote committed evidence/backup'
+                            assert not route.fence._closed, 'A4-M refused shutdown released original EX'
+                    assert close_error is first, 'A4-M FIRST native discovery close cause replaced'
+                    if fault == 'discovery_close':
+                        assert selected.close_error is first, 'A4-M FIRST native selection close cause replaced'
+                        assert connections[0].execute('SELECT 1').fetchone()[0] == 1, 'A4-M original SQLite custody lost'
+                    if fault == 'discovery_descriptor_close':
+                        assert selected.close_error is first and not failed_descriptors[0]['closed']
+                        os.fstat(failed_descriptors[0]['fd'])
+                async def health():
+                    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=create_app(state)), base_url='http://private') as client:
+                        assert (await client.get('/api/v1/health')).status_code == 200, 'A4-M discovery refusal prevented serving'
+                asyncio.run(health())
+                if fault == 'discovery_cap':
+                    asyncio.run(state.close_all())
+                    assert state._shutdown_complete, 'A4-M resolved discovery prevented shutdown'
+                print('PASS A4-M mounted discovery build/health/shutdown:', fault, flush=True)
+            finally:
+                # Dispose only exact private originals after the custody assertions;
+                # production never retries them or changes their failure records.
+                for conn in connections:
+                    sqlite3.Connection.close(conn)
+                for record in failed_descriptors:
+                    native_descriptor_close(record['fd'])
+                for fd in evidence_children:
+                    if state is None or not any(r['fd'] == fd for route in state._workflow_bootstrap.discoveries.values() for selected in route.selections for r in selected.descriptors):
+                        native_descriptor_close(fd)
+                if state is not None:
+                    for route in state._workflow_bootstrap.discoveries.values():
+                        for record in route.fences:
+                            if not record['closed'] and not record['transferred']:
+                                native_fence_close(record['fence'])
+                    if fault == 'discovery_cap' and not state._shutdown_complete:
+                        asyncio.run(state.close_all())
+                    state.metrics_store.close()
+
+    mounted_cases = ('success', 'integrity', 'backup', 'ex', 'history', 'history_precommit', 'commit_uncertain', 'kill', 'close', 'late_spawn')
+    for fault in mounted_cases:
+        if bootstrap_startup_case is not None and bootstrap_startup_case != fault:
+            continue
+        with tempfile.TemporaryDirectory(prefix='a4-mounted-') as scratch:
+            home = Path(scratch).resolve()
+            runtime = RuntimeDir.init(home/'runtime')
+            (home/'runtimes.yaml').write_text(json.dumps(dict(active=str(runtime.root), registered=[str(runtime.root)])))
+            with ExitStack() as stack:
+                stack.enter_context(patch.dict(os.environ, {'HAPPYRANCH_DAEMON_HOME': str(home)}))
+                stack.enter_context(patch('runtime.platform.backend_factory.select_session_backend', return_value=PassthroughBackend()))
+                slugs = ('happyranch', 'danze', 'family') if fault == 'success' else ('happyranch', 'family')
+                for slug in slugs:
+                    root = runtime.orgs_dir/slug
+                    _seed_skeleton(root, from_example=None)
+                    db = Database(root/'happyranch.db')
+                    try:
+                        schema.initialize_complete_org_schema(db, expected_org_slug=slug, layout='J')
+                        install_pause_schema(db, org_slug=slug)
+                        install_task_ownership(db, org_slug=slug)
+                        initialize_fresh_reviewer_agents(OrgPaths(root), db)
+                        db.insert_task(TaskRecord(id='TASK-mounted', brief='synthetic retained task', status=TaskStatus.COMPLETED))
+                        db._conn.execute('CREATE TABLE a4_mount_sentinel(id INTEGER PRIMARY KEY,v BLOB)')
+                        db._conn.execute('INSERT INTO a4_mount_sentinel VALUES(37,?)', (b'original\0typed',))
+                        db._conn.commit()
+                    finally:
+                        db.close()
+                    # Normalize ordinary startup before observing the upgrade.
+                    org = OrgState.load(slug=slug, root=root, settings=Settings())
+                    org.close()
+                path = runtime.orgs_dir/'happyranch/happyranch.db'
+                if fault == 'history':
+                    with closing(sqlite3.connect(path)) as conn:
+                        conn.execute("UPDATE tasks SET status='pending' WHERE id='TASK-mounted'")
+                        conn.commit()
+                if fault == 'integrity':
+                    # A genuine stale index, independently reported non-ok by SQLite.
+                    with closing(sqlite3.connect(path)) as conn:
+                        conn.execute('CREATE INDEX a4_stale ON a4_mount_sentinel(v)')
+                        row = tuple(conn.execute("SELECT rowid,type,name,tbl_name,rootpage,sql FROM sqlite_schema WHERE name='a4_stale'").fetchone())
+                        cookie = conn.execute('PRAGMA schema_version').fetchone()[0]
+                        conn.execute('PRAGMA writable_schema=ON')
+                        conn.execute('DELETE FROM sqlite_schema WHERE rowid=?', (row[0],))
+                        conn.execute('PRAGMA schema_version='+str(cookie+1))
+                        conn.execute('PRAGMA writable_schema=RESET')
+                        conn.execute("UPDATE a4_mount_sentinel SET v=x'0102'")
+                        conn.execute('PRAGMA writable_schema=ON')
+                        conn.execute('INSERT INTO sqlite_schema(rowid,type,name,tbl_name,rootpage,sql) VALUES(?,?,?,?,?,?)', row)
+                        conn.execute('PRAGMA schema_version='+str(cookie+2))
+                        conn.execute('PRAGMA writable_schema=RESET')
+                        conn.commit()
+                        assert conn.execute('PRAGMA integrity_check').fetchone()[0] != 'ok', 'A4-M corrupt fixture remained healthy'
+                blocker = OrgAccessFence.acquire(path.parent) if fault == 'ex' else None
+                native_spawn = asyncio.create_subprocess_exec
+                runner = home/'fault-helper.py'
+                injected = {
+                    'backup': """
+original_hash = bootstrap.BootstrapSource._hash
+def wrong_second_hash(self, fd):
+    value = original_hash(self, fd)
+    self.test_hash_calls = getattr(self, 'test_hash_calls', 0)+1
+    return '0'*64 if self.test_hash_calls == 2 and self.path.parent == Path(SOURCE_ROOT) else value
+bootstrap.BootstrapSource._hash = wrong_second_hash
+""",
+                    'history_precommit': """
+original_history = bootstrap.require_bootstrap_idle_history
+def late_history(source, *, writer=None):
+    if writer is not None and source.path.parent == Path(SOURCE_ROOT):
+        writer.execute("UPDATE tasks SET status='pending' WHERE id='TASK-mounted'")
+    return original_history(source, writer=writer)
+bootstrap.require_bootstrap_idle_history = late_history
+""",
+                    'commit_uncertain': """
+original_connection = bootstrap.BootstrapSource._connection
+def deny_commit(self, path, *, readonly):
+    conn = original_connection(self, path, readonly=readonly)
+    if not readonly and path == self.path and path.parent == Path(SOURCE_ROOT):
+        conn.set_authorizer(lambda action, one, two, db, trigger: sqlite3.SQLITE_DENY
+            if action == sqlite3.SQLITE_TRANSACTION and one == 'COMMIT' else sqlite3.SQLITE_OK)
+    return conn
+bootstrap.BootstrapSource._connection = deny_commit
+""",
+                    'close': """
+from runtime.daemon.org_state import OrgState
+original_close = OrgState.close
+def uncertain_close(self):
+    if self.root == Path(SOURCE_ROOT):
+        raise OSError('synthetic original close uncertainty')
+    return original_close(self)
+OrgState.close = uncertain_close
+""",
+                }.get(fault)
+                if injected:
+                    runner.write_text('import sys, sqlite3\nfrom pathlib import Path\nfrom runtime.infrastructure import workflow_sequential_bootstrap as bootstrap\nSOURCE_ROOT = '+repr(str(path.parent))+'\n'+injected+'\nraise SystemExit(bootstrap.bootstrap_helper_main(sys.argv[1:]))\n')
+                    async def fault_spawn(*args, **kwargs):
+                        if '--workflow-sequential-bootstrap-helper' in args:
+                            offset = args.index('--workflow-sequential-bootstrap-helper')
+                            args = (args[0], str(runner), *args[offset+1:])
+                        return await native_spawn(*args, **kwargs)
+                    stack.enter_context(patch.object(asyncio, 'create_subprocess_exec', fault_spawn))
+                if fault == 'kill':
+                    actual_run = bootstrap.BootstrapSupervisor.run
+                    async def killed_run(worker, qualify):
+                        calls = 0
+                        async def original_qualification(identity, digest):
+                            nonlocal calls
+                            allowed = await qualify(identity, digest)
+                            calls += 1
+                            if calls == 2 and worker.discovery.root == path.parent:
+                                os.killpg(worker.process.pid, signal.SIGKILL)
+                                await worker.process.wait()
+                            return allowed
+                        return await actual_run(worker, original_qualification)
+                    stack.enter_context(patch.object(bootstrap.BootstrapSupervisor, 'run', killed_run))
+                if fault == 'history_precommit':
+                    # Retain a real committed WAL without checkpointing it. A
+                    # failed late gate must not move those bytes into the DB.
+                    keeper = stack.enter_context(closing(sqlite3.connect(path)))
+                    keeper.execute('PRAGMA journal_mode=WAL')
+                    keeper.execute('PRAGMA wal_autocheckpoint=0')
+                    keeper.execute("INSERT INTO a4_mount_sentinel VALUES(38,x'03')")
+                    keeper.commit()
+                    assert path.with_name(path.name+'-wal').stat().st_size > 0
+                release_spawn = None
+                if fault == 'late_spawn':
+                    import threading
+                    release_spawn = threading.Event()
+                    actual_supervisor_init = bootstrap.BootstrapSupervisor.__init__
+                    def delayed_owner(worker, discovery, settings):
+                        actual_supervisor_init(worker, discovery, settings)
+                        discovery.deadline = min(discovery.deadline, time.monotonic()+20.1)
+                    async def delayed_native_spawn(*args, **kwargs):
+                        if '--workflow-sequential-bootstrap-helper' in args:
+                            await asyncio.get_running_loop().run_in_executor(None, release_spawn.wait)
+                        return await native_spawn(*args, **kwargs)
+                    stack.enter_context(patch.object(bootstrap.BootstrapSupervisor, '__init__', delayed_owner))
+                    stack.enter_context(patch.object(asyncio, 'create_subprocess_exec', delayed_native_spawn))
+                original_bytes = path.read_bytes()
+                first_backup = None
+                for start in ('first', 'next'):
+                    before = {slug: (root/'happyranch.db').read_bytes() for slug, root in runtime.iter_org_roots()}
+                    def durable_inventory(root):
+                        with closing(sqlite3.connect((root/'happyranch.db').as_uri()+'?mode=ro', uri=True)) as conn:
+                            conn.execute('PRAGMA query_only=ON')
+                            conn.execute('BEGIN')
+                            return schema.sequential_storage_inventory(conn)
+                    inventories = None
+                    if start == 'next':
+                        inventories = {slug: durable_inventory(root) for slug, root in runtime.iter_org_roots()}
+                        # Byte-zero belongs to automatic setup. Ordinary startup
+                        # retains its existing transient publication-lease writes.
+                        probe = bootstrap.BootstrapStartup(home=home, runtime_root=runtime.root)
+                        probe.run(tuple(runtime.iter_org_roots()), Settings())
+                        assert not probe.workers, 'A4-M second setup spawned an installer'
+                        for route in probe.discoveries.values():
+                            route.close()
+                        assert all((root/'happyranch.db').read_bytes() == before[slug] for slug, root in runtime.iter_org_roots()), 'A4-M second automatic setup wrote org DB'
+                    state = entry._build_state(Settings())
+                    try:
+                        expected = set(slugs) if fault == 'success' else set() if fault == 'late_spawn' else {'family'}
+                        assert set(state._all_orgs_snapshot()) == expected, ('A4-M startup lost attachment isolation or bypassed hold', fault, state.broken_orgs)
+                        # Existing profile policy may hold other consumers when a
+                        # root is unavailable; A4 does not waive that global veto.
+                        if fault == 'late_spawn':
+                            owner = state._workflow_bootstrap
+                            worker = owner.workers[0]
+                            assert owner.thread is not None and owner.thread.is_alive() and not owner.loop.is_closed(), 'A4-M lost original pending loop'
+                            assert not worker.spawn.done() and not worker.reaped and not worker.discovery.fence._closed, 'A4-M replaced unresolved original spawn'
+                            try:
+                                asyncio.run(state.close_all())
+                            except bootstrap.BootstrapEvidenceError:
+                                pass
+                            else:
+                                raise AssertionError('A4-M shutdown accepted pending original')
+                            release_spawn.set()
+                            end = time.monotonic()+5
+                            while not worker.reaped and time.monotonic() < end:
+                                time.sleep(.01)
+                            assert worker.reaped and worker.process.returncode == -signal.SIGKILL, 'A4-M lost actual late child kill/reap'
+                            assert worker.expired and not worker.closed and not worker.permit_sent, 'A4-M accepted late result or invented closure'
+                            assert path.read_bytes() == original_bytes, 'A4-M late child changed source'
+                            assert not worker.discovery.fence._closed, 'A4-M late reap released unknown original EX'
+                            worker.discovery.fence.close()  # exact synthetic original, after assertions
+                            owner.loop.call_soon_threadsafe(owner.loop.stop)
+                            owner.thread.join(timeout=2)
+                            assert not owner.thread.is_alive(), 'A4-M fixture failed to join original loop'
+                            owner.loop.close()
+                            unlaunched = [route for route in owner.discoveries.values() if route is not worker.discovery]
+                            assert len(owner.workers) == 1 and len(unlaunched) == 1, 'A4-M launched another worker while original pending'
+                            other = unlaunched[0]
+                            print('A4-M unlaunched discovery closure', json.dumps(dict(org=other.root.name,
+                                closed=other.closed, fences=[dict(attempted=r['attempted'], closed=r['closed'],
+                                    native_closed=r['fence']._closed) for r in other.fences])), flush=True)
+                            assert other.closed and all(r['closed'] and r['fence']._closed for r in other.fences), 'A4-M refused unlaunched worker leaked discovery custody'
+                            assert all(r['closed'] for selected in other.selections for r in (*selected.connections, *selected.descriptors)), 'A4-M unlaunched discovery lost selector custody'
+                            assert set(owner.holds) == set(slugs), 'A4-M unlaunched cleanup erased visible HOLD'
+                            assert all((root/'happyranch.db').read_bytes() == before[slug] for slug, root in runtime.iter_org_roots()), 'A4-M unlaunched cleanup changed source DB'
+                            print('PASS A4-M actual mounted startup: late_spawn original retained/late child killed/reaped', flush=True)
+                            break
+                        if fault != 'success':
+                            assert 'happyranch' in state.broken_orgs, 'A4-M missing visible closed hold'
+                            status = read_setup_status(home, runtime.root, 'happyranch')
+                            expected_status = ('unknown', 'commit_uncertain') if fault in ('commit_uncertain', 'kill') else ('installed_unverified', 'installation_unverified') if fault == 'close' else None
+                            if expected_status:
+                                assert (status.state, status.reason) == expected_status, ('A4-M wrong retained uncertainty', fault, status)
+                            if fault in ('integrity', 'ex', 'history'):
+                                reason = dict(integrity='integrity_check_failed', ex='writer_exclusion_unproven', history='history_check_failed')[fault]
+                                assert (status.state, status.reason) == ('not_installed', reason), ('A4-M wrong pre-intent hold', fault, status)
+                                assert status.backup_path is None, 'A4-M pre-intent hold fabricated backup'
+                            if fault != 'close':
+                                assert path.read_bytes() == original_bytes, ('A4-M failed check changed source DB', fault)
+                            if start == 'next':
+                                assert not state._workflow_bootstrap.workers, 'A4-M replayed a failed or uncertain attempt'
+                            elif fault in ('backup', 'history_precommit', 'commit_uncertain', 'kill', 'close', 'late_spawn'):
+                                worker = next(worker for worker in state._workflow_bootstrap.workers if worker.discovery.root == path.parent)
+                                assert worker.reaped, 'A4-M lost original child reap'
+                                assert worker.permit_sent == (fault in ('commit_uncertain', 'close')), 'A4-M wrong original COMMIT boundary'
+                                if fault in ('kill', 'close'):
+                                    assert not worker.closed and not worker.discovery.fence._closed, 'A4-M fabricated closure or released unknown EX'
+                                    try:
+                                        asyncio.run(state.close_all())
+                                    except bootstrap.BootstrapEvidenceError as exc:
+                                        assert str(exc) == 'workflow_setup_original_worker_in_flight' and not state._shutdown_complete, 'A4-M wrong unresolved shutdown custody'
+                                    else:
+                                        raise AssertionError('A4-M shutdown claimed unresolved original closed')
+                                if fault == 'backup':
+                                    assert worker.result['reason'] == 'backup_verification_failed', 'A4-M backup verification not reached'
+                                if fault == 'history_precommit':
+                                    assert worker.result['reason'] == 'history_check_failed', 'A4-M final durable history check not reached'
+                                # All native handles are synthetic. Release this exact
+                                # retained parent only AFTER asserting unknown custody;
+                                # the actual private child has been reaped, no descendants.
+                                if not worker.discovery.fence._closed:
+                                    worker.discovery.fence.close()
+                        for slug, org in state._all_orgs_snapshot().items():
+                            assert org.db._conn.execute("SELECT 1 FROM sqlite_schema WHERE name='workflow_seq_schema_versions'").fetchone(), 'A4-M daemon startup did not install sequential storage'
+                            assert tuple(org.db._conn.execute('SELECT id,v FROM a4_mount_sentinel').fetchone()) == (37, b'original\0typed'), 'A4-M changed retained typed cells'
+                            assert org.db._conn.execute('SELECT count(*) FROM workflow_seq_definitions').fetchone()[0] == 1, 'A4-M missed qualified catalog registration'
+                            assert org.db._conn.execute('SELECT count(*) FROM workflow_seq_settings').fetchone()[0] == 0, 'A4-M setup allocated settings or Allow'
+                            assert org.db._conn.execute('SELECT count(*) FROM workflow_seq_runs').fetchone()[0] == 0, 'A4-M setup allocated a workflow run'
+                            assert [tuple(row) for row in org.db._conn.execute('SELECT id,status FROM tasks')] == [('TASK-mounted','completed')], 'A4-M setup changed native tasks'
+                            status = read_setup_status(home, runtime.root, slug)
+                            assert (status.state, status.reason) == ('installed_verified', 'registered'), ('A4-M missing registered evidence', status)
+                            backup = Path(status.backup_path)
+                            assert backup.is_file(), 'A4-M missing retained backup'
+                            record = json.loads((backup.parent/'01.json').read_text())
+                            assert hashlib.sha256(backup.read_bytes()).hexdigest() == record['backup_sha256'], 'A4-M backup hash not verified'
+                            assert sorted(x.name for x in backup.parent.iterdir()) == ['00.json','01.json','02.json','03.json','04.json','05.json','before.db'], 'A4-M incomplete registered phase chain'
+                            if slug == 'happyranch':
+                                if start == 'first':
+                                    first_backup = backup
+                                else:
+                                    assert backup == first_backup, 'A4-M second startup created another backup'
+                        audit_path = home/'runtime-audit.db'
+                        with closing(sqlite3.connect(audit_path.as_uri()+'?mode=ro', uri=True)) as conn:
+                            audits = [json.loads(row[0]) for row in conn.execute("SELECT payload FROM audit_log WHERE task_id='' AND agent='daemon' AND action='workflow_setup_registered'")]
+                        assert {row['org_slug'] for row in audits} == expected and len(audits) == len(expected), 'A4-M missing, duplicate or premature runtime registration audit'
+                    finally:
+                        if release_spawn is not None:
+                            release_spawn.set()
+                        asyncio.run(state.close_all())
+                        state.metrics_store.close()
+                    if start == 'next':
+                        assert all(durable_inventory(root) == inventories[slug] for slug, root in runtime.iter_org_roots()), 'A4-M second full startup changed durable SQL/typed rows/rowids'
+                    if blocker is not None:
+                        blocker.close()
+                        blocker = None
+                    assert not (home/'daemon.pid').exists() and not (home/'daemon.port').exists(), 'A4-M build served a listener'
+                    print('PASS A4-M actual mounted startup:', fault, start, flush=True)
+    if sys.argv[1:] == ['--bootstrap-startup']:
+        raise SystemExit(0)
+
+# A4-H exercises the actual private helper and original parent socket/EX custody.
+# Its source owners are known because this test creates and positively closes
+# every synthetic native handle. No production validator returns fake success.
+if sys.argv[1:] in ([], ['--bootstrap-worker']):
+    import asyncio
+    import signal
+    import socket
+    from runtime.infrastructure import workflow_sequential_bootstrap as bootstrap
+    from runtime.infrastructure import workflow_schema as schema
+    from runtime.infrastructure.org_access_fence import OrgAccessFence, OrgAccessHeld
+    from runtime.daemon.routes.orgs import _seed_skeleton
+    from runtime.orchestrator.org_config import initialize_fresh_reviewer_agents
+
+    worker_cases = ('success', 'refuse_source', 'refuse_commit', 'cancel', 'kill',
+                    'reserve', 'late_spawn', 'source_error', 'source_eof', 'attempt_eof', 'unsolicited',
+                    'foreign_permit', 'duplicate_permit', 'qualification_false', 'late_spawn_after_timeout')
+    for fault in worker_cases:
+        if worker_case is not None and worker_case != fault:
+            continue
+        with tempfile.TemporaryDirectory(prefix='a4-worker-') as scratch:
+            private = Path(scratch).resolve()
+            home, runtime = private/'home', private/'runtime'
+            home.mkdir(mode=0o700)
+            root = runtime/'orgs/scratch'
+            _seed_skeleton(root, from_example=None)
+            path = root/'happyranch.db'
+            db = Database(path)
+            try:
+                schema.initialize_complete_org_schema(db, expected_org_slug='scratch', layout='J')
+                install_pause_schema(db, org_slug='scratch')
+                initialize_fresh_reviewer_agents(OrgPaths(root), db)
+                install_task_ownership(db, org_slug='scratch')
+                db._conn.execute('CREATE TABLE a4_helper_sentinel(id INTEGER PRIMARY KEY,v BLOB)')
+                db._conn.execute('INSERT INTO a4_helper_sentinel VALUES (37,?)', (b'original\0typed',))
+                db._conn.commit()
+                if fault == 'source_error':
+                    db.insert_task(TaskRecord(id='TASK-active', brief='synthetic pending owner'))
+            finally:
+                db.close()
+
+            def inventory():
+                with closing(sqlite3.connect(path.as_uri()+'?mode=ro', uri=True, timeout=0)) as conn:
+                    conn.execute('PRAGMA query_only=ON')
+                    conn.execute('BEGIN')
+                    return schema.sequential_storage_inventory(conn)
+            original, before = inventory(), path.read_bytes()
+            with patch.dict(os.environ, {'HAPPYRANCH_DAEMON_HOME': str(home)}):
+                startup = bootstrap.BootstrapStartup(home=home, runtime_root=runtime)
+                route = startup.discover(root)
+                assert route.read() == 'absent', 'A4-H fixture did not select original EX'
+                namespace = home/'backups/workflow-sequential'/hashlib.sha256(str(runtime).encode()).hexdigest()/'scratch'
+                if fault in ('source_eof', 'attempt_eof', 'unsolicited'):
+                    left, right = socket.socketpair()
+                    control = bootstrap.BootstrapControl(right, route.deadline)
+                    source = bootstrap.BootstrapSource(fence=route.fence, deadline=route.deadline,
+                        control=control if fault == 'source_eof' else None)
+                    attempt = None
+                    try:
+                        if fault != 'source_eof':
+                            source.open()
+                            attempt = bootstrap.BootstrapAttempt(home=home, runtime_root=runtime, slug='scratch',
+                                fence=route.fence, source_identity=source.source_identity,
+                                source_inventory_digest=source.inventory_digest, deadline=route.deadline, control=control)
+                        if fault == 'unsolicited':
+                            left.sendall(b'{"command":"commit"}\n')
+                        else:
+                            left.shutdown(socket.SHUT_WR)
+                        started = time.monotonic()
+                        try:
+                            source.open() if attempt is None else attempt.begin()
+                        except bootstrap.BootstrapEvidenceError:
+                            pass
+                        else:
+                            raise AssertionError('A4-H source/phase effects after parent EOF or unsolicited permission')
+                        assert time.monotonic()-started < .2 and control.failed, 'A4-H parent check blocked or lost permanent revocation'
+                        assert not namespace.exists(), 'A4-H revoked parent allocated intent'
+                        if attempt is None:
+                            assert not source.connections, 'A4-H revoked source opened SQLite'
+                    finally:
+                        source.close()
+                        if attempt is not None:
+                            attempt.close()
+                        left.close()
+                        right.close()
+                        route.close()
+                    assert inventory() == original and path.read_bytes() == before, 'A4-H revoked owner changed original'
+                    print('PASS A4-H original worker/permit/cancellation:', fault, flush=True)
+                    continue
+
+                async def run_worker():
+                    worker = bootstrap.BootstrapSupervisor(route, Settings())
+                    loop = asyncio.get_running_loop()
+                    calls, source_proofs, spawned = [], [], []
+                    offset = [0.0]
+                    clock = SimpleNamespace(monotonic=lambda: time.monotonic()+offset[0])
+                    actual_spawn = asyncio.create_subprocess_exec
+                    actual_send = loop.sock_sendall
+                    release = asyncio.Event()
+                    outer = asyncio.current_task()
+
+                    async def transport_fault(channel, raw):
+                        message = json.loads(raw)
+                        if message.get('command') == 'commit':
+                            if fault == 'foreign_permit':
+                                message['attempt_id'] = '0'*32
+                                raw = json.dumps(message, separators=(',', ':')).encode()+b'\n'
+                            elif fault == 'duplicate_permit':
+                                raw += raw
+                        return await actual_send(channel, raw)
+
+                    async def delayed_spawn(*args, **kwargs):
+                        process = await actual_spawn(*args, **kwargs)
+                        spawned.append(process)
+                        offset[0] = route.deadline-time.monotonic()+(1 if fault == 'late_spawn_after_timeout' else -19)
+                        await release.wait()
+                        return process
+
+                    async def qualify(identity, digest):
+                        calls.append((identity, digest))
+                        # Independent original persisted source, still legacy at
+                        # BOTH permission boundaries, with exact original cells.
+                        assert identity[:3] == (str(path), *route.fence.database_identity), 'A4-H wrong source binding'
+                        assert digest == hashlib.sha256(json.dumps(original, sort_keys=True,
+                            separators=(',', ':'), ensure_ascii=False).encode()).hexdigest(), 'A4-H wrong source inventory binding'
+                        source_proofs.append(inventory() == original)
+                        assert source_proofs[-1], 'A4-H rehearsal/permit after source COMMIT'
+                        if len(calls) == 1:
+                            assert not namespace.exists(), 'A4-H intent before parent qualification'
+                            if fault == 'refuse_source':
+                                raise ValueError('synthetic original qualification refusal')
+                            if fault == 'qualification_false':
+                                return False
+                        else:
+                            attempts = list(namespace.iterdir())
+                            assert len(attempts) == 1, 'A4-H allocated multiple attempts'
+                            record = json.loads((attempts[0]/'02.json').read_bytes())
+                            assert record['phase'] == 'pre_commit' and not (attempts[0]/'03.json').exists(), 'A4-H permit before durable pre_commit or after COMMIT'
+                            if fault == 'refuse_commit':
+                                raise ValueError('synthetic final original qualification refusal')
+                            if fault == 'cancel':
+                                outer.cancel()
+                                until = time.monotonic()+2
+                                while not worker.expired and time.monotonic() < until:
+                                    await asyncio.sleep(.001)
+                            if fault == 'kill':
+                                os.killpg(worker.process.pid, signal.SIGKILL)
+                                await asyncio.shield(worker.reap_task)
+                            if fault == 'reserve':
+                                offset[0] = route.deadline-time.monotonic()-19
+                        return True
+
+                    async def late_release():
+                        while not worker.expired:
+                            await asyncio.sleep(.001)
+                        # The actual returned child is still owned by the pending
+                        # spawn; positive closure must not be invented meanwhile.
+                        assert worker.spawn is not None and not worker.spawn.done(), 'A4-H lost pending original spawn'
+                        assert not worker.reaped and not worker.closed, 'A4-H invented delayed-spawn closure'
+                        prior_offset, offset[0] = offset[0], 0
+                        second = bootstrap.BootstrapSupervisor(route, Settings())
+                        second_task = asyncio.create_task(second.run(qualify))
+                        await asyncio.sleep(.01)
+                        if not second_task.done():
+                            release.set()
+                            second_task.cancel()
+                            await asyncio.gather(second_task, return_exceptions=True)
+                            raise AssertionError('A4-H admitted replacement behind unresolved original spawn')
+                        try:
+                            await second_task
+                        except bootstrap.BootstrapEvidenceError as exc:
+                            assert str(exc) == 'workflow_setup_original_worker_in_flight', 'A4-H wrong original-worker refusal'
+                        else:
+                            raise AssertionError('A4-H admitted replacement behind unresolved original spawn')
+                        assert second.spawn is None, 'A4-H replacement spawned before original closure'
+                        offset[0] = prior_offset
+                        release.set()
+
+                    error, value, releaser = None, None, None
+                    with ExitStack() as stack:
+                        stack.enter_context(patch.object(bootstrap, 'time', clock))
+                        if fault in ('foreign_permit', 'duplicate_permit'):
+                            stack.enter_context(patch.object(loop, 'sock_sendall', side_effect=transport_fault))
+                        if fault in ('late_spawn', 'late_spawn_after_timeout'):
+                            stack.enter_context(patch.object(asyncio, 'create_subprocess_exec', side_effect=delayed_spawn))
+                            if fault == 'late_spawn':
+                                releaser = asyncio.create_task(late_release())
+                        try:
+                            value = await worker.run(qualify)
+                        except BaseException as exc:
+                            error = exc
+                        if releaser is not None:
+                            await releaser
+                        if fault == 'late_spawn_after_timeout':
+                            assert not worker.spawn.done() and worker.process is None and not worker.reaped and not worker.closed, 'A4-H dropped unresolved original after deadline'
+                            try:
+                                route.close()
+                            except bootstrap.BootstrapEvidenceError as exc:
+                                assert str(exc) == 'workflow_setup_original_worker_in_flight', 'A4-H wrong original discovery close refusal'
+                            else:
+                                release.set()
+                                process = await worker.spawn
+                                if process.returncode is None:
+                                    os.killpg(process.pid, signal.SIGKILL)
+                                await process.wait()
+                                raise AssertionError('A4-H released original discovery behind unresolved spawn')
+                            release.set()
+                        if worker.spawn is not None:
+                            process = await worker.spawn
+                            await process.wait()
+                            if fault == 'late_spawn_after_timeout':
+                                assert process.returncode == -signal.SIGKILL, 'A4-H lost late original child kill'
+                    if fault == 'success':
+                        assert error is None and value['state'] == 'verified' and value['reason'] == 'storage_verified', ('A4-H actual helper failed', error, worker.result)
+                        assert worker.reaped and worker.closed and worker.permit_sent and len(calls) == 2, 'A4-H lost exact parent/child closure or repeated permit'
+                    else:
+                        assert error is not None, ('A4-H refused worker succeeded', fault)
+                        assert not worker.result or worker.result['state'] != 'verified', 'A4-H late success after refusal/cancellation'
+                        assert worker.expired and (not worker.permit_sent or fault in ('foreign_permit', 'duplicate_permit')), 'A4-H granted COMMIT after stop/reserve/refusal'
+                        if fault == 'kill':
+                            assert worker.process.returncode == -signal.SIGKILL, 'A4-H lost original pre-COMMIT kill observation'
+                        assert isinstance(error, asyncio.CancelledError) == (fault == 'cancel'), 'A4-H swallowed process cancellation'
+                        assert len(calls) == (0 if fault in ('source_error', 'late_spawn', 'late_spawn_after_timeout') else 1 if fault in ('refuse_source', 'qualification_false') else 2), 'A4-H intended permission boundary not reached'
+                    assert worker.process is not None and worker.process.returncode is not None, 'A4-H original process not reaped'
+                    # Even a positively closed child must not drop the parent's
+                    # ORIGINAL EX before final registration/status/attachment.
+                    route.fence.assert_held()
+                    try:
+                        other = OrgAccessFence.acquire(root, exclusive=True)
+                    except OrgAccessHeld:
+                        pass
+                    else:
+                        other.close()
+                        raise AssertionError('A4-H released original parent EX')
+                    original_spawn, original_process = worker.spawn, worker.process
+                    try:
+                        await worker.run(qualify)
+                    except bootstrap.BootstrapEvidenceError:
+                        pass
+                    else:
+                        raise AssertionError('A4-H replayed original worker')
+                    assert worker.spawn is original_spawn and worker.process is original_process, 'A4-H replayed original worker'
+                    return worker
+
+                worker = asyncio.run(run_worker())
+                route.close()
+                if fault == 'success':
+                    attempts = list(namespace.iterdir())
+                    assert len(attempts) == 1 and sorted(p.name for p in attempts[0].iterdir()) == [
+                        '00.json', '01.json', '02.json', '03.json', '04.json', '05.json', 'before.db'], 'A4-H missing registered phase'
+                    with closing(sqlite3.connect(path)) as conn:
+                        assert conn.execute('SELECT * FROM a4_helper_sentinel').fetchall() == [(37, b'original\0typed')], 'A4-H changed retained typed/rowid cells'
+                        assert conn.execute('SELECT count(*) FROM workflow_seq_definitions').fetchone()[0] == 1, 'A4-H missing actual qualified source registration'
+                else:
+                    assert inventory() == original and path.read_bytes() == before, 'A4-H failed worker changed original source'
+                    if fault in ('refuse_commit', 'cancel', 'kill', 'reserve', 'foreign_permit', 'duplicate_permit'):
+                        attempts = list(namespace.iterdir())
+                        assert len(attempts) == 1 and (attempts[0]/'02.json').exists() and not (attempts[0]/'03.json').exists(), 'A4-H lost no-replay pre_commit uncertainty'
+                        assert (attempts[0]/'before.db').exists(), 'A4-H discarded verified backup'
+                    else:
+                        assert not namespace.exists(), 'A4-H refused source allocated attempt'
+                assert not (home/'daemon.pid').exists() and not (home/'daemon.port').exists(), 'A4-H helper started daemon/listener'
+                print('PASS A4-H original worker/permit/cancellation:', fault, flush=True)
+    if sys.argv[1:]:
+        raise SystemExit(0)
+
+# A4 connection custody and per-org isolation use this existing shell venue.
+# Faults/observers are local to each temporary fixture; no production test hook.
+if sys.argv[1:] in ([], ['--startup-isolation']):
+    import asyncio
+    import httpx
+    from runtime.infrastructure import remote_job_schema
+    from runtime.daemon.routes.orgs import _seed_skeleton
+    from runtime.daemon.state import DaemonState
+    from runtime.daemon.app import create_app
+    from runtime.runtime import RuntimeDir
+    from runtime.platform.passthrough_backend import PassthroughBackend
+    from runtime.workflows.profile_coordinator import ProfileCoordinator
+    from runtime.workflows.authority import WorkflowAuthorityCoordinator
+    from runtime.infrastructure.workflow_schema import initialize_complete_org_schema
+    from runtime.orchestrator.org_config import initialize_fresh_reviewer_agents
+
+    with tempfile.TemporaryDirectory(prefix='a4-construction-') as scratch:
+        for fail_close in (False, True):
+            native = sqlite3.connect(Path(scratch) / ('unknown.db' if fail_close else 'closed.db'))
+            close_calls = []
+            class CloseFault:
+                def __getattr__(self, name):
+                    return getattr(native, name)
+                @property
+                def row_factory(self):
+                    return native.row_factory
+                @row_factory.setter
+                def row_factory(self, value):
+                    native.row_factory = value
+                def close(self):
+                    close_calls.append('close')
+                    if fail_close:
+                        raise OSError('synthetic close uncertainty')
+                    native.close()
+            connection = CloseFault()
+            owner = {}
+            primary = ValueError('synthetic constructor refusal')
+            try:
+                with patch.object(sqlite3, 'connect', return_value=connection), patch.object(
+                        remote_job_schema, 'validate_identity_enrollment_schema_preflight', side_effect=primary):
+                    try:
+                        Database(Path(scratch) / 'private.db', construction_owner=owner, acquisition_timeout=0)
+                    except ValueError as exc:
+                        assert exc is primary, 'A4-C1 original constructor failure was replaced'
+                    else:
+                        raise AssertionError('A4-C1 constructor refusal disappeared')
+                assert getattr(owner.get('load_db'), '_conn', None) is connection, 'A4-C1 lost original partial connection'
+                assert close_calls == ['close'], 'A4-C1 original connection closed more than once'
+                assert owner['load_db_closed'] is (not fail_close), 'A4-C1 invented successful closure'
+                if fail_close:
+                    assert isinstance(owner['load_close_error'], OSError)
+                    assert native.execute('SELECT 1').fetchone()[0] == 1
+                else:
+                    try:
+                        native.execute('SELECT 1')
+                    except sqlite3.ProgrammingError:
+                        pass
+                    else:
+                        raise AssertionError('A4-C1 positive close left a usable original connection')
+                print('PASS A4-C1 original partial constructor custody:', 'retained-unknown' if fail_close else 'closed', flush=True)
+            finally:
+                native.close()  # the exact synthetic handle, after custody assertions
+
+        busy_path = Path(scratch) / 'busy.db'
+        with closing(sqlite3.connect(busy_path)) as writer:
+            writer.execute('CREATE TABLE private_fixture (id INTEGER)')
+            writer.commit()
+            writer.execute('BEGIN EXCLUSIVE')
+            owner = {}
+            started = time.monotonic()
+            try:
+                Database(busy_path, construction_owner=owner, acquisition_timeout=0)
+            except sqlite3.OperationalError as exc:
+                assert getattr(exc, 'sqlite_errorcode', None) == sqlite3.SQLITE_BUSY
+            else:
+                raise AssertionError('A4-C2 busy source accepted')
+            elapsed = time.monotonic() - started
+            assert elapsed < .5 and owner['load_db_closed'], ('A4-C2 replenished busy wait', elapsed)
+            writer.rollback()
+        print('PASS A4-C2 actual exclusive SQLite contention: zero retry, closed; seconds=', elapsed, flush=True)
+
+    def seed_isolation_org(runtime, slug):
+        root = runtime.orgs_dir / slug
+        _seed_skeleton(root, from_example=None)
+        db = Database(root / 'happyranch.db')
+        try:
+            initialize_complete_org_schema(db, expected_org_slug=slug, layout='J')
+            initialize_fresh_reviewer_agents(OrgPaths(root), db)
+        finally:
+            db.close()
+        return root
+
+    for failure in (case for case in ('database', 'post_load', 'selector', 'profile',
+                                    'profile_database', 'profile_filesystem', 'profile_capture',
+                                    'main_owner', 'main_selector', 'main_sweep', 'main_unexpected', 'main_cancel', 'main_success', 'main_restore')
+                    if startup_case is None or case == startup_case):
+        with tempfile.TemporaryDirectory(prefix='a4-isolation-') as scratch:
+            home = Path(scratch).resolve()
+            runtime = RuntimeDir.init(home / 'runtime')
+            first_root = seed_isolation_org(runtime, 'alpha')
+            second_root = seed_isolation_org(runtime, 'beta')
+            if failure in ('selector', 'main_selector', 'main_success'):
+                for root in (first_root, second_root):
+                    definition = AgentDef(name='manager', team='engineering', role='manager', executor='codex',
+                        allow_rules=('happyranch',), repos={}, enrolled_by=None, enrolled_at_task=None,
+                        enrolled_at=None, system_prompt='Synthetic private A4 selector manager.')
+                    (root / 'org/agents/manager.md').write_text(render_agent_text(definition))
+                    (root / 'org/teams.yaml').write_text('teams:\n  engineering:\n    manager: manager\n    workers: []\n')
+            state = None
+            actual_load = OrgState.load
+            reached = []
+            selector_calls = []
+            actual_selector = WorkflowAuthorityCoordinator.ensure_authority_selector
+            actual_capture = ProfileCoordinator._capture_org_dependencies
+            def observed_capture(coordinator, org, **kwargs):
+                if org.slug == 'alpha':
+                    error = sqlite3.OperationalError if failure == 'profile_database' else OSError
+                    raise error('PRIVATE profile acquisition diagnostic')
+                return actual_capture(coordinator, org, **kwargs)
+            @contextmanager
+            def failed_inventory(coordinator):
+                raise OSError('PRIVATE profile inventory diagnostic')
+                yield  # preserve the context-manager protocol; no successful fact
+            def observed_selector(authority, **kwargs):
+                if kwargs.get('publisher') == 'daemon-state-load:selector-initialization':
+                    selector_calls.append(authority._org_slug)
+                    if authority._org_slug == 'alpha':
+                        raise OSError('PRIVATE selector diagnostic')
+                return actual_selector(authority, **kwargs)
+            def observed_load(**kwargs):
+                org = actual_load(**kwargs)
+                reached.append(org.slug)
+                if org.slug == 'alpha' and failure == 'post_load':
+                    def refuse_queue(queue):
+                        raise OSError('PRIVATE post-load diagnostic')
+                    org.orchestrator.attach_queue = refuse_queue
+                return org
+            if failure == 'database':
+                (first_root / 'happyranch.db').write_bytes(b'not a SQLite database')
+            try:
+                with ExitStack() as stack:
+                    stack.enter_context(patch.dict(os.environ, {'HAPPYRANCH_DAEMON_HOME': str(home)}))
+                    stack.enter_context(patch('runtime.platform.backend_factory.select_session_backend',
+                                              return_value=PassthroughBackend()))
+                    stack.enter_context(patch.object(OrgState, 'load', side_effect=observed_load))
+                    if failure == 'selector':
+                        stack.enter_context(patch.object(WorkflowAuthorityCoordinator, 'ensure_authority_selector', observed_selector))
+                    if failure in ('profile_database', 'profile_filesystem'):
+                        stack.enter_context(patch.object(ProfileCoordinator, '_capture_org_dependencies', observed_capture))
+                    if failure == 'profile_capture':
+                        stack.enter_context(patch.object(ProfileCoordinator, '_capture_orgs', failed_inventory))
+                    if failure == 'profile':
+                        stack.enter_context(patch.object(ProfileCoordinator, '_reconcile_startup',
+                                                         side_effect=RuntimeError('PRIVATE unexpected profile error')))
+                    try:
+                        state = DaemonState.from_runtime(runtime, Settings())
+                    except Exception as exc:
+                        raise AssertionError('A4-C3 runtime aborted before isolated completion: ' + failure) from exc
+                    if failure.startswith('main_'):
+                        import runtime.daemon.__main__ as entry
+                        # Execute the real entry tail AFTER the real state load.
+                        # Only the selected failing operation is replaced/denied;
+                        # beta still runs its original native tail in order.
+                        original_bind = OrgState.bind_authority_v2_owner
+                        original_sweep = entry._sweep_on_startup
+                        original_publish = entry._publish_v2_generations_on_startup
+                        tail, faults, startup_waits = [], [], []
+                        primary = KeyboardInterrupt('PRIVATE genuine process cancellation') if failure == 'main_cancel' else (
+                            RuntimeError('PRIVATE unexpected entry diagnostic') if failure == 'main_unexpected' else
+                            OSError('PRIVATE original entry diagnostic'))
+                        def bind(org):
+                            if org.slug == 'alpha' and failure == 'main_restore':
+                                def restoration_fault(action, name, value, *_):
+                                    if action == sqlite3.SQLITE_PRAGMA and name == 'busy_timeout' and value == '5000':
+                                        faults.append('native-timeout-restoration-denied')
+                                        return sqlite3.SQLITE_DENY
+                                    return sqlite3.SQLITE_OK
+                                org.db._conn.set_authorizer(restoration_fault)
+                            startup_waits.append((org.slug, 'bind', org.db._conn.execute('PRAGMA busy_timeout').fetchone()[0]))
+                            tail.append((org.slug, 'bind'))
+                            if org.slug == 'alpha' and failure in ('main_owner', 'main_unexpected', 'main_cancel'):
+                                faults.append(primary)
+                                raise primary
+                            return original_bind(org)
+                        def selector(authority, **kwargs):
+                            if kwargs.get('publisher') == 'daemon-startup:selector-initialization':
+                                tail.append((authority._org_slug, 'selector'))
+                                if authority._org_slug == 'alpha' and failure == 'main_selector':
+                                    faults.append(primary)
+                                    raise primary
+                            return actual_selector(authority, **kwargs)
+                        def sweep(db, queue, slug, orchestrator, *, startup_releases=None, startup_preparations=None):
+                            tail.append((slug, 'sweep'))
+                            if slug == 'alpha' and failure == 'main_sweep':
+                                # The native owner fails on its real first SQL,
+                                # rather than on a substituted successful scan.
+                                db._conn.set_authorizer(lambda *_: sqlite3.SQLITE_DENY)
+                                try:
+                                    return original_sweep(db, queue, slug, orchestrator, startup_releases=startup_releases, startup_preparations=startup_preparations)
+                                except Exception as exc:
+                                    faults.append(exc)
+                                    raise
+                                finally:
+                                    db._conn.set_authorizer(None)
+                            return original_sweep(db, queue, slug, orchestrator, startup_releases=startup_releases, startup_preparations=startup_preparations)
+                        def publish(org, queue):
+                            startup_waits.append((org.slug, 'publish', org.db._conn.execute('PRAGMA busy_timeout').fetchone()[0]))
+                            tail.append((org.slug, 'publish'))
+                            return original_publish(org, queue)
+                        originals = dict(state._all_orgs_snapshot())
+                        connections = {slug: org.db._conn for slug, org in originals.items()}
+                        from runtime.infrastructure.org_access_fence import original_org_fence
+                        fences = {slug: original_org_fence(slug) for slug in originals}
+                        with patch.object(OrgState, 'bind_authority_v2_owner', bind), \
+                                patch.object(WorkflowAuthorityCoordinator, 'ensure_authority_selector', selector), \
+                                patch.object(entry, '_sweep_on_startup', sweep), \
+                                patch.object(entry, '_publish_v2_generations_on_startup', publish):
+                            try:
+                                entry._initialize_runnable_startup(state)
+                            except KeyboardInterrupt as exc:
+                                assert failure == 'main_cancel' and exc is primary, 'A4-C4 wrong process cancellation'
+                            except Exception as exc:
+                                raise AssertionError('A4-C4 entry aborted remaining org/listener: ' + failure) from exc
+                            else:
+                                assert failure != 'main_cancel', 'A4-C4 swallowed process cancellation'
+                        for org in originals.values():
+                            org.db._conn.set_authorizer(None)
+                        assert startup_waits and all(wait == 0 for _, _, wait in startup_waits), ('A4-C4 renewed entry SQLite busy waiting', startup_waits)
+                        assert len(faults) == (0 if failure == 'main_success' else 1), ('A4-C4 intended boundary not reached', failure, tail)
+                        if failure == 'main_success':
+                            assert not state.broken_orgs and not state._startup_held_orgs, 'A4-C4 healthy entry held'
+                            assert tail == [(slug, phase) for slug in ('alpha', 'beta') for phase in ('bind', 'selector', 'sweep', 'publish')], ('A4-C4 original entry order', tail)
+                            assert all(org.db._conn.execute('PRAGMA busy_timeout').fetchone()[0] == 5000
+                                       for org in state.orgs.values()), 'A4-C4 serving timeout not restored'
+                        elif failure == 'main_cancel':
+                            assert tail == [('alpha', 'bind')] and not state.broken_orgs, 'A4-C4 process cancellation continued orgs'
+                        else:
+                            assert ('beta', 'sweep') in tail and ('beta', 'publish') in tail, ('A4-C4 later tail lost', tail)
+                            assert all(org is state._all_orgs_snapshot()[slug] and org.db._conn is connections[slug]
+                                       and original_org_fence(slug) is fences[slug] for slug, org in originals.items()), 'A4-C4 original custody replaced'
+                            assert all(conn.execute('SELECT 1').fetchone()[0] == 1 for conn in connections.values()), 'A4-C4 original connection lost'
+                            assert 'alpha' in state._startup_held_orgs and 'alpha' not in state.orgs, 'A4-C4 failed org runnable'
+                            held = state._startup_held_orgs['alpha']
+                            assert held is originals['alpha'] and held._runner_admission_closed, 'A4-C4 failed org runnable'
+                            assert held._startup_publication_held, 'A4-C4 failed publication runnable'
+                            if failure == 'main_restore':
+                                assert faults == ['native-timeout-restoration-denied'] and isinstance(held._startup_authority_error, sqlite3.DatabaseError), 'A4-C4 original restoration failure lost'
+                                assert held._startup_authority_error.sqlite_errorcode == sqlite3.SQLITE_AUTH, 'A4-C4 wrong native restoration failure'
+                            else:
+                                assert held._startup_authority_error is faults[0], 'A4-C4 original failure lost'
+                            assert 'PRIVATE' not in state.broken_orgs['alpha'], 'A4-C4 raw entry diagnostic escaped'
+                            assert state.profile_coordinator._startup_unknown, 'A4-C4 dependency hold not renewed'
+                            assert all(org.db._conn.execute('PRAGMA busy_timeout').fetchone()[0] == 0
+                                       for org in state._startup_held_orgs.values()), 'A4-C4 restored held timeout'
+                            assert (('alpha', 'publish') in tail) == (failure == 'main_restore'), 'A4-C4 continued failed org tail'
+                        print('PASS A4-C4 actual entry tail/original handles/later tail or process cancellation:', failure, flush=True)
+                    all_orgs = state._all_orgs_snapshot()
+                    assert 'beta' in reached and 'beta' in all_orgs, ('A4-C3 later org not attached', failure, reached)
+                    if failure in ('database', 'post_load', 'selector'):
+                        assert 'alpha' in state.broken_orgs and 'alpha' not in state.orgs
+                        assert 'PRIVATE' not in state.broken_orgs['alpha'], 'A4-C3 raw diagnostic escaped'
+                    if failure == 'selector':
+                        assert selector_calls == ['alpha', 'beta'], ('A4-C3 intended selector boundary not reached', selector_calls)
+                    if failure == 'post_load':
+                        assert all_orgs['alpha']._runner_admission_closed
+                    if failure.startswith('profile'):
+                        assert state.profile_coordinator._startup_unknown
+                        assert set(state._startup_held_orgs) == {'alpha', 'beta'} and not state.orgs
+                        assert all(org._runner_admission_closed for org in all_orgs.values())
+                        assert all('PRIVATE' not in reason for reason in state.broken_orgs.values())
+                    async def independent_app_read():
+                        app = create_app(state)
+                        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://private') as client:
+                            response = await client.get('/api/v1/health')
+                            assert response.status_code == 200, ('A4-C3 independent health failed', failure, response.status_code)
+                    asyncio.run(independent_app_read())
+                    assert all(owner.get('slug') != 'alpha' or not owner.get('load_db_closed')
+                               for owner in state._attachment_owners.values()), 'A4-C3 closed handle retained as unknown'
+                print('PASS A4-C3 per-org startup containment, later actual org, independent ASGI health:', failure, flush=True)
+            finally:
+                if state is not None:
+                    asyncio.run(state.close_all())
+
+    if sys.argv[1:] == ['--startup-isolation']:
+        raise SystemExit(0)
+
 
 # A1 extends this existing disposable shell venue. Real process pipes/files are
 # barriers; trace observers record actual opens and never supply gate outcomes.
@@ -1952,14 +3106,1306 @@ runpy.run_module('runtime.daemon',run_name='__main__')
     if sys.argv[1:]:
         raise SystemExit(0)
 
+# A4-N reads genuine private native histories before any install intent/effect.
+if sys.argv[1:] in ([], ['--bootstrap-owners']):
+    from runtime.infrastructure import workflow_sequential_bootstrap as bootstrap
+    from runtime.infrastructure import workflow_schema as schema
+    from runtime.infrastructure.org_access_fence import OrgAccessFence
+    from runtime.infrastructure.producer_admission import ProducerAdmissionStore, ProducerLifecycle, NativeWriterStore, NativeWriterLifecycle
+    from runtime.infrastructure.thread_admission import ThreadAdmissionStore, ThreadLifecycle, ThreadAttempt
+    from runtime.models import ThreadRecord, ThreadInvocationPurpose
+
+    cases = ('empty', 'producer_settled', 'producer_active', 'producer_unknown',
+        'producer_quiescence', 'producer_rewrite', 'writer_settled', 'writer_active', 'writer_unknown',
+        'writer_rewrite', 'pause_prepared', 'pause_unknown', 'thread_settled', 'thread_active',
+        'thread_unknown', 'thread_missing', 'thread_orphan', 'thread_rewrite', 'acquisition',
+        'deadline', 'sql_budget', 'query_only', 'task_active', 'task_terminal',
+        'publication_lease', 'profile_lease', 'domain_acquisition', 'repository_opened',
+        'repository_started', 'repository_finished', 'repository_returned', 'repository_outer',
+        'repository_closed', 'repository_unsealed', 'repository_rewrite', 'repository_foreign', 'repository_acquisition')
+    for fault in cases:
+        if owners_case is not None and owners_case != fault:
+            continue
+        with tempfile.TemporaryDirectory(prefix='a4-native-history-') as scratch:
+            private = Path(scratch).resolve()
+            home = private/'home'
+            home.mkdir(mode=0o700)
+            root = private/'runtime/orgs/scratch'
+            (root/'org').mkdir(parents=True)
+            (root/'org/teams.yaml').write_text('teams: {}\n')
+            path = root/'happyranch.db'
+            db = Database(path)
+            try:
+                schema.initialize_complete_org_schema(db, expected_org_slug='scratch', layout='J')
+                install_pause_schema(db, org_slug='scratch')
+                install_task_ownership(db, org_slug='scratch')
+                if fault in ('task_active', 'task_terminal'):
+                    from runtime.models import TaskStatus
+                    db.insert_task(TaskRecord(id='TASK-synthetic-domain', brief='private domain owner',
+                        status=TaskStatus.COMPLETED if fault=='task_terminal' else TaskStatus.PENDING,
+                        assigned_agent='synthetic-agent'))
+                if fault in ('publication_lease', 'profile_lease'):
+                    table = 'workflow_publication_leases' if fault=='publication_lease' else 'workflow_profile_leases'
+                    # Even a definitely absent process supplies no release of
+                    # this original retained publication/profile ownership.
+                    db._conn.execute('INSERT INTO '+table+' VALUES (?,?,?)', ('synthetic-owner', 'original-token', 2147483647))
+                if fault == 'domain_acquisition':
+                    db._conn.executemany('INSERT INTO workflow_authority_pointers VALUES (?,0,NULL,NULL,\'ready\',0)',
+                        [('synthetic-namespace-'+str(n),) for n in range(4097)])
+                if fault.startswith('repository_'):
+                    from runtime.infrastructure.db.tasks import repository_preparation_event
+                    from runtime.models import TaskStatus
+                    # Original constructors and append validator create the
+                    # histories. This fixture grants no live owner clearance.
+                    for number in range(1366 if fault=='repository_acquisition' else 1):
+                        scope = 'TASK-synthetic-repository-'+str(number)
+                        db.insert_task(TaskRecord(id=scope, brief='private terminal repository preparation',
+                            status=TaskStatus.COMPLETED, assigned_agent='synthetic-agent'))
+                        owner = dict(org='elsewhere' if fault=='repository_foreign' else 'scratch', kind='task',
+                            scope=scope, agent='synthetic-agent', session_id='synthetic-sid',
+                            invocation_id='a'*32, attempt_id='b'*32, boot_id='synthetic-boot', native_id=scope, source='c'*64)
+                        repository = dict(path=str(private/'synthetic-repository'), device=1, inode=1)
+                        obligation, request = format(number+1, '032x'), 'd'*32
+                        events = []
+                        def event(phase, **facts):
+                            body = repository_preparation_event(owner, repository, obligation, len(events), phase, **facts)
+                            db.append_repository_preparation_uncommitted(body)
+                            events.append(body)
+                        event('opened')
+                        if fault != 'repository_opened':
+                            command = dict(command='probe', probe='target_type', request_ref=request)
+                            event('intent', **command)
+                            if fault == 'repository_acquisition':
+                                event('not_admitted', **command, complete=True)
+                            else:
+                                event('attempted', **command, attempted=True)
+                                identity = dict(pid=2147483647, handle_ref='e'*64, start_pin='f'*64)
+                                event('started', **command, **identity, attempted=True, started=True)
+                                if fault != 'repository_started':
+                                    returned = dict(attempted=True, started=True, consumed=True, returncode=0,
+                                        capture_complete=True)
+                                    event('consumed', **command, **identity, **returned)
+                                    event('finished', **command, **identity, **returned, complete=True,
+                                        receipt=dict(quiescent=True, survivors=0, cleanup_error=False, cleanup_status='clean'))
+                            if fault not in ('repository_started', 'repository_finished'):
+                                event('worker_returned', complete=True)
+                                if fault != 'repository_returned':
+                                    event('outer_closed', complete=fault!='repository_outer',
+                                        inventory=dict(intervals=[], retained=[], outer_closed=fault!='repository_outer'))
+                                    if fault not in ('repository_outer', 'repository_unsealed'):
+                                        event('closed', complete=True, state_digest='0'*64)
+                        if fault == 'repository_rewrite':
+                            # Deliberate historical corruption, not a validator
+                            # stub: the strict reader must retain its own cause.
+                            changed = json.loads(json.dumps(events[-1]))
+                            changed['owner']['source'] = '1'*64
+                            db._conn.execute("UPDATE audit_log SET payload=? WHERE id=(SELECT max(id) FROM audit_log "
+                                "WHERE action='repository_preparation')", (json.dumps(changed),))
+                if fault.startswith('producer_'):
+                    store = ProducerAdmissionStore(db, 'scratch')
+                    first = ProducerLifecycle(org_slug='scratch', kind='cleanup', source_id='synthetic-source',
+                        occurrence_id='synthetic-occurrence', agent_id='synthetic-agent', session_id='synthetic-sid',
+                        preparation_id='synthetic-preparation', enqueued_at='2026-11-17T00:00:00+00:00', retry_initialized=False)
+                    store.save_uncommitted(first)
+                    if fault != 'producer_active':
+                        state = first.model_copy(update=dict(producer_settled=True,
+                            failed_cleanup=fault=='producer_unknown'))
+                        if fault == 'producer_quiescence':
+                            state = state.model_copy(update=dict(retry_initialized=True, attempts=(ThreadAttempt(
+                                attempt_id='synthetic-attempt', phase='initial', boundary='host', ordinal=0,
+                                settled=True, quiescent=False),)))
+                        store.save_uncommitted(state)
+                        if fault == 'producer_rewrite':
+                            db.insert_audit_log_uncommitted(first.source_id, first.agent_id,
+                                'producer_move_lifecycle', json.loads(state.model_copy(update=dict(
+                                    preparation_id='synthetic-replaced-preparation')).model_dump_json()))
+                if fault.startswith('writer_') or fault == 'acquisition':
+                    store = NativeWriterStore(db, 'scratch')
+                    first = NativeWriterLifecycle(org_slug='scratch', writer_id='synthetic-writer', publisher='disk_sweep')
+                    store.save_uncommitted(first)
+                    if fault != 'writer_active':
+                        store.save_uncommitted(first.model_copy(update=dict(
+                            state='unknown' if fault=='writer_unknown' else 'settled')))
+                    if fault == 'writer_rewrite':
+                        db.insert_audit_log_uncommitted('config:team-move-writer:'+first.writer_id,
+                            'native_writer', 'team_move_native_writer', json.loads(first.model_copy(update=dict(
+                                state='settled', publisher='synthetic-replaced-publisher')).model_dump_json()))
+                    if fault == 'acquisition':
+                        # Valid individual rows; only their original aggregate
+                        # acquisition bound can refuse the complete history.
+                        raw = first.model_copy(update=dict(state='settled')).model_dump_json()
+                        db._conn.executemany("INSERT INTO audit_log(task_id,agent,action,payload,timestamp) VALUES (?,?,?,?,?)",
+                            [('config:team-move-writer:'+first.writer_id, 'native_writer', 'team_move_native_writer', raw,
+                              '2026-11-17T00:00:00+00:00')]*8191)
+                if fault.startswith('pause_'):
+                    from runtime.models import TaskStatus
+                    db.insert_task(TaskRecord(id='TASK-synthetic-pause', brief='private terminal preparation',
+                        status=TaskStatus.COMPLETED, assigned_agent='synthetic-agent'))
+                    pause = TaskPauseStore(db, 'scratch')
+                    row = pause.ensure_uncommitted('TASK-synthetic-pause')
+                    row['journal']['entries'] = [dict(id='synthetic-native', org='scratch', root_task_id='TASK-synthetic-pause',
+                        task_id='TASK-synthetic-pause', agent='synthetic-agent', session_id='synthetic-sid', owner='ordinary',
+                        owner_identity={}, fingerprint=dict(status='pending', block_kind=None, count=0, session_id=None,
+                            agent='synthetic-agent', fanout=None, jobs=None, parent=None, brief_digest='0'*64),
+                        generation=0, phase='unknown' if fault=='pause_unknown' else 'prepared', retry={},
+                        context={'execution_unknown': True} if fault=='pause_unknown' else {},
+                        started_at=None, captured_generation=None)]
+                    pause.save_journal_uncommitted(row)
+                if fault.startswith('thread_'):
+                    db.insert_thread(ThreadRecord(id='THR-synthetic-history', subject='private original native history'))
+                    inv = db.mint_thread_invocation(thread_id='THR-synthetic-history', agent_name='synthetic-agent',
+                        triggering_seq=0, purpose=ThreadInvocationPurpose.REPLY)
+                    db._conn.execute("UPDATE thread_invocations SET status='failed',session_id='synthetic-sid' WHERE id=?", (inv.id,))
+                    inv = SimpleNamespace(id=inv.id, thread_id=inv.thread_id, agent_name=inv.agent_name, session_id='synthetic-sid')
+                    first = ThreadLifecycle(org_slug='scratch', invocation_id=inv.id, thread_id=inv.thread_id,
+                        agent_id=inv.agent_name, session_id=inv.session_id, preparation_id='synthetic-thread-preparation', retry_initialized=False)
+                    store = ThreadAdmissionStore(db, 'scratch')
+                    if fault != 'thread_missing':
+                        store.save_uncommitted(inv, first)
+                        if fault != 'thread_active':
+                            store.save_uncommitted(inv, first.model_copy(update=dict(producer_settled=True,
+                                failed_cleanup=fault=='thread_unknown')))
+                    if fault == 'thread_orphan':
+                        db._conn.execute('DELETE FROM thread_invocations WHERE id=?', (inv.id,))
+                    if fault == 'thread_rewrite':
+                        db.insert_audit_log_uncommitted(inv.thread_id, inv.agent_name,
+                            'thread_move_lifecycle', json.loads(first.model_copy(update=dict(
+                                producer_settled=True, preparation_id='synthetic-replaced-preparation')).model_dump_json()))
+                db._conn.commit()
+                db._conn.execute('PRAGMA wal_checkpoint(TRUNCATE)')
+            finally:
+                db.close()
+            before = path.read_bytes()
+            with patch.dict(os.environ, {'HAPPYRANCH_DAEMON_HOME': str(home)}):
+                fence = OrgAccessFence.acquire(root, exclusive=True)
+                source = bootstrap.BootstrapSource(fence=fence, deadline=time.monotonic()+119)
+                original_gate = bootstrap.require_bootstrap_idle_history
+                reached = []
+                history_sql = []
+                def observe(owner):
+                    assert owner is source and owner.source.in_transaction, 'A4-N lost original snapshot'
+                    assert owner.source.execute('PRAGMA query_only').fetchone()[0] == 1, 'A4-N native facade writable'
+                    reached.append('original-history')
+                    owner.source.set_trace_callback(history_sql.append)
+                    if fault == 'sql_budget':
+                        source._inventory_steps = 640000000
+                    if fault == 'query_only':
+                        owner.source.execute('PRAGMA query_only=OFF')
+                    if fault == 'deadline':
+                        # Only the private clock is changed. The original source
+                        # operation stays live; its five-second read expires.
+                        real = time.monotonic
+                        start = real()
+                        calls = [0]
+                        def now():
+                            calls[0] += 1
+                            return start if calls[0] <= 3 else start+6
+                        with patch.object(bootstrap.time, 'monotonic', side_effect=now):
+                            return original_gate(owner)
+                    return original_gate(owner)
+                try:
+                    with patch.object(bootstrap, 'require_bootstrap_idle_history', side_effect=observe), patch.object(
+                            Database, '__init__', side_effect=AssertionError('A4-N constructed writable facade')):
+                        error = None
+                        try:
+                            source.open()
+                        except (ValueError, sqlite3.Error) as exc:
+                            error = exc
+                    good = fault in ('empty', 'producer_settled', 'writer_settled', 'thread_settled', 'task_terminal',
+                                     'repository_closed')
+                    assert reached == ['original-history'], ('A4-N original history gate missing', fault, reached)
+                    assert (error is None) == good, ('A4-N accepted unclosed native history' if not good else 'A4-N rejected settled original history', fault, type(error).__name__)
+                    if not good:
+                        expected = dict(producer_rewrite='producer identity changed',
+                            writer_rewrite='native writer identity changed', thread_rewrite='thread lifecycle identity changed',
+                            thread_missing='thread history missing', acquisition='workflow_setup_history_acquisition_exhausted',
+                            deadline='workflow_setup_history_deadline', sql_budget='workflow_setup_inventory_exhausted',
+                            query_only='workflow_setup_history_owner_invalid', repository_rewrite='conflicting_history',
+                            repository_acquisition='workflow_setup_history_acquisition_exhausted').get(fault, 'workflow_setup_history_not_idle')
+                        if fault in ('task_active', 'publication_lease', 'profile_lease'):
+                            owner = dict(task_active='tasks:TASK-synthetic-domain',
+                                publication_lease='workflow_publication_leases', profile_lease='workflow_profile_leases')[fault]
+                            assert owner in str(error) and str(error).startswith(('workflow_coding_source_owner_unresolved:',
+                                'workflow_submission_source_owner_active:')), ('A4-N wrong current domain cause', fault, str(error))
+                        else:
+                            if fault == 'domain_acquisition':
+                                expected = 'workflow_setup_history_acquisition_exhausted'
+                            assert str(error) == expected, ('A4-N wrong native refusal cause', fault, type(error).__name__, str(error))
+                    if fault == 'repository_acquisition':
+                        assert not any('THEN payload END AS payload' in sql for sql in history_sql), \
+                            'A4-N acquired repository payload before whole bound'
+                    assert source.failed == (not good), 'A4-N failure did not latch source'
+                    assert source.source is not None and source.source.in_transaction, 'A4-N original source lost'
+                    if fault != 'query_only':
+                        assert source.source.execute('PRAGMA query_only').fetchone()[0] == 1, 'A4-N source became writable'
+                    assert not (home/'backups').exists() and source.backup_sha256 is None, 'A4-N effects before native qualification'
+                    changes = source.source.total_changes
+                    repeated_sql = []
+                    source.source.set_trace_callback(repeated_sql.append)
+                    try:
+                        original_gate(source)
+                    except ValueError:
+                        pass
+                    else:
+                        raise AssertionError('A4-N replayed original history qualification')
+                    finally:
+                        source.source.set_trace_callback(None)
+                    assert repeated_sql == [], 'A4-N repeated native history SQL'
+                    assert source.source.total_changes == changes, 'A4-N repeat changed native source'
+                    source.close()
+                    assert source.closed and all(record['closed'] for record in source.connections), 'A4-N original close unproved'
+                    assert path.read_bytes() == before, 'A4-N native history observation changed source'
+                    print('PASS A4-N strict original native history/source unchanged:', fault, flush=True)
+                finally:
+                    source.close()
+                    fence.close()
+    if sys.argv[1:] == ['--bootstrap-owners']:
+        raise SystemExit(0)
+
+# A4-D composes the actual original fence/selector and native loader boundaries.
+if sys.argv[1:] in ([], ['--bootstrap-discovery']):
+    from runtime.infrastructure import workflow_sequential_bootstrap as bootstrap
+    from runtime.infrastructure import workflow_schema as schema
+    from runtime.infrastructure.org_access_fence import OrgAccessFence, OrgAccessHeld, original_org_fence
+    from runtime.daemon.routes.orgs import _seed_skeleton
+    from runtime.orchestrator.org_config import initialize_fresh_reviewer_agents
+
+    discovery_cases = ('present', 'absent', 'ex_reselect', 'total', 'org', 'installed_expired',
+                       'deadlines', 'busy', 'shared_close', 'selection_close', 'ex_acquire',
+                       'transfer', 'load', 'load_fault', 'foreign_fence')
+    for fault in discovery_cases:
+        if discovery_case is not None and discovery_case != fault:
+            continue
+        with tempfile.TemporaryDirectory(prefix='a4-discovery-') as scratch:
+            private = Path(scratch).resolve()
+            home, runtime = private/'home', private/'runtime'
+            home.mkdir(mode=0o700)
+            root = runtime/'orgs/scratch'
+            _seed_skeleton(root, from_example=None)
+            path = root/'happyranch.db'
+            installed = fault in ('present', 'installed_expired', 'transfer', 'load', 'load_fault', 'foreign_fence')
+            db = schema.initialize_fresh_org_database(path, expected_org_slug='scratch') if installed else Database(path)
+            try:
+                if not installed:
+                    schema.initialize_complete_org_schema(db, expected_org_slug='scratch', layout='J')
+                install_pause_schema(db, org_slug='scratch')
+                initialize_fresh_reviewer_agents(OrgPaths(root), db)
+            finally:
+                db.close()
+            original_bytes = path.read_bytes()
+            with patch.dict(os.environ, {'HAPPYRANCH_DAEMON_HOME': str(home)}), ExitStack() as stack:
+                actual_clock = time.monotonic
+                offset = [0.0]
+                stack.enter_context(patch.object(bootstrap.time, 'monotonic', side_effect=lambda: actual_clock()+offset[0]))
+                startup = bootstrap.BootstrapStartup(home=home, runtime_root=runtime)
+                if fault in ('total', 'installed_expired'):
+                    offset[0] = 181 if fault == 'installed_expired' else 121
+                route = startup.discover(root)
+                assert route.deadline == min(route.started_at+120, startup.deadline), 'A4-D original org/total deadlines'
+                acquisitions, acquisition_intervals, closes, injected, native = [], [], [], [], []
+                actual_acquire = OrgAccessFence.acquire
+                actual_close = OrgAccessFence.close
+                actual_select = bootstrap.BootstrapDiscovery._select
+                actual_connect = sqlite3.connect
+                blocker = None
+                if fault == 'busy':
+                    blocker = actual_acquire(root)
+                def acquire(selected_root, **kwargs):
+                    acquisitions.append((selected_root, dict(kwargs)))
+                    interval = [actual_clock(), None]
+                    acquisition_intervals.append(interval)
+                    try:
+                        if fault == 'busy' and len(acquisitions) == 1:
+                            time.sleep(.3)
+                        fence = actual_acquire(selected_root, **kwargs)
+                    finally:
+                        interval[1] = actual_clock()
+                    if fault == 'ex_acquire' and kwargs.get('exclusive'):
+                        def unavailable():
+                            injected.append('ex_acquire')
+                            raise OSError('synthetic returned EX observation unavailable')
+                        fence.assert_held = unavailable
+                    return fence
+                def close(fence):
+                    closes.append(fence)
+                    if fault == 'shared_close' and not injected and not fence.exclusive:
+                        injected.append('shared_close')
+                        raise OSError('synthetic original SH close uncertainty')
+                    return actual_close(fence)
+                def select(discovery, fence, end):
+                    result = actual_select(discovery, fence, end)
+                    if fault == 'busy' and len(discovery.selections) == 1:
+                        # Work between acquisitions consumes the original org
+                        # deadline, but is not another native admission wait.
+                        time.sleep(.04)
+                    if fault == 'org' and len(discovery.selections) == 1:
+                        offset[0] = 101
+                    return result
+                def connect(*args, **kwargs):
+                    conn = actual_connect(*args, **kwargs)
+                    if fault != 'selection_close':
+                        return conn
+                    native.append(conn)
+                    class CloseFault:
+                        def __getattr__(self, name):
+                            return getattr(conn, name)
+                        @property
+                        def row_factory(self):
+                            return conn.row_factory
+                        @row_factory.setter
+                        def row_factory(self, value):
+                            conn.row_factory = value
+                        def close(self):
+                            injected.append('selection_close')
+                            raise OSError('synthetic original selector close uncertainty')
+                    return CloseFault()
+                actual_close_fence = bootstrap.BootstrapDiscovery._close_fence
+                def close_fence(discovery, record):
+                    result = actual_close_fence(discovery, record)
+                    if fault == 'ex_reselect' and len(discovery.fences) == 1 and record['closed'] and not injected:
+                        injected.append('ex_reselect')
+                        with closing(actual_connect(path)) as changed:
+                            changed.execute('CREATE TABLE workflow_seq_arrived(v TEXT)')
+                            changed.commit()
+                    return result
+                stack.enter_context(patch.object(OrgAccessFence, 'acquire', side_effect=acquire))
+                stack.enter_context(patch.object(OrgAccessFence, 'close', close))
+                stack.enter_context(patch.object(bootstrap.BootstrapDiscovery, '_select', select))
+                stack.enter_context(patch.object(bootstrap.BootstrapDiscovery, '_close_fence', close_fence))
+                stack.enter_context(patch.object(bootstrap.sqlite3, 'connect', side_effect=connect))
+                forbidden = [stack.enter_context(patch.object(owner, name,
+                    side_effect=AssertionError('A4-D source/install work in discovery')))
+                    for owner, name in ((bootstrap.BootstrapSource, 'open'), (bootstrap.BootstrapAttempt, 'begin'),
+                                        (bootstrap, 'require_install_integrity'), (schema, 'sequential_storage_inventory'), (schema, 'install_sequential_schema'))]
+                error = None
+                result = None
+                started = actual_clock()
+                try:
+                    result = route.read()
+                except BaseException as exc:
+                    error = exc
+                elapsed = actual_clock()-started
+                assert all(call.call_count == 0 for call in forbidden), 'A4-D source/install work in discovery'
+                if fault in ('shared_close', 'selection_close', 'ex_acquire'):
+                    assert error is not None and route.failed and result is None, 'A4-D unproven discovery escaped'
+                    assert route.primary is error, 'A4-D original discovery cause lost'
+                    if fault == 'ex_acquire':
+                        assert injected == ['ex_acquire'] and len(route.fences) == 2, 'A4-D lost returned EX before observation'
+                        assert route.closed and all(r['closed'] for r in route.fences), 'A4-D lost returned EX custody'
+                    else:
+                        assert not route.closed and route.close_error is not None, 'A4-D unknown discovery closure lost'
+                        before = len(closes), len(injected)
+                        try:
+                            route.close()
+                        except bootstrap.BootstrapEvidenceError:
+                            pass
+                        else:
+                            raise AssertionError('A4-D unknown discovery close retried')
+                        assert before == (len(closes), len(injected)), 'A4-D retried original native close'
+                        try:
+                            actual_acquire(root, exclusive=True)
+                        except OrgAccessHeld:
+                            pass
+                        else:
+                            raise AssertionError('A4-D released unknown original fence')
+                    try:
+                        route.take_shared()
+                    except bootstrap.BootstrapEvidenceError:
+                        pass
+                    else:
+                        raise AssertionError('A4-D transferred uncertain original')
+                else:
+                    assert error is None, (fault, error)
+                    expected = ('held' if fault in ('total', 'org', 'busy') else
+                                'absent' if fault in ('absent', 'deadlines') else 'present')
+                    assert result == expected, 'A4-D wrong fresh routing'
+                    if fault in ('total', 'org'):
+                        assert route.reason == 'startup_upgrade_budget_unavailable' and len(acquisitions) == 1, 'A4-D exhausted upgrade admitted EX'
+                    if fault == 'installed_expired':
+                        assert route.reason is None and len(acquisitions) == 1 and not route.fence.exclusive, 'A4-D upgrade expiry denied installed load'
+                    if fault == 'absent':
+                        assert len(route.selections) == 2 and route.fences[0]['closed'] and route.fence.exclusive, 'A4-D stale SH absence reused'
+                    if fault == 'ex_reselect':
+                        assert len(route.selections) == 3 and not route.fence.exclusive and all(r['closed'] for r in route.fences[:-1]), 'A4-D EX arrival bypassed SH rediscovery'
+                    if fault == 'busy':
+                        assert route.reason == 'writer_exclusion_unproven' and route.exclusion_error is not None, 'A4-D contention omitted visible hold'
+                        assert .45 <= elapsed < .85, ('A4-D replenished cumulative busy wait', elapsed)
+                        first_start, first_end = acquisition_intervals[0]
+                        second_start, _ = acquisition_intervals[1]
+                        # These independently observed native intervals are a
+                        # LOWER bound on the production ledger's charges. The
+                        # next requested wait cannot exceed its remaining .5s.
+                        requested = acquisitions[1][1]['deadline'] - second_start
+                        assert requested <= max(0, .5-(first_end-first_start)), 'A4-D renewed admission deadline'
+                        assert 'deadline' not in acquisitions[2][1], 'A4-D exhausted wait was replenished'
+                        assert not route.fence.exclusive and len(route.selections) == 2, 'A4-D contention bypassed fresh ordinary SH'
+                        print('A4-D admission', json.dumps(dict(first=first_end-first_start,
+                            second_requested=requested, elapsed=elapsed,
+                            charged=startup.admission_seconds), sort_keys=True))
+                    if fault == 'deadlines':
+                        original_deadline = startup.deadline
+                        offset[0] = 100
+                        second = startup.discover(runtime/'orgs/later')
+                        assert startup.deadline == original_deadline and second.deadline == original_deadline, 'A4-D renewed all-org window'
+                        assert route.deadline == route.started_at+120, 'A4-D renewed original org window'
+                        try:
+                            startup.discover(root)
+                        except bootstrap.BootstrapEvidenceError:
+                            pass
+                        else:
+                            raise AssertionError('A4-D repeated original discovery')
+                    if fault in ('transfer', 'load', 'load_fault'):
+                        fence = route.take_shared()
+                        assert fence is route.fence and route.fences[-1]['transferred'], 'A4-D original SH not transferred'
+                        route.close()
+                        fence.assert_held()
+                        try:
+                            route.take_shared()
+                        except bootstrap.BootstrapEvidenceError:
+                            pass
+                        else:
+                            raise AssertionError('A4-D transferred original SH twice')
+                        if fault == 'transfer':
+                            actual_close(fence)
+                        else:
+                            owner = dict(startup_acquisition=True)
+                            writer = actual_connect(path, timeout=0) if fault == 'load_fault' else None
+                            if writer is not None:
+                                writer.execute('BEGIN EXCLUSIVE')
+                            before = len(acquisitions)
+                            loaded = None
+                            try:
+                                loaded = OrgState.load(slug='scratch', root=root, settings=Settings(),
+                                    attachment_owner=owner, access_fence=fence)
+                            except sqlite3.OperationalError:
+                                assert fault == 'load_fault' and owner['load_db_closed'] and fence._closed, 'A4-D failed attachment lost original SH'
+                            else:
+                                assert fault == 'load' and loaded.db._org_access_fence is fence and original_org_fence('scratch') is fence, 'A4-D normal load replaced original SH'
+                            finally:
+                                if writer is not None:
+                                    writer.rollback()
+                                    writer.close()
+                                if loaded is not None:
+                                    loaded.close()
+                            assert len(acquisitions) == before, 'A4-D normal loader reacquired original SH'
+                            assert fence._closed, 'A4-D loader omitted original close'
+                    elif fault == 'foreign_fence':
+                        other = runtime/'orgs/foreign'
+                        other.mkdir()
+                        wrong = actual_acquire(other)
+                        exclusive = None
+                        try:
+                            for selected_root in (root,):
+                                try:
+                                    OrgState.load(slug='scratch', root=selected_root, settings=Settings(), access_fence=wrong)
+                                except ValueError as exc:
+                                    assert str(exc) == 'org_access_attachment_fence_mismatch'
+                                else:
+                                    raise AssertionError('A4-D accepted foreign original fence')
+                            wrong.assert_held()
+                            route.close()
+                            exclusive = actual_acquire(root, exclusive=True)
+                            try:
+                                OrgState.load(slug='scratch', root=root, settings=Settings(), access_fence=exclusive)
+                            except ValueError as exc:
+                                assert str(exc) == 'org_access_attachment_fence_mismatch'
+                            else:
+                                raise AssertionError('A4-D attached under EX')
+                            exclusive.assert_held()
+                        finally:
+                            actual_close(wrong)
+                            if exclusive is not None:
+                                actual_close(exclusive)
+                    else:
+                        route.close()
+                    assert route.closed, 'A4-D original discovery not closed/transferred'
+                # All unknown fault cleanup here is test-owned, outside production
+                # retry. Assertions above retain the uncertainty and real blocker.
+                for conn in native:
+                    conn.close()
+                for record in route.fences:
+                    if not record['closed'] and not record['transferred']:
+                        actual_close(record['fence'])
+                if blocker is not None:
+                    actual_close(blocker)
+                if fault not in ('ex_reselect', 'load'):
+                    assert path.read_bytes() == original_bytes, 'A4-D discovery changed source bytes'
+                print('PASS A4-D original discovery/window/custody:', fault, flush=True)
+    if sys.argv[1:]:
+        raise SystemExit(0)
+
+# A4-S routes before constructor/source effects; presence alone is not validity.
+# Native phase fixtures use the real publisher. They prove only routing evidence,
+# not source installation/native closure, which remain the full coordinator's duty.
+if sys.argv[1:] in ([], ['--bootstrap-selection']):
+    from runtime.infrastructure import workflow_sequential_bootstrap as bootstrap
+    from runtime.infrastructure import workflow_schema as schema
+    from runtime.infrastructure.org_access_fence import OrgAccessFence
+    from runtime.daemon import workflow_setup_status as setup_status
+    from typing import get_args
+    import re
+
+    selection_cases = ('absent', 'present', 'partial', 'empty_namespace', 'registered', 'registered_absent',
+                       'registered_identity', 'intent', 'backup_verified', 'pre_commit', 'committed',
+                       'verified', 'not_installed', 'malformed', 'namespace_alias', 'source_init',
+                       'connection_close', 'descriptor_close', 'busy', 'deadline', 'ex_reselect', 'reason_parity')
+    for fault in selection_cases:
+        if selection_case is not None and selection_case != fault:
+            continue
+        if fault == 'reason_parity':
+            backend = set(get_args(setup_status.SetupReason))
+            codes = {'default_load_budget_exceeded', 'default_load_qualification_unavailable',
+                     'writer_exclusion_unproven', 'startup_upgrade_budget_unavailable'}
+            text = Path('web/src/lib/api/types.ts').read_text().split('export interface WorkflowSetupStatus {', 1)[1]
+            mirror = set(re.findall("'([^']+)'", text.split('  reason:', 1)[1].split(';', 1)[0]))
+            assert codes <= backend and mirror == backend, 'A4-S closed hold-reason parity'
+            for code in codes:
+                assert setup_status.WorkflowSetupStatus(org_slug='scratch', reason=code).reason == code
+            print('PASS A4-S read-only startup routing/closure:', fault, flush=True)
+            continue
+        with tempfile.TemporaryDirectory(prefix='a4-selection-') as scratch:
+            private = Path(scratch).resolve()
+            home, runtime = private/'home', private/'runtime'
+            home.mkdir(mode=0o700)
+            root = runtime/'orgs/scratch'
+            root.mkdir(parents=True)
+            path = root/'happyranch.db'
+            installed_fixture = fault in ('present', 'registered', 'registered_identity')
+            db = schema.initialize_fresh_org_database(path, expected_org_slug='scratch') if installed_fixture else Database(path)
+            try:
+                if not installed_fixture:
+                    schema.initialize_complete_org_schema(db, expected_org_slug='scratch', layout='J')
+                if fault == 'partial':
+                    db._conn.execute('CREATE TABLE workflow_seq_partial(v TEXT)')
+                    db._conn.commit()
+                identity = schema._coding_org_identity(db._conn, expected_org_slug='scratch', expected_path=str(path))
+                db._conn.execute('BEGIN')
+                original_inventory = schema.sequential_storage_inventory(db._conn)
+                db._conn.rollback()
+            finally:
+                db.close()
+            with patch.dict(os.environ, {'HAPPYRANCH_DAEMON_HOME': str(home)}):
+                phases = ('intent', 'backup_verified', 'pre_commit', 'committed', 'verified', 'registered')
+                namespace = home/'backups/workflow-sequential'/hashlib.sha256(str(runtime).encode()).hexdigest()/'scratch'
+                if fault in phases or fault in ('not_installed', 'registered_absent', 'registered_identity'):
+                    ex = OrgAccessFence.acquire(root, exclusive=True)
+                    original = json.dumps(original_inventory, sort_keys=True, separators=(',', ':'), ensure_ascii=False).encode()
+                    recorded_identity = identity if fault != 'registered_identity' else (*identity[:2], identity[2]+1, identity[3])
+                    attempt = bootstrap.BootstrapAttempt(home=home, runtime_root=runtime, slug='scratch', fence=ex,
+                        source_identity=recorded_identity, source_inventory_digest=hashlib.sha256(original).hexdigest(),
+                        deadline=time.monotonic()+119)
+                    try:
+                        attempt.begin()
+                        if fault == 'not_installed':
+                            attempt.publish('not_installed')
+                        else:
+                            last = 'registered' if fault in ('registered_absent', 'registered_identity') else fault
+                            if last != 'intent':
+                                # The independent status reader validates chain/file shape;
+                                # it does not read/authorize using this synthetic backup.
+                                attempt.backup_path.write_bytes(b'synthetic phase-fixture only')
+                                attempt.backup_path.chmod(0o600)
+                                digest = hashlib.sha256(attempt.backup_path.read_bytes()).hexdigest()
+                                for phase in phases[1:phases.index(last)+1]:
+                                    attempt.publish(phase, backup_sha256=digest if phase == 'backup_verified' else None)
+                    finally:
+                        attempt.close()
+                        ex.close()
+                elif fault in ('empty_namespace', 'malformed'):
+                    namespace.mkdir(mode=0o700, parents=True)
+                    if fault == 'malformed':
+                        bad = namespace/'bad'
+                        bad.mkdir(mode=0o700)
+                        (bad/'00.json').write_bytes(b'{}')
+                        (bad/'00.json').chmod(0o600)
+                elif fault == 'namespace_alias':
+                    other = private/'aliased-backups'
+                    other.mkdir(mode=0o700)
+                    (home/'backups').symlink_to(other, target_is_directory=True)
+                locker = None
+                if fault == 'busy':
+                    locker = sqlite3.connect(path)
+                    locker.execute('PRAGMA journal_mode=DELETE')
+                    locker.execute('BEGIN EXCLUSIVE')
+                source_bytes = path.read_bytes()
+                fence = OrgAccessFence.acquire(root)
+                selected = bootstrap.BootstrapSelection(home=home, fence=fence,
+                    deadline=time.monotonic()+(-1 if fault == 'deadline' else 4))
+                real_connect, real_close_fd = sqlite3.connect, os.close
+                native, events, injected, close_calls, descriptor_calls, physical, timeouts = [], [], [], [], [], [], []
+                root_inode = root.stat().st_ino
+                class ObservedSelection(sqlite3.Connection):
+                    def execute(self, sql, *args, **kwargs):
+                        events.append(sql.split()[0].upper())
+                        if fault == 'source_init' and sql == 'PRAGMA query_only=ON':
+                            injected.append('source_init')
+                            raise sqlite3.OperationalError('synthetic selector initialization')
+                        return super().execute(sql, *args, **kwargs)
+                    def close(self):
+                        close_calls.append(self)
+                        if fault == 'connection_close' and not injected:
+                            injected.append('connection_close')
+                            raise OSError('synthetic original selector close')
+                        return super().close()
+                def connected(target, *args, **kwargs):
+                    assert str(target) == path.as_uri()+'?mode=ro', 'A4-S non-RO selector'
+                    timeouts.append(kwargs.get('timeout'))
+                    kwargs['factory'] = ObservedSelection
+                    connection = real_connect(target, *args, **kwargs)
+                    native.append(connection)
+                    def traced(sql):
+                        if re.search(r'(?i)\b(integrity_check|quick_check|checkpoint)\b', sql):
+                            physical.append(sql.split()[0])
+                    connection.set_trace_callback(traced)
+                    return connection
+                def closed_fd(fd):
+                    if fault == 'descriptor_close' and selected.connections and os.fstat(fd).st_ino == root_inode:
+                        descriptor_calls.append(fd)
+                        if not injected:
+                            injected.append('descriptor_close')
+                            raise OSError('synthetic original selector descriptor close')
+                    return real_close_fd(fd)
+                started, error, result = time.monotonic(), None, None
+                try:
+                    with ExitStack() as stack:
+                        stack.enter_context(patch.object(bootstrap.sqlite3, 'connect', side_effect=connected))
+                        stack.enter_context(patch.object(bootstrap.os, 'close', side_effect=closed_fd))
+                        forbidden = []
+                        for owner, symbol in ((bootstrap, 'require_install_integrity'), (bootstrap, 'inspect_sequential_install'),
+                                (bootstrap, 'sequential_storage_inventory'), (bootstrap.BootstrapAttempt, 'begin'),
+                                (bootstrap.BootstrapSource, 'open'), (bootstrap.BootstrapSource, 'backup'),
+                                (bootstrap.BootstrapRehearsal, 'run'), (bootstrap.BootstrapInstall, 'run'),
+                                (Database, '__init__')):
+                            forbidden.append(stack.enter_context(patch.object(owner, symbol,
+                                side_effect=AssertionError('A4-S installer/source work in selector'))))
+                        try:
+                            result = selected.read()
+                        except BaseException as exc:
+                            error = exc
+                        assert all(call.call_count == 0 for call in forbidden), 'A4-S installer/source work in selector'
+                    assert not physical, 'A4-S physical/install work in selector'
+                    passing = fault in ('absent', 'present', 'partial', 'empty_namespace', 'registered', 'ex_reselect')
+                    if passing:
+                        expected = 'present' if fault in ('present', 'partial', 'registered') else 'absent'
+                        assert error is None and result == expected and selected.result == expected, 'A4-S wrong presence routing'
+                        assert selected.closed and not selected.failed, 'A4-S success before positive closure'
+                    else:
+                        assert error is not None and result is None and selected.result is None, 'A4-S unproven selector escaped'
+                    assert len(native) == len(selected.connections), 'A4-S lost partially constructed selector connection'
+                    assert all(record['attempted'] for record in selected.connections+selected.descriptors), 'A4-S lost selector handle'
+                    assert path.read_bytes() == source_bytes, 'A4-S changed original source bytes'
+                    if fault in ('intent', 'backup_verified', 'pre_commit', 'committed', 'verified', 'not_installed', 'malformed', 'namespace_alias', 'deadline'):
+                        assert not native, 'A4-S latched evidence/deadline opened source'
+                    if fault == 'source_init':
+                        assert injected == ['source_init'] and selected.closed and len(close_calls) == 1, 'A4-S original initialization closure'
+                    if fault in ('connection_close', 'descriptor_close'):
+                        assert injected == [fault] and not selected.closed and selected.close_error is not None, 'A4-S unknown closure lost'
+                        counts = len(close_calls), len(descriptor_calls)
+                        for _ in range(2):
+                            try:
+                                selected.close()
+                            except bootstrap.BootstrapEvidenceError:
+                                pass
+                            else:
+                                raise AssertionError('A4-S unknown close retried as success')
+                        assert counts == (len(close_calls), len(descriptor_calls)), 'A4-S retried original unknown close'
+                    if fault == 'busy':
+                        assert isinstance(error, sqlite3.OperationalError) and time.monotonic()-started < .5, 'A4-S busy replenished wait'
+                    assert all(timeout == 0 for timeout in timeouts), 'A4-S nonzero busy timeout'
+                    if fault == 'registered':
+                        try:
+                            public = setup_status.read_setup_status(home, runtime, 'scratch').model_dump(mode='json')
+                        except Exception as exc:
+                            raise AssertionError('A4-S independent status projection changed') from exc
+                        assert set(public) == {'format', 'org_slug', 'state', 'reason', 'attempt_time', 'backup_path',
+                            'integrity_report'} and public['state'] == 'installed_verified', 'A4-S independent status projection changed'
+                    if fault == 'ex_reselect':
+                        fence.close()
+                        fence = OrgAccessFence.acquire(root, exclusive=True)
+                        with closing(real_connect(path)) as writer:
+                            writer.execute('CREATE TABLE workflow_seq_arrival(v TEXT)')
+                            writer.commit()
+                        new = bootstrap.BootstrapSelection(home=home, fence=fence, deadline=time.monotonic()+4)
+                        assert new.read() == 'present' and new.closed, 'A4-S reused stale SH absence under EX'
+                    if fault != 'ex_reselect' and locker is None:
+                        with closing(real_connect(path)) as check:
+                            check.execute('BEGIN')
+                            assert schema.sequential_storage_inventory(check) == original_inventory, 'A4-S changed original typed inventory'
+                    before = len(native), len(events)
+                    original_error = selected.primary
+                    try:
+                        selected.read()
+                    except bootstrap.BootstrapEvidenceError:
+                        pass
+                    else:
+                        raise AssertionError('A4-S replayed selector owner')
+                    assert before == (len(native), len(events)) and selected.primary is original_error, 'A4-S replay lost original outcome'
+                    print('PASS A4-S read-only startup routing/closure:', fault, flush=True)
+                finally:
+                    # Exact disposable native objects only; no production retry.
+                    for connection in native:
+                        sqlite3.Connection.close(connection)
+                    for record in selected.descriptors:
+                        if not record['closed']:
+                            real_close_fd(record['fd'])
+                    if locker is not None:
+                        locker.close()
+                    fence.close()
+    if sys.argv[1:]:
+        raise SystemExit(0)
+
+# A4-W observes the actual original source writer, durable phases and independent
+# reopened storage. Native faults and progress/phase observers remain test-side.
+if sys.argv[1:] in ([], ['--bootstrap-install']):
+    from runtime.infrastructure import workflow_sequential_bootstrap as bootstrap
+    from runtime.infrastructure import workflow_schema as schema
+    from runtime.infrastructure.org_access_fence import OrgAccessFence
+    from runtime.infrastructure.workflow_integrity import InstallIntegrityError
+    from runtime.daemon.routes.orgs import _seed_skeleton
+    from runtime.orchestrator.org_config import initialize_fresh_reviewer_agents
+    from runtime.workflows import sequential_history as history
+
+    writer_cases = ('none', 'rehearsal', 'rehearsal_close', 'backup_changed', 'metadata_changed',
+                    'space', 'temp', 'temp_alias', 'temp_mode', 'writer_source', 'target_integrity', 'target_budget',
+                    'permit', 'reserve', 'commit', 'writer_close', 'reopen', 'preservation', 'checkpoint')
+    for fault in writer_cases:
+        if install_case is not None and install_case != fault:
+            continue
+        with tempfile.TemporaryDirectory(prefix='a4-source-install-') as scratch:
+            private = Path(scratch).resolve()
+            home, runtime = private/'home', private/'runtime'
+            home.mkdir(mode=0o700)
+            temporary = private/'sqlite-temp'
+            temporary.mkdir(mode=0o700)
+            root = runtime/'orgs/scratch'
+            _seed_skeleton(root, from_example=None)
+            path = root/'happyranch.db'
+            db = Database(path)
+            try:
+                schema.initialize_complete_org_schema(db, expected_org_slug='scratch', layout='J')
+                install_pause_schema(db, org_slug='scratch')
+                initialize_fresh_reviewer_agents(OrgPaths(root), db)
+                install_task_ownership(db, org_slug='scratch')
+                from runtime.models import TaskStatus
+                db.insert_task(TaskRecord(id='TASK-preserved', brief='synthetic retained task', status=TaskStatus.COMPLETED))
+                db._conn.execute('CREATE TABLE a4_writer_sentinel(id INTEGER PRIMARY KEY,v BLOB)')
+                db._conn.execute('INSERT INTO a4_writer_sentinel VALUES (37,?)', (b'original\0typed',))
+                db._conn.commit()
+            finally:
+                db.close()
+            def inventory():
+                with closing(sqlite3.connect(path.as_uri()+'?mode=ro', uri=True, timeout=0)) as conn:
+                    conn.execute('PRAGMA query_only=ON')
+                    conn.execute('BEGIN')
+                    return schema.sequential_storage_inventory(conn)
+            original = inventory()
+            with patch.dict(os.environ, {'HAPPYRANCH_DAEMON_HOME': str(home), 'SQLITE_TMPDIR': str(temporary)}):
+                fence = OrgAccessFence.acquire(root, exclusive=True)
+                source = bootstrap.BootstrapSource(fence=fence, deadline=time.monotonic()+119)
+                attempt = rehearsal = stage = None
+                events, permits, injected, close_faults, commits = [], [], [], [], []
+                backup_bytes = None
+                actual_connection = bootstrap.BootstrapSource._connection
+                actual_close = bootstrap.BootstrapSource._close_connection
+                actual_checkpoint = bootstrap.BootstrapInstall._checkpoint
+                actual_target = bootstrap.BootstrapInstall._default_target
+                actual_integrity = schema.require_install_integrity
+                actual_progress = history._ReadBudget.progress
+                actual_load = OrgState.load
+                current_default = [False]
+                def observed_load(**kwargs):
+                    events.append(('private_load', kwargs['root']))
+                    return actual_load(**kwargs)
+                def connected(owner, target, *, readonly):
+                    conn = actual_connection(owner, target, readonly=readonly)
+                    if target == path:
+                        def traced(sql):
+                            operation = sql.split()[0].upper()
+                            events.append(('source_sql', operation))
+                            if operation == 'COMMIT':
+                                commits.append((attempt._phase, len(permits), time.monotonic() < source.deadline-20))
+                        conn.set_trace_callback(traced)
+                        def authorize(action, first, second, *_):
+                            if (fault == 'commit' and action == sqlite3.SQLITE_TRANSACTION
+                                    and first == 'COMMIT' and attempt is not None and attempt._phase == 'pre_commit'):
+                                injected.append(fault)
+                                return sqlite3.SQLITE_DENY
+                            if (fault == 'reopen' and readonly and stage is not None and stage.committed
+                                    and action == sqlite3.SQLITE_READ and first == 'workflow_seq_schema_versions'):
+                                injected.append(fault)
+                                return sqlite3.SQLITE_DENY
+                            return sqlite3.SQLITE_OK
+                        conn.set_authorizer(authorize)
+                    return conn
+                def integrity(conn, ledger, label):
+                    events.append(('integrity', label))
+                    main = conn.execute('PRAGMA database_list').fetchone()[2]
+                    if main == str(path) and fault in ('writer_source', 'target_integrity') and label == (
+                            'writer_source' if fault == 'writer_source' else 'target'):
+                        injected.append(fault)
+                        conn.set_authorizer(lambda action, a, b, *_: sqlite3.SQLITE_DENY
+                            if action == sqlite3.SQLITE_PRAGMA and a.lower() == 'integrity_check' else sqlite3.SQLITE_OK)
+                    return actual_integrity(conn, ledger, label)
+                def progress(budget):
+                    if fault == 'target_budget' and current_default[0] and budget.sql_limit == 32000000:
+                        injected.append(fault)
+                        budget.sql_steps = budget.sql_limit
+                    return actual_progress(budget)
+                def default_target(owner, conn):
+                    events.append(('default_target', owner.committed))
+                    current_default[0] = True
+                    try:
+                        return actual_target(owner, conn)
+                    finally:
+                        current_default[0] = False
+                def closed(owner, conn):
+                    if (fault == 'writer_close' and stage is not None and stage.committed
+                            and conn is stage.writer and not close_faults):
+                        record = next(row for row in owner.connections if row['connection'] is conn)
+                        record['attempted'] = True
+                        close_faults.append(conn)
+                        injected.append(fault)
+                        raise OSError('synthetic original source close uncertainty')
+                    return actual_close(owner, conn)
+                def checkpoint(owner, conn):
+                    events.append(('checkpoint', owner.committed))
+                    if not owner.committed:
+                        record = json.loads((attempt.root/'01.json').read_bytes())
+                        assert record['phase'] == 'backup_verified' and record['backup_sha256'] == hashlib.sha256(
+                            attempt.backup_path.read_bytes()).hexdigest(), 'A4-W checkpoint before durable verified backup'
+                        assert rehearsal.completed and rehearsal.closed, 'A4-W checkpoint before positive rehearsal closure'
+                        try:
+                            source.source.execute('SELECT 1')
+                        except sqlite3.ProgrammingError:
+                            pass
+                        else:
+                            raise AssertionError('A4-W checkpoint before original source reader closed')
+                    if fault == 'checkpoint' and owner.committed:
+                        injected.append(fault)
+                        conn.set_authorizer(lambda action, a, b, *_: sqlite3.SQLITE_DENY
+                            if action == sqlite3.SQLITE_PRAGMA and a.lower() == 'wal_checkpoint' else sqlite3.SQLITE_OK)
+                    result = actual_checkpoint(owner, conn)
+                    if fault == 'preservation' and owner.committed:
+                        injected.append(fault)
+                        conn.execute('UPDATE a4_writer_sentinel SET v=? WHERE id=37', (b'synthetic drift',))
+                        conn.commit()
+                    return result
+                def permit(owner):
+                    permits.append(owner.attempt_id)
+                    assert owner is attempt and attempt._phase == 'pre_commit', 'A4-W permit before durable pre_commit'
+                    record = json.loads((attempt.root/'02.json').read_bytes())
+                    assert record['phase'] == 'pre_commit' and record['backup_sha256'] == source.backup_sha256
+                    assert rehearsal.completed and rehearsal.closed, 'A4-W permit before positive rehearsal closure'
+                    assert [item[0] for item in events].count('private_load') == 2, 'A4-W rehearsal after source COMMIT'
+                    if fault == 'permit':
+                        injected.append(fault)
+                        return False
+                    if fault == 'reserve':
+                        injected.append(fault)
+                        # Clock only moves AFTER the positive parent permission.
+                        clock.return_value = source.deadline-19
+                    return True
+                failure = cleanup = None
+                try:
+                    with ExitStack() as stack:
+                        stack.enter_context(patch.object(OrgState, 'load', side_effect=observed_load))
+                        stack.enter_context(patch.object(bootstrap.BootstrapSource, '_connection', connected))
+                        stack.enter_context(patch.object(bootstrap.BootstrapSource, '_close_connection', closed))
+                        stack.enter_context(patch.object(bootstrap.BootstrapInstall, '_checkpoint', checkpoint))
+                        stack.enter_context(patch.object(bootstrap.BootstrapInstall, '_default_target', default_target))
+                        stack.enter_context(patch.object(schema, 'require_install_integrity', integrity))
+                        stack.enter_context(patch.object(history._ReadBudget, 'progress', progress))
+                        source.open()
+                        attempt = bootstrap.BootstrapAttempt(home=home, runtime_root=runtime, slug='scratch',
+                            fence=fence, source_identity=source.source_identity,
+                            source_inventory_digest=source.inventory_digest, deadline=source.deadline)
+                        attempt.begin()
+                        bootstrap.require_bootstrap_space(source, attempt)
+                        source.backup(attempt)
+                        backup_bytes = attempt.backup_path.read_bytes()
+                        rehearsal = bootstrap.BootstrapRehearsal(source, attempt)
+                        rehearsal.run(Settings())
+                        rehearsal.close()
+                        stage = bootstrap.BootstrapInstall(source, attempt, rehearsal)
+                        events.append(('writer_stage', None))
+                        if fault == 'rehearsal':
+                            rehearsal.completed = False
+                            injected.append(fault)
+                        elif fault == 'rehearsal_close':
+                            rehearsal.closed = False
+                            injected.append(fault)
+                        elif fault == 'backup_changed':
+                            attempt.backup_path.write_bytes(backup_bytes+b'synthetic drift')
+                            injected.append(fault)
+                        elif fault == 'metadata_changed':
+                            (root/'org/config.yaml').write_text('name: synthetic changed metadata\n')
+                            injected.append(fault)
+                        elif fault == 'space':
+                            # Each individual reservation fits; only the SUM
+                            # on this shared volume refuses before source work.
+                            free = 2*source.image_bytes+64*1048576+1024**3+sum(
+                                value[5] for value in source.observation[1:] if value is not None)+4096
+                            stack.enter_context(patch.object(bootstrap.os, 'fstatvfs', return_value=SimpleNamespace(f_bavail=free, f_frsize=1)))
+                            injected.append(fault)
+                        elif fault == 'temp':
+                            stack.enter_context(patch.dict(os.environ, {'SQLITE_TMPDIR': ''}))
+                            injected.append(fault)
+                        elif fault == 'temp_alias':
+                            alias = private/'sqlite-temp-alias'
+                            alias.symlink_to(temporary, target_is_directory=True)
+                            stack.enter_context(patch.dict(os.environ, {'SQLITE_TMPDIR': str(alias)}))
+                            injected.append(fault)
+                        elif fault == 'temp_mode':
+                            temporary.chmod(0o500)
+                            injected.append(fault)
+                        clock = stack.enter_context(patch.object(bootstrap.time, 'monotonic', wraps=time.monotonic))
+                        try:
+                            stage.run(permit)
+                        except BaseException as exc:
+                            failure = exc
+                        # The forward-clock test observes refusal first. Restore
+                        # the clock before independent rollback/closure proof.
+                        clock.side_effect = None
+                        clock.return_value = DEFAULT
+                        try:
+                            stage.close()
+                        except BaseException as exc:
+                            cleanup = exc
+                        assert (fault == 'none') == (failure is None), ('A4-W intended fault missed', fault, failure)
+                        if fault != 'none':
+                            assert injected, ('A4-W fault not reached', fault)
+                        if fault in ('rehearsal', 'rehearsal_close'):
+                            assert not stage.committed and not permits, 'A4-W admitted unclosed or incomplete rehearsal'
+                            assert not any(item[0] == 'checkpoint' for item in events), 'A4-W source effects before positive rehearsal closure'
+                        if fault in ('backup_changed', 'metadata_changed', 'space', 'temp', 'temp_alias', 'temp_mode'):
+                            assert not any(item[0] == 'checkpoint' for item in events), 'A4-W source effects before input/volume qualification'
+                            assert inventory() == original, 'A4-W changed unqualified source'
+                        if fault in ('writer_source', 'target_integrity'):
+                            assert isinstance(failure, InstallIntegrityError), ('A4-W replaced physical cause', type(failure))
+                            assert failure.stage == ('writer_source' if fault == 'writer_source' else 'target')
+                        if fault in ('target_budget', 'permit', 'reserve', 'writer_source', 'target_integrity'):
+                            assert not stage.committed and stage.unchanged and cleanup is None, ('A4-W lost pre-COMMIT unchanged proof', fault, cleanup)
+                            assert not commits, 'A4-W attempted COMMIT after pre-COMMIT refusal'
+                            assert inventory() == original, 'A4-W changed original SQL/types/cells/rowids'
+                            assert attempt._phase == 'not_installed', 'A4-W missing positively unchanged terminal event'
+                        if fault == 'target_budget':
+                            assert not permits, 'A4-W default target budget failure reached parent permit'
+                            from runtime.workflows._read_exhaustion import exhausted
+                            assert exhausted(failure), 'A4-W lost causal default target exhaustion'
+                        if fault in ('permit', 'reserve'):
+                            assert len(permits) == 1, 'A4-W repeated parent COMMIT request'
+                            assert str(failure) == ('workflow_setup_commit_permit_refused' if fault == 'permit'
+                                                    else 'workflow_setup_commit_reserve'), 'A4-W lost parent refusal/reserve cause'
+                        if fault == 'commit':
+                            assert stage.commit_uncertain and not stage.unchanged, 'A4-W COMMIT uncertainty became unchanged'
+                            assert attempt._phase == 'pre_commit', 'A4-W retried or cleared uncertain COMMIT'
+                        if fault in ('writer_close', 'reopen', 'preservation', 'checkpoint'):
+                            assert stage.committed and not stage.verified and not stage.unchanged, 'A4-W post-COMMIT failure became unchanged/verified'
+                            assert attempt._phase == 'committed', 'A4-W lost durable committed before fallible close/reopen'
+                            with closing(sqlite3.connect(path.as_uri()+'?mode=ro', uri=True, timeout=0)) as conn:
+                                conn.execute('PRAGMA query_only=ON')
+                                try:
+                                    installed = conn.execute('SELECT version FROM workflow_seq_schema_versions').fetchall()
+                                except sqlite3.DatabaseError:
+                                    installed = None
+                                assert installed == [(1,)], 'A4-W automatically restored a committed source'
+                        if fault == 'writer_close':
+                            assert cleanup is not None and len(close_faults) == 1, 'A4-W unknown original close retried'
+                            assert close_faults[0].execute('SELECT 1').fetchone()[0] == 1, 'A4-W lost unclosed original writer'
+                        if fault == 'none':
+                            assert stage.verified and stage.closed and source.closed and attempt._phase == 'verified', 'A4-W target not independently verified/closed'
+                            assert commits == [('pre_commit', 1, True)], 'A4-W COMMIT without durable phase/one permission/reserve'
+                            assert len(permits) == 1 and [value for name, value in events if name == 'default_target'] == [False, True], 'A4-W missing actual default target/reopen gate'
+                            assert [value for name, value in events if name == 'integrity'][-2:] == ['writer_source', 'target']
+                            with closing(sqlite3.connect(path)) as conn:
+                                assert conn.execute('SELECT id,typeof(v),hex(v) FROM a4_writer_sentinel').fetchall() == [(37, 'blob', '6F726967696E616C007479706564')]
+                                assert conn.execute('SELECT count(*) FROM workflow_seq_definitions').fetchone()[0] == 0, 'A4-W registered before separate qualified owner'
+                                assert conn.execute('SELECT count(*) FROM workflow_seq_settings').fetchone()[0] == 0, 'A4-W allocated settings/admission'
+                        if fault != 'backup_changed':
+                            assert attempt.backup_path.read_bytes() == backup_bytes, 'A4-W restored/changed original backup'
+                        close_error, count = stage.close_error, len(close_faults)
+                        before_close = len(events)
+                        try:
+                            stage.close()
+                        except bootstrap.BootstrapEvidenceError:
+                            assert not stage.closed, 'A4-W positive original close became unknown'
+                        assert (stage.close_error is close_error and len(close_faults) == count
+                                and len(events) == before_close), 'A4-W retried original close/proof or replaced original uncertainty'
+                        before, primary, uncertainty = len(events), stage.primary, stage.commit_uncertain
+                        try:
+                            stage.run(permit)
+                        except bootstrap.BootstrapEvidenceError:
+                            pass
+                        else:
+                            raise AssertionError('A4-W replayed original writer')
+                        assert len(events) == before, 'A4-W replay performed SQLite/checkpoint work'
+                        assert stage.primary is primary and stage.commit_uncertain == uncertainty, 'A4-W replay replaced original failure/uncertainty'
+                        print('PASS A4-W original writer/phase/default/preservation/closure:', fault, flush=True)
+                finally:
+                    # Exact synthetic handles only, AFTER all custody assertions.
+                    # No product retry/restore or live DB is involved in teardown.
+                    for record in source.connections:
+                        record['connection'].close()
+                    for record in source.descriptors:
+                        if not record['attempted']:
+                            os.close(record['fd'])
+                            record['attempted'] = record['closed'] = True
+                    if attempt is not None:
+                        attempt.close()
+                    if rehearsal is not None and not rehearsal.closed:
+                        rehearsal.closed = True  # synthetic negative flag only; actual close already proved
+                    fence.close()
+    if sys.argv[1:]:
+        raise SystemExit(0)
+
+# A4-R extends the same private venue. Source/backup are genuine native images;
+# only faults, clocks and observations are test-side. No successful owner is faked.
+if sys.argv[1:] in ([], ['--bootstrap-rehearsal']):
+    import shutil
+    from runtime.infrastructure import workflow_sequential_bootstrap as bootstrap
+    from runtime.infrastructure import workflow_schema as schema
+    from runtime.infrastructure.workflow_integrity import InstallIntegrityError
+    from runtime.infrastructure.org_access_fence import OrgAccessFence
+    from runtime.daemon.routes.orgs import _seed_skeleton
+    from runtime.orchestrator.org_config import initialize_fresh_reviewer_agents
+    from runtime.workflows.sequential_history import _ReadBudget
+    from runtime.workflows._read_exhaustion import exhausted
+    from runtime.infrastructure import remote_job_schema
+    from runtime.workflows.authority import WorkflowAuthorityCoordinator, WorkflowAuthorityError
+
+    rehearsal_cases = ('none', 'first_budget', 'next_budget', 'install', 'metadata_alias',
+                       'metadata_changed', 'backup_changed', 'space', 'scratch_location', 'deadline', 'load_init', 'authority', 'close')
+    for fault in rehearsal_cases:
+        if rehearsal_case is not None and rehearsal_case != fault:
+            continue
+        with tempfile.TemporaryDirectory(prefix='a4-writable-rehearsal-') as scratch:
+            private = Path(scratch).resolve()
+            home = private/'home'
+            home.mkdir(mode=0o700)
+            runtime = private/'runtime'
+            root = runtime/'orgs/scratch'
+            _seed_skeleton(root, from_example=None)
+            path = root/'happyranch.db'
+            db = Database(path)
+            try:
+                schema.initialize_complete_org_schema(db, expected_org_slug='scratch', layout='J')
+                install_pause_schema(db, org_slug='scratch')
+                initialize_fresh_reviewer_agents(OrgPaths(root), db)
+                install_task_ownership(db, org_slug='scratch')
+                db._conn.execute('CREATE TABLE a4_rehearsal_sentinel(id INTEGER PRIMARY KEY,v BLOB)')
+                db._conn.execute('INSERT INTO a4_rehearsal_sentinel VALUES (37,?)', (b'original\0typed',))
+                db._conn.commit()
+            finally:
+                db.close()
+            with patch.dict(os.environ, {'HAPPYRANCH_DAEMON_HOME': str(home)}):
+                fence = OrgAccessFence.acquire(root, exclusive=True)
+                source = bootstrap.BootstrapSource(fence=fence, deadline=time.monotonic()+119)
+                attempt = rehearsal = None
+                actual_load, actual_close = OrgState.load, OrgState.close
+                actual_install = schema.install_sequential_schema
+                actual_progress = _ReadBudget.progress
+                load_calls, install_calls, budget_calls, injections, close_calls = [], [], [], [], []
+                current = [None]
+                authority_error = WorkflowAuthorityError('authority_pointer_not_ready')
+                construction_error = ValueError('synthetic private constructor refusal')
+                def current_inventory():
+                    with closing(sqlite3.connect(path.as_uri()+'?mode=ro', uri=True)) as conn:
+                        conn.execute('PRAGMA query_only=ON')
+                        conn.execute('BEGIN')
+                        return schema.sequential_storage_inventory(conn)
+                original = current_inventory()
+                def observed_install(conn, **kwargs):
+                    assert kwargs['allowance'] is source.allowance and kwargs['integrity'] is source.integrity, 'A4-R replenished install ledger'
+                    assert kwargs['expected_path'] != str(path), 'A4-R wrote original source'
+                    assert kwargs['source_inventory'] == original
+                    install_calls.append(kwargs['expected_path'])
+                    if fault == 'install':
+                        injections.append(fault)
+                        # Real writer-source integrity refusal on this native writer.
+                        conn.set_authorizer(lambda action, a, b, *_: sqlite3.SQLITE_DENY
+                            if action == sqlite3.SQLITE_PRAGMA and a.lower() == 'integrity_check' else sqlite3.SQLITE_OK)
+                    return actual_install(conn, **kwargs)
+                def observed_progress(budget):
+                    if current[0] is not None:
+                        budget_calls.append((current[0], budget.sql_limit))
+                        if (fault == current[0]+'_budget' and budget.sql_limit == 32000000):
+                            injections.append(fault)
+                            # Consume the original native progress allowance;
+                            # the production hook raises its own causal refusal.
+                            budget.sql_steps = budget.sql_limit
+                    return actual_progress(budget)
+                def observed_close(org):
+                    close_calls.append(org)
+                    if fault == 'close':
+                        injections.append(fault)
+                        raise OSError('synthetic original private close uncertainty')
+                    return actual_close(org)
+                def observed_load(**kwargs):
+                    assert 'ownership_sql_limit' not in kwargs and 'deadline' not in kwargs, 'A4-R nondefault writable load'
+                    private_path = kwargs['root']/'happyranch.db'
+                    with closing(sqlite3.connect(private_path)) as probe:
+                        assert probe.execute("SELECT version FROM workflow_seq_schema_versions").fetchone()[0] == 1, 'A4-R load before private candidate install'
+                        value = probe.execute('SELECT v FROM a4_rehearsal_sentinel WHERE id=37').fetchone()[0]
+                    index = len(load_calls)
+                    assert value == (b'original\0typed' if index == 0 else b'writable-FIRST-survives-NEXT'), 'A4-R NEXT replaced the FIRST image'
+                    identity = private_path.stat()
+                    load_calls.append((str(private_path), identity.st_dev, identity.st_ino))
+                    current[0] = 'first' if index == 0 else 'next'
+                    try:
+                        with ExitStack() as faults:
+                            if fault == 'load_init':
+                                injections.append(fault)
+                                faults.enter_context(patch.object(remote_job_schema,
+                                    'validate_identity_enrollment_schema_preflight', side_effect=construction_error))
+                            if fault == 'authority':
+                                injections.append(fault)
+                                faults.enter_context(patch.object(WorkflowAuthorityCoordinator,
+                                    'recover_or_publish', side_effect=authority_error))
+                            org = actual_load(**kwargs)
+                        assert org.db._conn.execute('PRAGMA query_only').fetchone()[0] == 0, 'A4-R used read-only capacity instead of writable load'
+                        # A real first-load transaction is independently visible
+                        # to NEXT on the very same candidate. Source stays exact.
+                        org.db._conn.execute('UPDATE a4_rehearsal_sentinel SET v=? WHERE id=37', (b'writable-FIRST-survives-NEXT',))
+                        org.db._conn.commit()
+                        if fault == 'metadata_changed':
+                            injections.append(fault)
+                            (root/'org/teams.yaml').write_text('teams: {}\n# source metadata changed during private load\n')
+                        return org
+                    finally:
+                        current[0] = None
+                try:
+                    source.open()
+                    attempt = bootstrap.BootstrapAttempt(home=home, runtime_root=runtime, slug='scratch',
+                        fence=fence, source_identity=source.source_identity,
+                        source_inventory_digest=source.inventory_digest, deadline=source.deadline)
+                    attempt.begin()
+                    source.backup(attempt)
+                    before = hashlib.sha256(path.read_bytes()).hexdigest()
+                    backup_before = hashlib.sha256(attempt.backup_path.read_bytes()).hexdigest()
+                    rehearsal = bootstrap.BootstrapRehearsal(source, attempt)
+                    if fault == 'metadata_alias':
+                        (root/'org/alias.yaml').symlink_to(root/'org/teams.yaml')
+                        injections.append(fault)
+                    if fault == 'backup_changed':
+                        with closing(sqlite3.connect(attempt.backup_path)) as conn:
+                            conn.execute('UPDATE a4_rehearsal_sentinel SET v=? WHERE id=37', (b'wrong-unverified-image',))
+                            conn.commit()
+                        injections.append(fault)
+                    error = None
+                    with ExitStack() as faults:
+                        faults.enter_context(patch.object(schema, 'install_sequential_schema', side_effect=observed_install))
+                        faults.enter_context(patch.object(OrgState, 'load', side_effect=observed_load))
+                        faults.enter_context(patch.object(OrgState, 'close', observed_close))
+                        faults.enter_context(patch.object(_ReadBudget, 'progress', observed_progress))
+                        if fault == 'space':
+                            injections.append(fault)
+                            faults.enter_context(patch.object(bootstrap.os, 'fstatvfs', return_value=SimpleNamespace(f_bavail=0, f_frsize=4096)))
+                        if fault == 'scratch_location':
+                            injections.append(fault)
+                            faults.enter_context(patch.object(bootstrap.tempfile, 'tempdir', str(runtime)))
+                        if fault == 'deadline':
+                            injections.append(fault)
+                            faults.enter_context(patch.object(bootstrap.time, 'monotonic', return_value=source.deadline-19))
+                        try:
+                            receipt = rehearsal.run(Settings())
+                        except BaseException as exc:
+                            error = exc
+                        if fault == 'none':
+                            assert error is None, ('A4-R unexpected private rehearsal failure', type(error).__name__, error)
+                            assert len(load_calls) == 2 and load_calls[0] == load_calls[1], 'A4-R did not run writable FIRST/NEXT on the same image'
+                            assert len(install_calls) == 1 and all(v == load_calls[0][0] for v in install_calls), 'A4-R repeated private installation'
+                            assert {'first', 'next'} == {v[0] for v in budget_calls} and {32000000, 2000000} <= {v[1] for v in budget_calls}, 'A4-R skipped default complete budgets'
+                            assert rehearsal.completed and receipt['backup_sha256'] == backup_before and receipt['source_inventory_digest'] == source.inventory_digest
+                        else:
+                            assert error is not None and injections, ('A4-R intended fault missed', fault)
+                            assert rehearsal.failed and not rehearsal.completed, 'A4-R failed rehearsal accepted or not latched'
+                            if fault in ('first_budget', 'next_budget'):
+                                assert exhausted(error), 'A4-R exhaustion lost original causal dimension'
+                                assert len(load_calls) == (1 if fault == 'first_budget' else 2), 'A4-R wrong default load exhausted'
+                            elif fault == 'metadata_changed':
+                                assert str(error) == 'workflow_setup_rehearsal_input_changed', 'A4-R source metadata drift accepted'
+                            elif fault == 'backup_changed':
+                                assert not install_calls and str(error) == 'workflow_setup_rehearsal_input_changed', 'A4-R unverified candidate installed'
+                            elif fault == 'metadata_alias':
+                                assert not install_calls and str(error) == 'workflow_setup_file_unsafe', 'A4-R copied aliased metadata'
+                            elif fault == 'install':
+                                assert not load_calls and isinstance(error, InstallIntegrityError) and error.stage == 'writer_source', 'A4-R wrong private integrity boundary'
+                            elif fault == 'space':
+                                assert not install_calls and str(error) == 'workflow_setup_rehearsal_space_unavailable', 'A4-R ignored rehearsal headroom'
+                            elif fault == 'deadline':
+                                assert not install_calls and rehearsal.root is None, 'A4-R used reserved COMMIT time for rehearsal'
+                            elif fault == 'scratch_location':
+                                assert not install_calls and rehearsal.root is None and str(error) == 'workflow_setup_rehearsal_location_unsafe', 'A4-R created scratch in production storage'
+                            elif fault == 'load_init':
+                                assert error is construction_error and len(rehearsal.attachments) == 1, 'A4-R lost private construction failure'
+                                owner = rehearsal.attachments[0]
+                                assert owner['load_db_closed'] and owner['db_construction_started'], 'A4-R private constructor did not positively close'
+                                try:
+                                    owner['load_db']._conn.execute('SELECT 1')
+                                except sqlite3.ProgrammingError:
+                                    pass
+                                else:
+                                    raise AssertionError('A4-R positive constructor close left usable native handle')
+                            elif fault == 'authority':
+                                assert error is authority_error and not exhausted(error), 'A4-R replaced original authority refusal with size or generic failure'
+                        # Successful and failed rehearsals are never replayed.
+                        try:
+                            rehearsal.run(Settings())
+                        except bootstrap.BootstrapEvidenceError:
+                            pass
+                        else:
+                            raise AssertionError('A4-R repeated original rehearsal')
+                        scratch_root = rehearsal.root
+                        close_error = None
+                        try:
+                            rehearsal.close()
+                        except BaseException as exc:
+                            close_error = exc
+                        if fault == 'close':
+                            assert close_error is not None and scratch_root.exists(), 'A4-R deleted unknown original private owner'
+                            assert len(rehearsal.attachments) == 1 and rehearsal.attachments[0]['returned'] is close_calls[0], 'A4-R lost original private attachment'
+                            assert close_calls[0].db._conn.execute('SELECT 1').fetchone()[0] == 1
+                            try:
+                                rehearsal.close()
+                            except bootstrap.BootstrapEvidenceError:
+                                pass
+                            else:
+                                raise AssertionError('A4-R invented unknown private closure')
+                            assert len(close_calls) == 1, 'A4-R retried unknown private close'
+                        else:
+                            assert close_error is None and rehearsal.closed, ('A4-R private close failed', fault, close_error)
+                            assert scratch_root is None or not scratch_root.exists(), 'A4-R positively closed scratch retained'
+                    assert current_inventory() == original and hashlib.sha256(path.read_bytes()).hexdigest() == before, 'A4-R changed or auto-restored source before qualification'
+                    if fault != 'backup_changed':
+                        assert hashlib.sha256(attempt.backup_path.read_bytes()).hexdigest() == backup_before, 'A4-R modified verified backup'
+                    assert attempt._phase == 'backup_verified' and not (attempt.root/'02.json').exists(), 'A4-R advanced source COMMIT before qualification'
+                    print('PASS A4-R actual writable same-image FIRST/NEXT/default budgets/source preservation/original custody:', fault, flush=True)
+                finally:
+                    if rehearsal is not None:
+                        # Test-side rescue only AFTER retained unknown/no-retry
+                        # assertions; never production clearance or replay.
+                        rescued = set()
+                        for org in [owner.get('returned') for owner in rehearsal.attachments] + close_calls:
+                            if org is not None and id(org) not in rescued and not org._local_close_complete:
+                                actual_close(org)
+                                rescued.add(id(org))
+                        if rehearsal.root is not None and rehearsal.root.exists():
+                            rehearsal.close() if not rehearsal.failed else shutil.rmtree(rehearsal.root)
+                    source.close()
+                    if attempt is not None:
+                        attempt.close()
+                    fence.close()
+    if sys.argv[1:] == ['--bootstrap-rehearsal']:
+        raise SystemExit(0)
+
 # I1a extends this existing disposable venue, with no new execution lane.
-if sys.argv[1:] in ([], ['--install-integrity']):
+if sys.argv[1:] in ([], ['--install-integrity'], ['--bootstrap-backup'], ['--bootstrap-precommit'], ['--bootstrap-journal']):
     from scripts import install_workflow_sequential_schema as installer
     from runtime.infrastructure import workflow_schema as schema
     from runtime.infrastructure import workflow_integrity as physical
 
     @contextmanager
-    def install_integrity_fixture():
+    def install_integrity_fixture(*, idle: bool = False):
         with tempfile.TemporaryDirectory(prefix='workflow-install-integrity-') as scratch:
             root = Path(scratch)
             runtime = root / 'runtime'
@@ -1976,7 +4422,9 @@ if sys.argv[1:] in ([], ['--install-integrity']):
                 schema.initialize_complete_org_schema(db, expected_org_slug='scratch', layout='J')
                 install_pause_schema(db, org_slug='scratch')
                 install_task_ownership(db, org_slug='scratch')
-                db.insert_task(TaskRecord(id='TASK-integrity', brief='private preservation sentinel'))
+                from runtime.models import TaskStatus
+                db.insert_task(TaskRecord(id='TASK-integrity', brief='private preservation sentinel',
+                    status=TaskStatus.COMPLETED if idle else TaskStatus.PENDING))
             finally:
                 db.close()
             backup = root / 'verified-backup.db'
@@ -2000,6 +4448,572 @@ if sys.argv[1:] in ([], ['--install-integrity']):
                        ['--runtime-root', str(runtime), '--org', 'scratch',
                         '--confirm-cooperative-offline', '--backup', str(backup),
                         '--backup-sha256', backup_hash])
+
+    # A4-B owns the actual source/backup snapshot and pre-checkpoint gate.
+    # It does not claim original-host qualification or an installed outcome.
+    if sys.argv[1:] in ([], ['--bootstrap-backup']):
+        from runtime.infrastructure import workflow_sequential_bootstrap as bootstrap
+        from runtime.infrastructure.org_access_fence import OrgAccessFence
+        from runtime.daemon.workflow_setup_status import read_setup_status
+        from runtime.runtime import daemon_home
+
+        backup_cases = ('none', 'wal', 'checkpointed_wal', 'source_init', 'destination_init', 'source_integrity',
+                        'backup_integrity', 'inventory', 'file_sync', 'directory_sync',
+                        'space', 'deadline', 'close', 'alias', 'shared_space', 'shared_exact',
+                        'shared_minimum', 'database_space', 'temp_space', 'backup_space',
+                        'rehearsal_space', 'separate_exact', 'volume_io')
+        for fault in backup_cases:
+            if backup_case is not None and fault != backup_case:
+                continue
+            with install_integrity_fixture(idle=True) as fixture:
+                path, _, _, _, _, _, _ = fixture
+                native_connect = sqlite3.connect
+                keeper = native_connect(path)
+                keeper.execute('CREATE TABLE a4_native_preservation(id INTEGER PRIMARY KEY,i INTEGER,t TEXT,b BLOB,r REAL,n)')
+                keeper.execute('INSERT INTO a4_native_preservation VALUES(77,42,?,?,0.5,NULL)', ('typed\0é', b'\0blob'))
+                keeper.commit()
+                if fault in ('wal', 'checkpointed_wal'):
+                    assert keeper.execute('PRAGMA journal_mode=WAL').fetchone()[0] == 'wal'
+                    keeper.execute('PRAGMA wal_autocheckpoint=0')
+                    keeper.execute("UPDATE a4_native_preservation SET t='committed WAL sentinel' WHERE id=77")
+                    keeper.commit()
+                    assert path.with_name(path.name+'-wal').stat().st_size > 0
+                    if fault == 'checkpointed_wal':
+                        keeper.close()
+                        keeper = None
+                        assert not any(Path(str(path)+suffix).exists() for suffix in ('-wal', '-shm'))
+                else:
+                    assert keeper.execute('PRAGMA journal_mode=DELETE').fetchone()[0] == 'delete'
+                    keeper.close()
+                    keeper = None
+                def current_inventory():
+                    # The fixture alone knows its positively closed WAL image
+                    # is checkpointed; preserve companion absence until the
+                    # production native snapshot admission being exercised.
+                    uri = path.as_uri()+'?mode=ro'+('&immutable=1' if fault == 'checkpointed_wal' else '')
+                    with closing(native_connect(uri, uri=True, timeout=0)) as c:
+                        c.execute('PRAGMA query_only=ON')
+                        c.execute('BEGIN')
+                        return schema.sequential_storage_inventory(c)
+                original = current_inventory()
+                observed = {name: hashlib.sha256(Path(str(path)+name).read_bytes()).hexdigest()
+                            for name in ('', '-wal') if Path(str(path)+name).exists()}
+                statements, events, stages, created, injections = [], [], [], [], []
+                attempt = None
+                with closing(OrgAccessFence.acquire(path.parent, exclusive=True)) as fence:
+                    deadline = time.monotonic()+110
+                    owner = bootstrap.BootstrapSource(fence=fence, deadline=deadline)
+                    gate = bootstrap.require_install_integrity
+                    close_connection = bootstrap.BootstrapSource._close_connection
+                    sync = os.fsync
+                    close_fd = os.close
+                    space_gate = bootstrap.require_bootstrap_space
+                    native_directory, native_stat = bootstrap._directory, os.fstat
+                    native_space = os.fstatvfs
+                    primary = OSError('synthetic private backup close failure')
+                    def connect(filename, *args, **kwargs):
+                        text = str(filename)
+                        conn = native_connect(filename, *args, **kwargs)
+                        if text.startswith(path.as_uri()+'?') or '/before.db?' in text:
+                            created.append(conn)
+                        if text.startswith(path.as_uri()+'?'):
+                            conn.set_trace_callback(statements.append)
+                        if text.endswith('/before.db?mode=ro'):
+                            events.append('independent-backup-open')
+                        if (fault == 'source_init' and text.startswith(path.as_uri()+'?')
+                                or fault == 'destination_init' and text.endswith('/before.db?mode=rw')):
+                            conn.set_authorizer(lambda op, one, two, db, trigger:
+                                sqlite3.SQLITE_DENY if op == sqlite3.SQLITE_PRAGMA and one == 'foreign_keys'
+                                else sqlite3.SQLITE_OK)
+                            injections.append(fault)
+                        return conn
+                    def physical_gate(conn, ledger, stage):
+                        start = ledger.consumed
+                        assert conn.in_transaction and conn.execute('PRAGMA query_only').fetchone()[0] == 1
+                        if stage == 'backup':
+                            events.append('independent-backup-integrity')
+                            assert Path(conn.execute('PRAGMA database_list').fetchone()[2]) == attempt.backup_path
+                        if fault == stage+'_integrity':
+                            conn.set_authorizer(lambda op, one, two, db, trigger:
+                                sqlite3.SQLITE_DENY if op == sqlite3.SQLITE_PRAGMA and one == 'integrity_check'
+                                else sqlite3.SQLITE_OK)
+                            injections.append(fault)
+                        try:
+                            gate(conn, ledger, stage)
+                        finally:
+                            stages.append((stage, id(ledger), start, ledger.consumed))
+                            conn.set_authorizer(None)
+                    def owned_close(current, conn):
+                        record = next(r for r in current.connections if r['connection'] is conn)
+                        name = Path(conn.execute('PRAGMA database_list').fetchone()[2]).name if not record['attempted'] else None
+                        if fault == 'close' and name == 'before.db' and not record['attempted']:
+                            record['attempted'], record['error'] = True, primary
+                            injections.append('close')
+                            raise primary
+                        close_connection(current, conn)
+                        if name == 'before.db':
+                            events.append('backup-connection-closed')
+                            if fault == 'inventory' and 'inventory' not in injections:
+                                # A valid but wrong native image BEFORE hashing:
+                                # only independent exact inventory can catch it.
+                                with closing(native_connect(attempt.backup_path)) as changed:
+                                    changed.execute("UPDATE a4_native_preservation SET i=43 WHERE id=77")
+                                    changed.commit()
+                                injections.append('inventory')
+                    def fsync(fd):
+                        info = os.fstat(fd)
+                        if attempt is not None and attempt.backup_path.exists():
+                            backup_inode = attempt.backup_path.stat().st_ino
+                            if info.st_ino == backup_inode:
+                                events.append('backup-file-fsync')
+                                if fault == 'file_sync':
+                                    injections.append(fault)
+                                    raise OSError('synthetic private file sync failure')
+                            elif fd == attempt._parent:
+                                events.append('backup-directory-fsync')
+                                if fault == 'directory_sync':
+                                    injections.append(fault)
+                                    raise OSError('synthetic private directory sync failure')
+                            else:
+                                events.append('phase-file-fsync')
+                        return sync(fd)
+                    def descriptor_close(fd):
+                        info = os.fstat(fd)
+                        if attempt is not None and attempt.backup_path.exists() and info.st_ino == attempt.backup_path.stat().st_ino:
+                            events.append('backup-descriptor-close')
+                        return close_fd(fd)
+                    def volume_gate(source, current):
+                        # Observe the ORIGINAL policy at its native filesystem
+                        # boundary. Only volume readings are synthetic; all
+                        # original path/owner/deadline/collection logic executes.
+                        events.append('combined-volume-admission')
+                        assert current is attempt and source is owner
+                        assert (not attempt.backup_path.exists()
+                                or fault == 'alias' and attempt.backup_path.is_symlink()), 'A4-B volume qualification after backup creation'
+                        database = 2*owner.image_bytes+64*1048576+1024**3+sum(
+                            value[5] for value in owner.observation[1:] if value is not None)
+                        required = dict(database=database, temp=database,
+                            backup=owner.image_bytes+1024**3, rehearsal=owner.image_bytes+64*1048576)
+                        shared = database+required['backup']+required['rehearsal']
+                        paths = {path.parent: 'database', Path(os.environ['SQLITE_TMPDIR']): 'temp',
+                                 attempt.root: 'backup', Path(tempfile.gettempdir()).resolve(): 'rehearsal'}
+                        identities = {(target.stat().st_dev, target.stat().st_ino): category
+                                      for target, category in paths.items()}
+                        directories = {}
+                        def directory(target, custody):
+                            record = native_directory(target, custody)
+                            directories[record['fd']] = paths[target]
+                            return record
+                        def observed_stat(fd):
+                            info = native_stat(fd)
+                            category = identities.get((info.st_dev, info.st_ino))
+                            if category is not None and fault in (
+                                    'database_space', 'temp_space', 'backup_space',
+                                    'rehearsal_space', 'separate_exact'):
+                                values = list(info)
+                                values[2] = 100+tuple(required).index(category)
+                                return os.stat_result(values)
+                            return info
+                        def free_space(fd):
+                            category = directories[fd]
+                            if fault == 'volume_io':
+                                injections.append(fault)
+                                raise OSError('synthetic unavailable volume observation')
+                            if fault == 'shared_space':
+                                free = max(required.values())+4096
+                            elif fault == 'shared_exact':
+                                free = shared
+                            elif fault == 'shared_minimum':
+                                free = database-1 if category == 'temp' else shared+4096
+                            elif fault in ('database_space', 'temp_space', 'backup_space', 'rehearsal_space'):
+                                free = required[category]-(category == fault.removesuffix('_space'))
+                            elif fault == 'separate_exact':
+                                free = required[category]
+                            else:
+                                return native_space(fd)
+                            injections.append(fault)
+                            return SimpleNamespace(f_bavail=free, f_frsize=1)
+                        with ExitStack() as volume:
+                            volume.enter_context(patch.object(bootstrap, '_directory', directory))
+                            volume.enter_context(patch.object(bootstrap.os, 'fstat', observed_stat))
+                            volume.enter_context(patch.object(bootstrap.os, 'fstatvfs', free_space))
+                            return space_gate(source, current)
+                    error = None
+                    with ExitStack() as stack:
+                        stack.enter_context(patch.object(bootstrap.sqlite3, 'connect', connect))
+                        stack.enter_context(patch.object(bootstrap, 'require_install_integrity', physical_gate))
+                        stack.enter_context(patch.object(bootstrap.BootstrapSource, '_close_connection', owned_close))
+                        stack.enter_context(patch.object(bootstrap.os, 'fsync', fsync))
+                        stack.enter_context(patch.object(bootstrap.os, 'close', descriptor_close))
+                        stack.enter_context(patch.object(bootstrap, 'require_bootstrap_space', volume_gate))
+                        try:
+                            owner.open()
+                            attempt = bootstrap.BootstrapAttempt(home=daemon_home(), runtime_root=path.parents[2],
+                                slug='scratch', fence=fence, source_identity=owner.source_identity,
+                                source_inventory_digest=owner.inventory_digest, deadline=deadline)
+                            attempt.begin()
+                            if fault == 'alias':
+                                attempt.backup_path.symlink_to(path)
+                                injections.append(fault)
+                            if fault == 'space':
+                                stack.enter_context(patch.object(bootstrap.os, 'fstatvfs',
+                                    return_value=SimpleNamespace(f_bavail=0, f_frsize=4096)))
+                                injections.append(fault)
+                            if fault == 'deadline':
+                                stack.enter_context(patch.object(bootstrap.time, 'monotonic', return_value=deadline-19))
+                                injections.append(fault)
+                            owner.backup(attempt)
+                        except (ValueError, sqlite3.Error, OSError) as exc:
+                            error = exc
+                        # Drop clock/space faults before independent cleanup.
+                    if fault in ('none', 'wal', 'checkpointed_wal', 'shared_exact', 'separate_exact'):
+                        assert error is None, ('A4-B unexpected backup failure', fault, error)
+                        assert events.count('combined-volume-admission') == 1, 'A4-B omitted before-backup volume qualification'
+                        # Observe committed WAL content independently before
+                        # URI-sensitive durability instrumentation can fail.
+                        if fault in ('wal', 'checkpointed_wal'):
+                            with closing(native_connect(attempt.backup_path.as_uri()+'?mode=ro', uri=True)) as b:
+                                assert b.execute("SELECT 1 FROM sqlite_schema WHERE type='table' AND name='a4_native_preservation'").fetchone() is not None, 'A4-B lost committed WAL data'
+                                value = b.execute('SELECT t FROM a4_native_preservation WHERE id=77').fetchone()
+                                assert value is not None and value[0] == 'committed WAL sentinel', 'A4-B lost committed WAL data'
+                        assert [s[0] for s in stages] == ['source', 'backup'], 'A4-B mandatory backup physical gate omitted'
+                        assert len({s[1] for s in stages}) == 1 and stages[1][2] == stages[0][3] > 0, 'A4-B physical allowance replenished'
+                        assert owner.backup_sha256 == hashlib.sha256(attempt.backup_path.read_bytes()).hexdigest()
+                        assert os.stat(attempt.backup_path).st_ino != path.stat().st_ino
+                        assert stat.S_IMODE(attempt.backup_path.stat().st_mode) == 0o600
+                        ordered = ('backup-file-fsync', 'backup-descriptor-close', 'independent-backup-open',
+                                   'independent-backup-integrity', 'backup-connection-closed',
+                                   'backup-directory-fsync', 'phase-file-fsync')
+                        # The destination close precedes the first fsync; the
+                        # next close after the independent read is required here.
+                        try:
+                            cursor = events.index('backup-file-fsync')
+                            for event in ordered[1:]:
+                                cursor = events.index(event, cursor+1)
+                        except ValueError as exc:
+                            raise AssertionError('A4-B backup durability order missing') from exc
+                        assert events[-1] == 'backup-directory-fsync', 'A4-B backup_verified directory not fsynced'
+                        assert (attempt.root/'01.json').is_file(), 'A4-B verified phase missing'
+                        status = read_setup_status(daemon_home(), path.parents[2], 'scratch')
+                        assert status.state == 'unknown' and status.reason == 'install_incomplete', 'A4-B backup claimed installation'
+                    else:
+                        if fault in ('shared_space', 'shared_minimum', 'database_space', 'temp_space',
+                                     'backup_space', 'rehearsal_space', 'volume_io'):
+                            assert error is not None, 'A4-B accepted insufficient or unavailable combined volume'
+                        assert error is not None and injections, ('A4-B intended fault missed', fault, error)
+                        assert owner.failed, 'A4-B failed source owner not latched'
+                        if fault in ('shared_space', 'shared_minimum', 'database_space', 'temp_space',
+                                     'backup_space', 'rehearsal_space', 'volume_io'):
+                            if fault == 'volume_io':
+                                assert isinstance(error, OSError), 'A4-B replaced volume IO cause'
+                            else:
+                                assert str(error) == 'workflow_setup_volume_space_unavailable', 'A4-B accepted insufficient combined volume'
+                            assert events.count('combined-volume-admission') == 1, 'A4-B omitted before-backup volume qualification'
+                            assert not attempt.backup_path.exists(), 'A4-B backup created before complete volume qualification'
+                            assert len(owner.connections) == 1, 'A4-B opened backup before complete volume qualification'
+                        if fault.endswith('_init'):
+                            assert all(any(r['connection'] is conn for r in owner.connections) for conn in created), 'A4-B lost partially initialized native connection'
+                        if fault in ('source_integrity', 'backup_integrity'):
+                            assert isinstance(error, physical.InstallIntegrityError) and error.stage == fault.split('_')[0], ('A4-B wrong integrity boundary', error)
+                        if fault == 'inventory':
+                            assert str(error) == 'workflow_setup_backup_inventory_changed', ('A4-B wrong preservation boundary', error)
+                        if attempt is not None:
+                            assert not (attempt.root/'01.json').exists(), 'A4-B unverified backup published'
+                            try:
+                                owner.backup(attempt)
+                            except bootstrap.BootstrapEvidenceError as exc:
+                                assert str(exc) == 'workflow_setup_source_latched', 'A4-B failed source retried'
+                            else:
+                                raise AssertionError('A4-B failed source replayed backup')
+                    retained_backup = None
+                    if attempt is not None and attempt.backup_path.is_file() and not attempt.backup_path.is_symlink():
+                        retained_backup = hashlib.sha256(attempt.backup_path.read_bytes()).hexdigest()
+                    try:
+                        owner.close()
+                    except bootstrap.BootstrapEvidenceError as exc:
+                        assert fault == 'close' and str(exc) == 'workflow_setup_source_close_unknown'
+                        held = [r for r in owner.connections if r.get('error') is primary]
+                        assert len(held) == 1 and not held[0]['closed'], 'A4-B lost unknown original connection'
+                        assert held[0]['connection'].execute('SELECT 1').fetchone()[0] == 1
+                        try:
+                            owner.close()
+                        except bootstrap.BootstrapEvidenceError:
+                            pass
+                        else:
+                            raise AssertionError('A4-B invented original close after unknown')
+                        # Test-only final disposal after observing retained custody.
+                        held[0]['connection'].close()
+                    else:
+                        assert fault != 'close' and owner.closed and all(r['closed'] for r in owner.connections), 'A4-B invented successful close'
+                        for record in owner.connections:
+                            try:
+                                record['connection'].execute('SELECT 1')
+                            except sqlite3.ProgrammingError:
+                                pass
+                            else:
+                                raise AssertionError('A4-B positive close left native handle usable')
+                    assert all(r['attempted'] for r in owner.connections), 'A4-B unattempted original close'
+                    if attempt is not None:
+                        attempt.close()
+                    assert current_inventory() == original, 'A4-B source typed cells/rowids/SQL changed or auto-restored'
+                    assert not any(s.upper().startswith(('COMMIT', 'INSERT ', 'UPDATE ', 'DELETE ', 'CREATE ', 'DROP ', 'PRAGMA WAL_CHECKPOINT'))
+                                   for s in statements), 'A4-B source effects before independently verified backup'
+                    assert observed == {name: hashlib.sha256(Path(str(path)+name).read_bytes()).hexdigest()
+                                        for name in observed}, 'A4-B source/sidecar bytes changed'
+                    if retained_backup is not None:
+                        assert attempt.backup_path.is_file() and hashlib.sha256(attempt.backup_path.read_bytes()).hexdigest() == retained_backup, 'A4-B retained backup deleted or modified'
+                    print('PASS A4-B coherent source/WAL/fsync/independent inventory/original custody:', fault, flush=True)
+                if keeper is not None:
+                    keeper.close()
+        if sys.argv[1:] == ['--bootstrap-backup']:
+            raise SystemExit(0)
+
+    # A4-J is the independently consumed event wire/storage contract, using
+    # synthetic phase inputs. It does not certify installation/owner closure.
+    if sys.argv[1:] in ([], ['--bootstrap-journal']):
+        from runtime.infrastructure import workflow_sequential_bootstrap as bootstrap
+        from runtime.infrastructure.org_access_fence import OrgAccessFence
+        from runtime.daemon.workflow_setup_status import read_setup_status
+        from runtime.runtime import daemon_home
+
+        for fault in ('none', 'pending', 'file_sync', 'directory_sync', 'reserve', 'replay', 'alias', 'terminal', 'descriptor_close'):
+            with install_integrity_fixture() as fixture:
+                path, inventory, original, before, backup, backup_hash, argv = fixture
+                fence = OrgAccessFence.acquire(path.parent, exclusive=True)
+                with closing(sqlite3.connect(path)) as connection:
+                    identity = schema._coding_org_identity(connection, expected_org_slug='scratch', expected_path=str(path))
+                def attempt():
+                    return bootstrap.BootstrapAttempt(home=daemon_home(), runtime_root=path.parents[2], slug='scratch',
+                        fence=fence, source_identity=identity,
+                        source_inventory_digest=hashlib.sha256(repr(original).encode()).hexdigest(),
+                        deadline=time.monotonic()+30)
+                owner = attempt()
+                extra = None
+                if fault == 'descriptor_close':
+                    native_close, failed_closes = os.close, []
+                    def refused_close(fd):
+                        if owner._descriptors and fd == owner._descriptors[0]['fd']:
+                            failed_closes.append(fd)
+                            raise OSError('synthetic original descriptor close uncertainty')
+                        native_close(fd)
+                    try:
+                        with patch.object(bootstrap.os, 'close', refused_close):
+                            try:
+                                owner.begin()
+                            except OSError:
+                                pass
+                            else:
+                                raise AssertionError('A4-J directory close failure accepted')
+                            assert len(owner._descriptors) == 2, 'A4-J lost partially constructed directory descriptor'
+                            for _ in range(2):
+                                try:
+                                    owner.close()
+                                except bootstrap.BootstrapEvidenceError as exc:
+                                    assert str(exc) == 'workflow_setup_descriptor_close_unknown'
+                                else:
+                                    raise AssertionError('A4-J invented original descriptor closure')
+                            assert len(failed_closes) == 1, 'A4-J retried unknown original descriptor close'
+                            assert owner._descriptors[1]['closed'] and not owner._descriptors[0]['closed']
+                            os.fstat(failed_closes[0])  # actual injected-open original remains retained
+                            assert owner.failed and not owner.closed
+                        print('PASS A4-J partially constructed original descriptor custody; no retry', flush=True)
+                    finally:
+                        if failed_closes:
+                            native_close(failed_closes[0])  # exact synthetic leak after custody observation
+                        fence.close()
+                    continue
+                try:
+                    # Real fsync calls and original descriptors; no success stub.
+                    syncs = []
+                    native_fsync = os.fsync
+                    def fsync(fd):
+                        info = os.fstat(fd)
+                        syncs.append((info.st_ino, stat.S_ISDIR(info.st_mode)))
+                        native_fsync(fd)
+                    import stat
+                    with patch.object(bootstrap.os, 'fsync', fsync):
+                        owner.begin()
+                    first = owner.root / '00.json'
+                    assert first.is_file() and first.stat().st_mode & 0o777 == 0o600
+                    assert (first.stat().st_ino, False) in syncs, 'A4-J intent file not fsynced'
+                    assert syncs[-1] == (owner.root.stat().st_ino, True), 'A4-J intent directory not fsynced'
+                    assert all(p.stat().st_mode & 0o777 == 0o700 for p in
+                        (owner.root, owner.namespace, owner.namespace.parent, owner.namespace.parent.parent,
+                         owner.namespace.parent.parent.parent)), 'A4-J nonprivate namespace'
+                    if fault == 'terminal':
+                        owner.publish('not_installed')
+                        assert json.loads((owner.root / '01.json').read_bytes())['state'] == 'not_installed'
+                        try:
+                            owner.publish('backup_verified', backup_sha256=backup_hash)
+                        except bootstrap.BootstrapEvidenceError:
+                            pass
+                        else:
+                            raise AssertionError('A4-J terminal attempt replayed')
+                    else:
+                        with owner.backup_path.open('xb') as target:
+                            target.write(backup.read_bytes())
+                            target.flush()
+                            os.fchmod(target.fileno(), 0o600)
+                            os.fsync(target.fileno())
+                        if fault == 'pending':
+                            (owner.root / '01.json.pending').write_bytes(b'incomplete')
+                        elif fault == 'alias':
+                            owner.backup_path.unlink()
+                            owner.backup_path.symlink_to(backup)
+                        if fault in ('file_sync', 'directory_sync'):
+                            def refused_fsync(fd):
+                                is_directory = stat.S_ISDIR(os.fstat(fd).st_mode)
+                                if is_directory == (fault == 'directory_sync'):
+                                    raise OSError('synthetic original fsync refusal')
+                                native_fsync(fd)
+                            with patch.object(bootstrap.os, 'fsync', refused_fsync):
+                                try:
+                                    owner.publish('backup_verified', backup_sha256=backup_hash)
+                                except OSError:
+                                    pass
+                                else:
+                                    raise AssertionError('A4-J failed fsync accepted')
+                        elif fault in ('pending', 'alias'):
+                            try:
+                                owner.publish('backup_verified', backup_sha256=backup_hash)
+                            except bootstrap.BootstrapEvidenceError:
+                                pass
+                            else:
+                                raise AssertionError('A4-J unsafe/incomplete namespace accepted')
+                        else:
+                            owner.publish('backup_verified', backup_sha256=backup_hash)
+                            if fault == 'reserve':
+                                with patch.object(bootstrap.time, 'monotonic', return_value=owner.deadline-19):
+                                    try:
+                                        owner.publish('pre_commit')
+                                    except bootstrap.BootstrapEvidenceError as exc:
+                                        assert str(exc) == 'workflow_setup_commit_reserve'
+                                    else:
+                                        raise AssertionError('A4-J bypassed original COMMIT reserve')
+                                assert not (owner.root / '02.json').exists(), 'A4-J published late COMMIT intent'
+                            elif fault == 'replay':
+                                extra = attempt()
+                                try:
+                                    extra.begin()
+                                except bootstrap.BootstrapEvidenceError as exc:
+                                    assert str(exc) == 'workflow_setup_attempt_latched'
+                                else:
+                                    raise AssertionError('A4-J automatically retried latched attempt')
+                                assert set(p.name for p in owner.namespace.iterdir()) == {owner.attempt_id}
+                            else:
+                                for phase in ('pre_commit', 'committed', 'verified', 'registered'):
+                                    owner.publish(phase)
+                                previous = None
+                                for seq, phase in enumerate(('intent', 'backup_verified', 'pre_commit', 'committed', 'verified', 'registered')):
+                                    raw = (owner.root / f'{seq:02}.json').read_bytes()
+                                    value = json.loads(raw)
+                                    assert value['sequence'] == seq and value['previous_digest'] == previous
+                                    assert value['phase'] == phase and value['source_inventory_digest'] == owner.source_inventory_digest
+                                    previous = hashlib.sha256(raw).hexdigest()
+                                status = read_setup_status(daemon_home(), path.parents[2], 'scratch')
+                                assert (status.state, status.reason, status.backup_path) == ('installed_verified', 'registered', str(owner.backup_path)), status
+                                assert {p.name for p in owner.root.iterdir()} == {'before.db', *(f'{seq:02}.json' for seq in range(6))}
+                        if owner.failed:
+                            frozen = {p.name: p.lstat() for p in owner.root.iterdir()}
+                            try:
+                                owner.publish('not_installed')
+                            except bootstrap.BootstrapEvidenceError as exc:
+                                assert str(exc) == 'workflow_setup_attempt_latched', 'A4-J failed publisher retried after uncertainty'
+                            else:
+                                raise AssertionError('A4-J failed publisher later emitted success/absence')
+                            assert {p.name: p.lstat() for p in owner.root.iterdir()} == frozen
+                    assert inventory() == original and hashlib.sha256(path.read_bytes()).hexdigest() == before, 'A4-J journal touched source'
+                    assert hashlib.sha256(backup.read_bytes()).hexdigest() == backup_hash, 'A4-J restored/modified independent backup'
+                    print('PASS A4-J original descriptor/fsync/event-chain/no-replay:', fault, flush=True)
+                finally:
+                    if extra is not None:
+                        extra.close()
+                    owner.close()
+                    owner.close()  # no second close syscall for any original fd
+                    assert all(record['closed'] for record in owner._descriptors)
+                    fence.close()
+        if sys.argv[1:] == ['--bootstrap-journal']:
+            raise SystemExit(0)
+
+    # A4-P uses the nearest I1a fixture and real primitive. All mutation,
+    # deadline, authorizer and trace observers stay on this side of the boundary.
+    if sys.argv[1:] in ([], ['--bootstrap-precommit']):
+        from runtime.workflows.sequential_history import read_sequential_history
+
+        for fault in ('none', 'permit', 'deadline', 'target', 'commit'):
+            with install_integrity_fixture() as fixture:
+                path, inventory, original, before, backup, backup_hash, argv = fixture
+                statements, stages, callbacks = [], [], []
+                conn = sqlite3.connect(path, timeout=0)
+                conn.row_factory = sqlite3.Row
+                conn.execute('PRAGMA foreign_keys=ON')
+                conn.set_trace_callback(statements.append)
+                allowance = schema.SequentialInstallAllowance(deadline=time.monotonic()+30)
+                with schema._schema_snapshot(conn):
+                    identity = schema._coding_org_identity(conn, expected_org_slug='scratch', expected_path=str(path))
+                statements.clear()
+
+                def physical_gate(connection, ledger, stage):
+                    physical.require_install_integrity(connection, ledger, stage)
+                    stages.append(stage)
+                    if stage == 'target' and fault == 'target':
+                        raise ValueError('synthetic target failure before permit')
+
+                def offline():
+                    assert schema._coding_org_identity(conn, expected_org_slug='scratch', expected_path=str(path)) == identity
+
+                with ExitStack() as stack:
+                    def permit():
+                        assert stages == ['writer_source', 'target'], 'A4-P permit preceded full target integrity'
+                        assert conn.in_transaction and 'COMMIT' not in statements, 'A4-P rehearsal/default gate after COMMIT'
+                        history = read_sequential_history(conn, expected_org_slug='scratch')
+                        assert history.layout.sequential and history.layout.ownership == 2
+                        callbacks.append('default-target')
+                        if fault == 'permit':
+                            raise ValueError('synthetic original parent withheld permit')
+                        if fault == 'deadline':
+                            stack.enter_context(patch.object(schema.time, 'monotonic', return_value=allowance.deadline+1))
+                        if fault == 'commit':
+                            conn.set_authorizer(lambda action, arg1, *_: sqlite3.SQLITE_DENY
+                                if action == sqlite3.SQLITE_TRANSACTION and arg1 == 'COMMIT' else sqlite3.SQLITE_OK)
+
+                    stack.enter_context(patch.object(schema, 'require_install_integrity', physical_gate))
+                    error = None
+                    try:
+                        result = schema.install_sequential_schema(conn, expected_org_slug='scratch', expected_path=str(path),
+                            source_identity=identity, source_inventory=original, offline_check=offline,
+                            allowance=allowance, before_commit=permit)
+                    except (ValueError, schema.SequentialCommitUncertain) as exc:
+                        error = exc
+                if error is not None and isinstance(error.__cause__, AssertionError):
+                    raise error.__cause__  # retain attribution from the real callback boundary
+                assert stages == ['writer_source', 'target'], ('A4-P integrity gates changed', fault, stages)
+                assert callbacks == ([] if fault == 'target' else ['default-target']), ('A4-P callback absent/repeated', fault, callbacks)
+                if fault == 'none':
+                    assert error is None and result == 'installed' and statements.count('COMMIT') == 1
+                    assert not conn.in_transaction
+                else:
+                    assert error is not None, ('A4-P refused permit/target/deadline accepted', fault)
+                    if fault == 'commit':
+                        assert isinstance(error, schema.SequentialCommitUncertain), 'A4-P lost COMMIT uncertainty'
+                    else:
+                        assert type(error) is ValueError and 'COMMIT' not in statements, ('A4-P premature COMMIT', fault)
+                    if fault == 'deadline':
+                        assert str(error) == 'workflow_seq_install_deadline_exhausted'
+                    assert 'ROLLBACK' in statements and not conn.in_transaction, ('A4-P lost owned rollback', fault)
+                conn.close()
+                if fault != 'none':
+                    assert inventory() == original, ('A4-P changed original typed cells/rowids/SQL', fault)
+                    assert hashlib.sha256(path.read_bytes()).hexdigest() == before, ('A4-P changed checkpointed fixture bytes', fault)
+                else:
+                    with closing(sqlite3.connect(path)) as reopened:
+                        reopened.execute('PRAGMA foreign_keys=ON')
+                        assert read_sequential_history(reopened, expected_org_slug='scratch').layout.sequential
+                assert hashlib.sha256(backup.read_bytes()).hexdigest() == backup_hash, 'A4-P modified retained backup'
+                print('PASS A4-P pre-COMMIT default target/gates/permit:', fault,
+                      'committed-once' if fault == 'none' else 'original-preserved', flush=True)
+        if sys.argv[1:] == ['--bootstrap-precommit']:
+            raise SystemExit(0)
 
     with tempfile.TemporaryDirectory(prefix='workflow-bad-integrity-') as scratch:
         bad_path = Path(scratch) / 'bad.db'

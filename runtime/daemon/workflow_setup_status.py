@@ -7,6 +7,7 @@ import os
 import re
 import stat
 import time
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
@@ -18,7 +19,10 @@ from runtime.daemon.org_integrity_monitor import latest_report, runtime_key
 
 SetupState = Literal['not_installed', 'installed_unverified', 'installed_verified', 'unknown']
 SetupReason = Literal['evidence_unavailable', 'registered', 'not_installed', 'install_incomplete',
-                      'commit_uncertain', 'installation_unverified']
+                      'commit_uncertain', 'installation_unverified', 'default_load_budget_exceeded',
+                      'default_load_qualification_unavailable', 'writer_exclusion_unproven',
+                      'startup_upgrade_budget_unavailable', 'history_check_failed', 'integrity_check_failed',
+                      'backup_verification_failed', 'registration_failed']
 
 
 class Closed(BaseModel):
@@ -98,24 +102,41 @@ def _names(parent: int, limit: int, deadline: float) -> list[str]:
     return sorted(result)
 
 
-def _attempt(home: Path, runtime_root: Path, key: str, slug: str, deadline: float) -> dict:
+def _attempt_record(home: Path, runtime_root: Path, key: str, slug: str, deadline: float,
+                    *, directory_reader: Callable | None = None) -> dict:
     """Bounded complete namespace/chain read; missing evidence proves no state.
 
     A4 owns publication. Unrecognized or unfinished evidence stays unknown.
     No backup or org database is opened, and no selected prefix is accepted.
+    Startup supplies its original-custody directory reader; advisory status
+    retains its independent traversal.
     """
+    open_directory = directory if directory_reader is None else directory_reader
     root = home / 'backups' / 'workflow-sequential' / key / slug
     total = 0
     outcomes = []
-    with directory(root, deadline) as namespace:
+    with open_directory(root, deadline) as namespace:
         names = _names(namespace, 64, deadline)
+        if names == ['hold.json']:
+            value, _, _ = _record(namespace, 'hold.json', deadline)
+            if (set(value) != {'format', 'runtime_key', 'org_slug', 'reason', 'state', 'attempt_time'}
+                    or value['format'] != 'workflow-setup-hold@1'
+                    or (value['runtime_key'], value['org_slug']) != (key, slug)
+                    or value['state'] not in ('unknown', 'not_installed')
+                    or value['reason'] not in ('writer_exclusion_unproven', 'startup_upgrade_budget_unavailable',
+                        'history_check_failed', 'integrity_check_failed', 'backup_verification_failed',
+                        'registration_failed', 'install_incomplete', 'default_load_budget_exceeded', 'commit_uncertain')
+                    or _names(namespace, 64, deadline) != names):
+                raise ValueError('attempt_hold_invalid')
+            return dict(state=value['state'], reason=value['reason'], phase='held',
+                        attempt_time=_utc(value['attempt_time']), backup_path=None)
         if not 0 < len(names) <= 64:
             raise ValueError('attempt_namespace_unavailable')
         for name in sorted(names):
             check(deadline)
             if not re.fullmatch(r'[a-zA-Z0-9-]{1,128}', name):
                 raise ValueError('attempt_identity_invalid')
-            with directory(root / name, deadline) as parent:
+            with open_directory(root / name, deadline) as parent:
                 entries = _names(parent, 17, deadline)
                 records = sorted(item for item in entries if re.fullmatch(r'[0-9]{2}\.json', item))
                 if set(entries) - set(records) - {'before.db'} or not 0 < len(records) <= 16:
@@ -189,7 +210,12 @@ def _attempt(home: Path, runtime_root: Path, key: str, slug: str, deadline: floa
     # timestamps alone do not select an authoritative attempt.
     if len(outcomes) != 1:
         raise ValueError('attempt_selection_unavailable')
-    return {key: outcomes[0][key] for key in ('state', 'reason', 'attempt_time', 'backup_path')}
+    return outcomes[0]
+
+
+def _attempt(home: Path, runtime_root: Path, key: str, slug: str, deadline: float) -> dict:
+    value = _attempt_record(home, runtime_root, key, slug, deadline)
+    return {field: value[field] for field in ('state', 'reason', 'attempt_time', 'backup_path')}
 
 
 def read_setup_status(home: Path, runtime_root: Path, slug: str) -> WorkflowSetupStatus:

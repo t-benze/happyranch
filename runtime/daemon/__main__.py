@@ -37,6 +37,10 @@ if TYPE_CHECKING:
 
 # Frozen repository children must reach their resource limits/Git exec before
 # importing the daemon. This is the existing fixed helper dispatch, not serve.
+if __name__ == '__main__' and sys.argv[1:2] == ['--workflow-sequential-bootstrap-helper']:
+    from runtime.infrastructure.workflow_sequential_bootstrap import bootstrap_helper_main
+    raise SystemExit(bootstrap_helper_main(sys.argv[2:]))
+
 if __name__ == '__main__' and sys.argv[1:2] == ['--workflow-integrity-helper']:
     from runtime.daemon.org_integrity_monitor import helper_main as integrity_helper_main
     raise SystemExit(integrity_helper_main(sys.argv[2:]))
@@ -56,7 +60,7 @@ from runtime.config import Settings
 from runtime.daemon import _PROCESS_START_EPOCH, _PROCESS_START_MONOTONIC, paths, runtimes
 from runtime.daemon.app import create_app
 from runtime.daemon.queue import TaskQueue
-from runtime.daemon.state import DaemonState
+from runtime.daemon.state import DaemonState, _startup_failure_reason
 from runtime.infrastructure.audit_logger import AuditLogger
 from runtime.infrastructure.database import Database
 from runtime.models import BlockKind, TaskStatus
@@ -736,7 +740,8 @@ def _build_state(settings: Settings, *, lock_proof: LockProof | None = None) -> 
     owner = {"runtime": runtime, "candidate": None}
     try:
         state = DaemonState.from_runtime(runtime, settings,
-                                         construction_owner=owner, startup_lock_proof=lock_proof)
+                                         construction_owner=owner, automatic_workflow_setup=True,
+                                         startup_lock_proof=lock_proof)
     except BaseException as primary:
         # The original exception carries its original candidate/close owner
         # through the normal startup traceback; no second constructor or retry.
@@ -752,50 +757,91 @@ def _build_state(settings: Settings, *, lock_proof: LockProof | None = None) -> 
 
 
 def _initialize_runnable_startup(state: DaemonState, *, lock_proof: LockProof | None = None) -> None:
+    """Contain the final original per-org tail before serving any attachment."""
     from runtime.daemon.thread_delivery_release_service import _StartupThreadReleases
-    # Initial org construction admits no producers. Capture all populations
-    # before any recovery step can mint a current-boot invocation.
-    initial = [(org, _StartupThreadReleases(org.db, org.slug, lock_proof),
-                getattr(org.orchestrator, "_startup_preparations", None))
-               for org in state.orgs_snapshot().values()]
-    for org, startup_releases, startup_preparations in initial:
-        # THR-229 checkpoint C3d4b: bind the REAL owning-process boot marker
-        # (the existing ``authority_v2_origin_boot_id``) and the existing
-        # server-owned permission-surface reader before any startup recovery or
-        # publication.  These bindings are the production owner setup; they were
-        # previously exercised only by tests/store forwarders.
-        org.bind_authority_v2_owner()
-        # THR-229 checkpoint B2b2: initialize the eligible Engineering selector
-        # through the existing serialized transaction owner BEFORE any startup
-        # recovery/enqueue and before the API becomes available. Initialization
-        # is observation of authentic v1 history or genuine empty state, never
-        # activation: the owning transaction refuses missing/corrupt histories
-        # and an initializer-audit failure rather than manufacturing empty state
-        # or silently selecting legacy. A refusal propagates out of
-        # ``_build_state`` so the daemon never binds the API or admits launch.
-        for team in org.teams.teams():
-            manager = org.teams.executable_manager_for_team(team)
-            if manager is not None and is_eligible_policy_manager(
-                root=org.root, agent_name=manager, team=team, teams=org.teams,
-            ):
-                org.workflow_authority.ensure_authority_selector(
-                    team=team,
-                    publisher="daemon-startup:selector-initialization",
-                )
-        recovered_tokens = _sweep_on_startup(
-            org.db, state.queue, org.slug, org.orchestrator,
-            startup_releases=startup_releases, startup_preparations=startup_preparations,
-        )
-        # THR-229 checkpoint C3d4b: publish every pending v2 generation for this
-        # org after the sweep (covers ordinary continuations with no recovery Q,
-        # a lost in-memory queue after a committed ``published``, an old-boot
-        # ``publishing`` lease and exact already-consumed receipts) and before
-        # the API/worker pool admits work.
-        _publish_v2_generations_on_startup(org, state.queue)
-        # GitHub #688 Slice B: startup reply-delivery recovery returns the
-        # queued/replacement tokens to re-enqueue once the event loop is live
-        # (the lifespan enqueues them before thread workers start).
-        org._startup_recovered_thread_tokens = recovered_tokens
+    # Capture every initial population before any org can admit current-boot
+    # work. Keep unexpected capture errors for the same contained org tail;
+    # the release owner's own capture_unavailable remains an empty population.
+    initial = []
+    for org in state.orgs_snapshot().values():
+        try:
+            org.db._conn.execute('PRAGMA busy_timeout=0')
+            startup_releases = _StartupThreadReleases(org.db, org.slug, lock_proof)
+            startup_preparations = getattr(org.orchestrator, "_startup_preparations", None)
+        except Exception as exc:
+            initial.append((org, None, None, exc))
+        else:
+            initial.append((org, startup_releases, startup_preparations, None))
+    failed = False
+    for org, startup_releases, startup_preparations, capture_error in initial:
+        try:
+            if capture_error is not None:
+                raise capture_error
+            # from_runtime also serves direct attachment callers, which restore
+            # their serving timeout. This final startup tail must not inherit
+            # a fresh five-second wait at every native statement.
+            org.db._conn.execute('PRAGMA busy_timeout=0')
+            # THR-229 checkpoint C3d4b: bind the REAL owning-process boot marker
+            # (the existing ``authority_v2_origin_boot_id``) and the existing
+            # server-owned permission-surface reader before any startup recovery or
+            # publication.  These bindings are the production owner setup; they were
+            # previously exercised only by tests/store forwarders.
+            org.bind_authority_v2_owner()
+            # THR-229 checkpoint B2b2: initialize the eligible Engineering selector
+            # through the existing serialized transaction owner BEFORE any startup
+            # recovery/enqueue and before the API becomes available. Initialization
+            # is observation of authentic v1 history or genuine empty state, never
+            # activation: missing/corrupt histories or an initializer-audit failure
+            # hold this original attachment before any runner can admit launch.
+            for team in org.teams.teams():
+                manager = org.teams.executable_manager_for_team(team)
+                if manager is not None and is_eligible_policy_manager(
+                    root=org.root, agent_name=manager, team=team, teams=org.teams,
+                ):
+                    org.workflow_authority.ensure_authority_selector(
+                        team=team,
+                        publisher="daemon-startup:selector-initialization",
+                    )
+            recovered_tokens = _sweep_on_startup(
+                org.db, state.queue, org.slug, org.orchestrator,
+                startup_releases=startup_releases, startup_preparations=startup_preparations,
+            )
+            # THR-229 checkpoint C3d4b: publish every pending v2 generation for this
+            # org after the sweep (covers ordinary continuations with no recovery Q,
+            # a lost in-memory queue after a committed ``published``, an old-boot
+            # ``publishing`` lease and exact already-consumed receipts) and before
+            # the API/worker pool admits work.
+            _publish_v2_generations_on_startup(org, state.queue)
+            # GitHub #688 Slice B: startup reply-delivery recovery returns the
+            # queued/replacement tokens to re-enqueue once the event loop is live
+            # (the lifespan enqueues them before thread workers start).
+            org._startup_recovered_thread_tokens = recovered_tokens
+        except Exception as exc:
+            # Retain the same open attachment/fence and original error. No
+            # close, reconstruction, rollback claim or retry follows this tail.
+            # Process cancellation remains a BaseException and propagates to
+            # _build_state's original construction/cleanup owner.
+            org._startup_publication_held = True
+            org._startup_authority_error = exc
+            reason = _startup_failure_reason(exc)
+            state._hold_startup_orgs({org.slug: reason})
+            failed = True
+            if state.profile_coordinator is not None:
+                state.profile_coordinator._startup_unknown = True
+            logger.error("org %r entry startup held: %s", org.slug, reason)
+    if failed and state.profile_coordinator is not None:
+        # A failed org can no longer certify a dependency's current profile
+        # membership. Classify after independent later tails have completed.
+        state.profile_coordinator.reconcile_startup()
+    for org in state.orgs_snapshot().values():
+        try:
+            org.db._conn.execute('PRAGMA busy_timeout=5000')
+        except Exception as exc:
+            org._startup_publication_held = True
+            org._startup_authority_error = exc
+            state._hold_startup_orgs({org.slug: _startup_failure_reason(exc)})
+            if state.profile_coordinator is not None:
+                state.profile_coordinator._startup_unknown = True
     # Worker-pool bootstrap is deferred to the FastAPI lifespan startup
     # event because we need a running event loop. See `create_app` →
     # lifespan.
@@ -1012,7 +1058,11 @@ class _DiagnosticServer(uvicorn.Server):
             return
         _startup_log("server_startup", "complete", started)
         # This is the actual same-app ASGI + listener endpoint, before signals.
-        elapsed = _startup_log("normal_startup", "serving", self._startup_origin)
+        total_elapsed = _startup_log("startup_total", "serving", self._startup_origin)
+        bootstrap = self._diagnostic_app.state.daemon._workflow_bootstrap
+        upgrade = 0.0 if bootstrap is None else bootstrap.upgrade_seconds
+        ordinary_origin = None if self._startup_origin is None else self._startup_origin + upgrade
+        elapsed = _startup_log("normal_startup", "serving", ordinary_origin)
         try:
             totals = _STARTUP_PARTITION.get()
             if totals is not None:
@@ -1022,6 +1072,8 @@ class _DiagnosticServer(uvicorn.Server):
                     partition = {phase: totals[phase] for phase in _STARTUP_PHASES}
                     partition["remaining_startup"] = max(0.0, elapsed - sum(partition.values()))
                     partition.update(launcher=totals.get("launcher"), imports=totals.get("imports"))
+                    partition["workflow_upgrade"] = upgrade
+                    partition["startup_total"] = total_elapsed
                     partition["launcher_to_serving"] = (
                         partition["launcher"] + partition["imports"] + elapsed
                         if partition["launcher"] is not None and partition["imports"] is not None

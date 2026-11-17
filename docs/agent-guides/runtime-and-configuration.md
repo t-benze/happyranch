@@ -1,5 +1,39 @@
 # Runtime And Configuration
 
+Daemon startup mounts automatic sequential storage setup before ordinary org
+attachment or serving. Under Founder THR-336 msg250/251 (A4:2), positive predecessor
+proof is not required: ordinary one-daemon startup-migration trust combines with
+A1 EX, I1a full integrity, verified SHA-256 backup before source writes and complete
+durable idle/history checks, repeated before COMMIT. Concurrent pre-A1/old-code
+daemons are a documented cooperative limitation. No clean-shutdown receipt exists.
+
+Installed orgs take cheap SH selection and ordinary complete validation, with no
+installer/backup/inventory work. Absent orgs rediscover under EX, retain the backup
+at `<daemon_home>/backups/workflow-sequential/<runtime-key>/<org>/<attempt-id>/before.db`,
+rehearse actual writable FIRST/NEXT, install, reopen and run the actual A2 qualified
+registrar under original EX. Positive close and a workflow-free machine runtime
+audit precede registered status and ordinary SH attachment. No pre-COMMIT source
+checkpoint occurs. Settings/roles/Allow remain unchanged; missing settings stay
+Disabled. Runtime switching does not mount this startup-only upgrade.
+
+Any failed gate holds its org without fallback writable attachment. Closed
+pre-intent reasons may be retained in private `hold.json`; original attempt phases
+always take precedence. Failed/unknown records never replay or auto-restore.
+Missing predecessor evidence never causes `writer_exclusion_unproven`; unavailable
+or lost EX does. Existing profile dependency uncertainty may conservatively hold
+other consumers. Original native spawn/socket/reap/close custody survives failure;
+unknown originals retain EX and refuse successful shutdown. A retained original
+event loop owns late spawn kill/reap callbacks rather than cancelling them on return.
+
+The one-time pre-serving upgrade window is 120s/org, 180s total, 20s final reserve,
+>=60s before another attempt, 0.5s cumulative admission and 100s pre-COMMIT work.
+The ordinary all-org load/listener gate remains <=10s, with unchanged 32M SQL,
+separate A/B/C limits and 5s complete readers. `startup_total`/`workflow_upgrade`
+are separate diagnostics; ordinary timing excludes actual upgrade work only.
+Focused synthetic shells do not establish whole-listener or live-org acceptance.
+See the [current R2 amendment and startup contract](../specs/2026-11-14-automatic-workflow-setup.md#a4-startup-and-r2-amendment--thr-336-msg250251-a42)
+and [attachment custody](contracts/runtime-lifecycle.md#a4-startup-attachment-custody).
+
 POST `/orgs` now creates J + Coding + sequential storage and ownership-2 through
 a distinct owner after exclusive skeleton creation and exclusive DB-file
 creation. It retains A1's pre-open org-access fence, Default human-managed team
@@ -4488,12 +4522,24 @@ runtime switch cannot consume another runtime's same-day attempt.
 
 Supported org loads, fresh/reclaim routes and raw maintenance/offline openers acquire an org access fence before opening SQLite or constructing Database. Normal org connections retain SH through local close; explicit offline schema operations take EX without replacing their existing confirmation/lifecycle gates. Profile writers acquire affected org SH descriptors in stable key order before profile/publication/DB locks. Startup cache reads gate the metadata-only runtime org inventory before loading orgs; writers refuse unloaded dependencies. Original dynamic attachment includes exactly its own loaded, unpublished candidate in the sorted fence/membership capture; unrelated unloaded dependencies still refuse. Input/skeleton and existing-directory refusals close their route fence when no DB/native operation began or the original probe positively closed; probe errors without closure proof and unknown ownership stay held. Generic Database and machine-global stores remain workflow-free. See the [A1 contract](../specs/2026-11-14-automatic-workflow-setup.md#a1-cooperative-org-access-fence).
 
+
+### A4 private worker and original parent permission
+
+The mounted source/frozen helper inherits original EX, selects a private literal
+SQLite temp volume before SQL and receives one bound parent COMMIT permit after
+source and target qualification. Actual qualified registration, original close,
+runtime audit and final registered status now belong to that same helper interval.
+EOF/cancellation/duplicate permission revoke subsequent cooperative effects.
+The startup owner retains pending originals and late-child callbacks, and failed
+or uncertain records never replay. See the [current lifecycle contract](contracts/runtime-lifecycle.md#a4-startup-attachment-custody).
+
 ## Proven-lock thread startup release (THR-357 Fix 1)
 
 The initial startup sweep may release only previous-boot pending replies with
 recorded settled/quiescent attempts, a settled producer and the diagnostics' exact
-late `failed_cleanup` predicate. A NOT PROVEN lock releases nothing. The pass
-captures before current-boot admission, appends a separate daemon release audit
+late `failed_cleanup` predicate. A NOT PROVEN lock releases nothing. All initial
+org populations are captured before any A4 contained per-org startup tail runs.
+The pass appends a separate daemon release audit
 and uses normal reply replacement/admission without rewriting lifecycle history.
 See [the full contract](contracts/runtime-lifecycle.md#narrow-previous-boot-thread-release-thr-357-fix-1--1136)
 and [logging](contracts/observability.md#narrow-thread-startup-release-thr-357).

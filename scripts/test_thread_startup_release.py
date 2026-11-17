@@ -4,6 +4,9 @@ from __future__ import annotations
 import dataclasses
 import inspect
 import json
+import shutil
+import subprocess
+import sys
 from pathlib import Path
 import tempfile
 from types import SimpleNamespace
@@ -73,6 +76,182 @@ def sweep(org: Any, captured: _StartupThreadReleases) -> list[str]:
 
 
 class StartupReleaseTests(unittest.IsolatedAsyncioTestCase):
+    async def test_capture_all_before_contained_org_tails(self) -> None:
+        # Exercise the real entry, release owner, sweep and persisted rows. The
+        # first org's bind writes genuinely new lifecycle rows into the second
+        # org, so interleaved capture would incorrectly release current-boot work.
+        from runtime.config import Settings
+        from runtime.daemon.org_state import OrgState
+        from runtime.daemon import thread_delivery_release_service as releases
+        from runtime.infrastructure.database import Database
+        from runtime.infrastructure.workflow_schema import initialize_complete_org_schema
+        from runtime.orchestrator._paths import OrgPaths
+        from runtime.orchestrator.org_config import initialize_fresh_reviewer_agents
+        from scripts.mac_native.suite_repo_refresh import git_environment
+        from scripts.test_preparation_startup import (
+            ACTION as PREPARATION_ACTION, capture as capture_preparation,
+            journal as preparation_journal,
+        )
+
+        for case in ("success", "tail_failure", "capture_unavailable", "constructor_failure"):
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as scratch:
+                async with fixture(Path(scratch)/"org") as (first, client):
+                    state = client._transport.app.state.daemon
+                    root = first.root.parent/"beta"
+                    shutil.copytree(first.root/"org", root/"org")
+                    db = Database(root/"happyranch.db")
+                    try:
+                        initialize_complete_org_schema(db, expected_org_slug="beta", layout="J")
+                        initialize_fresh_reviewer_agents(OrgPaths(root), db)
+                    finally:
+                        db.close()
+                    second = OrgState.load(slug="beta", root=root, settings=Settings())
+                    # The existing fixture closes every original state attachment.
+                    state.orgs[second.slug] = second
+                    originals = {org.slug: seed(org, "THR-original") for org in (first, second)}
+                    before_first = snapshot(first.db, "THR-original")
+                    preparations = {}
+                    with git_environment(Path(scratch)):
+                        for org in (first, second):
+                            (org.root/"workspaces"/"worker").mkdir(parents=True, exist_ok=True)
+                            # Use the preparation suite's fresh-process receipt
+                            # isolation; the original owning child exits before
+                            # this parent captures the real persisted journal.
+                            result = subprocess.run([sys.executable, "-B", "-c", """
+from pathlib import Path
+import asyncio
+import sys
+from scripts.test_preparation_startup import seed
+from runtime.config import Settings
+from runtime.daemon.state import DaemonState
+from runtime.runtime import RuntimeDir
+root = Path(sys.argv[1])
+state = DaemonState.from_runtime(RuntimeDir.load(root.parent.parent), Settings())
+try:
+    seed(state.orgs[root.name], Path(sys.argv[2]))
+finally:
+    asyncio.run(state.close_all())
+""", str(org.root), str(Path(scratch)/f"preparation-{org.slug}")],
+                                capture_output=True, text=True, timeout=20)
+                            self.assertEqual(result.returncode, 0, result.stdout[-8000:] + result.stderr[-8000:])
+                            preparations[org.slug] = capture_preparation(org)
+                            org.orchestrator._startup_preparations = preparations[org.slug]
+                    preparation_before = {org.slug: preparation_journal(org) for org in (first, second)}
+                    captures, events, current = {}, [], []
+                    original_capture = _StartupThreadReleases.__init__
+                    original_bind = OrgState.bind_authority_v2_owner
+                    original_sweep = entry._sweep_on_startup
+                    failure = OSError("PRIVATE original startup failure")
+
+                    def capture(owner: Any, db: Any, slug: str, proof: Any) -> None:
+                        events.append((slug, "capture"))
+                        self.assertIs(proof, PROVEN)
+                        self.assertEqual(db._conn.execute("PRAGMA busy_timeout").fetchone()[0], 0)
+                        if slug == first.slug and case == "constructor_failure":
+                            raise failure
+                        if slug == first.slug and case == "capture_unavailable":
+                            with self.assertLogs("happyranch.daemon", level="WARNING") as logs, patch.object(
+                                releases, "native_read", side_effect=OSError("synthetic capture read unavailable")
+                            ):
+                                original_capture(owner, db, slug, proof)
+                            self.assertTrue(any("capture_unavailable" in line for line in logs.output))
+                            self.assertEqual(owner.records, ())
+                        else:
+                            original_capture(owner, db, slug, proof)
+                        captures[slug] = owner
+
+                    def bind(org: Any) -> None:
+                        events.append((org.slug, "bind"))
+                        if org is first:
+                            current.append(seed(second, "THR-current-boot"))
+                            if case == "tail_failure":
+                                raise failure
+                        original_bind(org)
+
+                    def observed_sweep(db: Any, queue: Any, slug: str, orchestrator: Any,
+                                       *, startup_releases: Any = None,
+                                       startup_preparations: Any = None) -> list[str]:
+                        events.append((slug, "sweep"))
+                        self.assertIs(startup_releases, captures[slug])
+                        if startup_preparations is not None:
+                            self.assertIs(startup_preparations, preparations[slug])
+                        tokens = original_sweep(db, queue, slug, orchestrator,
+                                                startup_releases=startup_releases,
+                                                startup_preparations=startup_preparations)
+                        self.assertTrue(startup_releases.used)
+                        return tokens
+
+                    with patch.object(_StartupThreadReleases, "__init__", capture), patch.object(
+                        OrgState, "bind_authority_v2_owner", bind
+                    ), patch.object(entry, "_sweep_on_startup", side_effect=observed_sweep):
+                        try:
+                            entry._initialize_runnable_startup(state, lock_proof=PROVEN)
+                        except Exception as exc:
+                            self.fail(f"{case}: startup aborted instead of containing the org: {exc!r}")
+
+                    self.assertIn((second.slug, "sweep"), events)
+                    for org in (first, second):
+                        held = org is first and case in ("tail_failure", "constructor_failure")
+                        entries = preparation_journal(org)
+                        closed = org.db.execute(
+                            "SELECT COUNT(*) FROM audit_log WHERE action=? AND task_id=?",
+                            (PREPARATION_ACTION, "TASK-stuck"),
+                        ).fetchone()[0]
+                        if held:
+                            self.assertEqual(entries, preparation_before[org.slug])
+                            self.assertEqual(closed, 0)
+                            self.assertFalse(preparations[org.slug].used)
+                        else:
+                            self.assertEqual(entries, [], "healthy startup must close captured preparation")
+                            self.assertEqual(closed, 1)
+                            self.assertTrue(preparations[org.slug].used)
+                    self.assertTrue(captures[second.slug].used)
+                    self.assertEqual(second.db.execute(
+                        "SELECT COUNT(*) FROM audit_log WHERE action=? AND task_id=?",
+                        (STARTUP_ACTION, "THR-original")
+                    ).fetchone()[0], 1)
+                    replacement = second.db.get_reply_delivery_state("THR-original", "worker")
+                    self.assertIsNone(replacement.running_invocation_token)
+                    self.assertIn(replacement.queued_invocation_token, second._startup_recovered_thread_tokens)
+                    if current:
+                        self.assertEqual(second.db.get_reply_delivery_state(
+                            "THR-current-boot", "worker"
+                        ).running_invocation_token, current[0].invocation_token)
+                        self.assertEqual(second.db.execute(
+                            "SELECT COUNT(*) FROM audit_log WHERE action=? AND task_id=?",
+                            (STARTUP_ACTION, "THR-current-boot")
+                        ).fetchone()[0], 0)
+                    self.assertEqual(events[:2], [(first.slug, "capture"), (second.slug, "capture")])
+                    self.assertEqual([row["id"] for row in captures[second.slug].records], [originals[second.slug].id])
+                    if case in ("tail_failure", "constructor_failure"):
+                        self.assertIs(state._startup_held_orgs[first.slug], first)
+                        self.assertNotIn(first.slug, state.orgs_snapshot())
+                        self.assertTrue(first._runner_admission_closed and first._startup_publication_held)
+                        self.assertIs(first._startup_authority_error, failure)
+                        self.assertEqual(state.broken_orgs[first.slug], "org_filesystem_unavailable")
+                        self.assertTrue(state.profile_coordinator._startup_unknown)
+                        self.assertNotIn((first.slug, "sweep"), events)
+                        if case == "constructor_failure":
+                            self.assertNotIn((first.slug, "bind"), events)
+                        self.assertEqual(snapshot(first.db, "THR-original"), before_first)
+                        # A4 still conservatively holds the unknown profile scope
+                        # AFTER the independent second tail has made progress.
+                        self.assertIs(state._startup_held_orgs[second.slug], second)
+                        self.assertEqual(state.broken_orgs[second.slug], "profile_consumer_changed")
+                        self.assertEqual(second.db._conn.execute("PRAGMA busy_timeout").fetchone()[0], 0)
+                    else:
+                        self.assertFalse(state.broken_orgs)
+                        self.assertIs(state.orgs_snapshot()[second.slug], second)
+                        self.assertEqual(second.db._conn.execute("PRAGMA busy_timeout").fetchone()[0], 5000)
+                        self.assertIs(state.orgs_snapshot()[first.slug], first)
+                        self.assertTrue(captures[first.slug].used)
+                        if case == "capture_unavailable":
+                            self.assertEqual(snapshot(first.db, "THR-original"), before_first)
+                        else:
+                            self.assertEqual(first.db.execute(
+                                "SELECT COUNT(*) FROM audit_log WHERE action=?", (STARTUP_ACTION,)
+                            ).fetchone()[0], 1)
+
     async def test_released_history_growth_is_thread_local(self) -> None:
         with tempfile.TemporaryDirectory() as scratch:
             async with fixture(Path(scratch)/"org") as (org, _):
