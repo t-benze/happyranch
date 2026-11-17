@@ -97,7 +97,7 @@ export function SkillDetailPage(): JSX.Element {
   if (query.isLoading) {
     return (
       <div className="h-full overflow-y-auto">
-        <div className="mx-auto w-full max-w-4xl px-4 py-5 md:px-7 md:py-6">
+        <div className="mx-auto w-full max-w-4xl px-4 py-6 md:px-12 md:py-8">
           {backLink}
           <div
             className="border-border-subtle bg-surface-subtle h-40 animate-pulse rounded-md border"
@@ -111,7 +111,7 @@ export function SkillDetailPage(): JSX.Element {
   if (query.isError || !query.data) {
     return (
       <div className="h-full overflow-y-auto">
-        <div className="mx-auto w-full max-w-4xl px-4 py-5 md:px-7 md:py-6">
+        <div className="mx-auto w-full max-w-4xl px-4 py-6 md:px-12 md:py-8">
           {backLink}
           <EmptyState
             icon={<TriangleAlert size={28} />}
@@ -138,11 +138,11 @@ export function SkillDetailPage(): JSX.Element {
     // `break-words` (inherited overflow-wrap) keeps long mono identifiers from
     // forcing horizontal overflow of the content region on narrow viewports.
     <div className="h-full overflow-y-auto">
-      <div className="mx-auto w-full max-w-4xl px-4 py-5 break-words md:px-7 md:py-6">
+      <div className="mx-auto w-full max-w-4xl px-4 py-6 break-words md:px-12 md:py-8">
       {backLink}
 
       {/* ── Header ─────────────────────────────────────────────── */}
-      <header className="border-border-default bg-surface-raised rounded-md border p-5 md:p-6">
+      <header className="border-border-default bg-surface-raised rounded-md border p-6 md:p-8">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div className="min-w-0">
             <div className="mb-2 flex flex-wrap items-center gap-2">
@@ -226,7 +226,7 @@ export function SkillDetailPage(): JSX.Element {
             {t('skills.detail.attentionBody')}
           </p>
           {issues.length > 0 && (
-            <ul className="text-fg-muted text-body-sm mt-2 list-disc space-y-1 pl-5">
+            <ul className="text-fg-muted text-body-sm mt-2 list-disc space-y-1 pl-6">
               {issues.map((issue) => (
                 <li key={issue}>{issue}</li>
               ))}
@@ -236,12 +236,12 @@ export function SkillDetailPage(): JSX.Element {
       )}
 
       {/* ── Source / SKILL.md content ─────────────────────────── */}
-      <section className="border-border-default bg-surface-raised mt-4 rounded-md border p-5 md:p-6">
+      <section className="border-border-default bg-surface-raised mt-4 rounded-md border p-6 md:p-8">
         <Eyebrow>{t('skills.catalog.source')}</Eyebrow>
         <p className="text-mono-sm text-fg-muted break-words">{skill.source}</p>
 
         {skill.when_to_use && (
-          <div className="mt-5">
+          <div className="mt-6">
             <Eyebrow>{t('skills.detail.whenToUse')}</Eyebrow>
             <p className="text-fg-muted text-body-sm leading-relaxed">
               {skill.when_to_use}
@@ -250,7 +250,7 @@ export function SkillDetailPage(): JSX.Element {
         )}
 
         {skill.description && (
-          <div className="mt-5">
+          <div className="mt-6">
             <Eyebrow>{t('skills.detail.guidance')}</Eyebrow>
             <p className="text-fg-muted text-body-sm leading-relaxed">
               {skill.description}
@@ -267,7 +267,7 @@ export function SkillDetailPage(): JSX.Element {
       {editable ? (
         <SkillAssignmentPanel slug={slug ?? ''} skillId={skill.skill_id} />
       ) : (
-      <section className="border-border-default bg-surface-raised mt-4 rounded-md border p-5 md:p-6">
+      <section className="border-border-default bg-surface-raised mt-4 rounded-md border p-6 md:p-8">
         <Eyebrow>{t('skills.detail.perAgent')}</Eyebrow>
         <h2 className="text-h2 text-fg mb-1">{t('skills.detail.whereEffective')}</h2>
         <p className="text-fg-muted text-body-sm">{t('skills.detail.perAgentDesc')}</p>

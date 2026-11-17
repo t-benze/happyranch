@@ -2,7 +2,7 @@
 
 > Test-policy amendment (THR-291 seq40): Python unit source and gates cited below
 > are retired. Product invariants and acceptance obligations remain unchanged;
-> replacement E2E coverage is PENDING. See [the coverage gap record](../python-test-reset.md).
+> replacement E2E coverage is PENDING. See [the coverage gap record](../operations/python-test-reset.md).
 
 > **Status:** current
 > **Date:** 2026-08-26
@@ -48,7 +48,7 @@ The future acceptance matrix has five required rows: same-Wi-Fi direct; same-Wi-
 
 #### M4 public-cell procedure (THR-327 goal C; native post-merge dispatch)
 
-[`scripts/ci/README-m4-tailnet.md`](../../scripts/ci/README-m4-tailnet.md)
+[`docs/operations/ci-m4-tailnet.md`](../operations/ci-m4-tailnet.md)
 owns the procedure. Main-only `managed-m4.yml` uses a GitHub-hosted macOS runner,
 workflow_dispatch only, contents:read, pinned actions and always-cleanup. It
 builds the unchanged shipped Go C archive natively and drives the existing C ABI
@@ -431,7 +431,7 @@ The Linux sidecar foreground command is `happyranch-tsnet-sidecar --config /abso
 
 Both rendered services are `Type=notify`, with `Restart=on-failure`, `RestartSec=1`, `WatchdogSec=30`, and `StartLimitIntervalSec=300`/`StartLimitBurst=5`. In system mode, connector crashes after READY get the full five starts in 300 seconds; when the connector fails before READY, the `Upholds`/`BindsTo` pair adds start-limit checks, so restarts can be refused after as few as three real starts. The unit stays failed until the same explicit `reset-failed`/start recovery; a refused unit may report `Result=signal`, and its journal’s `Start request repeated too quickly` line identifies the refusal. The prior 30/60/120s backoff (3/600s) belonged to the removed Go supervisor and is superseded; systemd is the only supervisor. The connector starts first: the sidecar has `After=` plus `BindsTo=happyranch-connector.service`; the system-mode connector adds `Upholds=happyranch-tsnet-sidecar.service` (systemd >= 249) to bring the bound sidecar back after connector recovery. Both have `PartOf=happyranch-managed.target`; the target Wants both, and intentionally stopping it stops the connector and its Upholds relationship. Every existing hardening directive is retained. The sidecar alone adds `AF_NETLINK` because tsnet Linux netmon subscribes to route/interface changes; the connector retains AF_INET/AF_INET6/AF_UNIX only.
 
-Same-boot recovery acceptance is defined by `.github/workflows/managed-m3.yml` and `scripts/ci/m3_recovery.sh` and remains **UNEXECUTED** until that main-only manual workflow passes. It reuses M2 provisioning and real-daemon tailnet requests and observes, in order, connector SIGKILL, sidecar SIGKILL with saved node identity/no new enrollment, connector watchdog timeout after SIGSTOP, intentional stop/start, the shipped start-limit exhaustion and explicit reset/start, daemon-fixture restart without reinstall, and uninstall/purge residue. Each recovery requires both services notify-READY and a paired real-daemon tailnet HTTP 200; unit properties and journals are retained per step. Step 5 crashes the running (READY) connector exactly five times and proves start-limit refusal from the connector journal. Only steps 4 and 5 explicitly start product services after a fault; a sidecar left stopped by `BindsTo=` fails acceptance without a harness workaround. Start-rate accounting is reset on both units at the beginning of fault steps 1–4 and 6 so previous starts do not consume another fault’s budget. VM reboot acceptance is separately defined by `scripts/ci/m3_reboot.sh` and the host-side Cloud Assistant runner `scripts/ci/m3_reboot_aliyun.py`. It remains **UNEXECUTED** until the exact published head completes two passes on an explicitly authorized disposable Ubuntu 24.04 VM. Each pass installs/pairs, observes both notify services automatically READY after a changed boot ID without issuing a product start, reuses the saved pairing credential for a real-daemon tailnet 200, and compares Headscale node keys/IDs/IPs/count plus consumed enrollment metadata and marker. It then disables/stops the managed target, reboots again, samples both services inactive/dead with zero restarts for at least 30 seconds, explicitly re-enables/starts the target, and purges with M2 residue checks. Only test fixture units (Headscale, daemon, peer tailscaled) are enabled for boot; state and phase logs live under `/var/lib/happyranch-m3`, not temporary storage. Product units and recovery limits are unchanged. Previous/current boot journals and properties accompany each pass; this driver adds no GitHub trigger or required check. See [the VM runbook](../../scripts/ci/README-m3-reboot.md) for invocation, failure handling and evidence.
+Same-boot recovery acceptance is defined by `.github/workflows/managed-m3.yml` and `scripts/ci/m3_recovery.sh` and remains **UNEXECUTED** until that main-only manual workflow passes. It reuses M2 provisioning and real-daemon tailnet requests and observes, in order, connector SIGKILL, sidecar SIGKILL with saved node identity/no new enrollment, connector watchdog timeout after SIGSTOP, intentional stop/start, the shipped start-limit exhaustion and explicit reset/start, daemon-fixture restart without reinstall, and uninstall/purge residue. Each recovery requires both services notify-READY and a paired real-daemon tailnet HTTP 200; unit properties and journals are retained per step. Step 5 crashes the running (READY) connector exactly five times and proves start-limit refusal from the connector journal. Only steps 4 and 5 explicitly start product services after a fault; a sidecar left stopped by `BindsTo=` fails acceptance without a harness workaround. Start-rate accounting is reset on both units at the beginning of fault steps 1–4 and 6 so previous starts do not consume another fault’s budget. VM reboot acceptance is separately defined by `scripts/ci/m3_reboot.sh` and the host-side Cloud Assistant runner `scripts/ci/m3_reboot_aliyun.py`. It remains **UNEXECUTED** until the exact published head completes two passes on an explicitly authorized disposable Ubuntu 24.04 VM. Each pass installs/pairs, observes both notify services automatically READY after a changed boot ID without issuing a product start, reuses the saved pairing credential for a real-daemon tailnet 200, and compares Headscale node keys/IDs/IPs/count plus consumed enrollment metadata and marker. It then disables/stops the managed target, reboots again, samples both services inactive/dead with zero restarts for at least 30 seconds, explicitly re-enables/starts the target, and purges with M2 residue checks. Only test fixture units (Headscale, daemon, peer tailscaled) are enabled for boot; state and phase logs live under `/var/lib/happyranch-m3`, not temporary storage. Product units and recovery limits are unchanged. Previous/current boot journals and properties accompany each pass; this driver adds no GitHub trigger or required check. See [the VM runbook](../operations/ci-m3-reboot.md) for invocation, failure handling and evidence.
 
 The shipped managed installer below provides fresh-host installation, post-start drift observation, uninstall and the enrollment credential handoff. Consumed-credential restart admission (THR-327 seq187/227) is implemented after the existing no-symlink and owner-directory gates: (1) a valid marker plus exact credential ENOENT starts with an empty auth key to reuse tsnet state, without re-running consumption or rewriting/recreating the marker; (2) marker plus any present credential entry (including a dangling symlink) refuses without reading the credential; (3) marker ENOENT preserves one-time validation, reading, redemption, durable consumption commit and credential deletion. Other marker/credential lookup errors fail closed. A trusted marker must be regular, current-user-owned, mode `0600`, and contain exactly the existing SHA-256 digest of `RoleIdentity + NUL + ControlURL` followed by a newline; marker reads use `O_NOFOLLOW|O_NONBLOCK` and verify the opened regular file. The production tsnet adapter refuses enrollment and restart before tsnet construction if `TS_AUTHKEY`, `TS_AUTH_KEY`, `TSNET_FORCE_LOGIN` or `TS_DEBUGSYSPOLICY_AUTH_KEY` is set, including empty values; its error names the variable and asks that it be unset without exposing its value. Only the explicitly passed credential may supply an auth key; restart reuses the configured persistent node state. Restart retains engine-start and all receipt gates (including durable state and expected-peer visibility), followed by connector probe and listener success. M1 below passed initial systemd notify startup and the bounded install/request/uninstall lifecycle. Tailnet transport (M2), full-daemon acceptance and real restart/reboot recovery remain **UNEXECUTED** and outside M1.
 
@@ -489,7 +489,8 @@ The 3b-1b-2 records-first sub-part extends only that writer's fixed map with
 digests are lowercase SHA-256 for exactly connector/sidecar/policy JSON,
 release-daemon JSON and daemon.token. Transaction records additionally bind
 provision.json. The sole provision phase is `provisioned`, and the sole
-transaction phase is `prepared`. Extra/duplicate fields, other versions/phases,
+fresh-publication transaction phase is `prepared`; the replacement-only stopped
+phase is described below. Extra/duplicate fields, other versions/phases,
 arbitrary digest paths, secret fields and non-digest values refuse before publication. The existing
 unversioned operator `provision` output and its reader remain unchanged.
 Any final or pending transaction entry blocks provision/install/uninstall and
@@ -563,33 +564,52 @@ and authenticated token rotation/repair remain undelivered and fail-closed;
 helper/package selection remains 3b-1d. TODO (3b-2): implement owned local
 Headscale stop/cleanup; this sub-part provides no callable seam for it.
 
-The next 3b-1c admission sub-part adds Python-only `replacement_inventory()`
-and a fail-closed `replace_failed()` entry. Only the replacement classifier can
-read a final `install-transaction.json`: the existing closed v1 schema is
-unchanged (only `prepared`; no new fields or phases). It requires root:root
-0600 metadata and all six fixed-file SHA-256 digests to match, including
-`provision.json`, and compares the exact journal bytes across both reads.
-Only a known failed/partial installation receives a `journal_generation`,
-the SHA-256 of those exact record bytes. This is a read-only candidate
-fingerprint, not proof of an interrupted transaction or permission to resume.
-Missing/different files, unknown/malformed records and final/pending uncertainty
-remain conflicts. Clean, intact manual and modern staged-inert/recorded installs
-are not replacement candidates; successful modern records should resume
-idempotently rather than be replaced. A modern installation classified as
-failed/partial can be a candidate.
+The 3b-1c Python-only replacement consumer now implements a **journal-bearing
+stop/intent sub-part**, not completed failed-install replacement. The v1 record
+still has exactly `version`, `layout`, `digests` and `phase`; only this consumer
+adds the phase `replacement-stopped` alongside `prepared`. Ordinary publication
+still accepts only `prepared`. All six original fixed-file digests, including
+provision.json, must match; root:root 0600 journal metadata and exact journal
+bytes are checked repeatedly. Stopped intents require the exact generated
+canonical bytes; `journal_generation` hashes those exact bytes.
+Unknown/malformed/mismatched records, missing files and pending entries refuse.
+Clean, successful modern staged-inert/recorded and intact manual installs still
+refuse before any mutation. An unjournaled failed/partial candidate also remains
+unavailable without effects in this bounded sub-part.
 
-This is the explicit read-only cut: `replace_failed()` refuses non-candidates
-and reports replacement mutation unavailable for candidates, before stop,
-release-home token reads/copies or any filesystem effect. Journal execution/update,
-quarantine/removal, fresh generation after replacement, and interrupted
-replacement resume to staged-inert remain undelivered and unavailable. The
-future mutating consumer must re-inventory, use the merged same-FD source-UID
-token reader before service effects, call `stop_and_confirm()` before file
-changes, journal/fsync every fixed-path rename/removal and never restore old
-credentials. Ordinary inventory, stop, provision/install/uninstall/drift and
-activation retain their transaction/profile refusals. No CLI/helper/D-Bus/package
-caller is added; Disable/account cleanup, rotation/repair, 3b-1d and 3b-2 remain
-outside this sub-part. All five rendered units in both layouts and
+For a proven journal-bearing failed/partial candidate, `replace_failed()`
+revalidates the recorded release home and reads only its fixed daemon.token
+through the merged same-FD source-UID reader before any mutating manager call.
+It re-inventories, calls the existing `stop_and_confirm()` owner, and requires
+dead inactive/failed states, no jobs, zero service PIDs and no cgroups before
+file changes. Stop/proof failure preserves every file. The merged atomic writer
+then fsyncs a root:root 0600 `replacement-stopped` intent with unchanged six
+digests, rechecks exact old journal bytes, fixed files and pinned parents, and
+atomically replaces only that journal followed by parent fsync. The ordinary
+no-replace writer contract is unchanged for every other publication. These
+sampled checks assume the existing single protected root writer; they are not
+a concurrent-root-writer fence.
+
+An interrupted published stopped intent is recognized only while its exact
+journal bytes and all six original files still validate. A later call rechecks
+the fixed token and quiescence, leaves the intent bytes unchanged, and raises
+`replacement paused after stop intent; quarantine/removal and fresh staging unavailable`.
+It never starts/enables a service or claims replacement success. Interruption
+before intent publication can leave `prepared`; if stopping erased the failed
+indication, a later call refuses rather than inventing failure provenance.
+Pending/uncertain entries are never automatically repaired or replayed.
+
+Quarantine/removal, fresh IDs/config/enrollment after replacement, unjournaled
+replacement and resume to staged-inert are still undelivered and unavailable.
+No old credentials, trust, control settings or argv are copied or restored.
+Ordinary inventory/stop/provision/install/uninstall/drift and modern activation
+retain their transaction/profile refusals, including the existing slice-3b-2
+home-control diagnostic. The fixed legacy system connector supervisor also
+consults the same transaction-refusal owner before install/uninstall/start/stop/
+restart/enable/disable/upgrade/rollback/run; a journal cannot reopen that path.
+No release daemon/package effect or CLI/helper/D-Bus/
+package caller is added. Disable/account cleanup, rotation/repair, 3b-1d and
+3b-2 remain outside this sub-part. All five unit strings in both layouts and
 `home_transport=False` remain unchanged.
 
 The root operator supplies `install --enrollment-key-file /absolute/input.key`; the input must be a root:root, single-link regular `0600` file, nonempty and at most 64 KiB. Literal no-follow parent traversal and nonblocking/no-follow file opens refuse symlinks and special files. Every install, including reinstall, requires explicit input; this command does not infer a keyless reinstall from persisted state. Use ordinary service restart for an enrolled host; installing a new key over a consumed marker still refuses at the existing marker-plus-input gate. The customer cell issues the single-use, short-expiry key; the installer does not provision it. The original operator input remains the operator's responsibility to remove promptly.
@@ -664,7 +684,7 @@ Pairing codes and device credentials are stored ONLY as sha256 digests inside th
 
 ### M4 home UDP enforcement amendment (TASK-15886)
 
-The [runbook](../../scripts/ci/README-m4-tailnet.md#home-udp-enforcement-proof-task-15886)
+The [runbook](../operations/ci-m4-tailnet.md#home-udp-enforcement-proof)
 owns the exact gate and controls. The pktap/tcpdump parser, observer self-test,
 socket observations and manual observer-probe workflow are removed. PR1459
 closed log diagnostics remain corroboration; contradictory regions still veto.

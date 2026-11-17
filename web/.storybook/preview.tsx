@@ -16,7 +16,7 @@ const preview: Preview = {
         <I18nProvider>
           <QueryClientProvider client={queryClient}>
             <TooltipProvider>
-              <div className="bg-surface-canvas text-text-primary min-h-screen px-4 py-6 sm:px-8 lg:px-12">
+              <div className="bg-surface-canvas text-text-primary min-h-screen px-4 py-8 sm:px-16 lg:px-12">
                 <Story />
               </div>
             </TooltipProvider>

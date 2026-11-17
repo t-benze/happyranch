@@ -1,10 +1,10 @@
 # Ordinary Jenkins job helper
 
 For HappyRanch Mac releases, follow the
-[Mac release handbook](runbooks/mac-release-handbook.md): GitHub Actions builds,
+[Mac release handbook](../runbooks/mac-release-handbook.md): GitHub Actions builds,
 and the owner signs locally. No Jenkins app-build job is installed; the proposed
 build-only job is unavailable. The Jenkins signing job stays disabled, and its
-[attended signing source](../ci/jenkins/mac-signing/README.md) is superseded
+[attended signing source](../../ci/jenkins/mac-signing/README.md) is superseded
 historical reference, not an operating route. The ordinary job helper below
 does not authorize Mac signing or a new job.
 
@@ -15,7 +15,7 @@ This PR852 distribution is a **candidate pending independent review, QA and exac
 ## Existing Mac native probe job
 
 The separate existing `happyranch-mac-native-probe` Freestyle job uses the
-[reviewed template and bounds](../ci/jenkins/mac-native-probe/README.md).
+[reviewed template and bounds](../../ci/jenkins/mac-native-probe/README.md).
 Its `toolchain` suite provisions exact hash-pinned uv 0.12.21 and Node 24.19.0
 LTS (bundled npm) and Go 1.23.12 from official release tarballs into job scratch, then observes
 packaging tools and free space. Only child-process PATH changes; no host install
@@ -35,7 +35,7 @@ and exit-only auth status are observed on the fixed host PATH with isolated HOME
 (host-stored login unverified); no session starts in that suite. Build23 at
 PR1485 head `5b66b30` proved source-toolchain readiness; packaged execution,
 signing and host login remain unverified. The separately authorized
-[`SUITE=packaged`](../ci/jenkins/mac-native-probe/README.md#packaged-app-observation)
+[`SUITE=packaged`](../../ci/jenkins/mac-native-probe/README.md#packaged-app-observation)
 reuses that provisioner for one exact-SOURCE_SHA unsigned app build, private
 installation and frozen daemon/session/cleanup observations. It records eight
 individual step results and the headless GUI/real-provider limitations. Existing
@@ -43,7 +43,7 @@ job configuration and triggers are unchanged; each submission needs explicit
 app-build and packaged-run allocation.
 Its build child alone appends `-modcacherw` for removable private Go cache
 directories. After the exact build terminates, the
-[`collect_packaged.py` join](../ci/jenkins/mac-native-probe/README.md#packaged-app-observation)
+[`collect_packaged.py` join](../../ci/jenkins/mac-native-probe/README.md#packaged-app-observation)
 writes a separate collected report with actual EXIT step8 status; the original
 pre-EXIT probe stays unchanged. Missing cleanup evidence remains NOT_RUN.
 After immutable checkout/identity, its stdlib-only bootstrap takes the measured
@@ -396,3 +396,18 @@ counts, and require both `cleanup.txt` and `post-cleanup.txt` to say
 Creating, editing, or running that live Jenkins item is an operator action, not
 part of repository verification. Never run this integration command on the
 HappyRanch Linux daemon host, directly or through a HappyRanch job.
+
+## History
+
+These references remain inline to preserve sentence meaning and owner, artifact,
+or case identity.
+
+- `TASK7679` — Persistent HappyRanch job, blocked callback and resume (original line 195).
+- `TASK7683` — Persistent HappyRanch job, blocked callback and resume (original line 195).
+- `THR-291 seq40` — Mac mini disposable integration job (original line 205).
+- `TASK-001` — Mac mini disposable integration job (original line 299).
+- `THR-291` — Mac mini disposable integration job (original lines 371, 376).
+- `seq40` — Mac mini disposable integration job (original line 372).
+- `THR297` — Mac mini disposable integration job (original line 374).
+- `THR-211 seq342` — Mac mini disposable integration job (original line 380).
+- `TASK-9558` — Mac mini disposable integration job (original line 381).

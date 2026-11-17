@@ -283,7 +283,7 @@ export function SchedulePage(): JSX.Element {
 
       {/* Error */}
       {query.isError && (
-        <div className="flex flex-col items-center justify-center gap-3 p-8 text-center">
+        <div className="flex flex-col items-center justify-center gap-3 p-16 text-center">
           <p className="text-feedback-danger text-sm">
             Could not load scheduled wakes.
             {query.error?.message && <> {query.error.message}</>}

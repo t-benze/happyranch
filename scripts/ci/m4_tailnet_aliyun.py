@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """M4 host-side Cloud Assistant orchestration; Linux client is diagnostic only.
 
-Run only as a persistent job, at a clean published head. See README-m4-tailnet.md.
+Run only as a persistent job, at a clean published head. See ../../docs/operations/ci-m4-tailnet.md.
 The host Aliyun profile never leaves this host. No system Tailscale is used.
 """
 from __future__ import annotations

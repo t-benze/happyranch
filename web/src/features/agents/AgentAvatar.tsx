@@ -35,9 +35,8 @@ export function AgentAvatar({
   size = 'sm',
   className = '',
 }: AgentAvatarProps): JSX.Element {
-  // NOTE: this project's `--spacing-8` is a custom 4rem (64px) t-shirt token,
-  // so `h-8` is NOT 32px. Use the linear-scale `h-9`/`h-12` for the intended
-  // 36px roster / 48px hero chips (Direction-A `a-agents`).
+  // Spacing is Tailwind's linear 4px scale (THR-376 PR4): `h-9`/`h-12` are
+  // the intended 36px roster / 48px hero chips (Direction-A `a-agents`).
   const sizing =
     size === 'lg'
       ? 'h-12 w-12 rounded-xl text-base'

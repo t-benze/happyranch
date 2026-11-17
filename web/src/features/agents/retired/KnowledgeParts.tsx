@@ -132,7 +132,7 @@ export function Facts({ children }: { children: ReactNode }): JSX.Element {
 
 export function Fact({ term, children }: { term: string; children: ReactNode }): JSX.Element {
   return (
-    <div className="md:flex md:gap-6">
+    <div className="md:flex md:gap-8">
       <dt className="text-text-muted md:w-40 md:shrink-0">{term}</dt>
       <dd className="text-text-primary min-w-0 break-words md:flex-1">{children}</dd>
     </div>
@@ -140,7 +140,7 @@ export function Fact({ term, children }: { term: string; children: ReactNode }):
 }
 
 export function SectionLabel({ children }: { children: ReactNode }): JSX.Element {
-  return <h3 className="text-text-muted mt-6 mb-2 text-xs font-semibold tracking-widest uppercase">{children}</h3>;
+  return <h3 className="text-text-muted mt-8 mb-2 text-xs font-semibold tracking-widest uppercase">{children}</h3>;
 }
 
 export function Notice({ tone, icon, role, children }: { tone: 'info' | 'danger' | 'positive' | 'neutral'; icon?: ReactNode; role?: 'status' | 'alert'; children: ReactNode }): JSX.Element {

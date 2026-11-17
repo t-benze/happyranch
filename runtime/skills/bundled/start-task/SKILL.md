@@ -1700,7 +1700,7 @@ public selection and the old-fresh fence atomically. Noncatalog V3 fixtures keep
 the disposable fence. Loaded identity, admission and genuine acceptance remain
 separate from source delivery. Preserve original
 command/key and uncertainty; source/merge is not operating authority. See
-`docs/runbooks/sequential-coding-cutover.md`; genuine FINAL callback rules remain.
+`docs/operations/sequential-coding-cutover.md`; genuine FINAL callback rules remain.
 
 
 Sequential Coding U4c supersedes the earlier unavailable public subject-binding

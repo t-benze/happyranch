@@ -627,7 +627,7 @@ export function OrganizationSection({ org }: Props): JSX.Element {
 
       {/* Sticky save bar */}
       {dirty && (
-        <div className="border-border bg-bg-subtle sticky bottom-0 -mx-6 mt-6 -mb-6 flex items-center gap-3 border-t px-6 py-3">
+        <div className="border-border bg-bg-subtle sticky bottom-0 -mx-8 mt-8 -mb-8 flex items-center gap-3 border-t px-8 py-3">
           <button
             type="button"
             onClick={handleSave}
@@ -767,7 +767,7 @@ const BooleanToggle = forwardRef<HTMLButtonElement, {
           onChange(!value);
         }
       }}
-      className={`inline-flex h-5 w-9 items-center rounded-full transition-colors ${
+      className={`inline-flex h-6 w-9 items-center rounded-full transition-colors ${
         value ? 'bg-accent' : 'bg-bg-raised border-border border'
       }`}
     >

@@ -1,4 +1,4 @@
-# Python test reset — THR-291 seq40
+# Python test reset
 
 Founder THR-291 seq659 slice 3 uses standard per-case JUnit and explicit
 failure-only trace/screenshot/log artifacts with GitHub default retention.
@@ -22,12 +22,12 @@ shutdown/physical closure checks remain. Thread providers scrub their known toke
 literals without an export-context protocol. No SQL/state upload, receipt/hash/
 ownership publisher or publication budgets remain. Operational480/240/720/60/900 bounds and product output caps stay.
 JUnit always uploads; missing reports fail. Known synthetic tokens receive literal
-scrubbing in JUnit/logs/ZIP members. See [the current reporting contract](../e2e/README.md#current-reporting-contract--slice-3-of-3-thr-291-seq659).
+scrubbing in JUnit/logs/ZIP members. See [the current reporting contract](../../e2e/README.md#current-reporting-contract--slice-3-of-3-thr-291-seq659).
 Historical records below preserve actual failures and holds; their removed
 controller/launcher/export/collector/optional-diagnostic instructions are superseded, never current acceptance.
 
 
-Founder seq40 authorizes deletion of the entire former Python unit selection
+Founder authorizes deletion of the entire former Python unit selection
 before replacement. It supersedes selective retirement, replacement-before-deletion
 and a small retained contract tier. This is accepted loss of test source, not
 compatibility proof. Git history retains the old source; no hidden copy or E2E
@@ -73,7 +73,7 @@ Remote DIY integration retains its actual policy-envelope helpers. Unit-only
 fixtures, helpers and archived test data are removed.
 
 Native Swift/Go/platform suites and product assets remain. Web behavior
-verification follows Product E2E; see [repository verification status](../AGENTS.md#verification-status).
+verification follows Product E2E; see [repository verification status](../../AGENTS.md#verification-status).
 `tests/contract/openapi.json` and `route-classification.json` remain contract data;
 `scripts/generate_openapi_snapshot.py` remains the maintainer.
 The hostile lab retains the four JSON inputs read by its actual `Contract` reader:
@@ -84,7 +84,7 @@ remain in the managed remote access spec.
 
 ## Gate state
 
-Founder THR-291 seq69 makes automated PR/main merge CI **lint/static only**.
+Founder makes automated PR/main merge CI **lint/static only**.
 Required checks at the final PR head and exact merge on main are exactly
 `Source Boundary Lint` and `Web Lint (Node 24)`, both unconditional with no
 path applicability. The manager supplies these two names to `pr_ci_waiter`;
@@ -100,7 +100,7 @@ Independent full code review and scoped QA remain mandatory. Static checks
 cannot establish lifecycle, callback, browser or platform correctness;
 behavioral regressions can be detected only later when their coverage executes.
 
-J1 adds seven KB/artifact variants after the preserved56 prefix: 63 cases per lane before J2. It covers real agent CLI writes, exact API and KB browser content, the artifact card and its byte-identical browser Download, bearer denials and beta-org isolation. See [the J1 contract](../e2e/README.md#j1-agent-kb-and-shared-artifacts-thr-343). Historical56-case run/source records below remain attributed to their original heads.
+J1 adds seven KB/artifact variants after the preserved56 prefix: 63 cases per lane before J2. It covers real agent CLI writes, exact API and KB browser content, the artifact card and its byte-identical browser Download, bearer denials and beta-org isolation. See [the J1 contract](../../e2e/README.md#j1-agent-kb-and-shared-artifacts-thr-343). Historical56-case run/source records below remain attributed to their original heads.
 
 J2 appends six custom-skill cases: **69 product cases per lane**, 138 across Python3.12/3.14. It covers genuine session CLI creation, default-hidden visibility, refused nonfounder eligibility writes, founder If-Match eligibility, exact next-session materialized marker reads and the founder Skills card. See the J2 section in the same E2E contract.
 
@@ -134,14 +134,14 @@ there is no separate publication phase, bounded FAIL receipt or timing-export
 certification. Hosted upload still shares the15-minute job envelope. These source
 bounds and480−375=105 nominal planning slack
 are not measured fit or observed signal/cleanup/export behavior. The42 baseline/Pause variants remain at their original boundaries;
-the E04 prefix below adds six. Cadence and the600 target remain unchanged. See [the timing contract](../e2e/README.md).
+the E04 prefix below adds six. Cadence and the600 target remain unchanged. See [the timing contract](../../e2e/README.md).
 Engineering_manager owns daily failure/missing-evidence triage through existing
 tasks/threads; no new notifications or guaranteed response SLA is implied.
 
 Python units stay RETIRED; `python` exits2. General integration is **SKIPPED**
 under THR-243 seq42, never PASS. Native/platform, integration, the named actual
 CLI callback and their isolation fences retain their sources. See the
-[repository verification status](../AGENTS.md#verification-status) for retired suites.
+[repository verification status](../../AGENTS.md#verification-status) for retired suites.
 Docs Manual build and the real tenant-isolation harness retain manual-only
 workflows, outside PR/main. Manual/tag macOS packaging is a separate release
 activity and invokes no fresh E2E.
@@ -194,7 +194,7 @@ replay, changed-payload retention under an ordinary static binding, known-task s
 missing/wrong bearer, colliding IDs across two orgs, and UI org switching.
 Jobs, threads, cancellation/late callback and actual daemon restart/recovery
 follow. The first eight cases are implemented in the separately authorized
-standalone lane; [its case record](../e2e/README.md) distinguishes source from
+standalone lane; [its case record](../../e2e/README.md) distinguishes source from
 actual execution/authoring evidence. The daily-only matrix is 3.12/3.14; historical scheduled runs38482572306/38644465643 failed; corrected behavior is pending. The aggregate requires every cell/variant, exact
 source, zero skips and cleanup; no installed ruleset enforcement is inferred.
 Public API creates ordinary tasks; the built browser verifies lifecycle and
@@ -209,7 +209,7 @@ reports retain their original failures, counts and allocations.
 ### E04 daily source prefix
 
 The daily harness appends six E04 variants after23 baseline and19 Pause
-variants (48 authored). Founder THR291seq301(b)/303 replaces only original slot44
+variants (48 authored). Founder replaces only original slot44
 with E04.review-required-refused under sole ROOT12445, accepted R1–R3 after
 independent TASK12447 design review. No legacy fixture or parity keeper: that
 variant's individual rejection and natural waiter wake are expressly retired.
@@ -232,7 +232,7 @@ shipping method/URL/query/HTTP200 and durable content, including live S2's
 historical blocked S1 result. CLI child deadline remains caller minus one second.
 Partial failure evidence uses existing sanitation; no production seam follows.
 
-The [E04 case/control records](../e2e/README.md#e04-jobs-prefix-task-10686--thr-291)
+The [E04 case/control records](../../e2e/README.md#e04-jobs-prefix-task-10686--thr-291)
 carry all four authoring answers and consumer mapping. Source/static checks do
 not establish execution, assertion sensitivity, fit, sanitation or cleanup.
 All new behavior/proof remains MISSING/UNEXECUTED; corrected daily behavior pending after observed historical failures.
@@ -279,7 +279,7 @@ and two cancelled. Real browser cascade and terminal CLI refusals precede
 forwarding W's original captured provider CLI request; independent serialized
 content, process/socket provenance and a full1s unchanged window are required.
 The E05 witness prefix is bound to its actual byte/record offset, with every
-E07 suffix record accounted. [Case and four-answer records](../e2e/README.md#e07-c-source-increment--task-10773)
+E07 suffix record accounted. [Case and four-answer records](../../e2e/README.md#e07-c-source-increment--task-10773)
 retain all missing proof. R/full remains HELD, with no new restart/rotation code.
 C50 uses fixed16/12/8/6/8 partitions within unchanged480/original720;425 is
 unmeasured arithmetic. Daily-only19UTC and the four execution artifacts are unchanged.
@@ -290,3 +290,12 @@ General/actual callback integration SKIPPED THR243seq42; retired units untouched
 The live cancel-CLI print mismatch and E04 output-cap/persistent-stop remain
 unresolved. Sole ROOT TASK12445 resolves superseded TASK12281 and owns main delivery/execution
 and collection, preserving all historical failures and unknown native ownership. No entire-reset or test-authoring PASS.
+
+## History
+
+Citations removed from the body, with the section they supported:
+
+- `THR-291 seq40` — Python test reset (original line 1).
+- `seq40` — Python test reset (original line 30).
+- `THR-291 seq69` — Gate state (original line 87).
+- `THR291seq301(b)/303` — E04 daily source prefix (original line 212).

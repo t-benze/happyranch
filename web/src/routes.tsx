@@ -49,7 +49,7 @@ function RootRedirect(): JSX.Element {
   const orgsQuery = useOrgsList();
   const { t } = useTranslation();
   if (orgsQuery.isLoading) {
-    return <div className="text-fg-muted p-6">{t('shell.loading')}</div>;
+    return <div className="text-fg-muted p-8">{t('shell.loading')}</div>;
   }
   const first = orgsQuery.data?.orgs[0]?.slug;
   if (!first) {
@@ -218,7 +218,7 @@ function SpendRedirect(): JSX.Element {
 function NotFound(): JSX.Element {
   const { t, render } = useTranslation();
   return (
-    <div className="text-fg-muted p-6">
+    <div className="text-fg-muted p-8">
       {render('shell.notFound.body', {
         link: (
           <a href="/" className="text-accent hover:underline">

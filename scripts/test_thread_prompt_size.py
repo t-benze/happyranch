@@ -1,4 +1,4 @@
-"""Focused no-provider thread prompt checks; see docs/local-ci.md."""
+"""Focused no-provider thread prompt checks; see docs/operations/local-ci.md."""
 from __future__ import annotations
 
 from collections.abc import AsyncIterator

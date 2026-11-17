@@ -273,7 +273,7 @@ classifications; an unrecognized hostname/auth/backend error remains `unknown`.
 Pinned tsnet v1.78.0 puts its log config/filch files in the same state root;
 there is no separate harness log-directory setting.
 
-## Home UDP enforcement proof (TASK-15886)
+## Home UDP enforcement proof
 
 The macOS pktap/tcpdump candidate is stopped. Its parser, pre-recipient observer
 self-test, socket observations and manual observer-probe workflow are removed.
@@ -465,3 +465,9 @@ covers only separate-network forced private DERP.
 
 
 Custody boundary (engineering_manager TASK-15621): the no-raw-address/PID/tuple/payload rule applies to the packet-proof and capture-diagnostic public fields. The pre-existing reviewed pairs handoff payload synthetic tailnet address and VM service journal metadata are existing public surfaces and are outside that assertion; credentials, enrollment/pairing material and raw capture lines remain forbidden everywhere.
+
+## History
+
+Citations removed from the body, with the section they supported:
+
+- `TASK-15886` — Home UDP enforcement proof (original line 276).

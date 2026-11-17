@@ -117,7 +117,7 @@ function CohortPicker({
     ...cohorts.filter((c) => c.executor === executor && c.model !== null).map((c) => c.model),
   ];
   return (
-    <div className="mt-4 flex flex-wrap items-center gap-x-5 gap-y-3">
+    <div className="mt-4 flex flex-wrap items-center gap-x-6 gap-y-3">
       <div role="group" aria-labelledby="usage-cli-label" className="flex flex-wrap items-center gap-2">
         <span id="usage-cli-label" className="text-caption text-text-muted mr-1">{t('usage.cli')}</span>
         {executors.map((ex) => (
@@ -429,7 +429,7 @@ function UnattributedBlock({
       <p>
         {t('usage.unattributed', { count: total, n: formatCount(total), period: periodLabel })}
       </p>
-      <ul aria-label={t('usage.unattributedLabel', { period: periodLabel })} className="mt-1 list-disc pl-5">
+      <ul aria-label={t('usage.unattributedLabel', { period: periodLabel })} className="mt-1 list-disc pl-6">
         {entries.map(([key, label]) => (
           <li key={key}>
             {RUN_TYPES.some(([type]) => type === key) ? t('usage.unattributedType', { label: t(label) }) : t(label)}: {formatCount(counts[key])}
@@ -537,7 +537,7 @@ export function EfficiencySection({ compare }: { compare: boolean }): JSX.Elemen
   } else if (chosen === null) {
     status = t('usage.efficiencyChooseCli');
     body = (
-      <div className="bg-surface border-border-default shadow-pasture-sm rounded-lg border p-5">
+      <div className="bg-surface border-border-default shadow-pasture-sm rounded-lg border p-6">
         <p className="text-body text-text-primary">
           {t('usage.chooseCohort')}
         </p>

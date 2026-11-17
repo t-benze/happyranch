@@ -39,7 +39,7 @@ function CompareSwitch({
     >
       <span
         aria-hidden="true"
-        className={`inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors ${
+        className={`inline-flex h-6 w-9 shrink-0 items-center rounded-full transition-colors ${
           checked ? 'bg-accent' : 'bg-bg-raised border-border border'
         }`}
       >
@@ -79,7 +79,7 @@ export function UsagePage(): JSX.Element {
   const [compare, setCompare] = useState(false);
   return (
     <ContentWrap>
-      <header className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+      <header className="mb-8 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0 flex-1">
           <PageHeader title={t('usage.title')} meta={<PeriodLabel compare={compare} />} />
         </div>

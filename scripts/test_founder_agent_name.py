@@ -1,4 +1,4 @@
-"""Focused founder initial-name observations; see docs/local-ci.md. No launches."""
+"""Focused founder initial-name observations; see docs/operations/local-ci.md. No launches."""
 from __future__ import annotations
 
 import argparse

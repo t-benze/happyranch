@@ -248,6 +248,19 @@ def _endpoint_valid(endpoint: str) -> bool:
                 for label in host.split(".")))
 
 
+def _canonical_dial_ip(dial_ip: str) -> bool:
+    """Shared canonical RFC1918 IPv4 predicate; never retain parser errors."""
+    ip = None
+    try:
+        ip = ipaddress.IPv4Address(dial_ip)
+    except ipaddress.AddressValueError:
+        pass
+    if ip is None:
+        return False
+    octets = ip.packed
+    return str(ip) == dial_ip and (octets[0] == 10 or (octets[0] == 172 and 16 <= octets[1] <= 31) or octets[:2] == b"\xc0\xa8")
+
+
 def _validate(fields: object, *, now: int) -> DecodedInvite:
     if type(now) is not int or not 0 <= now <= _INT64_MAX:
         raise InviteError("time")
@@ -268,16 +281,7 @@ def _validate(fields: object, *, now: int) -> DecodedInvite:
     if tls.keys() != _TLS_KEYS:
         raise InviteError("schema")
     dial_ip = _text(tls, "dial_ip")
-    ip = None
-    try:
-        ip = ipaddress.IPv4Address(dial_ip)
-    except ipaddress.AddressValueError:
-        pass
-    # Leave the handler first: `from None` still retains the raw exception.
-    if ip is None:
-        raise InviteError("url")
-    octets = ip.packed
-    if str(ip) != dial_ip or not (octets[0] == 10 or (octets[0] == 172 and 16 <= octets[1] <= 31) or octets[:2] == b"\xc0\xa8"):
+    if not _canonical_dial_ip(dial_ip):
         raise InviteError("url")
     control_url = _text(fields, "control_url")
     if control_url not in (_CONTROL_URL, _CONTROL_URL + "/"):

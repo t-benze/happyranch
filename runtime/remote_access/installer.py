@@ -1,7 +1,8 @@
 """Fresh-host managed systemd installation with transient file-only enrollment input.
 
 Provision binaries separately; the provision command stages configuration.
-No upgrade journal, rollback or automatic recovery is provided. Enrollment sources are removed on
+Only journal-bearing failed-install stop intents have a bounded recovery path;
+destructive replacement and upgrade rollback remain unavailable. Enrollment sources are removed on
 success and failure; issue a fresh single-use key before retrying. Files already
 present must match the rendered units; interrupted installs need operator care.
 """
@@ -73,9 +74,9 @@ class InstallInventory:
 class ReplacementInventory:
     """Read-only replacement candidate, never permission to replay a journal.
 
-    The generation fingerprints the exact validated prepared-record bytes. It
+    The generation fingerprints the exact validated transaction-record bytes. It
     is absent unless all six fixed-file digests match a known failed/partial
-    installation. No transaction execution or recovery is available yet.
+    installation, or a stopped replacement intent. Destructive recovery is held.
     """
 
     installation: InstallInventory
@@ -278,7 +279,7 @@ class ManagedInstaller:
                 location = str(self.root / "etc/happyranch/install-transaction.json")
                 if files.pop("install-transaction.json", None) != prepared_transaction:
                     raise InstallerError(location)
-                self._validate_install_record("install-transaction.json", prepared_transaction)
+                self._validate_install_record("install-transaction.json", prepared_transaction, replacement=True)
                 digests = self._json(prepared_transaction)["digests"]
                 if any(name not in files or hashlib.sha256(files[name]).hexdigest() != digest
                        for name, digest in digests.items()):
@@ -352,6 +353,12 @@ class ManagedInstaller:
             paths.extend(str(self.root / _UNIT_DIR / name) for name in units)
             complete = required <= files.keys()
             failed = any(props["ActiveState"] == "failed" for props in properties.values())
+            if (prepared_transaction is not None
+                    and self._json(prepared_transaction)["phase"] == "replacement-stopped"):
+                # Only the replacement consumer can recognize this intent. All
+                # six original files must still match; stopping changes manager
+                # state, so it cannot be used to infer a successful manual install.
+                return InstallInventory("known-failed-or-partial", "replacement-stopped", tuple(sorted(paths)))
             if modern and complete and len(units) in {0, len(UNITS)} and not failed:
                 managed = connector.get("managed")
                 profile = managed.get("profile") if isinstance(managed, dict) else None
@@ -370,9 +377,9 @@ class ManagedInstaller:
             return InstallInventory("manual-install-conflict", "unsafe-or-unrecognized", (location,))
 
     def replacement_inventory(self) -> ReplacementInventory:
-        """Inspect a prepared journal only for replacement candidate selection.
+        """Inspect a journal only for replacement candidate selection.
 
-        The existing closed v1 schema/phase is unchanged. A pending entry,
+        V1 adds only the replacement-stopped phase for this consumer. A pending entry,
         missing/different fixed file, unsafe metadata or changed journal refuses.
         Normal inventory and every lifecycle operation still reject journals.
         This observation neither reads a release-home token nor stops services.
@@ -391,24 +398,46 @@ class ManagedInstaller:
         return ReplacementInventory(installation, generation)
 
     def replace_failed(self) -> None:
-        """Refuse non-candidates; hold mutation until journal execution ships.
+        """Stop a journal-bearing candidate and persist its stopped intent.
 
-        This is the read-only admission sub-part, not a replacement transaction.
-        No stop, token copy, journal update, quarantine or removal is selectable.
+        This bounded sub-part never quarantines/removes files or stages a new
+        bundle. It always reports the remaining work, never replacement success.
+        Unjournaled candidates stay unavailable until their recovery owner ships.
         """
         candidate = self.replacement_inventory()
         installation = candidate.installation
         if installation.state != "known-failed-or-partial":
             raise InstallerError(f"replacement refused: {installation.state}: " + ", ".join(installation.paths))
-        raise InstallerError("replacement mutation unavailable; journal execution requires the next 3b-1c sub-part")
+        if candidate.journal_generation is None:
+            raise InstallerError("replacement mutation unavailable; unjournaled replacement requires the next 3b-1c sub-part")
+        try:
+            with self._directory("etc/happyranch") as parent:
+                transaction = self._read_file(parent, "install-transaction.json", owner=self.root_owner, mode=0o600)
+            if hashlib.sha256(transaction).hexdigest() != candidate.journal_generation:
+                raise InstallerError("replacement journal changed before stop")
+            # H2: derive only from the validated recorded release home. Reuse
+            # the same-FD source-UID reader before ANY mutating manager call.
+            release = self._check_release_record()
+            self._input(Path(release["data_home"]) / "daemon.token", token=True, source_uid=release["uid"])
+            if self.replacement_inventory() != candidate:
+                raise InstallerError("replacement inventory changed before stop")
+            self.stop_and_confirm(_replacement_transaction=transaction)
+            record = self._json(transaction)
+            if record["phase"] == "prepared":
+                record["phase"] = "replacement-stopped"
+                self._write_provision_file("install-transaction.json", json.dumps(record, sort_keys=True).encode(),
+                                           self.root_owner, 0o600, expected_transaction=transaction)
+        except (OSError, ServiceManagerError):
+            raise InstallerError("replacement stop intent incomplete; inspect the fixed transaction record") from None
+        raise InstallerError("replacement paused after stop intent; quarantine/removal and fresh staging unavailable")
 
-    def stop_and_confirm(self) -> InstallInventory:
+    def stop_and_confirm(self, *, _replacement_transaction: bytes | None = None) -> InstallInventory:
         """Stop only recognized remote units and prove manager quiescence.
 
         No filesystem mutation or admission reopening is performed. Callers must
         not cache this sampled observation as later file-mutation authority.
         """
-        inventory = self.inventory()
+        inventory = self._inventory(prepared_transaction=_replacement_transaction)
         if inventory.state in {"manual-install-conflict", "healthy-manual"}:
             raise InstallerError(f"{inventory.state}: " + ", ".join(inventory.paths))
         order = (UNITS[2], UNITS[0], UNITS[1], UNITS[3], UNITS[4])
@@ -431,8 +460,11 @@ class ManagedInstaller:
                                           or props.get("ControlGroup") != ""))
                     or props.get("Job") != ""):
                 raise InstallerError(f"quiescence unconfirmed: {self.root / _UNIT_DIR / name}")
-        confirmed = self.inventory()
-        if confirmed.state in {"manual-install-conflict", "healthy-manual"}:
+        confirmed = self._inventory(prepared_transaction=_replacement_transaction)
+        # An admitted failed manual installation can look intact after stopping.
+        # Only the exact six-digest transaction consumer can cross that boundary.
+        if (confirmed.state == "manual-install-conflict"
+                or (confirmed.state == "healthy-manual" and _replacement_transaction is None)):
             raise InstallerError(f"{confirmed.state}: " + ", ".join(confirmed.paths))
         return confirmed
 
@@ -841,9 +873,10 @@ class ManagedInstaller:
                 continue
             raise InstallerError("provisioning destination or pending entry exists; inspect partial files before retrying")
 
-    def _write_provision_file(self, name: str, data: bytes, owner: tuple[int, int], mode: int) -> None:
-        # Closed fresh-install destinations only. Transaction updates/replacement
-        # are deliberately not selectable until their recovery owner ships.
+    def _write_provision_file(self, name: str, data: bytes, owner: tuple[int, int], mode: int,
+                              *, expected_transaction: bytes | None = None) -> None:
+        # Fresh files never overwrite. Only the exact prepared -> stopped intent
+        # transition can update a final entry, through the same atomic writer.
         metadata = {
             **{key: ((self.root_owner[0], self._service_owner[1]), 0o640)
                for key in ("connector.json", "sidecar.json", "policy.json")
@@ -856,10 +889,32 @@ class ManagedInstaller:
         if (name not in metadata or metadata[name] != (owner, mode)
                 or owner is None or not 0 < len(data) <= 65536):
             raise InstallerError("invalid provisioning publication")
-        if name in ("provision.json", "install-transaction.json"):
+        updating = expected_transaction is not None
+        if updating:
+            if name != "install-transaction.json":
+                raise InstallerError("replacement update requires the fixed transaction record")
+            self._validate_install_record(name, expected_transaction)
+            self._validate_install_record(name, data, replacement=True)
+            expected_record = self._json(expected_transaction)
+            expected_record["phase"] = "replacement-stopped"
+            if self._json(data) != expected_record:
+                raise InstallerError("replacement update must preserve the exact six digests")
+        elif name in ("provision.json", "install-transaction.json"):
             self._validate_install_record(name, data)
         with self._publication_parent() as (parent, revalidate):
-            self._refuse_provision_entry(parent, name)
+            if updating:
+                if self._inventory(prepared_transaction=expected_transaction).state == "manual-install-conflict":
+                    raise InstallerError("replacement inventory changed before intent publication")
+                if self._read_file(parent, name, owner=self.root_owner, mode=0o600) != expected_transaction:
+                    raise InstallerError("replacement journal changed before intent publication")
+                try:
+                    os.stat(f".{name}.pending", dir_fd=parent, follow_symlinks=False)
+                except FileNotFoundError:
+                    pass
+                else:
+                    raise InstallerError("replacement pending entry exists")
+            else:
+                self._refuse_provision_entry(parent, name)
             pending = f".{name}.pending"
             descriptor = os.open(pending, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
                                  0o600, dir_fd=parent)
@@ -880,13 +935,23 @@ class ManagedInstaller:
                          value.st_mode, value.st_nlink, value.st_size) != expected):
                         raise InstallerError("unsafe or changed pending provisioning file")
                 revalidate()
-                # Recheck the final name after staging; never overwrite a late arrival.
-                try:
-                    os.stat(name, dir_fd=parent, follow_symlinks=False)
-                except FileNotFoundError:
-                    pass
+                if updating:
+                    if self._read_file(parent, name, owner=self.root_owner, mode=0o600) != expected_transaction:
+                        raise InstallerError("replacement journal changed before rename")
+                    for key, digest in self._json(expected_transaction)["digests"].items():
+                        file_owner, file_mode = metadata[key]
+                        actual = self._read_file(parent, key, owner=file_owner, mode=file_mode)
+                        if hashlib.sha256(actual).hexdigest() != digest:
+                            raise InstallerError("replacement fixed file changed before rename")
+                    revalidate()
                 else:
-                    raise InstallerError("provisioning destination appeared before rename")
+                    # Fresh publication must never overwrite a late arrival.
+                    try:
+                        os.stat(name, dir_fd=parent, follow_symlinks=False)
+                    except FileNotFoundError:
+                        pass
+                    else:
+                        raise InstallerError("provisioning destination appeared before rename")
                 # Plain rename can clobber a target arriving after the check.
                 # Preserve the legacy O_EXCL refusal atomically; no fallback.
                 try:
@@ -895,7 +960,7 @@ class ManagedInstaller:
                     raise InstallerError("atomic no-replace rename is unavailable") from None
                 rename.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
                 rename.restype = ctypes.c_int
-                if rename(parent, os.fsencode(pending), parent, os.fsencode(name), 1):  # RENAME_NOREPLACE
+                if rename(parent, os.fsencode(pending), parent, os.fsencode(name), 0 if updating else 1):
                     error = ctypes.get_errno()
                     if error == errno.EEXIST:
                         raise InstallerError("provisioning destination appeared before rename")
@@ -914,12 +979,13 @@ class ManagedInstaller:
                         os.unlink(pending, dir_fd=parent)
                         os.fsync(parent)
 
-    def _validate_install_record(self, name: str, data: bytes) -> None:
+    def _validate_install_record(self, name: str, data: bytes, *, replacement: bool = False) -> None:
         """Destination-bound v1 records, with the existing provenance kept verbatim.
 
         Publication alone supplies no service, transaction-update or recovery
         authority. The generator computes these fixed digests; no path
-        manifest, secret field or later transaction phase is accepted here.
+        manifest or secret field is accepted. Only the replacement consumer can
+        read/write the stopped phase; ordinary publication still requires prepared.
         """
         record = self._json(data)
         if name == "provision.json" and "version" not in record:
@@ -928,19 +994,22 @@ class ManagedInstaller:
                 raise InstallerError("invalid legacy provisioning record")
             return
         keys = {"connector.json", "sidecar.json", "policy.json", "release-daemon.json", "daemon.token"}
-        phase = "provisioned"
+        phases = {"provisioned"}
         if name == "install-transaction.json":
             keys.add("provision.json")
-            phase = "prepared"
+            phases = {"prepared", "replacement-stopped"} if replacement else {"prepared"}
         digests = record.get("digests")
         if (record.keys() != {"version", "layout", "digests", "phase"}
                 or type(record["version"]) is not int or record["version"] != 1
                 or record["layout"] not in ("source", "deb") or record["layout"] != self.layout
-                or record["phase"] != phase
+                or not isinstance(record["phase"], str) or record["phase"] not in phases
                 or not isinstance(digests, dict) or digests.keys() != keys
                 or any(not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None
                        for value in digests.values())):
             raise InstallerError("invalid versioned installation record")
+        if (name == "install-transaction.json" and record["phase"] == "replacement-stopped"
+                and data != json.dumps(record, sort_keys=True).encode()):
+            raise InstallerError("replacement intent bytes are not the exact generated record")
 
     def _refuse_install_transaction(self) -> None:
         """Any transaction inventory is inert until its recovery owner ships."""

@@ -263,6 +263,24 @@ def theme_names(text: str) -> set[str]:
 
 defined = theme_names(tokens_path.read_text(encoding="utf-8")) | theme_names(default_theme_path.read_text(encoding="utf-8"))
 
+# Spacing is Tailwind's linear scale: step N is N x 0.25rem (THR-376 PR4). A
+# numeric --spacing-N declared in tokens.css with any other value silently
+# re-maps every p-N/gap-N/h-N/... (the removed 5=24px..8=64px t-shirt remap).
+linear_spacing_hits = []
+tokens_text = re.sub(r"/\*.*?\*/", "", tokens_path.read_text(encoding="utf-8"), flags=re.S)
+for match in re.finditer(r"(?m)^\s*--spacing-([0-9]+(?:\.[0-9]+)?)\s*:\s*([^;]*?)\s*;", tokens_text):
+    step, value = match.group(1), match.group(2)
+    expected = float(step) * 0.25
+    value_match = re.fullmatch(r"([0-9]*\.?[0-9]+)(rem)?", value)
+    ok = value_match is not None and (value_match.group(2) == "rem" or float(value_match.group(1)) == 0) and float(value_match.group(1)) == expected
+    if not ok:
+        linear_spacing_hits.append(f"--spacing-{step}: {value} (linear scale is {expected:g}rem)")
+if linear_spacing_hits:
+    print("FAIL: tokens.css re-maps Tailwind's linear numeric spacing scale (THR-376 PR4):", file=sys.stderr)
+    for hit in linear_spacing_hits:
+        print(f"  non-linear spacing token: {hit}", file=sys.stderr)
+    sys.exit(5)
+
 colour_roots = [
     "inset-shadow", "inset-ring", "ring-offset", "decoration", "outline", "divide", "accent", "caret",
     "stroke", "shadow", "border", "ring", "fill", "from", "via", "text", "bg", "to",

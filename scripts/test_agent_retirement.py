@@ -1,4 +1,4 @@
-"""Focused no-launch retirement checks; see docs/local-ci.md. No pytest imports."""
+"""Focused no-launch retirement checks; see docs/operations/local-ci.md. No pytest imports."""
 from __future__ import annotations
 
 import argparse

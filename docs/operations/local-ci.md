@@ -10,7 +10,7 @@ linked-repository admin locks, proof/repository refusals,
 atomic rollback/no same-boot retry, and candidate-local grown-history exhaustion.
 It starts no task executor, serving daemon or retired unit/integration suite.
 
-## Focused thread startup release (THR-357 Fix 1)
+## Focused thread startup release
 
 `uv run --frozen python -B -m unittest scripts.test_thread_startup_release -v`
 drives the real `_sweep_on_startup` with synthetic persistent lifecycle rows:
@@ -23,7 +23,7 @@ retention of exhausted threads. No provider, live daemon or retired unit tree
 is used. Actual isolated-home spawn-to-serving timing is a separate task-scoped
 observation, not an integration-suite run or new CI trigger.
 
-## Focused daemon lifetime lock (THR-357)
+## Focused daemon lifetime lock
 
 ```sh
 uv run --frozen python -B -m unittest scripts.test_daemon_lock scripts.test_job_shutdown -v
@@ -67,7 +67,7 @@ execution remains a separate macOS native venue. These checks add no required
 CI check or E2E trigger; retired Python units and skipped general integration
 are not run.
 
-## Focused memory compaction and writer salience (THR-366 PR-B/C)
+## Focused memory compaction and writer salience
 
 ```sh
 python -B -m unittest scripts.test_memory_compaction scripts.test_memory_payload scripts.test_memory_digest -v
@@ -111,7 +111,7 @@ writes; matching ownership records canonical roots and retains primary-edit
 detection through continuation verification. No existing worktrees, daemon,
 retired Python units, general integration or Product E2E are exercised.
 
-## Focused workspace memory bootstrap coverage (THR-366 PR-A)
+## Focused workspace memory bootstrap coverage
 
 ```sh
 uv run --frozen pytest scripts/test_workspace_memory.py -v --tb=short
@@ -134,7 +134,7 @@ entry files remain unchanged and only valid IDs receive digest attribution.
 No daemon, provider or live workspace is written. This venue is outside retired
 Python units and adds no required check or E2E trigger.
 
-## Focused memory digest ranking and audit shape (THR-366 item 2)
+## Focused memory digest ranking and audit shape
 
 ```sh
 python -B -m unittest scripts.test_memory_digest -v
@@ -213,7 +213,7 @@ native containment. This standalone script venue stays outside retired Python
 units and adds no required CI check or E2E trigger. General integration remains
 SKIPPED under THR-243 seq42.
 
-## Focused root Pause/Resume coverage (THR-359)
+## Focused root Pause/Resume coverage
 
 ```sh
 python -B -m unittest scripts.test_task_pause_resume scripts.test_task_pause_jobs -v
@@ -233,7 +233,7 @@ it adds no production containment. The job checks run without daemon lifespan
 or providers; macOS native enumeration needs a separate macOS venue.
 General integration remains SKIPPED under THR-243 seq42.
 
-## Connector platform lifecycle focused coverage (THR-360 C1+C2)
+## Connector platform lifecycle focused coverage
 
 ```sh
 python -B -m unittest scripts.mac_native.test_connector_launchd -v
@@ -268,7 +268,7 @@ uninstall/purge and secret-free refusals. Existing lifecycle tests are unchanged
 It uses scripted launchctl responses, not native launchd or a real sidecar;
 ZERO Mac-mini runs are authorized for C5. QA owns
 real Darwin execution with `SUITE=connector-launchd`; see the
-[Mac-native job guide](../ci/jenkins/mac-native-probe/README.md#connector-launchagent-lifecycle-suiteconnector-launchd-thr-360-c1c2).
+[Mac-native job guide](../../ci/jenkins/mac-native-probe/README.md#connector-launchagent-lifecycle-suiteconnector-launchd-thr-360-c1c2).
 It adds no required check or automation trigger. Existing real-systemd
 integration remains SKIPPED under THR-243 seq42, not PASS.
 
@@ -281,7 +281,7 @@ signing scripts' actual inventory function. No codesign, app build, packaged
 execution or native launchd acceptance is implied. Packaged resource expectations
 now derive from committed Git identity; the fixed path/mode checks remain.
 
-## Frozen repository child launch regressions (THR-346 P2)
+## Frozen repository child launch regressions
 
 Run the focused standalone unit selection outside the retired Python suite:
 
@@ -337,7 +337,7 @@ PID/generation/state/parent and cgroup metadata, observer error/stop clocks and
 recent reap receipts. Observer snapshots also retain the first exception/stack
 (last8192 characters, explicit truncation); its JUnit diagnostic is emitted even
 without a registration error, so cleanup failure cannot discard that cause.
-See [the current reporting contract](../e2e/README.md#current-reporting-contract--slice-3-of-3-thr-291-seq659)
+See [the current reporting contract](../../e2e/README.md#current-reporting-contract--slice-3-of-3-thr-291-seq659)
 for caps, race/truncation limits and the artifact location. Environment/argv
 contents are excluded. Diagnostic stat and closure recording re-raise TimeoutError
 and RuntimeError unchanged, including controller alarms/interruptions; closure
@@ -402,12 +402,12 @@ downstream write/flush BrokenPipe/ConnectionReset after complete finite upstream
 I/O and clean owner teardown. Repeated targets, upstream/unjoined/ambiguous
 failures and other exceptions remain red; physical closure and budgets still apply.
 JUnit always uploads; missing reports fail. Known synthetic tokens receive literal
-scrubbing in JUnit/logs/ZIP members. See [the current reporting contract](../e2e/README.md#current-reporting-contract--slice-3-of-3-thr-291-seq659).
+scrubbing in JUnit/logs/ZIP members. See [the current reporting contract](../../e2e/README.md#current-reporting-contract--slice-3-of-3-thr-291-seq659).
 Historical records below preserve actual failures and holds; their removed
 controller/launcher/export/collector/optional-diagnostic instructions are superseded, never current acceptance.
 
 
-Founder THR-291 seq69 makes automated PR/main merge CI **lint/static only**.
+Founder makes automated PR/main merge CI **lint/static only**.
 Required checks at the final PR head and exact merge on main are exactly
 `Source Boundary Lint` and `Web Lint (Node 24)`, both unconditional with no
 path applicability. The manager supplies these two names to `pr_ci_waiter`;
@@ -433,12 +433,12 @@ run the wrapper, Python units, integration or Product E2E. The native
 three real Mac `df` checks. See
 `ci/jenkins/mac-native-probe/README.md`; Linux dispatcher output is SKIPPED.
 
-The manual [S5 repo-refresh probe](../ci/jenkins/mac-native-probe/README.md#s5-repository-refresh-probe)
+The manual [S5 repo-refresh probe](../../ci/jenkins/mac-native-probe/README.md#s5-repository-refresh-probe)
 drives real Darwin Git refresh and native preparation in private scratch using
 the existing locked 18 bootstrap wheels. Linux emits skipped JSON. Native Jenkins
 and frozen-app acceptance remain separate; local lint is not native evidence.
 
-The manual [packaging toolchain preflight](../ci/jenkins/mac-native-probe/README.md#packaging-toolchain-preflight-thr-346-msg86-option-b--task-15955)
+The manual [packaging toolchain preflight](../../ci/jenkins/mac-native-probe/README.md#packaging-toolchain-preflight-thr-346-msg86-option-b--task-15955)
 uses `SUITE=toolchain` to provision exact SHA256-pinned uv 0.12.21/Node 24.19.0
 LTS + bundled npm and Go 1.23.12 only in job scratch, with process-local PATH and caches.
 The source pins and bounded provisioner run at SOURCE_SHA. Preflight requires
@@ -461,7 +461,7 @@ transfer-diagnostic and tool-evidence checks run with
 `python3 -B -m unittest scripts.mac_native.test_toolchain scripts.mac_native.test_provisioning -v`.
 This focused manual venue remains outside retired Python units and required
 lint/static CI. The separate `SUITE=packaged` checks a scratch-installed app;
-see the [suite contract](../ci/jenkins/mac-native-probe/README.md#packaged-app-observation).
+see the [suite contract](../../ci/jenkins/mac-native-probe/README.md#packaged-app-observation).
 Its portable harness checks run with
 `python3 -B -m unittest scripts.mac_native.test_packaged -v`; Linux reports all
 eight steps NOT_RUN/SKIPPED, never native PASS.
@@ -497,7 +497,7 @@ failures and teardown snapshots into the real collector CLI. It checks all
 distinct first-row prefixes, including the earliest helper payload stored after
 a later failing step result, plus the build/command results and verified ZIP
 after scratch removal. No six-field redaction is applied. See the
-[packaged evidence contract](../ci/jenkins/mac-native-probe/README.md#packaged-app-observation)
+[packaged evidence contract](../../ci/jenkins/mac-native-probe/README.md#packaged-app-observation)
 for `census_error`, `command_result`, `command_result_key`, `build_output` and
 `retained_product`. A census failure keeps the child result and fails the step;
 a partial census never proves process absence. Empty comm remains unsupported.
@@ -520,7 +520,7 @@ Independent full code review and scoped QA remain mandatory. Static checks
 cannot establish lifecycle, callback, browser or platform correctness;
 behavioral regressions can be detected only later when their coverage executes.
 
-Focused launcher-timing observation (THR308seq353/354): run
+Focused launcher-timing observation: run
 `bash scripts/test-daemon-startup-timing.sh` locally with the frozen Python3.14
 environment. This standalone shell check observes the actual timing log helpers
 and serving partition with only the ASGI/listener return isolated, the real
@@ -744,7 +744,7 @@ complete-reader baseline and the original four phase assertions. The native
 release_identity CHECK is suspended only during the one synthetic mutation and
 restored to its exact prior value in finally; the pinned first refusal remains
 coding_mapping_history_invalid. No corrupt row is silently omitted.
-For A0b-2's capacity disposition, see the [storage contract](runbooks/sequential-workflow-storage.md):
+For A0b-2's capacity disposition, see the [storage contract](sequential-workflow-storage.md):
 installed happyranch's default FIRST/attempted NEXT is recorded as expected
 refusal with zero changes/certificate/observer leaks and an original-base
 comparison; its successful capacity gate moves to I2. All caps/checks remain.
@@ -812,9 +812,9 @@ This is separately routed by the manager; importing this source grants no live
 operation, setup, Coding role, migration, restart or installation authority.
 
 
-Focused schema-load observation (THR308seq348/353/354): run
+Focused schema-load observation: run
 `bash scripts/test-workflow-schema-load.sh` locally with frozen Python3.14.
-A0 (THR-336 msg194) extends its acquisition case table with native storage
+A0 extends its acquisition case table with native storage
 classes, exact/oversized byte lengths (including NUL/multibyte text), whole-row
 withholding, nullable NULL versus refusal sentinel, invalid UTF8/nonfinite REAL,
 rowid extremes/gaps, WHERE parameters and original row/byte/work charges.
@@ -863,7 +863,7 @@ log count, duration/outcome and unchanged queue/order/caught-error handling.
 These disposable in-process checks do not establish restart latency or genuine
 returned-workflow caller execution.
 
-Focused audit-removal observation (THR-308 seq403): run
+Focused audit-removal observation: run
 `bash scripts/test-coding-audit-removal.sh` locally with frozen Python3.14.
 Disposable SQLite drives production `validate_coding_data`: deep ordinary and
 unrecognised coding audit payloads are accepted, while unknown tasks/task_results
@@ -874,7 +874,7 @@ because its baseline spy-signature failure was repaired or ignored. No daemon,
 retired Python unit suite, general integration, E2E or CI trigger is added.
 Restart timing remains a separately authorized Founder observation.
 
-Focused ordinary-authority omission observation (THR308seq384 T-0): run
+Focused ordinary-authority omission observation: run
 `bash scripts/test-authority-v2-ordinary-omission.sh` locally with frozen
 Python3.14. Disposable SQLite/org fixtures drive real Database callback admission
 and replay, in-process completion-route evidence/replay, continuation stage
@@ -886,7 +886,7 @@ units, general integration or Product E2E. Live-daemon/Product-E2E proof is NOT
 RUN; owned workflow callbacks requiring genuine host launch/terminal evidence
 remain outside this no-launch observation.
 
-J1 adds seven KB/artifact variants after the preserved56 prefix: 63 cases per lane before J2. It covers real agent CLI writes, exact API and KB browser content, the artifact card and its byte-identical browser Download, bearer denials and beta-org isolation. See [the J1 contract](../e2e/README.md#j1-agent-kb-and-shared-artifacts-thr-343). Historical56-case run/source records below remain attributed to their original heads.
+J1 adds seven KB/artifact variants after the preserved56 prefix: 63 cases per lane before J2. It covers real agent CLI writes, exact API and KB browser content, the artifact card and its byte-identical browser Download, bearer denials and beta-org isolation. See [the J1 contract](../../e2e/README.md#j1-agent-kb-and-shared-artifacts-thr-343). Historical56-case run/source records below remain attributed to their original heads.
 
 J2 appends six custom-skill cases: **69 product cases per lane**, 138 across Python3.12/3.14. It covers genuine session CLI creation, default-hidden visibility, refused nonfounder eligibility writes, founder If-Match eligibility, exact next-session materialized marker reads and the founder Skills card. See the J2 section in the same E2E contract.
 
@@ -919,7 +919,7 @@ tasks/threads; no new notifications or guaranteed response SLA is implied.
 Python units stay RETIRED; `python` exits2. General integration is **SKIPPED**
 under THR-243 seq42, never PASS. Native/platform, integration, the named actual
 CLI callback and their isolation fences retain their sources. See the
-[repository verification status](../AGENTS.md#verification-status) for retired suites.
+[repository verification status](../../AGENTS.md#verification-status) for retired suites.
 Docs Manual build and the real tenant-isolation harness retain manual-only
 workflows, outside PR/main. Manual/tag macOS packaging is a separate release
 activity and invokes no fresh E2E.
@@ -927,15 +927,15 @@ The Nightly integration workflow (schedule and manual lanes) was retired under T
 
 
 The M4 macOS observer-probe workflow and pre-enrollment tcpdump/lsof gate are
-removed (TASK-15886). The manual/main-only/non-required managed-m4.yml lane now
+removed. The manual/main-only/non-required managed-m4.yml lane now
 uses authenticated home-VM UDP enforcement and a fresh exact native-daemon200;
-see scripts/ci/README-m4-tailnet.md. VM-only premerge controls do not close native
+see docs/operations/ci-m4-tailnet.md. VM-only premerge controls do not close native
 acceptance. Required lints, Product E2E and all spent run budgets are unchanged.
 Source delivery authorizes no dispatch.
 
-See [coverage gaps](python-test-reset.md) and [the case record](../e2e/README.md).
+See [coverage gaps](python-test-reset.md) and [the case record](../../e2e/README.md).
 
-## Focused disposable session lifecycle verification (THR307seq117)
+## Focused disposable session lifecycle verification
 
 Only a current manager allocation under ROOT11948 authorizes this standalone
 venue; it is outside automatic CI, general integration and Product E2E. Use an
@@ -1301,7 +1301,7 @@ validation outside `tests/`, not a retired suite or product E2E evidence.
 Docs Manual and tenant-isolation workflows are explicit manual-only; neither
 is a required path check. macOS packaging remains manual/tag release activity.
 
-## Historical E2E recovery diagnostics (ROOT12610 / TASK12643)
+## Historical E2E recovery diagnostics
 
 The controller latches the first actually recorded exception/traceback before
 diagnostic work; record_error performs no I/O. After the action catch's existing
@@ -1342,16 +1342,16 @@ strict UTF8/JSON, one at-most4097-byte read/4096-byte admission, no-follow owned
 parent/file identity and pending-collision refusal. A validated snapshot is
 frozen before root loss; export never rereads it. Available/null/stale metadata
 supplies no latest/complete cause, capture success, readiness, marks or health.
-See [the existing case record](../e2e/README.md#task-12643-accepted-recovery-case-map-root12610--thr291)
+See [the existing case record](../../e2e/README.md#task-12643-accepted-recovery-case-map-root12610--thr291)
 for all thirty R1/R2/R3/X expectations, A/B/D/E four answers, keeper gaps and
 full56 EACH3.12/3.14 L1–L7 plus TERM/INT/validator references.
 
-### Historical E05/E07 publication and retained failure isolation (ROOT13112 / THR291seq495)
+### Historical E05/E07 publication and retained failure isolation
 
 Slice3 replaces the historical collector/publication steps below with actual
 browser JSON, local observations and JUnit. The same-runtime checkpoint,
 positive resource closure, full50s and first-cause constraints remain. The
-current contract is [ordinary lane reporting](../e2e/README.md#current-reporting-contract--slice-3-of-3-thr-291-seq659).
+current contract is [ordinary lane reporting](../../e2e/README.md#current-reporting-contract--slice-3-of-3-thr-291-seq659).
 Healthy53/36/38/23tasks31results and B24→26 remain the strict specification.
 Safe failed-E05 pre/C/N/D checkpoints retain29/32/33/36 starts and17/20/21/24
 host releases, then exactly two P/W starts/four commands/one P result. No fake
@@ -1387,13 +1387,13 @@ static only. Normal hooks/nonforce/independent review/scoped QA and manager guar
 merge/main lints/genuine main-only Product assessment remain separate gates.
 No worker launch/merge or source-only operational completion follows.
 
-### E07 terminal scope and precedence (TASK12778 / ROOT12738)
+### E07 terminal scope and precedence
 
 Manager step25 accepts exact TASK12776 design37103B/SHA256
 `2fd2a058e4297c3e8268069df95a70d23909c3d1c42d2c37263e0b75d376b22a`
 after independent TASK12777 PASS — DESIGN ONLY under Founder THR291seq362.
 This replaces the older E07 body-catch-only failure-tail wording. ONLY existing
-R2-01/X-01 extend in [the recovery case record](../e2e/README.md#e07-caller-precedence-task12746--accepted12722-12741-root12738),
+R2-01/X-01 extend in [the recovery case record](../../e2e/README.md#e07-caller-precedence-task12746--accepted12722-12741-root12738),
 with EACH accepted finite input→action→FINAL observable→C/H/J subinput, separate
 four answers, keepers and distinct risks. Original30/SAME13/ordered56 EACH3.12/
 3.14/L1–L7,16sites/full validator/control/admission maps and dynamic20E05/24E07
@@ -1479,12 +1479,12 @@ scoped SOURCE QA, hooks/nonforce publication and SAME manager guarded merge/
 independent remote confirmation/exact-main TWOstatic remain separate gates before
 its later reviewed-main Product decision; every push renews them.
 
-### First-recorder/native-log source (TASK12758 / ROOT12738)
+### First-recorder/native-log source
 
 Current step17 manager acceptance of TASK12768 (33947B/SHA256
 7446d38710ee11ff65c955b60ab5b2a33f175b3dc24f47ac9378f083d82ed981) after
 independent12769 DESIGN ONLY PASS selects TASK12770's diagnostic-only original-G
-eligibility replacement and the [SAME13 keeper four answers and limits](../e2e/README.md#first-recorder-and-native-log-observations-task12758--root12738):
+eligibility replacement and the [SAME13 keeper four answers and limits](../../e2e/README.md#first-recorder-and-native-log-observations-task12758--root12738):
 R2-01/02/03/04/05/08, R3-01/06/07/08/09, X-01/02. Each finite input/action has
 an independent observable/final transition and distinct C identity/propagation,
 H actual hosted OS/native-log, J serialized noncredit risks. No runnable case,
@@ -1584,7 +1584,7 @@ Daily19UTC and later manager-owned reviewed-main-only Founder277 verification,
 original480/240/720/60/120/900,31s isolation and exclusions remain unchanged.
 
 The accepted12707–12708 / TASK12709 terminal observation extends the
-[existing recovery record](../e2e/README.md#advisory-terminal-interpretation-task12709--accepted12707-12708).
+[existing recovery record](../../e2e/README.md#advisory-terminal-interpretation-task12709--accepted12707-12708).
 Actual W is `_failure_raw["first"]`, its original object/saved traceback, never
 a category slot/latest cleanup error. Before the first initial owner check
 prepared with W, one setdefault claim binds W and an invocation nonce. Only the
@@ -1676,7 +1676,7 @@ read and every descriptor/directory exit/check remain; Timeout escapes and
 provisional available cannot survive exit failure. Export copies frozen memory.
 
 The exact joined matrix and four-answer case extensions live in the
-[existing recovery record](../e2e/README.md#optional-reader-disposition-and-raw-copy-checks-task12697--accepted12693):
+[existing recovery record](../../e2e/README.md#optional-reader-disposition-and-raw-copy-checks-task12697--accepted12693):
 unknown/admitted permit U or validated A and null/error D; unreached permits
 ONLY U/null-D; completed available requires A, every other completed outcome U,
 and all completed rows permit real later D errors. Necessary category/controller/
@@ -2075,7 +2075,7 @@ command, exit and complete logs. Durable jobs are required for long checks and
 pushes with long hooks; authenticate the terminal receipt before publication.
 The Nightly integration workflow (schedule and manual lanes) was retired under THR-291; daily Product E2E (`e2e.yml`, 19:00 UTC) is the behavioral lane.
 
-## System Assistant retirement artifact verification (THR-294)
+## System Assistant retirement artifact verification
 
 Run the accepted focused source shipping selection only in an authorized
 **disposable hosted** venue, never on the live Linux daemon host:
@@ -2450,7 +2450,7 @@ causal/restoration/repetition or held migration/restore/reboot proof is claimed.
 ### E04 daily source prefix
 
 The daily harness appends six E04 variants after23 baseline and19 Pause
-variants (48 authored). Founder THR291seq301(b)/303 replaces only original slot44
+variants (48 authored). Founder replaces only original slot44
 with E04.review-required-refused under sole ROOT12445, accepted R1–R3 after
 independent TASK12447 design review. No legacy fixture or parity keeper: that
 variant's individual rejection and natural waiter wake are expressly retired.
@@ -2473,7 +2473,7 @@ shipping method/URL/query/HTTP200 and durable content, including live S2's
 historical blocked S1 result. CLI child deadline remains caller minus one second.
 Partial failure evidence uses existing sanitation; no production seam follows.
 
-The [E04 case/control records](../e2e/README.md#e04-jobs-prefix-task-10686--thr-291)
+The [E04 case/control records](../../e2e/README.md#e04-jobs-prefix-task-10686--thr-291)
 carry all four authoring answers and consumer mapping. Source/static checks do
 not establish execution, assertion sensitivity, fit, sanitation or cleanup.
 All new behavior/proof remains MISSING/UNEXECUTED; corrected daily behavior pending after observed historical failures.
@@ -2518,7 +2518,7 @@ variants,38 starts=A12+B26,23 tasks/31 results (alpha22/30,beta1/1),21 completed
 and two cancelled. Real browser cascade and terminal CLI refusals precede
 forwarding W's original captured provider CLI request; independent serialized
 content, process/socket provenance and a full1s unchanged window are required.
-The [accepted process-state extension](../e2e/README.md#e07-process-state-observations-task12784--root12738)
+The [accepted process-state extension](../../e2e/README.md#e07-process-state-observations-task12784--root12738)
 (TASK12784/manager step31, exact TASK12782 design50050B/3de9f37a after independent
 TASK12783 DESIGN ONLY PASS29157B/9e12849b) adds only local optional diagnostics in
 `e07.closure` and independent COMPLETE-case `aggregate.validate_e07` inspection.
@@ -2580,7 +2580,7 @@ head/main, independent FULL review/same-H scoped SOURCE QA, normal hooks/nonforc
 and manager guarded merge remain; no Product/protected proof allocation here.
 
 The E05 witness prefix is bound to its actual byte/record offset, with every
-E07 suffix record accounted. [Case and four-answer records](../e2e/README.md#e07-c-source-increment--task-10773)
+E07 suffix record accounted. [Case and four-answer records](../../e2e/README.md#e07-c-source-increment--task-10773)
 retain all missing proof. R/full remains HELD, with no new restart/rotation code.
 C50 uses fixed16/12/8/6/8 partitions within unchanged480/original720;425 is
 unmeasured arithmetic. Daily-only19UTC and the four execution artifacts are unchanged.
@@ -2592,7 +2592,7 @@ The live cancel-CLI print mismatch and E04 output-cap/persistent-stop remain
 unresolved. Sole ROOT TASK12445 resolves superseded TASK12281 and owns main delivery/execution
 and collection, preserving all historical failures and unknown native ownership. No entire-reset or test-authoring PASS.
 
-### E07 R hold restoration — TASK-10804
+### E07 R hold restoration
 
 THR291 seq119 held R implementation and merge pending assessed source-bound
 first-daily timing. PR1043 merged as `e4ba47ce3ab528447d7cded481f721dec07d175f`
@@ -2605,7 +2605,7 @@ R's active abrupt crash/recovery path, provider command, subreaper handshake,
 publication-gap exception and required R artifacts/aggregate expectations are
 removed. Accepted original E07/addendum and PR1043 source remain held history;
 R is unimplemented in the active daily path, unproven, and not skipped-as-PASS.
-See the [restoration and retained C assertion mapping](../e2e/README.md#e07-restart-hold-restoration--task-10804).
+See the [restoration and retained C assertion mapping](../../e2e/README.md#e07-restart-hold-restoration--task-10804).
 
 D remains min(scenarios entry+480,original run+720), C50 with original
 partitions; no D−150 prefix admission, R75 or final25 allocation survives.
@@ -2628,7 +2628,7 @@ General AND actual CLI callback integration SKIPPED243seq42; units RETIRED.
 Root remains INCOMPLETE for held R, wider E04, cancel-CLI mismatch and daily
 acceptance. No deployment/serving restart/Jenkins/schema/auth/permission work.
 
-### Ordinary attachment focused QA (THR304 seq36)
+### Ordinary attachment focused QA
 
 `attachment-focused-qa.yml` is manual-only plumbing for the fixed
 `tests/integration/test_attachment_feedback_shipping.py` F1–F8 component cases.
@@ -3021,7 +3021,7 @@ remain separately recorded. The closed loader selections pass the same interpret
 source-script and owned-output admission as the full command before dispatch.
 
 
-### Start-reader source composition and blocked support (ROOT12299)
+### Start-reader source composition and blocked support
 
 PR1165 is merged at `fee7aa7222dbc80e16492258c15f8fa3214fabad`;
 TASK12436/TASK12438 review/synthetic QA at `aa9e64ad3a568b080571f86c6453d191aa6c706b`
@@ -3122,7 +3122,7 @@ remote commit/aware-time observation before its own callback.
 
 
 The ROOT12299 step31 disabled final-manager source is documented in
-[the coding contract](specs/2026-10-14-ordered-coding-workflow.md#disabled-live-final-manager-source).
+[the coding contract](../specs/2026-10-14-ordered-coding-workflow.md#disabled-live-final-manager-source).
 The fourth coding-owned manager uses a LOCAL single-attempt finalize command;
 only original settled QA PASS admits the repaired event@6 edge. Historical held QA
 records stay held. Own-session selected upstream metadata, strict actual exact-H
@@ -3168,14 +3168,14 @@ lifespan and SessionTracker SKIPPED24342; Python units RETIRED. No E2E/build/nat
 campaign, proof framework or new merge check is introduced.
 
 
-### Founder coding settings page — TASK12632
+### Founder coding settings page
 
 The retired coding-settings page tests rendered the real route/provider/client
 over MSW: E0/refusal/populated states, complete canonical save, disabled-retain, distinctness, 409 retention, uncertain
 lock plus original-key GET (committed; 404/error/repeat stay locked with one PUT),
 fields locked during a pending save, same-org late-read ordering (resolve and
 reject), send ownership across A→B→A during/after the PUT, org A→B isolation and
-en↔zh-CN with no requests (TASK12642). Historical results are UI/transport evidence
+en↔zh-CN with no requests. Historical results are UI/transport evidence
 only; they are not current verification and prove no backend persistence,
 authority or native behavior. Screenshots/browser runs are separate evidence.
 
@@ -3195,7 +3195,7 @@ from99/v25. Units RETIRED; integration INCLUDING callback/lifespan/SessionTracke
 SKIPPED24342. Root-owned workflow/operator/live-manager acceptance remains.
 
 
-## Settings-pinned engine composition evidence — TASK12615
+## Settings-pinned engine composition evidence
 
 This increment changes closed start syntax and coding reader composition, not
 routes/classification or settings-client transport. The supported idle-schema
@@ -3269,7 +3269,7 @@ Founder THR291seq362/current DEV-G03 brief authorizes exactly run.main/command/
 cleanup/failure/export preparations, Owned initializer/sample/cleanup diagnostic
 additions and nearest README/local-ci parity. The original observe watcher is
 unchanged; no helper, observer/channel/traversal/poll/consumer/venue is added.
-See [the existing keeper/four-answer record](../e2e/README.md#launcher-ownership-evidence-task12803--root12738).
+See [the existing keeper/four-answer record](../../e2e/README.md#launcher-ownership-evidence-task12803--root12738).
 
 Baseline-only ownership_evidence separates historical immutable successful
 allocation plus ORIGINAL complete terminal outcome from current liveness. Main's
@@ -3351,7 +3351,7 @@ stay separate OPEN/UNKNOWN. Consumed ONE362/12741 is never reused.
 
 The existing manager-operated `happyranch-mac-native-probe` job accepts
 `SUITE=disk-sweep` through the pinned Python allowlist, with no job configuration
-change. See [the probe contract](../ci/jenkins/mac-native-probe/README.md#s2-disk-sweep-suite).
+change. See [the probe contract](../../ci/jenkins/mac-native-probe/README.md#s2-disk-sweep-suite).
 `python3 scripts/mac_native/probe.py --suite disk-sweep --output /absolute/probe.json`
 emits skipped JSON on Linux; that is not native proof. Darwin runs real nonmutating
 product preview over a bounded private synthetic org, then separate disposable
@@ -3374,7 +3374,7 @@ only, adds no trigger and makes no Jenkins request itself. Default checks are
 source/simulated-frozen logic, with a real bounded dry-run worker and an argv-only
 root-tail retention check; they are NOT frozen proof. Optional `--frozen-daemon`
 executes an already built binary's helpers, but source-parent revision checks do
-not prove frozen-parent revision derivation. See the [probe README](../ci/jenkins/mac-native-probe/README.md#s3-cleanup-helper-probe)
+not prove frozen-parent revision derivation. See the [probe README](../../ci/jenkins/mac-native-probe/README.md#s3-cleanup-helper-probe)
 for exact invocation, output bounds and the existing job's bundle-build blocker.
 The documented `packaging/build_daemon.sh` requires fresh Darwin arm64/Python3.12.10;
 the Linux maker had no PyInstaller installed and used the permitted simulated
@@ -3383,7 +3383,7 @@ The job's <=4MiB regular-file limit cannot accommodate a fresh freeze; no limit,
 job configuration, toolchain or CI-trigger change follows from this slice.
 
 
-## S7 filesystem case safety (THR-346)
+## S7 filesystem case safety
 
 Focused native/platform regressions, outside the retired Python unit selection:
 
@@ -3399,14 +3399,14 @@ The native dispatcher skips on Linux. The manager separately runs `case-safety`
 on the existing Mac job; the new suite requires case-insensitive APFS scratch,
 records expected/actual rows, and starts no HTTP server or git/network operation.
 Git and native-writer bookkeeping are isolated only in probe fixtures.
-See [the native rows and bounds](../ci/jenkins/mac-native-probe/README.md#s7-case-safety-suite).
+See [the native rows and bounds](../../ci/jenkins/mac-native-probe/README.md#s7-case-safety-suite).
 No new CI check, trigger, Jenkins configuration or dependency is introduced.
 Frozen Mac-app acceptance and native execution remain separate evidence.
 The API declarations are unchanged; check the existing OpenAPI snapshot. The old
 web OpenAPI-coverage Vitest file was removed with THR-343 and is not restored.
 
 
-Focused agent-retirement observation (TASK-15793 / THR-296): run
+Focused agent-retirement observation: run
 `uv run --frozen --python 3.14 python scripts/test_agent_retirement.py`.
 The standalone checks drive the shipping FastAPI app through ASGI on temporary
 synthetic orgs and real SQLite/registry/authority stores, without lifespan,
@@ -3461,10 +3461,10 @@ at the final clean head; authenticate actual terminal `jobs show`/`jobs output`
 before claiming a pass. This adds no CI lane, required check or Product E2E run.
 I2 removes inline physical checks; full FKs and parts 2–7 remain on complete
 reads. The daily report is I1b. See the
-[I1a contract](specs/2026-11-14-automatic-workflow-setup.md).
+[I1a contract](../specs/2026-11-14-automatic-workflow-setup.md).
 
 
-Focused update-readiness checks (TASK-16297 / THR-346): run
+Focused update-readiness checks: run
 `python -B scripts/check_update_busy.py`. This uses the existing standalone
 ASGI/synthetic-org pattern and real SQLite, host admission/retry and logical
 lifetime trackers without lifespan, listeners, providers or native processes.
@@ -3478,7 +3478,7 @@ Swift gate/decoder checks remain manager-owned on macOS:
 Retired Python/Web unit lanes are not restored by these focused checks.
 
 
-## Focused founder initial-name coverage (THR-368)
+## Focused founder initial-name coverage
 
 `uv run --frozen --python 3.14 python scripts/test_founder_agent_name.py` reuses
 the existing standalone ASGI/synthetic-org retirement fixture, with real SQLite,
@@ -3505,7 +3505,7 @@ This focused script adds no required CI check or retired-suite execution.
 ## Linux bundled Python stack checks
 
 Linux payload/.deb build hosts need binutils (`readelf`), in addition to the
-[Linux release handbook](runbooks/linux-release-handbook.md) prerequisites.
+[Linux release handbook](linux-release-handbook.md) prerequisites.
 The packaging helper uses Python stdlib only; it adds no runtime dependency.
 
 ```sh
@@ -3528,7 +3528,7 @@ Only unavailable user-manager and unsupported kernel MDWE together produce an
 explicit skip reason. Thread/loader failures remain failures. None of these
 checks change systemd hardening, required CI selection or workflow triggers.
 
-## Fixed remote-access helper (THR-327 slice 3a)
+## Fixed remote-access helper
 
 The slice 3b-1 token-reader sub-part uses the existing standalone venue:
 `uv run --frozen pytest scripts/test_installer_token_custody.py -v --tb=short`.
@@ -3573,7 +3573,7 @@ before A's closures and continued B delivery. No production clock seam is added.
 Installed package activation and native password dialogs remain NOT RUN.
 Required hosted checks remain Source Boundary Lint and Web Lint (Node 24).
 
-## Focused skill-use observation checks (THR-203 step 1A)
+## Focused skill-use observation checks
 
 ```sh
 uv run --frozen python -B -m unittest scripts.test_skill_usage -v
@@ -3585,3 +3585,42 @@ honest file-open signals, unsafe/malformed/missing/oversized input refusal,
 reparse idempotency, fail-safe observation and additive legacy upgrades without
 providers, daemon lifespan or live data. This venue is outside retired Python
 units, general integration and Product E2E and adds no required CI check.
+
+## History
+
+Citations removed from the body, with the section they supported:
+
+- `THR-357 Fix 1` — Focused thread startup release (original line 3).
+- `THR-357` — Focused daemon lifetime lock (original line 16).
+- `THR-366 PR-B/C` — Focused memory compaction and writer salience (original line 60).
+- `THR-366 PR-A` — Focused workspace memory bootstrap coverage (original line 104).
+- `THR-366 item 2` — Focused memory digest ranking and audit shape (original line 127).
+- `THR-359` — Focused root Pause/Resume coverage (original line 206).
+- `THR-360 C1+C2` — Connector platform lifecycle focused coverage (original line 226).
+- `THR-346 P2` — Frozen repository child launch regressions (original line 274).
+- `THR-291 seq69` — Frozen repository child launch regressions (original line 400).
+- `THR308seq353/354` — Frozen repository child launch regressions (original line 513).
+- `THR308seq348/353/354` — A0b-2 requirement-to-case map (v3 section 4 and F1) (original line 805).
+- `THR-336 msg194` — A0b-2 requirement-to-case map (v3 section 4 and F1) (original line 807).
+- `THR-308 seq403` — A0b-2 requirement-to-case map (v3 section 4 and F1) (original line 856).
+- `THR308seq384 T-0` — A0b-2 requirement-to-case map (v3 section 4 and F1) (original line 867).
+- `TASK-15886` — A0b-2 requirement-to-case map (v3 section 4 and F1) (original line 920).
+- `THR307seq117` — Focused disposable session lifecycle verification (original line 928).
+- `ROOT12610 / TASK12643` — Historical E2E recovery diagnostics (original line 1294).
+- `ROOT13112 / THR291seq495` — Historical E05/E07 publication and retained failure isolation (original line 1339).
+- `TASK12778 / ROOT12738` — E07 terminal scope and precedence (original line 1380).
+- `TASK12758 / ROOT12738` — First-recorder/native-log source (original line 1472).
+- `THR-294` — System Assistant retirement artifact verification (original line 2068).
+- `THR291seq301(b)/303` — E04 daily source prefix (original line 2443).
+- `TASK-10804` — E07 R hold restoration (original line 2585).
+- `THR304 seq36` — Ordinary attachment focused QA (original line 2621).
+- `ROOT12299` — Start-reader source composition and blocked support (original line 3014).
+- `TASK12632` — Founder coding settings page (original line 3161).
+- `TASK12642` — Founder coding settings page (original line 3168).
+- `TASK12615` — Settings-pinned engine composition evidence (original line 3188).
+- `THR-346` — S7 filesystem case safety (original line 3376).
+- `TASK-15793 / THR-296` — S7 filesystem case safety (original line 3399).
+- `TASK-16297 / THR-346` — I1a install integrity cases (original line 3457).
+- `THR-368` — Focused founder initial-name coverage (original line 3471).
+- `THR-327 slice 3a` — Fixed remote-access helper (original line 3521).
+- `THR-203 step 1A` — Focused skill-use observation checks (original line 3566).

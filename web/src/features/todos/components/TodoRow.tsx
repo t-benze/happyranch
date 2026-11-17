@@ -95,7 +95,7 @@ export function TodoRow({ schedule }: TodoRowProps): JSX.Element {
     <Link
       to={`/orgs/${slug}/todos/${schedule.schedule_id}`}
       className={cn(
-        'flex w-full flex-col gap-2.5 px-5 py-4 text-left transition-colors hover:bg-bg-subtle',
+        'flex w-full flex-col gap-2.5 px-6 py-4 text-left transition-colors hover:bg-bg-subtle',
         'border-b border-border-subtle last:border-b-0',
       )}
     >
