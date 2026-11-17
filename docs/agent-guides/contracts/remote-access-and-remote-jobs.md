@@ -1135,6 +1135,53 @@ lifecycle/MDWE, generated Headscale maps, packet-wide public/DNS egress exclusio
 and native Darwin remain NOT RUN. See the [sidecar README](../../../app/linux/tsnet-sidecar/README.md) and
 [Round-7 specification](../../specs/2026-11-16-one-click-remote-access.md#6-invite-selected-bootstrap-and-secret-handling).
 
+### Pure home CA and server leaf core (THR-327 slice 3b-2b)
+
+`app/linux/tsnet-sidecar/homeca` is an **unwired**, Go-stdlib-only generation
+and validation package. Every issuance takes an explicit `time.Time` and
+`io.Reader`; it performs no file, network, process or ambient-clock operation.
+No command, binary, dependency or production importer is added. Root invocation,
+on-disk custody, authenticated `RefreshHomeAddress`, Headscale TLS installation
+and transaction/recovery wiring remain the Linux track's TASK-16780 work.
+
+| Choice | Contract and reason |
+| --- | --- |
+| CA and leaf keys | ECDSA P-256 with ECDSA/SHA-256 certificates and PKCS#8 private-key DER. This matches the Mac Go ephemeral issuer and standard Go/Swift Security certificate parsing; Swift's invite DER walker imposes no key-algorithm allowlist. Native Swift execution remains a Mac acceptance obligation. |
+| CA lifetime | Ten calendar years from issuance, with CA:TRUE, BasicConstraintsValid, CertSign and pathLen=0 (no intermediate issuers). Expiry/loss/replacement is a home-identity change: authenticated turn-off/re-enable, fresh invites and Linux approval. Never silently generate or repin a replacement CA. |
+| Leaf lifetime | 365 days from issuance, capped at the existing CA's NotAfter; the total backdated interval remains below 397 days. Issuance refuses with typed `ErrInsufficientCALifetime` if less than 30 days remain from the supplied current time, with no partial result or new-CA fallback. Exactly 30 days is accepted. |
+| Renewal | `LeafRenewalDue(leafDER, caDER, now)` is true at at most 90 days remaining, or for an invalid profile. It grants no issuance/trust authority. `IssueLeaf` uses only the supplied current CA and its matching key; an expired leaf can be recovered under that still-usable CA. No timer is introduced. |
+| Clock skew | NotBefore is backdated five minutes, clamped to CA NotBefore for leaves. Issuance dates are UTC whole seconds; validity is `NotBefore <= now < NotAfter`. Backdating never extends NotAfter or permits an expired/not-yet-valid CA. |
+| Serial and subject | Positive serials use 159 random bits (20 reader-supplied bytes with the sign bit cleared; all-zero refuses). CA CN is `HappyRanch home CA`; leaf CN is `control.happyranch.invalid`. Names carry no per-home authority; the exact pinned CA DER does. |
+| SAN and address | Exactly one DNS SAN, `control.happyranch.invalid`, and only serverAuth EKU. No IP/email/URI/other SAN, wildcard or caller-supplied name/address is accepted. A dial-IP change alone does not require a leaf change; authenticated refresh renews only when the expiry window requires it, under the same CA. |
+
+`NewCA(now, random)` and `IssueLeaf(caDER, caKey, now, random)` return one
+certificate DER plus a redacted `PrivateKey`. `ImportPrivateKey` accepts a
+copied PKCS#8 P-256 key for later same-CA issuance; `PrivateKey.DER()` is the
+explicit sensitive export for custody, never for diagnostics. Every fmt verb,
+String and GoString redacts the wrapper. Errors are closed typed categories;
+parser/signer/reader errors and private inputs are never wrapped or logged.
+Explicit exported key bytes and caller-owned buffers remain sensitive; the
+package does not promise memory erasure or protect a caller that logs them.
+
+`Check(caDER, leafDER, now)` admits exactly one self-signed P-256 CA DER
+(at most 4096 bytes), verifies CA constraints/signature/current validity, and
+validates a current leaf directly to that exact CA with an isolated root pool
+and standard DNS/time/serverAuth verification. It additionally closes the raw
+SAN extension to one fixed dNSName, refuses CA leaves, and requires the leaf's
+window to fit inside the CA's. `Fingerprint` is exactly
+64 lowercase hex SHA-256 characters over the supplied DER, without PEM
+normalization; hashing alone grants no trust. The certificate outputs fit the
+invite-v2 bounded DER walker and existing Linux/Mac Go CA admission checks.
+
+Root must retain the CA signing key separately from Headscale, which receives
+only its leaf key and certificate. The CA-only PEM goes to the protected
+`/etc/happyranch/control-ca.pem`; no host/system trust-store change is allowed.
+PEM encoding belongs to that future custody boundary and uses stdlib
+`encoding/pem`; this core has no PEM or filesystem API. Tests exercise generated
+CA PEM through the existing Linux `homeTrustPolicy.admit` temporary-root pattern;
+installed root custody, real Headscale TLS and native Mac acceptance remain
+separate, unexecuted obligations of the wiring/native tracks.
+
 ### Pure home Headscale renderers and LAN selector (THR-327 slice 3b-2a)
 
 `runtime/remote_access/home_headscale.py` is an **unwired** pure source unit.
