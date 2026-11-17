@@ -3,7 +3,7 @@
 Pure functions over Database + KbStore. Each function takes an explicit
 `now` clock so tests are deterministic.
 
-Spec: docs/superpowers/specs/2026-05-30-dashboard-overhaul-design.md
+Spec: docs/specs/2026-05-30-dashboard-overhaul-design.md
 """
 from __future__ import annotations
 

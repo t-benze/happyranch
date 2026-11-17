@@ -228,7 +228,7 @@ Allowed NEW settings, compatible storage, mounted native runtime and current
 authority/eligible roles. Fresh selection and engine prepare-admission both
 check the latest Allowed generation; old Explicit settings cannot substitute.
 Disabled remains the default; ordinary routing remains legacy. See
-`docs/superpowers/specs/2026-11-12-sequential-coding-u9.md` for the current cutover.
+`docs/specs/2026-11-12-sequential-coding-u9.md` for the current cutover.
 
 Authenticated admitted old @1/@2 replay/continuation retains its original pins
 across later disable/default changes and still requires current selected-role/
@@ -967,7 +967,7 @@ under Founder562; historical document pins and exclusions remain intact.
 V1 later merge requires exact independently reviewed head plus successful required
 lint/static CI on that head, scoped QA/hooks and guarded manager merge; optional
 target-base conditions cannot block v1. Artifact comparison base remains fixed.
-See [the current K0 source contract](../../superpowers/specs/2026-10-14-ordered-coding-workflow.md).
+See [the current K0 source contract](../../specs/2026-10-14-ordered-coding-workflow.md).
 Python units RETIRED, integration/callback SKIPPED24342; behavioral/protected proof
 UNEXECUTED/FOUNDER-WAIVED139429/430. Source review is not behavioral acceptance.
 
@@ -995,7 +995,7 @@ post-await authority revalidation. No live adoption/setup, execution or coding
 readiness is delivered. Python units RETIRED; integration/callback SKIPPED24342;
 behavior/security/protected proof UNEXECUTED/FOUNDER-WAIVED139429/430. Source-only
 review/static checks cannot establish reader-security or behavioral acceptance.
-See [the current K0/K1 contract](../../superpowers/specs/2026-10-14-ordered-coding-workflow.md).
+See [the current K0/K1 contract](../../specs/2026-10-14-ordered-coding-workflow.md).
 
 **Empty-only coding schema K2a1 — Founder THR139seq562/329, ROOT TASK10693.**
 
@@ -2419,7 +2419,7 @@ ACCESS-1 msg131 / PRD v1.0.4 requires current authority revalidation and the
 selected agents' own live repository operations, denied versus unverified
 BLOCK -> Held; it adds no checkpoint, credential or observer. Source/synthetic
 proof is separate from native settlement and real merge acceptance. See
-[the U5 design and preserved owners](../../superpowers/specs/2026-11-11-sequential-coding-u5.md).
+[the U5 design and preserved owners](../../specs/2026-11-11-sequential-coding-u5.md).
 
 
 Sequential U5b2a (TASK-15240) now supplies an UNMOUNTED original-live-Final
@@ -2433,7 +2433,7 @@ U5b2b action/check/observation/callback wiring, U6 history and U7 transport rema
 `guarded-repository-merge@1` success stays Held. Failed/lost command receipts
 remain uncertain after a separate MERGED read. No daemon effect, public command,
 job runner, schema change or live activation follows. Detailed limits and owners:
-[U5 spec](../../superpowers/specs/2026-11-11-sequential-coding-u5.md).
+[U5 spec](../../specs/2026-11-11-sequential-coding-u5.md).
 
 
 U5b2b1 (TASK-15264) moves historical Final raw observation/action helpers into
@@ -2457,7 +2457,7 @@ settlement entitlement follows. U6b mixed cancellation/native-tail producers,
 U5b2b2 original callback-observation validation/mount and U7 transport remain
 implementation remainder; sequential Final success stays Held. Pause generation
 and original receipt-recording uncertainty remain unchanged.
-[U6 specification](../../superpowers/specs/2026-11-11-sequential-coding-u6.md).
+[U6 specification](../../specs/2026-11-11-sequential-coding-u6.md).
 
 
 ## Sequential U6b1 and retained Coding preservation
@@ -2471,7 +2471,7 @@ writes. U6b2 must compose those original writers/overlays and attach the Founder
 route/native-tail consumer. This is implementation remainder, not missing proof.
 U5b2b2/U7 still own callback validation/mount and transport; Final success remains
 Held. No merge retry, reservation release, cleanup or live authority follows.
-[U6 specification](../../superpowers/specs/2026-11-11-sequential-coding-u6.md).
+[U6 specification](../../specs/2026-11-11-sequential-coding-u6.md).
 
 
 ## Sequential U6b2a native disposition boundary
@@ -2485,7 +2485,7 @@ rewritten. It supplies no root clearance, effect clearance or retry entitlement.
 Historical Coding cancellation/return readers and document paths remain exact.
 U6b2b still owes live retained-family writers, cross-family ordinary overlays,
 original-owner aggregation/history and Founder/native-tail attachment; U5b2b2/U7
-and Final success Held remain. See the [U6 split](../../superpowers/specs/2026-11-11-sequential-coding-u6.md).
+and Final success Held remain. See the [U6 split](../../specs/2026-11-11-sequential-coding-u6.md).
 
 
 ## Sequential U6b2b retained-family composition (TASK-15349)
@@ -2517,7 +2517,7 @@ or unavailable family proof remains UNSETTLED. Aggregate all-owner qualification
 is necessary before the original safe root-tail disposition; no ownership is
 cleared to force it. Source/static and synthetic writer comparisons are separate
 from a full populated mixed-old-history or native/V3 acceptance claim. See the
-[current U6 owner table](../../superpowers/specs/2026-11-11-sequential-coding-u6.md#u6b2b-mounted-composition-task-15349).
+[current U6 owner table](../../specs/2026-11-11-sequential-coding-u6.md#u6b2b-mounted-composition-task-15349).
 
 
 Mixed sequential cancellation composes the original Coding terminal/outer writers and
@@ -2546,7 +2546,7 @@ Six existing-Founder-bearer GETs expose stored sequential definition versions,
 repo-free settings, runs/detail and source/carrier/visit task links, under
 `/workflows/sequential` and `/tasks/{task_id}/sequential-workflow`. Exact paths,
 closed records, audience/privacy and remaining U7b–U7d work are in the current
-[U7 specification](../../superpowers/specs/2026-11-11-sequential-coding-u7.md).
+[U7 specification](../../specs/2026-11-11-sequential-coding-u7.md).
 SELECT-only snapshots authenticate complete history and fresh current authority;
 GET allocates/writes nothing. Absent-task404 precedes ownership409. Denied/foreign
 reads return no workflow content or link. Existing Founder task-result visibility
@@ -2598,7 +2598,7 @@ only the genuine manager's own FINAL callback supplies native provenance.
 U5b2b2 validates after positive outer settlement; **Final success remains Held**.
 U7c2 still owes compatible Final witness/output acceptance, U7d agent initiation,
 and U9 atomic fresh-start cutover. Full command/route grammar, audience exclusions,
-per-read allowances and SYNTHETIC evidence limits: [current U7 spec](../../superpowers/specs/2026-11-11-sequential-coding-u7.md).
+per-read allowances and SYNTHETIC evidence limits: [current U7 spec](../../specs/2026-11-11-sequential-coding-u7.md).
 No schema/permission/credential/access observer or live operation is introduced.
 
 ## U7c2a unmounted Final witness (TASK-15549)
@@ -2614,7 +2614,7 @@ write, effect or admission. **Final success stays Held.** U7c2b still must suppl
 complete output-history acceptance and same-transaction publication/return
 validation before mounting (subsequently supplied by U7c2b); U9 now mounts
 public fresh Coding selection together with the old-fresh fence.
-The [current U7 spec](../../superpowers/specs/2026-11-11-sequential-coding-u7.md)
+The [current U7 spec](../../specs/2026-11-11-sequential-coding-u7.md)
 records the pre-edit split, witness preimage, allowance accounting and evidence
 limits. ACCESS-1/current authority, agent-owned effective access, original Pause,
 receipt uncertainty/no reissue, U6 and historical owners remain unchanged.
@@ -2645,7 +2645,7 @@ U9 now mounts public fresh Coding selection and old-fresh refusal atomically.
 Native/V3/V5/M4 and genuine
 access/merge/activation acceptance remain separate. Source diagnostics are
 out-of-repo SYNTHETIC; units/Vitest RETIRED, integration SKIPPED24342 and no E2E.
-See the [current U7 spec](../../superpowers/specs/2026-11-11-sequential-coding-u7.md#u7c2b-complete-final-admission-task-15564).
+See the [current U7 spec](../../specs/2026-11-11-sequential-coding-u7.md#u7c2b-complete-final-admission-task-15564).
 
 R-M3-6 / TASK-15570 authorizes the single additional protected-owner exception
 `sequential_views.py` for browser-only Final redaction. After unchanged complete
@@ -2694,7 +2694,7 @@ flag shortcut or historical engine fallback. Admitted old @1/@2, original return
 source/thread association, U7a/U7b/U7c, Pause/U6 and LOCAL Final/receipt uncertainty
 are unchanged; thread sources still refuse, notifications remain excluded.
 No new route/schema/credential/permission/access observer or daemon network I/O.
-See the [current U7 source and evidence limits](../../superpowers/specs/2026-11-11-sequential-coding-u7.md#u7d-ordinary-source-completion-consumer-task-15578).
+See the [current U7 source and evidence limits](../../specs/2026-11-11-sequential-coding-u7.md#u7d-ordinary-source-completion-consumer-task-15578).
 
 ## U9 release boundary and atomic cutover (TASK-15624)
 
@@ -2730,7 +2730,7 @@ native/V3/V5/M4 or operator acceptance. TASK-15719 sizes the explicit installer
 separately; TASK-15741 caps complete-reader acquisition at160,000 tasks and
 ownership marks plus64MiB of task-ID/ownership cells before payload fetch.
 Default/runtime/venue/startup budgets remain unchanged. See the
-[compatibility table/full caller inventory](../../superpowers/specs/2026-11-12-sequential-coding-u9.md)
+[compatibility table/full caller inventory](../../specs/2026-11-12-sequential-coding-u9.md)
 and [operator install/backout](../../runbooks/sequential-coding-cutover.md).
 
 ## U9b inert operator registration and admission (TASK-15616)
@@ -2761,7 +2761,7 @@ TASK-15618 sizes this operator for retained ordinary history with one original
 and a 640M-step ownership SQL guard; other reader callers keep 32M. The existing
 8192-row/64MiB workflow acquisition limits remain. An INSERT-only SQLite authorizer
 and exact expected append comparison protect all original rows and SQL. Replay/
-readback need no backup hash. See the [sizing and caller inventory](../../superpowers/specs/2026-11-12-sequential-coding-u9.md#retained-history-repair-task-15618).
+readback need no backup hash. See the [sizing and caller inventory](../../specs/2026-11-12-sequential-coding-u9.md#retained-history-repair-task-15618).
 The separate explicit installer now streams every retained row under its own
 8,388,608-row/16GiB-cell/32MiB-row/32GiB-backup/900s allowance; before each
 complete reader it gates160,000 tasks and ownership marks and64MiB of their
@@ -2787,7 +2787,7 @@ operator/native/V3 acceptance; independent review/QA and manager merge remain.
 ## U4c current selected-Developer repository transport (TASK-15660)
 
 The earlier U4 checkpoint's unavailable public subject-binding adapter is
-superseded by [U4c](../../superpowers/specs/2026-11-12-sequential-coding-u4c.md).
+superseded by [U4c](../../specs/2026-11-12-sequential-coding-u4c.md).
 `happyranch workflows sequential repository-resolve` and `repository-bind`
 require `--org ORG --session-id CURRENT --from-file /absolute/command.json --json`.
 The canonical closed command contains exactly `format` with value

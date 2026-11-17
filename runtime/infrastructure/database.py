@@ -804,7 +804,7 @@ class Database(
 
         Returns True iff the row transitioned.
 
-        See docs/superpowers/specs/2026-05-26-cancel-race-design.md §5.3
+        See docs/specs/2026-05-26-cancel-race-design.md §5.3
         (Codex review of PR #34 surfaced the residual race).
         """
         row = self._conn.execute(

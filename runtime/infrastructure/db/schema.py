@@ -1159,7 +1159,7 @@ class SchemaMixin:
         ``CREATE TABLE IF NOT EXISTS jobs`` below becomes a no-op on an
         already-migrated DB.
 
-        See spec docs/superpowers/specs/2026-05-26-jobs-design.md §6.2.
+        See spec docs/specs/2026-05-26-jobs-design.md §6.2.
         """
         # `executescript` does not return rows, so use a plain execute+fetchall
         # to inspect the schema first.
@@ -2349,7 +2349,7 @@ class SchemaMixin:
             # SIGTERM'd session as "cancelled" (not a retryable failure) and
             # idempotent _fail calls don't overwrite the founder's note.
             "ALTER TABLE tasks ADD COLUMN cancelled_at TEXT",
-            # Revisit link: see docs/superpowers/specs/2026-04-23-revisit-root-link-design.md.
+            # Revisit link: see docs/specs/2026-04-23-revisit-root-link-design.md.
             # Sideways reference to the predecessor root of a revisit; NULL for
             # non-revisit tasks. walk_ancestors MUST NOT follow this column —
             # that's the attempt-isolation invariant from the v2 revisit spec.
@@ -2593,7 +2593,7 @@ class SchemaMixin:
             # are LEFT AS-IS; only new cancellations write status='cancelled'
             # (derivations read cancelled_at, not the status label). Forward-only
             # posture; the reverse migration is published in the Path-B spec
-            # (docs/superpowers/specs/2026-06-27-task-status-pathB-stored-design.md).
+            # (docs/specs/2026-06-27-task-status-pathB-stored-design.md).
             # No DDL: neither status nor block_kind has a CHECK constraint, so
             # the new values are application-enum-only.
             self._conn.execute(

@@ -848,7 +848,7 @@ No native visit recovery or original host settlement is inferred. Existing
 unknown-owner rules, repository/mixed U5 hold and the rule to
 roll back only with no nonterminal sequential Pause entries remain unchanged.
 The settings-generation limitation at this U3e-2 checkpoint is historical:
-[U9 Option A](../../superpowers/specs/2026-11-12-sequential-coding-u9.md#mounted-atomic-boundary-and-pin-compatibility-repair-task-15624)
+[U9 Option A](../../specs/2026-11-12-sequential-coding-u9.md#mounted-atomic-boundary-and-pin-compatibility-repair-task-15624)
 supersedes the newer-generation continuation veto. Admitted runs validate their
 original Allowed pins; fresh selection and engine prepare-admission require
 latest Allowed settings. Native recovery and settlement uncertainty remain.
@@ -885,7 +885,7 @@ generation/digest/admission snapshot through admission replay, lifecycle and the
 cancel fence after a newer Allowed or Disabled generation. Fresh
 `sequential_start._selection` and engine `_prepare_admission` independently
 require latest Allowed settings; invalid/missing/originally Disabled pins refuse.
-See [U9's mounted boundary and pin compatibility repair](../../superpowers/specs/2026-11-12-sequential-coding-u9.md#mounted-atomic-boundary-and-pin-compatibility-repair-task-15624).
+See [U9's mounted boundary and pin compatibility repair](../../specs/2026-11-12-sequential-coding-u9.md#mounted-atomic-boundary-and-pin-compatibility-repair-task-15624).
 Only the historical settings veto is superseded: cancellation still does not
 consult the marker, marker removal creates no settings generation, and the
 no-nonterminal-sequential-Pause rollback rule remains. Original native/receipt
@@ -952,7 +952,7 @@ positive original null-visit source-outer evidence. U3e-1b-ii owns that separate
 producer and manager skill instructions. Existing U3e-1a cancellation, U3e-2
 caller return, default Disabled admission, repository/mixed U5 successful-output hold,
 Pause backout remains controlling. The stale-settings continuation limit is
-historical and superseded by [U9 Option A](../../superpowers/specs/2026-11-12-sequential-coding-u9.md#mounted-atomic-boundary-and-pin-compatibility-repair-task-15624):
+historical and superseded by [U9 Option A](../../specs/2026-11-12-sequential-coding-u9.md#mounted-atomic-boundary-and-pin-compatibility-repair-task-15624):
 admission replay, lifecycle and the cancel fence retain admitted original Allowed
 pins after newer Allowed or Disabled settings; fresh selection and engine
 prepare-admission still require latest Allowed settings. Marker removal refuses
@@ -1074,7 +1074,7 @@ original budget. The repository-success hold and foreign-result refusal have
 zero new proof serializations, matching B. No reset/refund or protected fragment
 change follows; NEW uncharged work beyond F-U3f-AUTH/ENTRY/MOVE requires STOP.
 See [the current contract](reusable-workflows.md#u3f--u5a-document-witnesses-and-addressed-delivery)
-and [U3f source record](../../superpowers/specs/2026-11-09-sequential-document-witness-u3f.md).
+and [U3f source record](../../specs/2026-11-09-sequential-document-witness-u3f.md).
 
 
 ## U6a history inventory and native ownership
@@ -1087,7 +1087,7 @@ keeps audit/CAS COMMIT before opaque controls outside locks; mixed ancestor
 cancellation still refuses. U6b must compose native root-tail consumers before
 attachment. Ended SID, missing PID, launcher TERM/INT and successful Stop request
 remain insufficient settlement/cancellation proof. See the
-[U6 split](../../superpowers/specs/2026-11-11-sequential-coding-u6.md).
+[U6 split](../../specs/2026-11-11-sequential-coding-u6.md).
 
 
 ## U6b1 native handoff remains unmounted
@@ -1099,7 +1099,7 @@ settlement. Prepared/unknown/running owners and original Final receipt uncertain
 stay retained. Cancelled sequential dependencies conservatively retain the
 incomplete disposition until U6b2 composes positive original-owner evidence and
 the native-tail consumer. Existing native-tail/Founder cancellation behavior and
-Pause generations remain unchanged. See the [U6 split](../../superpowers/specs/2026-11-11-sequential-coding-u6.md).
+Pause generations remain unchanged. See the [U6 split](../../specs/2026-11-11-sequential-coding-u6.md).
 
 
 ## U6b2a original-owner qualification, without attachment
@@ -1115,7 +1115,7 @@ insufficient. A positive result qualifies only that original owner, never the
 whole root; no aggregate teardown-incomplete flag may be cleared from it.
 Native consumers and Founder cancellation stay unchanged until U6b2b composes
 every captured owner, live retained-family overlays and the complete attachment.
-See the [U6 split](../../superpowers/specs/2026-11-11-sequential-coding-u6.md).
+See the [U6 split](../../specs/2026-11-11-sequential-coding-u6.md).
 
 
 ## U6b2b original-owner aggregate (TASK-15349)
@@ -1138,7 +1138,7 @@ unsettled outer, failed control or route failure supplies one incomplete batch.
 No attempted transition is reset/retried. Lost memory grants no recovery action.
 This does not alter Pause admission generation or Final action/receipt uncertainty,
 or treat launcher TERM/INT, ended SID or missing PID as product cancellation.
-See the [U6 composition table](../../superpowers/specs/2026-11-11-sequential-coding-u6.md#u6b2b-mounted-composition-task-15349).
+See the [U6 composition table](../../specs/2026-11-11-sequential-coding-u6.md#u6b2b-mounted-composition-task-15349).
 
 The original document terminal writer (also inherited by review) preserves a
 native row already stamped cancelled by the mixed stop. It emits its unchanged

@@ -133,7 +133,7 @@ same visible result. CA changes still say **Home identity changed — approve ag
 ### THR-327 slice 5g: v2 invite and saved trust
 
 `RemoteInvite.parse(_:now:)` accepts only `hrinvite2:` plus strict bounded JSON
-under [section 6](../../docs/superpowers/specs/2026-11-16-one-click-remote-access.md).
+under [section 6](../../docs/specs/2026-11-16-one-click-remote-access.md).
 The exact top-level keys are `v`, `mode`, `control_url`, `control_plane_id`,
 `control_tls`, `home_endpoint`, `home_id`, `connector_id`, `invite_id`, `join_key`,
 `pair_secret`, `issued_at`, `expires_at`; `v` must be 2. Home control URL is exactly
@@ -153,7 +153,7 @@ there is no own-server UI. Display/debug/mirror and diagnostics redact v1/v2
 invites and secrets. Swift/Data copies cannot promise cryptographic erasure.
 
 **Normative issuer contract for slice 3c.** The [v2 wire literals (pinned)
-table in section 6](../../docs/superpowers/specs/2026-11-16-one-click-remote-access.md#v2-wire-literals-pinned)
+table in section 6](../../docs/specs/2026-11-16-one-click-remote-access.md#v2-wire-literals-pinned)
 adopts the implemented representations. Slice 3c MUST conform; issuer/parser
 round-trip fixtures are the shared contract. `RemoteInviteTests` owns the Mac
 round-trip fixture and strict refusal cases, including padded envelopes, wrong

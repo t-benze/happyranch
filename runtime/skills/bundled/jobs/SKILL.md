@@ -560,7 +560,7 @@ ACCESS-1 msg131 / PRD v1.0.4 preserves current-authority rechecks and agent-owne
 access failures (denied versus unverified BLOCK -> Held), with zero daemon PR/
 network I/O or new access observer/credential. U5a supplies no executable
 selection on success or refusal; existing assessment/Final success paths stay
-held. See docs/superpowers/specs/2026-11-11-sequential-coding-u5.md.
+held. See docs/specs/2026-11-11-sequential-coding-u5.md.
 
 Sequential Coding U5b2b2 / R-M3-3 adds only an unmounted closed Final callback
 observation parser/reader, with complete/selected U6 history, original callback/

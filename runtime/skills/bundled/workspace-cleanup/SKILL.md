@@ -352,7 +352,7 @@ own-unlink hardlink adjustment. Darwin requires validated native getmntinfo/stat
 mount evidence; unavailable or malformed evidence retains. It loses post-unlink
 observation and accepts the non-atomic stat-to-unlink window within the existing
 same-UID threat model, without an atomic identity guarantee. See the maintained
-`docs/superpowers/specs/2026-10-15-nightly-disk-sweeper.md` for the exact platform
+`docs/specs/2026-10-15-nightly-disk-sweeper.md` for the exact platform
 and hardlink contract. Devices/unknown special types retain. Worktrees and
 Git metadata keep strict special-object checks; all ownership/jobs/age/link/
 mount gates and durable manifest/lock/output exclusions remain.

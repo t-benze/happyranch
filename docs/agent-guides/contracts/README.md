@@ -32,7 +32,7 @@ When a retained design names a retired `protocol/` document or skill as its
 current source, use the
 matching bundled skill and agent guide instead. Historical `protocol/` paths
 identify documents retired after `01d5ede5`; use Git history for their contents.
-The [specs index](../../superpowers/specs/README.md) identifies current designs.
+The [specs index](../../specs/README.md) identifies current designs.
 When a spec conflicts with current sources, treat it as historical unless the
 index marks it `current`.
 
@@ -49,6 +49,6 @@ New specs should include a short status block near the top:
 ```md
 > Status: implemented
 > Current Source: docs/agent-guides/features-and-invariants.md
-> Superseded By: docs/superpowers/specs/YYYY-MM-DD-newer-design.md
+> Superseded By: docs/specs/YYYY-MM-DD-newer-design.md
 > Notes: Uses old CLI naming; current command is `happyranch`.
 ```

@@ -1,6 +1,6 @@
 """End-to-end tests for the review_required=true blocked-by-job flow.
 
-Spec: docs/superpowers/specs/2026-05-28-task-blocked-by-job-design.md §9.2
+Spec: docs/specs/2026-05-28-task-blocked-by-job-design.md §9.2
 
 Covers two paths that require explicit founder action:
 

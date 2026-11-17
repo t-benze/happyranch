@@ -1,6 +1,6 @@
 # UI_SPEC.md — HappyRanch Founder Console
 
-**Companion to:** `web/DESIGN.md` (tokens), `web/ARCHITECTURE.md` (layer rules), `docs/superpowers/specs/2026-05-14-web-ui-design.md` (the original web-UI design doc), `docs/agent-guides/web-and-cli.md` (informs the future Audit / Trends surface).
+**Companion to:** `web/DESIGN.md` (tokens), `web/ARCHITECTURE.md` (layer rules), `docs/specs/2026-05-14-web-ui-design.md` (the original web-UI design doc), `docs/agent-guides/web-and-cli.md` (informs the future Audit / Trends surface).
 
 **Status:** v0.1 spec. Threads is implemented; the other four nav slots (Tasks, KB, Audit, Agents) are sketched only to anchor the navigation model.
 

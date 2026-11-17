@@ -507,7 +507,7 @@ def _require_task_active(task_id: str, task: TaskRecord | None) -> None:
     bumped when its whole task was terminated.
 
     Closes the cancel-race documented in
-    docs/superpowers/specs/2026-05-26-cancel-race-design.md §5.1.
+    docs/specs/2026-05-26-cancel-race-design.md §5.1.
     """
     if task is None:
         raise HTTPException(
