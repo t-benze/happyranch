@@ -198,8 +198,7 @@ def _ordinary_source(conn: sqlite3.Connection, org: Any, task_id: str,
         row = rows[0]
         _check(selected_owner(conn, key, org.slug) == ('legacy', None, None)
                and row['cancelled_at'] is None
-               and row['status'] not in ('completed', 'failed', 'cancelled', 'superseded')
-               and row['dispatched_from_thread_id'] is None)
+               and row['status'] not in ('completed', 'failed', 'cancelled', 'superseded'))
         if source is None:
             source = row
             _check(row['task_type'] == 'task' and row['status'] == 'in_progress'

@@ -1,5 +1,35 @@
 # Reusable workflow contracts
 
+## R1a: thread-originated ordinary sources and terminal return
+
+Start@1 accepts an otherwise eligible ordinary manager task whose own row or
+same-team ordinary ancestry has thread-origin metadata. Direct thread invocations
+supply no task-session authority. Actual task/manager ownership, current genuine
+SID/INTEGER result, cancellation, bounded cycle-free ancestry, Pause, positive
+host settlement and the existing no-concurrent-child guards still govern.
+
+After complete-reader admission of a committed return, `sequential_return`
+rebuilds source/carrier histories and requests the ordinary parent wake. It also
+runs the ordinary terminal facade under the DB lock, checking persisted terminal
+status, bounded original revisit-thread ancestry and all bounded SYSTEM marker
+evidence. A marker matches the actual source ID and actual terminal status in
+that original thread. Duplicate/concurrent notifications never append, extend
+the cap or mint again. Parked/nonterminal sources have no tail; a non-root source
+only wakes its parent, without posting for a thread-originated ancestor.
+Composed-thread archive admission is still evaluated for terminal sources,
+including when a marker already exists.
+
+Returned-only restart rediscovery uses the same owner and the supplied thread
+queue adapter. Before a marker it attempts the ordinary tail; after a marker it
+retains partial effects, including marker-only, pending, settled or restart-failed
+invocations. Unreadable/over-budget marker evidence refuses another tail. There
+is no automatic redelivery or exactly-once eventual delivery guarantee.
+
+This is still one run, fixed assignments and the old source-terminal return
+semantics of Start@1. It does not replace chains or implement R3–R7, new catalog
+selection/discovery/composition, or new initiator continuation semantics. No live
+installation, Allow/role change or genuine Coding pilot follows from delivery.
+
 A2 (2026-11-17) adds positively fresh POST `/orgs` storage creation and qualified,
 definition-only registration of the literal reviewed Coding v2 catalog. The
 fresh owner exclusively creates the DB file, initializes J + Coding + sequential
@@ -1000,9 +1030,9 @@ an omitted queue retains the existing orchestrator queue behavior.
 Returned-only rediscovery replays the same consumer for terminal sources. It
 never resumes a sequential visit or mutates/acknowledges the outbox. The guarantee
 is one immutable workflow return; queue insertion is not a durable caller
-execution acknowledgement. Thread follow-up/SYSTEM/invocation minting are not
-invoked. No fresh-start producer, public command or bundled skill change ships
-in U3e-2. U3f supplies the document-only successful-output exception below;
+execution acknowledgement. At the historical U3e-2 checkpoint no terminal
+thread tail ran; R1a now supplies the guarded ordinary tail described above.
+No fresh-start producer, public command or bundled skill change ships in U3e-2. U3f supplies the document-only successful-output exception below;
 repository U5 remainder, native recovery, venue/settings and Pause
 backout holds remain. Source/static delivery supplies no V3 or restart proof.
 
@@ -1063,9 +1093,9 @@ The consumer authenticates the actual INTEGER callback before another fresh
 venue/read-only precheck and authority capture. Authority → teams → database
 locks precede the sole admission writer. It revalidates the RetryClaim, actual
 native invocation, current executable manager, noncancelled ordinary ancestry,
-absence of chain/fanout/job wait and independent bindings. Thread-originated or
-sequential-owned sources/ancestors refuse. D1 original limits are computed inside
-the writer from the exact pinned settings snapshot; native allowances are never
+absence of chain/fanout/job wait and independent bindings. Sequential-owned
+sources/ancestors refuse; R1a permits ordinary thread-origin metadata. D1 original
+limits are computed inside the writer from the exact pinned settings snapshot; native allowances are never
 replenished or converted. Native v2 spend/claim/ack uses only existing uncommitted
 APIs and rolls back with the unchanged U3b admission/activation graph.
 
@@ -1824,7 +1854,9 @@ settings, compatible storage, mounted native runtime and current authority;
 supplies no authority and a marker cannot bypass Coding selection. There is no
 flag shortcut or historical engine fallback. Admitted old @1/@2, original return and
 source/thread association, U7a/U7b/U7c, Pause/U6 and LOCAL Final/receipt uncertainty
-are unchanged; thread sources still refuse, notifications remain excluded.
+are unchanged. R1a now admits eligible thread-originated ordinary task ancestry
+and runs the guarded terminal return tail above; workflow hold/return notifications
+and initiator continuation remain excluded.
 No new route/schema/credential/permission/access observer or daemon network I/O.
 See the [current U7 source and evidence limits](../../specs/2026-11-11-sequential-coding-u7.md#u7d-ordinary-source-completion-consumer-task-15578).
 

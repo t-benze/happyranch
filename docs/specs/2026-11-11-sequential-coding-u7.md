@@ -14,6 +14,13 @@ below retain their evidence. See [current A2 contract](2026-11-14-automatic-work
 > Current Source: docs/agent-guides/contracts/reusable-workflows.md
 > Historical checkpoints below retain their original source-head exclusions. Their public fresh-start OFF/unmounted/venue-only descriptions are superseded by U9; admitted history and original evidence limits remain intact.
 
+> R1a extends Start@1 to otherwise eligible ordinary task sources/ancestors with
+> thread-origin metadata and adds the guarded ordinary terminal return tail,
+> including returned-only restart rediscovery. It retains one run, fixed
+> assignments and old source-terminal semantics. It supplies no chain replacement,
+> R3–R7, discovery/composer/catalog work, automatic partial-tail redelivery or
+> exactly-once delivery guarantee. [Current R1a contract](../agent-guides/contracts/reusable-workflows.md#r1a-thread-originated-ordinary-sources-and-terminal-return).
+
 THR-336 / ROOT TASK-15165; TASK-15465, linked retry of pre-edit failed TASK-15462.
 Plan rev3 TASK-14461 §U7, R-M2-1, R-M3-3 and R-M3-4 govern. Product authority:
 PRD v1.0.4 Shared Artifact `product_lead-2026-11-11-workflow-mechanism-prd-v1.0.4.md`,
@@ -505,7 +512,7 @@ without a job wait. The server-selected source task goes to the existing venue,
 Allowed settings/pin/binding/lower-limit and ordinary ancestry precheck BEFORE
 native callback insertion. Missing/malformed/Disabled settings and pin mismatch
 therefore retain zero result/business writes, spend and allocation. Worker,
-non-manager, foreign, ended/unbound, thread and workflow-owned sources refuse
+non-manager, foreign, ended/unbound, direct-thread-invocation and workflow-owned sources refuse
 through the existing manager/session/ownership/ancestry gates. The pending
 interval after native result COMMIT/tracker clear and before graph admission also compares the complete original native payload. `is_start_result`
 recognizes the SAVED native decision, so switching the incoming action cannot
@@ -526,8 +533,9 @@ and parks the source. Same-key changed bytes refuse; exact admitted replay retai
 original bytes and IDs. Cancellation and original budgets remain controlling.
 The unchanged original positive host/outer/close/release producer alone makes the
 first visit queue-eligible after evidence COMMIT. Source return and source/thread
-association remain with their original owners; thread sources still refuse and
-no notification feature is added.
+association remain with their original owners. R1a now permits ordinary
+thread-originated task ancestry and supplies the guarded terminal return tail
+described above; workflow hold/return notifications remain excluded.
 
 **Historical U7d OFF boundary (superseded by U9):** both fresh completion precheck and committed-result
 consumer call unchanged `check_venue_start`. It refuses the live daemon home

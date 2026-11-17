@@ -56,6 +56,11 @@ from runtime.orchestrator.agent_def import AgentDef, render_agent_text
 
 # A focused phase selects the same retained corruption rows/assertions. The
 # default/full matrix remains all four phases; no case is skipped or weakened.
+returned_case = None
+if len(sys.argv) == 2 and sys.argv[1].startswith('--returned-storage='):
+    returned_case = sys.argv[1].split('=', 1)[1]
+    sys.argv[1:] = ['--returned-storage']
+
 a2_case = None
 if len(sys.argv) == 2 and sys.argv[1].startswith('--fresh-catalog='):
     a2_case = sys.argv[1].split('=', 1)[1]
@@ -147,11 +152,484 @@ if len(sys.argv) == 2 and sys.argv[1].startswith('--retained-corruption-phase=')
         uncommitted='between uncommitted')[sys.argv[1].split('=', 1)[1]]
     sys.argv[1:] = ['--retained-corruption']
 
-assert sys.argv[1:] in ([], ['--bootstrap-startup'], ['--bootstrap-worker'], ['--bootstrap-owners'], ['--bootstrap-discovery'], ['--bootstrap-selection'], ['--bootstrap-install'], ['--bootstrap-rehearsal'], ['--bootstrap-backup'], ['--bootstrap-journal'], ['--bootstrap-precommit'], ['--startup-isolation'], ['--fresh-catalog'], ['--org-access-fence'], ['--org-access-openers'], ['--org-access-native'], ['--org-access-guardian'], ['--org-access-profile'], ['--setup-status'], ['--daily-integrity'], ['--install-integrity'], ['--bounded-acquisition'], ['--trace-custody'], ['--sequential-reuse'], ['--sequential-load'], ['--sequential-freshness'], ['--sequential-faults'], ['--sequential-sql-exhaustion'], ['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--coding-authority-corruption'], ['--document-native-corruption'], ['--author-handoff-corruption'], ['--document-revision-corruption'], ['--coding-history-corruption'], ['--physical-corruption'], ['--sequential-uncommitted'], ['--i2-cutover'], ['--i2-native']), 'unknown schema-load selection'
+assert sys.argv[1:] in ([], ['--returned-storage'], ['--bootstrap-startup'], ['--bootstrap-worker'], ['--bootstrap-owners'], ['--bootstrap-discovery'], ['--bootstrap-selection'], ['--bootstrap-install'], ['--bootstrap-rehearsal'], ['--bootstrap-backup'], ['--bootstrap-journal'], ['--bootstrap-precommit'], ['--startup-isolation'], ['--fresh-catalog'], ['--org-access-fence'], ['--org-access-openers'], ['--org-access-native'], ['--org-access-guardian'], ['--org-access-profile'], ['--setup-status'], ['--daily-integrity'], ['--install-integrity'], ['--bounded-acquisition'], ['--trace-custody'], ['--sequential-reuse'], ['--sequential-load'], ['--sequential-freshness'], ['--sequential-faults'], ['--sequential-sql-exhaustion'], ['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--coding-authority-corruption'], ['--document-native-corruption'], ['--author-handoff-corruption'], ['--document-revision-corruption'], ['--coding-history-corruption'], ['--physical-corruption'], ['--sequential-uncommitted'], ['--i2-cutover'], ['--i2-native']), 'unknown schema-load selection'
 
 
 print('SCHEMA_RUNTIME', json.dumps(dict(python=sys.version, executable=sys.executable, sqlite=sqlite3.sqlite_version,
     source=sys.modules[Database.__module__].__file__)), flush=True)
+
+# Private storage fixtures shared by returned-tail and retained-reader cases.
+from runtime.infrastructure.workflow_schema import (
+    initialize_complete_org_schema, install_sequential_schema,
+    sequential_storage_inventory, _coding_org_identity, _schema_snapshot,
+)
+from runtime.workflows.sequential_history import read_sequential_history
+from runtime.workflows import sequential_history as seq_history
+
+@contextmanager
+def sequential_fixture():
+    with tempfile.TemporaryDirectory(prefix='sequential-load-reuse-') as scratch:
+        root = Path(scratch) / 'orgs' / 'scratch'
+        (root / 'org/agents').mkdir(parents=True)
+        db = Database(OrgPaths(root).db_path)
+        try:
+            initialize_complete_org_schema(db, expected_org_slug='scratch', layout='J')
+            install_pause_schema(db, org_slug='scratch')
+            install_task_ownership(db, org_slug='scratch')
+            db.insert_task(TaskRecord(id='TASK-seq-load', brief='synthetic ordinary owner'))
+            with _schema_snapshot(db._conn):
+                identity = _coding_org_identity(db._conn, expected_org_slug='scratch',
+                                               expected_path=str(db.db_path))
+                inventory = sequential_storage_inventory(db._conn)
+            def offline():
+                assert _coding_org_identity(db._conn, expected_org_slug='scratch',
+                                            expected_path=str(db.db_path)) == identity
+            assert install_sequential_schema(db._conn, expected_org_slug='scratch',
+                expected_path=str(db.db_path), source_identity=identity,
+                source_inventory=inventory, offline_check=offline) == 'installed'
+            sql = []
+            with db.observe_trace(sql.append):
+                yield db, root, sql
+        finally:
+            db.close()
+
+# Synthetic storage only: compiler/parser and the unmodified public reader
+# validate the nonempty graph. These rows confer no execution authority.
+def populate_sequential(db, *, settled=False):
+    import hashlib
+    from runtime.workflows.sequential_definition import compile_definition, parse_start, parse_result
+    encode = seq_history._bytes
+    digest = lambda raw: hashlib.sha256(raw).hexdigest()
+    limits = dict(content_returns=0, max_content_epochs=1, max_visits=1, max_events=4)
+    raw = encode(dict(format='workflow-sequential-definition@1', identity='release/synthetic/load',
+        version=1, description='Synthetic nonempty load-reader fixture',
+        required_inputs=[dict(name='request', contract='bounded-text@1', required=True)],
+        roles=dict(author=dict(kind='agent', executable=True, eligibility='worker', independent_of=[])),
+        entry_node='author', nodes=[dict(id='author', role='author', responsibilities=['Write a fixture'],
+            inputs=[dict(name='request', source='run.request', required=True)],
+            output_contract=dict(slot='document', type='immutable-document@1'),
+            completion_checks=['immutable-document@1'],
+            outcomes=dict(produced=dict(action='terminal', condition='done'),
+                          BLOCK=dict(action='fail', code='blocked')))],
+        limits=limits, terminal_conditions=dict(done=dict(output='document',
+            requires=['immutable-document@1', 'native-success-and-positive-outer-settlement@1']))))
+    compiled = compile_definition(raw, source_digest=digest(raw))
+    pin = compiled.pin
+    bindings = [dict(role='author', principal='synthetic-author')]
+    snapshot = encode(dict(format='workflow-sequential-settings-storage@1',
+        definition=pin.model_dump(), bindings=bindings, limits=limits, admission='Allowed'))
+    request = encode(dict(format='workflow-sequential-settings-operation-storage@1',
+        operation_key='synthetic-settings', principal='synthetic-manager', settings_id='settings',
+        expected_generation=0, snapshot_digest=digest(snapshot)))
+    receipt = encode(dict(format='workflow-sequential-settings-receipt-storage@1',
+        operation_id='settings-op', settings_id='settings', generation=1, snapshot_digest=digest(snapshot)))
+    start = encode(dict(format='workflow-sequential-start@1', operation_key='synthetic-start',
+        definition=pin.model_dump(), settings=dict(generation=1, snapshot_digest=digest(snapshot)),
+        request='Synthetic stored request', inputs=[], bindings=bindings, lower_limits=limits))
+    parse_start(start)
+    for task, parent, agent in (('source', None, 'synthetic-manager'),
+                                ('carrier', 'source', 'synthetic-manager'),
+                                ('visit-task', 'carrier', 'synthetic-author')):
+        db.insert_task(TaskRecord(id=task, parent_task_id=parent, assigned_agent=agent,
+                                  brief='synthetic storage fixture'))
+    conn = db._conn
+    source_result, visit_result = [conn.execute(
+        'INSERT INTO task_results(task_id,agent,session_id,created_at) VALUES (?,?,?,?)',
+        (task, agent, session, '2026-11-14T00:00:00+00:00')).lastrowid
+        for task, agent, session in (('source', 'synthetic-manager', 'source-session'),
+                                     ('visit-task', 'synthetic-author', 'visit-session'))]
+    selection = encode(dict(outputs=[]))
+    content = b'Synthetic immutable document'
+    output = dict(slot='document', contract='immutable-document@1', epoch=1,
+        producer_visit='visit', task_id='visit-task', session_id='visit-session',
+        result_id=visit_result, digest=digest(content))
+    envelope = encode(dict(format='workflow-sequential-result@1', run_id='run', visit_id='visit',
+        definition_digest=pin.definition_digest, input_selection_digest=digest(selection),
+        outcome='produced', outputs=[output], findings=[], capability_receipts=(
+            [dict(check='immutable-document@1', evidence_digest=digest(content))] if settled else [])))
+    parse_result(envelope)
+    event = encode(dict(format='workflow-sequential-storage-event@1', kind='admitted',
+        run_id='run', sequence=1, operation_key='synthetic-start', prior_digest='0' * 64))
+    notification = encode(dict(format='workflow-sequential-notification-storage@1',
+        notification_id='outbox', event_id='event', run_id='run', visit_id='visit',
+        task_id='visit-task', kind='visit_queued'))
+    conn.execute('PRAGMA defer_foreign_keys=ON')
+    conn.execute('INSERT INTO workflow_seq_definitions VALUES (?,?,?,?,?,?,?,?,?,?)',
+        ('definition', pin.identity, pin.version, raw, pin.definition_digest, pin.source_digest,
+         pin.compiler, pin.validator, pin.interpreter, pin.capabilities))
+    conn.execute('INSERT INTO workflow_seq_settings VALUES (?,?,?,?,?,?,?)',
+        ('settings', 'scratch', 'definition', pin.identity, 1, snapshot, digest(snapshot)))
+    conn.execute('INSERT INTO workflow_seq_settings_operations VALUES (?,?,?,?,?,?,?,?,?)',
+        ('settings-op', 'scratch', 'synthetic-manager', 'synthetic-settings', request,
+         digest(request), 'settings', receipt, digest(receipt)))
+    conn.execute('INSERT INTO workflow_seq_runs VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+        ('run', 'scratch', 'definition', 'settings', 'source', 'synthetic-manager', 'source-session',
+         source_result, 'carrier', 'synthetic-start', start, digest(start), encode(limits),
+         'visit', 'active', 1, 0, 1, 1, 0, 'event'))
+    conn.execute('INSERT INTO workflow_seq_visits VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+        ('visit', 'run', 'author', 1, 1, None, 'visit-task', 'synthetic-author', 'visit-session',
+         visit_result, envelope, digest(envelope), encode(dict(checks=['immutable-document@1'] + (['native-success-and-positive-outer-settlement@1'] if settled else []))),
+         selection, digest(selection), 'waiting', 1))
+    conn.execute('INSERT INTO workflow_seq_events VALUES (?,?,?,?,?,?,?,?,?,?)',
+        ('event', 'run', 1, 'synthetic-start', 'admitted', '0' * 64, event, digest(event), None, None))
+    conn.execute('INSERT INTO workflow_seq_outputs VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
+        ('output', 'run', 'visit', 'document', 1, 'immutable-document@1', 'visit-task',
+         'visit-session', visit_result, content, digest(content), encode(dict(roles=['author']))))
+    conn.execute('INSERT INTO workflow_seq_evidence VALUES (?,?,?,?,?,?,?,?,?,?)',
+        ('evidence', 'run', 'visit', 'review', b'{}', digest(b'{}'),
+         'visit-task', 'synthetic-author', 'visit-session', visit_result))
+    conn.execute('INSERT INTO workflow_seq_outbox VALUES (?,?,?,?,?,?,?,?)',
+        ('outbox', 'run', 'event', 'visit_queued', 'visit', 'visit-task', notification, digest(notification)))
+    for task, kind, owner in (('source', 'seq_source_waiting', 'run'),
+                              ('carrier', 'seq_carrier', 'run'), ('visit-task', 'seq_visit', 'visit')):
+        conn.execute('UPDATE workflow_task_ownership SET version=2,kind=?,owner_id=? WHERE task_id=?',
+                     (kind, owner, task))
+    conn.commit()
+    history = read_sequential_history(conn, expected_org_slug='scratch')
+    assert history.status == 'storage readable' and history.run_ids == ('run',)
+    for table in seq_history.SEQUENTIAL_TABLES:
+        assert conn.execute('SELECT count(*) FROM ' + table).fetchone()[0] > 0, table + ' fixture is empty'
+
+def returned_storage_absence():
+    with tempfile.TemporaryDirectory(prefix='returned-storage-') as scratch:
+        db = Database(Path(scratch) / 'org.db')
+        dispatcher = SequentialDispatcher(SimpleNamespace(db=db, slug='scratch'))
+        try:
+            for installed in (False, True):
+                if installed:
+                    install_or_recover(db, expected_org_slug='scratch')
+                with patch.object(sequential_return, 'read_sequential_history',
+                                  side_effect=AssertionError('absent storage entered complete reader')) as reader:
+                    assert sequential_return.returned_run_ids(dispatcher) == ()
+                    rediscover_returned(dispatcher, sequential=True)
+                    reader.assert_not_called()
+                print('PASS returned absence skips complete reader:', 'legacy' if installed else 'native-only')
+
+            # Presence includes mixed-case names, table associations and TEMP;
+            # even malformed/partial storage must reach the complete reader.
+            for ddl, cleanup in (
+                ('CREATE TABLE WoRkFlOw_SeQ_probe (id)', 'DROP TABLE WoRkFlOw_SeQ_probe'),
+                ('CREATE VIEW workflow_seq_probe AS SELECT 1', 'DROP VIEW workflow_seq_probe'),
+                ('CREATE TEMP TABLE workflow_seq_probe (id)', 'DROP TABLE temp.workflow_seq_probe'),
+            ):
+                db._conn.execute(ddl)
+                db._conn.commit()
+                try:
+                    for consume in (sequential_return.returned_run_ids,
+                                    lambda owner: rediscover_returned(owner, sequential=True)):
+                        with patch.object(sequential_return, 'read_sequential_history',
+                                          side_effect=ValueError('complete-reader-refusal')) as reader:
+                            try:
+                                consume(dispatcher)
+                            except ValueError as exc:
+                                assert str(exc) == 'complete-reader-refusal', exc
+                            else:
+                                raise AssertionError('present storage suppressed complete-reader refusal')
+                            reader.assert_called_once_with(db._conn, expected_org_slug='scratch')
+                    # The real reader must also refuse these incomplete layouts.
+                    try:
+                        sequential_return.returned_run_ids(dispatcher)
+                    except ValueError:
+                        pass
+                    else:
+                        raise AssertionError('partial sequential storage accepted')
+                    print('PASS returned presence preserves complete-reader refusal:', ddl)
+                finally:
+                    db._conn.execute(cleanup)
+                    db._conn.commit()
+        finally:
+            db.close()
+
+def populate_returned(db):
+    """Valid private archival history, serialized with the real reducer/writers."""
+    from runtime.workflows import sequential_engine as engine
+    from runtime.workflows.sequential_definition import compile_definition, parse_start, parse_result
+    from runtime.workflows.sequential_reducer import ActiveVisit, AuthenticatedResult, RunState, reduce_result
+    from runtime.workflows.sequential_contracts import Counters, Limits
+    populate_sequential(db, settled=True)
+    conn = db._conn
+    one = lambda table: dict(conn.execute('SELECT * FROM ' + table).fetchone())
+    run, visit, definition = (one(table) for table in
+        ('workflow_seq_runs', 'workflow_seq_visits', 'workflow_seq_definitions'))
+    compiled = compile_definition(definition['definition_bytes'], source_digest=definition['source_digest'])
+    start = parse_start(run['start_bytes'])
+    envelope = parse_result(visit['result_bytes'])
+    checks = ['immutable-document@1', 'native-success-and-positive-outer-settlement@1']
+    decision = reduce_result(compiled, RunState(run_id='run', definition_digest=compiled.pin.definition_digest,
+        original_limits=Limits.model_validate_json(run['original_limits_bytes']), lower_limits=start.lower_limits,
+        counters=Counters(epoch=1, content_returns=0, visits=1, events=0),
+        active_visit=ActiveVisit(node='author', visit_id='visit', task_id='visit-task', session_id='visit-session',
+            epoch=1, input_selection_digest=visit['input_selection_digest']),
+        selections=[], findings=[], receipts=[]), AuthenticatedResult(task_id='visit-task',
+            session_id='visit-session', result_id=visit['result_id'], envelope=envelope, verified_checks=checks))
+    prior = one('workflow_seq_events')['event_digest']
+    raw = seq_history._bytes(dict(format='workflow-sequential-transition@1', run_id='run',
+        definition_digest=compiled.pin.definition_digest, source_visit='visit', source_result=visit['result_id'],
+        result_digest=decision.result_digest, output_digest=envelope.outputs[0].digest, node='author',
+        outcome='produced', prior_cas=0, prior_event_digest=prior, before=decision.before.model_dump(),
+        after=decision.after.model_dump(), invalidated=[], edge=decision.edge.model_dump(), successor=None))
+    conn.execute("UPDATE workflow_seq_visits SET state='completed',selected=0")
+    event = engine._event(conn, run, 'synthetic-transition', 'transition', prior, raw=raw,
+                          source_visit='visit', source_result=visit['result_id'])
+    engine._move_run(conn, run, event, state='completed', active_visit_id=None, epoch=1, content_returns=0, visits=1)
+    run = one('workflow_seq_runs')
+    prior = hashlib.sha256(raw).hexdigest()
+    event = engine._event(conn, run, 'synthetic-return', 'returned', prior)
+    engine._move_run(conn, run, event, state='completed', active_visit_id=None, epoch=1, content_returns=0, visits=1)
+    engine._outbox(conn, run, event, 'run_return', None, 'source')
+    conn.execute("UPDATE tasks SET status='completed',completed_at=? WHERE id IN ('source','carrier','visit-task')",
+                 ('2026-11-14T01:00:00+00:00',))
+    conn.commit()
+    assert read_sequential_history(conn, expected_org_slug='scratch').run_ids == ('run',)
+
+
+def returned_tail_cases(selected):
+    import asyncio
+    import threading
+    from runtime.models import ThreadRecord, ThreadMessageKind, TaskStatus, ThreadInvocationStatus
+    from runtime.infrastructure.audit_logger import AuditLogger
+    from runtime.workflows.sequential_start import _ordinary_source, precheck_completion
+    from runtime.workflows.sequential_history import _ReadBudget, _sql_budget
+    from runtime.workflows import sequential_start
+
+    cases = ('thread_source', 'thread_ancestor', 'thread_root_return', 'thread_ancestor_nonroot_return',
+        'parked_no_tail', 'duplicate_return', 'concurrent_return', 'restart_before_tail', 'restart_marker_only',
+        'restart_pending_or_settled_tail', 'composed_archive_recheck', 'marker_read_unavailable')
+    assert selected in (None, 'all', 'absence', *cases), selected
+    if selected in (None, 'all', 'absence'):
+        returned_storage_absence()
+    for case in cases:
+        if selected not in (None, 'all', case):
+            continue
+        variants = ('pending', 'consumed', 'failed') if case == 'restart_pending_or_settled_tail' else ('base',)
+        if case == 'thread_root_return':
+            variants = ('root', 'revisit', 'failed', 'cancelled', 'superseded')
+        if case == 'marker_read_unavailable':
+            variants = ('unreadable', 'malformed', 'over_budget')
+        for variant in variants:
+            with sequential_fixture() as (db, root, sql):
+                audit = AuditLogger(db)
+                db.insert_thread(ThreadRecord(id='THR-original', subject='Private original', turn_cap=1, turns_used=1))
+                if case in ('thread_source', 'thread_ancestor'):
+                    db.insert_task(TaskRecord(id='ordinary', assigned_agent='synthetic-manager', team='engineering',
+                        status='in_progress', brief='Private ordinary source',
+                        dispatched_from_thread_id='THR-original' if case == 'thread_source' else None))
+                    if case == 'thread_ancestor':
+                        db.insert_task(TaskRecord(id='ordinary-parent', assigned_agent='synthetic-manager',
+                            team='engineering', status='in_progress', brief='Private parent',
+                            dispatched_from_thread_id='THR-original'))
+                        db._conn.execute("UPDATE tasks SET parent_task_id='ordinary-parent' WHERE id='ordinary'")
+                        db._conn.commit()
+                    org = SimpleNamespace(slug='scratch', db=db, teams=SimpleNamespace(
+                        executable_manager_for_team=lambda team: 'synthetic-manager'))
+                    changes = db._conn.total_changes
+                    budget = _ReadBudget()
+                    with db.coherent_read_view() as conn, _sql_budget(conn, budget):
+                        source, ancestor, seen = _ordinary_source(conn, org, 'ordinary', budget)
+                    assert source['id'] == 'ordinary' and len(seen) == (2 if case == 'thread_ancestor' else 1)
+                    assert ancestor['dispatched_from_thread_id'] == 'THR-original'
+                    # Direct thread invocation is not ordinary task-session authority.
+                    org.sessions = SimpleNamespace(get_context_by_session=lambda sid: ('scratch', 'THR-original', 'synthetic-manager'))
+                    try:
+                        precheck_completion(org, {}, task_id='ordinary', principal='synthetic-manager',
+                            session_id='thread-session', status='completed', waiting_on_job_ids=None)
+                    except sequential_start.SequentialRefusal:
+                        pass
+                    else:
+                        raise AssertionError('direct_thread_refused: accepted non-task session')
+                    assert db._conn.total_changes == changes, case + ' wrote during ancestry admission'
+                    print('PASS R1a', case, 'direct_thread_refused zero writes', flush=True)
+                    continue
+
+                populate_returned(db)
+                original = 'source'
+                if case == 'thread_root_return' and variant == 'revisit':
+                    original = 'predecessor'
+                    db.insert_task(TaskRecord(id=original, assigned_agent='synthetic-manager', brief='Private predecessor',
+                        status='failed', dispatched_from_thread_id='THR-original'))
+                    db._conn.execute("UPDATE tasks SET revisit_of_task_id=? WHERE id='source'", (original,))
+                    db._conn.commit()
+                if case == 'thread_ancestor_nonroot_return':
+                    original = 'parent'
+                    db.insert_task(TaskRecord(id=original, assigned_agent='synthetic-manager', brief='Private waiting parent',
+                        status='in_progress', block_kind='delegated', dispatched_from_thread_id='THR-original'))
+                    db._conn.execute("UPDATE tasks SET parent_task_id=? WHERE id='source'", (original,))
+                    db._conn.commit()
+                else:
+                    db._conn.execute('UPDATE tasks SET dispatched_from_thread_id=? WHERE id=?', ('THR-original', original))
+                    db._conn.commit()
+                if case == 'thread_root_return' and variant in ('failed', 'cancelled', 'superseded'):
+                    db._conn.execute("UPDATE tasks SET status=? WHERE id='source'", (variant,))
+                    db._conn.commit()
+                if case == 'parked_no_tail':
+                    db._conn.execute("UPDATE tasks SET status='in_progress',block_kind='delegated',completed_at=NULL WHERE id='source'")
+                    db._conn.commit()
+                audit.log_thread_dispatch('THR-original', task_id=original, dispatcher='synthetic-manager',
+                                          target_agent='synthetic-manager', team='engineering')
+                histories, task_wakes, thread_jobs = [], [], []
+                class ThreadQueue:
+                    async def put(self, job):
+                        thread_jobs.append(job.invocation_token)
+                class Queue:
+                    thread_queue = ThreadQueue()
+                    def enqueue_if_absent(self, slug, task, publisher=None):
+                        if task not in task_wakes:
+                            task_wakes.append(task)
+                    def put_nowait(self, slug, task):
+                        task_wakes.append(task)
+                queue = Queue()
+                loop = asyncio.new_event_loop()
+                runner = threading.Thread(target=loop.run_forever)
+                runner.start()
+                orch = SimpleNamespace(_db=db, _audit=audit, _slug='scratch', _main_loop=loop,
+                    _update_task_history=histories.append)
+                dispatcher = SequentialDispatcher(SimpleNamespace(db=db, slug='scratch', orchestrator=orch))
+                db._workflow_sequential_dispatch = dispatcher
+                def deliver():
+                    return sequential_return.notify_returned(dispatcher, 'run', queue=queue)
+                def restart():
+                    rediscover_returned(dispatcher, sequential=True, queue=queue)
+                def snapshot():
+                    asyncio.run_coroutine_threadsafe(asyncio.sleep(0), loop).result(3)
+                    messages = [json.loads(row[0]) for row in db._conn.execute(
+                        "SELECT system_payload_json FROM thread_messages WHERE thread_id='THR-original' AND kind='system'")]
+                    invocations = [tuple(row) for row in db._conn.execute(
+                        "SELECT invocation_token,status,triggering_seq FROM thread_invocations WHERE purpose='task_followup' ORDER BY id")]
+                    return messages, invocations, db.get_thread('THR-original').turn_cap, list(thread_jobs)
+                try:
+                    if case == 'restart_before_tail':
+                        assert snapshot() == ([], [], 1, [])
+                        restart()
+                    elif case == 'restart_marker_only':
+                        with patch.object(db, 'mint_followup_invocation_with_cap_extend', side_effect=RuntimeError('private crash after marker')):
+                            try:
+                                deliver()
+                            except RuntimeError as exc:
+                                assert str(exc) == 'private crash after marker'
+                            else:
+                                raise AssertionError('marker-only crash seam not reached')
+                        before = snapshot()
+                        assert len(before[0]) == 1 and before[1:] == ([], 1, [])
+                        restart()
+                        assert snapshot() == before, 'restart_marker_only reminted partial tail'
+                    elif case == 'concurrent_return':
+                        entered, competing, release = threading.Event(), threading.Event(), threading.Event()
+                        append = db.append_thread_message
+                        def interrupted_append(*args, **kwargs):
+                            entered.set()
+                            assert release.wait(3), 'concurrent tail release timeout'
+                            return append(*args, **kwargs)
+                        errors = []
+                        def worker(second=False):
+                            try:
+                                if second:
+                                    competing.set()
+                                deliver()
+                            except BaseException as exc:
+                                errors.append(exc)
+                        with patch.object(db, 'append_thread_message', side_effect=interrupted_append):
+                            first = threading.Thread(target=worker)
+                            second = threading.Thread(target=worker, args=(True,))
+                            first.start()
+                            try:
+                                assert entered.wait(3), 'first concurrent marker not reached'
+                                second.start()
+                                assert competing.wait(3)
+                            finally:
+                                release.set()
+                                first.join(5)
+                                if second.ident is not None:
+                                    second.join(5)
+                            assert not first.is_alive() and not second.is_alive() and not errors, errors
+                    elif case == 'marker_read_unavailable':
+                        if variant == 'unreadable':
+                            denied = []
+                            def deny(action, table, column, database, trigger):
+                                if action == sqlite3.SQLITE_READ and table == 'thread_messages' and column == 'system_payload_json':
+                                    denied.append((table, column))
+                                    return sqlite3.SQLITE_DENY
+                                return sqlite3.SQLITE_OK
+                            db._conn.set_authorizer(deny)
+                        else:
+                            db.append_thread_message(thread_id='THR-original', speaker='synthetic-manager', kind=ThreadMessageKind.SYSTEM,
+                                system_payload=dict(unrelated=True))
+                            db._conn.execute('UPDATE thread_messages SET system_payload_json=?',
+                                ('{' if variant == 'malformed' else json.dumps(dict(padding='x' * 1048577)),))
+                            db._conn.commit()
+                        before = db._conn.execute('SELECT count(*) FROM thread_invocations').fetchone()[0]
+                        message_count = db._conn.execute('SELECT count(*) FROM thread_messages').fetchone()[0]
+                        try:
+                            deliver()
+                        except (ValueError, sqlite3.Error):
+                            pass
+                        else:
+                            raise AssertionError('marker_read_unavailable treated uncertainty as absence')
+                        finally:
+                            db._conn.set_authorizer(None)
+                        assert db._conn.execute('SELECT count(*) FROM thread_invocations').fetchone()[0] == before
+                        assert db.get_thread('THR-original').turn_cap == 1
+                        assert db._conn.execute('SELECT count(*) FROM thread_messages').fetchone()[0] == message_count
+                        assert histories == ['carrier', 'source'], 'marker refusal happened before admitted return tail'
+                        if variant == 'unreadable':
+                            assert denied, 'marker denial seam not reached'
+                        print('PASS R1a', case, variant, 'no mint/cap', flush=True)
+                        continue
+                    else:
+                        if case == 'restart_pending_or_settled_tail' and variant == 'pending':
+                            orch._main_loop = None  # Native marker/mint committed before lost queue wiring.
+                        assert deliver()
+                        orch._main_loop = loop
+                    if case in ('parked_no_tail', 'thread_ancestor_nonroot_return'):
+                        assert snapshot() == ([], [], 1, []), case + ' posted root followup'
+                        assert task_wakes == (['parent'] if case == 'thread_ancestor_nonroot_return' else []), (case, task_wakes, db.get_task('source'), db.get_task('parent'))
+                    elif case != 'restart_marker_only':
+                        messages, invocations, cap, queued = snapshot()
+                        expected_queued = 0 if case == 'restart_pending_or_settled_tail' and variant == 'pending' else 1
+                        assert len(messages) == len(invocations) == 1 and len(queued) == expected_queued, case + ' missing or duplicate marker/mint/queue'
+                        assert messages[0]['task_id'] == 'source' and messages[0]['original_task_id'] == original
+                        assert messages[0]['status'] == db.get_task('source').status.value
+                        assert queued == ([invocations[0][0]] if expected_queued else []) and cap == 2, case + ' cap/token mismatch'
+                        if case == 'restart_pending_or_settled_tail':
+                            if variant == 'consumed':
+                                assert db.consume_invocation(invocations[0][0])
+                            elif variant == 'failed':
+                                assert db.fail_invocation(invocations[0][0], status=ThreadInvocationStatus.FAILED, decline_reason='restart_orphan')
+                        if case == 'composed_archive_recheck':
+                            db.insert_thread(ThreadRecord(id='THR-composed', subject='Private composed',
+                                composed_by='synthetic-manager', composed_from_task_id='source'))
+                            admitted = []
+                            def archive(thread, trigger):
+                                admitted.append((thread, trigger, db.archive_thread_and_reset_sessions(thread,
+                                    summary='', audit_scope_id=thread, audit_agent='orchestrator', auto_archive_trigger=trigger,
+                                    append_archive_message=True)))
+                            orch._thread_archive_notify = archive
+                            restart()
+                            assert admitted and admitted[-1] == ('THR-composed', 'composed_task_terminal', None), 'composed_archive_recheck lost unresolved admission'
+                            db._conn.execute("UPDATE threads SET resolved_at=?,resolved_by=?,resolved_seq=1 WHERE id='THR-composed'",
+                                             ('2026-11-14T02:00:00+00:00', 'synthetic-manager'))
+                            db._conn.commit()
+                            restart()
+                            assert len(admitted) == 2 and admitted[-1][2] is not None, 'composed_archive_recheck lost fresh resolved admission'
+                            assert db.get_thread('THR-composed').status.value == 'archived'
+                        before = snapshot()
+                        if case in ('duplicate_return', 'restart_pending_or_settled_tail'):
+                            deliver()
+                            restart()
+                            assert snapshot() == before, case + ' repeated marker/cap/mint/queue'
+                    assert 'source' in histories and 'carrier' in histories
+                    print('PASS R1a', case, variant, 'rows/invocations/cap/queue', snapshot(), flush=True)
+                finally:
+                    asyncio.run_coroutine_threadsafe(asyncio.sleep(0), loop).result(3)
+                    loop.call_soon_threadsafe(loop.stop)
+                    runner.join(5)
+                    loop.close()
+
+
+if sys.argv[1:] == ['--returned-storage']:
+    returned_tail_cases(returned_case)
+    raise SystemExit(0)
+
+
 
 # A4-M drives the real daemon build before any listener, using only private orgs.
 if sys.argv[1:] in ([], ['--bootstrap-startup']):
@@ -5391,33 +5869,6 @@ if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--seque
     from runtime.workflows._read_exhaustion import ReadExhaustion
     from runtime.infrastructure.task_pause_controls import PauseControlError
 
-    @contextmanager
-    def sequential_fixture():
-        with tempfile.TemporaryDirectory(prefix='sequential-load-reuse-') as scratch:
-            root = Path(scratch) / 'orgs' / 'scratch'
-            (root / 'org/agents').mkdir(parents=True)
-            db = Database(OrgPaths(root).db_path)
-            try:
-                initialize_complete_org_schema(db, expected_org_slug='scratch', layout='J')
-                install_pause_schema(db, org_slug='scratch')
-                install_task_ownership(db, org_slug='scratch')
-                db.insert_task(TaskRecord(id='TASK-seq-load', brief='synthetic ordinary owner'))
-                with _schema_snapshot(db._conn):
-                    identity = _coding_org_identity(db._conn, expected_org_slug='scratch',
-                                                   expected_path=str(db.db_path))
-                    inventory = sequential_storage_inventory(db._conn)
-                def offline():
-                    assert _coding_org_identity(db._conn, expected_org_slug='scratch',
-                                                expected_path=str(db.db_path)) == identity
-                assert install_sequential_schema(db._conn, expected_org_slug='scratch',
-                    expected_path=str(db.db_path), source_identity=identity,
-                    source_inventory=inventory, offline_check=offline) == 'installed'
-                sql = []
-                with db.observe_trace(sql.append):
-                    yield db, root, sql
-            finally:
-                db.close()
-
     def counters(budget):
         return budget.consumed, budget.accepted_rows, budget.traversed
 
@@ -5434,102 +5885,6 @@ if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--seque
                 categories.append((type(cause), str(cause)))
                 cause = cause.__cause__
             return ('refused', tuple(categories))
-
-    # Synthetic storage only: compiler/parser and the unmodified public reader
-    # validate the nonempty graph. These rows confer no execution authority.
-    def populate_sequential(db):
-        import hashlib
-        from runtime.workflows.sequential_definition import compile_definition, parse_start, parse_result
-        encode = seq_history._bytes
-        digest = lambda raw: hashlib.sha256(raw).hexdigest()
-        limits = dict(content_returns=0, max_content_epochs=1, max_visits=1, max_events=4)
-        raw = encode(dict(format='workflow-sequential-definition@1', identity='release/synthetic/load',
-            version=1, description='Synthetic nonempty load-reader fixture',
-            required_inputs=[dict(name='request', contract='bounded-text@1', required=True)],
-            roles=dict(author=dict(kind='agent', executable=True, eligibility='worker', independent_of=[])),
-            entry_node='author', nodes=[dict(id='author', role='author', responsibilities=['Write a fixture'],
-                inputs=[dict(name='request', source='run.request', required=True)],
-                output_contract=dict(slot='document', type='immutable-document@1'),
-                completion_checks=['immutable-document@1'],
-                outcomes=dict(produced=dict(action='terminal', condition='done'),
-                              BLOCK=dict(action='fail', code='blocked')))],
-            limits=limits, terminal_conditions=dict(done=dict(output='document',
-                requires=['immutable-document@1', 'native-success-and-positive-outer-settlement@1']))))
-        compiled = compile_definition(raw, source_digest=digest(raw))
-        pin = compiled.pin
-        bindings = [dict(role='author', principal='synthetic-author')]
-        snapshot = encode(dict(format='workflow-sequential-settings-storage@1',
-            definition=pin.model_dump(), bindings=bindings, limits=limits, admission='Allowed'))
-        request = encode(dict(format='workflow-sequential-settings-operation-storage@1',
-            operation_key='synthetic-settings', principal='synthetic-manager', settings_id='settings',
-            expected_generation=0, snapshot_digest=digest(snapshot)))
-        receipt = encode(dict(format='workflow-sequential-settings-receipt-storage@1',
-            operation_id='settings-op', settings_id='settings', generation=1, snapshot_digest=digest(snapshot)))
-        start = encode(dict(format='workflow-sequential-start@1', operation_key='synthetic-start',
-            definition=pin.model_dump(), settings=dict(generation=1, snapshot_digest=digest(snapshot)),
-            request='Synthetic stored request', inputs=[], bindings=bindings, lower_limits=limits))
-        parse_start(start)
-        for task, parent, agent in (('source', None, 'synthetic-manager'),
-                                    ('carrier', 'source', 'synthetic-manager'),
-                                    ('visit-task', 'carrier', 'synthetic-author')):
-            db.insert_task(TaskRecord(id=task, parent_task_id=parent, assigned_agent=agent,
-                                      brief='synthetic storage fixture'))
-        conn = db._conn
-        source_result, visit_result = [conn.execute(
-            'INSERT INTO task_results(task_id,agent,session_id,created_at) VALUES (?,?,?,?)',
-            (task, agent, session, '2026-11-14T00:00:00+00:00')).lastrowid
-            for task, agent, session in (('source', 'synthetic-manager', 'source-session'),
-                                         ('visit-task', 'synthetic-author', 'visit-session'))]
-        selection = encode(dict(outputs=[]))
-        content = b'Synthetic immutable document'
-        output = dict(slot='document', contract='immutable-document@1', epoch=1,
-            producer_visit='visit', task_id='visit-task', session_id='visit-session',
-            result_id=visit_result, digest=digest(content))
-        envelope = encode(dict(format='workflow-sequential-result@1', run_id='run', visit_id='visit',
-            definition_digest=pin.definition_digest, input_selection_digest=digest(selection),
-            outcome='produced', outputs=[output], findings=[], capability_receipts=[]))
-        parse_result(envelope)
-        event = encode(dict(format='workflow-sequential-storage-event@1', kind='admitted',
-            run_id='run', sequence=1, operation_key='synthetic-start', prior_digest='0' * 64))
-        notification = encode(dict(format='workflow-sequential-notification-storage@1',
-            notification_id='outbox', event_id='event', run_id='run', visit_id='visit',
-            task_id='visit-task', kind='visit_queued'))
-        conn.execute('PRAGMA defer_foreign_keys=ON')
-        conn.execute('INSERT INTO workflow_seq_definitions VALUES (?,?,?,?,?,?,?,?,?,?)',
-            ('definition', pin.identity, pin.version, raw, pin.definition_digest, pin.source_digest,
-             pin.compiler, pin.validator, pin.interpreter, pin.capabilities))
-        conn.execute('INSERT INTO workflow_seq_settings VALUES (?,?,?,?,?,?,?)',
-            ('settings', 'scratch', 'definition', pin.identity, 1, snapshot, digest(snapshot)))
-        conn.execute('INSERT INTO workflow_seq_settings_operations VALUES (?,?,?,?,?,?,?,?,?)',
-            ('settings-op', 'scratch', 'synthetic-manager', 'synthetic-settings', request,
-             digest(request), 'settings', receipt, digest(receipt)))
-        conn.execute('INSERT INTO workflow_seq_runs VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
-            ('run', 'scratch', 'definition', 'settings', 'source', 'synthetic-manager', 'source-session',
-             source_result, 'carrier', 'synthetic-start', start, digest(start), encode(limits),
-             'visit', 'active', 1, 0, 1, 1, 0, 'event'))
-        conn.execute('INSERT INTO workflow_seq_visits VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
-            ('visit', 'run', 'author', 1, 1, None, 'visit-task', 'synthetic-author', 'visit-session',
-             visit_result, envelope, digest(envelope), encode(dict(checks=['immutable-document@1'])),
-             selection, digest(selection), 'waiting', 1))
-        conn.execute('INSERT INTO workflow_seq_events VALUES (?,?,?,?,?,?,?,?,?,?)',
-            ('event', 'run', 1, 'synthetic-start', 'admitted', '0' * 64, event, digest(event), None, None))
-        conn.execute('INSERT INTO workflow_seq_outputs VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
-            ('output', 'run', 'visit', 'document', 1, 'immutable-document@1', 'visit-task',
-             'visit-session', visit_result, content, digest(content), encode(dict(roles=['author']))))
-        conn.execute('INSERT INTO workflow_seq_evidence VALUES (?,?,?,?,?,?,?,?,?,?)',
-            ('evidence', 'run', 'visit', 'review', b'{}', digest(b'{}'),
-             'visit-task', 'synthetic-author', 'visit-session', visit_result))
-        conn.execute('INSERT INTO workflow_seq_outbox VALUES (?,?,?,?,?,?,?,?)',
-            ('outbox', 'run', 'event', 'visit_queued', 'visit', 'visit-task', notification, digest(notification)))
-        for task, kind, owner in (('source', 'seq_source_waiting', 'run'),
-                                  ('carrier', 'seq_carrier', 'run'), ('visit-task', 'seq_visit', 'visit')):
-            conn.execute('UPDATE workflow_task_ownership SET version=2,kind=?,owner_id=? WHERE task_id=?',
-                         (kind, owner, task))
-        conn.commit()
-        history = read_sequential_history(conn, expected_org_slug='scratch')
-        assert history.status == 'storage readable' and history.run_ids == ('run',)
-        for table in seq_history.SEQUENTIAL_TABLES:
-            assert conn.execute('SELECT count(*) FROM ' + table).fetchone()[0] > 0, table + ' fixture is empty'
 
     def populate_retained(db, root):
         import hashlib
@@ -10117,54 +10472,7 @@ for site in ('cutover', 'ownership', 'naming'):
                 db.close()
 assert not target_failures, target_failures
 
-with tempfile.TemporaryDirectory(prefix='returned-storage-') as scratch:
-    db = Database(Path(scratch) / 'org.db')
-    dispatcher = SequentialDispatcher(SimpleNamespace(db=db, slug='scratch'))
-    try:
-        for installed in (False, True):
-            if installed:
-                install_or_recover(db, expected_org_slug='scratch')
-            with patch.object(sequential_return, 'read_sequential_history',
-                              side_effect=AssertionError('absent storage entered complete reader')) as reader:
-                assert sequential_return.returned_run_ids(dispatcher) == ()
-                rediscover_returned(dispatcher, sequential=True)
-                reader.assert_not_called()
-            print('PASS returned absence skips complete reader:', 'legacy' if installed else 'native-only')
-
-        # Presence includes mixed-case names, table associations and TEMP;
-        # even malformed/partial storage must reach the complete reader.
-        for ddl, cleanup in (
-            ('CREATE TABLE WoRkFlOw_SeQ_probe (id)', 'DROP TABLE WoRkFlOw_SeQ_probe'),
-            ('CREATE VIEW workflow_seq_probe AS SELECT 1', 'DROP VIEW workflow_seq_probe'),
-            ('CREATE TEMP TABLE workflow_seq_probe (id)', 'DROP TABLE temp.workflow_seq_probe'),
-        ):
-            db._conn.execute(ddl)
-            db._conn.commit()
-            try:
-                for consume in (sequential_return.returned_run_ids,
-                                lambda owner: rediscover_returned(owner, sequential=True)):
-                    with patch.object(sequential_return, 'read_sequential_history',
-                                      side_effect=ValueError('complete-reader-refusal')) as reader:
-                        try:
-                            consume(dispatcher)
-                        except ValueError as exc:
-                            assert str(exc) == 'complete-reader-refusal', exc
-                        else:
-                            raise AssertionError('present storage suppressed complete-reader refusal')
-                        reader.assert_called_once_with(db._conn, expected_org_slug='scratch')
-                # The real reader must also refuse these incomplete layouts.
-                try:
-                    sequential_return.returned_run_ids(dispatcher)
-                except ValueError:
-                    pass
-                else:
-                    raise AssertionError('partial sequential storage accepted')
-                print('PASS returned presence preserves complete-reader refusal:', ddl)
-            finally:
-                db._conn.execute(cleanup)
-                db._conn.commit()
-    finally:
-        db.close()
+returned_tail_cases(None)
 
 with tempfile.TemporaryDirectory(prefix='workflow-load-') as scratch:
     paths = OrgPaths(root=Path(scratch))
