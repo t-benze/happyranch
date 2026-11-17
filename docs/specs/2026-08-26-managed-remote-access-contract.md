@@ -565,7 +565,7 @@ helper/package selection remains 3b-1d. TODO (3b-2): implement owned local
 Headscale stop/cleanup; this sub-part provides no callable seam for it.
 
 The 3b-1c Python-only replacement consumer implements **stop/intent, config
-quarantine, fixed state/enrollment removal and quarantined config removal**,
+quarantine, fixed state/enrollment, quarantined config and owned unit removal**,
 not completed failed-install replacement. The v1
 record still has exactly `version`, `layout`, `digests` and `phase`, with the six
 original fixed-file digests (including provision.json) unchanged throughout.
@@ -581,7 +581,14 @@ consumer advances the closed linear sequence:
 `replacement-remove-tsnet-log2` → `replacement-remove-enrollment` →
 `replacement-remove-enrollment-link` → `replacement-state-removed` →
 `replacement-remove-config-connector` → `replacement-remove-config-sidecar` →
-`replacement-remove-config-policy` → `replacement-configs-removed`.
+`replacement-remove-config-policy` → `replacement-configs-removed` →
+`replacement-remove-target-link` → `replacement-remove-verifier-link` →
+`replacement-remove-unit-connector` → `replacement-remove-unit-sidecar` →
+`replacement-remove-unit-target` → `replacement-remove-unit-verifier-socket` →
+`replacement-remove-unit-verifier-service` → `replacement-remove-dropins-connector` →
+`replacement-remove-dropins-sidecar` → `replacement-remove-dropins-target` →
+`replacement-remove-dropins-verifier-socket` → `replacement-remove-dropins-verifier-service` →
+`replacement-remove-target-wants` → `replacement-units-removed`.
 
 Root:root 0600 journal metadata and exact bytes are checked repeatedly. All
 replacement phases require exact generated canonical bytes; `journal_generation`
@@ -628,8 +635,8 @@ with the exact six original digests. The existing bounded full inventory, exact
 journal/digests and literal parent identities are rechecked before unlink.
 Only service-owned single-link regular 0600 state files, the root-owned 0600
 enrollment source and the root-owned exact-target enrollment link are removed.
-Opaque state is never read, interpreted, copied or restored. No directory,
-unit, package, release-daemon file or quarantined config is removed.
+Opaque state is never read, interpreted, copied or restored. This state-removal group removes no directory,
+unit, package, release-daemon file or quarantined config.
 
 Interruption after any new intent, unlink or parent fsync leaves services off;
 a new instance checks the exact on-disk generation and resumes the current
@@ -662,11 +669,28 @@ parent-fsync boundary; pending or mismatched records still refuse safely.
 
 At `replacement-configs-removed`, the consumer raises exactly
 `replacement paused after config removal; unit removal and fresh staging unavailable`.
-Repeating this terminal boundary rechecks token/quiescence without changing files
-or journal bytes. All five remote unit files and directories remain. Their
-removal, fresh IDs/config/policy generation, transaction finalization and
-staged-inert completion remain undelivered and fail-closed. This state is not
-modern staged-inert.
+A subsequent call consumes this boundary to remove the two reserved enablement
+links (`multi-user.target.wants/happyranch-managed.target`, then
+`happyranch-managed.target.wants/happyranch-release-verifier.socket`), the five
+exact remote unit files in their existing order, their five empty `.d`
+directories, then the empty `happyranch-managed.target.wants` directory. Each
+fixed removal has its own preceding atomically published/fsynced exact-generation
+intent. The shared systemd and `multi-user.target.wants` directories remain.
+Unknown drop-ins/target wants, changed unit bytes/metadata or foreign links refuse;
+there is no recursive deletion. Config/state absence from completed intents,
+all remaining digests, the source-UID/same-FD release token, full bounded inventory,
+stop/quiescence and pinned no-follow parents/leaf metadata are checked before
+effects. Each removal fsyncs its parent. A fresh instance resumes every new
+intent, unlink/rmdir and publication boundary. Only the exact current/completed
+unit intent can recognize an absent unit with systemd's cached own fragment,
+empty drop-ins and inactive/failed state; quiescence still requires no job,
+zero PIDs and no cgroup. No cached foreign fragment or ordinary lifecycle is admitted.
+
+At `replacement-units-removed`, the consumer raises exactly
+`replacement paused after unit removal; fresh staging and transaction closure unavailable`.
+Repeating this boundary rechecks token/quiescence without changing files or journal
+bytes. Fresh DISTINCT IDs/config/policy generation and safe transaction closure
+remain undelivered and fail-closed. This state is not modern staged-inert.
 No revoked credentials/trust are restored into service. Ordinary inventory/stop/
 provision/install/uninstall/drift and all ten fixed legacy system supervisor
 lifecycle entries retain their final/pending transaction refusals. Modern

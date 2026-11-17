@@ -2,8 +2,8 @@
 
 Provision binaries separately; the provision command stages configuration.
 Journal-bearing failed installs can stop and quarantine their exact old configs;
-fixed state/enrollment removal is journaled, while config/unit removal, fresh
-replacement staging and upgrade rollback remain unavailable. Enrollment sources are removed on
+fixed state/enrollment, quarantined config and owned unit removal are journaled.
+Fresh replacement staging, transaction closure and upgrade rollback remain unavailable. Enrollment sources are removed on
 success and failure; issue a fresh single-use key before retrying. Files already
 present must match the rendered units; interrupted installs need operator care.
 """
@@ -78,7 +78,18 @@ _CONFIG_REMOVALS = (
     ("replacement-remove-config-policy", "etc/happyranch/.replacement-policy.json"),
 )
 _CONFIG_REMOVAL_PHASES = (*[phase for phase, _ in _CONFIG_REMOVALS], "replacement-configs-removed")
-_REPLACEMENT_PHASES = ("replacement-stopped", *_QUARANTINE_PHASES, *_REMOVAL_PHASES, *_CONFIG_REMOVAL_PHASES)
+_UNIT_REMOVALS = (
+    ("replacement-remove-target-link", f"{_UNIT_DIR}/multi-user.target.wants/{UNITS[2]}", "link"),
+    ("replacement-remove-verifier-link", f"{_UNIT_DIR}/{UNITS[2]}.wants/{UNITS[3]}", "link"),
+    *[("replacement-remove-unit-" + label, f"{_UNIT_DIR}/{name}", "unit") for label, name in zip(
+        ("connector", "sidecar", "target", "verifier-socket", "verifier-service"), UNITS)],
+    *[("replacement-remove-dropins-" + label, f"{_UNIT_DIR}/{name}.d", "directory") for label, name in zip(
+        ("connector", "sidecar", "target", "verifier-socket", "verifier-service"), UNITS)],
+    ("replacement-remove-target-wants", f"{_UNIT_DIR}/{UNITS[2]}.wants", "directory"),
+)
+_UNIT_REMOVAL_PHASES = (*[phase for phase, _, _ in _UNIT_REMOVALS], "replacement-units-removed")
+_REPLACEMENT_PHASES = ("replacement-stopped", *_QUARANTINE_PHASES, *_REMOVAL_PHASES,
+                       *_CONFIG_REMOVAL_PHASES, *_UNIT_REMOVAL_PHASES)
 
 
 class InstallerError(RuntimeError):
@@ -197,7 +208,9 @@ class ManagedInstaller:
             raise InstallerError(str(self.root / relative)) from None
         return files
 
-    def _inventory_units(self, connector: dict) -> tuple[set[str], dict[str, dict[str, str]]]:
+    def _inventory_units(
+        self, connector: dict, *, removing_units: set[str] | None = None,
+    ) -> tuple[set[str], dict[str, dict[str, str]]]:
         if connector and not isinstance(connector.get("managed"), dict):
             raise InstallerError(str(self.root / "etc/happyranch/connector.json"))
         expected = managed_units(self.layout, connector_config=connector)
@@ -247,10 +260,17 @@ class ManagedInstaller:
             except (ServiceManagerError, OSError):
                 raise InstallerError(path) from None
             loaded = name in present
-            if (props.get("FragmentPath") != (path if loaded else "")
-                    or props.get("DropInPaths") != "" or props.get("NeedDaemonReload") != "no"
-                    or props.get("LoadState") != ("loaded" if loaded else "not-found")
-                    or props.get("ActiveState") not in ({"active", "inactive", "failed"} if loaded else {"inactive"})):
+            # systemd can retain the old fragment after its journaled unlink,
+            # including across a new installer instance. Only this consumer's
+            # exact current/completed unit intent permits a cached OWN fragment.
+            cached = (not loaded and name in (removing_units or set())
+                      and props.get("LoadState") == "loaded" and props.get("FragmentPath") == path)
+            if (props.get("FragmentPath") != (path if loaded or cached else "")
+                    or props.get("DropInPaths") != ""
+                    or props.get("NeedDaemonReload") not in ({"no", "yes"} if cached else {"no"})
+                    or props.get("LoadState") != ("loaded" if loaded or cached else "not-found")
+                    or props.get("ActiveState") not in ({"active", "inactive", "failed"} if loaded else
+                                                       {"inactive", "failed"} if cached else {"inactive"})):
                 # Manager strings can contain arbitrary data: report fixed paths only.
                 raise InstallerError(path)
             properties[name] = props
@@ -292,7 +312,9 @@ class ManagedInstaller:
             if prepared_transaction is not None:
                 self._validate_install_record("install-transaction.json", prepared_transaction, replacement=True)
                 phase = self._json(prepared_transaction)["phase"]
-            quarantine_phase = "replacement-quarantined" if phase in _REMOVAL_PHASES else phase
+            unit_removal = phase in _UNIT_REMOVAL_PHASES
+            quarantine_phase = ("replacement-configs-removed" if unit_removal else
+                                "replacement-quarantined" if phase in _REMOVAL_PHASES else phase)
             removed = ({relative for _, relative in _REPLACEMENT_REMOVALS[:_REMOVAL_PHASES.index(phase)]}
                        if phase in _REMOVAL_PHASES else set())
             removable_configs: set[str] = set()
@@ -300,6 +322,19 @@ class ManagedInstaller:
                 current = _CONFIG_REMOVAL_PHASES.index(phase)
                 removed = {relative for _, relative in (*_REPLACEMENT_REMOVALS, *_CONFIG_REMOVALS[:current])}
                 removable_configs = set(_QUARANTINE_CONFIGS[:current + 1])
+            removing_units: set[str] = set()
+            if unit_removal:
+                current = _UNIT_REMOVAL_PHASES.index(phase)
+                removed = {relative for _, relative in (*_REPLACEMENT_REMOVALS, *_CONFIG_REMOVALS)}
+                removed.update(relative for _, relative, _ in _UNIT_REMOVALS[:current])
+                removable_configs = set(_QUARANTINE_CONFIGS)
+                removing_units = {Path(relative).name for _, relative, kind in _UNIT_REMOVALS[:current + 1]
+                                  if kind == "unit"}
+            if unit_removal or phase == "replacement-configs-removed":
+                # Unlike multi-user.target.wants, this target's wants directory
+                # belongs solely to these units. Unknown contents veto deletion.
+                if self._unit_wants_names() - {UNITS[3]}:
+                    raise InstallerError(str(self.root / _UNIT_DIR / (UNITS[2] + ".wants")))
             # Completed removal intents require absence, including on resume.
             for relative in removed:
                 try:
@@ -405,9 +440,9 @@ class ManagedInstaller:
             # Once the connector copy is journaledly removed, only the validated
             # provenance selects the existing exact unit-byte profile. No old
             # config/argv/control binding is reconstructed or executed.
-            if phase in _CONFIG_REMOVAL_PHASES and "connector.json" not in files and modern:
+            if (phase in _CONFIG_REMOVAL_PHASES or unit_removal) and "connector.json" not in files and modern:
                 connector = {"managed": {"profile": "linux-managed-identity-v1"}}
-            units, properties = self._inventory_units(connector)
+            units, properties = self._inventory_units(connector, removing_units=removing_units)
             paths.extend(str(self.root / _UNIT_DIR / name) for name in units)
             complete = required <= files.keys()
             failed = any(props["ActiveState"] == "failed" for props in properties.values())
@@ -459,8 +494,9 @@ class ManagedInstaller:
 
         Prepared candidates publish stopped intent first; the next call quarantines
         configs. A later call consumes quarantine to remove fixed retired state.
-        A further call removes quarantined configs. Unit removal and fresh staging
-        stay unavailable; never report success.
+        A further call removes quarantined configs, then another removes only
+        owned unit entries. Fresh staging and transaction closure stay unavailable;
+        never report success.
         Unjournaled candidates stay unavailable until their recovery owner ships.
         """
         candidate = self.replacement_inventory()
@@ -486,7 +522,8 @@ class ManagedInstaller:
                 record["phase"] = "replacement-stopped"
                 self._write_provision_file("install-transaction.json", json.dumps(record, sort_keys=True).encode(),
                                            self.root_owner, 0o600, expected_transaction=transaction)
-            elif record["phase"] in (*_REMOVAL_PHASES, *_CONFIG_REMOVAL_PHASES, "replacement-quarantined"):
+            elif record["phase"] in (*_REMOVAL_PHASES, *_CONFIG_REMOVAL_PHASES, *_UNIT_REMOVAL_PHASES,
+                                     "replacement-quarantined"):
                 self._remove_replacement_state(transaction)
             else:
                 self._quarantine_configs(transaction)
@@ -553,14 +590,18 @@ class ManagedInstaller:
         raise InstallerError("replacement paused after config quarantine; removal and fresh staging unavailable")
 
     def _remove_replacement_state(self, transaction: bytes) -> None:
-        """Consume one bounded removal group; retain units and the journal."""
+        """Consume one bounded removal group; retain the journal until closure."""
         record = self._json(transaction)
+        units = record["phase"] in ("replacement-configs-removed", *_UNIT_REMOVAL_PHASES)
         configs = record["phase"] in ("replacement-state-removed", *_CONFIG_REMOVAL_PHASES)
-        phases = _CONFIG_REMOVAL_PHASES if configs else _REMOVAL_PHASES
+        phases = _UNIT_REMOVAL_PHASES if units else _CONFIG_REMOVAL_PHASES if configs else _REMOVAL_PHASES
         while record["phase"] != phases[-1]:
             phase = record["phase"]
             if phase in phases:
-                self._remove_replacement_entry(transaction)
+                if units:
+                    self._remove_replacement_unit(transaction)
+                else:
+                    self._remove_replacement_entry(transaction)
                 next_phase = phases[phases.index(phase) + 1]
             else:
                 next_phase = phases[0]
@@ -569,9 +610,77 @@ class ManagedInstaller:
             self._write_provision_file("install-transaction.json", updated, self.root_owner, 0o600,
                                        expected_transaction=transaction)
             transaction = updated
+        if units:
+            raise InstallerError("replacement paused after unit removal; fresh staging and transaction closure unavailable")
         if configs:
             raise InstallerError("replacement paused after config removal; unit removal and fresh staging unavailable")
         raise InstallerError("replacement paused after state removal; config/unit removal and fresh staging unavailable")
+
+    def _unit_wants_names(self) -> set[str]:
+        try:
+            with self._directory(f"{_UNIT_DIR}/{UNITS[2]}.wants") as parent:
+                with os.scandir(parent) as entries:
+                    names = set()
+                    for index, entry in enumerate(entries):
+                        if index >= 2:
+                            raise InstallerError(str(self.root / _UNIT_DIR / (UNITS[2] + ".wants")))
+                        names.add(entry.name)
+                return names
+        except FileNotFoundError:
+            return set()
+
+    def _remove_replacement_unit(self, transaction: bytes) -> None:
+        """Remove one fixed unit, reserved link or EMPTY owned unit directory."""
+        phase = self._json(transaction)["phase"]
+        entry = next(((relative, kind) for intent, relative, kind in _UNIT_REMOVALS if intent == phase), None)
+        if entry is None:
+            raise InstallerError("unit removal requires the exact fixed-path intent")
+        relative, kind = entry
+        with self._publication_parent() as (journal_parent, revalidate):
+            self._check_replacement_transaction(journal_parent, transaction)
+            if self._inventory(prepared_transaction=transaction).state != "known-failed-or-partial":
+                raise InstallerError("replacement inventory changed before unit removal")
+            folder, name = str(Path(relative).parent), Path(relative).name
+            try:
+                with self._publication_parent(folder) as (parent, revalidate_removal):
+                    try:
+                        before = os.stat(name, dir_fd=parent, follow_symlinks=False)
+                    except FileNotFoundError:
+                        revalidate()
+                        revalidate_removal()
+                        os.fsync(parent)
+                        return
+                    if (before.st_uid, before.st_gid) != self.root_owner:
+                        raise InstallerError("unsafe unit removal owner")
+                    if kind == "directory":
+                        with self._directory(relative) as directory:
+                            if os.listdir(directory) or (os.fstat(directory).st_dev, os.fstat(directory).st_ino) != (
+                                    before.st_dev, before.st_ino):
+                                raise InstallerError("unit removal directory changed or is not empty")
+                    elif kind == "unit":
+                        # Inventory already selected the exact known profile bytes.
+                        self._read_unit(parent, name)
+                    elif (not stat.S_ISLNK(before.st_mode) or before.st_nlink != 1
+                          or os.readlink(name, dir_fd=parent) not in {f"../{name}", str(self.root / _UNIT_DIR / name)}):
+                        raise InstallerError("unsafe unit removal link")
+                    self._check_replacement_transaction(journal_parent, transaction)
+                    release = self._check_release_record()
+                    self._input(Path(release["data_home"]) / "daemon.token", token=True, source_uid=release["uid"])
+                    if self._inventory(prepared_transaction=transaction).state != "known-failed-or-partial":
+                        raise InstallerError("replacement inventory changed before unit effect")
+                    self._confirm_quiescent()
+                    revalidate()
+                    revalidate_removal()
+                    after = os.stat(name, dir_fd=parent, follow_symlinks=False)
+                    fields = ("st_dev", "st_ino", "st_uid", "st_gid", "st_mode", "st_nlink",
+                              "st_size", "st_mtime_ns", "st_ctime_ns")
+                    if any(getattr(before, field) != getattr(after, field) for field in fields):
+                        raise InstallerError("unit removal entry changed")
+                    (os.rmdir if kind == "directory" else os.unlink)(name, dir_fd=parent)
+                    os.fsync(parent)
+            except FileNotFoundError:
+                # Only exact current intent absence is accepted by inventory.
+                pass
 
     def _remove_replacement_entry(self, transaction: bytes) -> None:
         phase = self._json(transaction)["phase"]
@@ -667,7 +776,8 @@ class ManagedInstaller:
         if self._read_file(parent, "install-transaction.json", owner=self.root_owner, mode=0o600) != transaction:
             raise InstallerError("replacement generation changed before mutation")
         record = self._json(transaction)
-        phase = "replacement-quarantined" if record["phase"] in _REMOVAL_PHASES else record["phase"]
+        phase = ("replacement-configs-removed" if record["phase"] in _UNIT_REMOVAL_PHASES else
+                 "replacement-quarantined" if record["phase"] in _REMOVAL_PHASES else record["phase"])
         configs = (self._quarantine_metadata(phase) if phase in (*_QUARANTINE_PHASES, *_CONFIG_REMOVAL_PHASES) else
                    {name: ((self.root_owner[0], self._service_owner[1]), 0o640, False)
                     for name in _QUARANTINE_CONFIGS})
@@ -698,6 +808,18 @@ class ManagedInstaller:
                     self.manager.stop(name, timeout=50.0)
             except (ServiceManagerError, OSError):
                 raise InstallerError(f"quiescence unconfirmed: {self.root / _UNIT_DIR / name}") from None
+        self._confirm_quiescent()
+        confirmed = self._inventory(prepared_transaction=_replacement_transaction)
+        # An admitted failed manual installation can look intact after stopping.
+        # Only the exact six-digest transaction consumer can cross that boundary.
+        if (confirmed.state == "manual-install-conflict"
+                or (confirmed.state == "healthy-manual" and _replacement_transaction is None)):
+            raise InstallerError(f"{confirmed.state}: " + ", ".join(confirmed.paths))
+        return confirmed
+
+    def _confirm_quiescent(self) -> None:
+        """Sample the same stop proof again immediately before each unit effect."""
+        order = (UNITS[2], UNITS[0], UNITS[1], UNITS[3], UNITS[4])
         for name in order:
             process_keys = ("MainPID", "ControlPID", "ControlGroup") if name in (UNITS[0], UNITS[1], UNITS[4]) else ()
             try:
@@ -710,13 +832,6 @@ class ManagedInstaller:
                                           or props.get("ControlGroup") != ""))
                     or props.get("Job") != ""):
                 raise InstallerError(f"quiescence unconfirmed: {self.root / _UNIT_DIR / name}")
-        confirmed = self._inventory(prepared_transaction=_replacement_transaction)
-        # An admitted failed manual installation can look intact after stopping.
-        # Only the exact six-digest transaction consumer can cross that boundary.
-        if (confirmed.state == "manual-install-conflict"
-                or (confirmed.state == "healthy-manual" and _replacement_transaction is None)):
-            raise InstallerError(f"{confirmed.state}: " + ", ".join(confirmed.paths))
-        return confirmed
 
     def _account(self, *, create: bool) -> tuple[int, int] | None:
         try:
@@ -1149,7 +1264,7 @@ class ManagedInstaller:
             phases = ("prepared", *_REPLACEMENT_PHASES)
             previous = phases.index(expected_record["phase"])
             if previous + 1 == len(phases):
-                raise InstallerError("replacement config removal is the unfinished boundary")
+                raise InstallerError("replacement unit removal is the unfinished boundary")
             expected_record["phase"] = phases[previous + 1]
             if self._json(data) != expected_record:
                 raise InstallerError("replacement update must preserve the exact six digests")
@@ -1159,6 +1274,10 @@ class ManagedInstaller:
             if updating:
                 if self._inventory(prepared_transaction=expected_transaction).state == "manual-install-conflict":
                     raise InstallerError("replacement inventory changed before intent publication")
+                if self._json(expected_transaction)["phase"] in ("replacement-configs-removed", *_UNIT_REMOVAL_PHASES):
+                    release = self._check_release_record()
+                    self._input(Path(release["data_home"]) / "daemon.token", token=True, source_uid=release["uid"])
+                    self._confirm_quiescent()
                 if self._read_file(parent, name, owner=self.root_owner, mode=0o600) != expected_transaction:
                     raise InstallerError("replacement journal changed before intent publication")
                 try:

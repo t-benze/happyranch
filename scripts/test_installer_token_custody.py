@@ -51,6 +51,17 @@ CONFIG_REMOVALS = [
 ]
 CONFIG_REMOVAL_PHASES = [phase for phase, _ in CONFIG_REMOVALS] + ["replacement-configs-removed"]
 CONFIG_REMOVAL_BOUNDARY = "^replacement paused after config removal; unit removal and fresh staging unavailable$"
+UNIT_REMOVALS = [
+    ("replacement-remove-target-link", "etc/systemd/system/multi-user.target.wants/happyranch-managed.target", "link"),
+    ("replacement-remove-verifier-link", "etc/systemd/system/happyranch-managed.target.wants/happyranch-release-verifier.socket", "link"),
+    *[("replacement-remove-unit-" + label, "etc/systemd/system/" + name, "unit") for label, name in zip(
+        ("connector", "sidecar", "target", "verifier-socket", "verifier-service"), module.UNITS)],
+    *[("replacement-remove-dropins-" + label, "etc/systemd/system/" + name + ".d", "directory") for label, name in zip(
+        ("connector", "sidecar", "target", "verifier-socket", "verifier-service"), module.UNITS)],
+    ("replacement-remove-target-wants", "etc/systemd/system/happyranch-managed.target.wants", "directory"),
+]
+UNIT_REMOVAL_PHASES = [phase for phase, _, _ in UNIT_REMOVALS] + ["replacement-units-removed"]
+UNIT_REMOVAL_BOUNDARY = "^replacement paused after unit removal; fresh staging and transaction closure unavailable$"
 
 
 class FakeManager:
@@ -724,7 +735,7 @@ def test_invalid_record_schema_refuses_before_publication(fixture: Fixture, name
 
 @pytest.mark.parametrize("name", ["install-transaction.json", ".install-transaction.json.pending"])
 @pytest.mark.parametrize("operation", ["provision", "install", "uninstall", "drift"])
-@pytest.mark.parametrize("phase", ["prepared", "replacement-stopped", *QUARANTINE_PHASES, *REMOVAL_PHASES, *CONFIG_REMOVAL_PHASES])
+@pytest.mark.parametrize("phase", ["prepared", "replacement-stopped", *QUARANTINE_PHASES, *REMOVAL_PHASES, *CONFIG_REMOVAL_PHASES, *UNIT_REMOVAL_PHASES])
 def test_transaction_inventory_never_authorizes_service_or_recovery(
     fixture: Fixture, name: str, operation: str, phase: str,
 ) -> None:
@@ -1027,18 +1038,21 @@ def test_replacement_stop_failure_preserves_all_files(fixture: Fixture, failure:
 
 
 @pytest.mark.parametrize("attack", ["foreign-owner", "parent-swap", "leaf-swap", "mode", "links", "size", "mtime"])
-@pytest.mark.parametrize("candidate", ["prepared", "stopped", "quarantined", "removal", "config-removal"])
+@pytest.mark.parametrize("candidate", ["prepared", "stopped", "quarantined", "removal", "config-removal", "unit-removal"])
 def test_replacement_token_refuses_before_stop_or_publication(
     fixture: Fixture, monkeypatch: pytest.MonkeyPatch, attack: str, candidate: str,
 ) -> None:
     manager, _, _ = (prepared_replacement(fixture) if candidate == "prepared" else stopped_replacement(fixture))
-    if candidate in {"quarantined", "removal", "config-removal"}:
+    if candidate in {"quarantined", "removal", "config-removal", "unit-removal"}:
         with pytest.raises(module.InstallerError, match="^replacement paused after config quarantine;"):
             fixture.installer.replace_failed()
-    if candidate == "config-removal":
+    if candidate in {"config-removal", "unit-removal"}:
         with pytest.raises(module.InstallerError, match=REMOVAL_BOUNDARY):
             fixture.installer.replace_failed()
-    if candidate in {"removal", "config-removal"}:
+    if candidate == "unit-removal":
+        with pytest.raises(module.InstallerError, match=CONFIG_REMOVAL_BOUNDARY):
+            fixture.installer.replace_failed()
+    if candidate in {"removal", "config-removal", "unit-removal"}:
         write = fixture.installer._write_provision_file
         def interrupt(name: str, data: bytes, *args: object, **kwargs: object) -> None:
             write(name, data, *args, **kwargs)
@@ -1941,7 +1955,7 @@ def test_staged_identity_cannot_bypass_via_supervisor(
 
 @pytest.mark.parametrize("operation", ["install", "uninstall", "start", "stop", "restart", "enable", "disable", "upgrade", "rollback", "run"])
 @pytest.mark.parametrize("entry", ["install-transaction.json", ".install-transaction.json.pending"])
-@pytest.mark.parametrize("phase", ["prepared", "replacement-stopped", *QUARANTINE_PHASES, *REMOVAL_PHASES, *CONFIG_REMOVAL_PHASES])
+@pytest.mark.parametrize("phase", ["prepared", "replacement-stopped", *QUARANTINE_PHASES, *REMOVAL_PHASES, *CONFIG_REMOVAL_PHASES, *UNIT_REMOVAL_PHASES])
 def test_replacement_transaction_blocks_legacy_supervisor_lifecycle(
     fixture: Fixture, monkeypatch: pytest.MonkeyPatch, operation: str, entry: str, phase: str,
 ) -> None:
@@ -2307,10 +2321,14 @@ def test_replacement_removes_only_quarantined_configs(fixture: Fixture, case: st
     assert all(state == "inactive" for state in manager.states.values())
     assert all(call[0] in {"show", "stop"} and call[1] in module.UNITS for call in manager.calls)
     manager.calls.clear()
-    with pytest.raises(module.InstallerError, match=CONFIG_REMOVAL_BOUNDARY):
+    with pytest.raises(module.InstallerError, match=UNIT_REMOVAL_BOUNDARY):
         fixture.installer.replace_failed()
-    assert staged_inventory(fixture) == after
-    assert fixture.installer.replacement_inventory().installation.detail == "replacement-configs-removed"
+    units_removed = staged_inventory(fixture)
+    changed = {key for key in after.keys() | units_removed.keys() if after.get(key) != units_removed.get(key)}
+    assert changed <= {"etc/happyranch", "etc/happyranch/install-transaction.json", "etc/systemd/system",
+                       *[relative for _, relative, _ in UNIT_REMOVALS]}
+    assert all(not (fixture.root / relative).exists() for _, relative, _ in UNIT_REMOVALS)
+    assert fixture.installer.replacement_inventory().installation.detail == "replacement-units-removed"
     assert fixture.installer.inventory().state == "manual-install-conflict"
 
 
@@ -2363,9 +2381,11 @@ def test_replacement_config_removal_interruption_resumes(
     observed = fixture.installer.replacement_inventory()
     assert observed.installation.detail == phase
     assert observed.journal_generation == hashlib.sha256(journal).hexdigest()
-    with pytest.raises(module.InstallerError, match=CONFIG_REMOVAL_BOUNDARY):
+    consumes_configs = phase == "replacement-configs-removed"
+    with pytest.raises(module.InstallerError, match=UNIT_REMOVAL_BOUNDARY if consumes_configs else CONFIG_REMOVAL_BOUNDARY):
         fixture.installer.replace_failed()
-    assert json.loads((parent / "install-transaction.json").read_bytes())["phase"] == "replacement-configs-removed"
+    assert json.loads((parent / "install-transaction.json").read_bytes())["phase"] == (
+        "replacement-units-removed" if consumes_configs else "replacement-configs-removed")
     assert all(not (fixture.root / r).exists() for _, r in CONFIG_REMOVALS)
     assert all(state == "inactive" for state in manager.states.values())
     assert all(call[0] in {"show", "stop"} and call[1] in module.UNITS for call in manager.calls)
@@ -2416,9 +2436,11 @@ def test_replacement_config_removal_publication_interruption(
         root=fixture.root, root_owner=previous.root_owner, manager=manager,
         lookup_user=previous._lookup_user, lookup_group=previous._lookup_group)
     assert fixture.installer.replacement_inventory().installation.detail == expected_phase
-    with pytest.raises(module.InstallerError, match=CONFIG_REMOVAL_BOUNDARY):
+    consumes_configs = expected_phase == "replacement-configs-removed"
+    with pytest.raises(module.InstallerError, match=UNIT_REMOVAL_BOUNDARY if consumes_configs else CONFIG_REMOVAL_BOUNDARY):
         fixture.installer.replace_failed()
-    assert json.loads((parent / "install-transaction.json").read_bytes())["phase"] == "replacement-configs-removed"
+    assert json.loads((parent / "install-transaction.json").read_bytes())["phase"] == (
+        "replacement-units-removed" if consumes_configs else "replacement-configs-removed")
     assert all(not (fixture.root / r).exists() for _, r in CONFIG_REMOVALS)
     assert all(state == "inactive" for state in manager.states.values())
     assert all(call[0] in {"show", "stop"} and call[1] in module.UNITS for call in manager.calls)
@@ -2539,3 +2561,333 @@ def test_replacement_config_removal_rechecks_before_unlink(
     assert mutated, "late config removal boundary was not reached"
     assert staged_inventory(fixture) == snapshot
     assert all(call[0] == "show" for call in manager.calls[len(calls):])
+
+
+def configs_removed_with_units(fixture: Fixture, case: str = "failed") -> tuple[LifecycleManager, Path, bytes]:
+    manager, parent, prepared = state_removed_with_configs(fixture, case)
+    with pytest.raises(module.InstallerError, match=CONFIG_REMOVAL_BOUNDARY):
+        fixture.installer.replace_failed()
+    unit_parent = fixture.root / "etc/systemd/system"
+    for _, relative, kind in UNIT_REMOVALS:
+        if kind == "directory":
+            (fixture.root / relative).mkdir(mode=0o755, exist_ok=True)
+    for folder, name in (("multi-user.target.wants", module.UNITS[2]),
+                         (module.UNITS[2] + ".wants", module.UNITS[3])):
+        directory = unit_parent / folder
+        directory.mkdir(mode=0o755, exist_ok=True)
+        (directory / name).symlink_to("../" + name)
+    manager.calls.clear()
+    return manager, parent, prepared
+
+
+@pytest.mark.parametrize("case", ["failed", "partial", "modern-failed"])
+@pytest.mark.parametrize("layout", ["source", "deb"])
+def test_replacement_removes_only_owned_units(
+    fixture: Fixture, monkeypatch: pytest.MonkeyPatch, case: str, layout: str,
+) -> None:
+    fixture.installer.layout = layout
+    fixture.installer.units = module.managed_units(layout)
+    if layout == "deb":
+        payload = fixture.root / "opt/happyranch-desktop"
+        for directory in (payload / "bin", payload / "python/bin"):
+            directory.mkdir(parents=True, mode=0o755)
+        for directory in (fixture.root / "opt", payload, payload / "python"):
+            directory.chmod(0o755)
+        for name in ("bin/happyranch-tsnet-sidecar", "python/bin/python3.12"):
+            path = payload / name
+            path.write_bytes(b"synthetic packaged executable")
+            path.chmod(0o755)
+        (payload / "python/bin/python3").symlink_to("python3.12")
+        monkeypatch.setattr(os, "getgrouplist", lambda *args: [os.getgid()])
+    manager, parent, prepared = configs_removed_with_units(fixture, case)
+    for relative in ("opt/happyranch/operator-data", "opt/happyranch-desktop/keep", "etc/systemd/system/custom.service",
+                     "etc/systemd/system/happyranch.service", "etc/systemd/system/multi-user.target.wants/custom.service"):
+        (fixture.root / relative).parent.mkdir(parents=True, exist_ok=True)
+        fixture.write(fixture.root / relative, b"synthetic-unrelated-data")
+    before = staged_inventory(fixture)
+    with pytest.raises(module.InstallerError):
+        fixture.installer.replace_failed()
+    assert json.loads((parent / "install-transaction.json").read_bytes()) == {
+        **json.loads(prepared), "phase": "replacement-units-removed"}
+    after = staged_inventory(fixture)
+    allowed = {relative for _, relative, _ in UNIT_REMOVALS} | {
+        "etc/systemd/system", "etc/systemd/system/multi-user.target.wants",
+        "etc/happyranch", "etc/happyranch/install-transaction.json"}
+    changed = {key for key in before.keys() | after.keys() if before.get(key) != after.get(key)}
+    assert changed <= allowed
+    assert all(not (fixture.root / relative).exists() for _, relative, _ in UNIT_REMOVALS)
+    assert all(state == "inactive" for state in manager.states.values())
+    assert all(call[0] in {"show", "stop"} and call[1] in module.UNITS for call in manager.calls)
+    with pytest.raises(module.InstallerError, match=UNIT_REMOVAL_BOUNDARY):
+        fixture.installer.replace_failed()
+    assert staged_inventory(fixture) == after
+    assert fixture.installer.inventory().state == "manual-install-conflict"
+    assert fixture.installer.replacement_inventory().installation.detail == "replacement-units-removed"
+
+
+@pytest.mark.parametrize("phase,relative,kind,point", [
+    (phase, relative, kind, point) for phase, relative, kind in UNIT_REMOVALS for point in ("intent", "remove", "fsync")
+] + [("replacement-units-removed", "", "", "intent")])
+def test_replacement_unit_removal_interruption_resumes(
+    fixture: Fixture, monkeypatch: pytest.MonkeyPatch, phase: str, relative: str, kind: str, point: str,
+) -> None:
+    manager, parent, prepared = configs_removed_with_units(fixture, "modern-failed")
+    write, unlink, rmdir, fsync = fixture.installer._write_provision_file, os.unlink, os.rmdir, os.fsync
+    interrupted = False
+
+    def die() -> None:
+        nonlocal interrupted
+        interrupted = True
+        raise SystemExit("synthetic-unit-removal-death")
+
+    def publish(name: str, data: bytes, *args: object, **kwargs: object) -> None:
+        write(name, data, *args, **kwargs)
+        if json.loads(data)["phase"] == phase and point == "intent":
+            die()
+
+    def remove(name: str, *, dir_fd: int) -> None:
+        (rmdir if kind == "directory" else unlink)(name, dir_fd=dir_fd)
+        if point == "remove" and str(name) == Path(relative).name:
+            if json.loads((parent / "install-transaction.json").read_bytes())["phase"] == phase:
+                die()
+
+    def sync(fd: int) -> None:
+        fsync(fd)
+        if point == "fsync" and json.loads((parent / "install-transaction.json").read_bytes())["phase"] == phase:
+            target = fixture.root / relative
+            if not target.exists() and os.fstat(fd).st_ino == target.parent.stat().st_ino:
+                die()
+
+    with monkeypatch.context() as patch:
+        patch.setattr(fixture.installer, "_write_provision_file", publish)
+        patch.setattr(os, "unlink" if kind != "directory" else "rmdir", remove)
+        patch.setattr(os, "fsync", sync)
+        with pytest.raises((module.InstallerError, SystemExit)):
+            fixture.installer.replace_failed()
+    assert interrupted, "requested unit removal boundary was not reached"
+    journal = (parent / "install-transaction.json").read_bytes()
+    assert json.loads(journal) == {**json.loads(prepared), "phase": phase}
+    previous = fixture.installer
+    fixture.installer = module.ManagedInstaller(
+        root=fixture.root, root_owner=previous.root_owner, layout=previous.layout, manager=manager,
+        lookup_user=previous._lookup_user, lookup_group=previous._lookup_group)
+    observed = fixture.installer.replacement_inventory()
+    assert observed.installation.detail == phase
+    assert observed.journal_generation == hashlib.sha256(journal).hexdigest()
+    with pytest.raises(module.InstallerError, match=UNIT_REMOVAL_BOUNDARY):
+        fixture.installer.replace_failed()
+    assert json.loads((parent / "install-transaction.json").read_bytes())["phase"] == "replacement-units-removed"
+    assert all(not (fixture.root / relative).exists() for _, relative, _ in UNIT_REMOVALS)
+    assert all(state == "inactive" for state in manager.states.values())
+
+
+@pytest.mark.parametrize("phase", UNIT_REMOVAL_PHASES)
+@pytest.mark.parametrize("point", ["pending-fsync", "rename", "parent-fsync"])
+def test_replacement_unit_removal_publication_interruption(
+    fixture: Fixture, monkeypatch: pytest.MonkeyPatch, phase: str, point: str,
+) -> None:
+    manager, parent, prepared = configs_removed_with_units(fixture)
+    sync, rename = os.fsync, fixture.installer._rename_provision_entry
+    interrupted = False
+
+    def die() -> None:
+        nonlocal interrupted
+        interrupted = True
+        raise SystemExit("synthetic-unit-publication-death")
+
+    def fsync(fd: int) -> None:
+        sync(fd)
+        pending, current = parent / ".install-transaction.json.pending", parent / "install-transaction.json"
+        if point == "pending-fsync" and pending.exists() and json.loads(pending.read_bytes())["phase"] == phase:
+            if os.fstat(fd).st_ino == pending.stat().st_ino:
+                die()
+        if point == "parent-fsync" and json.loads(current.read_bytes())["phase"] == phase:
+            if os.fstat(fd).st_ino == parent.stat().st_ino:
+                die()
+
+    def replace(fd: int, source: str, destination: str, *, updating: bool = False) -> None:
+        rename(fd, source, destination, updating=updating)
+        if point == "rename" and json.loads((parent / destination).read_bytes())["phase"] == phase:
+            die()
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "fsync", fsync)
+        patch.setattr(fixture.installer, "_rename_provision_entry", replace)
+        with pytest.raises((SystemExit, module.InstallerError)):
+            fixture.installer.replace_failed()
+    assert interrupted, "requested unit publication boundary was not reached"
+    phases = ["replacement-configs-removed", *UNIT_REMOVAL_PHASES]
+    expected = phases[phases.index(phase) - 1] if point == "pending-fsync" else phase
+    assert json.loads((parent / "install-transaction.json").read_bytes()) == {**json.loads(prepared), "phase": expected}
+    previous = fixture.installer
+    fixture.installer = module.ManagedInstaller(
+        root=fixture.root, root_owner=previous.root_owner, manager=manager,
+        lookup_user=previous._lookup_user, lookup_group=previous._lookup_group)
+    assert fixture.installer.replacement_inventory().installation.detail == expected
+    with pytest.raises(module.InstallerError, match=UNIT_REMOVAL_BOUNDARY):
+        fixture.installer.replace_failed()
+
+
+@pytest.mark.parametrize("bad", ["journal", "pending", "reappeared-config", "reappeared-state", "unit-bytes",
+                                 "unit-mode", "unit-hardlink", "unit-symlink", "dropin", "unknown-wants", "wrong-link",
+                                 "directory-symlink", "directory-mode", "token-mode", "token-owner", "stop-error", "pid"])
+def test_replacement_unit_removal_refuses_unsafe_inventory(
+    fixture: Fixture, monkeypatch: pytest.MonkeyPatch, bad: str,
+) -> None:
+    manager, parent, _ = configs_removed_with_units(fixture)
+    units = fixture.root / "etc/systemd/system"
+    target = units / module.UNITS[0]
+    if bad == "journal":
+        journal = parent / "install-transaction.json"
+        journal.write_bytes(journal.read_bytes() + b"\n")
+    elif bad == "pending":
+        fixture.write(parent / ".install-transaction.json.pending", b"{}")
+    elif bad.startswith("reappeared"):
+        fixture.write(parent / ".replacement-connector.json" if bad.endswith("config") else fixture.root / REMOVALS[0][1], b"reappeared")
+    elif bad == "unit-bytes":
+        target.write_bytes(b"synthetic-foreign-unit")
+    elif bad == "unit-mode":
+        target.chmod(0o666)
+    elif bad == "unit-hardlink":
+        os.link(target, fixture.inputs / "unit-alias")
+    elif bad == "unit-symlink":
+        target.unlink()
+        target.symlink_to(fixture.token)
+    elif bad in {"dropin", "unknown-wants"}:
+        fixture.write(units / (module.UNITS[0] + ".d" if bad == "dropin" else module.UNITS[2] + ".wants") / "foreign", b"foreign")
+    elif bad == "wrong-link":
+        target = units / "multi-user.target.wants" / module.UNITS[2]
+        target.unlink()
+        target.symlink_to(fixture.token)
+    elif bad.startswith("directory"):
+        target = units / (module.UNITS[0] + ".d")
+        if bad.endswith("symlink"):
+            target.rmdir()
+            target.symlink_to(fixture.inputs, target_is_directory=True)
+        else:
+            target.chmod(0o777)
+    elif bad == "token-mode":
+        fixture.token.chmod(0o640)
+    elif bad == "token-owner":
+        info, fstat = fixture.token.stat(), os.fstat
+        def foreign(fd: int) -> object:
+            current = fstat(fd)
+            if (current.st_dev, current.st_ino) == (info.st_dev, info.st_ino):
+                values = {key: getattr(current, key) for key in dir(current) if key.startswith("st_")}
+                return SimpleNamespace(**{**values, "st_uid": current.st_uid + 1})
+            return current
+        monkeypatch.setattr(os, "fstat", foreign)
+    elif bad == "stop-error":
+        manager.stop_error = module.UNITS[1]
+    else:
+        manager.override["MainPID"] = "42"
+    before = staged_inventory(fixture)
+    manager.calls.clear()
+    with pytest.raises(module.InstallerError):
+        fixture.installer.replace_failed()
+    assert staged_inventory(fixture) == before
+    assert all(call[0] in ({"show", "stop"} if bad in {"stop-error", "pid"} else {"show"}) for call in manager.calls)
+
+
+@pytest.mark.parametrize("attack", ["journal", "token", "config-parent", "unit-parent", "leaf", "metadata", "foreign-entry", "pid"])
+@pytest.mark.parametrize("kind", ["unit", "directory", "link"])
+def test_replacement_unit_removal_rechecks_before_effect(
+    fixture: Fixture, monkeypatch: pytest.MonkeyPatch, attack: str, kind: str,
+) -> None:
+    manager, parent, _ = configs_removed_with_units(fixture)
+    phase, relative, _ = next(entry for entry in UNIT_REMOVALS if entry[2] == kind)
+    # Reach this current intent using the real consumer, never fabricated phase authority.
+    write = fixture.installer._write_provision_file
+    def stop_at(name: str, data: bytes, *args: object, **kwargs: object) -> None:
+        write(name, data, *args, **kwargs)
+        if json.loads(data)["phase"] == phase:
+            raise SystemExit("synthetic-current-intent")
+    with monkeypatch.context() as patch:
+        patch.setattr(fixture.installer, "_write_provision_file", stop_at)
+        with pytest.raises((SystemExit, module.InstallerError)):
+            fixture.installer.replace_failed()
+    assert json.loads((parent / "install-transaction.json").read_bytes())["phase"] == phase
+    check, remove = fixture.installer._check_replacement_transaction, fixture.installer._remove_replacement_unit
+    inside, checks, mutated = False, 0, False
+    snapshot: dict = {}
+
+    def enter(transaction: bytes) -> None:
+        nonlocal inside
+        inside = True
+        remove(transaction)
+
+    def checked(fd: int, transaction: bytes) -> None:
+        nonlocal mutated, checks
+        check(fd, transaction)
+        if not inside or mutated:
+            return
+        checks += 1
+        if checks != 2:
+            return
+        mutated = True
+        target = fixture.root / relative
+        if attack == "journal":
+            fixture.write(parent / "install-transaction.json", transaction + b"\n")
+        elif attack == "token":
+            fixture.token.chmod(0o640)
+        elif attack in {"config-parent", "unit-parent"}:
+            folder = parent if attack == "config-parent" else target.parent
+            folder.rename(folder.with_name("previous-parent"))
+            folder.mkdir(mode=0o755)
+        elif attack == "leaf":
+            target.rename(target.with_name("previous-leaf"))
+            target.symlink_to(fixture.token)
+        elif attack == "metadata":
+            if kind == "link":
+                target.unlink()
+                target.symlink_to(fixture.token)
+            else:
+                target.chmod(0o777)
+        elif attack == "foreign-entry":
+            fixture.write((target if kind == "directory" else parent) / "foreign", b"synthetic-foreign")
+        else:
+            manager.override["MainPID"] = "42"
+        snapshot.update(staged_inventory(fixture))
+
+    monkeypatch.setattr(fixture.installer, "_remove_replacement_unit", enter)
+    monkeypatch.setattr(fixture.installer, "_check_replacement_transaction", checked)
+    with pytest.raises(module.InstallerError):
+        fixture.installer.replace_failed()
+    assert mutated, "late unit removal boundary was not reached"
+    assert staged_inventory(fixture) == snapshot
+    assert json.loads((parent if attack != "config-parent" else parent.with_name("previous-parent"))
+                      .joinpath("install-transaction.json").read_bytes())["phase"] == phase
+
+
+@pytest.mark.parametrize("bad", ["none", "foreign-fragment", "dropins", "active", "pid", "job", "cgroup"])
+def test_replacement_unit_removal_accepts_only_quiescent_cached_fragments(
+    fixture: Fixture, monkeypatch: pytest.MonkeyPatch, bad: str,
+) -> None:
+    manager, parent, _ = configs_removed_with_units(fixture)
+    show = manager.show_properties
+    observed: dict = {}
+    def cached(unit: str, properties: tuple[str, ...]) -> dict[str, str]:
+        values = show(unit, properties)
+        if not (fixture.root / "etc/systemd/system" / unit).exists():
+            if not observed:
+                observed.update(staged_inventory(fixture))
+            for key, value in {"FragmentPath": str(fixture.root / "etc/systemd/system" / unit),
+                               "LoadState": "loaded", "NeedDaemonReload": "yes"}.items():
+                if key in properties:
+                    values[key] = value
+            overrides = {"foreign-fragment": ("FragmentPath", "/usr/lib/systemd/system/foreign.service"),
+                         "dropins": ("DropInPaths", "/foreign.conf"), "active": ("ActiveState", "active"),
+                         "pid": ("MainPID", "42"), "job": ("Job", "42/start"), "cgroup": ("ControlGroup", "/foreign")}
+            if bad in overrides:
+                key, value = overrides[bad]
+                if key in properties:
+                    values[key] = value
+        return values
+    monkeypatch.setattr(manager, "show_properties", cached)
+    with pytest.raises(module.InstallerError):
+        fixture.installer.replace_failed()
+    assert observed, "cached fragment boundary was not reached"
+    assert json.loads((parent / "install-transaction.json").read_bytes())["phase"] == (
+        "replacement-units-removed" if bad == "none" else "replacement-remove-unit-connector")
+    if bad != "none":
+        assert staged_inventory(fixture) == observed
