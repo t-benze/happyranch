@@ -17,6 +17,8 @@ The founder-supplied HTML bundle is evidence of proposed UX only. When it confli
 
 ## Shared authority, data, and UX baseline
 
+> Superseded: keyboard shortcuts removed (THR-372).
+
 - The SPA receives a localhost-gated daemon bearer from `GET /api/v1/auth/bootstrap`, stores it in `sessionStorage`, and retries one 401 once. Browser UI has no client-side role/RBAC gate; daemon routes enforce authorization and org/participant checks. Scoped registration tokens are exceptional flows, not general remote access.
 - Founder-authenticated actions are the present authority baseline. Generalized operator/delegated roles, arbitrary remote-browser access, and an in-dock assistant approval surface are out of scope until separately designed and Founder-ruled.
 - Dashboard, metrics, health, filesystem/process/config, executor, and SSE data are daemon snapshots/projections that may be unavailable or stale. SSE augments cache/polling; it is not a durable delivery guarantee. Every domain PRD requires clear unavailable/derived/stale treatment.

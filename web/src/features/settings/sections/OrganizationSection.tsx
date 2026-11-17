@@ -322,20 +322,6 @@ export function OrganizationSection({ org }: Props): JSX.Element {
     } finally { savingLatch.current = false; }
   }, [buildPatch, mutation, orgSlug, identityPreflight, fields.dreamInclude, fields.dreamExclude, agentsList]);
 
-  // ⌘S shortcut
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key === 's') {
-        e.preventDefault();
-        if (dirty && saveState.phase !== 'saving') {
-          handleSave();
-        }
-      }
-    };
-    window.addEventListener('keydown', handler);
-    return () => window.removeEventListener('keydown', handler);
-  }, [dirty, saveState.phase, handleSave]);
-
   // Unsaved-changes guard on nav-away
   useEffect(() => {
     const handler = (e: BeforeUnloadEvent) => {
@@ -658,9 +644,6 @@ export function OrganizationSection({ org }: Props): JSX.Element {
           >
             {t('settings.organization.saveBar.discard')}
           </button>
-          <span className="text-fg-subtle ml-auto text-xs">
-            {t('settings.organization.saveBar.shortcut')}
-          </span>
         </div>
       )}
 

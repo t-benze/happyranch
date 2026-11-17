@@ -18,6 +18,11 @@
 # id.thread / id.task (and badge id_thread / id_task) = --color-info blue;
 # status escalated (and badge status_escalated) = attention amber via
 # semanticTone; JetBrains Mono is self-hosted from /fonts (no "Local" face).
+# THR-376 PR2 adds: layout.grid.app_shell 48px topbar row and
+# components.topbar = Pasture .topbar (56px, --bg 80% translucent,
+# Newsreader 18/500 title, 26px padding). The active sidebar nav row is
+# Pasture accent-soft / accent-text / 600 with no left marker (this file
+# has no sidebar-nav row; see DESIGN_SYSTEM.md).
 # The rest of this file is unchanged historical reference (Phase 4 rewrites it).
 
 name: HappyRanch Founder Console
@@ -266,7 +271,7 @@ layout:
 
   grid:
     app_shell:
-      rows: "48px 1fr 24px"          # topbar / body / statusbar
+      rows: "48px 1fr 24px"          # topbar / body / statusbar  # SUPERSEDED (Pasture): topbar 56px
       cols: "1fr"
     threads_page:
       cols: "340px 1fr"               # inbox / detail
@@ -449,7 +454,7 @@ components:
     color_text:    "{colors.semantic.dark.text.primary}"
 
   kbd_chip:
-    # The little keycaps in the HelpDrawer and inline hints.
+    # The little keycaps for inline key labels.
     bg: "{colors.semantic.dark.surface.raised}"
     text: "{colors.semantic.dark.text.primary}"
     border: "1px solid {colors.semantic.dark.border.default}"
@@ -459,11 +464,11 @@ components:
     font: "{typography.scale.mono_sm}"
     box_shadow: "inset 0 -1px 0 rgba(0, 0, 0, 0.4)"   # subtle keycap depth
 
-  topbar:
-    height: "48px"
-    bg: "{colors.semantic.dark.surface.sunken}"
-    border_bottom: "1px solid {colors.semantic.dark.border.subtle}"
-    padding_x: "{layout.spacing.4}"
+  topbar:   # SUPERSEDED (Pasture): .topbar 56px, --bg 80% translucent, 1px --border, padding 0 26px, title Newsreader 18/500
+    height: "48px"   # SUPERSEDED (Pasture): 56px
+    bg: "{colors.semantic.dark.surface.sunken}"   # SUPERSEDED (Pasture): color-mix(--bg 80%, transparent)
+    border_bottom: "1px solid {colors.semantic.dark.border.subtle}"   # SUPERSEDED (Pasture): 1px --border
+    padding_x: "{layout.spacing.4}"   # SUPERSEDED (Pasture): 26px
     elevation: "{elevation.1}"
 
   statusbar:
@@ -536,8 +541,8 @@ components:
     backdrop: "{colors.semantic.dark.surface.scrim}"
 
   drawer:
-    # Right-side slide-out. Reserved for HelpDrawer in v1; designed so the
-    # future "Agent detail" drawer (clicking an agent_chip) drops in.
+    # Right-side slide-out, designed so the future "Agent detail" drawer
+    # (clicking an agent_chip) drops in.
     width: "20rem"                # 320px
     elevation: "{elevation.3}"
     bg: "{colors.semantic.dark.surface.overlay}"
@@ -590,8 +595,8 @@ elevation, except where elevation actually means "this is floating
 above the page" (popovers, modals, drawers).
 
 Why this matters for HappyRanch specifically: every screen carries org slug,
-agent identity, IDs (THR-NNN / TASK-NNN), tier color, timestamps, status,
-keyboard hints. If the chrome is loud, the signal disappears. The design
+agent identity, IDs (THR-NNN / TASK-NNN), tier color, timestamps and
+status. If the chrome is loud, the signal disappears. The design
 language is built to make the *data* the foreground and the *UI* the
 parchment.
 
@@ -734,7 +739,7 @@ on intent for the founder-facing inventory:
 - **Dialog** is 512px wide, never page-wide. The product has dialogs for
   *actions*, not for content; if a screen needs a wider surface, it's a
   page, not a dialog.
-- **Drawer** is reserved for right-side panels: HelpDrawer today, future
+- **Drawer** is reserved for right-side panels, such as a future
   "Agent detail" sidecar from clicking an AgentChip.
 - **ToastQueue** docks bottom-right. 22rem wide. Variants are
   border-left-colored, not background-tinted — toasts are interruptive
@@ -782,7 +787,7 @@ tier/status/feedback semantic tokens or propose a new semantic token —
 do not invent a magenta because "we needed something different."
 
 **DON'T** all-caps form labels. Only the `overline` step is uppercase,
-used for section headers (INBOX, PARTICIPANTS, SHORTCUTS). Field labels
+used for section headers (INBOX, PARTICIPANTS). Field labels
 use the `label` step in title case.
 
 **DON'T** animate inbox/list state changes. Power users notice movement
@@ -796,5 +801,5 @@ sub-routes under Audit. If a sixth needs a top-level slot, we are
 designing a different product.
 
 **DON'T** use icon-only buttons for destructive actions. Archive and
-Abandon are text buttons with a keyboard hint. Icon-only is fine for
+Abandon are text buttons. Icon-only is fine for
 "refresh" and "filter clear"; never for "destroy this thread."

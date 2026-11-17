@@ -22,7 +22,8 @@ class LockProof:
 
     A held lock excludes earlier lock holders. On transition boots it does
     not exclude a pre-lock daemon without a positive dead-PID observation.
-    Nothing consumes this proof yet; it grants no record release by itself.
+    The narrow thread startup pass consumes this proof together with recorded
+    lifecycle quiescence; it grants no record release by itself.
     """
 
     proven: bool

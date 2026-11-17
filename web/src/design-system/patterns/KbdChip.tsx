@@ -1,5 +1,5 @@
 /**
- * KbdChip — small keycap-style chip used in HelpSheet and inline hints.
+ * KbdChip — small keycap-style chip for inline key labels.
  * Per DESIGN.md `components.kbd_chip`: subtle bottom-inset shadow gives
  * the keycap depth without any drop shadow.
  *

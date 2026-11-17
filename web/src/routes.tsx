@@ -21,7 +21,6 @@ import { SequentialWorkflowsPage } from '@/features/workflows/SequentialWorkflow
 import { JobsPage } from '@/features/jobs/JobsPage';
 import { JobDetailPage } from '@/features/jobs/JobDetailPage';
 import { CommandPaletteHost } from '@/host/CommandPaletteHost';
-import { HelpDrawerHost } from '@/host/HelpDrawerHost';
 import { AuditPage } from '@/features/audit/AuditPage';
 import { SkillsPage } from '@/features/skills/SkillsPage';
 import { SkillValidationPage } from '@/features/skills/SkillValidationPage';
@@ -98,7 +97,7 @@ function AppShell(): JSX.Element {
     <div className="flex h-full flex-row">
       <Sidebar />
       <div className="flex min-w-0 flex-1 flex-col">
-        <AppBar presentation={/^\/orgs\/[^/]+\/tasks\/?$/.test(location.pathname) ? 'tasks' : undefined} />
+        <AppBar />
         <main className="flex-1 overflow-hidden">
           <AppShellErrorBoundary resetKey={location.pathname}>
             <Outlet />
@@ -106,7 +105,6 @@ function AppShell(): JSX.Element {
         </main>
       </div>
       <CommandPaletteHost />
-      <HelpDrawerHost />
     </div>
   );
 }

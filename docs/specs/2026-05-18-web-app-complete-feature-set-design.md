@@ -36,6 +36,8 @@ The threads feature already shipped (`2026-05-14-web-ui-design.md`). Every daemo
 
 ### 3.2 Remaining feature surfaces
 
+> Superseded: keyboard shortcuts removed (THR-372).
+
 | # | Surface | Daemon endpoints (existing) | SSE in v1? | Detail-spec status |
 |---|---|---|---|---|
 | 1 | Tasks | list / detail / recall / events / cancel / revisit / resolve-escalation | yes — `/tasks/events` (inbox) and `/tasks/{id}/events` (tail) | sketch in `web/UI_SPEC.md` §8 |

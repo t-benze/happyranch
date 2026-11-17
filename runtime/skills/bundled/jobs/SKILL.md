@@ -67,7 +67,8 @@ backfill, compensation or clearance writer is introduced. Behavior UNEXECUTED.
 
 The normal daemon holds `<daemon_home>/daemon.lock` before startup sweeps until
 process exit; never unlink that file. Its logged previous-boot proof is not job
-or process-tree quiescence and has no release consumer yet. Shell stop retains
+or process-tree quiescence. Only the separate narrow thread startup pass consumes
+it together with recorded thread-attempt quiescence; job recovery is unchanged. Shell stop retains
 60s TERM grace and waits up to 2s for actual exit after KILL; an unconfirmed exit
 returns nonzero and retains lifecycle evidence. Every shell stop-success and
 applying legacy-migration path also waits up to 2s for a no-follow nonblocking

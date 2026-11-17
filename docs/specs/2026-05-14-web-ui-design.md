@@ -238,6 +238,8 @@ Endpoints **not** exposed in the TS client: `/reply`, `/decline`, `/dispatch`, `
 
 ### 7.6 Keyboard parity
 
+> Superseded: keyboard shortcuts removed (THR-372).
+
 Bindings match the TUI 1:1 so muscle memory transfers: `N` new, `I` invite, `A` archive, `X` abandon, `F` forward, `R` focus composer, `Ctrl+Enter` send, `?` help, `g i` jump to inbox, `/` filter. The TUI's modal Esc-to-dismiss convention is preserved.
 
 ## 8. Extensibility recipe (future features)

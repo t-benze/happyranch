@@ -133,8 +133,6 @@ interface ComposerProps {
   onSend: (markdown: string, attachments: PendingAttachment[]) => unknown | Promise<unknown>;
   attachments?: PendingAttachment[];
   onAttachmentsChange?: (attachments: PendingAttachment[]) => void;
-  /** Lets a parent focus the textarea (e.g. the R keyboard shortcut). */
-  registerFocus?: (focus: () => void) => void;
 
   // Required
   agents: AddressOption[];
@@ -166,7 +164,6 @@ export function Composer({
   errorMessage,
   helper,
   placeholder,
-  registerFocus,
   onSend,
   attachments = [],
   onAttachmentsChange,
@@ -321,7 +318,6 @@ export function Composer({
           placeholder={composerPlaceholder}
           ariaLabel={L.textareaAria}
           mentionListLabel={labels?.mentionList}
-          registerFocus={registerFocus}
           className="text-body text-text-primary placeholder:text-text-muted w-full resize-none bg-transparent py-1.5 focus:outline-none disabled:opacity-50"
         />
         {/* Abort reply — icon-only trailing action INSIDE the pill, left of the

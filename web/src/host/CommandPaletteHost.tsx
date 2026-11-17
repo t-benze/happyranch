@@ -1,8 +1,9 @@
 /**
- * CommandPaletteHost — mounts the Cmd-K palette globally inside AppShell.
+ * CommandPaletteHost — mounts the command palette globally inside AppShell.
  *
- * Per spec `2026-05-19-web-polish-design.md` §6. Owns the open state, wires
- * the hotkey, and gathers indexable rows from React Query caches. By design
+ * Per spec `2026-05-19-web-polish-design.md` §6. Owns the open state (no
+ * keyboard shortcut opens it; THR-372 removed Cmd/Ctrl+K) and gathers
+ * indexable rows from React Query caches. By design
  * it does NOT subscribe to the source hooks (no fan-out fetch on every
  * keystroke). Sections show whatever the surrounding session has already
  * loaded into cache.
@@ -17,10 +18,6 @@ import {
 } from '@/design-system/patterns/CommandPalette';
 import { useTranslation } from '@/hooks/i18n';
 import type { MessageKey, MessageParams } from '@/lib/i18n';
-// Cmd/Ctrl-K is unbound; the palette retains its explicit trigger.
-// The pre-overhaul command palette is retained but opened via a different
-// trigger; remove its ⌘K hotkey to avoid conflicts.
-// import { useCommandPaletteHotkey } from '@/hooks/command-palette';
 import type {
   AgentSummary,
   KBEntry,

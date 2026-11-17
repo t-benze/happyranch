@@ -1040,7 +1040,11 @@ has a dormant service bound to the actual initial app/state/runtime/org-map,
 org/DB/path, supervisor/tracker and attachment generation. Only actual successful
 ASGI/listener startup admits it; construction/readiness performs no operation or
 selection. Native preview/show and the sole `release_exact_thread_delivery`
-transaction have no ACTIVE HTTP/CLI, startup, reaper or automatic release caller.
+human transaction have no ACTIVE HTTP/CLI, startup, reaper or automatic caller.
+THR-357 adds a separate narrow proven-lock startup release; its exact predicate,
+append-only daemon record and refusal rules are in the maintained
+[lifecycle contract](contracts/runtime-lifecycle.md#narrow-previous-boot-thread-release-thr-357-fix-1--1136).
+The human command/confirmation/serving authority is unchanged.
 Temporary, dynamic, custom, replaced and missing contexts refuse. Neither
 ambient credentials nor caller proof flags enable mutation. Proof-backed release
 is unavailable. The approved human risk override requires exact preview, stable

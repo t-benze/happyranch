@@ -217,10 +217,9 @@ happyranch web --no-open           # print the URL only
 ```
 
 The localhost SPA renders the full threads inbox (compose / reply / invite /
-archive / extend / forward / resume / SSE-driven live updates) and is the
-single interactive interface for founders. Keyboard shortcuts: `N` new,
-`I` invite, `A` archive, `F` forward, `R` focus composer,
-`Ctrl+Enter` send, `?` help. Archived threads expose a "Resume thread" button
+archive / extend / resume / SSE-driven live updates) and is the
+single interactive interface for founders. In the composer, `Enter` sends
+and `Shift+Enter` inserts a newline. Archived threads expose a "Resume thread" button
 to reopen them. The dev server (`cd web && npm run dev`)
 proxies to the daemon for hot-reload development.
 
