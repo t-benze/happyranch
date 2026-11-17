@@ -7,3 +7,6 @@ type Story = StoryObj;
 export const Coverage: Story = {};
 export const InProgress: Story = { args: { status: 'in_progress' } };
 export const Escalated: Story = { args: { status: 'escalated' } };
+/** Feature-vocabulary form (Todos schedule / Skills validation states). */
+export const ToneLabelWithDot: Story = { args: { tone: 'positive', label: 'Armed', dot: true } };
+export const ToneLabelAttention: Story = { args: { tone: 'attention', label: 'Needs attention' } };

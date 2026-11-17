@@ -12,8 +12,9 @@ import type { ScheduleRecord } from '@/lib/api/types'
 import { useTranslation } from '@/hooks/i18n'
 import type { Locale } from '@/lib/i18n'
 import { formatCountFor } from '@/lib/i18n/format'
-import { StatusPill } from './StatusPill'
-import { shortDayLabel, type Translate } from '../strings'
+import { StatusBadge } from '@/design-system/patterns/StatusBadge'
+import { Avatar } from '@/design-system/primitives/Avatar'
+import { scheduleStatusBadge, shortDayLabel, type Translate } from '../strings'
 import { formatFireAtInTz, formatReviewDate } from '../timezone'
 import { formatRecurringRule } from '../recurrence'
 import { cn } from '@/lib/utils'
@@ -101,7 +102,7 @@ export function TodoRow({ schedule }: TodoRowProps): JSX.Element {
     >
       <div className="flex items-start justify-between gap-4">
         <div className="flex min-w-0 items-center gap-2.5">
-          <StatusPill status={schedule.status} />
+          <StatusBadge {...scheduleStatusBadge(schedule.status, t)} />
           <span
             className={cn(
               'truncate text-sm font-semibold text-fg',
@@ -126,12 +127,7 @@ export function TodoRow({ schedule }: TodoRowProps): JSX.Element {
       <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1">
         <div className="text-fg-muted flex min-w-0 items-center gap-1.5 text-xs">
           <span className="inline-flex items-center gap-1">
-            <span
-              aria-hidden="true"
-              className="bg-tier-green-tint text-status-open inline-flex size-4 shrink-0 items-center justify-center rounded-sm text-xs font-semibold"
-            >
-              {agentInitials(schedule.agent_name)}
-            </span>
+            <Avatar initials={agentInitials(schedule.agent_name)} tone="soft" size="sm" />
             <span className="truncate"><IdentityName canonicalId={schedule.agent_name} /></span>
           </span>
           <span aria-hidden="true" className="text-fg-subtle">

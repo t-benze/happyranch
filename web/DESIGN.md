@@ -119,9 +119,9 @@ colors:
     # Agent identity dots — one warm violet (manager), one cool teal
     # (worker). Deliberately NOT mapped to tier colors — role identity is
     # orthogonal to status meaning.
-    violet_500: "#8265c8"
+    violet_500: "#8265c8"   # SUPERSEDED (Pasture, THR-376 PR9): agent manager = --color-info
     violet_300: "#b6a3e1"
-    teal_500:   "#2a9a93"
+    teal_500:   "#2a9a93"   # SUPERSEDED (Pasture, THR-376 PR9): agent worker = --color-accent
     teal_300:   "#7cc4be"
 
   # Semantic tokens — these are the only names components reference.
@@ -155,8 +155,8 @@ colors:
         red:           "{colors.palette.red_500}"
         red_tint:      "rgba(208, 74, 58, 0.14)"
       agent:
-        manager:       "{colors.palette.violet_500}"   # 6px dot
-        worker:        "{colors.palette.teal_500}"
+        manager:       "{colors.palette.violet_500}"   # 6px dot   # SUPERSEDED (Pasture): --color-agent-manager = var(--color-info)
+        worker:        "{colors.palette.teal_500}"   # SUPERSEDED (Pasture): --color-agent-worker = var(--color-accent)
         founder:       "{colors.palette.signal_400}"   # founder is "you"   # SUPERSEDED (Pasture): --color-agent-founder (accent)
       status:
         open:          "{colors.palette.green_500}"   # SUPERSEDED (Pasture): --color-status-open (positive)
@@ -203,8 +203,8 @@ colors:
         red:           "{colors.palette.red_700}"
         red_tint:      "rgba(163, 55, 43, 0.10)"
       agent:
-        manager:       "{colors.palette.violet_500}"
-        worker:        "{colors.palette.teal_500}"
+        manager:       "{colors.palette.violet_500}"   # SUPERSEDED (Pasture): --color-agent-manager = var(--color-info)
+        worker:        "{colors.palette.teal_500}"   # SUPERSEDED (Pasture): --color-agent-worker = var(--color-accent)
         founder:       "{colors.palette.signal_600}"   # SUPERSEDED (Pasture): --color-agent-founder (accent)
       status:
         open:          "{colors.palette.green_700}"   # SUPERSEDED (Pasture): --color-status-open (positive)
@@ -650,7 +650,10 @@ See the frontmatter for the full palette. The opinion behind it:
   consumed by StatusBadge, decline message bubbles, and error text.
   Never used to tint a whole row or background; that reads as alarmist.
   Use the tint variants (`*_tint`, 14% alpha) for badge fills.
-- **Two agent identity colors.** Manager = warm violet
+- **Two agent identity colors.** SUPERSEDED (Pasture, THR-376 PR9): manager
+  = `--color-info`, worker = `--color-accent`, founder = accent; agent
+  avatars are the design-system `Avatar` (22/30/34px circles, founder
+  accent → info gradient). Original: Manager = warm violet
   (`violet_500`), worker = cool teal (`teal_500`). They prefix every agent
   name with a 6px dot. Founder uses the accent blue (`signal_400`), so the
   founder reads as a participant *in the system* rather than an external

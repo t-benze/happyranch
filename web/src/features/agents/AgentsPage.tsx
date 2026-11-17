@@ -34,7 +34,8 @@ import { PendingEnrollmentsTab } from './PendingEnrollmentsTab';
 import { AgentDetailPane } from './AgentDetailPane';
 import type { AgentSummary } from '@/lib/api/types';
 import { AddAgentDialog } from './AddAgentDialog';
-import { AgentAvatar } from './AgentAvatar';
+import { Avatar } from '@/design-system/primitives/Avatar';
+import { agentInitials } from './agentInitials';
 import { RetiredAgentDetail } from './retired/RetiredAgentDetail';
 import { RetiredRoster } from './retired/RetiredRoster';
 import { useTranslation } from '@/hooks/i18n';
@@ -220,7 +221,7 @@ export function AgentsPage(): JSX.Element {
                             <div className="flex items-start gap-2.5">
                               {/* AGENTS-02: role-colored avatar-initial chip,
                                   mirroring the existing led-dot role logic. */}
-                              <AgentAvatar displayName={identityPresentation.name(a.name)} name={a.name} role={a.role} size="sm" />
+                              <Avatar initials={agentInitials(identityPresentation.name(a.name))} tone={a.role === 'manager' ? 'manager' : 'worker'} size="lg" />
                               <div className="min-w-0 flex-1">
                                 <div className="flex items-center gap-2">
                                   <span className="font-display text-text-primary truncate text-sm font-medium">

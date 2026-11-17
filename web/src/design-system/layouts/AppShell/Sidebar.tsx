@@ -34,6 +34,7 @@ import { AddOrgDialog } from '@/features/orgs/AddOrgDialog';
 import { useDashboardSummary } from '@/hooks/dashboard';
 import { useTranslation } from '@/hooks/i18n';
 import { identityInitials, useFounderName, useHasIdentityProvider } from '@/hooks/identities';
+import { Avatar } from '@/design-system/primitives/Avatar';
 
 import { useOrgsList } from '@/hooks/orgs';
 import { useThreadRoutes } from '@/hooks/threads';
@@ -263,12 +264,7 @@ function AccountRowView({ name }: { name: string }): JSX.Element {
       aria-label={t('shell.account.label', { name, role: t('shell.account.founder') })}
       className="focus-visible:ring-accent flex items-center gap-2.5 rounded-sm px-2 py-1.5 focus-visible:ring-2 focus-visible:outline-none"
     >
-      <span
-        aria-hidden="true"
-        className="bg-accent text-accent-fg inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-[0.65rem] font-semibold"
-      >
-        {identityInitials(name)}
-      </span>
+      <Avatar initials={identityInitials(name)} tone="founder" size="md" />
       <span className="min-w-0 flex-col leading-tight max-md:hidden md:flex">
         <span className="text-fg truncate text-sm">{name}</span>
         <span className="text-fg-subtle truncate text-xs">{t('shell.account.founder')}</span>

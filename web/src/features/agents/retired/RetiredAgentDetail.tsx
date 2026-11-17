@@ -14,6 +14,7 @@ import { AddressableNameEditor } from '@/shared/identities/AddressableNameEditor
 import { useTranslation } from '@/hooks/i18n';
 import { useAgentsRoutes } from '@/hooks/agents';
 import { identityInitials } from '@/hooks/identities';
+import { Avatar } from '@/design-system/primitives/Avatar';
 import { ApiError } from '@/lib/api';
 import {
   useDistillAttempts, useDistillOperations, useKnowledgeArchives, useRetiredKnowledgeSource, useStartDistill,
@@ -125,9 +126,7 @@ export function RetiredAgentDetail({ sourceId }: { sourceId: string }): JSX.Elem
       <div className="space-y-6 px-8 py-4">
         <BackLink onClick={() => navigate(`${routes.inbox()}?view=terminated`)} />
         <header className="border-border-subtle flex items-start gap-4 border-b pb-4">
-          <span aria-hidden="true" className="bg-surface-sunken text-text-secondary flex h-12 w-12 shrink-0 items-center justify-center rounded-md text-base font-semibold">
-            {identityInitials(source.name)}
-          </span>
+          <Avatar initials={identityInitials(source.name)} tone="neutral" size="lg" />
           <div className="min-w-0 flex-1">
             <h2 className="font-display text-text-primary text-2xl font-medium break-words">{source.name}</h2>
             <div className="text-text-secondary mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">

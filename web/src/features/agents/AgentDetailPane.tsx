@@ -32,7 +32,8 @@ import { useJobsList } from '@/hooks/jobs';
 import { useDensity } from '@/hooks/density';
 import { useTeamsList } from '@/hooks/teams';
 import { isEligiblePolicyManager } from '@/hooks/authorityPolicy';
-import { AgentAvatar } from './AgentAvatar';
+import { Avatar } from '@/design-system/primitives/Avatar';
+import { agentInitials } from './agentInitials';
 import { useExecutorOptions } from '@/hooks/executor-options';
 import { TeamEscalationPolicyEntryCard } from './TeamEscalationPolicyCard';
 import { AgentKnowledge } from './instill/AgentKnowledge';
@@ -373,7 +374,7 @@ export function AgentDetailPane({ agentName, onClose, onStartThread, onRetired }
       <header className="border-border-default flex items-start gap-3.5 border-b px-6 py-4">
         {/* AGENTS-04: detail-hero avatar anchor (Direction-A `a-agents`),
             reusing the roster's role-colored initial chip. */}
-        <AgentAvatar displayName={identityPresentation.name(agentName)} name={agentName} role={agent?.role ?? null} size="lg" />
+        <Avatar initials={agentInitials(identityPresentation.name(agentName))} tone={agent?.role === 'manager' ? 'manager' : 'worker'} size="lg" />
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-3">
             <h2 className="font-display text-text-primary truncate text-xl font-medium">

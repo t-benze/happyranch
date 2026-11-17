@@ -4,6 +4,7 @@
  * retained retired-source detail by permanent ID.
  */
 import { useIdentityPresentation, identityInitials } from '@/hooks/identities';
+import { Avatar } from '@/design-system/primitives/Avatar';
 import { useDensity } from '@/hooks/density';
 import { useTranslation } from '@/hooks/i18n';
 
@@ -34,9 +35,7 @@ export function RetiredRoster({ selected, onSelect }: { selected: string | null;
                   active ? 'bg-accent-muted border-accent-muted shadow-pasture-sm border' : 'bg-surface border-surface hover:border-border-default border'
                 }`}
               >
-                <span aria-hidden="true" className="bg-surface-sunken text-text-secondary flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-xs font-semibold">
-                  {identityInitials(name)}
-                </span>
+                <Avatar initials={identityInitials(name)} tone="neutral" size="lg" />
                 <span className="min-w-0 flex-1">
                   <span className="font-display text-text-primary block truncate text-sm font-medium">{name}</span>
                   <span className="text-text-muted block text-xs">{t('knowledge.roster.retiredUnknownDate')}</span>

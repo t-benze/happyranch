@@ -14,6 +14,7 @@
  */
 import type { ScheduleStatus } from '@/lib/api/types'
 import type { MessageKey, MessageParams } from '@/lib/i18n'
+import { toneFor, type Tone } from '@/design-system/patterns/semanticTone'
 
 export type Translate = (key: MessageKey, params?: MessageParams) => string
 
@@ -33,6 +34,21 @@ export function statusLabel(status: ScheduleStatus, t: Translate): string {
   return Object.prototype.hasOwnProperty.call(STATUS_KEYS, status)
     ? t(STATUS_KEYS[status])
     : status
+}
+
+/** Schedule states that show the live led on their status badge. */
+const LED_STATUSES: ReadonlySet<string> = new Set(['armed', 'firing'])
+
+/**
+ * Shared `StatusBadge` props for a schedule status (THR-376 PR9, replaces the
+ * Todos-only StatusPill): the same localized word, the shared semanticTone
+ * tone and the armed/firing led.
+ */
+export function scheduleStatusBadge(
+  status: ScheduleStatus,
+  t: Translate,
+): { tone: Tone; label: string; dot: boolean } {
+  return { tone: toneFor(status), label: statusLabel(status, t), dot: LED_STATUSES.has(status) }
 }
 
 /** Groups for the index filter tabs in display order. */

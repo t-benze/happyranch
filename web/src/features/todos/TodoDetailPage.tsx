@@ -10,13 +10,15 @@ import { ArrowLeft, Clock, ExternalLink, Pause, Pencil, X } from 'lucide-react'
 import { ContentWrap } from '@/design-system/layouts/ContentWrap/ContentWrap'
 import { Button } from '@/design-system/primitives/Button'
 import { useTodoDetail, usePauseTodo, useCancelTodo, useEditTodo } from './hooks'
-import { StatusPill } from './components/StatusPill'
+import { StatusBadge } from '@/design-system/patterns/StatusBadge'
+import { Avatar } from '@/design-system/primitives/Avatar'
 import { ConfirmDialog } from './components/ConfirmDialog'
 import { EditDialog } from './components/EditDialog'
 import { formatFireAtInTz, formatReviewDate } from './timezone'
 import { formatRecurringRule } from './recurrence'
 import {
   classifyTodoError,
+  scheduleStatusBadge,
   shortDayLabel,
   type TodoErrorView,
   type Translate,
@@ -201,13 +203,8 @@ export function TodoDetailPage({
             {schedule.normalized_brief}
           </h1>
           <div className="text-fg-muted mt-3 flex flex-wrap items-center gap-3 text-sm">
-            <StatusPill status={schedule.status} />
-            <span
-              aria-hidden="true"
-              className="bg-tier-green-tint text-status-open inline-flex size-6 shrink-0 items-center justify-center rounded-sm text-xs font-semibold"
-            >
-              {agentInitials(schedule.agent_name)}
-            </span>
+            <StatusBadge {...scheduleStatusBadge(schedule.status, t)} />
+            <Avatar initials={agentInitials(schedule.agent_name)} tone="soft" size="sm" />
             <span className="text-fg"><IdentityName canonicalId={schedule.agent_name} /></span>
             <span className="text-fg-subtle font-mono text-xs">
               {schedule.schedule_id}
