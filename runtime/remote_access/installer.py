@@ -1,8 +1,8 @@
 """Fresh-host managed systemd installation with transient file-only enrollment input.
 
 Provision binaries separately; the provision command stages configuration.
-Only journal-bearing failed-install stop intents have a bounded recovery path;
-destructive replacement and upgrade rollback remain unavailable. Enrollment sources are removed on
+Journal-bearing failed installs can stop and quarantine their exact old configs;
+removal, fresh replacement staging and upgrade rollback remain unavailable. Enrollment sources are removed on
 success and failure; issue a fresh single-use key before retrying. Files already
 present must match the rendered units; interrupted installs need operator care.
 """
@@ -55,6 +55,10 @@ _STATE_DIRS = ("var/lib/happyranch-connector", "var/lib/happyranch-tsnet-sidecar
 _DEB_PREFIX = "opt/happyranch-desktop"
 _DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 _FILE_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
+_QUARANTINE_CONFIGS = ("connector.json", "sidecar.json", "policy.json")
+_QUARANTINE_PHASES = ("replacement-quarantine-connector", "replacement-quarantine-sidecar",
+                      "replacement-quarantine-policy", "replacement-quarantined")
+_REPLACEMENT_PHASES = ("replacement-stopped", *_QUARANTINE_PHASES)
 
 
 class InstallerError(RuntimeError):
@@ -76,7 +80,7 @@ class ReplacementInventory:
 
     The generation fingerprints the exact validated transaction-record bytes. It
     is absent unless all six fixed-file digests match a known failed/partial
-    installation, or a stopped replacement intent. Destructive recovery is held.
+    installation, or an exact stopped/quarantine intent. Fresh staging is held.
     """
 
     installation: InstallInventory
@@ -264,9 +268,16 @@ class ManagedInstaller:
             self._service_owner = self._account(create=False)
             service = self._service_owner
             config_owner = None if service is None else (self.root_owner[0], service[1])
+            phase = None
+            if prepared_transaction is not None:
+                self._validate_install_record("install-transaction.json", prepared_transaction, replacement=True)
+                phase = self._json(prepared_transaction)["phase"]
+            config_metadata = {name: (config_owner, (0o600, 0o640, 0o644), False)
+                               for name in _QUARANTINE_CONFIGS}
+            if phase in _QUARANTINE_PHASES:
+                config_metadata = self._quarantine_metadata(phase)
             files = self._inventory_files("etc/happyranch", {
-                **{name: (config_owner, (0o600, 0o640, 0o644), False)
-                   for name in ("connector.json", "sidecar.json", "policy.json")},
+                **config_metadata,
                 "release-daemon.json": (self.root_owner, 0o644, False),
                 "provision.json": (self.root_owner, 0o600, False),
                 "daemon.token": (service, 0o600, False),
@@ -275,11 +286,15 @@ class ManagedInstaller:
                    if prepared_transaction is not None else {}),
             })
             paths.extend(str(self.root / "etc/happyranch" / name) for name in files)
+            if phase in _QUARANTINE_PHASES:
+                for name in _QUARANTINE_CONFIGS:
+                    quarantined = ".replacement-" + name
+                    if quarantined in files:
+                        files[name] = files.pop(quarantined)
             if prepared_transaction is not None:
                 location = str(self.root / "etc/happyranch/install-transaction.json")
                 if files.pop("install-transaction.json", None) != prepared_transaction:
                     raise InstallerError(location)
-                self._validate_install_record("install-transaction.json", prepared_transaction, replacement=True)
                 digests = self._json(prepared_transaction)["digests"]
                 if any(name not in files or hashlib.sha256(files[name]).hexdigest() != digest
                        for name, digest in digests.items()):
@@ -291,12 +306,13 @@ class ManagedInstaller:
             if provenance is not None:
                 # Recorded provisioning retains its exact mode contract. Only
                 # unrecorded legacy configs may use the other safe modes above.
-                with self._directory("etc/happyranch") as parent:
-                    for name in ("connector.json", "sidecar.json", "policy.json"):
-                        if name in files:
-                            location = str(self.root / "etc/happyranch" / name)
-                            if self._read_file(parent, name, owner=config_owner, mode=0o640) != files[name]:
-                                raise InstallerError(location)
+                if phase not in _QUARANTINE_PHASES:
+                    with self._directory("etc/happyranch") as parent:
+                        for name in _QUARANTINE_CONFIGS:
+                            if name in files:
+                                location = str(self.root / "etc/happyranch" / name)
+                                if self._read_file(parent, name, owner=config_owner, mode=0o640) != files[name]:
+                                    raise InstallerError(location)
                 location = str(self.root / "etc/happyranch/provision.json")
                 self._validate_install_record("provision.json", provenance)
                 record = self._json(provenance)
@@ -353,12 +369,11 @@ class ManagedInstaller:
             paths.extend(str(self.root / _UNIT_DIR / name) for name in units)
             complete = required <= files.keys()
             failed = any(props["ActiveState"] == "failed" for props in properties.values())
-            if (prepared_transaction is not None
-                    and self._json(prepared_transaction)["phase"] == "replacement-stopped"):
+            if phase in _REPLACEMENT_PHASES:
                 # Only the replacement consumer can recognize this intent. All
                 # six original files must still match; stopping changes manager
                 # state, so it cannot be used to infer a successful manual install.
-                return InstallInventory("known-failed-or-partial", "replacement-stopped", tuple(sorted(paths)))
+                return InstallInventory("known-failed-or-partial", phase, tuple(sorted(paths)))
             if modern and complete and len(units) in {0, len(UNITS)} and not failed:
                 managed = connector.get("managed")
                 profile = managed.get("profile") if isinstance(managed, dict) else None
@@ -379,8 +394,8 @@ class ManagedInstaller:
     def replacement_inventory(self) -> ReplacementInventory:
         """Inspect a journal only for replacement candidate selection.
 
-        V1 adds only the replacement-stopped phase for this consumer. A pending entry,
-        missing/different fixed file, unsafe metadata or changed journal refuses.
+        V1 stopped/quarantine phases belong only to this consumer. A pending entry,
+        missing/different fixed file, wrong placement or unsafe metadata refuses.
         Normal inventory and every lifecycle operation still reject journals.
         This observation neither reads a release-home token nor stops services.
         """
@@ -398,10 +413,11 @@ class ManagedInstaller:
         return ReplacementInventory(installation, generation)
 
     def replace_failed(self) -> None:
-        """Stop a journal-bearing candidate and persist its stopped intent.
+        """Stop a journal-bearing candidate, then resume exact config quarantine.
 
-        This bounded sub-part never quarantines/removes files or stages a new
-        bundle. It always reports the remaining work, never replacement success.
+        Prepared candidates publish stopped intent first, preserving the existing
+        boundary. A later call quarantines only the three digest-bound configs.
+        Removal/fresh staging stay unavailable; this never reports success.
         Unjournaled candidates stay unavailable until their recovery owner ships.
         """
         candidate = self.replacement_inventory()
@@ -427,9 +443,121 @@ class ManagedInstaller:
                 record["phase"] = "replacement-stopped"
                 self._write_provision_file("install-transaction.json", json.dumps(record, sort_keys=True).encode(),
                                            self.root_owner, 0o600, expected_transaction=transaction)
+            else:
+                self._quarantine_configs(transaction)
         except (OSError, ServiceManagerError):
             raise InstallerError("replacement stop intent incomplete; inspect the fixed transaction record") from None
         raise InstallerError("replacement paused after stop intent; quarantine/removal and fresh staging unavailable")
+
+    def _quarantine_metadata(self, phase: str) -> dict:
+        """Accept exactly the before/after placement of ONE journaled rename.
+
+        Only its source may have partially tightened metadata. Every earlier
+        config is root-only in quarantine; every later config is still 0640.
+        Neither duplicate locations nor missing configs can resume.
+        """
+        current = _QUARANTINE_PHASES.index(phase)
+        metadata = {}
+        config_owner = (self.root_owner[0], self._service_owner[1])
+        with self._directory("etc/happyranch") as parent:
+            for index, name in enumerate(_QUARANTINE_CONFIGS):
+                quarantine = ".replacement-" + name
+                found = {}
+                for entry in (name, quarantine):
+                    try:
+                        found[entry] = os.stat(entry, dir_fd=parent, follow_symlinks=False)
+                    except FileNotFoundError:
+                        pass
+                if (len(found) != 1 or (index < current and quarantine not in found)
+                        or (index > current and name not in found)):
+                    raise InstallerError(str(self.root / "etc/happyranch" / name))
+                entry, info = next(iter(found.items()))
+                actual = ((info.st_uid, info.st_gid), stat.S_IMODE(info.st_mode), False)
+                allowed = {(self.root_owner, 0o600, False)} if entry == quarantine else {
+                    (config_owner, 0o640, False)}
+                if index == current and entry == name:
+                    allowed |= {(config_owner, 0o600, False), (self.root_owner, 0o600, False)}
+                if actual not in allowed:
+                    raise InstallerError(str(self.root / "etc/happyranch" / entry))
+                metadata[entry] = actual
+        return metadata
+
+    def _quarantine_configs(self, transaction: bytes) -> None:
+        record = self._json(transaction)
+        while record["phase"] != "replacement-quarantined":
+            phase = record["phase"]
+            if phase in _QUARANTINE_PHASES:
+                self._quarantine_config(_QUARANTINE_CONFIGS[_QUARANTINE_PHASES.index(phase)], transaction)
+                next_phase = _QUARANTINE_PHASES[_QUARANTINE_PHASES.index(phase) + 1]
+            else:
+                next_phase = _QUARANTINE_PHASES[0]
+            record["phase"] = next_phase
+            updated = json.dumps(record, sort_keys=True).encode()
+            self._write_provision_file("install-transaction.json", updated, self.root_owner, 0o600,
+                                       expected_transaction=transaction)
+            transaction = updated
+        raise InstallerError("replacement paused after config quarantine; removal and fresh staging unavailable")
+
+    def _quarantine_config(self, name: str, transaction: bytes) -> None:
+        """Tighten and move only a digest-bound fixed source; never overwrite."""
+        record = self._json(transaction)
+        if record["phase"] != _QUARANTINE_PHASES[_QUARANTINE_CONFIGS.index(name)]:
+            raise InstallerError("quarantine requires the exact fixed-path intent")
+        with self._publication_parent() as (parent, revalidate):
+            if self._inventory(prepared_transaction=transaction).state != "known-failed-or-partial":
+                raise InstallerError("replacement inventory changed before quarantine")
+            self._check_replacement_transaction(parent, transaction)
+            metadata = self._quarantine_metadata(record["phase"])
+            quarantine = ".replacement-" + name
+            if quarantine in metadata:
+                return  # The exact intent's rename already completed.
+            owner, mode, _ = metadata[name]
+            before = os.stat(name, dir_fd=parent, follow_symlinks=False)
+            if hashlib.sha256(self._read_file(parent, name, owner=owner, mode=mode)).hexdigest() != record["digests"][name]:
+                raise InstallerError("quarantine source changed")
+            descriptor = os.open(name, _FILE_FLAGS, dir_fd=parent)
+            try:
+                info = os.fstat(descriptor)
+                def signature(value: os.stat_result) -> tuple[int, ...]:
+                    return (value.st_dev, value.st_ino, value.st_uid, value.st_gid,
+                            value.st_mode, value.st_nlink, value.st_size, value.st_mtime_ns, value.st_ctime_ns)
+                if signature(info) != signature(before):
+                    raise InstallerError("quarantine source changed while opening")
+                revalidate()
+                self._check_replacement_transaction(parent, transaction)
+                if signature(os.stat(name, dir_fd=parent, follow_symlinks=False)) != signature(info):
+                    raise InstallerError("quarantine source changed before metadata update")
+                revalidate()
+                # Journal is durable before either metadata change or rename.
+                os.fchmod(descriptor, 0o600)
+                os.fchown(descriptor, *self.root_owner)
+                os.fsync(descriptor)
+                if hashlib.sha256(self._read_file(parent, name, owner=self.root_owner, mode=0o600)).hexdigest() != record["digests"][name]:
+                    raise InstallerError("quarantine source changed before rename")
+                named = os.stat(name, dir_fd=parent, follow_symlinks=False)
+                if (named.st_dev, named.st_ino) != (info.st_dev, info.st_ino):
+                    raise InstallerError("quarantine source replaced before rename")
+                self._check_replacement_transaction(parent, transaction)
+                revalidate()
+                self._rename_provision_entry(parent, name, quarantine)
+                os.fsync(parent)
+            finally:
+                os.close(descriptor)
+
+    def _check_replacement_transaction(self, parent: int, transaction: bytes) -> None:
+        if self._read_file(parent, "install-transaction.json", owner=self.root_owner, mode=0o600) != transaction:
+            raise InstallerError("replacement generation changed before mutation")
+        record = self._json(transaction)
+        configs = (self._quarantine_metadata(record["phase"]) if record["phase"] in _QUARANTINE_PHASES else
+                   {name: ((self.root_owner[0], self._service_owner[1]), 0o640, False)
+                    for name in _QUARANTINE_CONFIGS})
+        metadata = {**configs, "release-daemon.json": (self.root_owner, 0o644, False),
+                    "provision.json": (self.root_owner, 0o600, False), "daemon.token": (self._service_owner, 0o600, False)}
+        for name, digest in record["digests"].items():
+            entry = ".replacement-" + name if ".replacement-" + name in configs else name
+            owner, mode, _ = metadata[entry]
+            if hashlib.sha256(self._read_file(parent, entry, owner=owner, mode=mode)).hexdigest() != digest:
+                raise InstallerError("replacement fixed file changed before mutation")
 
     def stop_and_confirm(self, *, _replacement_transaction: bytes | None = None) -> InstallInventory:
         """Stop only recognized remote units and prove manager quiescence.
@@ -875,8 +1003,8 @@ class ManagedInstaller:
 
     def _write_provision_file(self, name: str, data: bytes, owner: tuple[int, int], mode: int,
                               *, expected_transaction: bytes | None = None) -> None:
-        # Fresh files never overwrite. Only the exact prepared -> stopped intent
-        # transition can update a final entry, through the same atomic writer.
+        # Fresh files never overwrite. Only the closed linear replacement
+        # transitions can update a final entry, through the same atomic writer.
         metadata = {
             **{key: ((self.root_owner[0], self._service_owner[1]), 0o640)
                for key in ("connector.json", "sidecar.json", "policy.json")
@@ -893,10 +1021,14 @@ class ManagedInstaller:
         if updating:
             if name != "install-transaction.json":
                 raise InstallerError("replacement update requires the fixed transaction record")
-            self._validate_install_record(name, expected_transaction)
+            self._validate_install_record(name, expected_transaction, replacement=True)
             self._validate_install_record(name, data, replacement=True)
             expected_record = self._json(expected_transaction)
-            expected_record["phase"] = "replacement-stopped"
+            phases = ("prepared", *_REPLACEMENT_PHASES)
+            previous = phases.index(expected_record["phase"])
+            if previous + 1 == len(phases):
+                raise InstallerError("replacement quarantine is the unfinished boundary")
+            expected_record["phase"] = phases[previous + 1]
             if self._json(data) != expected_record:
                 raise InstallerError("replacement update must preserve the exact six digests")
         elif name in ("provision.json", "install-transaction.json"):
@@ -938,11 +1070,7 @@ class ManagedInstaller:
                 if updating:
                     if self._read_file(parent, name, owner=self.root_owner, mode=0o600) != expected_transaction:
                         raise InstallerError("replacement journal changed before rename")
-                    for key, digest in self._json(expected_transaction)["digests"].items():
-                        file_owner, file_mode = metadata[key]
-                        actual = self._read_file(parent, key, owner=file_owner, mode=file_mode)
-                        if hashlib.sha256(actual).hexdigest() != digest:
-                            raise InstallerError("replacement fixed file changed before rename")
+                    self._check_replacement_transaction(parent, expected_transaction)
                     revalidate()
                 else:
                     # Fresh publication must never overwrite a late arrival.
@@ -952,19 +1080,7 @@ class ManagedInstaller:
                         pass
                     else:
                         raise InstallerError("provisioning destination appeared before rename")
-                # Plain rename can clobber a target arriving after the check.
-                # Preserve the legacy O_EXCL refusal atomically; no fallback.
-                try:
-                    rename = ctypes.CDLL(None, use_errno=True).renameat2
-                except AttributeError:
-                    raise InstallerError("atomic no-replace rename is unavailable") from None
-                rename.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
-                rename.restype = ctypes.c_int
-                if rename(parent, os.fsencode(pending), parent, os.fsencode(name), 0 if updating else 1):
-                    error = ctypes.get_errno()
-                    if error == errno.EEXIST:
-                        raise InstallerError("provisioning destination appeared before rename")
-                    raise OSError(error, "atomic provisioning rename failed")
+                self._rename_provision_entry(parent, pending, name, updating=updating)
                 os.fsync(parent)
             finally:
                 os.close(descriptor)
@@ -979,13 +1095,29 @@ class ManagedInstaller:
                         os.unlink(pending, dir_fd=parent)
                         os.fsync(parent)
 
+    @staticmethod
+    def _rename_provision_entry(parent: int, source: str, target: str, *, updating: bool = False) -> None:
+        # Plain rename can clobber a late target. Keep the shared O_EXCL
+        # publication/quarantine contract atomic; no fallback.
+        try:
+            rename = ctypes.CDLL(None, use_errno=True).renameat2
+        except AttributeError:
+            raise InstallerError("atomic no-replace rename is unavailable") from None
+        rename.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+        rename.restype = ctypes.c_int
+        if rename(parent, os.fsencode(source), parent, os.fsencode(target), 0 if updating else 1):
+            error = ctypes.get_errno()
+            if error == errno.EEXIST:
+                raise InstallerError("provisioning destination appeared before rename")
+            raise OSError(error, "atomic provisioning rename failed")
+
     def _validate_install_record(self, name: str, data: bytes, *, replacement: bool = False) -> None:
         """Destination-bound v1 records, with the existing provenance kept verbatim.
 
         Publication alone supplies no service, transaction-update or recovery
         authority. The generator computes these fixed digests; no path
         manifest or secret field is accepted. Only the replacement consumer can
-        read/write the stopped phase; ordinary publication still requires prepared.
+        read/write stopped/quarantine phases; ordinary publication requires prepared.
         """
         record = self._json(data)
         if name == "provision.json" and "version" not in record:
@@ -997,7 +1129,7 @@ class ManagedInstaller:
         phases = {"provisioned"}
         if name == "install-transaction.json":
             keys.add("provision.json")
-            phases = {"prepared", "replacement-stopped"} if replacement else {"prepared"}
+            phases = {"prepared", *_REPLACEMENT_PHASES} if replacement else {"prepared"}
         digests = record.get("digests")
         if (record.keys() != {"version", "layout", "digests", "phase"}
                 or type(record["version"]) is not int or record["version"] != 1
@@ -1007,7 +1139,7 @@ class ManagedInstaller:
                 or any(not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None
                        for value in digests.values())):
             raise InstallerError("invalid versioned installation record")
-        if (name == "install-transaction.json" and record["phase"] == "replacement-stopped"
+        if (name == "install-transaction.json" and record["phase"] in _REPLACEMENT_PHASES
                 and data != json.dumps(record, sort_keys=True).encode()):
             raise InstallerError("replacement intent bytes are not the exact generated record")
 
