@@ -565,7 +565,8 @@ helper/package selection remains 3b-1d. TODO (3b-2): implement owned local
 Headscale stop/cleanup; this sub-part provides no callable seam for it.
 
 The 3b-1c Python-only replacement consumer implements **stop/intent, config
-quarantine and fixed state/enrollment removal**, not completed failed-install replacement. The v1
+quarantine, fixed state/enrollment removal and quarantined config removal**,
+not completed failed-install replacement. The v1
 record still has exactly `version`, `layout`, `digests` and `phase`, with the six
 original fixed-file digests (including provision.json) unchanged throughout.
 Ordinary transaction publication still accepts only `prepared`. Only this
@@ -578,12 +579,15 @@ consumer advances the closed linear sequence:
 `replacement-remove-tsnet-state` → `replacement-remove-consumed` →
 `replacement-remove-tsnet-log-config` → `replacement-remove-tsnet-log1` →
 `replacement-remove-tsnet-log2` → `replacement-remove-enrollment` →
-`replacement-remove-enrollment-link` → `replacement-state-removed`.
+`replacement-remove-enrollment-link` → `replacement-state-removed` →
+`replacement-remove-config-connector` → `replacement-remove-config-sidecar` →
+`replacement-remove-config-policy` → `replacement-configs-removed`.
 
 Root:root 0600 journal metadata and exact bytes are checked repeatedly. All
 replacement phases require exact generated canonical bytes; `journal_generation`
-hashes those bytes. Unknown/malformed/mismatched records, missing files, wrong
-placements and pending entries refuse before mutation. Clean, successful modern
+hashes those bytes. Except for the exact current/completed removal intents,
+missing files refuse. Unknown/malformed/mismatched records, wrong placements
+and pending entries refuse before mutation. Clean, successful modern
 staged-inert/recorded and intact manual installs still refuse; an unjournaled
 failed/partial candidate remains unavailable without effects.
 
@@ -641,11 +645,28 @@ automatically repaired or replayed.
 
 At `replacement-state-removed`, the consumer raises exactly
 `replacement paused after state removal; config/unit removal and fresh staging unavailable`.
+A subsequent call rechecks the source token and stop/quiescence proof, then
+removes only the three root-only `.replacement-{connector,sidecar,policy}.json`
+copies, in that order. Each unlink has its own published/fsynced exact-generation
+intent through the same atomic writer. Descriptor-relative no-follow parent
+pinning, single-link regular root:root 0600 metadata, journal and every remaining
+fixed-file digest are rechecked before each effect; the removal parent is fsynced.
+Only the exact current intent may have its copy present or absent. Later copies
+must remain digest-bound; completed copies and all completed state/enrollment
+paths must stay absent, including original config locations. All six original
+digests remain unchanged in the journal. Once the connector copy is absent,
+validated provision provenance selects only the existing exact legacy/identity
+unit-byte profile; no old configuration, ID, key, trust or control binding is
+reconstructed or executed. Fresh-instance resume handles every intent/unlink/
+parent-fsync boundary; pending or mismatched records still refuse safely.
+
+At `replacement-configs-removed`, the consumer raises exactly
+`replacement paused after config removal; unit removal and fresh staging unavailable`.
 Repeating this terminal boundary rechecks token/quiescence without changing files
-or journal bytes. The quarantined diagnostic copies remain root-only; all five
-remote unit files and directories remain. Their removal, fresh IDs/config/policy
-generation, transaction finalization and staged-inert completion remain
-undelivered and fail-closed. This state is not modern staged-inert.
+or journal bytes. All five remote unit files and directories remain. Their
+removal, fresh IDs/config/policy generation, transaction finalization and
+staged-inert completion remain undelivered and fail-closed. This state is not
+modern staged-inert.
 No revoked credentials/trust are restored into service. Ordinary inventory/stop/
 provision/install/uninstall/drift and all ten fixed legacy system supervisor
 lifecycle entries retain their final/pending transaction refusals. Modern
