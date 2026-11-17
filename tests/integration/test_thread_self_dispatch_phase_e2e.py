@@ -10,7 +10,7 @@ Verifies the self-only dispatch doctrine introduced in the
   - The runtime fires a TASK_FOLLOWUP invocation at the manager.
   - The manager posts a followup reply.
 
-Spec: docs/superpowers/specs/2026-05-28-thread-talk-self-dispatch-only-design.md §13
+Spec: docs/specs/2026-05-28-thread-talk-self-dispatch-only-design.md §13
 Historical self-dispatch plan, Task 6: removed; see Git history.
 """
 from __future__ import annotations

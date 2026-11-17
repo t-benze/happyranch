@@ -1865,7 +1865,7 @@ def _finish_step_return(orch: "Orchestrator", task: TaskRecord, agent: str, resu
     # `delegate` branch (no idempotence guard) will resurrect the parent and
     # spawn a child task on a tree the founder explicitly killed.
     # Token usage stays persisted above (provider really charged for it).
-    # See docs/superpowers/specs/2026-05-26-cancel-race-design.md §5.2.
+    # See docs/specs/2026-05-26-cancel-race-design.md §5.2.
     refetch = db.get_task(task_id)
     if refetch is None or refetch.cancelled_at is not None:
         logger.debug(
@@ -4703,7 +4703,7 @@ def _is_already_terminal(orch: "Orchestrator", task_id: str) -> bool:
     predicate still does the right thing.
 
     Closes the cancel-race documented in
-    docs/superpowers/specs/2026-05-26-cancel-race-design.md §5.3.
+    docs/specs/2026-05-26-cancel-race-design.md §5.3.
     """
     existing = orch._db.get_task(task_id)
     return (
@@ -5940,7 +5940,7 @@ def _maybe_resume_blocked_task(
     Returns True if it enqueued; False otherwise. Idempotent — extra enqueues
     are harmless (run_step_impl's CAS admits exactly one).
 
-    Spec: docs/superpowers/specs/2026-05-28-task-blocked-by-job-design.md §5.4
+    Spec: docs/specs/2026-05-28-task-blocked-by-job-design.md §5.4
     """
     import json as _json
 
@@ -6002,7 +6002,7 @@ def _maybe_post_thread_escalation(
     manager can escalate at any depth. So we walk ancestors to the chain root,
     then the revisit chain, to find the originating thread.
 
-    Spec: docs/superpowers/specs/2026-06-06-thread-escalation-surfacing-design.md
+    Spec: docs/specs/2026-06-06-thread-escalation-surfacing-design.md
     """
     if current_owner is not None and not current_owner():
         return
@@ -6152,7 +6152,7 @@ def _maybe_post_thread_followup(
     ``revisit_task_id`` path is historical and never populated by current
     code paths.
 
-    Spec: docs/superpowers/specs/2026-05-28-thread-task-followup-design.md §4-§6
+    Spec: docs/specs/2026-05-28-thread-task-followup-design.md §4-§6
     """
     # Predicate gate — first pass using caller's claim (cheap early-out).
     # CANCELLED is a terminal followup status (Path B, THR-037): a founder cancel

@@ -1,7 +1,7 @@
 # HappyRanch web — architecture notes
 
 Localhost React SPA bundled into the FastAPI daemon. See
-`docs/superpowers/specs/2026-05-14-web-ui-design.md` for the full web-UI
+`docs/specs/2026-05-14-web-ui-design.md` for the full web-UI
 design and `web/DESIGN_SYSTEM.md` for the design-system migration plan.
 
 ## Workflow review API contracts
@@ -51,7 +51,7 @@ read must be strictly newer than the refused basis; for `operation_conflict` it
 may equal that basis (both also respect the committed floor). Settings →
 Coding (`features/settings/sections/CodingSection`) is a pointer to Setup plus a
 read-only original-key lookup for historical saves. See
-`docs/superpowers/specs/2026-11-12-sequential-coding-u8.md`.
+`docs/specs/2026-11-12-sequential-coding-u8.md`.
 
 ## Layers (strict)
 
@@ -402,7 +402,7 @@ switch-window request assertions (positive receipt 375/375 assertions, 30 PNGs,
 recorded before THR-372 removed the help-drawer S6/S11/S16 cases and the
 S13/S18 dormant-⌘K assertions with the keyboard shortcuts).
 Both env gates are no-ops for every ordinary build. See
-`docs/superpowers/specs/2026-09-20-web-i18n-design.md`.
+`docs/specs/2026-09-20-web-i18n-design.md`.
 
 
 **W4d-1** translates KB and Artifacts chrome, including list/detail/candidates,

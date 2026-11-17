@@ -49,7 +49,6 @@ app/mac/tsnet-bridge/libtsnet.h
 app/mac/tsnet-bridge/.stub.o
 
 
-.superpowers
 web/node_modules
 
 # Screenshot evidence (keep in PRs + happyranch artifacts, never committed)

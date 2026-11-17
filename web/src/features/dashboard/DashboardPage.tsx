@@ -13,7 +13,7 @@ import { IdentityName } from '@/shared/identities/IdentityName';
  * Pasture tokens (tokens.css) provide the full warm/green OKLCH palette
  * with Hanken Grotesk UI, Newsreader display serif, JetBrains Mono.
  *
- * Spec: docs/superpowers/specs/2026-05-30-dashboard-overhaul-design.md
+ * Spec: docs/specs/2026-05-30-dashboard-overhaul-design.md
  */
 import { useState, type ReactNode } from 'react';
 import { ChevronRight } from 'lucide-react';

@@ -12,7 +12,7 @@ Add at most a one-line pointer below when a new feature needs one.
 instruction file; `CLAUDE.md` is a raw relative compatibility symlink to it, so
 edit `AGENTS.md` only. Implementation, behavior tests and the OpenAPI snapshot
 own runtime rules. Bundled agent instructions live in `runtime/skills/bundled/`.
-`docs/superpowers/specs/README.md` indexes retained current and referenced designs;
+`docs/specs/README.md` indexes retained current and referenced designs;
 current-source and status conventions live in `docs/agent-guides/contracts/README.md`.
 
 ## Read When Touching
@@ -41,7 +41,7 @@ current-source and status conventions live in `docs/agent-guides/contracts/READM
 
 ## Task model rules
 
-- Task-local and manager-handoff `model`/`reasoning_effort`, retry carry and explicit clear: [THR-356 contract](docs/superpowers/specs/2026-11-13-task-model-reasoning-overrides.md).
+- Task-local and manager-handoff `model`/`reasoning_effort`, retry carry and explicit clear: [THR-356 contract](docs/specs/2026-11-13-task-model-reasoning-overrides.md).
 
 - Task owners (`task_type='task'`) produce `decision` blocks; delegated subtask agents (`task_type='subtask'`) produce plain completions. Prose uses "task owner" and "subtask agent" rather than "team manager"/"worker".
 - Only root tasks (`parent_task_id is None`) escalate to the founder; non-root tasks fail and hand back to their parent (bounded recovery carries it up).
@@ -271,7 +271,7 @@ One line per area; read the linked contract before changing it.
 
 - **Coding workflow** (disabled by default; built-in definition, historical Founder settings at `/orgs/:slug/settings/coding` — since U8b a pointer to Workflows → Setup with read-only original-save recovery — `scripts/setup_coding.py`): [coding-workflow.md](docs/agent-guides/contracts/coding-workflow.md)
 - **Sequential Coding cutover** (atomic v2 fresh-start selection/old-fresh fence; separate offline setup/admission): [operator install/backout](docs/runbooks/sequential-coding-cutover.md)
-- **Workflow schema, activation and document review** (F–J; fresh combined storage, existing migrations stay explicit until A4): [document-workflows.md](docs/agent-guides/contracts/document-workflows.md), [automatic setup](docs/superpowers/specs/2026-11-14-automatic-workflow-setup.md#a2-fresh-creation-and-definition-only-catalog).
+- **Workflow schema, activation and document review** (F–J; fresh combined storage, existing migrations stay explicit until A4): [document-workflows.md](docs/agent-guides/contracts/document-workflows.md), [automatic setup](docs/specs/2026-11-14-automatic-workflow-setup.md#a2-fresh-creation-and-definition-only-catalog).
 - **Escalation authority policy** (THR-181/229/277/279; THR308 T-0 ordinary callbacks omit attempt/admitted audit/token, retained escalation and lineage admission): [authority-policy.md](docs/agent-guides/contracts/authority-policy.md)
 - **Task orchestration** (attachments, retries, root Pause/Resume, creation-time ownership marks): [task-orchestration.md](docs/agent-guides/contracts/task-orchestration.md)
 - **Launch, preparation and daemon lifecycle** (repository refresh, preparation recovery, startup safety, narrow proven-lock thread release, ordinary Pause-unknown crash recovery, shutdown): [runtime-lifecycle.md](docs/agent-guides/contracts/runtime-lifecycle.md)
@@ -287,4 +287,4 @@ One line per area; read the linked contract before changing it.
 
 - **Agent retirement:** Founder-only `agents retire` preserves archives and may retire an empty non-routing manager team; manager-session terminate stays worker-only. See [agent lifecycle](docs/agent-guides/orchestrator-contracts.md#agent-lifecycle-enrollment-approval-and-termination).
 
-- **Org access fencing (A1):** preconstructor org EX/SH, original native child/guardian custody and sorted profile-org order: [automatic setup contract](docs/superpowers/specs/2026-11-14-automatic-workflow-setup.md#a1-cooperative-org-access-fence).
+- **Org access fencing (A1):** preconstructor org EX/SH, original native child/guardian custody and sorted profile-org order: [automatic setup contract](docs/specs/2026-11-14-automatic-workflow-setup.md#a1-cooperative-org-access-fence).

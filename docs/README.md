@@ -12,7 +12,7 @@ Use the source that matches the question:
   implementation still matter.
 - [Manual site](manual/pages/index.md) — source for the user-facing manual.
 - [Architecture decisions](adr/) — durable decisions with their recorded scope.
-- [Superpowers specs](superpowers/specs/README.md) — retained current and
+- [Specs](specs/README.md) — retained current and
   referenced designs. Historical implementation plans were removed; see Git history.
 
 For current behavior, prefer implementation, behavior tests, the

@@ -1515,7 +1515,7 @@ def _thread_talk_dispatch_doctrine_section() -> list[str]:
     403 response. The rule itself is mechanical (route rejects
     `effective_target != dispatcher` with `thread_dispatch_must_be_self`);
     this section is the *why* and the recommended pattern. Spec:
-    `docs/superpowers/specs/2026-05-28-thread-talk-self-dispatch-only-design.md`.
+    `docs/specs/2026-05-28-thread-talk-self-dispatch-only-design.md`.
 
     Keep the prose tight — every agent in every org reads this on every
     session. If this grows past ~25 lines it has become docs, not a prompt.

@@ -1,7 +1,7 @@
 """Portable, identity-safe descendant-tree census and sampling (THR-207 Slice B).
 
 Slice B of the host-resource concurrency architecture
-(``docs/superpowers/specs/2026-08-24-host-resource-concurrency.md``) ships the
+(``docs/specs/2026-08-24-host-resource-concurrency.md``) ships the
 portable measurement surface: a per-session descendant-tree census that is
 **identity-safe** (a PID is only acted upon when its recorded start identity
 still matches — PID reuse is never mistaken for the same process) plus a

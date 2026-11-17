@@ -386,7 +386,7 @@ resources, output, deadline and actual cleanup. Independent full review,
 behavioral QA, applicable checks, normal publication and guarded merge remain.
 
 
-[Current contract](../superpowers/specs/2026-10-09-identity-names-core.md).
+[Current contract](../specs/2026-10-09-identity-names-core.md).
 
 
 ## Bundled skill sources and canonical delivery
@@ -465,7 +465,7 @@ must provide those filesystem/process semantics; missing primitives fail
 through the existing named refusal paths. Containers and network filesystems
 are supported only when they preserve those semantics. Windows and unknown
 platforms have no fallback. See the current Linux design in
-``docs/superpowers/specs/2026-08-22-linux-canonical-store-design.md``.
+``docs/specs/2026-08-22-linux-canonical-store-design.md``.
 
 **THR-095 (founder ruling option B):** The executor is declared in the
 **org/agents/<name>.md frontmatter** (``AgentDef.executor``) — the single
@@ -821,13 +821,13 @@ refusal is required, never silent ignoring or invented flags. Null adds no
 argv override; literal template substitution never invokes a shell.
 Every input2 response, including failure, retains output1 and its integer input2
 acknowledgement. See the [generated prompt and same-profile ordinary update
-handoff](../superpowers/specs/2026-10-11-agent-reasoning-effort.md#generated-custom-cli-connection-prompt-thr298-seq34):
+handoff](../specs/2026-10-11-agent-reasoning-effort.md#generated-custom-cli-connection-prompt-thr298-seq34):
 a fresh ordinary adapter-purpose token omits `workspace_adapter_id`, uses the
 contract-reference's `required_executable_path` (distinct from direct status),
 refreshes hashes, completes check-ins/versioned conformance and submits the same
 profile for PENDING/exact-snapshot Founder approval and readback. No duplicate,
 delete/recreate, direct-token reuse or automatic update/approval is supported.
-The normal Connect UI has no v2 update mode. Legacy adapters need no reapproval. Opt-in is a normal reviewed adapter update, not a capability inspector. The [current spec](../superpowers/specs/2026-10-11-agent-reasoning-effort.md) gives the exact declaration and wire shape.
+The normal Connect UI has no v2 update mode. Legacy adapters need no reapproval. Opt-in is a normal reviewed adapter update, not a capability inspector. The [current spec](../specs/2026-10-11-agent-reasoning-effort.md) gives the exact declaration and wire shape.
 
 **Adapter contract reference (THR-107 seq184).** The authoritative v1
 ``AdapterInput``/``AdapterOutput`` contract is served by the running daemon via
@@ -904,7 +904,7 @@ re-run connect).`; legacy adapters keep the re-submit/approval wording.
 This includes a changed wrapper refused during executor construction or profile
 binding validation, its resolver warning, and the checks just before launch.
 Settings -> Executors -> Custom CLIs has a matching **Reconnect** action. See the
-[upgrade lifecycle](../superpowers/specs/2026-07-19-custom-cli-adapter-envelope-design.md#direct-connect-upgrade-and-reconnect-lifecycle-701)
+[upgrade lifecycle](../specs/2026-07-19-custom-cli-adapter-envelope-design.md#direct-connect-upgrade-and-reconnect-lifecycle-701)
 for audit fields and ordering.
 
 Before submitting the receipt, wrapper authors must locally send a fresh,
@@ -1044,7 +1044,7 @@ which returns schemas generated from those models at runtime. The
 wrappers must fetch the contract-reference endpoint and follow the returned
 schemas, never a hand-constructed copy. Normative prose is the signed
 architecture §2
-(``docs/superpowers/specs/2026-07-24-unified-adapter-runtime-architecture.md``).
+(``docs/specs/2026-07-24-unified-adapter-runtime-architecture.md``).
 
 ## Deterministic integration executables
 
@@ -1315,7 +1315,7 @@ Codex `input_tokens` remains normalized to net uncached input under issue
 `cache_creation_tokens` exactly (`0` is reported zero); absent/non-integer is
 `NULL`. The normalizer makes Fresh input complete only when both uncached input
 and cache write are reported. See
-`docs/superpowers/specs/2026-09-30-usage-v1-design.md` for the complete state,
+`docs/specs/2026-09-30-usage-v1-design.md` for the complete state,
 coverage, source-evidence, and resumed-conversation regression contract.
 
 Usage v1 lifecycle cohort attribution is captured from the effective launch
@@ -1802,7 +1802,7 @@ Creation and task spawn use existing combination/custom declaration validators.
 Saved-invalid settings fail before executor construction without entering native
 three-attempt refusal accounting. Custom override nonzero-before-callback fails
 with a plain rejection reason and no throttle/supervisor retry. Non-task runners
-keep their default selection. See [the task contract](../superpowers/specs/2026-11-13-task-model-reasoning-overrides.md).
+keep their default selection. See [the task contract](../specs/2026-11-13-task-model-reasoning-overrides.md).
 
 ### Founder retirement
 

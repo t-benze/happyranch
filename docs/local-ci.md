@@ -3112,7 +3112,7 @@ remote commit/aware-time observation before its own callback.
 
 
 The ROOT12299 step31 disabled final-manager source is documented in
-[the coding contract](superpowers/specs/2026-10-14-ordered-coding-workflow.md#disabled-live-final-manager-source).
+[the coding contract](specs/2026-10-14-ordered-coding-workflow.md#disabled-live-final-manager-source).
 The fourth coding-owned manager uses a LOCAL single-attempt finalize command;
 only original settled QA PASS admits the repaired event@6 edge. Historical held QA
 records stay held. Own-session selected upstream metadata, strict actual exact-H
@@ -3451,7 +3451,7 @@ at the final clean head; authenticate actual terminal `jobs show`/`jobs output`
 before claiming a pass. This adds no CI lane, required check or Product E2E run.
 I2 removes inline physical checks; full FKs and parts 2–7 remain on complete
 reads. The daily report is I1b. See the
-[I1a contract](superpowers/specs/2026-11-14-automatic-workflow-setup.md).
+[I1a contract](specs/2026-11-14-automatic-workflow-setup.md).
 
 
 Focused update-readiness checks (TASK-16297 / THR-346): run

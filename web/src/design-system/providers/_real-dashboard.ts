@@ -4,7 +4,7 @@
  * Single `useDashboardSummary` hook backed by GET /dashboard/summary. No
  * polling — refetches on mount and explicit refetch only. staleTime 30s
  * keeps the summary warm during quick tab-switches per
- * docs/superpowers/specs/2026-05-30-dashboard-overhaul-design.md §3.4.
+ * docs/specs/2026-05-30-dashboard-overhaul-design.md §3.4.
  *
  * Note: the Dashboard's escalation-resolve flow consumes the existing
  * `useResolveEscalation` hook on TasksApi, not a new dashboard-local one.

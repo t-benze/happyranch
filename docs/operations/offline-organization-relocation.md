@@ -50,7 +50,7 @@
 >
 > Evidence for each statement is the shipped code at the current head and the
 > Step-0 evidence gate
-> `docs/superpowers/specs/org-portability-reference-consumers.md`.
+> `docs/specs/org-portability-reference-consumers.md`.
 
 ## 1. Scope, assumptions, boundaries, and placeholders
 
@@ -1264,7 +1264,7 @@ runbook's success criteria do not include it.
   `JobStatus`); `runtime/infrastructure/database.py` (`tasks`, `schedules`,
   `jobs`).
 - DB-to-filesystem reference map:
-  `docs/superpowers/specs/org-portability-reference-consumers.md`.
+  `docs/specs/org-portability-reference-consumers.md`.
 - Job stream reads use the stored absolute `stdout_path`/`stderr_path`
   (`runtime/daemon/routes/jobs.py` tail/read) — the reason historical stream
   links may be unavailable after relocation (§4). Only `pending` rows launch;
