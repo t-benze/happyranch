@@ -355,3 +355,236 @@ def test_redaction_across_diagnostics_and_persisted_bytes(tmp_path: Path, monkey
     for path in (tmp_path / "issuer").iterdir():
         clean = not any(canary.encode() in path.read_bytes() for canary in canaries)
         assert clean, "journal and lock bytes must never persist transport secrets"
+
+
+def observation_snapshot(root: Path) -> dict:
+    """Exclude read access times; retain names, bytes and mutation identities."""
+    import stat
+    result = {}
+    for path in [root, *sorted(root.rglob("*"))]:
+        info = path.lstat()
+        result[str(path.relative_to(root))] = (
+            info.st_dev, info.st_ino, info.st_mode, info.st_nlink,
+            info.st_size, info.st_mtime_ns, info.st_ctime_ns,
+            path.read_bytes() if stat.S_ISREG(info.st_mode) else None,
+        )
+    return result
+
+
+def forbid_observation_effects(issuer: HomeInviteIssuer, patch: pytest.MonkeyPatch) -> None:
+    import fcntl
+    def forbidden(*args: object, **kwargs: object) -> None:
+        pytest.fail("observation attempted an effect or lock acquisition")
+    for owner, names in ((issuer, ("_write", "_invalidate")),
+                         (issuer._minter, ("mint", "recover")),
+                         (issuer._pairing, ("issue_invite_record",)),
+                         (fcntl, ("flock",)),
+                         (os, ("mkdir", "unlink", "rename", "replace"))):
+        for name in names:
+            patch.setattr(owner, name, forbidden)
+    original_open = os.open
+    def read_only_open(path: object, flags: int, *args: object, **kwargs: object) -> int:
+        assert not flags & (os.O_CREAT | os.O_TRUNC | os.O_RDWR | os.O_WRONLY | os.O_APPEND), "observation opened a writer"
+        return original_open(path, flags, *args, **kwargs)
+    patch.setattr(os, "open", read_only_open)
+
+
+def test_observe_absent_journal_is_frozen_and_creates_nothing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from dataclasses import FrozenInstanceError, fields
+    issuer, minter, _, _, _ = setup(tmp_path)
+    before = observation_snapshot(tmp_path)
+    with monkeypatch.context() as patch:
+        forbid_observation_effects(issuer, patch)
+        observed = issuer.observe()
+    assert (observed.phase, observed.expires_at) == ("none", None)
+    assert [item.name for item in fields(observed)] == ["phase", "expires_at"]
+    with pytest.raises(FrozenInstanceError):
+        observed.phase = "issued"
+    assert observation_snapshot(tmp_path) == before
+    assert not (tmp_path / "issuer" / "invite-issuer.lock").exists()
+    assert minter.calls == minter.recoveries == []
+
+
+@pytest.mark.parametrize("lifetime,seconds", [(500.0, 300), (20.6, 21)])
+@pytest.mark.parametrize("moment", ["before", "deadline", "after"])
+def test_observe_effective_deadline_and_expiry(tmp_path: Path, lifetime: float, seconds: int, moment: str) -> None:
+    issuer, minter, _, _, clock = setup(tmp_path)
+    minter.lifetime = lifetime
+    issued = issuer.issue()
+    deadline = int(START.timestamp()) + seconds
+    clock.now = datetime.fromtimestamp(deadline, timezone.utc) + timedelta(
+        microseconds={"before": -1, "deadline": 0, "after": 1}[moment])
+    before = observation_snapshot(tmp_path)
+    observed = issuer.observe()
+    if moment == "before":
+        assert observed.phase == "issued"
+        assert type(observed.expires_at) is int
+        assert observed.expires_at == issued.expires_at == deadline
+    else:
+        assert (observed.phase, observed.expires_at) == ("expired", None)
+    assert observation_snapshot(tmp_path) == before
+    assert record(tmp_path)["outcome"] == "issued", "expiry observation must not rewrite issuance"
+    assert category(lambda: issuer.issue(issued.operation_id)) == "already_issued"
+    assert len(minter.calls) == 1
+
+
+@pytest.mark.parametrize("phase", ["refused", "expired", "recovered", "uncertain", "minting", "encoding", "pairing"])
+def test_observe_nonissued_phase_survives_expiry(tmp_path: Path, phase: str) -> None:
+    issuer, minter, _, _, clock = setup(tmp_path)
+    if phase == "refused":
+        minter.behavior = "refused"
+        assert category(issuer.issue) == "refused"
+    elif phase == "expired":
+        minter.lifetime = 0.1
+        assert category(issuer.issue) == "expired"
+    else:
+        minter.behavior = "uncertain"
+        assert category(issuer.issue) == "uncertain"
+        if phase == "recovered":
+            minter.behavior, minter.cleared = "success", True
+            issuer.recover(record(tmp_path)["operation_id"])
+        elif phase != "minting":
+            journal = record(tmp_path)
+            journal["outcome"] = phase
+            (tmp_path / "issuer" / "invite-issuer.json").write_text(json.dumps(journal))
+    clock.advance(3600)
+    before = observation_snapshot(tmp_path)
+    observed = issuer.observe()
+    assert (observed.phase, observed.expires_at) == (phase, None)
+    assert observation_snapshot(tmp_path) == before
+    assert len(minter.calls) == 1
+
+
+@pytest.mark.parametrize("journal_present", [False, True])
+def test_observe_without_lock_file_and_while_lock_held(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+                                                      journal_present: bool) -> None:
+    import fcntl
+    issuer, _, _, _, _ = setup(tmp_path)
+    if journal_present:
+        issuer.issue()
+        (tmp_path / "issuer" / "invite-issuer.lock").unlink()
+    before = observation_snapshot(tmp_path)
+    with monkeypatch.context() as patch:
+        forbid_observation_effects(issuer, patch)
+        observed = issuer.observe()
+    assert observed.phase == ("issued" if journal_present else "none")
+    assert observation_snapshot(tmp_path) == before
+    lock_path = tmp_path / "issuer" / "invite-issuer.lock"
+    assert not lock_path.exists()
+    fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        before = observation_snapshot(tmp_path)
+        with monkeypatch.context() as patch:
+            forbid_observation_effects(issuer, patch)
+            held = issuer.observe()
+        assert held == observed
+        assert observation_snapshot(tmp_path) == before
+    finally:
+        os.close(fd)
+
+
+@pytest.mark.parametrize("case", ["binding", "malformed", "extra-field", "duplicate-field", "unknown-phase",
+                                  "journal-mode", "journal-symlink", "journal-dangling", "journal-hardlink",
+                                  "directory-mode", "directory-symlink", "directory-missing"])
+def test_observe_invalid_state_is_closed_and_unchanged(tmp_path: Path, case: str) -> None:
+    issuer, _, _, _, _ = setup(tmp_path)
+    issuer.issue()
+    parent = tmp_path / "issuer"
+    path = parent / "invite-issuer.json"
+    if case == "journal-mode":
+        path.chmod(0o644)
+    elif case.startswith("journal-"):
+        target = parent / "saved.json"
+        path.rename(target)
+        if case == "journal-hardlink":
+            os.link(target, path)
+        else:
+            path.symlink_to(target if case == "journal-symlink" else parent / "missing.json")
+    elif case == "directory-mode":
+        parent.chmod(0o755)
+    elif case in ("directory-symlink", "directory-missing"):
+        issuer._state_dir = tmp_path / "other"
+        if case == "directory-symlink":
+            issuer._state_dir.symlink_to(parent, target_is_directory=True)
+    elif case == "malformed":
+        path.write_text('{"synthetic-private-canary":')
+    elif case == "duplicate-field":
+        path.write_text(path.read_text()[:-1] + ',"outcome":"issued"}')
+    else:
+        journal = record(tmp_path)
+        field = {"binding": "binding_digest", "extra-field": "extra", "unknown-phase": "outcome"}[case]
+        journal[field] = "synthetic-private-canary"
+        path.write_text(json.dumps(journal))
+    before = observation_snapshot(tmp_path)
+    with pytest.raises(IssuerError) as caught:
+        issuer.observe()
+    error = caught.value
+    assert error.args == ("state",)
+    assert error.__cause__ is error.__context__ is None
+    assert "synthetic-private-canary" not in str(error) + repr(error) + repr(error.args)
+    assert observation_snapshot(tmp_path) == before
+
+
+@pytest.mark.parametrize("case,expected", [("mode", "configuration"), ("codec", "encoding"),
+                                          ("naive-clock", "configuration"), ("clock-range", "configuration"),
+                                          ("io", "state"), ("adapter", "uncertain")])
+def test_observe_validation_and_exception_boundary(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+                                                  case: str, expected: str) -> None:
+    from dataclasses import replace
+    issuer, _, _, _, clock = setup(tmp_path)
+    issuer.issue()
+    if case == "mode":
+        issuer._config = replace(issuer._config, mode="own_server")
+    elif case == "codec":
+        issuer._config = replace(issuer._config, dial_ip="synthetic-private-canary")
+    elif case == "naive-clock":
+        clock.now = START.replace(tzinfo=None)
+    elif case == "clock-range":
+        clock.now = datetime.max.replace(tzinfo=timezone.utc)
+    else:
+        def fault(*args: object) -> None:
+            raise (OSError if case == "io" else RuntimeError)("synthetic-private-canary")
+        monkeypatch.setattr(issuer, "_read", fault)
+    before = observation_snapshot(tmp_path)
+    with pytest.raises(IssuerError) as caught:
+        issuer.observe()
+    error = caught.value
+    assert error.args == (expected,)
+    assert error.__cause__ is error.__context__ is None
+    assert "synthetic-private-canary" not in str(error) + repr(error) + repr(error.args)
+    assert observation_snapshot(tmp_path) == before
+
+
+@pytest.mark.parametrize("failure", [None, "malformed", "adapter"])
+def test_observe_never_discloses_private_fields(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+                                               failure: str | None) -> None:
+    from dataclasses import asdict, replace
+    issuer, minter, _, _, clock = setup(tmp_path)
+    minter.key = "c7032a2e17007abc" * 3
+    issuer._config = replace(issuer._config, home_id="canary-home-17007", control_plane_id="canary-control-17007",
+                             connector_id="canary-connector-17007")
+    issued = issuer.issue()
+    parsed = decode(issued.invite_text, now=int(clock().timestamp()))
+    canaries = (issued.invite_text, minter.key, parsed.pair_secret,
+                hashlib.sha256(parsed.pair_secret.encode()).hexdigest(), issued.operation_id,
+                record(tmp_path)["binding_digest"], "canary-home-17007", "canary-control-17007", "canary-connector-17007")
+    if failure == "malformed":
+        (tmp_path / "issuer" / "invite-issuer.json").write_text(json.dumps({"private": "|".join(canaries)})[:-1])
+    elif failure == "adapter":
+        def leak(*args: object) -> None:
+            raise RuntimeError("|".join(canaries))
+        monkeypatch.setattr(issuer, "_read", leak)
+    if failure is None:
+        observed = issuer.observe()
+        assert set(asdict(observed)) == {"phase", "expires_at"}
+        display = str(observed) + repr(observed) + repr(asdict(observed))
+    else:
+        with pytest.raises(IssuerError) as caught:
+            issuer.observe()
+        error = caught.value
+        assert error.args == ("state" if failure == "malformed" else "uncertain",)
+        assert error.__cause__ is error.__context__ is None
+        display = str(error) + repr(error) + repr(error.args) + repr(vars(error))
+    clean = not any(canary in display for canary in canaries)
+    assert clean, "observation results and diagnostics must contain phase/deadline or closed codes only"
