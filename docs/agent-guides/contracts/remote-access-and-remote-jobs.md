@@ -938,7 +938,9 @@ revalidates the recorded release home and reads only its fixed daemon.token
 through the merged same-FD source-UID reader before any mutating manager call.
 It re-inventories, calls the existing `stop_and_confirm()` owner, and requires
 dead inactive/failed states, no jobs, zero service PIDs and no cgroups before
-file changes. Stop/proof failure preserves every file. A prepared candidate
+file changes. Stop/proof failure preserves the remaining files; a validated
+own-journal pending file may already have been discarded before the later stop
+under the recovery rule below. A prepared candidate
 still fsyncs only the `replacement-stopped` intent and raises the existing stop
 boundary diagnostic. Interruption before that publication can leave `prepared`;
 if stopping erased the failed indication, the next call refuses rather than
@@ -1308,12 +1310,13 @@ and native Darwin remain NOT RUN. See the [sidecar README](../../../app/linux/ts
 
 ### Pure home CA and server leaf core (THR-327 slice 3b-2b)
 
-`app/linux/tsnet-sidecar/homeca` is an **unwired**, Go-stdlib-only generation
+`app/linux/tsnet-sidecar/homeca` is a Go-stdlib-only generation
 and validation package. Every issuance takes an explicit `time.Time` and
 `io.Reader`; it performs no file, network, process or ambient-clock operation.
-No command, binary, dependency or production importer is added. Root invocation,
-on-disk custody, authenticated `RefreshHomeAddress`, Headscale TLS installation
-and transaction/recovery wiring remain the Linux track's TASK-16780 work.
+The inert root-run materializer below is its only production importer. The core
+retains no filesystem API or new dependency. Authenticated `RefreshHomeAddress`,
+Headscale TLS installation and lifecycle wiring remain the Linux track's
+TASK-16780 work.
 
 | Choice | Contract and reason |
 | --- | --- |
@@ -1347,11 +1350,36 @@ invite-v2 bounded DER walker and existing Linux/Mac Go CA admission checks.
 Root must retain the CA signing key separately from Headscale, which receives
 only its leaf key and certificate. The CA-only PEM goes to the protected
 `/etc/happyranch/control-ca.pem`; no host/system trust-store change is allowed.
-PEM encoding belongs to that future custody boundary and uses stdlib
+PEM encoding belongs to the materializer custody boundary below and uses stdlib
 `encoding/pem`; this core has no PEM or filesystem API. Tests exercise generated
 CA PEM through the existing Linux `homeTrustPolicy.admit` temporary-root pattern;
 installed root custody, real Headscale TLS and native Mac acceptance remain
 separate, unexecuted obligations of the wiring/native tracks.
+
+### Inert Linux home CA materializer (THR-327 slice 3b-2e)
+
+The root-run Go command reuses `homeca`; it adds no new cryptographic profile,
+trust store, CA replacement, network action or service. No installer, supervisor,
+helper, D-Bus, polkit or systemd entry calls it yet. The production entry accepts
+exactly one verb, with no path, name, address or settings arguments and no
+custody environment override. The installed binary is outside PATH and
+`HAPPYRANCH_BUNDLED_BIN`.
+
+| Surface | Fixed contract |
+| --- | --- |
+| Materializer | `/opt/happyranch-desktop/libexec/remote-access/happyranch-home-ca`, regular root:root 0755 package file; no wrapper or symlink in `bin/` or `/usr/bin`. |
+| Custody | `/var/lib/happyranch-remote-access/home-ca/`, root:root 0700, below root:root 0700 `/var/lib/happyranch-remote-access`. `/var` and `/var/lib` must be root:root 0755; `/` must be root-owned without group/world writes. Only the two managed directories may be created. Existing unsafe metadata is refused, never repaired. |
+| CA | `ca.pem` (one canonical certificate PEM) and `ca.key` (one canonical PKCS#8 PRIVATE KEY PEM), regular single-link root:root 0600, each at most 4096 bytes including PEM. The CA key never leaves `home-ca/`. DER imports retain the core's 4096-byte bound. |
+| Leaf staging | `leaf.pem` and `leaf.key`, same bounds and custody. These are root-only staging files, never Headscale service custody. The leaf has exactly `control.happyranch.invalid` as its DNS SAN, with no supplied address/name. |
+| `ensure` | Requires actual euid 0. Creates a CA only when both CA files and both leaf files are absent. An existing admitted matching CA/key is retained byte-exactly. Issues a leaf if the pair is absent or `LeafRenewalDue`; a current pair is unchanged. Invalid/expired/not-yet-valid CA, mismatched key or CA with less than the core's 30-day issuance minimum refuses before writes, even if an existing leaf is not due. No replacement-CA fallback. |
+| `renew-leaf` | Requires actual euid 0 and an existing valid CA/key. Always issues a new leaf/key under that exact CA. It never creates/replaces a CA. |
+| `status` | Read-only; protected filesystem permissions still apply. Validates inventory and CA, reads certificates but never private-key contents. Emits exactly `ca_fingerprint`, `ca_not_after`, `leaf_not_after`, `renewal_due` as one JSON line. A missing complete leaf pair has empty `leaf_not_after` and renewal due; absent CA or a half-pair refuses. Invalid certificate encoding refuses; an expired/profile-invalid parsed leaf reports renewal due. Status does not prove private-key matching or readiness. |
+| Output / exits | Success emits that fixed secret-free JSON projection on stdout for every verb. Exit 0 is success, 1 is refusal/I/O failure, 2 is usage. Refusals have empty stdout and one fixed stderr category; an output write failure may leave partial stdout and returns 1. No underlying error text, key bytes/DER/PEM or certificate PEM is printed. |
+| Refusal categories | `usage` (exit 2); `root-required`, `unsafe-custody` (including unsafe type/owner/group/mode/link count or oversized file), `unexpected-entry` (including any pending residue), `incomplete-state`, `invalid-ca`, `ca-lifetime`, `invalid-key`, `invalid-leaf`, `io-failure`, `busy`, `generation-failure` (exit 1). Categories are typed internally and retain no underlying error. |
+| Admission and bounds | Literal descriptor-relative `O_NOFOLLOW` directory/leaf opens; leaves also use nonblocking opens before type checks. Inventory reads at most five names to refuse more than the four fixed leaves. Files use same-FD bounded reads and metadata rechecks. Unknown entries refuse and are preserved. A nonblocking directory flock serializes cooperating commands without adding a lock file; this is not a fence against a separate root writer. |
+| Publication / recovery | Generate and validate before publication. Each member uses its exclusive same-directory `.<name>.pending`, exact 0600 owner/mode, file fsync, descriptor-relative rename, directory fsync. Publish the key durably **before** the certificate, for both CA creation and leaf rotation. A crash can leave a key-only pair (`incomplete-state`), pending residue (`unexpected-entry`), or old certificate/new key (`invalid-key` for write verbs); each refuses without further writes or automatic recovery/deletion. A complete CA without a leaf pair may safely issue its first leaf. No newly published CA certificate becomes usable without its already-durable matching key. |
+| Test isolation | Only same-package `_test.go` calls supply a temporary root, current test UID/GID and clock/euid observations to the unexported command logic. The shipped entry supplies literal `/`, root:root, actual euid and current time; there is no production flag/environment redirection. Temp-root checks prove owner/mode as observable by the unprivileged test process, not installed root acceptance. |
+| 3b-2f handoff | The next slice owns validated copying of **only** the staged leaf cert/key into `/etc/happyranch/headscale` for locked `happyranch-headscale` service custody, plus protected CA-only `/etc/happyranch/control-ca.pem` publication. It must coordinate safe leaf handoff/reload and interrupted staging with authenticated lifecycle operations. CA signing key stays root-only in `home-ca/`; this command performs no Headscale copy, configuration, user/unit creation, start, reload or cleanup. 3b-2g owns later helper invocation. |
 
 ### Pure home Headscale renderers and LAN selector (THR-327 slice 3b-2a)
 

@@ -45,6 +45,15 @@ surface. It has no wrapper or symlink and stays inert; TASK-16780 owns service
 and installer wiring. Building the payload never executes it or starts/enables
 a service. No download happens at Enable.
 
+The same native Go build also ships the inert root-run home CA materializer at
+`libexec/remote-access/happyranch-home-ca` (installed as
+`/opt/happyranch-desktop/libexec/remote-access/happyranch-home-ca`, root:root
+0755). It is outside `bin/`, `/usr/bin` and `HAPPYRANCH_BUNDLED_BIN`; no service
+or helper calls it yet. Its fixed `ensure`, `renew-leaf` and `status` verbs and
+root-only staging custody are described in the [remote-access contract](../agent-guides/contracts/remote-access-and-remote-jobs.md#inert-linux-home-ca-materializer-thr-327-slice-3b-2e).
+The command uses stdlib and the existing first-party `homeca` package only.
+Python ELF repair/checking remains restricted to `python/`.
+
 `packaging/linux/headscale-pin.json` pins tag, official amd64/arm64 asset names,
 SHA-256 values and embedded Go version. The already-verified managed Python
 downloads over HTTPS into private build scratch, allowing only github.com and
@@ -91,7 +100,8 @@ native packaging checks below also cover this exclusion, inventory output and
 refusal of unlicensed near-miss or escaping replacements.
 
 The extracted payload contains `python/`, `web/dist/`, `licenses/`,
-`build-info.json`, and `bin/{happyranch,happyranch-daemon,happyranch-tsnet-sidecar}`.
+`build-info.json`, `bin/{happyranch,happyranch-daemon,happyranch-tsnet-sidecar}`,
+`libexec/headscale/headscale` and `libexec/remote-access/happyranch-home-ca`.
 The two POSIX launchers resolve their prefix from their own `bin/` location,
 execute the bundled interpreter with `-I -m`, and default
 `HAPPYRANCH_WEB_DIST` to that prefix's `web/dist` only when unset. Invoke them

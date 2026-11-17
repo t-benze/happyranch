@@ -109,7 +109,8 @@ with tempfile.TemporaryDirectory(prefix='happyranch-deb-', dir='/tmp') as tempor
         if path.is_symlink() and not path.resolve(strict=True).is_relative_to(payload):
             parser.error('payload symlink escapes its prefix')
     for required in ('bin/happyranch', 'bin/happyranch-daemon', 'bin/happyranch-app',
-                     'libexec/headscale/headscale', 'licenses/headscale-LICENSE',
+                     'libexec/headscale/headscale', 'libexec/remote-access/happyranch-home-ca',
+                     'licenses/headscale-LICENSE',
                      'licenses/headscale-modules.json', 'licenses/headscale-build-info.json',
                      'licenses/headscale/go-runtime/LICENSE',
                      'python/bin/python3', 'web/dist/index.html',
@@ -117,6 +118,10 @@ with tempfile.TemporaryDirectory(prefix='happyranch-deb-', dir='/tmp') as tempor
                      'share/applications/happyranch.desktop.in', 'licenses/HappyRanch-LICENSE'):
         if not (payload / required).is_file():
             parser.error('incomplete desktop payload: ' + required)
+
+    materializer = payload / 'libexec/remote-access/happyranch-home-ca'
+    if materializer.is_symlink() or not materializer.stat().st_mode & 0o111:
+        parser.error('unsafe home CA materializer payload')
 
     # Inspect foreign-architecture payloads without executing them. Reject old
     # unsafe tarballs; build-payload repairs and tests the native interpreter.

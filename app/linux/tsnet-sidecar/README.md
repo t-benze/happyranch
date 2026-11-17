@@ -118,7 +118,9 @@ revalidates the recorded release home and reads only its fixed daemon.token
 through the merged same-FD source-UID reader before any mutating manager call.
 It re-inventories, calls the existing `stop_and_confirm()` owner, and requires
 dead inactive/failed states, no jobs, zero service PIDs and no cgroups before
-file changes. Stop/proof failure preserves every file. A prepared candidate
+file changes. Stop/proof failure preserves the remaining files; a validated own-journal
+pending file may already have been discarded before the later stop under the
+recovery rule below. A prepared candidate
 still fsyncs only the `replacement-stopped` intent and raises the existing stop
 boundary diagnostic. Interruption before that publication can leave `prepared`;
 if stopping erased the failed indication, the next call refuses rather than
@@ -298,8 +300,12 @@ Linux home transport (THR-327 1b) adds the optional protected config record
 to the identity profile. It requires the canonical control URL
 `https://control.happyranch.invalid:8443` and an RFC1918 IPv4. That home URL
 cannot use the legacy transport. Slice 3b owns generating this configuration,
-the home CA/server leaf and the private DERP map; this module generates none of
-those persistent objects. Existing non-home configs retain their transport.
+the home CA/server leaf and the private DERP map; the sidecar process generates
+none of those persistent objects. The root-run materializer at the fixed non-PATH
+`/opt/happyranch-desktop/libexec/remote-access/happyranch-home-ca` path provides
+`ensure`, `renew-leaf`, and `status` for the home CA/server leaf; see the
+[inert Linux home CA materializer contract](../../../docs/agent-guides/contracts/remote-access-and-remote-jobs.md#inert-linux-home-ca-materializer-thr-327-slice-3b-2e).
+Existing non-home configs retain their transport.
 
 Before constructing tsnet, Linux admits the fixed no-follow root-owned
 `/etc/happyranch/control-ca.pem` (single-link, at most 64 KiB, one valid CA with

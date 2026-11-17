@@ -609,7 +609,9 @@ revalidates the recorded release home and reads only its fixed daemon.token
 through the merged same-FD source-UID reader before any mutating manager call.
 It re-inventories, calls the existing `stop_and_confirm()` owner, and requires
 dead inactive/failed states, no jobs, zero service PIDs and no cgroups before
-file changes. Stop/proof failure preserves every file. A prepared candidate
+file changes. Stop/proof failure preserves the remaining files; a validated own-journal
+pending file may already have been discarded before the later stop under the
+recovery rule below. A prepared candidate
 still fsyncs only the `replacement-stopped` intent and raises the existing stop
 boundary diagnostic. Interruption before that publication can leave `prepared`;
 if stopping erased the failed indication, the next call refuses rather than
