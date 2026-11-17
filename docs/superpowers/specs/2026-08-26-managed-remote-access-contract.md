@@ -563,6 +563,35 @@ and authenticated token rotation/repair remain undelivered and fail-closed;
 helper/package selection remains 3b-1d. TODO (3b-2): implement owned local
 Headscale stop/cleanup; this sub-part provides no callable seam for it.
 
+The next 3b-1c admission sub-part adds Python-only `replacement_inventory()`
+and a fail-closed `replace_failed()` entry. Only the replacement classifier can
+read a final `install-transaction.json`: the existing closed v1 schema is
+unchanged (only `prepared`; no new fields or phases). It requires root:root
+0600 metadata and all six fixed-file SHA-256 digests to match, including
+`provision.json`, and compares the exact journal bytes across both reads.
+Only a known failed/partial installation receives a `journal_generation`,
+the SHA-256 of those exact record bytes. This is a read-only candidate
+fingerprint, not proof of an interrupted transaction or permission to resume.
+Missing/different files, unknown/malformed records and final/pending uncertainty
+remain conflicts. Clean, intact manual and modern staged-inert/recorded installs
+are not replacement candidates; successful modern records should resume
+idempotently rather than be replaced. A modern installation classified as
+failed/partial can be a candidate.
+
+This is the explicit read-only cut: `replace_failed()` refuses non-candidates
+and reports replacement mutation unavailable for candidates, before stop,
+release-home token reads/copies or any filesystem effect. Journal execution/update,
+quarantine/removal, fresh generation after replacement, and interrupted
+replacement resume to staged-inert remain undelivered and unavailable. The
+future mutating consumer must re-inventory, use the merged same-FD source-UID
+token reader before service effects, call `stop_and_confirm()` before file
+changes, journal/fsync every fixed-path rename/removal and never restore old
+credentials. Ordinary inventory, stop, provision/install/uninstall/drift and
+activation retain their transaction/profile refusals. No CLI/helper/D-Bus/package
+caller is added; Disable/account cleanup, rotation/repair, 3b-1d and 3b-2 remain
+outside this sub-part. All five rendered units in both layouts and
+`home_transport=False` remain unchanged.
+
 The root operator supplies `install --enrollment-key-file /absolute/input.key`; the input must be a root:root, single-link regular `0600` file, nonempty and at most 64 KiB. Literal no-follow parent traversal and nonblocking/no-follow file opens refuse symlinks and special files. Every install, including reinstall, requires explicit input; this command does not infer a keyless reinstall from persisted state. Use ordinary service restart for an enrolled host; installing a new key over a consumed marker still refuses at the existing marker-plus-input gate. The customer cell issues the single-use, short-expiry key; the installer does not provision it. The original operator input remains the operator's responsibility to remove promptly.
 
 The installer first creates and fsyncs the root-owned link `/etc/credstore/happyranch-tsnet-enrollment` pointing only to `/etc/happyranch/enrollment.key`, then exclusively stages that fixed source as root:root `0600` and fsyncs it and its directory. Cleanup unlinks and fsyncs the source before removing the link, so interrupted staging/cleanup preserves lookup for any surviving source. `/etc/credstore` is created root-owned `0700`; existing safe `0700` or `0755` is retained. The credential name is reserved to this installation: no inherited or other credstore credential may use it. The sidecar renders `LoadCredential=enrollment-key:happyranch-tsnet-enrollment` and `--credential-file ${CREDENTIALS_DIRECTORY}/enrollment-key`, overriding the JSON credential path before validation. Only the path enters argv; the key never enters argv or environment. Credential-name lookup, unlike an absolute missing source, is nonfatal when absent in both [systemd 255](https://www.freedesktop.org/software/systemd/man/255/systemd.exec.html#LoadCredential=) and this host's systemd 259. After source/link deletion, systemd may also remove the empty per-unit credential directory while still exporting its path in `CREDENTIALS_DIRECTORY` ([v255 directory removal](https://github.com/systemd/systemd/blob/v255/src/core/exec-credential.c#L927-L932), [environment export](https://github.com/systemd/systemd/blob/v255/src/core/exec-invoke.c#L1881-L1891)). The sidecar handles that absent-directory state without creating a directory or an empty credential file. A remaining source/link yields a present copy, which the existing consumed-marker gate refuses.
