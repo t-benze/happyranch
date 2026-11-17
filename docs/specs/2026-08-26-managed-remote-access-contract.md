@@ -599,8 +599,9 @@ replacement phases require exact generated canonical bytes; `journal_generation`
 hashes those bytes. Except for exact current/completed removal and staging intents,
 missing files refuse. Unknown/malformed/mismatched records, wrong placements
 and pending entries refuse before mutation. Clean, modern recorded and intact
-manual installs still refuse. A modern staged-inert retry returns without effects;
-an unjournaled failed/partial candidate remains unavailable without effects.
+manual installs still refuse. Journal-free modern staged-inert inventory also
+refuses exactly `replacement refused: modern:` without effects; an unjournaled
+failed/partial candidate remains unavailable without effects.
 
 For a proven journal-bearing failed/partial candidate, `replace_failed()`
 revalidates the recorded release home and reads only its fixed daemon.token
@@ -752,12 +753,16 @@ fsyncs the journal's parent last. Unknown, unsafe, pending, quarantined or chang
 residue refuses with non-secret fixed paths and remains untouched. There is no
 unjournaled recovery or restoration of revoked credentials/trust.
 
-A fresh instance resumes each exact intent or completed effect. After retirement,
-ordinary inventory returns `modern` / `staged-inert`, with no transaction journal
-or quarantine residue. A retry of that ordinary completed state returns without
-effects. V1's existing phases and record shape remain readable; policy currentness
-is not required for closure. Pending-residue recovery, racing root writers and
-actual machine-power-loss durability remain unverified. Until journal retirement,
+While a recognized replacement journal remains, a fresh instance resumes each
+exact closure intent or completed effect and converges to retirement without
+duplicate effects. After durable retirement, ordinary inventory returns `modern` /
+`staged-inert`, with no transaction journal or quarantine residue. A fresh-instance
+ReplaceFailed retry then refuses exactly `replacement refused: modern:` with zero
+filesystem, journal or service effects, just like clean-host staging. No completion
+marker or new durable provenance distinguishes these states. V1's existing phases
+and record shape remain readable; policy currentness is not required for closure.
+Pending-residue recovery, racing root writers and actual machine-power-loss
+durability remain unverified. Until journal retirement,
 ordinary inventory/stop/provision/install/uninstall/drift and all ten fixed legacy
 system supervisor lifecycle entries retain their final/pending transaction
 refusals. Modern activation still refuses exactly `home control binding not provisioned; requires slice 3b-2`.

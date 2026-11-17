@@ -1558,7 +1558,8 @@ def test_fixed_inventory_classifies_without_effects(
     if delay:
         assert fixture.installer.replacement_inventory().journal_generation is None
         if case == "staged":
-            fixture.installer.replace_failed()  # Completed inert staging is an effect-free retry.
+            with pytest.raises(module.InstallerError, match="^replacement refused: modern:$"):
+                fixture.installer.replace_failed()
         else:
             with pytest.raises(module.InstallerError, match="unjournaled replacement|replacement refused"):
                 fixture.installer.replace_failed()
@@ -3020,9 +3021,10 @@ def test_replacement_stages_fresh_inert_generation(fixture: Fixture, monkeypatch
     completed = staged_inventory(fixture)
     manager.calls.clear()
     fresh_staging_instance(fixture)
-    fixture.installer.replace_failed()
+    with pytest.raises(module.InstallerError, match="^replacement refused: modern:$"):
+        fixture.installer.replace_failed()
     assert staged_inventory(fixture) == completed
-    assert all(call[0] == "show" for call in manager.calls)
+    assert all(call[0] == "show" and call[1] in module.UNITS for call in manager.calls)
 
 
 @pytest.mark.parametrize("phase,point,delay", [(phase, point, 0) for phase in STAGING_PHASES for point in
@@ -3073,6 +3075,13 @@ def test_replacement_staging_publication_resumes(fixture: Fixture, monkeypatch: 
     if json.loads(before["etc/happyranch/install-transaction.json"][-1])["phase"] in ["replacement-staged", *CLOSURE_PHASES]:
         fixture.installer.replace_failed()
         assert_closed_replacement(fixture, before)
+        completed = staged_inventory(fixture)
+        manager.calls.clear()
+        fresh_staging_instance(fixture)
+        with pytest.raises(module.InstallerError, match="^replacement refused: modern:$"):
+            fixture.installer.replace_failed()
+        assert staged_inventory(fixture) == completed
+        assert all(call[0] == "show" and call[1] in module.UNITS for call in manager.calls)
     else:
         with pytest.raises(module.InstallerError, match=STAGING_BOUNDARY):
             fixture.installer.replace_failed()
@@ -3312,13 +3321,25 @@ def test_replacement_closure_effect_resumes(fixture: Fixture, monkeypatch: pytes
     # Only persisted exact-generation intent is carried into the new instance.
     expire_staged_policy(fixture, monkeypatch)
     fresh_staging_instance(fixture)
-    fixture.installer.replace_failed()
+    manager.calls.clear()
+    if journal.exists():
+        fixture.installer.replace_failed()
+        if point == "unlink-before":
+            assert all(call[0] != "reload" for call in manager.calls)
+    else:
+        retired = staged_inventory(fixture)
+        with pytest.raises(module.InstallerError, match="^replacement refused: modern:$"):
+            fixture.installer.replace_failed()
+        assert staged_inventory(fixture) == retired
+        assert all(call[0] == "show" and call[1] in module.UNITS for call in manager.calls)
     assert_closed_replacement(fixture, before)
     completed = staged_inventory(fixture)
     manager.calls.clear()
-    fixture.installer.replace_failed()
+    fresh_staging_instance(fixture)
+    with pytest.raises(module.InstallerError, match="^replacement refused: modern:$"):
+        fixture.installer.replace_failed()
     assert staged_inventory(fixture) == completed
-    assert all(call[0] == "show" for call in manager.calls)
+    assert all(call[0] == "show" and call[1] in module.UNITS for call in manager.calls)
 
 
 @pytest.mark.parametrize("bad", ["none", "cached", "reload-stuck", "unknown", "quarantine", "provision-digest", "policy-schema", "policy-artifact"])

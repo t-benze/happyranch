@@ -523,7 +523,9 @@ class ManagedInstaller:
         candidate = self.replacement_inventory()
         installation = candidate.installation
         if installation.state == "modern" and installation.detail == "staged-inert":
-            return  # Completed staging retry only; no unjournaled recovery effects.
+            # Only a recognized journal resumes closure below. Retired staging
+            # is indistinguishable from a clean-host non-candidate.
+            raise InstallerError("replacement refused: modern:")
         if installation.state != "known-failed-or-partial":
             raise InstallerError(f"replacement refused: {installation.state}: " + ", ".join(installation.paths))
         if candidate.journal_generation is None:
