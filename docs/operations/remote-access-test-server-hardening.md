@@ -189,12 +189,15 @@ python3 headscale_device_check.py --approved /etc/happyranch-test-server/approve
 ```
 
 Findings cover unknown/missing devices, overdue reviews, reusable keys,
-unused-and-unexpired keys and original lifetime (`expiration - created_at`)
+unused-and-unexpired keys and currently stored lifetime (`expiration - created_at`)
 longer than the configurable maximum (default 1h). Output shows only numeric
 node/key IDs or approved-entry indexes, never names, key prefixes or raw keys.
-Expired historical reusable/long-lifetime rows remain findings if retained by
-Headscale; expiration prevents new use but does not rewrite their history.
-Record their retirement locally rather than expecting expiration to erase them.
+Retained reusable rows remain findings after expiry; historical long-lifetime
+findings persist only while stored expiration is unchanged. Early expiry/retirement
+in v0.25.1 overwrites expiration with the current time and can erase evidence
+that a key originally had a long lifetime; the checker cannot reconstruct it.
+Run the audit (or capture a snapshot) before manually expiring keys if
+original-lifetime evidence matters.
 
 ### Tagged input contract
 
