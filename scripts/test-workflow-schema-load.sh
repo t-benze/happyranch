@@ -770,6 +770,20 @@ if sys.argv[1:] in ([], ['--bundled-catalog'], ['--start-context']):
                 elif case == 'thread_origin_manager':
                     await manager_context('context-thread-source')
                 elif case == 'foreign_context':
+                    unknown_refusals = []
+                    for audience, headers in (('origin', {'origin': 'http://browser'}),
+                                              ('cli_unregistered_sid', cli)):
+                        body = await read('unregistered-sid', headers=headers,
+                            path=url.replace('/scratch/', '/not-loaded/'), status=404, code='unknown_org')
+                        unknown_refusals.append((audience, body))
+                    leaked = [(audience, body) for audience, body in unknown_refusals
+                        if 'available' in json.dumps(body)
+                        or any(slug in json.dumps(body) for slug in state.orgs_snapshot())]
+                    assert not leaked, ('unknown_slug refusal discloses loaded org inventory', leaked)
+                    assert all(body == {'detail': {'code': 'unknown_org'}}
+                        for _, body in unknown_refusals), unknown_refusals
+                    print('PASS R1b1 foreign_context unknown_slug origin + cli_unregistered_sid: '
+                          '404 code-only; zero writes and identical inventory', flush=True)
                     for task, principal, slug in (('private-source', 'r1c_manager', 'foreign'),
                             ('absent-task', 'r1c_manager', 'scratch'), ('private-source', 'r1c_dev', 'scratch')):
                         sid = 'foreign-' + task + principal + slug

@@ -29,10 +29,15 @@ class _NoStoreRoute(APIRoute):
             try:
                 response = await handler(request)
             except HTTPException as exc:
+                detail = exc.detail
+                if (exc.status_code == 404 and isinstance(detail, dict)
+                        and detail.get('code') == 'unknown_org'):
+                    # OrgDep runs before audience admission; disclose no org inventory.
+                    detail = {'code': 'unknown_org'}
                 # The SPA's global HTTPException projection does not preserve
                 # exception headers. Keep this narrow route's refusal uncached.
                 response = JSONResponse(status_code=exc.status_code,
-                    content={'detail': exc.detail}, headers=exc.headers)
+                    content={'detail': detail}, headers=exc.headers)
             except RequestValidationError:
                 response = JSONResponse(status_code=422, content={
                     'detail': {'code': 'sequential_start_context_invalid'}})
