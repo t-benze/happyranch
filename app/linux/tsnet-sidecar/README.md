@@ -73,53 +73,68 @@ replacement, Disable cleanup and authenticated token rotation remain fail-closed
 the Go sidecar and `home_transport=False` are unchanged. TODO (3b-2): owned local
 Headscale stop/cleanup, with no callable seam implemented in this sub-part.
 
-The 3b-1c Python-only replacement consumer now implements a **journal-bearing
-stop/intent sub-part**, not completed failed-install replacement. The v1 record
-still has exactly `version`, `layout`, `digests` and `phase`; only this consumer
-adds the phase `replacement-stopped` alongside `prepared`. Ordinary publication
-still accepts only `prepared`. All six original fixed-file digests, including
-provision.json, must match; root:root 0600 journal metadata and exact journal
-bytes are checked repeatedly. Stopped intents require the exact generated
-canonical bytes; `journal_generation` hashes those exact bytes.
-Unknown/malformed/mismatched records, missing files and pending entries refuse.
-Clean, successful modern staged-inert/recorded and intact manual installs still
-refuse before any mutation. An unjournaled failed/partial candidate also remains
-unavailable without effects in this bounded sub-part.
+The 3b-1c Python-only replacement consumer implements a **stop/intent and
+config-quarantine sub-part**, not completed failed-install replacement. The v1
+record still has exactly `version`, `layout`, `digests` and `phase`, with the six
+original fixed-file digests (including provision.json) unchanged throughout.
+Ordinary transaction publication still accepts only `prepared`. Only this
+consumer advances the closed linear sequence:
+
+`prepared` → `replacement-stopped` → `replacement-quarantine-connector` →
+`replacement-quarantine-sidecar` → `replacement-quarantine-policy` →
+`replacement-quarantined`.
+
+Root:root 0600 journal metadata and exact bytes are checked repeatedly. All
+replacement phases require exact generated canonical bytes; `journal_generation`
+hashes those bytes. Unknown/malformed/mismatched records, missing files, wrong
+placements and pending entries refuse before mutation. Clean, successful modern
+staged-inert/recorded and intact manual installs still refuse; an unjournaled
+failed/partial candidate remains unavailable without effects.
 
 For a proven journal-bearing failed/partial candidate, `replace_failed()`
 revalidates the recorded release home and reads only its fixed daemon.token
 through the merged same-FD source-UID reader before any mutating manager call.
 It re-inventories, calls the existing `stop_and_confirm()` owner, and requires
 dead inactive/failed states, no jobs, zero service PIDs and no cgroups before
-file changes. Stop/proof failure preserves every file. The merged atomic writer
-then fsyncs a root:root 0600 `replacement-stopped` intent with unchanged six
-digests, rechecks exact old journal bytes, fixed files and pinned parents, and
-atomically replaces only that journal followed by parent fsync. The ordinary
-no-replace writer contract is unchanged for every other publication. These
-sampled checks assume the existing single protected root writer; they are not
-a concurrent-root-writer fence.
+file changes. Stop/proof failure preserves every file. A prepared candidate
+still fsyncs only the `replacement-stopped` intent and raises the existing stop
+boundary diagnostic. Interruption before that publication can leave `prepared`;
+if stopping erased the failed indication, the next call refuses rather than
+inventing failure provenance.
 
-An interrupted published stopped intent is recognized only while its exact
-journal bytes and all six original files still validate. A later call rechecks
-the fixed token and quiescence, leaves the intent bytes unchanged, and raises
-`replacement paused after stop intent; quarantine/removal and fresh staging unavailable`.
-It never starts/enables a service or claims replacement success. Interruption
-before intent publication can leave `prepared`; if stopping erased the failed
-indication, a later call refuses rather than inventing failure provenance.
-Pending/uncertain entries are never automatically repaired or replayed.
+A later call resumes the published stopped intent through config quarantine.
+Before each rename the existing atomic writer publishes and fsyncs its exact
+fixed-path intent, preserving all six digests. Only that intent's source may
+be in its original 0640 root:hr state or partially tightened 0600 root:hr/root:root
+state. Each previous config must already be quarantined and each later config
+must still be at its original path. Exactly one location per config is required.
+The consumer tightens the descriptor to root:root 0600, fsyncs it, rechecks the
+journal, all digests and pinned parents, then uses atomic no-replace rename to
+`/etc/happyranch/.replacement-connector.json`, `.replacement-sidecar.json` or
+`.replacement-policy.json` and fsyncs the parent. No old config is executed,
+restored or used to select argv/control settings. Only these three original
+fixed paths move; unknown files, custom units/drop-ins, the release daemon and
+package are untouched. No recursive removal occurs.
 
-Quarantine/removal, fresh IDs/config/enrollment after replacement, unjournaled
-replacement and resume to staged-inert are still undelivered and unavailable.
-No old credentials, trust, control settings or argv are copied or restored.
-Ordinary inventory/stop/provision/install/uninstall/drift and modern activation
-retain their transaction/profile refusals, including the existing slice-3b-2
-home-control diagnostic. The fixed legacy system connector supervisor also
-consults the same transaction-refusal owner before install/uninstall/start/stop/
-restart/enable/disable/upgrade/rollback/run; a journal cannot reopen that path.
-No release daemon/package effect or CLI/helper/D-Bus/
-package caller is added. Disable/account cleanup, rotation/repair, 3b-1d and
-3b-2 remain outside this sub-part. All five unit strings in both layouts and
-`home_transport=False` remain unchanged.
+After all three renames it publishes `replacement-quarantined` and raises
+`replacement paused after config quarantine; removal and fresh staging unavailable`.
+Interruption at each new phase or metadata/rename boundary leaves services off;
+a new consumer instance resumes only the exact digest-bound before/after
+placement. Repeating terminal quarantine rechecks token/quiescence but changes
+no files or journal bytes. These sampled checks assume the existing single
+protected root writer; they are not a concurrent-root-writer fence. Pending or
+uncertain entries are never automatically repaired or replayed.
+
+The quarantined diagnostic copies remain root-only. Their removal, removal of
+old units/state/enrollment, fresh IDs/config/enrollment generation, transaction
+finalization and resume to staged-inert remain undelivered and fail-closed.
+No revoked credentials/trust are restored into service. Ordinary inventory/stop/
+provision/install/uninstall/drift and all ten fixed legacy system supervisor
+lifecycle entries retain their final/pending transaction refusals. Modern
+activation still refuses exactly `home control binding not provisioned; requires slice 3b-2`.
+No CLI/helper/D-Bus/package caller is added. Disable/account cleanup, token
+rotation/repair, 3b-1d and 3b-2 remain outside this sub-part. All five unit strings
+in both layouts/profiles and `SidecarUnitSpec.home_transport=False` are unchanged.
 
 Linux home transport (THR-327 1b) adds the optional protected config record
 `"control_tls":{"dial_ip":"192.168.1.10","ca_sha256":"<64 lowercase hex>"}`
