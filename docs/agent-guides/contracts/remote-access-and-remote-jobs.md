@@ -1292,7 +1292,9 @@ reply releases the dialog slot even if the authorization deadline or pending-req
 expiry refuses the mutation; a late reply never authorizes an expired request. One dialog
 is allowed globally. Per-unique-name cursors disappear on disconnect. Status
 contains only bounded public summaries. Error/log categories are closed.
-IssueInvite and all install/lifecycle/R3 methods are absent, so invite issuance's
+Custom-server URL/key intake methods do not exist and are not planned; outside-home access
+uses a fixed build-configured server (see [Outside-home access (fixed operator server)](../../superpowers/specs/2026-11-16-one-click-remote-access.md#outside-home-access-fixed-operator-server)).
+IssueInvite and all install/lifecycle methods are absent, so invite issuance's
 one-per-minute rate limit and policy-renewal installation belong to later slices.
 
 `helper_control.OperationAPI` defines status, approve_pending, reject_pending,
@@ -1360,7 +1362,7 @@ refuse. Accepted endpoints are preserved byte-for-byte; the endpoint is not
 the control dial IP.
 
 `decode(invite_text, now=integer_unix_seconds)` uses an explicit clock, refuses
-v1 and reserved own-server/system trust, and checks the same schema, encodings,
+v1, system trust and non-home modes, and checks the same schema, encodings,
 addresses, entropy, fingerprint, times and size limits. Both APIs perform no
 I/O or network access. Encoding always emits the fixed control URL without a
 slash; decoding also accepts the table's optional single trailing slash and
@@ -1402,7 +1404,7 @@ adds no issuance handler, helper operation, UI, service action or live 3c-2 flow
 `runtime.remote_access.invite_issuer.HomeInviteIssuer` composes the encoder and
 `PinnedPairingManager.issue_invite_record` with an injected `JoinKeyMinter` and
 protected state directory. It has no network, subprocess, Headscale adapter,
-helper/polkit method, installation or own-server intake. The future helper
+helper/polkit method, installation or URL/key intake. The future helper
 supplies protected `HomeInviteConfig`, a pairing owner bound to the same home,
 and exactly one issuer directory per home. It must authenticate each new issue
 and explicit recovery separately under the existing helper contract. This core
