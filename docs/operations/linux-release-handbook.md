@@ -37,6 +37,35 @@ HappyRanch wheel as real `.py` files. It builds production `web/dist` with
 Its private Go module cache uses `-modcacherw` so build cleanup can remove it.
 Existing version/architecture outputs are refused; use a fresh destination.
 
+The payload also carries the official **Headscale v0.25.1** native Linux asset
+at `libexec/headscale/headscale` (installed as
+`/opt/happyranch-desktop/libexec/headscale/headscale`, mode 0755, root-owned by
+dpkg). This fixed path sits outside `bin/` and the daemon's bundled-bin PATH
+surface. It has no wrapper or symlink and stays inert; TASK-16780 owns service
+and installer wiring. Building the payload never executes it or starts/enables
+a service. No download happens at Enable.
+
+`packaging/linux/headscale-pin.json` pins tag, official amd64/arm64 asset names,
+SHA-256 values and embedded Go version. The already-verified managed Python
+downloads over HTTPS into private build scratch, allowing only github.com and
+its explicit release CDN `release-assets.githubusercontent.com` on redirects.
+Each request has a 20-second socket timeout; streaming is capped at 128 MiB
+and a 180-second deadline (checked between bounded socket reads). No new build
+tool is needed. `LINUX_HEADSCALE_DOWNLOAD_FAILED` or
+`LINUX_HEADSCALE_SHA256_MISMATCH` aborts before the binary is installed or
+inspected. The pin was checked against upstream release `checksums.txt` and
+fresh downloads of both assets.
+
+Headscale's exact pinned BSD-3-Clause license ships in
+`licenses/headscale-LICENSE`. `headscale-modules.json` inventories the verified
+binary's linked modules from `go version -m`; their original notices are in
+`licenses/headscale/modules/`. Downloads use private Go module and GOPATH
+checksum-state caches, the public proxy and checksum DB, and must match the embedded module sums. Missing
+originals fail the build. `headscale-build-info.json` records asset/tag/hash,
+Go 1.23.4 and the matching toolchain module sum; `headscale/go-runtime/` retains
+that toolchain's license and vendor notices. All are also copied to the .deb's
+`/usr/share/doc/happyranch/licenses/`.
+
 After copying the interpreter and runtime wheels,
 `python-elf-stack.py --fix --mdwe` checks every regular ELF in `python/`, regardless of name or mode.
 It reports each missing/executable `PT_GNU_STACK` and repairs it to a
@@ -485,10 +514,11 @@ archive members/escaping links and existing outputs, and calls
 host or execute a foreign interpreter: `x86_64` maps to Debian `amd64`, and
 `aarch64` maps to `arm64`. The manual workflow retains its original two native
 matrix rows and uploads the .deb alongside its intermediate inputs.
-The .deb builder rejects any ELF without exactly one non-executable stack
+The .deb builder rejects any ELF in `python/` without exactly one non-executable stack
 header before packaging, including older unsafe tarballs; rebuild those through
 `build-payload.sh`. This check never executes a foreign interpreter. The native
 payload build and installed-package smoke perform the actual MDWE thread test.
+The Headscale static Go binary outside `python/` is never scanned or repaired.
 The installed smoke requires build-host `readelf` and retains its output in
 `python-stack-mdwe.log`, including any explicit unsupported-venue skip reason.
 The same build job then runs the installed-package smoke on **both** rows and

@@ -126,6 +126,10 @@ uv pip install --no-config --python "$UV_PROJECT_ENVIRONMENT/bin/python" \
     --no-deps --no-index "$WORK/wheels/"*.whl
 PAYLOAD="$WORK/output/$NAME"
 mkdir -p "$PAYLOAD/bin" "$PAYLOAD/web" "$PAYLOAD/licenses"
+# Inert, fixed non-PATH payload. Verification precedes any inspection/use;
+# Python ELF repair below deliberately scans only python/, never this binary.
+"$MANAGED_PYTHON" -I "$WORK/source/packaging/linux/collect-notices.py" \
+    --install-headscale "$GO_ARCH" "$WORK" "$PAYLOAD"
 "$MANAGED_PYTHON" -I - "$MANAGED_PREFIX" "$UV_PROJECT_ENVIRONMENT" "$PAYLOAD" <<'PYCOPY'
 import shutil, sys
 from pathlib import Path

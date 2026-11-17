@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import gzip
+import hashlib
 import io
 import json
 import os
@@ -20,6 +21,133 @@ BUILDER = Path(__file__).with_name('build-deb.sh')
 UNIT = BUILDER.parent / 'systemd/happyranch-daemon.service'
 
 
+class HeadscalePayloadTests(unittest.TestCase):
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory(prefix='headscale-payload-test-', dir='/tmp')
+        self.addCleanup(temporary.cleanup)
+        self.work = Path(temporary.name)
+        self.payload = self.work / 'payload'
+        self.payload.mkdir()
+        self.collector = runpy.run_path(str(BUILDER.with_name('collect-notices.py')))
+        self.globals = self.collector['install_headscale'].__globals__
+        self.data = b'synthetic inert Headscale binary; never execute\n'
+        self.pin = json.loads(BUILDER.with_name('headscale-pin.json').read_text())
+        self.pin['assets']['amd64']['sha256'] = hashlib.sha256(self.data).hexdigest()
+        self.addCleanup(patch.stopall)
+        patch.dict(os.environ, GOMODCACHE=str(self.work / 'go-modules')).start()
+        patch.dict(self.globals, headscale_pin=lambda: self.pin).start()
+        self.opener = patch('urllib.request.build_opener').start().return_value
+
+    def install(self, data: bytes) -> None:
+        self.opener.open.return_value = io.BytesIO(data)
+        self.collector['install_headscale']('amd64', self.work, self.payload)
+
+    def notice_fixture(self, *, licensed: bool = True) -> list[str]:
+        binary = self.payload / 'libexec/headscale/headscale'
+        binary.parent.mkdir(parents=True)
+        binary.write_bytes(self.data)
+        (self.payload / 'licenses').mkdir()
+        module = self.work / 'module'
+        module.mkdir()
+        if licensed:
+            (module / 'LICENSE').write_bytes(b'original dependency notice\n')
+        goroot = self.work / 'goroot'
+        goroot.mkdir()
+        (goroot / 'LICENSE').write_bytes(b'original Go 1.23.4 notice\n')
+        vendor = goroot / 'src/vendor/example'
+        vendor.mkdir(parents=True)
+        (vendor / 'NOTICE').write_bytes(b'original Go vendor notice\n')
+        raw = (f'{binary}: go1.23.4\n\tmod\tgithub.com/juanfont/headscale\t(devel)\n'
+               '\tdep\texample.com/linked\tv1.2.3\th1:synthetic\n')
+        return [raw, json.dumps(dict(Path='example.com/linked', Version='v1.2.3',
+                                    Sum='h1:synthetic', Dir=str(module))),
+                json.dumps(dict(Path='golang.org/toolchain',
+                                Version='v0.0.1-go1.23.4.linux-amd64',
+                                Sum='h1:toolchain', Dir=str(goroot)))]
+
+    def test_headscale_pin_mismatch_and_download_failure_leave_no_install(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, '^LINUX_HEADSCALE_SHA256_MISMATCH$'):
+            self.install(b'tampered binary')
+        self.assertFalse((self.payload / 'libexec/headscale/headscale').exists())
+        self.opener.open.side_effect = OSError('synthetic transport failure')
+        with self.assertRaisesRegex(RuntimeError, '^LINUX_HEADSCALE_DOWNLOAD_FAILED$'):
+            self.install(self.data)
+        self.assertFalse((self.payload / 'libexec/headscale/headscale').exists())
+
+    def test_headscale_verified_install_is_inert_and_executable(self) -> None:
+        for arch in ('amd64', 'arm64'):
+            with self.subTest(arch=arch):
+                data = self.data + arch.encode()
+                self.pin['assets'][arch]['sha256'] = hashlib.sha256(data).hexdigest()
+                self.opener.open.return_value = io.BytesIO(data)
+                self.collector['install_headscale'](arch, self.work, self.payload)
+                binary = self.payload / 'libexec/headscale/headscale'
+                self.assertTrue(binary.is_file())
+                self.assertFalse(binary.is_symlink())
+                self.assertEqual(binary.read_bytes(), data)
+                self.assertEqual(binary.stat().st_mode & 0o777, 0o755)
+                self.assertFalse((self.payload / 'bin').exists())
+                self.assertEqual(self.opener.open.call_args.args,
+                                 ('https://github.com/juanfont/headscale/releases/download/v0.25.1/'
+                                  'headscale_0.25.1_linux_' + arch,))
+                self.assertEqual(self.opener.open.call_args.kwargs, {'timeout': 20})
+
+    def test_headscale_redirect_hosts_and_stream_deadline(self) -> None:
+        redirect = self.collector['HeadscaleRedirect']()
+        with patch('urllib.request.HTTPRedirectHandler.redirect_request', return_value='accepted') as base:
+            for url in ('http://github.com/asset', 'https://untrusted.example/asset',
+                        'https://github.com@untrusted.example/asset',
+                        'https://release-assets.githubusercontent.com:444/asset'):
+                with self.subTest(url=url), self.assertRaisesRegex(RuntimeError, 'redirect refused'):
+                    redirect.redirect_request(None, None, 302, '', {}, url)
+            base.assert_not_called()
+            for host in ('github.com', 'release-assets.githubusercontent.com'):
+                self.assertEqual(redirect.redirect_request(None, None, 302, '', {},
+                                                          f'https://{host}/asset'), 'accepted')
+        with patch('time.monotonic', side_effect=[0, 181]), self.assertRaisesRegex(
+                RuntimeError, '^LINUX_HEADSCALE_DOWNLOAD_FAILED$'):
+            self.install(self.data)
+        self.assertFalse((self.payload / 'libexec/headscale/headscale').exists())
+
+    def test_headscale_linked_notices_and_exact_toolchain(self) -> None:
+        with patch('subprocess.check_output', side_effect=self.notice_fixture()) as go:
+            self.collector['collect_headscale'](BUILDER.parents[2], self.payload)
+        licenses = self.payload / 'licenses'
+        for name in ('headscale-LICENSE', 'headscale-modules.json', 'headscale-build-info.json',
+                     'headscale/modules/example.com/linked@v1.2.3/LICENSE', 'headscale/go-runtime/LICENSE'):
+            self.assertTrue((licenses / name).is_file(), name)
+        self.assertEqual((licenses / 'headscale-LICENSE').read_bytes(),
+                         BUILDER.with_name('headscale-LICENSE').read_bytes())
+        self.assertEqual(json.loads((licenses / 'headscale-modules.json').read_text()),
+                         [dict(Path='example.com/linked', Version='v1.2.3', Sum='h1:synthetic')])
+        self.assertEqual((licenses / 'headscale/modules/example.com/linked@v1.2.3/LICENSE').read_bytes(),
+                         b'original dependency notice\n')
+        self.assertEqual((licenses / 'headscale/go-runtime/LICENSE').read_bytes(),
+                         b'original Go 1.23.4 notice\n')
+        self.assertEqual((licenses / 'headscale/go-runtime/src/vendor/example/NOTICE').read_bytes(),
+                         b'original Go vendor notice\n')
+        info = json.loads((licenses / 'headscale-build-info.json').read_text())
+        self.assertEqual(info['GoVersion'], 'go1.23.4')
+        self.assertEqual(info['Tag'], 'v0.25.1')
+        for call in go.call_args_list[1:]:
+            self.assertEqual(call.args[0][:4], ['go', 'mod', 'download', '-json'])
+            self.assertEqual(call.kwargs['env']['GOSUMDB'], 'sum.golang.org')
+            self.assertEqual(call.kwargs['env']['GONOSUMDB'], '')
+            self.assertEqual(call.kwargs['env']['GOINSECURE'], '')
+
+    def test_headscale_missing_original_and_wrong_module_sum_refused(self) -> None:
+        results = self.notice_fixture(licensed=False)
+        with patch('subprocess.check_output', side_effect=results), self.assertRaisesRegex(
+                RuntimeError, '^LINUX_HEADSCALE_NOTICE_MISSING: example.com/linked$'):
+            self.collector['collect_headscale'](BUILDER.parents[2], self.payload)
+        changed = json.loads(results[1])
+        changed['Sum'] = 'h1:wrong'
+        with patch('subprocess.check_output', side_effect=[results[0], json.dumps(changed)]), \
+                self.assertRaisesRegex(RuntimeError, '^LINUX_HEADSCALE_MODULE_VERIFY_FAILED: example.com/linked$'):
+            self.collector['collect_headscale'](BUILDER.parents[2], self.payload)
+        self.assertFalse((self.payload / 'licenses/headscale-modules.json').exists())
+
+
 class NoticeCollectionTests(unittest.TestCase):
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory(prefix='notice-test-', dir='/tmp')
@@ -32,6 +160,7 @@ class NoticeCollectionTests(unittest.TestCase):
         self.outside.mkdir()
         repo = BUILDER.parents[2]
         for name in ('LICENSE', 'packaging/linux/python-build-standalone-LICENSE.txt',
+                     'packaging/linux/headscale-LICENSE',
                      'packaging/linux/THIRD_PARTY_NOTICES.md', 'packaging/notice-data/radix-LICENSE'):
             target = self.source / name
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -64,9 +193,20 @@ class NoticeCollectionTests(unittest.TestCase):
         goroot.mkdir(exist_ok=True)
         (goroot / 'LICENSE').write_text('synthetic Go notice\n')
         raw = '\n'.join(json.dumps(dict(Module=module)) for module in modules)
+        binary = payload / 'libexec/headscale/headscale'
+        binary.parent.mkdir(parents=True)
+        binary.write_bytes(b'synthetic Headscale for complete collector')
+        pin = json.loads(BUILDER.with_name('headscale-pin.json').read_text())
+        pin['assets']['amd64']['sha256'] = hashlib.sha256(binary.read_bytes()).hexdigest()
+        headscale = (f'{binary}: go1.23.4\n\tdep\texample.com/vendor\tv1.0.0\th1:synthetic\n')
+        original = json.dumps({key: self.vendor[key] for key in ('Path', 'Version', 'Sum', 'Dir')})
+        toolchain = json.dumps(dict(Path='golang.org/toolchain', Version='v0.0.1-go1.23.4.linux-amd64',
+                                    Sum='h1:toolchain', Dir=str(goroot)))
         with patch.object(sys, 'argv', ['collect-notices.py', str(self.source), str(payload)]), \
+                patch.dict(os.environ, GOMODCACHE=str(self.work / 'go-modules')), \
                 patch('importlib.metadata.distributions', return_value=[]), \
-                patch('subprocess.check_output', side_effect=[raw, str(goroot)]):
+                patch.dict(self.collector['main'].__globals__, headscale_pin=lambda: pin), \
+                patch('subprocess.check_output', side_effect=[raw, str(goroot), headscale, original, toolchain]):
             self.collector['main']()
         return payload / 'licenses'
 
@@ -85,6 +225,11 @@ class NoticeCollectionTests(unittest.TestCase):
                 self.assertFalse((notices / 'go/happyranch').exists())
                 self.assertEqual((notices / 'HappyRanch-LICENSE').read_bytes(),
                                  (self.source / 'LICENSE').read_bytes())
+                self.assertTrue((notices / 'headscale-modules.json').is_file())
+                self.assertEqual(json.loads((notices / 'headscale-modules.json').read_text()),
+                                 [{key: self.vendor[key] for key in ('Path', 'Version', 'Sum')}])
+                self.assertEqual((notices / 'headscale/modules/example.com/vendor@v1.0.0/LICENSE').read_bytes(),
+                                 self.original)
 
     def test_unlicensed_near_miss_replacements_still_refused(self) -> None:
         for label, change in (
@@ -144,6 +289,12 @@ class DebPackageTests(unittest.TestCase):
             'share/happyranch/desktop/happyranch_window.py': '# fixture',
             'licenses/HappyRanch-LICENSE': 'original license fixture',
             'licenses/nested/NOTICE': 'original dependency notice',
+            'licenses/headscale-LICENSE': BUILDER.with_name('headscale-LICENSE').read_text(),
+            'licenses/headscale-modules.json': '[{"Path":"example.com/linked","Version":"v1.2.3","Sum":"h1:synthetic"}]',
+            'licenses/headscale-build-info.json': '{"Tag":"v0.25.1","GoVersion":"go1.23.4"}',
+            'licenses/headscale/modules/example.com/linked@v1.2.3/LICENSE': 'original Headscale dependency notice',
+            'licenses/headscale/go-runtime/LICENSE': 'original Go 1.23.4 notice',
+            'libexec/headscale/headscale': 'fixture Headscale',
         }
         for launcher in ('happyranch', 'happyranch-daemon', 'happyranch-app'):
             files['bin/' + launcher] = '#!/bin/sh\nexit 0\n'
@@ -156,10 +307,13 @@ class DebPackageTests(unittest.TestCase):
             path = payload / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(text)
-            path.chmod(0o755 if name.startswith('bin/') or name in (
+            path.chmod(0o755 if name.startswith(('bin/', 'libexec/')) or name in (
                 'python/lib/libpython3.12.so.1.0', 'licenses/nested/NOTICE') else 0o644)
         for name in ('python/bin/python3.12', 'python/lib/libpython3.12.so.1.0'):
             (payload / name).write_bytes(self.elf(arch))
+        # Static Go binary has no GNU_STACK: Python-only ELF checks must leave
+        # its verified upstream bytes unchanged, on both architectures.
+        (payload / 'libexec/headscale/headscale').write_bytes(self.elf(arch, 'missing'))
         (payload / 'python/bin/python3').symlink_to('python3.12')
         archive = self.work / (root + '.tar.gz')
         with tarfile.open(archive, 'w:gz') as stream:
@@ -188,6 +342,7 @@ class DebPackageTests(unittest.TestCase):
             'EnvironmentFile=-%h/.config/happyranch/daemon.env',
             'Restart=on-failure',
             'RestartSec=5',
+            'TimeoutStopSec=60',
             '',
             '[Install]',
             'WantedBy=default.target',
@@ -310,6 +465,17 @@ class DebPackageTests(unittest.TestCase):
                 self.assertIn('happyranch (0.1.0-1)', gzip.decompress((doc / 'changelog.Debian.gz').read_bytes()).decode())
                 self.assertEqual(len(list((installed / 'usr/share/icons/hicolor').rglob('happyranch.*'))), 8)
                 prefix = installed / 'opt/happyranch-desktop'
+                binary = prefix / 'libexec/headscale/headscale'
+                self.assertEqual(binary.read_bytes(), self.elf(payload_arch, 'missing'))
+                self.assertEqual(binary.stat().st_mode & 0o777, 0o755)
+                self.assertFalse(binary.is_symlink())
+                self.assertFalse((prefix / 'bin/headscale').exists())
+                self.assertFalse((installed / 'usr/bin/headscale').exists())
+                for name in ('headscale-LICENSE', 'headscale-modules.json', 'headscale-build-info.json',
+                             'headscale/modules/example.com/linked@v1.2.3/LICENSE', 'headscale/go-runtime/LICENSE'):
+                    expected = self.work / f'happyranch-0.1.0-linux-{payload_arch}/licenses' / name
+                    self.assertEqual((prefix / 'licenses' / name).read_bytes(), expected.read_bytes())
+                    self.assertEqual((doc / 'licenses' / name).read_bytes(), expected.read_bytes())
                 self.assertFalse(list(prefix.rglob('__pycache__')))
                 self.assertTrue((prefix / 'python/lib/module.py').is_file())
                 self.assertEqual((prefix / 'python/lib/libpython3.12.so.1.0').stat().st_mode & 0o777, 0o644)
@@ -324,6 +490,21 @@ class DebPackageTests(unittest.TestCase):
                 self.assertNotEqual(repeated.returncode, 0)
                 self.assertIn('output already exists', repeated.stderr)
                 self.assertEqual(deb.read_bytes(), before)
+
+    def test_incomplete_headscale_payload_is_refused(self) -> None:
+        for index, missing in enumerate(('libexec/headscale/headscale', 'licenses/headscale-LICENSE',
+                                         'licenses/headscale-modules.json', 'licenses/headscale-build-info.json',
+                                         'licenses/headscale/go-runtime/LICENSE')):
+            with self.subTest(missing=missing):
+                archive = self.payload(version=f'0.3.{index}')
+                root = self.work / f'happyranch-0.3.{index}-linux-x86_64'
+                (root / missing).unlink()
+                with tarfile.open(archive, 'w:gz') as stream:
+                    stream.add(root, arcname=root.name)
+                result = self.build(archive)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('incomplete desktop payload: ' + missing, result.stderr)
+                self.assertFalse(list((self.work / 'dist').glob('*.deb')))
 
     def test_version_mapping(self) -> None:
         for version, debversion in (('1.2.3rc1', '1.2.3~rc1-1'), ('1.2.3.dev2', '1.2.3~dev2-1'),

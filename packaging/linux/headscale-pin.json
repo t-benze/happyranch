@@ -1,0 +1,15 @@
+{
+  "tag": "v0.25.1",
+  "base_url": "https://github.com/juanfont/headscale/releases/download/v0.25.1/",
+  "go_version": "go1.23.4",
+  "assets": {
+    "amd64": {
+      "name": "headscale_0.25.1_linux_amd64",
+      "sha256": "d2cda0a5d748587f77c920a76cd1bf1ab429e5299ba5bc6b3dda90712721b45b"
+    },
+    "arm64": {
+      "name": "headscale_0.25.1_linux_arm64",
+      "sha256": "49dfe4254c9251f3e8acc73792fd00263f0727074ac4ea1c7d1b2e670818869b"
+    }
+  }
+}

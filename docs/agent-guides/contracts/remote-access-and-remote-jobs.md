@@ -1247,6 +1247,15 @@ separate, unexecuted obligations of the wiring/native tracks.
 
 ### Pure home Headscale renderers and LAN selector (THR-327 slice 3b-2a)
 
+The Linux payload ships pinned Headscale v0.25.1 **inert** at
+`/opt/happyranch-desktop/libexec/headscale/headscale` (0755, dpkg root ownership),
+outside the bundled-bin PATH surface. Both official native assets are SHA-256
+pinned; its exact BSD-3-Clause license, linked dependency inventory/originals
+and embedded Go 1.23.4 toolchain notices ship in `licenses/` and the .deb's doc
+licenses copy. No wrapper, symlink, service or start/enable is added by bundling.
+TASK-16780 owns wiring this path into the home lifecycle; Turn off keeps the
+inert packaged binary and notices. See the [Linux release handbook](../../operations/linux-release-handbook.md#build-the-intermediate-payload).
+
 `runtime/remote_access/home_headscale.py` is an **unwired** pure source unit.
 `render_headscale_config(dial_ip=..., policy_path=...)` and
 `render_private_derp_map(dial_ip=...)` return deterministic, sorted-key YAML
