@@ -82,6 +82,12 @@ class IssuedInvite:
         return "IssuedInvite(<redacted>)"
 
 
+@dataclass(frozen=True)
+class InviteObservation:
+    phase: str
+    expires_at: int | None
+
+
 def _metadata(fd: int, parent: int, name: str) -> None:
     opened = os.fstat(fd)
     named = os.stat(name, dir_fd=parent, follow_symlinks=False)
@@ -317,3 +323,31 @@ class HomeInviteIssuer:
     def recover(self, operation_id: str) -> None:
         """Explicit helper recovery; adapter must prove cleanup, with no mint."""
         self._boundary(operation_id, True)
+
+    def observe(self) -> InviteObservation:
+        """Read the protected journal without locks, effects or private fields."""
+        code = "uncertain"
+        try:
+            binding = self._binding()
+            with _directory(self._state_dir) as parent:
+                record = self._read(parent, binding)
+            if record is None:
+                return InviteObservation("none", None)
+            phase = record["outcome"]
+            if phase == "issued":
+                expires_at = math.floor(record["expires_at"])
+                if self._now() >= expires_at:
+                    return InviteObservation("expired", None)
+                return InviteObservation("issued", expires_at)
+            return InviteObservation(phase, None)
+        except IssuerError as error:
+            code = error.args[0]
+        except invite_v2.InviteError:
+            code = "encoding"
+        except (OSError, ValueError, TypeError, OverflowError):
+            code = "state"
+        except BaseException:
+            pass
+        # Match _boundary: raise only after leaving every library handler.
+        del self
+        raise IssuerError(code)

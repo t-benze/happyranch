@@ -1638,6 +1638,18 @@ cannot extend it. An expired or slow result is not delivered. A durable
 refusal and issuer restart; a backward clock does not release it. A nonblocking
 exclusive file lock refuses concurrent/reentrant issuance with `busy`.
 
+`observe()` returns frozen `InviteObservation(phase, expires_at)` from the
+validated journal without acquiring a lock, creating files/directories or
+calling minting, pairing, recovery or invalidation. An absent journal reports
+`none`; other outcomes are returned verbatim, except `issued` at or past its
+effective deadline reports `expired`. Only unexpired `issued` exposes the
+floored integer deadline; every other phase exposes `None`. In particular,
+`minting` and `uncertain` remain unchanged across expiry. Observation never
+rewrites the journal or returns invite text, keys, secrets, digests, operation
+IDs or configuration bindings; unsafe/malformed/mismatched state raises the
+existing closed, chain-free `IssuerError` codes. Protected helper/Status wiring
+remains in the later serial 3c-2b slice.
+
 The supplied directory must already exist, be owned by the effective helper
 UID and have mode 0700. Every literal parent is traversed without following
 symlinks. Journal and lock files must be regular, single-link, owned 0600 files;
