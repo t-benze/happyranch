@@ -4,6 +4,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import secrets
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -113,8 +114,23 @@ def test_oversize_refused(case: str) -> None:
     elif case == "decoded":
         refuses(raw_wire(b" " * 4097), "oversized")
     else:
-        # A syntactically valid large host forces JSON over 4096, never truncation.
-        change = {"home_endpoint": "a" * 4000 + ":443"} if case == "encoder-json" else {"ca_der": b"x" * 4097}
+        if case == "encoder-json":
+            # An opaque, unique extension keeps the CA structurally acceptable
+            # to this codec while pushing only the serialized envelope over its
+            # bound. Signature verification remains downstream, as for the
+            # existing reconstructed DER fixtures. The endpoint stays valid.
+            body = parts(parts(SWIFT_CA)[0][1]); tbs = parts(body[0][1])
+            extensions = parts(parts(tbs[-1][1])[0][1])
+            extensions.append((0x30, tlv(6, b"\x2a\x03\x04") + tlv(4, b"x" * 2400)))
+            tbs[-1] = (0xa3, tlv(0x30, b"".join(tlv(tag, value) for tag, value in extensions)))
+            body[0] = (0x30, b"".join(tlv(tag, value) for tag, value in tbs))
+            ca = tlv(0x30, b"".join(tlv(tag, value) for tag, value in body))
+            assert len(ca) < 4096
+            f = fixture(); f["control_tls"] = trust(ca)
+            assert len(json_bytes(f)) > 4096
+            change = {"ca_der": ca}
+        else:
+            change = {"ca_der": b"x" * 4097}
         with pytest.raises(InviteError, match="^oversized$"):
             encode(**(inputs() | change))
 
@@ -178,14 +194,21 @@ def test_swift_control_url_refusals(url: str) -> None:
 
 
 @pytest.mark.parametrize("endpoint", [":443", "100.64.0.10:80", "100.64.0.10:443/path", "user@100.64.0.10:443",
-                                       "100.64.0.10:443?q", "100.64.0.10:443#f"])
+    "100.64.0.10:443?q", "100.64.0.10:443#f", "home<node:443", "home>node:443", "home\\node:443",
+    "home|node:443", "home{node:443", "home}node:443", "a" * 64 + ".tailnet:443",
+    ".home:443", "home..tailnet:443", "home.:443", "-home.tailnet:443", "home-.tailnet:443",
+    ".".join(["a" * 63] * 3 + ["b" * 62]) + ":443", "home_node:443", "192.168.001.40:443", "256.1.1.1:443",
+    "[fd7a:115c:a1e0::1]suffix:443", "[fd7a:115c:a1e0::1]:80:443", "[fe80::1%eth0]:443"])
 def test_swift_endpoint_refusals(endpoint: str) -> None:
-    # Swift testURLAndTrustRefusals :123-125.
+    # Swift testURLAndTrustRefusals :123-125, expanded for canonical host grammar.
     f = fixture(); f["home_endpoint"] = endpoint
     refuses(wire(f), "url")
+    with pytest.raises(InviteError, match="^url$"):
+        encode(**(inputs() | {"home_endpoint": endpoint}))
 
 
-@pytest.mark.parametrize("endpoint", ["100.64.0.10:443", "home-node.tailnet:443", "[fd7a:115c:a1e0::1]:443"])
+@pytest.mark.parametrize("endpoint", ["100.64.0.10:443", "home-node.tailnet:443", "[fd7a:115c:a1e0::1]:443",
+    "Home-Node.Tailnet:443", "a:443", "a" * 63 + ".tailnet:443", ".".join(["a" * 63] * 3 + ["b" * 61]) + ":443"])
 def test_endpoint_unchanged(endpoint: str) -> None:
     result = encode(**(inputs() | {"home_endpoint": endpoint}))
     assert decode(result.invite_text, now=NOW).home_endpoint == endpoint
@@ -343,21 +366,84 @@ def test_certificate_refusals(case: str) -> None:
         encode(**(inputs() | {"ca_der": ca}))
 
 
-def test_redaction(capsys: pytest.CaptureFixture) -> None:
+@pytest.mark.parametrize("field", ["pair_secret", "join_key", "invite_text"])
+@pytest.mark.parametrize("failure", ["assignment", "deletion", "construction-type", "construction-missing",
+    "construction-extra", "construction-positional", "reinitialization", "copy-update"])
+def test_redaction(capsys: pytest.CaptureFixture, field: str, failure: str) -> None:
     # Swift testSecretRepresentationsAreRedacted :182-189.
-    result = encode(**inputs()); decoded = decode(result.invite_text, now=NOW)
+    result = encode(**(inputs() | {"join_key": secrets.token_hex(24)}))
+    decoded = decode(result.invite_text, now=NOW)
+    private = (decoded.join_key, decoded.pair_secret, result.invite_text)
     displays = repr(result) + str(result) + repr(decoded) + str(decoded)
+
+    def error_displays(error: Exception, *, model_failure: bool = False) -> str:
+        rendered = ""
+        pending = [error]; seen = set()
+        while pending:
+            item = pending.pop()
+            if id(item) in seen:
+                continue
+            seen.add(id(item))
+            rendered += str(item) + repr(item) + repr(item.args) + repr(vars(item))
+            if hasattr(item, "errors"):
+                rendered += repr(item.errors())
+            if hasattr(item, "json"):
+                rendered += item.json()
+            pending.extend(e for e in (item.__cause__, item.__context__) if e is not None)
+            if model_failure:
+                tb = item.__traceback__
+                while tb is not None:
+                    # Consumer/test frames own their inputs; model refusal
+                    # frames must release input references before raising.
+                    if tb.tb_frame.f_globals.get("__name__") == "runtime.remote_access.invite_v2":
+                        rendered += repr(tb.tb_frame.f_locals)
+                        retained_receiver = any(isinstance(value, (type(result), type(decoded)))
+                                                for value in tb.tb_frame.f_locals.values())
+                        assert not retained_receiver, "model refusal retains a secret-bearing receiver"
+                    tb = tb.tb_next
+        return rendered
+
     for category in ("entropy", "certificate", "schema", "time"):
         displays += repr(InviteError(category)) + str(InviteError(category))
     for operation in (lambda: encode(**(inputs() | {"join_key": decoded.pair_secret})),
                       lambda: decode(result.invite_text + "=", now=NOW)):
         with pytest.raises(InviteError) as error:
             operation()
-        displays += repr(error.value) + str(error.value)
+        displays += error_displays(error.value)
+
+    target = result if field == "invite_text" else decoded
+    values = ({"invite_text": result.invite_text, "pair_secret_digest": result.pair_secret_digest,
+               "expires_at": result.expires_at} if field == "invite_text" else {
+        "home_id": decoded.home_id, "control_plane_id": decoded.control_plane_id, "connector_id": decoded.connector_id,
+        "control_url": decoded.control_url, "ca_der": decoded.ca_der, "dial_ip": decoded.dial_ip,
+        "home_endpoint": decoded.home_endpoint, "invite_id": decoded.invite_id, "join_key": decoded.join_key,
+        "pair_secret": decoded.pair_secret, "issued_at": decoded.issued_at, "expires_at": decoded.expires_at})
+    secret = getattr(target, field)
+    if failure == "assignment": operation = lambda: setattr(target, field, secret)
+    elif failure == "deletion": operation = lambda: delattr(target, field)
+    elif failure == "construction-type": operation = lambda: type(target)(**(values | {field: [secret]}))
+    elif failure == "construction-missing": operation = lambda: type(target)(**{field: secret})
+    elif failure == "construction-extra": operation = lambda: type(target)(**(values | {secret: secret}))
+    elif failure == "construction-positional": operation = lambda: type(target)(secret, **values)
+    elif failure == "reinitialization": operation = lambda: target.__init__(**values)
+    else:
+        # An exposed Pydantic-style update must not bypass immutability. The
+        # immutable replacement deliberately exposes no such API.
+        copy_update = getattr(type(target), "model_copy", None)
+        operation = (lambda: copy_update(target, update={field: secret})) if copy_update else None
+    if operation is not None:
+        with pytest.raises(Exception) as error:
+            operation()
+        displays += error_displays(error.value, model_failure=True)
+        closed_failure = isinstance(error.value, InviteError)
+    else:
+        closed_failure = True
+    assert getattr(target, field) == secret
     captured = capsys.readouterr()
     displays += captured.out + captured.err
-    for secret in (decoded.join_key, decoded.pair_secret, result.invite_text):
-        assert secret not in displays
+    leaked = any(value in displays for value in private)
+    assert not leaked, "secret disclosure in object/error diagnostics"
+    assert closed_failure, "model failure must be closed"
 
 
 def test_pairing_digest_handoff(tmp_path: Path) -> None:

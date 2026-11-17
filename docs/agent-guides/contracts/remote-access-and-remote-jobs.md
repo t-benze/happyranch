@@ -1269,15 +1269,23 @@ For `issue_invite_record`, the caller converts that integer deadline to an aware
 UTC datetime. Callers floor fractional datetime deadlines before invoking the
 integer-only encoder; the encoder refuses floats and booleans. It never extends
 a deadline or truncates an oversized invite. The runtime endpoint is validated
-as ASCII host:443 and preserved byte-for-byte; it is not the control dial IP.
+as canonical IPv4, an ASCII DNS/tailnet name (LDH labels of 1..63 bytes,
+253 bytes total), or bracketed IPv6, followed by exactly `:443`. Empty labels,
+edge hyphens, other host punctuation, IPv6 zone IDs and noncanonical IPv4
+refuse. Accepted endpoints are preserved byte-for-byte; the endpoint is not
+the control dial IP.
 
 `decode(invite_text, now=integer_unix_seconds)` uses an explicit clock, refuses
 v1 and reserved own-server/system trust, and checks the same schema, encodings,
 addresses, entropy, fingerprint, times and size limits. Both APIs perform no
 I/O or network access. Encoding always emits the fixed control URL without a
 slash; decoding also accepts the table's optional single trailing slash and
-normalizes only that URL. Result display/repr and refusal categories redact
-secrets. Explicit transport fields must never be logged or persisted as diagnostics.
+normalizes only that URL. Results are immutable slotted primitive-field objects,
+with redacted display/repr and no Pydantic validation/copy/update API. Invalid
+construction, reinitialization, assignment and deletion raise constant-message
+`InviteError` refusals; those model refusal frames release input references
+before raising and retain no input-bearing structured or chained library error.
+Explicit transport fields must never be logged or persisted as diagnostics.
 
 Assumption and division of checks (TASK-16835 manager ruling): row 5's
 “Exactly one CA DER with CA:TRUE” remains unchanged. A private bounded,

@@ -12,9 +12,6 @@ import ipaddress
 import json
 import re
 import secrets
-from urllib.parse import urlsplit
-
-from pydantic import BaseModel, ConfigDict, Field
 
 _PREFIX = "hrinvite2:"
 _CONTROL_URL = "https://control.happyranch.invalid:8443"
@@ -31,8 +28,32 @@ class InviteError(ValueError):
     """Closed categories only; never retain input in error arguments."""
 
 
-class _Redacted(BaseModel):
-    model_config = ConfigDict(strict=True, frozen=True)
+class _Redacted:
+    """Immutable primitive fields, with no input-bearing library diagnostics.
+
+    Refusal frames drop their input references before raising. No Pydantic
+    validation/copy/update API is exposed on these private-transport results.
+    """
+
+    __slots__ = ("_sealed",)
+    _types: tuple[type, ...]
+
+    def __init__(self, *args: object, **values: object) -> None:
+        if (getattr(self, "_sealed", False) or args or values.keys() != set(self.__slots__)
+                or any(type(values[name]) is not kind for name, kind in zip(self.__slots__, self._types))):
+            del self, args, values
+            raise InviteError("model")
+        for name in self.__slots__:
+            object.__setattr__(self, name, values[name])
+        object.__setattr__(self, "_sealed", True)
+
+    def __setattr__(self, *args: object, **kwargs: object) -> None:
+        del self, args, kwargs
+        raise InviteError("immutable")
+
+    def __delattr__(self, *args: object, **kwargs: object) -> None:
+        del self, args, kwargs
+        raise InviteError("immutable")
 
     def __repr__(self) -> str:
         return f"{type(self).__name__}(<redacted>)"
@@ -40,14 +61,26 @@ class _Redacted(BaseModel):
     def __str__(self) -> str:
         return self.__repr__()
 
+    def __eq__(self, other: object) -> bool:
+        if type(self) is not type(other):
+            return NotImplemented
+        return all(getattr(self, name) == getattr(other, name) for name in self.__slots__)
+
 
 class EncodedInvite(_Redacted):
-    invite_text: str = Field(repr=False)
-    pair_secret_digest: str = Field(repr=False)
+    __slots__ = ("invite_text", "pair_secret_digest", "expires_at")
+    _types = (str, str, int)
+
+    invite_text: str
+    pair_secret_digest: str
     expires_at: int
 
 
 class DecodedInvite(_Redacted):
+    __slots__ = ("home_id", "control_plane_id", "connector_id", "control_url", "ca_der", "dial_ip",
+                 "home_endpoint", "invite_id", "join_key", "pair_secret", "issued_at", "expires_at")
+    _types = (str, str, str, str, bytes, str, str, str, str, str, int, int)
+
     home_id: str
     control_plane_id: str
     connector_id: str
@@ -55,9 +88,9 @@ class DecodedInvite(_Redacted):
     ca_der: bytes
     dial_ip: str
     home_endpoint: str
-    invite_id: str = Field(repr=False)
-    join_key: str = Field(repr=False)
-    pair_secret: str = Field(repr=False)
+    invite_id: str
+    join_key: str
+    pair_secret: str
     issued_at: int
     expires_at: int
 
@@ -194,6 +227,27 @@ def _text(fields: dict[str, object], key: str) -> str:
     return value
 
 
+def _endpoint_valid(endpoint: str) -> bool:
+    """Recognize an authority without URL-parser repair or normalization."""
+    if not endpoint.isascii() or not endpoint.endswith(":443"):
+        return False
+    host = endpoint[:-4]
+    if host.startswith("[") and host.endswith("]") and "%" not in host:
+        try:
+            ipaddress.IPv6Address(host[1:-1])
+        except ipaddress.AddressValueError:
+            return False
+        return True
+    if re.fullmatch(r"[0-9]+(?:\.[0-9]+){3}", host):
+        try:
+            return str(ipaddress.IPv4Address(host)) == host
+        except ipaddress.AddressValueError:
+            return False
+    return (1 <= len(host) <= 253 and
+            all(re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?", label)
+                for label in host.split(".")))
+
+
 def _validate(fields: object, *, now: int) -> DecodedInvite:
     if type(now) is not int or not 0 <= now <= _INT64_MAX:
         raise InviteError("time")
@@ -225,20 +279,7 @@ def _validate(fields: object, *, now: int) -> DecodedInvite:
     if control_url not in (_CONTROL_URL, _CONTROL_URL + "/"):
         raise InviteError("url")
     endpoint = _text(fields, "home_endpoint")
-    # Host syntax, fixed runtime port, and byte-for-byte transport preservation.
-    try:
-        target = urlsplit("https://" + endpoint)
-        valid_endpoint = (
-            endpoint.isascii() and all(32 < ord(char) < 127 for char in endpoint)
-            and "%" not in endpoint and endpoint.endswith(":443")
-            and bool(target.hostname) and target.port == 443
-            and target.username is None and target.password is None
-            and not target.path and not target.query and not target.fragment
-            and "?" not in endpoint and "#" not in endpoint
-        )
-    except ValueError:
-        valid_endpoint = False
-    if not valid_endpoint:
+    if not _endpoint_valid(endpoint):
         raise InviteError("url")
     ca = _unb64(tls["ca_der"], "certificate")
     fingerprint = _text(tls, "sha256")
