@@ -649,7 +649,7 @@ The same `require_bootstrap_idle_history` snapshot now composes the existing
 `TasksMixin.repository_preparation_history_uncommitted` and
 `repository_preparation_closed` owners. Each original obligation must retain its
 complete immutable owner/repository/sequence and belong to the selected org, with
-positive original command receipts, worker return, outer interval closure and a
+positive original command receipts or no-admission proof, worker return, outer closure and a
 final validated `closed` record. A valid unfinished prefix, dead process, terminal
 task or successful command cannot supply missing preparation/outer evidence.
 Malformed native history retains the original reader's cause; no event is
