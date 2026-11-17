@@ -725,7 +725,7 @@ def _build_state(settings: Settings) -> DaemonState:
     owner = {"runtime": runtime, "candidate": None}
     try:
         state = DaemonState.from_runtime(runtime, settings,
-                                         construction_owner=owner)
+                                         construction_owner=owner, automatic_workflow_setup=True)
     except BaseException as primary:
         # The original exception carries its original candidate/close owner
         # through the normal startup traceback; no second constructor or retry.
@@ -1019,7 +1019,11 @@ class _DiagnosticServer(uvicorn.Server):
             return
         _startup_log("server_startup", "complete", started)
         # This is the actual same-app ASGI + listener endpoint, before signals.
-        elapsed = _startup_log("normal_startup", "serving", self._startup_origin)
+        total_elapsed = _startup_log("startup_total", "serving", self._startup_origin)
+        bootstrap = self._diagnostic_app.state.daemon._workflow_bootstrap
+        upgrade = 0.0 if bootstrap is None else bootstrap.upgrade_seconds
+        ordinary_origin = None if self._startup_origin is None else self._startup_origin + upgrade
+        elapsed = _startup_log("normal_startup", "serving", ordinary_origin)
         try:
             totals = _STARTUP_PARTITION.get()
             if totals is not None:
@@ -1029,6 +1033,8 @@ class _DiagnosticServer(uvicorn.Server):
                     partition = {phase: totals[phase] for phase in _STARTUP_PHASES}
                     partition["remaining_startup"] = max(0.0, elapsed - sum(partition.values()))
                     partition.update(launcher=totals.get("launcher"), imports=totals.get("imports"))
+                    partition["workflow_upgrade"] = upgrade
+                    partition["startup_total"] = total_elapsed
                     partition["launcher_to_serving"] = (
                         partition["launcher"] + partition["imports"] + elapsed
                         if partition["launcher"] is not None and partition["imports"] is not None

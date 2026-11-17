@@ -479,6 +479,159 @@ class BootstrapStartup:
         self.admission_seconds = 0.0
         self.discoveries: dict[Path, BootstrapDiscovery] = {}
         self.workers: list[BootstrapSupervisor] = []
+        self.holds: dict[str, str] = {}
+        self.hold_descriptors: list[dict] = []
+        self.upgrade_seconds = 0.0
+        self.prepared = False
+        self.loop = self.thread = None
+
+    def run(self, roots: tuple[tuple[str, Path], ...], settings: Settings) -> None:
+        """Keep the original event loop alive when native spawn/reap is unknown.
+
+        asyncio.run would cancel pending originals on return, losing their late
+        child kill/reap callbacks. A retained owner cannot use that teardown.
+        """
+        import asyncio
+        import threading
+        if self.loop is not None:
+            raise BootstrapEvidenceError('workflow_setup_startup_latched')
+        self.loop = asyncio.new_event_loop()
+        try:
+            self.loop.run_until_complete(self.prepare(roots, settings))
+        finally:
+            if asyncio.all_tasks(self.loop):
+                self.thread = threading.Thread(target=self.loop.run_forever,
+                    name='workflow-bootstrap-original', daemon=True)
+                self.thread.start()
+            else:
+                self.loop.close()
+
+    def require_closed(self) -> None:
+        if any(not worker.reaped or not worker.closed and not worker.discovery.fence._closed
+               for worker in self.workers):
+            raise BootstrapEvidenceError('workflow_setup_original_worker_in_flight')
+
+    def _hold(self, slug: str, reason: str, state: str) -> None:
+        """External pre-intent latch only; never obscure an existing attempt."""
+        self.holds[slug] = reason
+        parent = _directory(self.home, self.hold_descriptors)['fd']
+        key = hashlib.sha256(str(self.runtime_root).encode('utf8')).hexdigest()
+        for name in ('backups', 'workflow-sequential', key, slug):
+            try:
+                os.mkdir(name, 0o700, dir_fd=parent)
+            except FileExistsError:
+                pass
+            else:
+                os.fsync(parent)
+            child = dict(fd=os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                                   dir_fd=parent), attempted=False, closed=False)
+            self.hold_descriptors.append(child)
+            parent = child['fd']
+            _private_directory(parent)
+        if _names(parent, 64, time.monotonic()+1):
+            return
+        value = dict(format='workflow-setup-hold@1', runtime_key=key, org_slug=slug,
+                     reason=reason, state=state, attempt_time=datetime.now(timezone.utc).isoformat())
+        raw = json.dumps(value, sort_keys=True, separators=(',', ':')).encode('utf8')
+        record = dict(fd=os.open('hold.pending', os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                                0o600, dir_fd=parent), attempted=False, closed=False)
+        self.hold_descriptors.append(record)
+        if os.write(record['fd'], raw) != len(raw):
+            raise BootstrapEvidenceError('workflow_setup_short_write')
+        os.fsync(record['fd'])
+        _close_descriptor(record)
+        os.link('hold.pending', 'hold.json', src_dir_fd=parent, dst_dir_fd=parent, follow_symlinks=False)
+        os.unlink('hold.pending', dir_fd=parent)
+        os.fsync(parent)
+
+    async def prepare(self, roots: tuple[tuple[str, Path], ...], settings: Settings) -> None:
+        """Startup-only, serial upgrades before ordinary writable attachment.
+
+        A4:2 uses the normal one-daemon startup-migration trust, original A1 EX
+        and the helper's full integrity/backup/history checks. No predecessor
+        receipt or freshly empty host-owner map is used as authority.
+        """
+        if self.prepared:
+            raise BootstrapEvidenceError('workflow_setup_startup_latched')
+        self.prepared = True
+        for slug, root in roots:
+            discovery = self.discover(root)
+            worker = None
+            started = time.monotonic()
+            try:
+                selected = discovery.read()
+                if selected == 'held':
+                    raise BootstrapEvidenceError(discovery.reason)
+                if selected == 'present':
+                    continue
+                worker = BootstrapSupervisor(discovery, settings)
+
+                async def qualify(identity: tuple, digest: str) -> bool:
+                    discovery.fence.assert_held()
+                    if (not discovery.fence.exclusive or discovery.failed or discovery.closed
+                            or identity != discovery.selections[-1].source_identity):
+                        raise BootstrapEvidenceError('writer_exclusion_unproven')
+                    return True
+
+                try:
+                    await worker.run(qualify)
+                finally:
+                    self.upgrade_seconds += max(0.0, time.monotonic()-started)
+                # The original child returned, positively closed and reaped;
+                # final registered evidence must agree before releasing EX.
+                from runtime.daemon.workflow_setup_status import _attempt_record
+                key = hashlib.sha256(str(self.runtime_root).encode('utf8')).hexdigest()
+                record = _attempt_record(self.home, self.runtime_root, key, slug,
+                                         min(discovery.deadline, time.monotonic()+1))
+                if (record['phase'] != 'registered' or record['attempt_id'] != worker.attempt_id
+                        or record['db_identity'] != dict(path=str(root/'happyranch.db'),
+                            device=discovery.fence.database_identity[0], inode=discovery.fence.database_identity[1])):
+                    raise BootstrapEvidenceError('workflow_setup_registration_unavailable')
+                discovery.close()
+            except Exception as exc:
+                reason = (worker.result['reason'] if worker is not None and worker.result and worker.result['state'] != 'verified' else
+                          str(exc) if isinstance(exc, BootstrapEvidenceError) and str(exc) in (
+                              'writer_exclusion_unproven', 'startup_upgrade_budget_unavailable') else
+                          'writer_exclusion_unproven' if isinstance(exc, OrgAccessHeld) else
+                          'install_incomplete')
+                if reason not in ('writer_exclusion_unproven', 'startup_upgrade_budget_unavailable',
+                        'history_check_failed', 'integrity_check_failed', 'backup_verification_failed',
+                        'registration_failed', 'default_load_budget_exceeded', 'commit_uncertain'):
+                    reason = 'install_incomplete'
+                self.holds[slug] = reason
+                try:
+                    state = ('not_installed' if discovery.result in ('absent', 'held')
+                             and (worker is None or worker.closed and not worker.permit_sent) else 'unknown')
+                    self._hold(slug, reason, state)
+                except Exception:
+                    # Broken-org status remains visible even if external evidence
+                    # cannot be published. Never infer a persisted latch here.
+                    pass
+                try:
+                    if worker is None or worker.reaped and worker.closed:
+                        discovery.close()
+                except Exception:
+                    pass  # Original unknown custody remains in this startup owner.
+            finally:
+                for record in reversed(self.hold_descriptors):
+                    if not record['attempted']:
+                        try:
+                            _close_descriptor(record)
+                        except OSError as exc:
+                            record['error'] = exc
+                            self.holds[slug] = 'install_incomplete'
+
+    def take_shared(self, root: Path) -> OrgAccessFence:
+        discovery = self.discoveries[root]
+        if discovery.result == 'present' and not discovery.closed:
+            return discovery.take_shared()
+        # A successful upgrade released EX only after original closure. The
+        # normal attachment is a fresh SH interval, without another installer.
+        if root.name in self.holds or not discovery.closed:
+            raise BootstrapEvidenceError('workflow_setup_discovery_transfer_refused')
+        fence = self._acquire(discovery, exclusive=False, deadline=time.monotonic()+5)
+        discovery.fences[-1]['transferred'] = True
+        return fence
 
     def discover(self, root: Path) -> BootstrapDiscovery:
         root = Path(root)
@@ -653,7 +806,7 @@ class BootstrapSource:
     """Original read snapshot and independent backup, before source effects.
 
     EX supplies cooperative exclusion only. The coordinator must independently
-    qualify original native/host/producer owners BEFORE allocating an attempt.
+    qualify EX and complete durable history BEFORE allocating an attempt (A4:2).
     Construction performs no opens so custody survives partial open()/backup().
     No method checkpoints, repairs, installs, restores, replays or releases EX.
     """
@@ -701,6 +854,11 @@ class BootstrapSource:
                                uri=True, timeout=0)
         # Retain before PRAGMA, native cursor work or any other fallible setup.
         self.connections.append(dict(connection=conn, attempted=False, closed=False))
+        if path == self.path:
+            # SQLite may otherwise checkpoint on close even after a refused
+            # transaction. Only our explicit post-COMMIT checkpoint may move
+            # retained WAL bytes into the source DB.
+            conn.setconfig(sqlite3.SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, True)
         conn.row_factory = sqlite3.Row
         if readonly:
             conn.execute('PRAGMA query_only=ON')
@@ -941,14 +1099,14 @@ class BootstrapSource:
         self.closed = True
 
 
-def require_bootstrap_idle_history(source: BootstrapSource) -> None:
-    """SELECT-only durable prerequisite, never original host/exclusion clearance.
+def require_bootstrap_idle_history(source: BootstrapSource, *, writer: sqlite3.Connection | None = None) -> None:
+    """Complete durable prerequisite under A4:2's original cooperative EX.
 
     Reuse the native owners' strict histories on the SAME coherent source.
     No Database construction, recovery, attestation, stale-writer exception or
     new participation marker can discharge retained preparation uncertainty.
-    Registry/cooperating-host and actual original process custody must still
-    qualify separately before an automatic intent is allocated.
+    The actual writer repeats this before COMMIT on the same cumulative ledger.
+    Pre-A1 concurrent daemons remain the documented startup-migration limitation.
     """
     from types import SimpleNamespace
     from runtime.infrastructure.producer_admission import ProducerAdmissionStore, NativeWriterStore
@@ -957,12 +1115,15 @@ def require_bootstrap_idle_history(source: BootstrapSource) -> None:
     from runtime.infrastructure.db.tasks import TasksMixin, repository_preparation_closed
     from runtime.infrastructure.workflow_schema import _validate_coding_source_idle
 
-    if source._history_started:
+    if writer is None and source._history_started:
         raise BootstrapEvidenceError('workflow_setup_history_latched')
-    source._unchanged()
-    conn = source.source
+    source._unchanged() if writer is None else source._check()
+    conn = source.source if writer is None else writer
     if (conn is None or source.layout is None or source.layout.sequential
-            or not conn.in_transaction or conn.execute('PRAGMA query_only').fetchone()[0] != 1):
+            or not conn.in_transaction
+            or writer is None and conn.execute('PRAGMA query_only').fetchone()[0] != 1
+            or writer is not None and not any(record['connection'] is writer and not record['attempted']
+                                             for record in source.connections)):
         raise BootstrapEvidenceError('workflow_setup_history_owner_invalid')
     source._history_started = True
     deadline = min(time.monotonic()+5, source.allowance.deadline)
@@ -1027,16 +1188,16 @@ def require_bootstrap_idle_history(source: BootstrapSource) -> None:
         if any(not state.producer_settled or state.deferred or state.unknown
                or any(not attempt.settled or not attempt.quiescent for attempt in state.attempts)
                for state in producers.values()):
-            raise BootstrapEvidenceError('writer_exclusion_unproven')
+            raise BootstrapEvidenceError('workflow_setup_history_not_idle')
         writers = NativeWriterStore(facade, source.fence.root.name).history_uncommitted()
         if any(state.state != 'settled' for state in writers.values()):
-            raise BootstrapEvidenceError('writer_exclusion_unproven')
+            raise BootstrapEvidenceError('workflow_setup_history_not_idle')
         # A terminal task label cannot settle even a pre-launch preparation.
         # Closed Pause invocations are removed by their original owner; every
         # remaining entry still needs that owner's positive reconciliation.
         for row in acquire('SELECT admission_journal_json FROM task_pause_controls'):
             if decode_journal(row[0])['entries']:
-                raise BootstrapEvidenceError('writer_exclusion_unproven')
+                raise BootstrapEvidenceError('workflow_setup_history_not_idle')
         invocations = acquire('SELECT id,thread_id,agent_name,session_id FROM thread_invocations ORDER BY id')
         histories = acquire("SELECT id,task_id,agent,payload FROM audit_log WHERE action='thread_move_lifecycle' ORDER BY id")
         by_thread: dict[str, list] = {}
@@ -1049,7 +1210,7 @@ def require_bootstrap_idle_history(source: BootstrapSource) -> None:
                 row = native.get(state.invocation_id)
                 if (row is None or (row['thread_id'], row['agent_name'], row['session_id'])
                         != (thread, state.agent_id, state.session_id)):
-                    raise BootstrapEvidenceError('writer_exclusion_unproven')
+                    raise BootstrapEvidenceError('workflow_setup_history_not_idle')
         for invocation in invocations:
             history = by_thread.get(invocation['thread_id'], [])
             # Bound complete sibling replay as well as initial acquisition.
@@ -1061,7 +1222,7 @@ def require_bootstrap_idle_history(source: BootstrapSource) -> None:
             state = states[-1][1]
             if (not state.producer_settled or state.deferred or state.unknown
                     or any(not attempt.settled or not attempt.quiescent for attempt in state.attempts)):
-                raise BootstrapEvidenceError('writer_exclusion_unproven')
+                raise BootstrapEvidenceError('workflow_setup_history_not_idle')
         # Repository commands have independent original worker/outer custody.
         # A terminal native producer or empty Pause journal cannot close them.
         # Scalar-size the WHOLE collection above, then debit each original
@@ -1079,12 +1240,12 @@ def require_bootstrap_idle_history(source: BootstrapSource) -> None:
                 check()
                 event = item['event']
                 if event['owner']['org'] != source.fence.root.name:
-                    raise BootstrapEvidenceError('writer_exclusion_unproven')
+                    raise BootstrapEvidenceError('workflow_setup_history_not_idle')
                 obligations.setdefault(event['obligation'], []).append(event)
             for stream in obligations.values():
                 check()
                 if stream[-1]['phase'] != 'closed' or not repository_preparation_closed(stream):
-                    raise BootstrapEvidenceError('writer_exclusion_unproven')
+                    raise BootstrapEvidenceError('workflow_setup_history_not_idle')
             check()
         # Storage validity and native terminal history alone cannot exclude
         # queued/result/recovery work or retained publication/profile owners.
@@ -1113,7 +1274,7 @@ def require_bootstrap_idle_history(source: BootstrapSource) -> None:
         _validate_coding_source_idle(conn, expected_org_slug=source.fence.root.name,
                                      layout=source.layout.document)
         check()
-        source._unchanged()
+        source._unchanged() if writer is None else source._check()
     except BaseException:
         source.failed = True
         raise
@@ -1592,8 +1753,9 @@ class BootstrapInstall:
             self.writer.execute('PRAGMA synchronous=FULL')
             if self.writer.execute('PRAGMA synchronous').fetchone()[0] != 2:
                 raise BootstrapEvidenceError('workflow_setup_durability_unavailable')
-            self._checkpoint(self.writer)
-            # Reentry after checkpoint uses the same identity/inventory under
+            # Never checkpoint before COMMIT: a later failed gate must leave
+            # the original DB bytes unchanged, including an existing WAL source.
+            # Writer reentry uses the same identity/inventory under
             # BEGIN IMMEDIATE, and the primitive repeats writer-source integrity.
             def guard():
                 self._inputs()
@@ -1604,6 +1766,7 @@ class BootstrapInstall:
                 self._default_target(self.writer)
                 self._preserved(self.writer)
                 guard()
+                require_bootstrap_idle_history(self.source, writer=self.writer)
                 self.attempt.publish('pre_commit')
                 self._check()
                 if self._permit_requested:
@@ -1696,17 +1859,127 @@ class BootstrapInstall:
             raise
 
 
+class BootstrapRegistration:
+    """Actual A2 registrar under a duplicate of the original EX, never served.
+
+    Successful definition registration, positive original closure and the
+    machine audit precede registered. An uncertain tail is never replayed.
+    """
+
+    def __init__(self, attempt: BootstrapAttempt, settings: Settings) -> None:
+        self.attempt, self.settings = attempt, settings
+        self.owner: dict = {'startup_acquisition': True}
+        self.audit_owner: dict = {}
+        self.descriptors: list[dict] = []
+        self.org = self.fence = self.audit = None
+        self.started = self.closed = self.failed = False
+
+    def run(self) -> None:
+        from runtime.daemon.org_state import OrgState
+        from runtime.infrastructure.database import Database
+        from runtime.workflows.sequential_builtin import preset_catalog, inspect_definition
+        from runtime.workflows.sequential_history import _ReadBudget
+
+        if self.started:
+            raise BootstrapEvidenceError('workflow_setup_registration_latched')
+        self.started = True
+        attempt = self.attempt
+        attempt._check()
+        if attempt._phase != 'verified':
+            raise BootstrapEvidenceError('workflow_setup_registration_unavailable')
+        for fd in (attempt.fence.fd, attempt.fence._parent):
+            self.descriptors.append(dict(fd=os.dup(fd), attempted=False, closed=False))
+        self.fence = OrgAccessFence(self.descriptors[0]['fd'], self.descriptors[1]['fd'],
+            attempt.fence._name, attempt.fence.root, True, attempt.fence._namespace)
+        self.org = OrgState.load(slug=attempt.slug, root=attempt.fence.root,
+            settings=self.settings, attachment_owner=self.owner, access_fence=self.fence,
+            bootstrap_registration=attempt)
+        attempt._check()
+        if (self.org._startup_publication_held or self.org._startup_authority_error is not None
+                or self.org.naming_readiness != 'ready'):
+            raise BootstrapEvidenceError('workflow_setup_registration_unavailable')
+        with self.org.db.workflow_schema_transaction() as conn:
+            budget = _ReadBudget(deadline=min(time.monotonic()+5, attempt.deadline))
+            if any(not inspect_definition(conn, compiled, budget)[1] for compiled in preset_catalog()):
+                raise BootstrapEvidenceError('workflow_setup_registration_unavailable')
+        self._close_org()
+        attempt._check()
+        self.audit = Database(attempt.home/'runtime-audit.db', construction_owner=self.audit_owner,
+                              acquisition_timeout=0)
+        self.audit.insert_audit_log(task_id='', agent='daemon', action='workflow_setup_registered',
+            payload=dict(format='workflow-setup-registered@1', runtime_key=attempt.runtime_key,
+                org_slug=attempt.slug, attempt_id=attempt.attempt_id,
+                backup_sha256=attempt._backup_sha256, target_version=1))
+
+    def _close_org(self) -> None:
+        if self.owner.get('registration_close_attempted'):
+            if not self.owner.get('registration_closed'):
+                raise BootstrapEvidenceError('workflow_setup_registration_close_unknown')
+            return
+        self.owner['registration_close_attempted'] = True
+        if self.org is not None:
+            self.org.close()
+        elif self.owner.get('db_construction_started') and not self.owner.get('load_db_closed'):
+            raise BootstrapEvidenceError('workflow_setup_registration_close_unknown')
+        if self.fence is not None and self.fence._closed:
+            for record in self.descriptors:
+                record['attempted'] = record['closed'] = True
+        else:
+            for record in reversed(self.descriptors):
+                _close_descriptor(record)
+        self.owner['registration_closed'] = True
+
+    def close(self) -> None:
+        if self.closed:
+            return
+        if self.failed:
+            raise BootstrapEvidenceError('workflow_setup_registration_close_unknown')
+        errors = []
+        try:
+            self._close_org()
+        except BaseException as exc:
+            errors.append(exc)
+        if not self.audit_owner.get('audit_close_attempted'):
+            self.audit_owner['audit_close_attempted'] = True
+            try:
+                if self.audit is not None:
+                    self.audit.close()
+                elif self.audit_owner.get('load_db') is not None and not self.audit_owner.get('load_db_closed'):
+                    raise BootstrapEvidenceError('workflow_setup_registration_close_unknown')
+            except BaseException as exc:
+                errors.append(exc)
+        if errors:
+            self.failed = True
+            raise BootstrapEvidenceError('workflow_setup_registration_close_unknown') from errors[0]
+        self.closed = True
+
+
 _PIPE_LIMIT = 16384
 _WORKER_REASONS = frozenset({'storage_verified', 'org_database_busy', 'org_database_corrupt',
     'org_database_full', 'org_database_interrupted', 'org_database_io', 'org_database_unavailable',
     'org_filesystem_unavailable', 'org_load_refused', 'org_startup_unavailable',
-    'default_load_budget_exceeded'})
+    'default_load_budget_exceeded', 'writer_exclusion_unproven', 'history_check_failed',
+    'integrity_check_failed', 'backup_verification_failed', 'registration_failed', 'commit_uncertain'})
 
 
 def _worker_failure_reason(primary: BaseException, rehearsal: BootstrapRehearsal | None,
                            writer: BootstrapInstall | None) -> str:
     from runtime.daemon.state import _startup_failure_reason
     from runtime.workflows._read_exhaustion import exhausted
+    from runtime.infrastructure.workflow_integrity import InstallIntegrityError
+    if writer is not None and writer.commit_uncertain:
+        return 'commit_uncertain'
+    if isinstance(primary, InstallIntegrityError):
+        return 'backup_verification_failed' if primary.stage == 'backup' else 'integrity_check_failed'
+    if isinstance(primary, OrgAccessHeld):
+        return 'writer_exclusion_unproven'
+    if isinstance(primary, BootstrapEvidenceError) and str(primary).startswith('workflow_setup_backup'):
+        return 'backup_verification_failed'
+    if isinstance(primary, BootstrapEvidenceError) and str(primary).startswith('workflow_setup_history'):
+        return 'history_check_failed'
+    if isinstance(primary, ValueError) and str(primary).startswith((
+            'workflow_coding_source_owner_', 'workflow_submission_source_owner_')):
+        return 'history_check_failed'
     if ((rehearsal is not None and not rehearsal.completed
             or writer is not None and not writer.commit_uncertain) and exhausted(primary)):
         return 'default_load_budget_exceeded'
@@ -1824,7 +2097,8 @@ def bootstrap_helper_main(argv: list[str]) -> int:
     It cannot allocate intent until its ORIGINAL parent qualifies the observed
     source, or COMMIT without the same parent's single bound permit. A private
     rehearsal uses the existing actual writable OrgState first/next owner.
-    Storage verification is the final child stage; registration stays parent-owned.
+    Qualified registration, positive closure, runtime audit and registered phase
+    complete the child's original EX interval before ordinary parent attachment.
     """
     if len(argv) != 3 or any(not value.isascii() or not value.isdecimal() for value in argv):
         return 2
@@ -1834,7 +2108,7 @@ def bootstrap_helper_main(argv: list[str]) -> int:
     channel = socket.socket(fileno=channel_fd)
     # Even malformed request acquisition cannot hang an unowned bootstrap child.
     control = BootstrapControl(channel, time.monotonic()+5)
-    source = attempt = rehearsal = writer = fence = None
+    source = attempt = rehearsal = writer = registration = fence = None
     sqlite_temporary = sqlite_identity = None
     state, closed, primary = 'unknown', False, None
     try:
@@ -1886,12 +2160,16 @@ def bootstrap_helper_main(argv: list[str]) -> int:
         rehearsal.close()
         writer = BootstrapInstall(source, attempt, rehearsal)
         writer.run(control.permit)
+        registration = BootstrapRegistration(attempt, settings)
+        registration.run()
+        registration.close()
+        attempt.publish('registered')
         state = 'verified'
     except BaseException as exc:
         primary = exc
     finally:
         errors = []
-        for owner in (writer, rehearsal, source, attempt):
+        for owner in (registration, writer, rehearsal, source, attempt):
             if owner is not None:
                 try:
                     owner.close()
@@ -1927,6 +2205,7 @@ def bootstrap_helper_main(argv: list[str]) -> int:
             state = 'unknown'
         result = dict(event='result', state=state, closed=closed,
                       reason='storage_verified' if primary is None and state == 'verified' else
+                             'registration_failed' if registration is not None else
                              _worker_failure_reason(primary if primary is not None else errors[0], rehearsal, writer),
                       attempt_id=None if attempt is None else attempt.attempt_id)
         try:
@@ -1944,9 +2223,9 @@ def bootstrap_helper_main(argv: list[str]) -> int:
 class BootstrapSupervisor:
     """One original subprocess/EX interval, including delayed spawn and reap.
 
-    run()'s qualifier is the coordinator's original host/registry/process proof,
-    rechecked before intent and COMMIT. This class cannot supply that proof.
-    Its verified return means storage only, never final registered/ready status.
+    The coordinator rechecks original cooperative EX and source binding before
+    intent and COMMIT under A4:2 startup-migration trust. The helper's verified
+    return also requires qualified registration, runtime audit and final phase.
     """
 
     def __init__(self, discovery: BootstrapDiscovery, settings: Settings) -> None:
@@ -2002,8 +2281,8 @@ class BootstrapSupervisor:
     async def run(self, qualify: Callable[[tuple, str], Awaitable[bool]]) -> dict:
         """Bounded original execution; cancellation withdraws, drains, then kills.
 
-        Only literal True from the qualifier permits effects. Neither a transport record nor
-        EX possession synthesizes original qualification. No failed run repeats.
+        Only literal True from the coordinator's A4:2 EX/source recheck permits
+        effects; transport alone grants none. No failed run repeats.
         """
         import asyncio
         import signal

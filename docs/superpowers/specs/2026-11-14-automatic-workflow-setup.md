@@ -7,6 +7,84 @@ loads. The approved design is TASK-16078 design v6 (SHA256
 reviewed in TASK-16087. Root TASK-16061's `i1-split-ruling.md` separates the
 install gates (I1a) from the daily read-only advisory report (I1b).
 
+## A4 startup and R2 amendment — THR-336 msg250/251 (A4:2)
+
+This is the current A4 contract and amends design v2 **R2**, retained by v6.
+Positive previous-owner proof is **not required**. Existing org upgrades use the
+same one-daemon-at-a-time trust as the ordinary startup `ALTER TABLE` migrations
+in `runtime/infrastructure/db/schema.py`, together with the original A1 EX lock,
+I1a full `PRAGMA integrity_check`, a SHA-256 verified backup before any source
+write, and the complete durable idle/history checks. No per-org clean-shutdown
+receipt is created or consumed. A concurrently running pre-A1/old-code daemon
+is a **documented cooperative limitation**: it does not participate in the lock
+protocol. EX does not fence that process. A4:2 accepts that limitation; it does
+not certify its closure or weaken retained native/history predicates.
+
+`__main__._build_state` mounts `BootstrapStartup` before ordinary org attachment,
+startup recovery and serving. Runtime switching does not invoke this automatic
+upgrade. SH discovery routes installed storage to ordinary complete validation
+without installer, inventory, physical scan or backup work. Absent storage is
+rediscovered under EX. The parent rechecks the original EX and source binding
+before intent and before its one bound COMMIT permission. The child checks full
+source/backup integrity, exact preservation and every durable producer, native
+writer, Pause, thread, repository-preparation and current-domain idle predicate.
+It repeats the durable checks in the actual target transaction before COMMIT.
+No source checkpoint occurs before COMMIT, so a refused late gate cannot move
+an existing WAL into the original DB file. Known COMMIT alone permits checkpoint.
+
+Backups remain at
+`<daemon_home>/backups/workflow-sequential/<sha256(canonical-runtime-root)>/<org>/<attempt-id>/before.db`.
+The helper runs actual writable FIRST/NEXT rehearsal with unchanged default
+readers, installs, independently reopens, then invokes the A2 qualified
+`SequentialBuiltinStore` through the real unpublished org loader under a duplicate
+of the same original EX. Registration adds only the reviewed definition bytes;
+missing settings remain Disabled and roles unset. Positive original close and an
+empty-task/daemon `workflow_setup_registered` audit in workflow-free
+`runtime-audit.db` precede the final durable `registered` phase. Only then does
+ordinary attachment begin under fresh SH. An exact installed second start does
+no installation, backup or definition-registration DML and adds no setup audit.
+
+Failed checks HOLD the org with a closed visible cause, without a fallback
+writable load. Pre-intent refusals publish a private no-follow `hold.json` latch
+when possible; status reports only observed absence, otherwise unknown. Integrity,
+backup and history refusals use `integrity_check_failed`,
+`backup_verification_failed` and `history_check_failed`.
+`writer_exclusion_unproven` means EX could not be acquired or original custody
+was lost; missing predecessor proof never selects it. Existing attempt phases
+are never replaced by a hold. `pre_commit` stays `unknown/commit_uncertain`;
+committed/verified without registered stays installed_unverified. Failed,
+unfinished, malformed and unknown recorded attempts never replay or auto-restore,
+even after restart. Backups and records remain for separately authorized operator
+assessment. Missing evidence is never success. Existing machine-wide profile
+dependency uncertainty may also hold other consumers; A4 does not waive it.
+
+The one-time **pre-serving upgrade window** is at most **120s/org, 180s total**,
+with a **20s final reserve**, **at least 60s remaining before another attempt**,
+**0.5s cumulative fence admission/busy wait**, and **100s pre-COMMIT work**
+(TASK-16625 step23/MEM-703). It is separate from the **<=10s ordinary all-org
+load/listener gate**. Complete reads remain **32M SQL steps and 5s per read**,
+with the original separate A/B/C limits. No limit is raised. Diagnostics expose
+`startup_total` and `workflow_upgrade` separately; `normal_startup` and the ordinary
+launcher-to-serving partition exclude only actual one-time upgrade work.
+First-start upgrade duration, ordinary load/listener and installed subsequent
+startup are distinct acceptance observations, never inferred from shell duration.
+
+Parent EOF/cancellation withdraws permission, bounds terminate/kill/reap within
+the original reserve and retains unknown originals. The startup owner keeps its
+original event loop alive for pending spawn/reap callbacks, including a late
+child kill; it never cancels those originals merely to close a temporary loop.
+Unknown closure retains EX and prevents a successful daemon close claim. A late
+result never becomes readiness. Native filesystem calls remain cooperative.
+The focused `--bootstrap-startup[=CASE]` shell tests drive the real build and
+supervisor, including failed checks, late history over a real WAL, native COMMIT
+denial, killed child, uncertain registrar close and no replay. They are private
+synthetic evidence, not live-org or whole-listener timing qualification.
+
+Earlier A4 checkpoint sections below record delivery history; their unmounted,
+missing-positive-owner and unfinished registrar statements are superseded by
+this R2 amendment and startup contract. Offline manual-install requirements,
+Coding setup/roles/Allow, PR1252's hold, and deploy/restart authority are unchanged.
+
 ## I1a: mandatory full integrity during offline installation
 
 `runtime/infrastructure/workflow_integrity.py` owns the explicit native full

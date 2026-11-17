@@ -101,6 +101,7 @@ class DaemonState:
     _attachment_swap_pending: bool = field(init=False, default=False, repr=False)
     _attachment_swap_failed: bool = field(init=False, default=False, repr=False)
     _startup_held_orgs: dict[str, OrgState] = field(init=False, default_factory=dict, repr=False)
+    _workflow_bootstrap: Any = field(init=False, default=None, repr=False)
     _attachment_closes: dict[int, dict] = field(init=False, default_factory=dict, repr=False)
     _org_readers: dict[int, int] = field(init=False, default_factory=dict, repr=False)
     _retiring_orgs: set[int] = field(init=False, default_factory=set, repr=False)
@@ -383,7 +384,8 @@ class DaemonState:
             )
 
     @classmethod
-    def from_runtime(cls, runtime: RuntimeDir, settings: Settings, *, construction_owner: dict | None = None) -> "DaemonState":
+    def from_runtime(cls, runtime: RuntimeDir, settings: Settings, *, construction_owner: dict | None = None,
+                     automatic_workflow_setup: bool = False) -> "DaemonState":
         state = cls(runtime=runtime, settings=settings)
         construction = construction_owner if construction_owner is not None else {}
         construction["candidate"] = state
@@ -461,7 +463,13 @@ class DaemonState:
                             exc,
                         )
 
-            for slug, root in runtime.iter_org_roots():
+            roots = tuple(runtime.iter_org_roots())
+            if automatic_workflow_setup:
+                from runtime.infrastructure.workflow_sequential_bootstrap import BootstrapStartup
+                state._workflow_bootstrap = BootstrapStartup(home=daemon_home(), runtime_root=runtime.root)
+                state._workflow_bootstrap.run(roots, settings)
+                state.broken_orgs.update(state._workflow_bootstrap.holds)
+            for slug, root in roots:
                 state.workflow_setup_roots[slug] = root
                 if slug in state.broken_orgs:
                     continue
@@ -470,7 +478,10 @@ class DaemonState:
                 token = object()
                 state._attachment_owners[token] = owner
                 try:
-                    org = OrgState.load(slug=slug, root=root, settings=settings, attachment_owner=owner)
+                    fence = (state._workflow_bootstrap.take_shared(root)
+                             if state._workflow_bootstrap is not None else None)
+                    org = OrgState.load(slug=slug, root=root, settings=settings, attachment_owner=owner,
+                                        access_fence=fence)
                     owner['load_returned'] = True
                     owner["org"] = org
                     org._profile_coordinator = state.profile_coordinator
@@ -798,6 +809,8 @@ class DaemonState:
 
     async def close_all(self) -> None:
         self._stop_runner_admission()
+        if self._workflow_bootstrap is not None:
+            self._workflow_bootstrap.require_closed()
         await self._drain_attachments()
         captured = self._capture_attachments()
         await self._drain_thread_releases()

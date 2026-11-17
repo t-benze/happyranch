@@ -20,7 +20,8 @@ SetupState = Literal['not_installed', 'installed_unverified', 'installed_verifie
 SetupReason = Literal['evidence_unavailable', 'registered', 'not_installed', 'install_incomplete',
                       'commit_uncertain', 'installation_unverified', 'default_load_budget_exceeded',
                       'default_load_qualification_unavailable', 'writer_exclusion_unproven',
-                      'startup_upgrade_budget_unavailable']
+                      'startup_upgrade_budget_unavailable', 'history_check_failed', 'integrity_check_failed',
+                      'backup_verification_failed', 'registration_failed']
 
 
 class Closed(BaseModel):
@@ -111,6 +112,19 @@ def _attempt_record(home: Path, runtime_root: Path, key: str, slug: str, deadlin
     outcomes = []
     with directory(root, deadline) as namespace:
         names = _names(namespace, 64, deadline)
+        if names == ['hold.json']:
+            value, _, _ = _record(namespace, 'hold.json', deadline)
+            if (set(value) != {'format', 'runtime_key', 'org_slug', 'reason', 'state', 'attempt_time'}
+                    or value['format'] != 'workflow-setup-hold@1'
+                    or (value['runtime_key'], value['org_slug']) != (key, slug)
+                    or value['state'] not in ('unknown', 'not_installed')
+                    or value['reason'] not in ('writer_exclusion_unproven', 'startup_upgrade_budget_unavailable',
+                        'history_check_failed', 'integrity_check_failed', 'backup_verification_failed',
+                        'registration_failed', 'install_incomplete', 'default_load_budget_exceeded', 'commit_uncertain')
+                    or _names(namespace, 64, deadline) != names):
+                raise ValueError('attempt_hold_invalid')
+            return dict(state=value['state'], reason=value['reason'], phase='held',
+                        attempt_time=_utc(value['attempt_time']), backup_path=None)
         if not 0 < len(names) <= 64:
             raise ValueError('attempt_namespace_unavailable')
         for name in sorted(names):

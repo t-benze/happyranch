@@ -2,50 +2,42 @@
 
 ### A4 startup attachment custody
 
-The private `--workflow-sequential-bootstrap-helper` dispatch now reaches the
-original source/backup/rehearsal/writer stages before daemon imports. Its parent
-`BootstrapSupervisor` retains the original subprocess, socket and inherited EX
-description, including delayed spawn. One startup admits no replacement while
-an original worker remains unreaped. The coordinator must provide positive
-original host/registry/cooperating-host qualification before intent and again
-before the single same-attempt COMMIT permit; neither EX nor transport supplies
-that proof. The helper selects a private literal SQLite temp volume before SQL.
+`__main__._build_state` mounts `BootstrapStartup` before writable ordinary org
+attachment and serving; runtime switching retains its separate ordinary path.
+Founder THR-336 msg250/251 (A4:2) amends R2: predecessor proof is not required.
+Normal one-daemon startup-migration trust combines with original A1 EX, full I1a
+integrity, verified SHA-256 backup before source writes and complete durable
+producer/writer/Pause/thread/repository/current-domain idle history, repeated in
+the target transaction before COMMIT. A concurrent pre-A1/old-code daemon remains
+a documented cooperative limitation; no per-org closure receipt is introduced.
+`writer_exclusion_unproven` applies to unavailable/lost EX, never missing
+predecessor proof. Retained history is neither reconciled nor rewritten.
 
-Parent EOF, unsolicited/duplicate permission and cancellation permanently revoke
-source/phase effects at the next cooperative check. Parent and child retain the
-original 120s/org, 180s-total and 20s COMMIT/closure reserve. Cancellation first
-withdraws permission, permits bounded original cleanup, then terminates/kills
-and observes the original reap within that reserve. Unavailable spawn/reap or
-closure retains the original owner/fence; a late result cannot become success.
-Process cancellation propagates after this custody handling. Native filesystem
-calls remain cooperative and are not claimed hard-wall bounded.
+The source/frozen private helper retains original subprocess/socket/inherited EX
+custody. Installed SH discovery performs no install/backup/inventory work. Absent
+storage is rediscovered under EX before intent. Full source/backup/target checks,
+actual writable FIRST/NEXT rehearsal, one parent permit and independent reopen
+precede the actual A2 qualified source registrar. Source checkpoint occurs only
+after known COMMIT. The never-served registrar uses a duplicate of the same EX;
+positive original close and the empty-task/daemon runtime registration audit
+precede final registered publication. Only then does normal SH attachment start.
 
-The child's positive result is storage `verified` only, with every original
-connection and private rehearsal positively closed. It performs no source
-registration, final audit/status publication or live attachment. The existing
-`--bootstrap-worker[=CASE]` shell table observes real subprocess/EX/socket and
-persisted source/phase boundaries. Automatic runtime mounting, positive original
-host qualification, final registration/status and whole-listener acceptance
-remain incomplete; this checkpoint does not change what a restart installs.
+A failed check holds the org without fallback writable loading. Pre-intent holds
+may publish private external latches; existing phases are never overwritten.
+A last pre_commit remains unknown/commit_uncertain; committed/verified without
+registered remains installed_unverified. Failed/unknown records never replay or
+auto-restore. Parent EOF/cancellation withdraws permission before bounded cleanup,
+terminate/kill and original reap. Unknown closure retains EX and prevents a
+successful shutdown claim. A dedicated retained original loop preserves pending
+spawn/reap and late-child kill callbacks instead of cancelling them on return.
+Late success never becomes readiness; native filesystem calls remain cooperative.
 
-Before any automatic intent, `BootstrapSource.open` also invokes the existing
-SELECT-only current-domain idle reader on its original query-only snapshot.
-Queued tasks, callback/recovery claims, publication/profile leases and remote
-operations retain their original refusal rules; a dead PID does not release a
-lease. Whole collections are scalar-sized before payload acquisition and charged
-to the same 8192-row/64MiB native-history acquisition ledger, five-second read
-deadline and cumulative install SQL ledger. Terminal history can pass this
-prerequisite without granting original host/process/preparation or cooperating
-host clearance. No historical state is rewritten or reconciled by this read.
-
-That same prerequisite also composes the existing complete repository-preparation
-history reader and original command/worker/outer closure validator. Every retained
-obligation must belong to this org and end in a validated `closed` record;
-successful command return, worker return or a terminal task alone cannot close it.
-The entire collection is scalar-sized before payload acquisition; scoped replay
-debits the same acquisition, SQL and deadline ledgers. Malformed history retains
-its original native refusal cause. This adds no live host clearance or automatic
-installation caller.
+The one-time pre-serving upgrade window remains 120s/org, 180s total, 20s reserve,
+>=60s before another attempt, 0.5s cumulative admission and 100s pre-COMMIT.
+Ordinary all-org load/listener remains <=10s, with 32M SQL, separate A/B/C and
+5s complete readers. Diagnostics separate actual upgrade work from ordinary
+startup; focused private shells establish neither live-org nor whole-listener
+timing acceptance. See the [current R2 amendment](../../superpowers/specs/2026-11-14-automatic-workflow-setup.md#a4-startup-and-r2-amendment--thr-336-msg250251-a42).
 
 `DaemonState.from_runtime` contains each org's construction and post-load binding
 before adding it to the runnable map. Expected SQLite/filesystem/data refusals
@@ -69,7 +61,7 @@ cancellation still propagates to `_build_state`'s original cleanup owner.
 The entry tail resets SQLite busy waiting to zero before any of this work and
 restores the normal five-second timeout only for still-runnable attachments after
 its final profile pass. Held connections retain zero waiting. These operations
-supply neither original-host setup qualification nor whole-listener timing proof.
+do not replace the automatic integrity/history gates or whole-listener timing proof.
 
 The optional `Database` construction owner receives the instance immediately
 after connect and before PRAGMA/DDL. Constructor failure attempts one close,

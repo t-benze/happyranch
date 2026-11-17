@@ -1,5 +1,40 @@
 # Sequential workflow storage — operator draft
 
+## Automatic daemon-start installation (A4:2)
+
+Founder THR-336 msg250/251 amends design v2 R2 (retained by v6): positive
+previous-owner proof is not required. Automatic startup uses the same
+one-daemon-at-a-time trust as ordinary startup schema migrations, plus original
+A1 EX, full I1a integrity, verified SHA-256 backup before source writes and all
+complete durable history checks, repeated before COMMIT. A concurrent
+pre-A1/old-code daemon is a **documented cooperative limitation**, because it
+does not acquire the participating lock. No clean-shutdown receipt is used.
+
+On the next startup each of happyranch, danze and family is treated conditionally:
+installed storage takes ordinary complete validation without another backup or
+installer; absent storage installs only if every gate passes. Otherwise the org
+HOLDs with a closed reason and no fallback writable load. Unavailable/lost EX
+selects `writer_exclusion_unproven`; missing predecessor proof does not. No live
+DB observation is needed to state this policy. Existing profile dependency
+uncertainty may also hold other consumers.
+
+Automatic backups stay at
+`<daemon_home>/backups/workflow-sequential/<runtime-key>/<org>/<attempt-id>/before.db`.
+Only a known COMMIT permits source checkpoint; verified storage, actual A2
+qualified registrar, positive closure and runtime audit precede registered
+status. Failed/unknown attempts, pre-intent hold latches and incomplete phases
+remain indefinitely for separately authorized operator assessment. Restart never
+replays them or automatically restores a backup. A last pre_commit stays unknown;
+committed/verified without registered stays installed_unverified. Never treat
+missing/malformed evidence or a daily advisory report as setup success.
+
+The one-time pre-serving upgrade window is 120s/org, 180s total, 20s final reserve,
+>=60s before another attempt, 0.5s cumulative admission and 100s pre-COMMIT work.
+The separate ordinary all-org load/listener gate remains <=10s, complete reads
+remain 32M SQL and 5s, and the original A/B/C limits remain. Source delivery
+provides no deploy/restart, live manual installation, Coding setup/roles/Allow
+or PR1252 release. The explicit manual-install block below is unchanged.
+
 I1a adds mandatory explicit full physical checks at the coherent source,
 RO/query-only verified backup, writer source after `BEGIN IMMEDIATE`, and actual
 writable target before any COMMIT attempt. One cumulative integrity ledger
@@ -270,8 +305,7 @@ live/native/V3 acceptance. Before-COMMIT SIGKILL may retain a cold nonempty jour
 the unchanged checkpoint guard refuses until an explicitly assessed checkpointed
 image is available. Never remove recovery files to force a rerun.
 
-Existing org startup must not install this extension in A2; automatic existing-org
-bootstrap belongs to A4. A2's distinct POST `/orgs` owner now exclusively creates
+A2 did not install existing orgs; the automatic existing-org startup owner is now A4 above. A2's distinct POST `/orgs` owner now exclusively creates
 the DB in its new skeleton, installs J + Coding + sequential/ownership-2 and
 validates the literal independent combined reference plus install-time physical
 integrity. Historical initializer defaults stay byte-unchanged, and absent DBs
@@ -345,4 +379,4 @@ complete reads under the original budgets and deadline.
 
 The supported explicit installers/migration writers now acquire stable EX before the first org connection; read-only check branches acquire SH. Sequential setup holds EX across its source reads, writer, close and publication. The source-only preflight/backup reader and maintenance readers acquire SH. Existing human-host exclusions precede any new fence-file effect. Operator confirmation, registry/lifecycle, backup, source/target checks, original deadlines and uncertain-outcome handling remain required.
 
-Lock files live under `<daemon_home>/org-access-fences/` and are never removed/replaced by the protocol. EX is cooperative exclusion, not original native closure or migration permission. Old/nonparticipating/unknown native custody remains unproved: preserve it and reconcile its original owner. Never infer safety from a free lock or dead PID. Automatic bootstrap and its full original-owner qualification remain the separate A4 owner.
+Lock files live under `<daemon_home>/org-access-fences/` and are never removed/replaced by the protocol. EX is cooperative exclusion, not original native closure or migration permission. Retained unknown native history still holds; preserve its original owner. Automatic A4 uses the startup-migration trust and cooperative limitation explicitly amended above by THR-336 msg250/251, without predecessor receipts or PID-based clearance. Explicit offline/manual operations retain their existing operator exclusion requirements.

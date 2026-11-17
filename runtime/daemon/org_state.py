@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import sqlite3
 import uuid
 from collections.abc import Iterator
@@ -430,13 +431,23 @@ class OrgState:
     @classmethod
     @_startup_load_timing()
     def load(cls, *, slug: str, root: Path, settings: Settings, attachment_owner: dict | None = None,
-             access_fence: OrgAccessFence | None = None) -> "OrgState":
+             access_fence: OrgAccessFence | None = None,
+             bootstrap_registration: Any = None) -> "OrgState":
         from runtime.infrastructure.org_access_fence import OrgAccessFence, bind_org_fence
         owner = attachment_owner if attachment_owner is not None else {}
         owner['load_db_closed'] = True
         fence = access_fence if access_fence is not None else OrgAccessFence.acquire(root)
-        if fence.root != root or fence.exclusive:
+        if fence.root != root or (fence.exclusive and bootstrap_registration is None):
             raise ValueError('org_access_attachment_fence_mismatch')
+        if bootstrap_registration is not None:
+            from runtime.infrastructure.workflow_sequential_bootstrap import BootstrapAttempt
+            if (not isinstance(bootstrap_registration, BootstrapAttempt) or not fence.exclusive
+                    or bootstrap_registration.fence.root != root
+                    or bootstrap_registration._phase != 'verified'):
+                raise ValueError('org_access_attachment_fence_mismatch')
+            bootstrap_registration._check()
+            if os.fstat(fence.fd) != os.fstat(bootstrap_registration.fence.fd):
+                raise ValueError('org_access_attachment_fence_mismatch')
         owner['access_fence'] = fence
         try:
             fence.assert_held()

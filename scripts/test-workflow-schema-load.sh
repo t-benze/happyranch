@@ -62,6 +62,12 @@ if len(sys.argv) == 2 and sys.argv[1].startswith('--fresh-catalog='):
     assert a2_case in ('route', 'historical', 'registration')
     sys.argv[1:] = ['--fresh-catalog']
 
+bootstrap_startup_case = None
+if len(sys.argv) == 2 and sys.argv[1].startswith('--bootstrap-startup='):
+    bootstrap_startup_case = sys.argv[1].split('=', 1)[1]
+    assert bootstrap_startup_case in ('success', 'integrity', 'backup', 'ex', 'history', 'history_precommit', 'commit_uncertain', 'kill', 'close', 'late_spawn')
+    sys.argv[1:] = ['--bootstrap-startup']
+
 worker_case = None
 if len(sys.argv) == 2 and sys.argv[1].startswith('--bootstrap-worker='):
     worker_case = sys.argv[1].split('=', 1)[1]
@@ -139,11 +145,287 @@ if len(sys.argv) == 2 and sys.argv[1].startswith('--retained-corruption-phase=')
         uncommitted='between uncommitted')[sys.argv[1].split('=', 1)[1]]
     sys.argv[1:] = ['--retained-corruption']
 
-assert sys.argv[1:] in ([], ['--bootstrap-worker'], ['--bootstrap-owners'], ['--bootstrap-discovery'], ['--bootstrap-selection'], ['--bootstrap-install'], ['--bootstrap-rehearsal'], ['--bootstrap-backup'], ['--bootstrap-journal'], ['--bootstrap-precommit'], ['--startup-isolation'], ['--fresh-catalog'], ['--org-access-fence'], ['--org-access-openers'], ['--org-access-native'], ['--org-access-guardian'], ['--org-access-profile'], ['--setup-status'], ['--daily-integrity'], ['--install-integrity'], ['--bounded-acquisition'], ['--trace-custody'], ['--sequential-reuse'], ['--sequential-load'], ['--sequential-freshness'], ['--sequential-faults'], ['--sequential-sql-exhaustion'], ['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--coding-authority-corruption'], ['--document-native-corruption'], ['--author-handoff-corruption'], ['--document-revision-corruption'], ['--coding-history-corruption'], ['--physical-corruption'], ['--sequential-uncommitted'], ['--i2-cutover'], ['--i2-native']), 'unknown schema-load selection'
+assert sys.argv[1:] in ([], ['--bootstrap-startup'], ['--bootstrap-worker'], ['--bootstrap-owners'], ['--bootstrap-discovery'], ['--bootstrap-selection'], ['--bootstrap-install'], ['--bootstrap-rehearsal'], ['--bootstrap-backup'], ['--bootstrap-journal'], ['--bootstrap-precommit'], ['--startup-isolation'], ['--fresh-catalog'], ['--org-access-fence'], ['--org-access-openers'], ['--org-access-native'], ['--org-access-guardian'], ['--org-access-profile'], ['--setup-status'], ['--daily-integrity'], ['--install-integrity'], ['--bounded-acquisition'], ['--trace-custody'], ['--sequential-reuse'], ['--sequential-load'], ['--sequential-freshness'], ['--sequential-faults'], ['--sequential-sql-exhaustion'], ['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--coding-authority-corruption'], ['--document-native-corruption'], ['--author-handoff-corruption'], ['--document-revision-corruption'], ['--coding-history-corruption'], ['--physical-corruption'], ['--sequential-uncommitted'], ['--i2-cutover'], ['--i2-native']), 'unknown schema-load selection'
 
 
 print('SCHEMA_RUNTIME', json.dumps(dict(python=sys.version, executable=sys.executable, sqlite=sqlite3.sqlite_version,
     source=sys.modules[Database.__module__].__file__)), flush=True)
+
+# A4-M drives the real daemon build before any listener, using only private orgs.
+if sys.argv[1:] in ([], ['--bootstrap-startup']):
+    import asyncio
+    import signal
+    from runtime.daemon import __main__ as entry
+    from runtime.daemon.routes.orgs import _seed_skeleton
+    from runtime.runtime import RuntimeDir
+    from runtime.platform.passthrough_backend import PassthroughBackend
+    from runtime.orchestrator.org_config import initialize_fresh_reviewer_agents
+    from runtime.daemon.workflow_setup_status import read_setup_status
+    from runtime.infrastructure import workflow_sequential_bootstrap as bootstrap
+    from runtime.infrastructure import workflow_schema as schema
+    from runtime.infrastructure.org_access_fence import OrgAccessFence
+    from runtime.models import TaskStatus
+
+    mounted_cases = ('success', 'integrity', 'backup', 'ex', 'history', 'history_precommit', 'commit_uncertain', 'kill', 'close', 'late_spawn')
+    for fault in mounted_cases:
+        if bootstrap_startup_case is not None and bootstrap_startup_case != fault:
+            continue
+        with tempfile.TemporaryDirectory(prefix='a4-mounted-') as scratch:
+            home = Path(scratch).resolve()
+            runtime = RuntimeDir.init(home/'runtime')
+            (home/'runtimes.yaml').write_text(json.dumps(dict(active=str(runtime.root), registered=[str(runtime.root)])))
+            with ExitStack() as stack:
+                stack.enter_context(patch.dict(os.environ, {'HAPPYRANCH_DAEMON_HOME': str(home)}))
+                stack.enter_context(patch('runtime.platform.backend_factory.select_session_backend', return_value=PassthroughBackend()))
+                slugs = ('happyranch', 'danze', 'family') if fault == 'success' else ('happyranch', 'family')
+                for slug in slugs:
+                    root = runtime.orgs_dir/slug
+                    _seed_skeleton(root, from_example=None)
+                    db = Database(root/'happyranch.db')
+                    try:
+                        schema.initialize_complete_org_schema(db, expected_org_slug=slug, layout='J')
+                        install_pause_schema(db, org_slug=slug)
+                        install_task_ownership(db, org_slug=slug)
+                        initialize_fresh_reviewer_agents(OrgPaths(root), db)
+                        db.insert_task(TaskRecord(id='TASK-mounted', brief='synthetic retained task', status=TaskStatus.COMPLETED))
+                        db._conn.execute('CREATE TABLE a4_mount_sentinel(id INTEGER PRIMARY KEY,v BLOB)')
+                        db._conn.execute('INSERT INTO a4_mount_sentinel VALUES(37,?)', (b'original\0typed',))
+                        db._conn.commit()
+                    finally:
+                        db.close()
+                    # Normalize ordinary startup before observing the upgrade.
+                    org = OrgState.load(slug=slug, root=root, settings=Settings())
+                    org.close()
+                path = runtime.orgs_dir/'happyranch/happyranch.db'
+                if fault == 'history':
+                    with closing(sqlite3.connect(path)) as conn:
+                        conn.execute("UPDATE tasks SET status='pending' WHERE id='TASK-mounted'")
+                        conn.commit()
+                if fault == 'integrity':
+                    # A genuine stale index, independently reported non-ok by SQLite.
+                    with closing(sqlite3.connect(path)) as conn:
+                        conn.execute('CREATE INDEX a4_stale ON a4_mount_sentinel(v)')
+                        row = tuple(conn.execute("SELECT rowid,type,name,tbl_name,rootpage,sql FROM sqlite_schema WHERE name='a4_stale'").fetchone())
+                        cookie = conn.execute('PRAGMA schema_version').fetchone()[0]
+                        conn.execute('PRAGMA writable_schema=ON')
+                        conn.execute('DELETE FROM sqlite_schema WHERE rowid=?', (row[0],))
+                        conn.execute('PRAGMA schema_version='+str(cookie+1))
+                        conn.execute('PRAGMA writable_schema=RESET')
+                        conn.execute("UPDATE a4_mount_sentinel SET v=x'0102'")
+                        conn.execute('PRAGMA writable_schema=ON')
+                        conn.execute('INSERT INTO sqlite_schema(rowid,type,name,tbl_name,rootpage,sql) VALUES(?,?,?,?,?,?)', row)
+                        conn.execute('PRAGMA schema_version='+str(cookie+2))
+                        conn.execute('PRAGMA writable_schema=RESET')
+                        conn.commit()
+                        assert conn.execute('PRAGMA integrity_check').fetchone()[0] != 'ok', 'A4-M corrupt fixture remained healthy'
+                blocker = OrgAccessFence.acquire(path.parent) if fault == 'ex' else None
+                native_spawn = asyncio.create_subprocess_exec
+                runner = home/'fault-helper.py'
+                injected = {
+                    'backup': """
+original_hash = bootstrap.BootstrapSource._hash
+def wrong_second_hash(self, fd):
+    value = original_hash(self, fd)
+    self.test_hash_calls = getattr(self, 'test_hash_calls', 0)+1
+    return '0'*64 if self.test_hash_calls == 2 and self.path.parent == Path(SOURCE_ROOT) else value
+bootstrap.BootstrapSource._hash = wrong_second_hash
+""",
+                    'history_precommit': """
+original_history = bootstrap.require_bootstrap_idle_history
+def late_history(source, *, writer=None):
+    if writer is not None and source.path.parent == Path(SOURCE_ROOT):
+        writer.execute("UPDATE tasks SET status='pending' WHERE id='TASK-mounted'")
+    return original_history(source, writer=writer)
+bootstrap.require_bootstrap_idle_history = late_history
+""",
+                    'commit_uncertain': """
+original_connection = bootstrap.BootstrapSource._connection
+def deny_commit(self, path, *, readonly):
+    conn = original_connection(self, path, readonly=readonly)
+    if not readonly and path == self.path and path.parent == Path(SOURCE_ROOT):
+        conn.set_authorizer(lambda action, one, two, db, trigger: sqlite3.SQLITE_DENY
+            if action == sqlite3.SQLITE_TRANSACTION and one == 'COMMIT' else sqlite3.SQLITE_OK)
+    return conn
+bootstrap.BootstrapSource._connection = deny_commit
+""",
+                    'close': """
+from runtime.daemon.org_state import OrgState
+original_close = OrgState.close
+def uncertain_close(self):
+    if self.root == Path(SOURCE_ROOT):
+        raise OSError('synthetic original close uncertainty')
+    return original_close(self)
+OrgState.close = uncertain_close
+""",
+                }.get(fault)
+                if injected:
+                    runner.write_text('import sys, sqlite3\nfrom pathlib import Path\nfrom runtime.infrastructure import workflow_sequential_bootstrap as bootstrap\nSOURCE_ROOT = '+repr(str(path.parent))+'\n'+injected+'\nraise SystemExit(bootstrap.bootstrap_helper_main(sys.argv[1:]))\n')
+                    async def fault_spawn(*args, **kwargs):
+                        if '--workflow-sequential-bootstrap-helper' in args:
+                            offset = args.index('--workflow-sequential-bootstrap-helper')
+                            args = (args[0], str(runner), *args[offset+1:])
+                        return await native_spawn(*args, **kwargs)
+                    stack.enter_context(patch.object(asyncio, 'create_subprocess_exec', fault_spawn))
+                if fault == 'kill':
+                    actual_run = bootstrap.BootstrapSupervisor.run
+                    async def killed_run(worker, qualify):
+                        calls = 0
+                        async def original_qualification(identity, digest):
+                            nonlocal calls
+                            allowed = await qualify(identity, digest)
+                            calls += 1
+                            if calls == 2 and worker.discovery.root == path.parent:
+                                os.killpg(worker.process.pid, signal.SIGKILL)
+                                await worker.process.wait()
+                            return allowed
+                        return await actual_run(worker, original_qualification)
+                    stack.enter_context(patch.object(bootstrap.BootstrapSupervisor, 'run', killed_run))
+                if fault == 'history_precommit':
+                    # Retain a real committed WAL without checkpointing it. A
+                    # failed late gate must not move those bytes into the DB.
+                    keeper = stack.enter_context(closing(sqlite3.connect(path)))
+                    keeper.execute('PRAGMA journal_mode=WAL')
+                    keeper.execute('PRAGMA wal_autocheckpoint=0')
+                    keeper.execute("INSERT INTO a4_mount_sentinel VALUES(38,x'03')")
+                    keeper.commit()
+                    assert path.with_name(path.name+'-wal').stat().st_size > 0
+                release_spawn = None
+                if fault == 'late_spawn':
+                    import threading
+                    release_spawn = threading.Event()
+                    actual_supervisor_init = bootstrap.BootstrapSupervisor.__init__
+                    def delayed_owner(worker, discovery, settings):
+                        actual_supervisor_init(worker, discovery, settings)
+                        discovery.deadline = min(discovery.deadline, time.monotonic()+20.1)
+                    async def delayed_native_spawn(*args, **kwargs):
+                        if '--workflow-sequential-bootstrap-helper' in args:
+                            await asyncio.get_running_loop().run_in_executor(None, release_spawn.wait)
+                        return await native_spawn(*args, **kwargs)
+                    stack.enter_context(patch.object(bootstrap.BootstrapSupervisor, '__init__', delayed_owner))
+                    stack.enter_context(patch.object(asyncio, 'create_subprocess_exec', delayed_native_spawn))
+                original_bytes = path.read_bytes()
+                first_backup = None
+                for start in ('first', 'next'):
+                    before = {slug: (root/'happyranch.db').read_bytes() for slug, root in runtime.iter_org_roots()}
+                    def durable_inventory(root):
+                        with closing(sqlite3.connect((root/'happyranch.db').as_uri()+'?mode=ro', uri=True)) as conn:
+                            conn.execute('PRAGMA query_only=ON')
+                            conn.execute('BEGIN')
+                            return schema.sequential_storage_inventory(conn)
+                    inventories = None
+                    if start == 'next':
+                        inventories = {slug: durable_inventory(root) for slug, root in runtime.iter_org_roots()}
+                        # Byte-zero belongs to automatic setup. Ordinary startup
+                        # retains its existing transient publication-lease writes.
+                        probe = bootstrap.BootstrapStartup(home=home, runtime_root=runtime.root)
+                        probe.run(tuple(runtime.iter_org_roots()), Settings())
+                        assert not probe.workers, 'A4-M second setup spawned an installer'
+                        for route in probe.discoveries.values():
+                            route.close()
+                        assert all((root/'happyranch.db').read_bytes() == before[slug] for slug, root in runtime.iter_org_roots()), 'A4-M second automatic setup wrote org DB'
+                    state = entry._build_state(Settings())
+                    try:
+                        expected = set(slugs) if fault == 'success' else set() if fault == 'late_spawn' else {'family'}
+                        assert set(state._all_orgs_snapshot()) == expected, ('A4-M startup lost attachment isolation or bypassed hold', fault, state.broken_orgs)
+                        # Existing profile policy may hold other consumers when a
+                        # root is unavailable; A4 does not waive that global veto.
+                        if fault == 'late_spawn':
+                            owner = state._workflow_bootstrap
+                            worker = owner.workers[0]
+                            assert owner.thread is not None and owner.thread.is_alive() and not owner.loop.is_closed(), 'A4-M lost original pending loop'
+                            assert not worker.spawn.done() and not worker.reaped and not worker.discovery.fence._closed, 'A4-M replaced unresolved original spawn'
+                            try:
+                                asyncio.run(state.close_all())
+                            except bootstrap.BootstrapEvidenceError:
+                                pass
+                            else:
+                                raise AssertionError('A4-M shutdown accepted pending original')
+                            release_spawn.set()
+                            end = time.monotonic()+5
+                            while not worker.reaped and time.monotonic() < end:
+                                time.sleep(.01)
+                            assert worker.reaped and worker.process.returncode == -signal.SIGKILL, 'A4-M lost actual late child kill/reap'
+                            assert worker.expired and not worker.closed and not worker.permit_sent, 'A4-M accepted late result or invented closure'
+                            assert path.read_bytes() == original_bytes, 'A4-M late child changed source'
+                            worker.discovery.fence.close()  # exact synthetic original, after assertions
+                            owner.loop.call_soon_threadsafe(owner.loop.stop)
+                            owner.thread.join(timeout=2)
+                            assert not owner.thread.is_alive(), 'A4-M fixture failed to join original loop'
+                            owner.loop.close()
+                            print('PASS A4-M actual mounted startup: late_spawn original retained/late child killed/reaped', flush=True)
+                            break
+                        if fault != 'success':
+                            assert 'happyranch' in state.broken_orgs, 'A4-M missing visible closed hold'
+                            status = read_setup_status(home, runtime.root, 'happyranch')
+                            expected_status = ('unknown', 'commit_uncertain') if fault in ('commit_uncertain', 'kill') else ('installed_unverified', 'installation_unverified') if fault == 'close' else None
+                            if expected_status:
+                                assert (status.state, status.reason) == expected_status, ('A4-M wrong retained uncertainty', fault, status)
+                            if fault in ('integrity', 'ex', 'history'):
+                                reason = dict(integrity='integrity_check_failed', ex='writer_exclusion_unproven', history='history_check_failed')[fault]
+                                assert (status.state, status.reason) == ('not_installed', reason), ('A4-M wrong pre-intent hold', fault, status)
+                                assert status.backup_path is None, 'A4-M pre-intent hold fabricated backup'
+                            if fault != 'close':
+                                assert path.read_bytes() == original_bytes, ('A4-M failed check changed source DB', fault)
+                            if start == 'next':
+                                assert not state._workflow_bootstrap.workers, 'A4-M replayed a failed or uncertain attempt'
+                            elif fault in ('backup', 'history_precommit', 'commit_uncertain', 'kill', 'close', 'late_spawn'):
+                                worker = next(worker for worker in state._workflow_bootstrap.workers if worker.discovery.root == path.parent)
+                                assert worker.reaped, 'A4-M lost original child reap'
+                                assert worker.permit_sent == (fault in ('commit_uncertain', 'close')), 'A4-M wrong original COMMIT boundary'
+                                if fault in ('kill', 'close'):
+                                    assert not worker.closed and not worker.discovery.fence._closed, 'A4-M fabricated closure or released unknown EX'
+                                    try:
+                                        asyncio.run(state.close_all())
+                                    except bootstrap.BootstrapEvidenceError as exc:
+                                        assert str(exc) == 'workflow_setup_original_worker_in_flight' and not state._shutdown_complete, 'A4-M wrong unresolved shutdown custody'
+                                    else:
+                                        raise AssertionError('A4-M shutdown claimed unresolved original closed')
+                                if fault == 'backup':
+                                    assert worker.result['reason'] == 'backup_verification_failed', 'A4-M backup verification not reached'
+                                if fault == 'history_precommit':
+                                    assert worker.result['reason'] == 'history_check_failed', 'A4-M final durable history check not reached'
+                                # All native handles are synthetic. Release this exact
+                                # retained parent only AFTER asserting unknown custody;
+                                # the actual private child has been reaped, no descendants.
+                                if not worker.discovery.fence._closed:
+                                    worker.discovery.fence.close()
+                        for slug, org in state._all_orgs_snapshot().items():
+                            assert org.db._conn.execute("SELECT 1 FROM sqlite_schema WHERE name='workflow_seq_schema_versions'").fetchone(), 'A4-M daemon startup did not install sequential storage'
+                            assert tuple(org.db._conn.execute('SELECT id,v FROM a4_mount_sentinel').fetchone()) == (37, b'original\0typed'), 'A4-M changed retained typed cells'
+                            assert org.db._conn.execute('SELECT count(*) FROM workflow_seq_definitions').fetchone()[0] == 1, 'A4-M missed qualified catalog registration'
+                            assert org.db._conn.execute('SELECT count(*) FROM workflow_seq_settings').fetchone()[0] == 0, 'A4-M setup allocated settings or Allow'
+                            assert org.db._conn.execute('SELECT count(*) FROM workflow_seq_runs').fetchone()[0] == 0, 'A4-M setup allocated a workflow run'
+                            assert [tuple(row) for row in org.db._conn.execute('SELECT id,status FROM tasks')] == [('TASK-mounted','completed')], 'A4-M setup changed native tasks'
+                            status = read_setup_status(home, runtime.root, slug)
+                            assert (status.state, status.reason) == ('installed_verified', 'registered'), ('A4-M missing registered evidence', status)
+                            backup = Path(status.backup_path)
+                            assert backup.is_file(), 'A4-M missing retained backup'
+                            record = json.loads((backup.parent/'01.json').read_text())
+                            assert hashlib.sha256(backup.read_bytes()).hexdigest() == record['backup_sha256'], 'A4-M backup hash not verified'
+                            assert sorted(x.name for x in backup.parent.iterdir()) == ['00.json','01.json','02.json','03.json','04.json','05.json','before.db'], 'A4-M incomplete registered phase chain'
+                            if slug == 'happyranch':
+                                if start == 'first':
+                                    first_backup = backup
+                                else:
+                                    assert backup == first_backup, 'A4-M second startup created another backup'
+                        audit_path = home/'runtime-audit.db'
+                        with closing(sqlite3.connect(audit_path.as_uri()+'?mode=ro', uri=True)) as conn:
+                            audits = [json.loads(row[0]) for row in conn.execute("SELECT payload FROM audit_log WHERE task_id='' AND agent='daemon' AND action='workflow_setup_registered'")]
+                        assert {row['org_slug'] for row in audits} == expected and len(audits) == len(expected), 'A4-M missing, duplicate or premature runtime registration audit'
+                    finally:
+                        if release_spawn is not None:
+                            release_spawn.set()
+                        asyncio.run(state.close_all())
+                        state.metrics_store.close()
+                    if start == 'next':
+                        assert all(durable_inventory(root) == inventories[slug] for slug, root in runtime.iter_org_roots()), 'A4-M second full startup changed durable SQL/typed rows/rowids'
+                    if blocker is not None:
+                        blocker.close()
+                        blocker = None
+                    assert not (home/'daemon.pid').exists() and not (home/'daemon.port').exists(), 'A4-M build served a listener'
+                    print('PASS A4-M actual mounted startup:', fault, start, flush=True)
+    if sys.argv[1:] == ['--bootstrap-startup']:
+        raise SystemExit(0)
 
 # A4-H exercises the actual private helper and original parent socket/EX custody.
 # Its source owners are known because this test creates and positively closes
@@ -393,10 +675,10 @@ if sys.argv[1:] in ([], ['--bootstrap-worker']):
                 if fault == 'success':
                     attempts = list(namespace.iterdir())
                     assert len(attempts) == 1 and sorted(p.name for p in attempts[0].iterdir()) == [
-                        '00.json', '01.json', '02.json', '03.json', '04.json', 'before.db'], 'A4-H missing storage phase or premature registered event'
+                        '00.json', '01.json', '02.json', '03.json', '04.json', '05.json', 'before.db'], 'A4-H missing registered phase'
                     with closing(sqlite3.connect(path)) as conn:
                         assert conn.execute('SELECT * FROM a4_helper_sentinel').fetchall() == [(37, b'original\0typed')], 'A4-H changed retained typed/rowid cells'
-                        assert conn.execute('SELECT count(*) FROM workflow_seq_definitions').fetchone()[0] == 0, 'A4-H helper performed unqualified source registration'
+                        assert conn.execute('SELECT count(*) FROM workflow_seq_definitions').fetchone()[0] == 1, 'A4-H missing actual qualified source registration'
                 else:
                     assert inventory() == original and path.read_bytes() == before, 'A4-H failed worker changed original source'
                     if fault in ('refuse_commit', 'cancel', 'kill', 'reserve', 'foreign_permit', 'duplicate_permit'):
@@ -2796,7 +3078,7 @@ if sys.argv[1:] in ([], ['--bootstrap-owners']):
                             thread_missing='thread history missing', acquisition='workflow_setup_history_acquisition_exhausted',
                             deadline='workflow_setup_history_deadline', sql_budget='workflow_setup_inventory_exhausted',
                             query_only='workflow_setup_history_owner_invalid', repository_rewrite='conflicting_history',
-                            repository_acquisition='workflow_setup_history_acquisition_exhausted').get(fault, 'writer_exclusion_unproven')
+                            repository_acquisition='workflow_setup_history_acquisition_exhausted').get(fault, 'workflow_setup_history_not_idle')
                         if fault in ('task_active', 'publication_lease', 'profile_lease'):
                             owner = dict(task_active='tasks:TASK-synthetic-domain',
                                 publication_lease='workflow_publication_leases', profile_lease='workflow_profile_leases')[fault]

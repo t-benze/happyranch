@@ -1,108 +1,38 @@
 # Runtime And Configuration
 
-A4's unmounted source prerequisite now composes strict native histories with the
-existing current-domain idle reader before any install intent. It reads the same
-query-only snapshot, bounds whole collections before acquisition and shares the
-original history/SQL/deadline allowances. Queued work, callback/recovery and
-publication/profile/remote ownership retain their original refusal causes;
-terminal labels or absent PIDs grant no original host closure. Automatic startup
-mounting and whole-listener acceptance remain incomplete; see the
-[current-domain checkpoint](../superpowers/specs/2026-11-14-automatic-workflow-setup.md#a4-current-domain-prerequisite-checkpoint).
+Daemon startup mounts automatic sequential storage setup before ordinary org
+attachment or serving. Under Founder THR-336 msg250/251 (A4:2), positive predecessor
+proof is not required: ordinary one-daemon startup-migration trust combines with
+A1 EX, I1a full integrity, verified SHA-256 backup before source writes and complete
+durable idle/history checks, repeated before COMMIT. Concurrent pre-A1/old-code
+daemons are a documented cooperative limitation. No clean-shutdown receipt exists.
 
-The prerequisite now also checks complete retained repository-preparation
-histories with their existing strict reader and command/worker/outer closure
-validator. Each obligation needs this org's original final `closed` record;
-terminal tasks or successful commands alone supply no release. Whole acquisition
-and scoped replay share the existing bounds and deadline, with no history rewrite
-or Database construction. See the [repository prerequisite](../superpowers/specs/2026-11-14-automatic-workflow-setup.md#a4-repository-preparation-prerequisite-checkpoint).
+Installed orgs take cheap SH selection and ordinary complete validation, with no
+installer/backup/inventory work. Absent orgs rediscover under EX, retain the backup
+at `<daemon_home>/backups/workflow-sequential/<runtime-key>/<org>/<attempt-id>/before.db`,
+rehearse actual writable FIRST/NEXT, install, reopen and run the actual A2 qualified
+registrar under original EX. Positive close and a workflow-free machine runtime
+audit precede registered status and ordinary SH attachment. No pre-COMMIT source
+checkpoint occurs. Settings/roles/Allow remain unchanged; missing settings stay
+Disabled. Runtime switching does not mount this startup-only upgrade.
 
-Startup attachment construction now records the original SQLite connection
-before its first PRAGMA. A failed constructor closes once, preserves its primary
-cause and retains any unclosed handle in the daemon's attachment owner. Startup
-SQLite admission uses zero busy waiting through load and both profile tails;
-successful serving connections then regain the existing five-second timeout.
-Per-org load, post-load binding and selector failures quarantine that org and
-continue later orgs. The final daemon entry tail also contains original owner
-binding and recovery/publication failures, retains the original attachment and
-cause, and renews conservative profile dependency holds after later org tails.
-It restores zero busy waiting throughout that tail; only still-runnable orgs
-regain the normal timeout afterward. Genuine process cancellation propagates.
-Profile classification failures keep conservative dependency holds while allowing the listener to start. Public broken-org reasons are
-sanitized; original exceptions remain with their owned state. This A4 custody
-checkpoint adds no automatic installer caller. See the
-[lifecycle contract](contracts/runtime-lifecycle.md#a4-startup-attachment-custody).
+Any failed gate holds its org without fallback writable attachment. Closed
+pre-intent reasons may be retained in private `hold.json`; original attempt phases
+always take precedence. Failed/unknown records never replay or auto-restore.
+Missing predecessor evidence never causes `writer_exclusion_unproven`; unavailable
+or lost EX does. Existing profile dependency uncertainty may conservatively hold
+other consumers. Original native spawn/socket/reap/close custody survives failure;
+unknown originals retain EX and refuse successful shutdown. A retained original
+event loop owns late spawn kill/reap callbacks rather than cancelling them on return.
 
-The unmounted A4 source/backup owner now takes a coherent RO WAL snapshot and
-independently verifies an exclusive, fsynced private backup before its durable
-backup_verified event. Failure latches the original connections/attempt, with
-no source checkpoint, restore or retry. See the [current source/backup boundary](../superpowers/specs/2026-11-14-automatic-workflow-setup.md#a4-coherent-source-and-verified-backup-checkpoint);
-this checkpoint still does not invoke automatic setup at daemon startup.
-
-Before creating `before.db`, that owner now enforces the complete combined
-backup/DB/SQLite-temp/rehearsal headroom policy by actual device. DB and SQLite
-temp share one requirement only when they share a device; backup and rehearsal
-requirements add even on that device. Every observed free-space reading must
-suffice. Missing/unsafe temp custody or unavailable space refuses before a backup
-file/connection exists. Writer admission repeats the same policy; neither check
-reserves disk blocks or changes the original operation deadline.
-
-The next unmounted stage, `BootstrapRehearsal`, copies the independently verified
-image and bounded canonical org metadata into private scratch. It runs the real
-candidate installer and actual writable default FIRST/NEXT loads on the same
-image, including A2's qualified catalog tail. Original install ledgers and the
-pre-COMMIT deadline remain shared; ordinary load budgets stay unchanged. A failed
-private close retains its original owner and scratch, without retry or deletion.
-This is capacity evidence only, never live native-owner qualification. See the
-[rehearsal boundary](../superpowers/specs/2026-11-14-automatic-workflow-setup.md#a4-private-writable-rehearsal-checkpoint).
-
-The unmounted `BootstrapInstall` stage now requires that rehearsal's positive
-closure, revalidates its original metadata/image and combined volume headroom,
-and composes the real source checkpoint/writer. Actual default target validation
-precedes durable pre_commit and one parent COMMIT permission; original twenty-
-second reserve and install ledgers remain binding after the parent's reply.
-It records committed before fallible close/checkpoint/reopen, independently
-checks default target and retained inventory, then closes before verified.
-Known pre-COMMIT failure needs independent original equality and positive closure
-before not_installed; COMMIT/rollback/close uncertainty never grants fallback or
-retry. Registration, original-owner qualification, supervision and startup mount
-remain incomplete. See the [writer boundary](../superpowers/specs/2026-11-14-automatic-workflow-setup.md#a4-original-writer-and-independent-reopen-checkpoint).
-
-The unmounted `BootstrapSelection` supplies the preconstructor routing stage.
-Under the original SH (or later EX) it reads bounded prior attempt evidence and
-opens SQLite read-only/query-only with zero busy waiting. Any reserved sequential
-object routes to ordinary complete validation, without installer, backup, full
-integrity or inventory work. An absent result grants no installation authority;
-the coordinator must rediscover under EX and qualify original owners. Failed,
-unfinished or malformed attempt evidence latches before SQL. Registered evidence
-requires present storage and the exact original path/device/inode. Results escape
-only after positive original handle closure. The four A4 hold reasons now have
-backend/TypeScript parity; existing status rendering is unchanged. This stage
-still has no automatic startup caller. See the [selection boundary](../superpowers/specs/2026-11-14-automatic-workflow-setup.md#a4-read-only-startup-selection-checkpoint).
-
-The unmounted `BootstrapStartup`/`BootstrapDiscovery` composition retains one
-original 180-second upgrade window and at-most-120-second org deadline. An absent
-org needs at least 60 seconds of global remainder and the final 20-second reserve
-before EX admission. It closes the original SH before fresh EX selection; an
-installation arriving in that gap requires fresh SH selection before ordinary
-attachment. All fence acquisitions share one cumulative 0.5-second wait allowance;
-admission wall time is charged conservatively, and exhaustion permits only
-nonblocking acquisition. This is not a hard bound on native filesystem calls.
-Installed selection stays available after upgrade-window expiry. Budget/contention
-holds allocate no install attempt. Only a positively selected original SH may
-transfer once into `OrgState.load(access_fence=...)`; foreign/EX fences refuse,
-and normal loader closure retains the existing original attachment custody.
-Native-owner qualification, helper supervision and automatic startup mounting
-remain incomplete. See the [discovery boundary](../superpowers/specs/2026-11-14-automatic-workflow-setup.md#a4-original-discovery-and-upgrade-window-checkpoint).
-
-The source stage also reads the original native producer/writer and complete
-thread histories through its same query-only connection, before attempt/backup
-creation. Unsettled/unknown preparation, retained Pause entries and missing or
-orphan thread evidence hold without clearing history. Native replay keeps its
-original predicates, bounded acquisition, five-second read deadline and the
-shared inventory SQL ledger. This durable prerequisite does not certify original
-host/process or registry/cooperating-host exclusion; full qualification,
-supervision and automatic startup mounting remain unfinished. Ordinary installed
-loads never enter this stage. See the [lifecycle contract](contracts/runtime-lifecycle.md#a4-startup-attachment-custody).
+The one-time pre-serving upgrade window is 120s/org, 180s total, 20s final reserve,
+>=60s before another attempt, 0.5s cumulative admission and 100s pre-COMMIT work.
+The ordinary all-org load/listener gate remains <=10s, with unchanged 32M SQL,
+separate A/B/C limits and 5s complete readers. `startup_total`/`workflow_upgrade`
+are separate diagnostics; ordinary timing excludes actual upgrade work only.
+Focused synthetic shells do not establish whole-listener or live-org acceptance.
+See the [current R2 amendment and startup contract](../superpowers/specs/2026-11-14-automatic-workflow-setup.md#a4-startup-and-r2-amendment--thr-336-msg250251-a42)
+and [attachment custody](contracts/runtime-lifecycle.md#a4-startup-attachment-custody).
 
 POST `/orgs` now creates J + Coding + sequential storage and ownership-2 through
 a distinct owner after exclusive skeleton creation and exclusive DB-file
@@ -4580,23 +4510,10 @@ Supported org loads, fresh/reclaim routes and raw maintenance/offline openers ac
 
 ### A4 private worker and original parent permission
 
-The private bootstrap helper now executes the existing source/verified-backup/
-writable-rehearsal/writer pipeline under its inherited original EX description.
-It selects a private literal SQLite temp volume before SQL. The original parent
-retains pending spawn, process, socket and fence custody; no replacement worker
-is admitted while an earlier original remains unreaped. A positive coordinator
-qualification is required before intent and again before the single bound
-COMMIT permission. EOF, cancellation and unsolicited/duplicate permission revoke
-subsequent cooperative source/phase effects. The original 120s/org, 180s-total,
-20s reserve and default reader/integrity limits remain unchanged. Bounded cleanup
-withdraws permission before terminate/kill/reap and preserves unknown originals;
-late completion never publishes readiness. Process cancellation propagates.
-
-A positive helper result means storage verified and original handles closed,
-without source registration, final audit/status or attachment. Automatic startup
-mounting and genuine host/registry/cooperating-host qualification remain separate
-and unfinished, as do final registration/status and whole-listener acceptance.
-The existing focused shell --bootstrap-worker table observes real child/parent
-transport, native EX retention, exact pre-COMMIT source preservation and durable
-no-replay phases. It is not whole-daemon timing acceptance. See the maintained
-[lifecycle contract](contracts/runtime-lifecycle.md#a4-startup-attachment-custody).
+The mounted source/frozen helper inherits original EX, selects a private literal
+SQLite temp volume before SQL and receives one bound parent COMMIT permit after
+source and target qualification. Actual qualified registration, original close,
+runtime audit and final registered status now belong to that same helper interval.
+EOF/cancellation/duplicate permission revoke subsequent cooperative effects.
+The startup owner retains pending originals and late-child callbacks, and failed
+or uncertain records never replay. See the [current lifecycle contract](contracts/runtime-lifecycle.md#a4-startup-attachment-custody).
