@@ -1174,6 +1174,7 @@ Restrictive defaults beyond the specification's literal pins:
 | `tls_letsencrypt_challenge_type` | `TLS-ALPN-01`; v0.25.1 validates this enum even with ACME disabled. Avoid the HTTP-01/80 path. |
 | `tls_letsencrypt_cache_dir` | `/var/lib/happyranch-headscale/acme-unused`; unused, still within protected state if later inspected. |
 | `derp.server.region_id`, `region_code`, `region_name` | `999`, `happyranch-home`, `HappyRanch Home`; one fixed end-user region, no location disclosure. |
+| Map `nodes.name`, `stunonly`, `canport80` | `999a`, false, false; one fixed node, retain the required DERP relay alongside STUN, advertise no HTTP/80 capability. Map region metadata matches the config. |
 | `derp.server.ipv4`, `ipv6` | Validated dial IP, `none`; no hostname/AAAA fallback in either explicit or generated tuple. |
 | `derp.paths` | Only `/etc/happyranch/headscale/derp.yaml`; no extra maps. |
 | `derp.urls`, `auto_update_enabled`, `update_frequency` | Empty list, false, `0s`; no external DERP fetch or refresh worker. |
