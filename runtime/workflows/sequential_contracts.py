@@ -345,3 +345,197 @@ class TransitionRecord(Closed):
         elif self.successor is not None:
             raise ValueError("non-next edge cannot allocate a successor")
         return self
+
+
+# S1: separate inert @2 syntax. The original @1 records and live parser remain
+# unchanged; these types are not an admission, storage or assignment interface.
+GENERIC_COMPILER_ABI = 'workflow-sequential-compiler@2'
+GENERIC_VALIDATOR_ABI = 'workflow-sequential-validator@2'
+GENERIC_INTERPRETER_ABI = 'workflow-sequential-interpreter@2'
+GENERIC_CAPABILITY_ABI = 'workflow-sequential-capabilities@2'
+JSON_OUTPUT_LIMIT = 49152
+DOCUMENT_OUTPUT_LIMIT = 1048576
+CALLBACK_METADATA_LIMIT = 16384
+GenericOutputType = Literal['canonical-json-object@1', 'immutable-document@1']
+VisitNumber = Annotated[StrictInt, Field(ge=1, le=64)]
+RevisionCount = Annotated[StrictInt, Field(ge=0, le=63)]
+AttemptCount = Annotated[StrictInt, Field(ge=0, le=64)]
+
+
+class GenericNodeLimits(Closed):
+    revisions: RevisionCount
+    attempts: Annotated[StrictInt, Field(ge=1, le=64)]
+    recoveries: AttemptCount
+
+
+class GenericLimits(Closed):
+    max_visits: Annotated[StrictInt, Field(ge=1, le=64)]
+    max_events: Annotated[StrictInt, Field(ge=1, le=4096)]
+    max_recoveries: AttemptCount
+    node_revisions: Annotated[
+        tuple[tuple[Name, RevisionCount], ...], BeforeValidator(_pairs), Field(max_length=32),
+    ] = ()
+
+
+class GenericRoleRequirement(RoleRequirement):
+    default_agent: Token | None = None
+
+
+class GenericOutputContract(Closed):
+    slot: Name
+    type: GenericOutputType
+
+
+class GenericNextEdge(Closed):
+    action: Literal['next']
+    node: Name
+    consume_counter: Literal['node_revisions'] | None = None
+    invalidate_dependents: StrictBool = False
+
+    @model_validator(mode='after')
+    def explicit_revision(self) -> Self:
+        if (self.consume_counter is not None) != self.invalidate_dependents:
+            raise ValueError('revision requires counter consumption and invalidation')
+        return self
+
+
+class GenericHoldEdge(Closed):
+    action: Literal['hold']
+    owner: Literal['initiator']
+    remedy: Literal['no_automatic_retry']
+
+
+GenericEdge = Annotated[
+    GenericNextEdge | GenericHoldEdge | FailEdge | TerminalEdge, Field(discriminator='action'),
+]
+
+
+class GenericNode(Closed):
+    id: Name
+    role: Name
+    responsibilities: Annotated[tuple[Text, ...], BeforeValidator(_array), Field(min_length=1, max_length=16)]
+    inputs: Annotated[tuple[NodeInput, ...], BeforeValidator(_array), Field(max_length=32)]
+    output_contract: GenericOutputContract
+    limits: GenericNodeLimits
+    outcomes: Annotated[tuple[tuple[Token, GenericEdge], ...], BeforeValidator(_pairs), Field(min_length=1, max_length=8)]
+
+    @model_validator(mode='after')
+    def local_bounds(self) -> Self:
+        for text in self.responsibilities:
+            _text(text, 16384)
+        if len({item.name for item in self.inputs}) != len(self.inputs):
+            raise ValueError('duplicate node input')
+        return self
+
+
+class GenericTerminalCondition(Closed):
+    output: Name
+
+
+class GenericDefinition(Closed):
+    format: Literal['workflow-sequential-definition@2']
+    identity: Identity
+    version: Positive
+    description: Text
+    required_inputs: Annotated[tuple[RequiredInput, ...], BeforeValidator(_array), Field(min_length=1, max_length=32)]
+    roles: Annotated[tuple[tuple[Name, GenericRoleRequirement], ...], BeforeValidator(_pairs), Field(min_length=1, max_length=16)]
+    entry_node: Name
+    nodes: Annotated[tuple[GenericNode, ...], BeforeValidator(_array), Field(min_length=1, max_length=32)]
+    limits: GenericLimits
+    terminal_conditions: Annotated[tuple[tuple[Name, GenericTerminalCondition], ...], BeforeValidator(_pairs), Field(min_length=1, max_length=32)]
+
+    @model_validator(mode='after')
+    def bounded_description(self) -> Self:
+        _text(self.description, 16384)
+        return self
+
+
+class GenericDefinitionPin(Closed):
+    identity: Identity
+    version: Positive
+    definition_digest: Digest
+    source_digest: Digest
+    compiler: Literal['workflow-sequential-compiler@2']
+    validator: Literal['workflow-sequential-validator@2']
+    interpreter: Literal['workflow-sequential-interpreter@2']
+    capabilities: Literal['workflow-sequential-capabilities@2']
+
+
+class GenericStepOverride(Closed):
+    node: Name
+    # model_fields_set retains omission versus explicit null. Resolution and
+    # target-executor validation belong to S3, never to this syntax record.
+    model: Token | None = None
+    reasoning_effort: Token | None = None
+
+
+class GenericStartCommand(Closed):
+    format: Literal['workflow-sequential-start@2']
+    operation_key: Token
+    definition: GenericDefinitionPin
+    settings: SettingsPin
+    request: Text
+    inputs: Annotated[tuple[InputValue, ...], BeforeValidator(_array), Field(max_length=32)]
+    role_overrides: Annotated[tuple[BindingClaim, ...], BeforeValidator(_array), Field(max_length=16)]
+    step_overrides: Annotated[tuple[GenericStepOverride, ...], BeforeValidator(_array), Field(max_length=32)]
+    lower_limits: GenericLimits
+
+    @model_validator(mode='after')
+    def unique_claims(self) -> Self:
+        _text(self.request, 16384)
+        if (len({item.name for item in self.inputs}) != len(self.inputs)
+                or any(item.name == 'request' for item in self.inputs)
+                or len({item.role for item in self.role_overrides}) != len(self.role_overrides)
+                or len({item.node for item in self.step_overrides}) != len(self.step_overrides)):
+            raise ValueError('duplicate or reserved start key')
+        return self
+
+
+class GenericOutputRef(Closed):
+    slot: Name
+    contract: GenericOutputType
+    version: VisitNumber
+    producer_visit: Token
+    task_id: Token
+    session_id: Token
+    result_id: Positive
+    digest: Digest
+
+
+class GenericCallback(Closed):
+    format: Literal['workflow-sequential-callback@2']
+    outcome: Token
+    content_base64: Annotated[str, StringConstraints(max_length=1398104)]
+    findings: Annotated[tuple[Text, ...], BeforeValidator(_array), Field(max_length=32)]
+
+    @model_validator(mode='after')
+    def bounded_findings(self) -> Self:
+        for text in self.findings:
+            _text(text, 16384)
+        return self
+
+
+class GenericResultEnvelope(Closed):
+    """Server-composed references; parsing does not authenticate native identity."""
+
+    format: Literal['workflow-sequential-result@2']
+    run_id: Token
+    visit_id: Token
+    definition_digest: Digest
+    input_selection_digest: Digest
+    outcome: Token
+    outputs: Annotated[tuple[GenericOutputRef, ...], BeforeValidator(_array), Field(max_length=1)]
+    findings: Annotated[tuple[Finding, ...], BeforeValidator(_array), Field(max_length=32)]
+
+
+class GenericNodeCounters(Closed):
+    revisions: RevisionCount
+    attempts: AttemptCount
+    recoveries: AttemptCount
+
+
+class GenericCounters(Closed):
+    visits: VisitNumber
+    events: Annotated[StrictInt, Field(ge=0, le=4096)]
+    recoveries: AttemptCount
+    nodes: Annotated[tuple[tuple[Name, GenericNodeCounters], ...], BeforeValidator(_pairs), Field(min_length=1, max_length=32)]

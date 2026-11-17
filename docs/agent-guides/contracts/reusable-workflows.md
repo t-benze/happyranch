@@ -165,12 +165,109 @@ F1/F3/F6 and AC1/AC5/AC8. These are source interfaces, not M1 acceptance.
 compiled records. `sequential_definition.py` owns pure canonical parsing,
 definition compilation, graph validation and start completeness checks.
 The reducer and brief renderer build on these modules. None allocates tasks,
-reads resources, registers releases, performs I/O, calls Coding progression, or has a production producer caller. The
+reads resources, registers releases, performs I/O or calls Coding progression. Later @1 runtime consumers remain attached to the original entry points; @2 stays inert. The
 definition identity is a pin, never a progression or brief-builder selector.
 
-## Definition and ABI
+## S1: generic definition and pure ABI @2 (inert)
 
-The new family is `workflow-sequential-definition@1`, distinct from historical
+[The approved replacement design](../../specs/2026-11-16-workflow-replace-chain-design.md)
+introduces explicit `compile_generic_definition`, `parse_generic_start`,
+`validate_generic_start`, `parse_generic_callback`, `parse_generic_result`,
+`reduce_generic_result` and `render_generic_node_brief` entry points in the same
+four U1 owners. Existing `compile_definition`, `parse_start`, `parse_result`,
+`parse_transition`, `reduce_result` and `render_node_brief` retain @1 semantics
+and original canonical parse/replay bytes. The live decision model, composer,
+catalog, settings/storage and admission remain @1. S1 supplies no @2 live start,
+assignment resolution, native proof producer, hold/control writer or inbox.
+Storage is S2a; assignment resolution is S3; control/native attachment and source
+continuation follow in S4–S6. There is no installation or admission authority here.
+
+`workflow-sequential-definition@2` retains identity/version, description,
+required inputs, roles, entry node, nodes, limits and terminal conditions. Its
+pin uses compiler/validator/interpreter/capabilities **@2**, with the exact raw
+canonical definition SHA256 and independently selected source SHA256. Compiled
+maps/arrays remain immutable tuples; the saved wire bytes own the pin, not a
+`model_dump()` of that compiled view. Structural JSON retains the existing
+canonical encoding, 1 MiB definition/start bound, depth 24, duplicate-key refusal,
+strict integers and 16 KiB text fields.
+
+A role retains executable-agent eligibility/independence syntax and adds optional
+nullable permanent `default_agent`. A node has `id`, `role`, `responsibilities`,
+`inputs`, `output_contract`, `limits`, and `outcomes`. There is no
+`completion_checks` field or domain registry in @2. Output contracts are exactly
+`{slot,type}`, with type `canonical-json-object@1` (48 KiB / 49,152 bytes) or
+`immutable-document@1` (1 MiB / 1,048,576 UTF8 bytes). Generic JSON must be a
+canonical object; finite floating values are allowed in content, with the same
+finite depth/integer/duplicate-key bounds. Repository/head/PR/evidence keys have
+no engine semantics. Length is checked before decoding, parsing or hashing.
+
+Each node declares `limits={revisions,attempts,recoveries}`, respectively 0–63,
+1–64 and 0–64. Run limits are `max_visits` (1–64), `max_events` (1–4096),
+`max_recoveries` (0–64), plus optional `node_revisions` lower ceilings keyed by
+node ID. Definition/original/requested ceilings intersect; keys, agents, sessions
+and briefs create no new allowance. Counters retain total visits/events/recoveries
+and per-node revisions/attempts/recoveries; S1 consumes automatic node revisions
+and attempts, while later control writers own recovery consumption. There are no
+engine-wide two-return/three-epoch limits in @2. Output versions/visit ordinals
+are bounded by the original 64-visit ceiling.
+
+At most 32 nodes, 16 roles, 32 slots and eight outcomes per node are accepted.
+Outcome keys are any declared existing bounded token (1–128 ASCII characters
+from the Token grammar), independently of output type. Edges remain closed
+`next`, `hold`, `fail`, or `terminal`. A correction next edge explicitly sets
+`consume_counter=node_revisions` and `invalidate_dependents=true`: it spends
+the **target node's** revision and attempt, reserves one visit and retires that
+producer's control/data dependents. Other next edges spend only an attempt/visit.
+Removing counter-consuming edges must leave an acyclic graph. All nodes must be
+reachable; required current inputs must have a producer on every path, including
+correction invalidations; at least one terminal path must fit original limits,
+including both visits and events. Each fresh node result consumes one event,
+including the terminal result; successor allocation adds no event and must leave
+room for its result. A graph with no fitting path refuses as
+`no_terminal_path_within_limits`.
+Terminal conditions contain only `{output}`; they require available generic
+output and positive native settlement, with no typed domain witness. A hold edge
+has `owner=initiator` and `remedy=no_automatic_retry`. Limits exhausted in pure
+reduction yield no successor intent; no retry/reassignment is implemented here.
+
+Start@2 contains exactly `format`, `operation_key`, full `definition`/`settings`
+pins, `request`, `inputs`, `role_overrides`, `step_overrides`, `lower_limits`.
+Role overrides are partial `{role,principal}` claims; step overrides name a node
+and optional nullable `model`/`reasoning_effort`. Field presence is retained for
+later S3 resolution: omission and explicit null differ. Pure validation checks
+keys/pins/required inputs/limits; it neither resolves defaults nor checks current
+agent/executor eligibility. The original Start@1 parser refuses @2.
+
+Callback@2 is a canonical UTF8 JSON string containing exactly `format`, `outcome`,
+`content_base64`, `findings`. Findings are own text, at most 32 strings; metadata
+with empty content is at most 16 KiB. Standard padded base64 must be canonical;
+encoded length is bounded before decoding. There are no capability claims or
+client-supplied native identities. A future trusted adapter composes result@2
+with run/visit IDs, definition/selection digests, outcome, at most one generic
+output reference and attributed findings. References fix slot/contract/version,
+producer visit/task/SID/positive INTEGER result and exact content SHA256. The
+result envelope retains its 64 KiB bound. Syntax proves no native authority.
+
+The pure reducer receives a trusted snapshot and adapter assertion of actual
+native identity/current disclosure authority/positive native and outer settlement,
+plus the actual output bytes. S1 produces none of these proofs. Next/terminal
+edges require the declared output. Empty hold/fail content requires a causal
+finding. Unknown outcomes, unverified settlement or mismatched output provenance
+select no new output/successor. Malformed/oversized content refuses before
+hashing; a later acceptance writer owns its durable hold. Exact result replay
+returns the original decision; changed native identity/content conflicts.
+Generic acceptance never attests semantic truth, matching Git heads or remote
+merge. Brief@2 carries fixed trusted safety separately from authored node data,
+only declared recipient-addressed current bytes/references, responsibilities,
+outcomes and actual remaining totals/node counters. No Coding branch or trusted
+domain supplement is required by this path.
+
+The supported focused owner is `scripts/test-workflow-schema-load.sh --generic-abi=all`;
+its six groups and proof limits are in [local CI](../../operations/local-ci.md).
+
+## Historical @1 definition and ABI (retained parser/replay)
+
+The retained family is `workflow-sequential-definition@1`, distinct from historical
 document compilers and `workflow-coding-definition@1`. Definition fields are
 `format`, `identity`, positive INTEGER `version`, `description`,
 `required_inputs`, `roles`, `entry_node`, `nodes`, `limits`, and
@@ -210,7 +307,7 @@ arrays become tuples; frozen nested models retain the original raw byte pin.
 Serialize wire records from their specified JSON shapes, not the compiled
 definition's tuple-based `model_dump()` representation.
 
-## Finite graph rules
+## Finite graph rules (@1)
 
 The ceiling is 32 nodes, 16 roles, 32 input/output slots, 8 outcomes per node,
 64 visits, 3 content epochs, 2 content returns and 4096 events. Definitions are
@@ -265,7 +362,7 @@ dangling inputs. Its future trusted merge capability must still independently
 require current exact-subject review and QA, authority, native settlement and
 guarded action evidence. Earlier graph refusal is not proof of that policy.
 
-## Closed command, result and transition syntax
+## Closed command, result and transition syntax (@1)
 
 `parse_start` accepts only canonical `workflow-sequential-start@1` with
 `operation_key`, full `definition` pin, `settings` generation/snapshot digest,
@@ -309,7 +406,7 @@ selected edge, invalidation and result identity; a future owning writer
 must authenticate persisted history, CAS, one-time consumption and genuine
 fresh task/visit allocation. Parsing grants none of those effects.
 
-## Pure reducer ABI
+## Pure reducer ABI (@1)
 
 `sequential_reducer.reduce_result(compiled, state, result) -> Decision` uses
 `workflow-sequential-interpreter@1`. All records inherit the frozen, strict,
@@ -363,7 +460,7 @@ an attempted return after the last permitted epoch still retires stale dependent
 selections but cannot spend another return/epoch. Missing required current input
 also holds without reserving a visit. Effects and history remain external.
 
-## Pure brief ABI
+## Pure brief ABI (@1)
 
 `sequential_briefs.render_node_brief(compiled, state, original_request=...,
 inputs=BriefInputs(...)) -> NodeBrief` renders `workflow-sequential-node-brief@1`.
@@ -383,7 +480,7 @@ supplements. Definition/data text cannot replace the fixed system safety field,
 change policy or introduce scripts/expressions/permissions. Rendering grants no
 allocation, execution, disclosure or repository authority.
 
-## Bundled data and acceptance status
+## Bundled data and acceptance status (@1)
 
 [Example provenance and finite acceptance cases](reusable-workflows-examples/README.md)
 record the four unchanged reviewed example files, including their presentation
