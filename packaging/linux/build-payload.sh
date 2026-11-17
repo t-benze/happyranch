@@ -157,6 +157,12 @@ cp -a "$WORK/source/web/dist" "$PAYLOAD/web/dist"
 export CGO_ENABLED=0 GOOS=linux GOARCH="$GO_ARCH" GOFLAGS=-modcacherw
 (cd "$WORK/source/app/linux/tsnet-sidecar" && go build -buildvcs=false -mod=readonly -trimpath \
     -o "$PAYLOAD/bin/happyranch-tsnet-sidecar" ./cmd/happyranch-tsnet-sidecar)
+# Root-only invocation is enforced by this inert command itself. Its fixed
+# libexec path is deliberately outside bin/ and HAPPYRANCH_BUNDLED_BIN.
+mkdir -p "$PAYLOAD/libexec/remote-access"
+(cd "$WORK/source/app/linux/tsnet-sidecar" && go build -buildvcs=false -mod=readonly -trimpath \
+    -o "$PAYLOAD/libexec/remote-access/happyranch-home-ca" ./cmd/happyranch-home-ca)
+chmod 755 "$PAYLOAD/libexec/remote-access/happyranch-home-ca"
 cat > "$PAYLOAD/bin/happyranch" <<'CLI'
 #!/bin/sh
 set -eu
