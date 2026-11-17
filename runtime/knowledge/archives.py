@@ -210,7 +210,10 @@ class KnowledgeArchiveStore:
         confirmation_json = _json(confirmation)
         failure = None
         try:
-            build_curation_input(capture)
+            # Precheck before allocating operation/task IDs; dispatch renders
+            # the same bounded contract with the actual task and attachment key.
+            build_curation_input(capture, org_slug=self._org, task_id='TASK-pending',
+                                 storage_key='distill-pending-snapshot.json')
         except CurationError as error:
             failure = _json({'code': error.code, **error.counts})
         with self._transaction():
