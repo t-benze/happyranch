@@ -118,6 +118,22 @@ window exhaustion, original cause/closure and real native load/failure paths.
 Original-owner qualification, helper supervision and all-org/listener timing
 remain incomplete; this stage does not authorize setup effects.
 
+The original `BootstrapSource.open` now checks retained native histories on its
+same coherent query-only snapshot before any attempt/backup. The strict native
+producer/writer and complete thread lifecycle readers retain their append and
+identity rules. Unsettled/deferred/unknown preparation, nonquiescent attempts,
+missing/orphan thread evidence and every retained Pause entry refuse; an ended
+task, a stale disk-sweep record or a thread predecessor attestation cannot settle
+them. Reads share the original inventory SQL ledger, with an at-most-five-second
+deadline, bounded scalar-before-payload acquisition and charged complete sibling
+replay. There is no writable Database facade, history rewrite or same-source
+replay. The existing shell's `--bootstrap-owners[=CASE]` covers these boundaries
+using private native storage and the original strict readers. This is a durable
+history prerequisite only: current source/domain, original host/process,
+registry/cooperating-host and full exclusion qualification remain separate.
+The automatic coordinator/supervisor and whole-startup acceptance are unfinished;
+ordinary installed loads do not enter this source/installer stage.
+
 > Moved verbatim from the repository-root `AGENTS.md` on 2026-10-30. Sections keep
 > their original relative order. Where a later section says it supersedes or
 > extends an earlier one, the later section controls; sections marked

@@ -667,6 +667,7 @@ class BootstrapSource:
         self.backup_sha256: str | None = None
         self._inventory_steps = 0
         self._backup_started = False
+        self._history_started = False
         self.failed = self.closed = False
 
     def _check(self) -> None:
@@ -779,6 +780,7 @@ class BootstrapSource:
             raw = json.dumps(self.source_inventory, sort_keys=True, separators=(',', ':'), ensure_ascii=False).encode('utf8')
             self.inventory_digest = hashlib.sha256(raw).hexdigest()
             self._unchanged()
+            require_bootstrap_idle_history(self)
             _close_descriptor(parent)
         except BaseException:
             self.failed = True
@@ -919,6 +921,134 @@ class BootstrapSource:
             self.failed = True
             raise BootstrapEvidenceError('workflow_setup_source_close_unknown') from errors[0]
         self.closed = True
+
+
+def require_bootstrap_idle_history(source: BootstrapSource) -> None:
+    """SELECT-only durable prerequisite, never original host/exclusion clearance.
+
+    Reuse the native owners' strict histories on the SAME coherent source.
+    No Database construction, recovery, attestation, stale-writer exception or
+    new participation marker can discharge retained preparation uncertainty.
+    Registry/cooperating-host and actual original process custody must still
+    qualify separately before an automatic intent is allocated.
+    """
+    from types import SimpleNamespace
+    from runtime.infrastructure.producer_admission import ProducerAdmissionStore, NativeWriterStore
+    from runtime.infrastructure.thread_admission import ThreadAdmissionStore
+    from runtime.infrastructure.task_pause_controls import decode_journal
+
+    if source._history_started:
+        raise BootstrapEvidenceError('workflow_setup_history_latched')
+    source._unchanged()
+    conn = source.source
+    if (conn is None or source.layout is None or source.layout.sequential
+            or not conn.in_transaction or conn.execute('PRAGMA query_only').fetchone()[0] != 1):
+        raise BootstrapEvidenceError('workflow_setup_history_owner_invalid')
+    source._history_started = True
+    deadline = min(time.monotonic()+5, source.allowance.deadline)
+    rows_read = bytes_read = 0
+
+    def check() -> None:
+        source._check()
+        if time.monotonic() >= deadline:
+            raise BootstrapEvidenceError('workflow_setup_history_deadline')
+
+    def progress() -> int:
+        source._inventory_steps += 1000
+        return int(source._inventory_steps > 640000000 or time.monotonic() >= deadline)
+
+    def acquire(sql: str) -> list[sqlite3.Row]:
+        nonlocal rows_read, bytes_read
+        result = []
+        for row in conn.execute(sql):
+            check()
+            rows_read += 1
+            # Native scalar lengths gate payload acquisition below; replayed
+            # rows debit again, rather than borrowing an uncharged collection.
+            bytes_read += sum(len(value.encode('utf8')) if type(value) is str else
+                              len(value) if type(value) is bytes else 8 for value in row)
+            if rows_read > 8192 or bytes_read > 64*1048576:
+                raise BootstrapEvidenceError('workflow_setup_history_acquisition_exhausted')
+            result.append(row)
+        check()
+        return result
+
+    try:
+        source._inventory_steps += 1000
+        if source._inventory_steps > 640000000:
+            raise BootstrapEvidenceError('workflow_setup_inventory_exhausted')
+        conn.set_progress_handler(progress, 1000)
+        check()
+        actions = "('producer_move_lifecycle','team_move_native_writer','thread_move_lifecycle')"
+        audit_size = '+'.join('coalesce(length(CAST('+name+' AS BLOB)),0)'
+                              for name in ('task_id', 'agent', 'payload'))
+        bounds = conn.execute('SELECT count(*),coalesce(sum('+audit_size+'),0),'
+            'coalesce(max(length(CAST(payload AS BLOB))),0),'
+            "coalesce(sum(typeof(payload)!='text'),0) FROM audit_log WHERE action IN " + actions).fetchone()
+        if bounds[0] > 8192 or bounds[1] > 64*1048576 or bounds[2] > 16384 or bounds[3]:
+            raise BootstrapEvidenceError('workflow_setup_history_acquisition_exhausted')
+        rows_read, bytes_read = bounds[0], bounds[1]
+        # Gate native variable-width input in SQL before fetching Python cells.
+        # This observation is not a task-count or runtime-capacity qualification.
+        pending_rows, pending_bytes = rows_read, bytes_read
+        for table, columns in (('thread_invocations', ('thread_id', 'agent_name', 'session_id')),
+                               ('task_pause_controls', ('admission_journal_json',))):
+            size = '+'.join('coalesce(length(CAST('+name+' AS BLOB)),0)' for name in columns)
+            count, total, largest = conn.execute('SELECT count(*),coalesce(sum('+size+'),0),'
+                'coalesce(max('+size+'),0) FROM '+table).fetchone()
+            pending_rows, pending_bytes = pending_rows+count, pending_bytes+total
+            if pending_rows > 8192 or pending_bytes > 64*1048576 or largest > 32*1048576:
+                raise BootstrapEvidenceError('workflow_setup_history_acquisition_exhausted')
+            check()
+        # These original stores need only _conn for reading. The actual native
+        # connection is query-only and has no writable Database facade to borrow.
+        facade = SimpleNamespace(_conn=conn)
+        producers = ProducerAdmissionStore(facade, source.fence.root.name).history_uncommitted()
+        if any(not state.producer_settled or state.deferred or state.unknown
+               or any(not attempt.settled or not attempt.quiescent for attempt in state.attempts)
+               for state in producers.values()):
+            raise BootstrapEvidenceError('writer_exclusion_unproven')
+        writers = NativeWriterStore(facade, source.fence.root.name).history_uncommitted()
+        if any(state.state != 'settled' for state in writers.values()):
+            raise BootstrapEvidenceError('writer_exclusion_unproven')
+        # A terminal task label cannot settle even a pre-launch preparation.
+        # Closed Pause invocations are removed by their original owner; every
+        # remaining entry still needs that owner's positive reconciliation.
+        for row in acquire('SELECT admission_journal_json FROM task_pause_controls'):
+            if decode_journal(row[0])['entries']:
+                raise BootstrapEvidenceError('writer_exclusion_unproven')
+        invocations = acquire('SELECT id,thread_id,agent_name,session_id FROM thread_invocations ORDER BY id')
+        histories = acquire("SELECT id,task_id,agent,payload FROM audit_log WHERE action='thread_move_lifecycle' ORDER BY id")
+        by_thread: dict[str, list] = {}
+        for row in histories:
+            by_thread.setdefault(row['task_id'], []).append(row)
+        store = ThreadAdmissionStore(facade, source.fence.root.name)
+        native = {row['id']: row for row in invocations}
+        for thread, history in by_thread.items():
+            for _, state in store._decode_states(thread, history, check=check):
+                row = native.get(state.invocation_id)
+                if (row is None or (row['thread_id'], row['agent_name'], row['session_id'])
+                        != (thread, state.agent_id, state.session_id)):
+                    raise BootstrapEvidenceError('writer_exclusion_unproven')
+        for invocation in invocations:
+            history = by_thread.get(invocation['thread_id'], [])
+            # Bound complete sibling replay as well as initial acquisition.
+            rows_read += len(history)
+            bytes_read += sum(len(row['payload'].encode('utf8')) for row in history)
+            if rows_read > 8192 or bytes_read > 64*1048576:
+                raise BootstrapEvidenceError('workflow_setup_history_acquisition_exhausted')
+            states = store._replay_bounded(SimpleNamespace(**dict(invocation)), history, check=check)
+            state = states[-1][1]
+            if (not state.producer_settled or state.deferred or state.unknown
+                    or any(not attempt.settled or not attempt.quiescent for attempt in state.attempts)):
+                raise BootstrapEvidenceError('writer_exclusion_unproven')
+        check()
+        source._unchanged()
+    except BaseException:
+        source.failed = True
+        raise
+    finally:
+        conn.set_progress_handler(None, 0)
 
 
 class BootstrapRehearsal:

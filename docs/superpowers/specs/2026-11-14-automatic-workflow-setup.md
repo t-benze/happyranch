@@ -580,6 +580,39 @@ listener acceptance remain incomplete. Keep A4 draft. No limits, parts2-7,
 I1a/I1b, historical initializer, A1/A2, independent review/QA or exact-head gates
 change; no live install, restart, role/Allow or workflow work is authorized.
 
+### A4 retained native history prerequisite checkpoint
+
+`BootstrapSource.open` now calls `require_bootstrap_idle_history` on its original
+coherent query-only snapshot after complete source/inventory acquisition and
+before any install intent/backup. The existing strict `ProducerAdmissionStore`,
+`NativeWriterStore` and complete `ThreadAdmissionStore` replay own native format,
+append, original identity and sticky uncertainty. Every selected history must
+be settled, nondeferred and known, with all retained attempts settled/quiescent;
+every remaining Pause entry requires its original owner's reconciliation.
+Complete native invocation/history joins also refuse missing/orphan thread
+evidence. No terminal-label, PID, stale disk-sweep or predecessor-attestation
+exception supplies installation closure. Nothing is backfilled or cleared.
+
+Scalar lengths/counts bound selected payload acquisition before Python fetch;
+the history read retains 8192 rows/64MiB and native 16KiB audit records, with
+complete sibling replay charged again. These are acquisition refusals, never a
+default-runtime size gate. SQL debits the source's existing cumulative 640M
+inventory ledger; the read has its own at-most-five-second deadline clipped by
+the original pre-COMMIT window. A failed gate latches the original source, which
+still owns and closes its raw connection once. A repeat on the same source
+cannot renew a successful or failed read. No writable Database is constructed.
+
+The existing schema shell adds `--bootstrap-owners[=CASE]`: empty, positive
+producer/writer/thread settlement, active/unknown/nonquiescent/replaced histories,
+terminal-task prepared/unknown Pause entries, missing/orphan threads, aggregate
+acquisition, deadline, shared SQL exhaustion and query-only refusal. Synthetic
+fixtures and clocks stay test-side; successful native readers are never stubbed.
+This is only the retained-history prerequisite. Current domain/source closure,
+positive original host/process/preparation custody, registry/cooperating-host
+qualification, supervised helper/parent permission, registration/audit/status,
+coordinator mount and whole-startup acceptance remain incomplete. Keep A4 draft;
+no automatic existing-org install caller or ordinary load cost is added here.
+
 ### A4 final entry startup isolation checkpoint
 
 The custody boundary also spans the actual daemon entry tail after

@@ -70,6 +70,16 @@ and normal loader closure retains the existing original attachment custody.
 Native-owner qualification, helper supervision and automatic startup mounting
 remain incomplete. See the [discovery boundary](../superpowers/specs/2026-11-14-automatic-workflow-setup.md#a4-original-discovery-and-upgrade-window-checkpoint).
 
+The source stage also reads the original native producer/writer and complete
+thread histories through its same query-only connection, before attempt/backup
+creation. Unsettled/unknown preparation, retained Pause entries and missing or
+orphan thread evidence hold without clearing history. Native replay keeps its
+original predicates, bounded acquisition, five-second read deadline and the
+shared inventory SQL ledger. This durable prerequisite does not certify original
+host/process or registry/cooperating-host exclusion; full qualification,
+supervision and automatic startup mounting remain unfinished. Ordinary installed
+loads never enter this stage. See the [lifecycle contract](contracts/runtime-lifecycle.md#a4-startup-attachment-custody).
+
 POST `/orgs` now creates J + Coding + sequential storage and ownership-2 through
 a distinct owner after exclusive skeleton creation and exclusive DB-file
 creation. It retains A1's pre-open org-access fence, Default human-managed team

@@ -57,6 +57,16 @@ if len(sys.argv) == 2 and sys.argv[1].startswith('--fresh-catalog='):
     assert a2_case in ('route', 'historical', 'registration')
     sys.argv[1:] = ['--fresh-catalog']
 
+owners_case = None
+if len(sys.argv) == 2 and sys.argv[1].startswith('--bootstrap-owners='):
+    owners_case = sys.argv[1].split('=', 1)[1]
+    assert owners_case in ('empty', 'producer_settled', 'producer_active', 'producer_unknown',
+        'producer_quiescence', 'producer_rewrite', 'writer_settled', 'writer_active', 'writer_unknown',
+        'writer_rewrite', 'pause_prepared', 'pause_unknown', 'thread_settled', 'thread_active',
+        'thread_unknown', 'thread_missing', 'thread_orphan', 'thread_rewrite', 'acquisition',
+        'deadline', 'sql_budget', 'query_only')
+    sys.argv[1:] = ['--bootstrap-owners']
+
 backup_case = None
 if len(sys.argv) == 2 and sys.argv[1].startswith('--bootstrap-backup='):
     backup_case = sys.argv[1].split('=', 1)[1]
@@ -111,7 +121,7 @@ if len(sys.argv) == 2 and sys.argv[1].startswith('--retained-corruption-phase=')
         uncommitted='between uncommitted')[sys.argv[1].split('=', 1)[1]]
     sys.argv[1:] = ['--retained-corruption']
 
-assert sys.argv[1:] in ([], ['--bootstrap-discovery'], ['--bootstrap-selection'], ['--bootstrap-install'], ['--bootstrap-rehearsal'], ['--bootstrap-backup'], ['--bootstrap-journal'], ['--bootstrap-precommit'], ['--startup-isolation'], ['--fresh-catalog'], ['--org-access-fence'], ['--org-access-openers'], ['--org-access-native'], ['--org-access-guardian'], ['--org-access-profile'], ['--setup-status'], ['--daily-integrity'], ['--install-integrity'], ['--bounded-acquisition'], ['--trace-custody'], ['--sequential-reuse'], ['--sequential-load'], ['--sequential-freshness'], ['--sequential-faults'], ['--sequential-sql-exhaustion'], ['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--coding-authority-corruption'], ['--document-native-corruption'], ['--author-handoff-corruption'], ['--document-revision-corruption'], ['--coding-history-corruption'], ['--physical-corruption'], ['--sequential-uncommitted'], ['--i2-cutover'], ['--i2-native']), 'unknown schema-load selection'
+assert sys.argv[1:] in ([], ['--bootstrap-owners'], ['--bootstrap-discovery'], ['--bootstrap-selection'], ['--bootstrap-install'], ['--bootstrap-rehearsal'], ['--bootstrap-backup'], ['--bootstrap-journal'], ['--bootstrap-precommit'], ['--startup-isolation'], ['--fresh-catalog'], ['--org-access-fence'], ['--org-access-openers'], ['--org-access-native'], ['--org-access-guardian'], ['--org-access-profile'], ['--setup-status'], ['--daily-integrity'], ['--install-integrity'], ['--bounded-acquisition'], ['--trace-custody'], ['--sequential-reuse'], ['--sequential-load'], ['--sequential-freshness'], ['--sequential-faults'], ['--sequential-sql-exhaustion'], ['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--coding-authority-corruption'], ['--document-native-corruption'], ['--author-handoff-corruption'], ['--document-revision-corruption'], ['--coding-history-corruption'], ['--physical-corruption'], ['--sequential-uncommitted'], ['--i2-cutover'], ['--i2-native']), 'unknown schema-load selection'
 
 
 print('SCHEMA_RUNTIME', json.dumps(dict(python=sys.version, executable=sys.executable, sqlite=sqlite3.sqlite_version,
@@ -2286,6 +2296,182 @@ runpy.run_module('runtime.daemon',run_name='__main__')
                 raise AssertionError('hardlinked report accepted')
         daily_case('PASS')
     if sys.argv[1:]:
+        raise SystemExit(0)
+
+# A4-N reads genuine private native histories before any install intent/effect.
+if sys.argv[1:] in ([], ['--bootstrap-owners']):
+    from runtime.infrastructure import workflow_sequential_bootstrap as bootstrap
+    from runtime.infrastructure import workflow_schema as schema
+    from runtime.infrastructure.org_access_fence import OrgAccessFence
+    from runtime.infrastructure.producer_admission import ProducerAdmissionStore, ProducerLifecycle, NativeWriterStore, NativeWriterLifecycle
+    from runtime.infrastructure.thread_admission import ThreadAdmissionStore, ThreadLifecycle, ThreadAttempt
+    from runtime.models import ThreadRecord, ThreadInvocationPurpose
+
+    cases = ('empty', 'producer_settled', 'producer_active', 'producer_unknown',
+        'producer_quiescence', 'producer_rewrite', 'writer_settled', 'writer_active', 'writer_unknown',
+        'writer_rewrite', 'pause_prepared', 'pause_unknown', 'thread_settled', 'thread_active',
+        'thread_unknown', 'thread_missing', 'thread_orphan', 'thread_rewrite', 'acquisition',
+        'deadline', 'sql_budget', 'query_only')
+    for fault in cases:
+        if owners_case is not None and owners_case != fault:
+            continue
+        with tempfile.TemporaryDirectory(prefix='a4-native-history-') as scratch:
+            private = Path(scratch).resolve()
+            home = private/'home'
+            home.mkdir(mode=0o700)
+            root = private/'runtime/orgs/scratch'
+            (root/'org').mkdir(parents=True)
+            (root/'org/teams.yaml').write_text('teams: {}\n')
+            path = root/'happyranch.db'
+            db = Database(path)
+            try:
+                schema.initialize_complete_org_schema(db, expected_org_slug='scratch', layout='J')
+                install_pause_schema(db, org_slug='scratch')
+                install_task_ownership(db, org_slug='scratch')
+                if fault.startswith('producer_'):
+                    store = ProducerAdmissionStore(db, 'scratch')
+                    first = ProducerLifecycle(org_slug='scratch', kind='cleanup', source_id='synthetic-source',
+                        occurrence_id='synthetic-occurrence', agent_id='synthetic-agent', session_id='synthetic-sid',
+                        preparation_id='synthetic-preparation', enqueued_at='2026-11-17T00:00:00+00:00', retry_initialized=False)
+                    store.save_uncommitted(first)
+                    if fault != 'producer_active':
+                        state = first.model_copy(update=dict(producer_settled=True,
+                            failed_cleanup=fault=='producer_unknown'))
+                        if fault == 'producer_quiescence':
+                            state = state.model_copy(update=dict(retry_initialized=True, attempts=(ThreadAttempt(
+                                attempt_id='synthetic-attempt', phase='initial', boundary='host', ordinal=0,
+                                settled=True, quiescent=False),)))
+                        store.save_uncommitted(state)
+                        if fault == 'producer_rewrite':
+                            db.insert_audit_log_uncommitted(first.source_id, first.agent_id,
+                                'producer_move_lifecycle', json.loads(state.model_copy(update=dict(
+                                    preparation_id='synthetic-replaced-preparation')).model_dump_json()))
+                if fault.startswith('writer_') or fault == 'acquisition':
+                    store = NativeWriterStore(db, 'scratch')
+                    first = NativeWriterLifecycle(org_slug='scratch', writer_id='synthetic-writer', publisher='disk_sweep')
+                    store.save_uncommitted(first)
+                    if fault != 'writer_active':
+                        store.save_uncommitted(first.model_copy(update=dict(
+                            state='unknown' if fault=='writer_unknown' else 'settled')))
+                    if fault == 'writer_rewrite':
+                        db.insert_audit_log_uncommitted('config:team-move-writer:'+first.writer_id,
+                            'native_writer', 'team_move_native_writer', json.loads(first.model_copy(update=dict(
+                                state='settled', publisher='synthetic-replaced-publisher')).model_dump_json()))
+                    if fault == 'acquisition':
+                        # Valid individual rows; only their original aggregate
+                        # acquisition bound can refuse the complete history.
+                        raw = first.model_copy(update=dict(state='settled')).model_dump_json()
+                        db._conn.executemany("INSERT INTO audit_log(task_id,agent,action,payload,timestamp) VALUES (?,?,?,?,?)",
+                            [('config:team-move-writer:'+first.writer_id, 'native_writer', 'team_move_native_writer', raw,
+                              '2026-11-17T00:00:00+00:00')]*8191)
+                if fault.startswith('pause_'):
+                    from runtime.models import TaskStatus
+                    db.insert_task(TaskRecord(id='TASK-synthetic-pause', brief='private terminal preparation',
+                        status=TaskStatus.COMPLETED, assigned_agent='synthetic-agent'))
+                    pause = TaskPauseStore(db, 'scratch')
+                    row = pause.ensure_uncommitted('TASK-synthetic-pause')
+                    row['journal']['entries'] = [dict(id='synthetic-native', org='scratch', root_task_id='TASK-synthetic-pause',
+                        task_id='TASK-synthetic-pause', agent='synthetic-agent', session_id='synthetic-sid', owner='ordinary',
+                        owner_identity={}, fingerprint=dict(status='pending', block_kind=None, count=0, session_id=None,
+                            agent='synthetic-agent', fanout=None, jobs=None, parent=None, brief_digest='0'*64),
+                        generation=0, phase='unknown' if fault=='pause_unknown' else 'prepared', retry={},
+                        context={'execution_unknown': True} if fault=='pause_unknown' else {},
+                        started_at=None, captured_generation=None)]
+                    pause.save_journal_uncommitted(row)
+                if fault.startswith('thread_'):
+                    db.insert_thread(ThreadRecord(id='THR-synthetic-history', subject='private original native history'))
+                    inv = db.mint_thread_invocation(thread_id='THR-synthetic-history', agent_name='synthetic-agent',
+                        triggering_seq=0, purpose=ThreadInvocationPurpose.REPLY)
+                    db._conn.execute("UPDATE thread_invocations SET status='failed',session_id='synthetic-sid' WHERE id=?", (inv.id,))
+                    inv = SimpleNamespace(id=inv.id, thread_id=inv.thread_id, agent_name=inv.agent_name, session_id='synthetic-sid')
+                    first = ThreadLifecycle(org_slug='scratch', invocation_id=inv.id, thread_id=inv.thread_id,
+                        agent_id=inv.agent_name, session_id=inv.session_id, preparation_id='synthetic-thread-preparation', retry_initialized=False)
+                    store = ThreadAdmissionStore(db, 'scratch')
+                    if fault != 'thread_missing':
+                        store.save_uncommitted(inv, first)
+                        if fault != 'thread_active':
+                            store.save_uncommitted(inv, first.model_copy(update=dict(producer_settled=True,
+                                failed_cleanup=fault=='thread_unknown')))
+                    if fault == 'thread_orphan':
+                        db._conn.execute('DELETE FROM thread_invocations WHERE id=?', (inv.id,))
+                    if fault == 'thread_rewrite':
+                        db.insert_audit_log_uncommitted(inv.thread_id, inv.agent_name,
+                            'thread_move_lifecycle', json.loads(first.model_copy(update=dict(
+                                producer_settled=True, preparation_id='synthetic-replaced-preparation')).model_dump_json()))
+                db._conn.commit()
+                db._conn.execute('PRAGMA wal_checkpoint(TRUNCATE)')
+            finally:
+                db.close()
+            before = path.read_bytes()
+            with patch.dict(os.environ, {'HAPPYRANCH_DAEMON_HOME': str(home)}):
+                fence = OrgAccessFence.acquire(root, exclusive=True)
+                source = bootstrap.BootstrapSource(fence=fence, deadline=time.monotonic()+119)
+                original_gate = bootstrap.require_bootstrap_idle_history
+                reached = []
+                def observe(owner):
+                    assert owner is source and owner.source.in_transaction, 'A4-N lost original snapshot'
+                    assert owner.source.execute('PRAGMA query_only').fetchone()[0] == 1, 'A4-N native facade writable'
+                    reached.append('original-history')
+                    if fault == 'sql_budget':
+                        source._inventory_steps = 640000000
+                    if fault == 'query_only':
+                        owner.source.execute('PRAGMA query_only=OFF')
+                    if fault == 'deadline':
+                        # Only the private clock is changed. The original source
+                        # operation stays live; its five-second read expires.
+                        real = time.monotonic
+                        start = real()
+                        calls = [0]
+                        def now():
+                            calls[0] += 1
+                            return start if calls[0] <= 3 else start+6
+                        with patch.object(bootstrap.time, 'monotonic', side_effect=now):
+                            return original_gate(owner)
+                    return original_gate(owner)
+                try:
+                    with patch.object(bootstrap, 'require_bootstrap_idle_history', side_effect=observe), patch.object(
+                            Database, '__init__', side_effect=AssertionError('A4-N constructed writable facade')):
+                        error = None
+                        try:
+                            source.open()
+                        except (ValueError, sqlite3.Error) as exc:
+                            error = exc
+                    good = fault in ('empty', 'producer_settled', 'writer_settled', 'thread_settled')
+                    assert reached == ['original-history'], ('A4-N original history gate missing', fault, reached)
+                    assert (error is None) == good, ('A4-N accepted unclosed native history' if not good else 'A4-N rejected settled original history', fault, type(error).__name__)
+                    if not good:
+                        expected = dict(producer_rewrite='producer identity changed',
+                            writer_rewrite='native writer identity changed', thread_rewrite='thread lifecycle identity changed',
+                            thread_missing='thread history missing', acquisition='workflow_setup_history_acquisition_exhausted',
+                            deadline='workflow_setup_history_deadline', sql_budget='workflow_setup_inventory_exhausted',
+                            query_only='workflow_setup_history_owner_invalid').get(fault, 'writer_exclusion_unproven')
+                        assert str(error) == expected, ('A4-N wrong native refusal cause', fault, type(error).__name__, str(error))
+                    assert source.failed == (not good), 'A4-N failure did not latch source'
+                    assert source.source is not None and source.source.in_transaction, 'A4-N original source lost'
+                    if fault != 'query_only':
+                        assert source.source.execute('PRAGMA query_only').fetchone()[0] == 1, 'A4-N source became writable'
+                    assert not (home/'backups').exists() and source.backup_sha256 is None, 'A4-N effects before native qualification'
+                    changes = source.source.total_changes
+                    repeated_sql = []
+                    source.source.set_trace_callback(repeated_sql.append)
+                    try:
+                        original_gate(source)
+                    except ValueError:
+                        pass
+                    else:
+                        raise AssertionError('A4-N replayed original history qualification')
+                    finally:
+                        source.source.set_trace_callback(None)
+                    assert repeated_sql == [], 'A4-N repeated native history SQL'
+                    assert source.source.total_changes == changes, 'A4-N repeat changed native source'
+                    source.close()
+                    assert source.closed and all(record['closed'] for record in source.connections), 'A4-N original close unproved'
+                    assert path.read_bytes() == before, 'A4-N native history observation changed source'
+                    print('PASS A4-N strict original native history/source unchanged:', fault, flush=True)
+                finally:
+                    source.close()
+                    fence.close()
+    if sys.argv[1:] == ['--bootstrap-owners']:
         raise SystemExit(0)
 
 # A4-D composes the actual original fence/selector and native loader boundaries.
