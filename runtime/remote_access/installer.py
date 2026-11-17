@@ -69,6 +69,19 @@ class InstallInventory:
     paths: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class ReplacementInventory:
+    """Read-only replacement candidate, never permission to replay a journal.
+
+    The generation fingerprints the exact validated prepared-record bytes. It
+    is absent unless all six fixed-file digests match a known failed/partial
+    installation. No transaction execution or recovery is available yet.
+    """
+
+    installation: InstallInventory
+    journal_generation: str | None = None
+
+
 def managed_units(layout: str = "source", *, connector_config: dict | None = None) -> dict[str, str]:
     """Use the shared renderers verbatim, including sidecar credential injection."""
     if layout not in ("source", "deb"):
@@ -241,6 +254,9 @@ class ManagedInstaller:
         manual installs still require migration. This supplies no replacement,
         cleanup, source-token read or activation authority.
         """
+        return self._inventory()
+
+    def _inventory(self, *, prepared_transaction: bytes | None = None) -> InstallInventory:
         location = str(self.root / "etc/happyranch")
         paths: list[str] = []
         try:
@@ -254,8 +270,19 @@ class ManagedInstaller:
                 "provision.json": (self.root_owner, 0o600, False),
                 "daemon.token": (service, 0o600, False),
                 "enrollment.key": (self.root_owner, 0o600, False),
+                **({"install-transaction.json": (self.root_owner, 0o600, False)}
+                   if prepared_transaction is not None else {}),
             })
             paths.extend(str(self.root / "etc/happyranch" / name) for name in files)
+            if prepared_transaction is not None:
+                location = str(self.root / "etc/happyranch/install-transaction.json")
+                if files.pop("install-transaction.json", None) != prepared_transaction:
+                    raise InstallerError(location)
+                self._validate_install_record("install-transaction.json", prepared_transaction)
+                digests = self._json(prepared_transaction)["digests"]
+                if any(name not in files or hashlib.sha256(files[name]).hexdigest() != digest
+                       for name, digest in digests.items()):
+                    raise InstallerError(location)
             connector = self._json(files["connector.json"]) if "connector.json" in files else {}
             provenance = files.get("provision.json")
             modern = False
@@ -341,6 +368,39 @@ class ManagedInstaller:
             if isinstance(exc, InstallerError) and str(exc).startswith(str(self.root) + "/"):
                 location = str(exc)
             return InstallInventory("manual-install-conflict", "unsafe-or-unrecognized", (location,))
+
+    def replacement_inventory(self) -> ReplacementInventory:
+        """Inspect a prepared journal only for replacement candidate selection.
+
+        The existing closed v1 schema/phase is unchanged. A pending entry,
+        missing/different fixed file, unsafe metadata or changed journal refuses.
+        Normal inventory and every lifecycle operation still reject journals.
+        This observation neither reads a release-home token nor stops services.
+        """
+        location = str(self.root / "etc/happyranch/install-transaction.json")
+        try:
+            with self._directory("etc/happyranch") as parent:
+                transaction = self._read_file(parent, "install-transaction.json", owner=self.root_owner, mode=0o600)
+        except FileNotFoundError:
+            return ReplacementInventory(self.inventory())
+        except (OSError, InstallerError):
+            return ReplacementInventory(InstallInventory("manual-install-conflict", "unsafe-or-unrecognized", (location,)))
+        installation = self._inventory(prepared_transaction=transaction)
+        generation = (hashlib.sha256(transaction).hexdigest()
+                      if installation.state == "known-failed-or-partial" else None)
+        return ReplacementInventory(installation, generation)
+
+    def replace_failed(self) -> None:
+        """Refuse non-candidates; hold mutation until journal execution ships.
+
+        This is the read-only admission sub-part, not a replacement transaction.
+        No stop, token copy, journal update, quarantine or removal is selectable.
+        """
+        candidate = self.replacement_inventory()
+        installation = candidate.installation
+        if installation.state != "known-failed-or-partial":
+            raise InstallerError(f"replacement refused: {installation.state}: " + ", ".join(installation.paths))
+        raise InstallerError("replacement mutation unavailable; journal execution requires the next 3b-1c sub-part")
 
     def stop_and_confirm(self) -> InstallInventory:
         """Stop only recognized remote units and prove manager quiescence.

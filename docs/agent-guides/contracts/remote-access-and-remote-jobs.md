@@ -893,6 +893,35 @@ consumption remain fail-closed, as do existing modern activation entries. The
 required temp-root/fake-manager checks remain in `scripts/test_installer_token_custody.py`.
 TODO (3b-2): owned local Headscale stop/cleanup; no callable seam is added here.
 
+The next 3b-1c admission sub-part adds Python-only `replacement_inventory()`
+and a fail-closed `replace_failed()` entry. Only the replacement classifier can
+read a final `install-transaction.json`: the existing closed v1 schema is
+unchanged (only `prepared`; no new fields or phases). It requires root:root
+0600 metadata and all six fixed-file SHA-256 digests to match, including
+`provision.json`, and compares the exact journal bytes across both reads.
+Only a known failed/partial installation receives a `journal_generation`,
+the SHA-256 of those exact record bytes. This is a read-only candidate
+fingerprint, not proof of an interrupted transaction or permission to resume.
+Missing/different files, unknown/malformed records and final/pending uncertainty
+remain conflicts. Clean, intact manual and modern staged-inert/recorded installs
+are not replacement candidates; successful modern records should resume
+idempotently rather than be replaced. A modern installation classified as
+failed/partial can be a candidate.
+
+This is the explicit read-only cut: `replace_failed()` refuses non-candidates
+and reports replacement mutation unavailable for candidates, before stop,
+release-home token reads/copies or any filesystem effect. Journal execution/update,
+quarantine/removal, fresh generation after replacement, and interrupted
+replacement resume to staged-inert remain undelivered and unavailable. The
+future mutating consumer must re-inventory, use the merged same-FD source-UID
+token reader before service effects, call `stop_and_confirm()` before file
+changes, journal/fsync every fixed-path rename/removal and never restore old
+credentials. Ordinary inventory, stop, provision/install/uninstall/drift and
+activation retain their transaction/profile refusals. No CLI/helper/D-Bus/package
+caller is added; Disable/account cleanup, rotation/repair, 3b-1d and 3b-2 remain
+outside this sub-part. All five rendered units in both layouts and
+`home_transport=False` remain unchanged.
+
 Deb install refuses incomplete/unsafe/changed provisioning before unit writes
 or service start. Source installs without a provisioning record retain their
 independently provisioned configs, but also require the root-owned release install

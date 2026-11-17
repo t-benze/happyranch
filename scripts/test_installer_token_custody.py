@@ -771,6 +771,166 @@ def lifecycle_fixture(fixture: Fixture) -> LifecycleManager:
     return manager
 
 
+def prepared_replacement(fixture: Fixture, case: str = "failed") -> tuple[LifecycleManager, Path, bytes]:
+    manager = lifecycle_fixture(fixture)
+    modern = case == "modern-failed"
+    if modern:
+        generated_bundle(fixture)
+    else:
+        fixture.provision()
+    inventory_units(fixture, modern=modern, missing=module.UNITS[1] if case == "partial" else None)
+    if case != "partial":
+        manager.states[module.UNITS[0]] = "failed"
+    parent = fixture.root / "etc/happyranch"
+    record = dict(version=1, layout=fixture.installer.layout, phase="prepared", digests={
+        name: hashlib.sha256((parent / name).read_bytes()).hexdigest()
+        for name in ("connector.json", "sidecar.json", "policy.json", "release-daemon.json", "daemon.token", "provision.json")
+    })
+    data = json.dumps(record, sort_keys=True).encode()
+    fixture.installer._write_provision_file("install-transaction.json", data, fixture.installer.root_owner, 0o600)
+    manager.calls.clear()
+    return manager, parent, data
+
+
+@pytest.mark.parametrize("case", ["failed", "partial", "modern-failed"])
+def test_replacement_inventory_binds_exact_prepared_generation(fixture: Fixture, case: str) -> None:
+    manager, parent, data = prepared_replacement(fixture, case)
+    fixture.token.unlink()  # Classification must not reopen the release-home token.
+    before = staged_inventory(fixture)
+    result = fixture.installer.replacement_inventory()
+    assert result.installation.state == "known-failed-or-partial"
+    assert result.installation.detail == ("partial" if case == "partial" else "failed")
+    assert result.journal_generation == hashlib.sha256(data).hexdigest()
+    assert str(parent / "install-transaction.json") in result.installation.paths
+    assert staged_inventory(fixture) == before
+    assert all(call[0] == "show" and call[1] in module.UNITS for call in manager.calls)
+
+
+@pytest.mark.parametrize("case", ["clean", "manual-active", "manual-stopped", "manual-journal", "staged", "recorded", "conflict"])
+def test_replace_failed_refuses_non_candidates_without_effects(fixture: Fixture, case: str) -> None:
+    manager = lifecycle_fixture(fixture)
+    expected = "clean"
+    if case == "manual-journal":
+        manager, _, _ = prepared_replacement(fixture)
+        manager.states.clear()
+        expected = "healthy-manual"
+    elif case in {"staged", "recorded"}:
+        generated_bundle(fixture)
+        expected = "modern"
+        if case == "recorded":
+            inventory_units(fixture, modern=True)
+    elif case != "clean":
+        fixture.provision()
+        inventory_units(fixture)
+        expected = "healthy-manual"
+        if case == "manual-active":
+            manager.states = dict.fromkeys(module.UNITS, "active")
+        if case == "conflict":
+            fixture.write(fixture.root / "etc/happyranch/custom.json", b"synthetic-secret")
+            expected = "manual-install-conflict"
+    before = staged_inventory(fixture)
+    with pytest.raises(module.InstallerError, match=f"^replacement refused: {expected}:"):
+        fixture.installer.replace_failed()
+    assert staged_inventory(fixture) == before
+    assert all(call[0] == "show" and call[1] in module.UNITS for call in manager.calls)
+
+
+@pytest.mark.parametrize("bad", ["malformed", "unknown-phase", "extra-field", "layout", "digest", "missing-file",
+                                 "pending", "mode", "symlink", "foreign-owner", "changed-journal"])
+def test_replacement_inventory_refuses_unproven_journal(
+    fixture: Fixture, monkeypatch: pytest.MonkeyPatch, bad: str,
+) -> None:
+    manager, parent, data = prepared_replacement(fixture)
+    path = parent / "install-transaction.json"
+    record = json.loads(data)
+    changed_inventory: list[dict[str, tuple]] = []
+    if bad in {"unknown-phase", "extra-field", "layout", "digest"}:
+        if bad == "unknown-phase":
+            record["phase"] = "synthetic-secret"
+        elif bad == "extra-field":
+            record["token"] = "synthetic-secret"
+        elif bad == "layout":
+            record["layout"] = "deb"
+        else:
+            record["digests"]["provision.json"] = "f" * 64
+        fixture.write(path, json.dumps(record).encode())
+    elif bad == "malformed":
+        fixture.write(path, b"synthetic-secret")
+    elif bad == "missing-file":
+        (parent / "daemon.token").unlink()
+    elif bad == "pending":
+        fixture.write(parent / ".install-transaction.json.pending", data)
+    elif bad == "mode":
+        path.chmod(0o644)
+    elif bad == "symlink":
+        path.unlink()
+        path.symlink_to(fixture.inputs / "connector.json")
+    elif bad == "foreign-owner":
+        target, fstat = path.stat(), os.fstat
+
+        def foreign(fd: int) -> object:
+            info = fstat(fd)
+            if (info.st_dev, info.st_ino) != (target.st_dev, target.st_ino):
+                return info
+            values = {name: getattr(info, name) for name in dir(info) if name.startswith("st_")}
+            return SimpleNamespace(**{**values, "st_uid": info.st_uid + 1})
+
+        monkeypatch.setattr(os, "fstat", foreign)
+    else:
+        read = fixture.installer._read_file
+        reads = 0
+
+        def changed(parent_fd: int, name: str, **kwargs: object) -> bytes:
+            nonlocal reads
+            value = read(parent_fd, name, **kwargs)
+            if name == "install-transaction.json":
+                reads += 1
+                if reads == 1:
+                    # Replace the real final entry between the two real reads.
+                    # A semantically identical record still has different bytes.
+                    replacement = fixture.inputs / "replacement-journal.json"
+                    fixture.write(replacement, value + b"\n")
+                    os.replace(replacement, path)
+                    changed_inventory.append(staged_inventory(fixture))
+            return value
+
+        monkeypatch.setattr(fixture.installer, "_read_file", changed)
+    before = staged_inventory(fixture)
+    result = fixture.installer.replacement_inventory()
+    assert result.installation.state == "manual-install-conflict"
+    assert result.journal_generation is None
+    assert "synthetic-secret" not in repr(result)
+    assert staged_inventory(fixture) == (changed_inventory[0] if changed_inventory else before)
+    assert all(call[0] == "show" and call[1] in module.UNITS for call in manager.calls)
+
+
+@pytest.mark.parametrize("journal", [False, True])
+def test_replace_failed_holds_recognized_candidates_before_mutation(fixture: Fixture, journal: bool) -> None:
+    manager, parent, _ = prepared_replacement(fixture)
+    if not journal:
+        (parent / "install-transaction.json").unlink()
+    before = staged_inventory(fixture)
+    with pytest.raises(module.InstallerError, match="^replacement mutation unavailable;"):
+        fixture.installer.replace_failed()
+    assert staged_inventory(fixture) == before
+    assert all(call[0] == "show" and call[1] in module.UNITS for call in manager.calls)
+
+
+@pytest.mark.parametrize("operation", ["inventory", "stop"])
+def test_replacement_observation_never_relaxes_other_transaction_guards(fixture: Fixture, operation: str) -> None:
+    manager, _, _ = prepared_replacement(fixture)
+    assert fixture.installer.replacement_inventory().journal_generation is not None
+    manager.calls.clear()
+    before = staged_inventory(fixture)
+    if operation == "inventory":
+        assert fixture.installer.inventory().state == "manual-install-conflict"
+    else:
+        with pytest.raises(module.InstallerError):
+            fixture.installer.stop_and_confirm()
+        assert all(call[0] == "show" for call in manager.calls)
+    assert staged_inventory(fixture) == before
+
+
 def inventory_units(fixture: Fixture, *, modern: bool = False, missing: str | None = None) -> None:
     units = fixture.root / "etc/systemd/system"
     units.mkdir(parents=True, mode=0o755)
