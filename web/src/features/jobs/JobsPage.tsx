@@ -22,6 +22,7 @@ import { useMemo } from 'react';
 import { Lock } from 'lucide-react';
 import { Link, useParams } from 'react-router-dom';
 import { ContentWrap } from '@/design-system/layouts/ContentWrap/ContentWrap';
+import { List, Row, RowAction } from '@/design-system/patterns/List';
 import { PageTitle } from '@/design-system/patterns/PageTitle';
 import { TONE_CLASS, toneClass } from '@/design-system/patterns/semanticTone';
 import { useJobsList } from '@/hooks/jobs';
@@ -156,57 +157,60 @@ function OutcomeCell({ job }: { job: JobRecord }): JSX.Element {
 }
 
 /**
- * A job as an elevated card. The whole card NAVIGATES to the existing
+ * A job as one row of its status group's List (THR-376 PR7: rows in one card
+ * per group, not a stack of cards). The whole row NAVIGATES to the existing
  * JobDetailPage (no inline decision). Columns match the header row exactly.
  */
 function JobCard({ job, to }: { job: JobRecord; to: string }): JSX.Element {
   return (
-    <Link
-      to={to}
-      className={`${CARD_ROW} bg-surface-raised border-border-default hover:shadow-pasture shadow-pasture-sm rounded-lg border px-6 py-4 transition-shadow ${
-        job.status === 'rejected' ? 'opacity-70 hover:opacity-100' : ''
-      }`}
-    >
-      {/* JOB */}
-      <span className={`${CARD_COL.job} text-mono-sm text-accent-text tracking-wide`}>{job.id}</span>
+    <RowAction asChild>
+      <Link
+        to={to}
+        className={`${CARD_ROW} ${
+          job.status === 'rejected' ? 'opacity-70 hover:opacity-100' : ''
+        }`}
+      >
+        {/* JOB */}
+        <span className={`${CARD_COL.job} text-mono-sm text-accent-text tracking-wide`}>{job.id}</span>
 
-      {/* COMMAND — title + verbatim command */}
-      <div className={`${CARD_COL.command} flex flex-col gap-1`}>
-        <div className="flex min-w-0 items-center gap-2">
-          <span className="text-text-primary truncate text-sm font-medium">{job.title}</span>
-          {job.status === 'pending' && job.review_required && <NeedsReviewPill />}
+        {/* COMMAND — title + verbatim command */}
+        <div className={`${CARD_COL.command} flex flex-col gap-1`}>
+          <div className="flex min-w-0 items-center gap-2">
+            <span className="text-text-primary truncate text-sm font-medium">{job.title}</span>
+            {job.status === 'pending' && job.review_required && <NeedsReviewPill />}
+          </div>
+          <code
+            className={`text-text-muted block truncate font-mono text-xs ${
+              job.status === 'rejected' ? 'line-through' : ''
+            }`}
+          >
+            $ {job.script_text}
+          </code>
         </div>
-        <code
-          className={`text-text-muted block truncate font-mono text-xs ${
-            job.status === 'rejected' ? 'line-through' : ''
-          }`}
-        >
-          $ {job.script_text}
-        </code>
-      </div>
 
-      {/* REQUESTED BY */}
-      <div className={`${CARD_COL.requestedBy} flex min-w-0 items-center gap-2`}>
-        <AgentAvatar name={job.agent_name} />
-        <span className="text-text-secondary truncate text-sm"><IdentityName canonicalId={job.agent_name} /></span>
-      </div>
+        {/* REQUESTED BY */}
+        <div className={`${CARD_COL.requestedBy} flex min-w-0 items-center gap-2`}>
+          <AgentAvatar name={job.agent_name} />
+          <span className="text-text-secondary truncate text-sm"><IdentityName canonicalId={job.agent_name} /></span>
+        </div>
 
-      {/* TASK */}
-      <span className={`${CARD_COL.task} text-mono-sm text-accent-text truncate`}>{job.task_id}</span>
+        {/* TASK */}
+        <span className={`${CARD_COL.task} text-mono-sm text-accent-text truncate`}>{job.task_id}</span>
 
-      {/* OPENED */}
-      <div className={`${CARD_COL.opened} flex justify-end`}>
-        <OutcomeCell job={job} />
-      </div>
-    </Link>
+        {/* OPENED */}
+        <div className={`${CARD_COL.opened} flex justify-end`}>
+          <OutcomeCell job={job} />
+        </div>
+      </Link>
+    </RowAction>
   );
 }
 
-/** Column-header row above the cards — aligns to the shared card row. */
+/** Column-header row above the lists — aligns to the shared row padding. */
 function ColumnHeader(): JSX.Element {
   const { t } = useTranslation();
   return (
-    <div className={`${CARD_ROW} text-text-muted px-6 pb-1 text-xs font-medium tracking-wider uppercase`}>
+    <div className={`${CARD_ROW} text-text-muted px-5 pb-1 text-xs font-medium tracking-wider uppercase`}>
       <span className={CARD_COL.job}>{t('jobs.list.column.job')}</span>
       <span className={CARD_COL.command}>{t('jobs.list.column.command')}</span>
       <span className={CARD_COL.requestedBy}>{t('jobs.list.column.requestedBy')}</span>
@@ -289,13 +293,13 @@ export function JobsPage(): JSX.Element {
                     className="flex flex-col gap-2"
                   >
                     <StatusGroupHeader status={status} count={rows.length} />
-                    <ul className="flex flex-col gap-2">
+                    <List>
                       {rows.map((job) => (
-                        <li key={job.id}>
+                        <Row key={job.id} padding="none">
                           <JobCard job={job} to={slug ? `/orgs/${slug}/jobs/${job.id}` : '#'} />
-                        </li>
+                        </Row>
                       ))}
-                    </ul>
+                    </List>
                   </section>
                 );
               })}

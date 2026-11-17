@@ -91,6 +91,35 @@ Feature compositions keep using the stable `@/design-system/...` import paths.
   drops it next to `text-text-primary`. The old `PageHeader` (h2, Hanken
   18/600) is removed; `ThreadHeader` keeps its own h2 detail-pane header.
   Detail, onboarding and story headings are not migrated yet.
+- `Card` and `CardHeader` (`primitives/Card.tsx`, THR-376 PR7) are Pasture
+  ds.css `.card` / `.card-pad` / `.card-head` / `.card-title`: `bg-surface-raised`
+  (--surface), 1px `border-border-default` (--border), `shadow-pasture-sm`
+  (--shadow-sm, the warm shadow; Direction A uses the same value in dark) and
+  padding 20 (`p-5`). `variant="container"` (default) is 18px (`rounded-lg`,
+  ds.css --radius-lg) for a page section or a list; `variant="entry"` is
+  12px (`rounded-md`, --radius) for one item in a feed or grid of separate
+  cards. ds.css has only the 18px `.card`; the 12px entry radius comes from
+  the designer review. `padding="none"` is for cards whose children own the
+  padding (a `CardHeader`, a `List`). `as` picks `div`/`section`/`article`/`aside`.
+  `CardHeader` is `.card-head`: flex, centred, 10px gap (`gap-2.5`), 16px /
+  20px padding, 1px bottom border; `title` is `.card-title` 13px / 600 /
+  -0.1px (`text-body-sm font-semibold tracking-[-0.1px]`, an `h3` unless
+  `titleAs` says otherwise), `meta` is caption muted text and `actions` are
+  pushed right (`.card-head .spacer`). Do not pass the title classes through
+  `cn()` (tailwind-merge reads `text-body-sm` as a colour).
+- `List`, `Row` and `RowAction` (`patterns/List.tsx`, THR-376 PR7) draw a
+  one-card-per-group list: one container `Card` (no padding, clipped) holding
+  a `<ul>` whose rows are separated by a 1px `--border` hairline (ds.css
+  `.divider`). Use it instead of a stack of separate cards. ds.css has no
+  list-row rule: a `Row` (`<li>`) is padded like `.card-head` (16px / 20px,
+  `py-4 px-5`). When the whole row is clickable, give the `Row`
+  `padding="none"` and put the padding on a `RowAction`, a full-width button
+  (or, with `asChild`, the single child such as a router `Link`; only its
+  `className` is merged) that hovers to `bg-surface-hover`. Consumer classes
+  win, so a dense roster keeps its own padding and selected fill. Adopted on
+  Jobs (status groups), the Agents roster and the Dreams feed. The Tasks
+  group cards are `Card as="section" padding="none"` because `TaskListRow`
+  already draws its own dividers. Other card sites are not migrated yet.
 - Page-local CSS does not live in `tokens.css`. The Tasks list's `.tasks-*`
   layout rules are in `src/features/tasks/tasks.css`, imported by
   `TasksPage.tsx`; `tokens.css` keeps only the Tasks `--text-task-*` type
@@ -236,13 +265,15 @@ and retry is local state, so Storybook remains daemon-isolated.
 
 ## Coverage ledger
 
-**43 reusable components: 41 story-covered, 2 justified exclusions.** Stories
+**45 reusable components: 43 story-covered, 2 justified exclusions.** Stories
 preserve the former catalogue's descriptions, examples, variants, and token
 visibility through titles, docs, controls, and representative renders.
 
 | Reusable export | Story or exclusion | Representative states / variants | Tokens |
 |---|---|---|---|
 | `Button` | [source:primitives/Button.tsx#Button] [story:primitives/Button.coverage.stories.tsx#Coverage] Primitives / Button States | default/secondary/outline/ghost/destructive/destructive-outline/link; default/sm/lg/icon; loading, disabled, icon, focus, `asChild` | `components.button` |
+| `Card` | [source:primitives/Card.tsx#Card] [story:primitives/Card.coverage.stories.tsx#Coverage] Primitives / Card Variants | container (18px), entry (12px); padding default (20) / none; with CardHeader | `--radius-lg`, `--radius-md`, `shadow-pasture-sm`, surface/border |
+| `CardHeader` | [source:primitives/Card.tsx#CardHeader] [story:primitives/CardHeader.coverage.stories.tsx#Coverage] Primitives / Card Header | title, meta, actions | `.card-head`, `.card-title` |
 | `Dialog` | [source:primitives/Dialog.tsx#Dialog] [story:primitives/Dialog.coverage.stories.tsx#Coverage] Primitives / Dialog Interaction | trigger → portal | `components.dialog` |
 | `Drawer` | [source:primitives/Drawer.tsx#Drawer] [story:primitives/Drawer.coverage.stories.tsx#Coverage] Primitives / Drawer Interaction | trigger → drawer | `components.drawer` |
 | `DropdownMenu` | [source:primitives/DropdownMenu.tsx#DropdownMenu] [story:primitives/DropdownMenu.coverage.stories.tsx#Coverage] Primitives / Dropdown Menu Interaction | trigger, populated actions | `components.dropdown_menu` |
@@ -265,6 +296,7 @@ visibility through titles, docs, controls, and representative renders.
 | `InboxRow` | [source:patterns/InboxRow.tsx#InboxRow] [story:patterns/InboxRow.coverage.stories.tsx#Coverage] Patterns / Inbox Row States | default/thread × active/open/archived; default rows retain the 8px bordered interactive shell, while grouped thread rows are flush and their enclosing list owns the border/dividers; nested pills preserved | `components.inbox_row`, `--radius-sm` |
 | `KbdChip` | [source:patterns/KbdChip.tsx#KbdChip] [story:patterns/KbdChip.coverage.stories.tsx#Coverage] Patterns / Kbd Chip Combinations | key, chord | `components.kbd_chip` |
 | `Markdown` | [source:patterns/Markdown.tsx#Markdown] [story:patterns/Markdown.coverage.stories.tsx#Coverage] Patterns / Markdown Content | heading/list/emphasis/code | typography/code |
+| `List` | [source:patterns/List.tsx#List] [story:patterns/List.coverage.stories.tsx#Coverage] Patterns / List Variants | static Row, link RowAction (`asChild`), button RowAction; container/entry; selected row | `.card`, `.divider`, `bg-surface-hover` |
 | `MentionAutocomplete` | [source:patterns/MentionAutocomplete.tsx#MentionAutocomplete] [story:patterns/MentionAutocomplete.coverage.stories.tsx#Coverage] Patterns / Mention Autocomplete Populated | populated portal/listbox | surface/border |
 | `MentionTextarea` | [source:patterns/MentionTextarea.tsx#MentionTextarea] [story:patterns/MentionTextarea.coverage.stories.tsx#Coverage] Patterns / Mention Textarea Interaction | editable mention | `components.textarea` |
 | `Mermaid` | [source:patterns/Mermaid.tsx#default] [story:patterns/Mermaid.coverage.stories.tsx#Coverage] Patterns / Mermaid Diagram | loading → diagram | `components.code_block` |
