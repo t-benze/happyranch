@@ -73,8 +73,11 @@ Feature compositions keep using the stable `@/design-system/...` import paths.
   Measured WCAG 2.x ratios: light ink-3 4.52:1 on `--bg` and 4.86:1 on the
   raised surface, ink-2 6.94:1, white on accent/positive 5.23:1, info 4.88:1;
   dark ink-3 5.32:1 on `--bg` and 4.82:1 raised, ink-2 8.34:1, dark
-  `accent-fg` on accent 7.40:1 and on positive 7.93:1, info 7.30:1. Keep new
-  text colours at or above 4.5:1 against the surfaces they sit on.
+  `accent-fg` on accent 7.40:1 and on positive 7.93:1, info 7.30:1. The
+  primary Button's hover and press states use the opaque `accent-hover`
+  token (Pasture `.btn-primary:hover` → `--accent-press`), not a translucent
+  `primary/90`: label on hover/press is 6.57:1 light and 9.19:1 dark. Keep
+  new text colours at or above 4.5:1 against the surfaces they sit on.
 - Primitives wrap basic interaction and Radix behavior. Patterns combine them
   into reusable product language. Layouts own reusable geometry.
 - Components are pure props-in/events-out unless a documented role requires an
