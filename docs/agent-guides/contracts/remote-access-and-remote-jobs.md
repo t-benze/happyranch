@@ -1285,3 +1285,60 @@ terminating other devices. Expired pending authority remains visibly failed and
 cannot be approved; read-only observations never burn it. Fixed production control path:
 `/run/happyranch-connector/control.sock`; no credential is returned by this
 control protocol. Native dialogs and installed service/package activation remain unproven.
+
+## Home invite encoder (THR-327 slice 3c-1)
+
+`runtime.remote_access.invite_v2.encode` is a pure, home-only envelope encoder.
+The normative schema, representations and bounds are the [section 6 v2 wire
+literals table](../../superpowers/specs/2026-11-16-one-click-remote-access.md#v2-wire-literals-pinned).
+It generates the invite ID and pairing secret with `secrets`, serializes compact
+sorted JSON without escaping slashes, and returns the private `invite_text`,
+`pair_secret_digest` and integer `expires_at`. The digest hashes the exact
+base64url secret's UTF-8 text, as consumed by `PinnedPairingManager.redeem`.
+For `issue_invite_record`, the caller converts that integer deadline to an aware
+UTC datetime. Callers floor fractional datetime deadlines before invoking the
+integer-only encoder; the encoder refuses floats and booleans. It never extends
+a deadline or truncates an oversized invite. The runtime endpoint is validated
+as canonical IPv4, an ASCII DNS/tailnet name (LDH labels of 1..63 bytes,
+253 bytes total), or bracketed IPv6, followed by exactly `:443`. Empty labels,
+edge hyphens, other host punctuation, IPv6 zone IDs and noncanonical IPv4
+refuse. Accepted endpoints are preserved byte-for-byte; the endpoint is not
+the control dial IP.
+
+`decode(invite_text, now=integer_unix_seconds)` uses an explicit clock, refuses
+v1 and reserved own-server/system trust, and checks the same schema, encodings,
+addresses, entropy, fingerprint, times and size limits. Both APIs perform no
+I/O or network access. Encoding always emits the fixed control URL without a
+slash; decoding also accepts the table's optional single trailing slash and
+normalizes only that URL. Results are immutable slotted primitive-field objects,
+with redacted display/repr and no Pydantic validation/copy/update API. Invalid
+construction, reinitialization, assignment and deletion raise constant-message
+`InviteError` refusals; those model refusal frames release input references
+before raising and retain no input-bearing structured or chained library error.
+Codec parsing refusals also leave library exception handlers before raising
+their closed category, so neither cause nor context retains a raw library
+exception, including malformed JSON, UTF-8 and address diagnostics.
+Explicit transport fields must never be logged or persisted as diagnostics.
+
+Assumption and division of checks (TASK-16835 manager ruling): row 5's
+“Exactly one CA DER with CA:TRUE” remains unchanged. A private bounded,
+forward-only DER TLV walker follows the reviewed Mac
+`RemoteInvite.swift` `InviteCertificate.validate` field order. It requires one
+complete Certificate SEQUENCE, no trailing bytes, a correctly ordered TBS and
+extensions wrapper, unique extension OIDs, and basicConstraints with cA exactly
+DER TRUE (`ff`). It rejects indefinite, nonminimal, truncated and overrunning
+lengths. The structure has fixed depth; extension iterations consume input.
+This is structural issuance validation, not full X.509 admission. It does not
+parse validity dates, signatures or keys: the Go sidecar's
+`homeTrustPolicy.admit` performs full `crypto/x509` parsing, CA/key-usage and
+validity checks at protected home-CA admission; the Mac verifier retains
+Security parsing plus its typed walker/validity checks. Those remain the trust
+boundary. No dependency or subprocess parser is added.
+
+Focused standalone verification:
+`uv run --frozen pytest scripts/test_invite_v2.py -v`. The tests copy the public
+Swift CA bytes and inline field vectors with source citations, check canonical
+encoder bytes using fixed test-side entropy, and hand the digest/deadline to the
+real pairing manager against temporary synthetic state. Swift's CA-expiration
+refusal is a downstream verifier check under the division above. This slice
+adds no issuance handler, helper operation, UI, service action or live 3c-2 flow.
