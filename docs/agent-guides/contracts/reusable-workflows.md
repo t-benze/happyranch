@@ -1862,19 +1862,30 @@ See the [current U7 source and evidence limits](../../specs/2026-11-11-sequentia
 
 ## U9 release boundary and atomic cutover (TASK-15624)
 
-`sequential_release` reads only the fixed reviewed bundled Coding v2 resource,
-checks source/canonical bytes and the full compiler/validator/interpreter/
-capability pin, then uses the common engine. There is no v1/filesystem fallback.
+R1c generalizes `sequential_release` to one literal `MANIFEST` indexed by
+identity and version. Each entry pins the `runtime` package resource, exact
+size, source/canonical digests and compiler/validator/interpreter/capability
+ABIs. `select_bundled_release` re-reads and validates those bytes, then uses the
+common engine; no Coding identity gate selects the live lane. The sole shipped
+entry remains `release/happyranch/coding` v2, `coding.v2.json` (3795 bytes), with
+unchanged source/definition/ABI pins. `coding.v1.json` is retired legacy grammar:
+fresh selection refuses `coding_fresh_start_retired`, with no filesystem fallback.
+A2's existing registrar and A4/offline consumers share that manifest via
+`preset_catalog`/`inspect_definition`; `PRESET_CATALOG` is only a compatibility
+projection. Exact existing registration writes zero; mismatches refuse. There
+is no competing registrar, Allow/default/role write or live setup change.
 U9b mounts this fresh-only selector together with `coding_fresh_start_retired`
 at old callback intake and consumption/inner writers, after authenticated exact
 admitted replay. Literal old @1/@2 syntax/history, callback/settlement/cancellation
 and LOCAL Final remain with their original family owners.
 
-Public Coding fresh start independently requires mounted native runtime and
-compatible storage, current authority/eligible roles, and latest Allowed NEW
-settings. Any Coding identity/version goes through reviewed-v2 selection; a V3
-marker cannot divert it into the fixture lane. Noncatalog V3 fixtures keep the
-original disposable fence and common engine. A missing marker grants no authority.
+Every bundled fresh start independently requires mounted native runtime and
+installed exact registration, current authority/eligible roles, and latest
+Allowed NEW settings. A known bundled identity with an unsupported version
+refuses; a V3 marker cannot divert it into the fixture lane. Noncatalog V3
+fixtures keep the original disposable fence and common engine. A missing marker grants no authority.
+Start@1 still permits one run with fixed assignments and old source-terminal
+return semantics; R1c adds no @2, discovery route/composer or chain replacement.
 No endpoint, flag, startup installation, old-settings conversion or legacy
 progression fallback is added. Only the genuine original ordinary manager source
 callback initiates work; positive original host/outer settlement still releases

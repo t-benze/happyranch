@@ -524,10 +524,13 @@ The consumer authenticates the actual INTEGER callback before another fresh
 venue/read-only precheck and authority capture. Authority → teams → database
 locks precede the sole admission writer. It revalidates the RetryClaim, actual
 native invocation, current executable manager, noncancelled ordinary ancestry,
-absence of chain/fanout/job wait and independent bindings. Thread-originated or
-sequential-owned sources/ancestors refuse. D1 original limits are computed inside
-the writer from the exact pinned settings snapshot; native allowances are never
-replenished or converted. Native v2 spend/claim/ack uses only existing uncommitted
+absence of chain/fanout/job wait and independent bindings. R1a treats thread
+origin as metadata: eligible ordinary sources/ancestors may originate in a
+thread; sequential-owned sources/ancestors still refuse. Only an actually
+terminal root source gets the guarded original-thread tail; a parked source
+has no tail, and a non-root source only wakes its parent. D1 original limits
+are computed inside the writer from the exact pinned settings snapshot; native
+allowances are never replenished or converted. Native v2 spend/claim/ack uses only existing uncommitted
 APIs and rolls back with the unchanged U3b admission/activation graph.
 
 The source must still be the same live, admitted and attempt-committed ordinary
