@@ -4584,12 +4584,23 @@ def _build_agent_prompt(orch: "Orchestrator", task, agent: str) -> str:
     reviewers = resolve_reviewer_configuration(
         orch._db, known_agents=resolve_known_agent_names(orch._paths),
     )
+    # This is pre-session guidance, not discovery/admission authority. Only
+    # ordinary task-owning executable managers receive the conditional offer.
+    from runtime.workflows.recovery import classify_task
+    actor = prompt_loader.load_agent(orch._paths, agent) if is_mgr else None
+    workflow_start_available = bool(
+        actor is not None and actor.role == "manager" and actor.executor
+        and actor.team == task.team and task.assigned_agent == agent
+        and orch.teams.executable_manager_for_team(task.team) == agent
+        and classify_task(orch._db, task.id, org_slug=orch._slug).kind == "legacy"
+    )
     base = build_capabilities_prompt(
         agents=agents_for_prompt,
         step_number=task.orchestration_step_count + 1,  # 1-indexed for manager display
         prior_steps=prior_steps,
         manager_name=agent,
         self_only=not is_mgr,
+        workflow_start_available=workflow_start_available,
         reviewer_agents=list(reviewers.agents),
         reviewer_configuration_state=reviewers.state,
         missing_reviewer_agents=list(reviewers.missing_agents),

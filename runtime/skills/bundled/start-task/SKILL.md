@@ -486,6 +486,24 @@ U4a observes only literal no-follow ordinary clone/object metadata, refusing com
 
 For a genuine executable team manager's OWN source callback, sequential start uses decision action `workflow_start` with the unchanged `workflow-sequential-start@1` StartCommand. Preserve the exact definition/settings pins, one stable operation key and actual remaining limits; syntax and lower limits create no new allowance. An unavailable venue refuses the start and grants no setup authority. Only positive original source host/outer settlement can release the first visit to the queue. Source and carrier create no fake result or SID. Use only the actual task/agent/session binding; genuine `report-completion` remains the FINAL action.
 
+For an eligible ordinary manager task-owner session, first read your own
+CLI-surface GET `/api/v1/orgs/ORG/workflows/sequential/start-context?session_id=SID`.
+Use an available bundled definition with Allowed settings. Compose with
+`happyranch workflows sequential start-compose --org ORG --session-id SID --from-file ABS --json`.
+The absolute bounded canonical JSON file contains exactly definition
+(identity@version), settings (the discovered generation/snapshot_digest),
+operation_key, request, inputs, and optional lower_limits (all four @1 fields).
+The composer only reads and prints the closed decision; copy it unchanged into
+your OWN genuine FINAL report-completion decision. It never starts work or
+calls report-completion. Preserve the composed bytes/pins and stable key;
+stale settings conflict instead of silently repinning. Discovery/composition
+reserve nothing and the final callback rechecks admission. This is one run per
+source with fixed assignments; the source task ends when the run returns.
+Thread-originated ordinary sources have a partial thread tail with no redelivery
+guarantee. Worker/self-only and direct thread/wake/dream sessions cannot use this
+manager task decision. Retired coding.v1 / old fresh coding start@1/@2 remain
+refused. Unavailable discovery grants no setup, install, role or start authority.
+
 ## Historical Explicit settings-pinned coding composition (ROOT13015)
 
 THR-308 seq403 removes generic audit_log coding scanning and its watermark.

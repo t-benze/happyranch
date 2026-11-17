@@ -564,6 +564,13 @@ def register(sub: argparse._SubParsersAction) -> None:
         if form != 'repository-preflight':
             command.add_argument('--from-file', required=True)
         command.set_defaults(func=cmd_workflow_sequential)
+    from cli.commands.workflow_sequential_start import cmd_workflow_sequential_start_compose
+    compose = sequential_sub.add_parser('start-compose', help='Read-only own-session pinned FINAL decision composer')
+    compose.add_argument('--org', required=True)
+    compose.add_argument('--session-id', required=True)
+    compose.add_argument('--from-file', required=True)
+    compose.add_argument('--json', action='store_true', required=True)
+    compose.set_defaults(func=cmd_workflow_sequential_start_compose)
     coding = workflow_sub.add_parser('coding', help='Fixed release import and agent-manager role defaults; no coding run allocation')
     coding_sub = coding.add_subparsers(dest='coding_command', required=True)
     start = coding_sub.add_parser('run-start', help='Compose settings-pinned start@2 or historical start@1; allocates nothing')
