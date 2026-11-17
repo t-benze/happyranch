@@ -190,6 +190,17 @@ object is confirmed absent; receipt-only retries converge. Other uncertainty is
 `cleanup-uncertain`, never success. No automatic repair/retry. See the
 [maintained A–E contract](../agent-guides/contracts/remote-access-and-remote-jobs.md#inert-linux-headscale-custody-prefix-thr-327-slice-3b-2f-1).
 
+Preparation first refuses competing fragments/drop-ins in the default systemd
+load paths with no-follow checks and zero effects (`foreign-unit`; unsafe
+parent/I/O `custody-uncertain`). The maintained contract lists the exact paths
+and literal merged-`/usr` alias exception. Cleanup refuses before stop/disable
+on any matching alias/enablement symlink under `/etc/systemd/system` or
+`/run/systemd/system`: wants/requires links, foreign/dangling targets and manual
+links to the managed unit are all foreign because this installer creates none.
+Typed secret-free `cleanup-uncertain`, exit1, preserves account, receipt, unit,
+custody and links. Unrelated links remain; no-follow inventory uncertainty or
+exhaustion refuses. A–E partial-cleanup/retry rules above remain unchanged.
+
 Managed Linux no longer takes a fixed `daemon_port`. The connector and sidecar
 exclusion lists remain sorted, equal and always include DEV 8765 plus operator
 exclusions. The ingress address is exactly `127.0.0.1:<managed.bind_port>`;

@@ -245,12 +245,26 @@ account unowned; there is no pre-creation intent. Shape mismatch, malformed or
 foreign/mismatched receipt, unsafe/foreign custody or differing unit refuses
 without repair or deletion.
 
+Before any preparation effect, no-follow checks refuse foreign fragments and
+applicable drop-ins across the default systemd load paths, including runtime,
+local-vendor, vendor and separate `/lib` paths. The maintained 3b-2f-1 contract
+lists every checked directory and the literal merged-`/usr` alias exception.
+Foreign objects remain intact; refusal is typed secret-free `foreign-unit`
+(unsafe parent/I/O: `custody-uncertain`).
+
 **Owned cleanup:** `python -m runtime.remote_access.installer disable-headscale
 --layout deb` and legacy `uninstall --layout deb` stop/disable the exact owned
 Headscale unit and remove its canonical policy and empty fixed custody. The
 staged-profile uninstall refusal stays unchanged; helper Turn off remains later
 work. Unknown config/DB/Noise/DERP/key/socket entries are preserved and refused:
 this inert slice never creates them and cannot establish their ownership.
+Before stop/disable, matching alias/enablement links anywhere below
+`/etc/systemd/system` or `/run/systemd/system` also refuse with typed secret-free
+`cleanup-uncertain`, preserving account, receipt, unit, custody and links without
+stop/disable. This includes wants/requires links, foreign/dangling targets and
+manual links to the managed unit: the inert installer creates no such links.
+No-follow inventory is bounded; uncertainty/exhaustion refuses. Unrelated links
+are preserved. A–E partial-cleanup and explicit retry semantics are unchanged.
 
 A valid creation receipt plus fresh matching identity/shape, unshared group,
 stopped unit and no process using the UID permits userdel, then conditional

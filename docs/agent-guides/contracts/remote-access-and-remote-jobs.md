@@ -1386,6 +1386,27 @@ extension remain later slices. No live root/systemd acceptance is claimed.
 | Port preflight | `headscale_service.preflight_ports(dial_ip)` validates the same canonical RFC1918 IPv4 contract as the renderer, then samples exclusive AF_INET binds at dial_ip TCP8443/UDP3478 and 127.0.0.1 TCP19090/TCP50443. No reuse option, all probes closed. `occupied-port` on EADDRINUSE; other failures `port-check-uncertain`; invalid input `dial-ip`, no raw exceptions. No selection/wiring or real bind is performed by preparation. A check is an observation, not a reservation against a later binder. |
 | Preparation output/refusals | Secret-free JSON with `state=inert`, `account=created/owned/unowned`, and `preservation=receipt-recorded` or the visible unowned statement. Closed refusal categories: `deb-layout-required`, `account-shape`, `account-create-uncertain`, `account-receipt-uncertain`, `foreign-unit`, `foreign-custody`, `custody-uncertain`. Native command text/output and underlying exception contexts are discarded. Partial objects are preserved for operator inspection; no automatic repair/deletion. |
 
+**Foreign systemd inventory:** Before creating any account, receipt, custody or
+unit, preparation uses literal no-follow checks in these default system-unit
+load directories: `/etc/systemd/system.control`, `/run/systemd/system.control`,
+`/run/systemd/transient`, `/run/systemd/generator.early`, `/etc/systemd/system`,
+`/etc/systemd/system.attached`, `/run/systemd/system`,
+`/run/systemd/system.attached`, `/run/systemd/generator`,
+`/usr/local/lib/systemd/system`, `/usr/lib/systemd/system`, and
+`/run/systemd/generator.late`. Also check `/lib/systemd/system` unless literal
+`/lib` is a symlink exactly to `usr/lib` or `/usr/lib`, whose already-checked
+destination is redundant; that link is never followed. Other aliased/unsafe
+parents refuse. At every directory, any `happyranch-headscale.service` object
+outside the exact managed `/etc` fragment is foreign, even with identical bytes.
+Any `happyranch-headscale.service.d`, `happyranch-.service.d` or `service.d`
+object (including empty directories/dangling links) or fixed unit-pending residue
+also refuses. Preparation reports typed secret-free `foreign-unit` (unsafe
+parent/I/O: `custody-uncertain`) with zero effects and preserves foreign objects.
+The [systemd.unit load-path and drop-in rules](https://www.freedesktop.org/software/systemd/man/latest/systemd.unit.html)
+justify checking both higher-priority overrides and lower-priority fragments
+that `/etc` would shadow; drop-ins merge across paths. This is the fixed default
+system layout, not discovery of custom compiled/environment unit paths.
+
 **Manager account/custody rulings A–E (cleanup):**
 A is the unowned preservation rule above. B publishes only the actually created
 identity; a crash between useradd and receipt publication leaves it unowned.
@@ -1421,6 +1442,22 @@ Foreign/unsafe/unknown entries, pending/tampered receipts and differing units
 refuse before any stop/delete. Package payload/notices, installer-state parent,
 root-only CA material, connector/daemon/org data and unrelated Headscale installs
 are preserved. No recursive purge or adoption of an unrelated install.
+
+Before stop/disable, cleanup also inventories `/etc/systemd/system` and
+`/run/systemd/system` recursively with no-follow descriptor reads. Any symlink
+named `happyranch-headscale.service` or whose literal target basename is that
+unit is foreign: aliases, wants/requires links, dangling or foreign-target links,
+and manually created links to the managed fragment all refuse. This inert
+installer creates no alias/enablement links. Refusal is secret-free typed
+`cleanup-uncertain`, exit1, preserving identities, receipt, unit, custody and
+links without stop or disable. Unrelated links remain untouched and are never
+followed. Inventory is bounded to 65,536 entries and depth 32 across both trees;
+unsafe, unreadable, changing or exhausted inventory refuses. A fresh link check
+also precedes disable after stop. With no matching links, disable has no link
+removal to perform under the same cooperative root-writer assumption; this is
+not a concurrent-root-writer fence. [systemctl disable](https://www.freedesktop.org/software/systemd/man/latest/systemctl.html#disable%20UNIT%E2%80%A6)
+can otherwise remove manually created links, so no receipt licenses them.
+A–E partial-cleanup uncertainty and explicit retry semantics remain unchanged.
 
 Cleanup JSON returns `state=removed, account=removed` only after owned convergence;
 `state=preserved, account="preserved: not created by HappyRanch"` visibly preserves

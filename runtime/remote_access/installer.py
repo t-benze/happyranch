@@ -51,6 +51,15 @@ UNITS = (
     "happyranch-release-verifier.service",
 )
 _UNIT_DIR = "etc/systemd/system"
+# systemd.unit system load paths, including attached/generated overrides.
+# /lib is checked separately: merged-/usr's literal alias is redundant.
+_HEADSCALE_UNIT_DIRS = (
+    "etc/systemd/system.control", "run/systemd/system.control",
+    "run/systemd/transient", "run/systemd/generator.early", _UNIT_DIR,
+    "etc/systemd/system.attached", "run/systemd/system", "run/systemd/system.attached",
+    "run/systemd/generator", "usr/local/lib/systemd/system", "usr/lib/systemd/system",
+    "run/systemd/generator.late",
+)
 _ENROLLMENT = "etc/happyranch/enrollment.key"
 _CREDSTORE = "etc/credstore"
 _CREDENTIAL_NAME = "happyranch-tsnet-enrollment"
@@ -1217,17 +1226,36 @@ class ManagedInstaller:
         Config, database, key, socket, pending or unknown inventory refuses; this
         prefix cannot establish ownership of an existing Headscale installation.
         """
-        for path in (*headscale.CUSTODY, _UNIT_DIR):
+        paths = list(_HEADSCALE_UNIT_DIRS)
+        with self._directory() as root:
+            try:
+                info = os.stat("lib", dir_fd=root, follow_symlinks=False)
+            except FileNotFoundError:
+                pass
+            else:
+                if stat.S_ISLNK(info.st_mode):
+                    if os.readlink("lib", dir_fd=root) not in {"usr/lib", "/usr/lib"}:
+                        raise headscale.HeadscaleServiceError("foreign-unit")
+                else:
+                    paths.append("lib/systemd/system")
+        for path in (*paths, *headscale.CUSTODY):
             try:
                 with self._directory(path) as parent:
-                    if path == _UNIT_DIR:
-                        try:
-                            data = self._read_unit(parent, headscale.UNIT)
-                        except FileNotFoundError:
-                            data = None
-                        if data is not None and data != render_headscale_unit().encode():
-                            raise headscale.HeadscaleServiceError("foreign-unit")
-                        for extra in (headscale.UNIT + ".d", "." + headscale.UNIT + ".pending"):
+                    if path not in headscale.CUSTODY:
+                        if path == _UNIT_DIR:
+                            try:
+                                data = self._read_unit(parent, headscale.UNIT)
+                            except FileNotFoundError:
+                                data = None
+                            if data is not None and data != render_headscale_unit().encode():
+                                raise headscale.HeadscaleServiceError("foreign-unit")
+                        # Drop-ins merge across load paths, including dash-prefix
+                        # and service-wide overrides; an empty dir is foreign too.
+                        entries = (headscale.UNIT + ".d", "happyranch-.service.d", "service.d",
+                                   "." + headscale.UNIT + ".pending")
+                        if path != _UNIT_DIR:
+                            entries += (headscale.UNIT,)
+                        for extra in entries:
                             try:
                                 os.stat(extra, dir_fd=parent, follow_symlinks=False)
                             except FileNotFoundError:
@@ -1242,6 +1270,49 @@ class ManagedInstaller:
                             raise headscale.HeadscaleServiceError("foreign-custody")
             except FileNotFoundError:
                 pass
+
+    def _headscale_cleanup_links(self) -> None:
+        """disable removes manual links too; this inert installer owns none.
+
+        Inspect config trees without following links, including dangling links
+        to foreign same-named fragments. Exhaustion/unsafe inventory refuses.
+        This is an observation under the cooperative root-writer discipline.
+        """
+        count = 0
+
+        def inspect(parent: int, depth: int) -> None:
+            nonlocal count
+            if depth > 32:
+                raise headscale.HeadscaleServiceError("cleanup-uncertain")
+            with os.scandir(parent) as entries:
+                for entry in entries:
+                    count += 1
+                    if count > 65536:
+                        raise headscale.HeadscaleServiceError("cleanup-uncertain")
+                    info = os.stat(entry.name, dir_fd=parent, follow_symlinks=False)
+                    if stat.S_ISLNK(info.st_mode):
+                        target = os.readlink(entry.name, dir_fd=parent)
+                        if entry.name == headscale.UNIT or Path(target).name == headscale.UNIT:
+                            raise headscale.HeadscaleServiceError("cleanup-uncertain")
+                    elif stat.S_ISDIR(info.st_mode):
+                        child = os.open(entry.name, _DIR_FLAGS, dir_fd=parent)
+                        try:
+                            self._check_directory(child, "systemd config inventory", None)
+                            inspect(child, depth + 1)
+                        finally:
+                            os.close(child)
+
+        for path in (_UNIT_DIR, "run/systemd/system"):
+            opened = False
+            try:
+                with self._directory(path) as parent:
+                    opened = True
+                    inspect(parent, 0)
+            except FileNotFoundError:
+                # Only an absent config root is empty; a disappearing entry
+                # during inspection must not clear deletion admission.
+                if opened:
+                    raise headscale.HeadscaleServiceError("cleanup-uncertain") from None
 
     def _headscale_cleanup_identity(self, receipt: dict | None) -> tuple[bool, bool]:
         """Re-observe remaining identities; a receipt never licenses UID reuse."""
@@ -1336,6 +1407,7 @@ class ManagedInstaller:
             receipt = self._headscale_receipt()
             user, group = self._headscale_cleanup_identity(receipt)
             self._headscale_inventory()
+            self._headscale_cleanup_links()
             present = unit_present = False
             for path in (*headscale.CUSTODY, f"{_UNIT_DIR}/{headscale.UNIT}"):
                 try:
@@ -1364,6 +1436,7 @@ class ManagedInstaller:
                                        mode=0o644) != render_headscale_unit().encode():
                         raise headscale.HeadscaleServiceError("cleanup-uncertain")
                 self.manager.stop(headscale.UNIT, timeout=50.0)
+                self._headscale_cleanup_links()
                 self.manager.disable(headscale.UNIT)
             self._headscale_stopped()
             user, group = self._headscale_cleanup_identity(receipt)

@@ -298,9 +298,38 @@ def test_crash_after_useradd_becomes_unowned(fixture, monkeypatch, capsys) -> No
     assert not any(args[0] in {"userdel", "groupdel", "useradd"} for args in fixture.calls)
 
 
-@pytest.mark.parametrize("entry", ["unknown", "policy", "link", "mode", "state", "unit", "dropin"])
+@pytest.mark.parametrize("entry", ["unknown", "policy", "link", "mode", "state", "unit", "dropin",
+    *[f"load:{path}:{kind}:{account}"
+      for path in ("etc/systemd/system.control", "run/systemd/system.control",
+                   "run/systemd/transient", "run/systemd/generator.early",
+                   "etc/systemd/system.attached", "run/systemd/system",
+                   "run/systemd/system.attached", "run/systemd/generator",
+                   "usr/local/lib/systemd/system", "usr/lib/systemd/system",
+                   "run/systemd/generator.late", "lib/systemd/system")
+      for kind in ("fragment", "fragment-link", "dropin", "dropin-link")
+      for account in ("absent", "unowned", "owned")],
+    "prefix-dropin", "type-dropin", "lib-foreign-link"])
 def test_foreign_custody_preserved(fixture, monkeypatch, capsys, entry) -> None:
-    assert fixture.prepare(monkeypatch, capsys)[0] == 0
+    if entry.startswith("load:"):
+        _, path, kind, account = entry.split(":")
+        if account == "owned":
+            assert fixture.prepare(monkeypatch, capsys)[0] == 0
+        elif account == "unowned":
+            fixture.present = fixture.group_present = True
+        foreign = fixture.root / path / (home.UNIT + (".d" if kind.startswith("dropin") else ""))
+        for parent in reversed(foreign.parents):
+            if parent.is_relative_to(fixture.root) and parent != fixture.root:
+                parent.mkdir(exist_ok=True, mode=0o755)
+        if kind.endswith("-link"):
+            foreign.symlink_to(fixture.root / "missing-foreign-object")
+        elif kind == "dropin":
+            foreign.mkdir(mode=0o755)
+            (foreign / "override.conf").write_bytes(b"synthetic private diagnostic")
+        else:
+            # Even identical bytes at an alternate location confer no ownership.
+            foreign.write_bytes(EXPECTED_UNIT.encode())
+    else:
+        assert fixture.prepare(monkeypatch, capsys)[0] == 0
     folder = fixture.root / "etc/happyranch/headscale"
     if entry == "unknown": (folder / "unknown").write_bytes(b"foreign")
     if entry == "policy": (folder / "policy.hujson").write_bytes(b"foreign")
@@ -314,16 +343,31 @@ def test_foreign_custody_preserved(fixture, monkeypatch, capsys, entry) -> None:
     if entry == "state": (fixture.root / "var/lib/happyranch-headscale/db.sqlite").write_bytes(b"foreign")
     if entry == "unit": (fixture.root / "etc/systemd/system/happyranch-headscale.service").write_bytes(b"foreign")
     if entry == "dropin": (fixture.root / "etc/systemd/system/happyranch-headscale.service.d").mkdir()
+    if entry in {"prefix-dropin", "type-dropin"}:
+        (fixture.root / "etc/systemd/system" / ("happyranch-.service.d" if entry == "prefix-dropin"
+                                                 else "service.d")).mkdir()
+    if entry == "lib-foreign-link": (fixture.root / "lib").symlink_to("foreign-lib")
+    identities = fixture.present, fixture.group_present, fixture.receipt().exists()
+    def snapshot():
+        return {str(p.relative_to(fixture.root)): (p.lstat().st_mode,
+                    os.readlink(p) if p.is_symlink() else p.read_bytes() if p.is_file() else None)
+                for p in fixture.root.rglob("*")}
+    contents = snapshot()
     before = sorted(str(p.relative_to(fixture.root)) for p in fixture.root.rglob("*"))
     fixture.calls.clear()
     code, output = fixture.prepare(monkeypatch, capsys)
     assert code == 1 and ("foreign-" in output or "custody-uncertain" in output)
+    if entry.startswith("load:"):
+        assert "foreign-unit" in output
+    assert "synthetic private diagnostic" not in output
+    assert snapshot() == contents
     assert sorted(str(p.relative_to(fixture.root)) for p in fixture.root.rglob("*")) == before
     assert all(args[0] in {"getent", "passwd"} for args in fixture.calls)
     code, output = fixture.cleanup(monkeypatch, capsys)
     assert code == 1 and "cleanup-uncertain" in output
     assert sorted(str(p.relative_to(fixture.root)) for p in fixture.root.rglob("*")) == before
-    assert fixture.present and fixture.group_present and fixture.receipt().exists()
+    assert (fixture.present, fixture.group_present, fixture.receipt().exists()) == identities
+    assert snapshot() == contents
     assert not any(args[0] in {"userdel", "groupdel", "useradd", "systemctl"} for args in fixture.calls)
 
 
@@ -397,7 +441,10 @@ def test_readiness_is_fixed_local_and_bounded(monkeypatch, ready) -> None:
 @pytest.mark.parametrize("case", ["created", "userdel-fail", "groupdel-fail-retry", "uid-reused",
                                   "both-absent", "process", "unit", "group-member", "gid-changed",
                                   "shape-changed", "service-fail", "objects-absent", "unit-absent",
-                                  "retry-group-member", "retry-gid-changed", "retry-primary-shared", "uid-numeric-reused"])
+                                  "retry-group-member", "retry-gid-changed", "retry-primary-shared", "uid-numeric-reused",
+                                  "foreign-alias", "foreign-wants", "foreign-requires", "manual-managed-link",
+                                  "runtime-alias", "runtime-wants", "runtime-requires", "dangling-alias",
+                                  "unrelated-links", "merged-usr-relative", "merged-usr-absolute"])
 def test_cleanup_receipted_transitions(fixture, monkeypatch, capsys, command, case) -> None:
     assert fixture.prepare(monkeypatch, capsys)[0] == 0
     receipt = fixture.receipt().read_bytes()
@@ -427,19 +474,55 @@ def test_cleanup_receipted_transitions(fixture, monkeypatch, capsys, command, ca
     if case == "gid-changed": fixture.group.gr_gid += 1
     if case == "shape-changed": fixture.user.pw_shell = "/bin/bash"
     if case == "service-fail": fixture.fail_service = True
+    if case in {"merged-usr-relative", "merged-usr-absolute"}:
+        (fixture.root / "usr").mkdir(mode=0o755)
+        (fixture.root / "usr/lib").mkdir(mode=0o755)
+        (fixture.root / "lib").symlink_to("usr/lib" if case.endswith("relative") else "/usr/lib")
+        assert fixture.prepare(monkeypatch, capsys)[0] == 0
+    foreign_links = []
+    if case in {"foreign-alias", "foreign-wants", "foreign-requires", "manual-managed-link",
+                "runtime-alias", "runtime-wants", "runtime-requires", "dangling-alias",
+                "unrelated-links"}:
+        config = fixture.root / ("run/systemd/system" if case.startswith("runtime-") else "etc/systemd/system")
+        for parent in (*reversed(config.parents), config):
+            if parent.is_relative_to(fixture.root) and parent != fixture.root:
+                parent.mkdir(exist_ok=True, mode=0o755)
+        target = fixture.root / "opt/foreign" / home.UNIT
+        if case != "dangling-alias":
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(b"synthetic private diagnostic")
+        if case in {"foreign-wants", "runtime-wants", "foreign-requires", "runtime-requires"}:
+            link = config / ("operator.target.requires" if case.endswith("requires") else "operator.target.wants") / home.UNIT
+            link.parent.mkdir(mode=0o755)
+        else:
+            link = config / "operator-alias.service"
+        if case == "manual-managed-link": target = fixture.root / "etc/systemd/system" / home.UNIT
+        if case == "unrelated-links": target = fixture.root / "opt/foreign/other.service"
+        link.symlink_to(target)
+        foreign_links.append((link, os.readlink(link)))
+    def snapshot():
+        return {str(p.relative_to(fixture.root)): (p.lstat().st_mode,
+                    os.readlink(p) if p.is_symlink() else p.read_bytes() if p.is_file() else None)
+                for p in fixture.root.rglob("*")}
+    before = snapshot() if foreign_links else None
     fixture.calls.clear()
     code, output = fixture.cleanup(monkeypatch, capsys, command)
     assert "synthetic private diagnostic" not in output
     deletion = [args[0] for args in fixture.calls if args[0] in {"userdel", "groupdel", "useradd"}]
-    if case in {"created", "both-absent", "objects-absent", "unit-absent"}:
+    if case in {"created", "both-absent", "objects-absent", "unit-absent", "unrelated-links",
+                "merged-usr-relative", "merged-usr-absolute"}:
         assert code == 0 and output.strip(), output
         assert json.loads(output) == {"state": "removed", "account": "removed"}
-        assert deletion == (["userdel", "groupdel"] if case in {"created", "unit-absent"} else [])
+        assert deletion == ([] if case in {"both-absent", "objects-absent"} else ["userdel", "groupdel"])
     else:
         assert code == 1 and "cleanup-uncertain" in output
         assert fixture.receipt().read_bytes() == receipt
         assert (fixture.root / "etc/happyranch/headscale/policy.hujson").read_bytes() == EXPECTED_POLICY
         assert (fixture.root / "etc/systemd/system" / home.UNIT).read_bytes() == EXPECTED_UNIT.encode()
+        if foreign_links:
+            assert all(link.is_symlink() and os.readlink(link) == target for link, target in foreign_links)
+            assert snapshot() == before
+            assert not any(args[0] == "systemctl" and args[1] in {"stop", "disable"} for args in fixture.calls)
         if case == "groupdel-fail-retry":
             assert "partial-cleanup-uncertain" in output
             assert not fixture.present and fixture.group_present
@@ -458,4 +541,7 @@ def test_cleanup_receipted_transitions(fixture, monkeypatch, capsys, command, ca
     assert not any((fixture.root / path).exists() for path in home.CUSTODY)
     assert not (fixture.root / "etc/systemd/system" / home.UNIT).exists()
     assert payload.read_bytes() == notices.read_bytes() == b"synthetic inert package"
+    assert all(link.is_symlink() and os.readlink(link) == target for link, target in foreign_links)
+    if case in {"merged-usr-relative", "merged-usr-absolute"}:
+        assert os.readlink(fixture.root / "lib") == ("usr/lib" if case.endswith("relative") else "/usr/lib")
     assert not any(args[0] == "systemctl" and args[1] in {"start", "enable", "restart"} for args in fixture.calls)
