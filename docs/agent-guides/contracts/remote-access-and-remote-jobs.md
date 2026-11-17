@@ -1697,3 +1697,110 @@ the explicit invite field out of diagnostics. Focused standalone verification:
 temporary real pairing state and an abrupt child-process exit cover this core;
 real local minting, protected IPC/authentication and installed/native acceptance
 remain in the later serial 3c-2b slice.
+
+### Unwired home join-key adapter (THR-327 slice 3b-2c)
+
+`runtime.remote_access.home_minter.HeadscaleJoinKeyMinter` satisfies the existing
+`JoinKeyMinter` using injected `HeadscaleAdminOperations`, an invite user **NAME**,
+a UTC clock and `OperationRecordStore`. It does no I/O, builds no argv and imports
+no subprocess/socket/gRPC client or environment access. TASK-16780 owns the
+concrete protected local admin-socket transport, root invocation, user/ACL
+creation, helper wiring and any dependency that transport requires. Nothing
+here installs, invokes or proves real Headscale behavior or native acceptance.
+
+Tagged v0.25.1 contracts relied on (verified read-only; not a CLI/JSON adapter):
+
+| RPC / projection | Relied-on fields and behavior | Tagged upstream source |
+| --- | --- | --- |
+| `CreatePreAuthKey` | Request `user` (name), `reusable`, `ephemeral`, `expiration`; transport sends no `acl_tags`. Response `pre_auth_key`. | [service RPCs](https://github.com/juanfont/headscale/blob/v0.25.1/proto/headscale/v1/headscale.proto#L43-L66), [request/response](https://github.com/juanfont/headscale/blob/v0.25.1/proto/headscale/v1/preauthkey.proto#L19-L27), [GetUserByName before creation](https://github.com/juanfont/headscale/blob/v0.25.1/hscontrol/grpcv1.go#L142-L176) |
+| `PreAuthKey` | String `user`, `id`, `key`; Boolean `reusable`, `ephemeral`, `used`; timestamp `expiration`, `created_at`; repeated string `acl_tags`. Transport returns every field as the typed record, with UTC datetimes and tuple tags; absent/ambiguous data must not be invented. | [complete proto record](https://github.com/juanfont/headscale/blob/v0.25.1/proto/headscale/v1/preauthkey.proto#L7-L17) |
+| Key creation | 24 random bytes encoded as 48 lowercase hexadecimal characters; newly persisted key is unused. | [database creation](https://github.com/juanfont/headscale/blob/v0.25.1/hscontrol/db/preauth_keys.go#L37-L86), [key generation](https://github.com/juanfont/headscale/blob/v0.25.1/hscontrol/db/preauth_keys.go#L165-L172) |
+| `ListPreAuthKeys` | Request `user`; response repeated `pre_auth_keys`. Complete user inventory includes used/expired keys. No partial/filtered/truncated snapshot may report success. | [proto](https://github.com/juanfont/headscale/blob/v0.25.1/proto/headscale/v1/preauthkey.proto#L36-L38), [server](https://github.com/juanfont/headscale/blob/v0.25.1/hscontrol/grpcv1.go#L201-L224), [database list](https://github.com/juanfont/headscale/blob/v0.25.1/hscontrol/db/preauth_keys.go#L96-L111) |
+| `ExpirePreAuthKey` | Request `user`, raw `key`; empty response. Server checks ownership and sets expiration to its current time. RPC success alone is insufficient; independently re-list. | [proto](https://github.com/juanfont/headscale/blob/v0.25.1/proto/headscale/v1/preauthkey.proto#L29-L34), [server ownership check](https://github.com/juanfont/headscale/blob/v0.25.1/hscontrol/grpcv1.go#L179-L198), [database update](https://github.com/juanfont/headscale/blob/v0.25.1/hscontrol/db/preauth_keys.go#L155-L163) |
+
+**Hard transport contract:** raw keys and request/response bodies stay in memory
+and protected request fields; never argv, env, URLs, logs or exceptions.
+Headscale v0.25.1 CLI **`preauthkeys expire` is NOT an acceptable transport**:
+[`expire KEY` copies raw `args[0]` into the request](https://github.com/juanfont/headscale/blob/v0.25.1/cmd/headscale/cli/preauthkeys.go#L196-L223).
+Every operation must honor its supplied timeout. `AdminRefused` is allowed only
+when the transport proves create made no state change; a timeout, lost reply or
+unknown server error cannot satisfy that guarantee. The adapter discards raw
+exceptions, leaves handlers, then raises fixed `refused`/`uncertain` categories
+`from None`, retaining neither cause nor context.
+
+A successful list must also be ordered after prior create effects, including a
+timed-out create. If an earlier request could still commit a usable key later,
+the transport must refuse list until settlement or the requested key deadline
+has passed. This is an additional transport obligation, **not a claim that the
+tagged RPC guarantees cancellation/settlement**. An empty snapshot while create
+can still commit cannot prove recovery. Concrete transport acceptance must
+establish this ordering; the synchronous fake only models settled effects.
+
+The invite user MUST be dedicated to Mac invite keys. The helper must serialize
+mint/recover with all other writers for that user. Before each create the adapter
+lists, expires every unused unexpired key and re-lists to prove cleanup. It also
+expires an encountered used reusable key, which can still enroll again. Recovery
+does the same for **all** keys of that user without a creation-window filter:
+lost create replies or unavailable local records cannot hide a key. Used
+single-use keys and keys with expiration <= now are unusable. A later recovery
+can therefore succeed by time after a failed expire, but every call still needs
+a complete clean re-list. Any transport, parse or clock doubt returns False.
+
+Mint rejects a nonpositive, >300-second, naive or non-UTC deadline before any
+admin call. It rounds down to whole seconds and rechecks after cleanup and store
+persistence. The store atomically/durably reserves each operation's creation
+window before its sole create; reservations survive refusal/recovery/restart and
+cannot be overwritten or reused. Store failure refuses without create. Create
+always requests non-reusable, non-ephemeral, untagged keys. A malformed result,
+used key, user mismatch, expired result or server expiration beyond the requested
+deadline is uncertain; success returns the actual server expiration.
+
+UNPINNED -> restrictive choice:
+
+- Admin calls get a five-second timeout. Every row in each complete inventory
+  is validated, including inert expired keys and used single-use keys; all IDs
+  must be unique and nonempty. Only keys that can still enroll count toward the
+  128-key operational/cleanup cap, including used reusable and unused unexpired
+  keys. Inert history consumes no expire RPCs. Both pre-cleanup and independent
+  post-expire inventories must pass; malformed/unknown/ambiguous rows refuse
+  even when their apparent expiration or used flag suggests they are inert.
+- A separate whole-inventory ceiling is 600,000 rows. Sizing assumption: a
+  one-year lifecycle at the real issuer's maximum one mint/minute/home needs
+  at most `366 * 24 * 60 = 527,040` rows, leaving 72,960 rows of margin (about
+  50 days). This is a bounded lifecycle, not indefinite retention. Mint accepts
+  at most 599,999 existing rows so even a lost create reply leaves a complete
+  recoverable inventory of at most 600,000. At capacity, mint returns typed
+  `MintRefused("refused")` before reservation/create; recovery still processes
+  600,000 rows. Beyond the ceiling recovery returns False, never proof from a
+  truncated list; waiting for expiration cannot clear that whole-list refusal.
+  Validation is linear with a bounded ID set and at most 128 retained cleanup
+  candidates. This row bound does not certify transport byte/RSS or wall-time
+  limits; the concrete transport must bound decoding and honor its timeout,
+  refusing incomplete results. No filtered-success read is authorized.
+- Named operator remediation at that lifecycle ceiling: **retire and recreate
+  the dedicated invite user** in a separately authorized maintenance operation.
+  Retire its enrolled nodes first (disruptive: affected clients must re-enroll),
+  then use Headscale v0.25.1 `DeleteUser` and `CreateUser` for the same dedicated
+  name and re-establish the existing user/ACL bindings before resuming issuance.
+  [`DeleteUser`/`CreateUser` exist](https://github.com/juanfont/headscale/blob/v0.25.1/proto/headscale/v1/headscale.proto#L16-L41);
+  [`DestroyUser` refuses users with nodes, deletes their keys, then deletes the user](https://github.com/juanfont/headscale/blob/v0.25.1/hscontrol/db/users.go#L44-L77).
+  Node retirement is supported by the existing
+  [`DeleteNode` RPC](https://github.com/juanfont/headscale/blob/v0.25.1/hscontrol/grpcv1.go#L349-L379).
+  There is [no delete-preauthkey RPC in this tagged service](https://github.com/juanfont/headscale/blob/v0.25.1/proto/headscale/v1/headscale.proto#L43-L68).
+  Expire alone never removes history. This adapter performs no retention/reset,
+  adds no admin operation, and grants no live maintenance authority. Preserve
+  durable operation reservations and the issuer journal across maintenance;
+  reconcile any uncertain operation explicitly, never retry its create.
+- Zero UTC offset and complete typed timestamps/Booleans/strings are required;
+  no JSON coercion, missing-field defaults, ACL tags or key-format fallback.
+- Expire all unused invite-user keys, including older operations, rather than
+  relying on timestamps to attribute an uncertain creation.
+- Durable insert-only operation reservations prevent a second create for an ID;
+  this module selects no persistence format, socket path, user, ACL or transport.
+- Refuse successful list snapshots while an earlier create could still commit
+  a usable key; no timeout/cancellation-to-settlement inference is allowed.
+
+Standalone synthetic verification: `uv run --frozen pytest
+scripts/test_home_minter.py scripts/test_invite_issuer.py -v`. Fake operations
+model the tagged fields/expiration semantics; they do not establish protected
+socket custody, real server execution, Linux/Mac integration or installed access.
