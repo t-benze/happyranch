@@ -288,9 +288,10 @@ struct AppDelegateStopHonestyTests {
         let ready = scratch.appendingPathComponent("ready")
         let controller = RealProcessController()
         // exec retains ignored TERM and leaves exactly one disposable process.
+        // Keep it alive well beyond the managed Stop's 60-second TERM grace.
         let child = try controller.launch(
             executableURL: URL(fileURLWithPath: "/bin/sh"),
-            arguments: ["-c", "trap '' TERM; printf ready > \"$1\"; exec /bin/sleep 60",
+            arguments: ["-c", "trap '' TERM; printf ready > \"$1\"; exec /bin/sleep 600",
                         "stop-child", ready.path],
             currentDirectoryURL: scratch, environment: nil, terminationHandler: nil)
         defer {
