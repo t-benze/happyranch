@@ -188,7 +188,7 @@ export function TaskListRow({ task, to, taskRoutes }: TaskListRowProps): JSX.Ele
           <StatusBadge status={task.status} />
         </div>
         {/* TASK — monospace task-id badge */}
-        <div className={`${COL.task} tasks-id truncate [&>span]:text-text-muted`} title={task.task_id}>
+        <div className={`${COL.task} tasks-id truncate`} title={task.task_id}>
           <IdBadge id={task.task_id} kind="task" />
         </div>
         {/* TITLE — headline text + optional second-line context (waiting qualifier
