@@ -1822,8 +1822,8 @@ which appears in Resolved; display order does not change severity rollups or
 filter-option order. Resting list rows and their lineage use the existing raised
 section surface (white in light mode, semantic raised override in dark mode),
 with distinct hover styling. Only superseded rows are dimmed in every grouping.
-Tasks opts into blue in-progress and amber escalated badges and its own AppBar metrics; other
-surfaces retain their defaults.
+Tasks uses the shared status badges and the shared Pasture AppBar (THR-376);
+there is no Tasks-only badge or AppBar presentation.
 
 Filter supports status and exact assigned-agent name. Apply submits both drafts;
 closing the panel leaves applied values unchanged. Clear omits both parameters.

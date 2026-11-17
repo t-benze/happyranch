@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 import { Moon, Sun } from 'lucide-react';
 import { useLocation } from 'react-router-dom';
 import { useI18n, useTranslation } from '@/hooks/i18n';
@@ -16,6 +17,13 @@ import { features } from '@/config/features';
  * stays correct on every surface without new client state. THR-118 W2a keeps
  * `pageTitleFromPath` a pure helper but gives it an explicit locale argument;
  * the React hook lives in the `AppBar` consumer, never in the helper.
+ *
+ * THR-376 PR2: every page gets the Pasture `.topbar` (ds.css): 56px tall,
+ * 26px inline padding, 14px gap, `--bg` at 80% (`bg-bg/80` compiles to the
+ * same `color-mix(in oklab, var(--color-bg) 80%, transparent)`), and the
+ * `.page-title` in Newsreader 18/500. There is no per-page presentation.
+ * Optional `status` renders after the title and `actions` before the
+ * language/theme controls; both are omitted when not supplied.
  */
 
 const SECTION_TITLES: Record<string, MessageKey> = {
@@ -50,18 +58,23 @@ export function pageTitleFromPath(pathname: string, locale: Locale): string {
 }
 
 export interface AppBarProps {
-  presentation?: 'tasks';
+  /** Page status chip(s), rendered right after the page title. */
+  status?: ReactNode;
+  /** Page-level actions, rendered at the right before the shell controls. */
+  actions?: ReactNode;
 }
 
-export function AppBar({ presentation }: AppBarProps): JSX.Element {
+export function AppBar({ status, actions }: AppBarProps): JSX.Element {
   const location = useLocation();
   const { locale, setLocale, t } = useI18n();
   const title = pageTitleFromPath(location.pathname, locale);
 
   return (
-    <div className={`border-border bg-bg-subtle flex shrink-0 items-center border-b ${presentation === 'tasks' ? 'tasks-appbar' : 'h-12 gap-4 px-5'}`}>
-      <span className={`text-fg font-medium ${presentation === 'tasks' ? 'font-display text-lg' : 'text-sm'}`}>{title}</span>
+    <div className="border-border bg-bg/80 flex h-14 shrink-0 items-center gap-3.5 border-b px-6.5">
+      <span className="text-fg font-display text-lg font-medium">{title}</span>
+      {status != null && <div className="flex min-w-0 items-center gap-2">{status}</div>}
       <div className="ml-auto flex shrink-0 items-center gap-2">
+        {actions != null && <div className="flex items-center gap-2">{actions}</div>}
         <Select value={locale} onValueChange={(next) => {
           if (next === 'en' || next === 'zh-CN') setLocale(next);
         }}>

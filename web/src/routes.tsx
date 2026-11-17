@@ -98,7 +98,7 @@ function AppShell(): JSX.Element {
     <div className="flex h-full flex-row">
       <Sidebar />
       <div className="flex min-w-0 flex-1 flex-col">
-        <AppBar presentation={/^\/orgs\/[^/]+\/tasks\/?$/.test(location.pathname) ? 'tasks' : undefined} />
+        <AppBar />
         <main className="flex-1 overflow-hidden">
           <AppShellErrorBoundary resetKey={location.pathname}>
             <Outlet />

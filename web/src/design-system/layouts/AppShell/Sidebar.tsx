@@ -310,8 +310,8 @@ function Brandmark(): JSX.Element {
   return (
     <svg
       viewBox="0 0 100 100"
-      width="22"
-      height="22"
+      width="30"
+      height="30"
       aria-hidden="true"
       className="text-brand-foreground shrink-0"
     >
@@ -354,7 +354,7 @@ export function SidebarNavItem({
   if (!enabled) {
     const span = (
       <span
-        className="text-fg-subtle flex cursor-not-allowed items-center justify-center gap-2.5 rounded-sm px-2 py-1.5 text-sm md:justify-start"
+        className="text-fg-subtle text-nav flex cursor-not-allowed items-center justify-center gap-2.5 rounded-sm px-2 py-1.5 font-medium md:justify-start"
         aria-disabled="true"
       >
         <Icon size={16} aria-hidden="true" className="shrink-0" />
@@ -373,10 +373,12 @@ export function SidebarNavItem({
     <NavLink
       to={to}
       className={({ isActive }) =>
-        `flex items-center gap-2.5 rounded-sm border-l-2 border-l-transparent px-2 py-1.5 text-sm transition-colors focus-visible:ring-2 focus-visible:outline-none focus-visible:ring-accent justify-center md:justify-start ${
+        // THR-376 PR2: Pasture `[data-dir="a"] .nav-item.active` — accent-soft
+        // fill, accent-text ink, weight 600, no left bar; rows 13.5px/500.
+        `flex items-center gap-2.5 rounded-sm px-2 py-1.5 text-nav transition-colors focus-visible:ring-2 focus-visible:outline-none focus-visible:ring-accent justify-center md:justify-start ${
           isActive
-            ? 'border-l-accent bg-bg-raised text-fg font-medium'
-            : 'text-fg-muted hover:bg-bg-raised hover:text-fg'
+            ? 'bg-accent-soft text-accent-text font-semibold'
+            : 'text-fg-muted font-medium hover:bg-bg-raised hover:text-fg'
         }`
       }
     >
