@@ -27,6 +27,7 @@ import { useKbRoutes, useKBList, useKBSearch, useKBStats } from '@/hooks/kb';
 import { useDensity } from '@/hooks/density';
 import { useDreamsList } from '@/hooks/dreams';
 import { ContentWrap } from '@/design-system/layouts/ContentWrap/ContentWrap';
+import { PageTitle } from '@/design-system/patterns/PageTitle';
 import { EmptyState } from '@/design-system/patterns/EmptyState';
 import { Input } from '@/design-system/primitives/Input';
 import { Button } from '@/design-system/primitives/Button';
@@ -557,16 +558,11 @@ export function KbPage(): JSX.Element {
             candidates from the same client-side count the feed derives. */}
         <header className="shrink-0 border-b border-border-subtle">
           <ContentWrap>
-          <div className="flex items-start justify-between gap-3 max-sm:flex-col">
-            <div className="min-w-0 flex-1">
-              <p className="text-text-muted text-xs font-medium uppercase tracking-wide">
-                {t('kb.headerEyebrow', { count: liveEntries.length, number: formatCountFor(locale, liveEntries.length) })}
-              </p>
-              <h1 className="font-display text-display text-text-primary mt-1 font-medium">
-                {t('kb.pageTitle')}
-              </h1>
-            </div>
-            <div className="flex shrink-0 items-center gap-2">
+          <PageTitle
+            eyebrow={t('kb.headerEyebrow', { count: liveEntries.length, number: formatCountFor(locale, liveEntries.length) })}
+            title={t('kb.pageTitle')}
+            actions={
+            <>
               {candidatePendingCount > 0 && (
                 <button
                   type="button"
@@ -581,8 +577,9 @@ export function KbPage(): JSX.Element {
                   {t('kb.composeButton')}
                 </Button>
               )}
-            </div>
-          </div>
+            </>
+            }
+          />
           </ContentWrap>
         </header>
 

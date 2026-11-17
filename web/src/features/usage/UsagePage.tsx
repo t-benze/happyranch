@@ -15,7 +15,7 @@
  */
 import { useState } from 'react';
 import { ContentWrap } from '@/design-system/layouts/ContentWrap/ContentWrap';
-import { PageHeader } from '@/design-system/patterns/PageHeader';
+import { PageTitle } from '@/design-system/patterns/PageTitle';
 import { EfficiencySection } from './EfficiencySection';
 import { WorkloadSection } from './WorkloadSection';
 import { useEfficiencyOptions, useWorkload } from './useUsageData';
@@ -79,11 +79,12 @@ export function UsagePage(): JSX.Element {
   const [compare, setCompare] = useState(false);
   return (
     <ContentWrap>
-      <header className="mb-8 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-        <div className="min-w-0 flex-1">
-          <PageHeader title={t('usage.title')} meta={<PeriodLabel compare={compare} />} />
-        </div>
-        <CompareSwitch checked={compare} onChange={setCompare} />
+      <header className="mb-8">
+        <PageTitle
+          title={t('usage.title')}
+          lede={<PeriodLabel compare={compare} />}
+          actions={<CompareSwitch checked={compare} onChange={setCompare} />}
+        />
       </header>
       <WorkloadSection compare={compare} />
       <EfficiencySection compare={compare} />

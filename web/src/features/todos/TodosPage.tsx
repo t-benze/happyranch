@@ -9,6 +9,7 @@ import { useState } from 'react'
 import { useParams } from 'react-router-dom'
 import { AlertCircle, Clock, RefreshCw } from 'lucide-react'
 import { ContentWrap } from '@/design-system/layouts/ContentWrap/ContentWrap'
+import { PageTitle } from '@/design-system/patterns/PageTitle'
 import { Button } from '@/design-system/primitives/Button'
 import { EmptyState } from '@/design-system/patterns/EmptyState'
 import { cn } from '@/lib/utils'
@@ -73,13 +74,11 @@ export function TodosPage(): JSX.Element {
   return (
     <ContentWrap>
       <div className="mb-6">
-        <p className="text-fg-subtle text-overline mb-2 font-mono tracking-wider uppercase">
-          {t('todos.list.eyebrow')}
-        </p>
-        <h1 className="text-display font-display text-fg leading-tight">
-          {t('todos.list.title')}
-        </h1>
-        <p className="text-fg-muted mt-2 text-base">{t('todos.list.subtitle')}</p>
+        <PageTitle
+          eyebrow={t('todos.list.eyebrow')}
+          title={t('todos.list.title')}
+          lede={t('todos.list.subtitle')}
+        />
         <p className="text-fg-subtle mt-1.5 text-sm">{t('todos.list.trustLine')}</p>
       </div>
 

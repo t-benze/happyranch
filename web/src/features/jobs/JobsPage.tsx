@@ -22,6 +22,7 @@ import { useMemo } from 'react';
 import { Lock } from 'lucide-react';
 import { Link, useParams } from 'react-router-dom';
 import { ContentWrap } from '@/design-system/layouts/ContentWrap/ContentWrap';
+import { PageTitle } from '@/design-system/patterns/PageTitle';
 import { TONE_CLASS, toneClass } from '@/design-system/patterns/semanticTone';
 import { useJobsList } from '@/hooks/jobs';
 import { useTranslation } from '@/hooks/i18n';
@@ -259,12 +260,7 @@ export function JobsPage(): JSX.Element {
     <div className="bg-surface-canvas h-full">
       <ContentWrap>
         <header className="mb-6">
-          <p className="text-text-muted text-xs font-medium tracking-wide uppercase">
-            {t('jobs.list.eyebrow')}
-          </p>
-          <h1 className="font-display text-text-primary mt-1 text-2xl font-medium">
-            {t('jobs.list.title')}
-          </h1>
+          <PageTitle eyebrow={t('jobs.list.eyebrow')} title={t('jobs.list.title')} />
         </header>
 
         {query.isLoading ? (

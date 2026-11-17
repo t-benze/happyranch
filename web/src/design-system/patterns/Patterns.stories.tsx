@@ -17,7 +17,7 @@ import { MentionAutocomplete } from './MentionAutocomplete';
 import { MentionTextarea } from './MentionTextarea';
 import Mermaid from './Mermaid';
 import { MessageBubble } from './MessageBubble';
-import { PageHeader } from './PageHeader';
+import { PageTitle } from './PageTitle';
 import { RecipientsInput } from './RecipientsInput';
 import { Sparkline } from './Sparkline';
 import { StatValue } from './StatValue';
@@ -82,7 +82,13 @@ function MentionExample(): JSX.Element { const [value, setValue] = useState('@fr
 export const MentionTextareaInteraction: Story = { render: () => <MentionExample /> };
 export const MermaidDiagram: Story = { render: () => <Mermaid source="flowchart LR; Catalogue --> Storybook; Storybook --> Docs; Storybook --> StaticBuild" /> };
 export const MessageBubbleVariants: Story = { parameters: { docs: { description: { story: 'All five variants from the former catalogue, using their real role/body/decline/system prop contracts.' } } }, render: () => <div className="grid max-w-3xl gap-6"><MessageBubble variant="founder" seq={1} speaker="founder" speakerRole="founder" timestamp="2026-09-02T12:00:00Z" body="Please replace the catalogue." /><MessageBubble variant="worker" seq={2} speaker="frontend_engineer" speakerRole="worker" timestamp="2026-09-02T12:01:00Z" body="Implementation is in progress." /><MessageBubble variant="manager" seq={3} speaker="engineering_manager" speakerRole="manager" timestamp="2026-09-02T12:02:00Z" body="Pin the exact PR head before review." /><MessageBubble variant="decline" seq={4} speaker="founder" speakerRole="founder" timestamp="2026-09-02T12:03:00Z" declineReason="Evidence was not retrievable." /><MessageBubble variant="system" seq={5} timestamp="2026-09-02T12:04:00Z" systemDescription="Static build verified." /></div> };
-export const PageHeaderWithActions: Story = { render: () => <PageHeader title="Design system" meta="40 stories · 4 exclusions" actions={<Button>Review</Button>} /> };
+export const PageTitleSlots: Story = { parameters: { docs: { description: { story: 'Every slot combination: title only; eyebrow + title; title + lede; eyebrow + title + lede + actions; title + actions. One <h1> per page, so only render one PageTitle on a real page.' } } }, render: () => <div className="grid max-w-4xl gap-10">
+  <PageTitle title="Agents" />
+  <PageTitle eyebrow="12 documents" title="Knowledge" />
+  <PageTitle title="Usage" lede="Last 7 days · Asia/Shanghai" />
+  <PageTitle eyebrow="5 open · 2 escalated" title="Tasks" lede="Everything your agents are working on." actions={<><Button variant="ghost" size="sm">Filter</Button><Button size="sm">New task</Button></>} />
+  <PageTitle title="Settings" actions={<Button variant="secondary" size="sm">Export</Button>} />
+</div> };
 
 function RecipientsExample(): JSX.Element { const [value, setValue] = useState('front'); return <div className="max-w-xl"><RecipientsInput value={value} onChange={setValue} agents={agents} placeholder="Add recipients" /></div>; }
 export const RecipientsInputInteraction: Story = { render: () => <RecipientsExample /> };

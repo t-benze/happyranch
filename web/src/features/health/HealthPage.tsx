@@ -19,7 +19,7 @@ import {
   type HttpRouteStats,
   type ParsedHistoryRow,
 } from '@/hooks/metrics';
-import { PageHeader } from '@/design-system/patterns/PageHeader';
+import { PageTitle } from '@/design-system/patterns/PageTitle';
 import { Sparkline } from '@/design-system/patterns/Sparkline';
 import { formatCount } from '@/lib/format';
 import { cn } from '@/lib/utils';
@@ -583,9 +583,12 @@ export function HealthPage(): JSX.Element {
     <div className="bg-surface-canvas h-full overflow-y-auto">
       {/* a-health hl-wrap: 1120 centered cap (THR-099 Slice 7). */}
       <div className="max-w-content-wide mx-auto p-8">
-        <header className="mb-8 flex items-start justify-between gap-3">
-          <PageHeader title={t('health.title')} meta={t('health.meta')} />
-          <WindowToggle winIdx={winIdx} onChange={onChangeWindow} />
+        <header className="mb-8">
+          <PageTitle
+            title={t('health.title')}
+            lede={t('health.meta')}
+            actions={<WindowToggle winIdx={winIdx} onChange={onChangeWindow} />}
+          />
         </header>
 
         {liveQ.isError && (

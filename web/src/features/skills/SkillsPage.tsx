@@ -20,6 +20,7 @@ import { useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { Activity, Info, Package, Plus, Sparkles, TriangleAlert } from 'lucide-react';
 import { EmptyState } from '@/design-system/patterns/EmptyState';
+import { PageTitle } from '@/design-system/patterns/PageTitle';
 import { isCustomSkillForbidden, useCustomSkillsCatalog } from '@/hooks/custom-skills';
 import { useTranslation } from '@/hooks/i18n';
 import type { MessageKey } from '@/lib/i18n';
@@ -107,16 +108,14 @@ export function SkillsPage(): JSX.Element {
           })}
         </div>
 
-        <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
-          <div className="min-w-0">
-            <div className="text-fg-subtle text-overline mb-1 tracking-wider uppercase">
-              {t('skills.catalog.overline', {
-                label: headingLabel,
-                count: customSelected ? customSkills.length : items.length,
-              })}
-            </div>
-            <h2 className="text-h2 text-fg">{t('skills.catalog.heading')}</h2>
-          </div>
+        <PageTitle
+          className="mb-4"
+          eyebrow={t('skills.catalog.overline', {
+            label: headingLabel,
+            count: customSelected ? customSkills.length : items.length,
+          })}
+          title={t('skills.catalog.heading')}
+          actions={
           <div className="flex flex-wrap items-center gap-2.5">
             {attention > 0 && (
               <span className="text-attention-text bg-attention-soft inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold">
@@ -144,7 +143,8 @@ export function SkillsPage(): JSX.Element {
               </Link>
             )}
           </div>
-        </div>
+          }
+        />
 
         {/* Guidance-only global warning */}
         <div className="border-border-default bg-bg-subtle text-fg-muted text-body-sm mb-6 flex items-center gap-2.5 rounded-md border px-3 py-2.5">
