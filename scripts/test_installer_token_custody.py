@@ -1329,13 +1329,16 @@ def test_replacement_quarantine_interruption_resumes_exact_generation(
     observed = fixture.installer.replacement_inventory()
     assert observed.installation.detail == phase
     assert observed.journal_generation == hashlib.sha256((parent / "install-transaction.json").read_bytes()).hexdigest()
-    with pytest.raises(module.InstallerError, match="^replacement paused after config quarantine;"):
+    consumes_quarantine = phase == "replacement-quarantined"
+    boundary = REMOVAL_BOUNDARY if consumes_quarantine else "^replacement paused after config quarantine;"
+    with pytest.raises(module.InstallerError, match=boundary):
         fixture.installer.replace_failed()
     assert json.loads((parent / "install-transaction.json").read_bytes()) == {
-        **json.loads(prepared), "phase": "replacement-quarantined"}
+        **json.loads(prepared), "phase": "replacement-state-removed" if consumes_quarantine else "replacement-quarantined"}
     assert all(not (parent / name).exists() and (parent / (".replacement-" + name)).is_file()
                for name in QUARANTINE_CONFIGS)
     assert all(call[0] in {"show", "stop"} and call[1] in module.UNITS for call in manager.calls)
+    assert all(state == "inactive" for state in manager.states.values())
 
 
 @pytest.mark.parametrize("bad", ["unknown", "malformed", "digest", "downgraded", "prepared-downgrade", "missing", "duplicate",
