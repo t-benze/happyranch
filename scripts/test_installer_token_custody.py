@@ -1580,6 +1580,9 @@ def lifecycle_cli_manager(fixture: Fixture, monkeypatch: pytest.MonkeyPatch) -> 
 
     manager = SystemdServiceManager(system=True, unit_dir=units, backup_dir=backups, run=run)
     monkeypatch.setattr(supervisor_module, "service_manager", lambda **kwargs: manager)
+    # The alternate lifecycle now consults the same real fixed-path transaction
+    # owner. Keep that read in the synthetic root, never the developer host.
+    monkeypatch.setattr(module, "ManagedInstaller", lambda: fixture.installer)
     return manager, calls
 
 
@@ -1663,6 +1666,32 @@ def test_staged_identity_cannot_bypass_via_supervisor(
         getattr(supervisor, operation)()
     assert staged_inventory(fixture) == before
     assert fixture.manager.calls == []
+
+
+@pytest.mark.parametrize("operation", ["install", "uninstall", "start", "stop", "restart", "enable", "disable", "upgrade", "rollback", "run"])
+@pytest.mark.parametrize("entry", ["install-transaction.json", ".install-transaction.json.pending"])
+@pytest.mark.parametrize("phase", ["prepared", "replacement-stopped"])
+def test_replacement_transaction_blocks_legacy_supervisor_lifecycle(
+    fixture: Fixture, monkeypatch: pytest.MonkeyPatch, operation: str, entry: str, phase: str,
+) -> None:
+    fixture.provision()
+    parent = fixture.root / "etc/happyranch"
+    record = json.loads(record_data("install-transaction.json"))
+    record["phase"] = phase
+    fixture.write(parent / entry, json.dumps(record).encode())
+    config = ConnectorConfig.from_file(parent / "connector.json")
+    config.managed_dir_root = str(fixture.root / "alternate")
+    config.state_path = str(fixture.root / "source-state/trust-state.json")
+    config.policy_path = str(parent / "policy.json")
+    manager, service_calls = lifecycle_cli_manager(fixture, monkeypatch)
+    supervisor = ConnectorSupervisor(config=config, manager=manager)
+    monkeypatch.setattr(supervisor, "_run_loop", lambda **kwargs: 0)
+    monkeypatch.setattr(supervisor, "_chown_tree", lambda *args: None)
+    before = staged_inventory(fixture)
+    with pytest.raises(ConnectorConfigError, match="^installation transaction blocks remote lifecycle$"):
+        getattr(supervisor, operation)()
+    assert staged_inventory(fixture) == before
+    assert service_calls == []
 
 
 @pytest.mark.parametrize("entry", ["target", "pending"])

@@ -113,7 +113,10 @@ replacement and resume to staged-inert are still undelivered and unavailable.
 No old credentials, trust, control settings or argv are copied or restored.
 Ordinary inventory/stop/provision/install/uninstall/drift and modern activation
 retain their transaction/profile refusals, including the existing slice-3b-2
-home-control diagnostic. No release daemon/package effect or CLI/helper/D-Bus/
+home-control diagnostic. The fixed legacy system connector supervisor also
+consults the same transaction-refusal owner before install/uninstall/start/stop/
+restart/enable/disable/upgrade/rollback/run; a journal cannot reopen that path.
+No release daemon/package effect or CLI/helper/D-Bus/
 package caller is added. Disable/account cleanup, rotation/repair, 3b-1d and
 3b-2 remain outside this sub-part. All five unit strings in both layouts and
 `home_transport=False` remain unchanged.
