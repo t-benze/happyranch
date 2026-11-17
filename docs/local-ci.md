@@ -16,6 +16,10 @@ subprocesses hold flock while actual shell/migration stop handles missing/stale
 PID and an exited live PID; held locks refuse after the real 2s observation
 bound, preserving evidence. Free/absent locks succeed, while symlink, dangling,
 directory, FIFO and unreadable lock paths refuse without blocking or mutation.
+The actual migration CLI also covers both selected homes (`~/.opc` and
+`~/.happyranch`): held/unsafe locks refuse before runtime discovery or writes,
+absent/free locks allow migration, and dry-run leaves a live holder and all
+fixture files unchanged.
 Offline
 maintenance refuses a competing holder before registry/DB preflight, without
 leaking the configured path. These checks run without a

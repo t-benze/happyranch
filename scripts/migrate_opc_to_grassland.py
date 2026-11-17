@@ -275,10 +275,11 @@ def main() -> int:
         info("nothing to migrate: neither ~/.opc nor ~/.happyranch exists")
         return 0
 
-    if OPC_HOME.exists():
-        info(f"step 1: stop any running daemon under {OPC_HOME}{tag}")
-        stop_daemon_if_running(OPC_HOME, dry)
+    selected_home = OPC_HOME if OPC_HOME.exists() else HAPPYRANCH_HOME
+    info(f"step 1: stop any running daemon under {selected_home}{tag}")
+    stop_daemon_if_running(selected_home, dry)
 
+    if OPC_HOME.exists():
         if HAPPYRANCH_HOME.exists():
             warn(f"refusing to rename: {HAPPYRANCH_HOME} already exists")
             warn("delete or back it up before re-running, or migrate manually")

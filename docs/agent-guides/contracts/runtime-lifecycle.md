@@ -54,6 +54,9 @@ errors, symlinks, unexpected file types or changed inode evidence refuse with
 the lock path and readable PID, preserving lifecycle markers. Shell stop uses
 the checkout's uv/Python environment for this portable probe. Migration dry-run
 remains a signal-free/mutation-free preview and makes no stopped claim.
+The migration entrypoint gates the selected existing home before discovery or
+mutation: `~/.opc` when present, otherwise `~/.happyranch`, including reruns
+after the home rename and partially migrated runtimes.
 Failure refuses success/restart or applying migration. Existing `--force` only
 guards the default-home stop; no semantics
 are added. In-repo Mac managed restart waits for its actual exit callback;

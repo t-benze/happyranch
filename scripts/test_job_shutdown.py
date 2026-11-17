@@ -294,6 +294,96 @@ stop_daemon_if_running(Path(os.environ['HAPPYRANCH_DAEMON_HOME']), dry=False)
             with self.assertRaises(BlockingIOError):
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
 
+    def migration_fixture(self, user_home: Path, home_name: str) -> tuple[Path, Path]:
+        home = user_home / home_name
+        home.mkdir()
+        runtime = user_home / "fixture-runtime"
+        runtime.mkdir()
+        (runtime / "opc.yaml").write_text("fixture: legacy config\n")
+        (home / "runtimes.yaml").write_text(f"registered:\n- {runtime}\nactive: {runtime}\n")
+        return home, runtime
+
+    def run_migration(self, home: Path, *args: str) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            [sys.executable, "-B", str(ROOT / "scripts/migrate_opc_to_grassland.py"), *args],
+            cwd=ROOT, env={**os.environ, "HOME": str(home.parent)},
+            capture_output=True, text=True, timeout=10)
+
+    def test_migration_cli_refuses_held_or_unsafe_selected_home(self) -> None:
+        for home_name in (".opc", ".happyranch"):
+            for state in ("missing", "stale"):
+                for kind in ("held", "symlink"):
+                    with self.subTest(home=home_name, pid=state, lock=kind), tempfile.TemporaryDirectory() as temp, ExitStack() as stack:
+                        home, runtime = self.migration_fixture(Path(temp), home_name)
+                        pid = self.seed_pid(home, state)
+                        if kind == "held":
+                            holder = self.lock_holder(home)
+                            stack.callback(self.reap, holder)
+                        else:
+                            target = home / "lock-target"
+                            target.write_text("retained lock target")
+                            (home / "daemon.lock").symlink_to(target)
+                        before = {p: p.read_bytes() for p in home.rglob("*") if p.is_file()}
+                        lock_stat = (home / "daemon.lock").lstat()
+                        result = self.run_migration(home)
+                        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                        self.assertIn(str(home / "daemon.lock"), result.stderr)
+                        self.assertIn(pid or "unavailable", result.stderr)
+                        self.assertNotIn("step 3:", result.stdout)
+                        self.assertEqual((runtime / "opc.yaml").read_text(), "fixture: legacy config\n")
+                        self.assertFalse((runtime / "happyranch.yaml").exists())
+                        self.assertEqual({p: p.read_bytes() for p in home.rglob("*") if p.is_file()}, before)
+                        self.assertEqual((home / "daemon.lock").lstat().st_ino, lock_stat.st_ino)
+                        if kind == "held":
+                            self.assertIsNone(holder.poll())
+                            self.assert_lock_held(home)
+                        else:
+                            self.assertTrue((home / "daemon.lock").is_symlink())
+
+    def test_migration_cli_accepts_absent_or_free_selected_home_lock(self) -> None:
+        for home_name in (".opc", ".happyranch"):
+            for present in (False, True):
+                with self.subTest(home=home_name, lock=present), tempfile.TemporaryDirectory() as temp:
+                    home, runtime = self.migration_fixture(Path(temp), home_name)
+                    pid = self.seed_pid(home, "stale")
+                    if present:
+                        (home / "daemon.lock").write_text("retained lock evidence")
+                        inode = (home / "daemon.lock").stat().st_ino
+                    result = self.run_migration(home)
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertIn("migration complete.", result.stdout)
+                    self.assertFalse((runtime / "opc.yaml").exists())
+                    self.assertEqual((runtime / "happyranch.yaml").read_text(), "fixture: legacy config\n")
+                    selected = home.parent / ".happyranch"
+                    self.assertEqual((selected / "daemon.pid").read_text(), pid)
+                    self.assertEqual((selected / "daemon.lock").exists(), present)
+                    if present:
+                        self.assertEqual((selected / "daemon.lock").read_text(), "retained lock evidence")
+                        self.assertEqual((selected / "daemon.lock").stat().st_ino, inode)
+                        with (selected / "daemon.lock").open() as lock:
+                            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    def test_migration_cli_dry_run_preserves_live_selected_home(self) -> None:
+        for home_name in (".opc", ".happyranch"):
+            with self.subTest(home=home_name), tempfile.TemporaryDirectory() as temp, ExitStack() as stack:
+                home, runtime = self.migration_fixture(Path(temp), home_name)
+                holder = self.lock_holder(home)
+                stack.callback(self.reap, holder)
+                (home / "daemon.pid").write_text(str(holder.pid))
+                before = {p: p.read_bytes() for p in home.rglob("*") if p.is_file()}
+                lock_inode = (home / "daemon.lock").stat().st_ino
+                result = self.run_migration(home, "--dry-run")
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn("rename: opc.yaml -> happyranch.yaml", result.stdout)
+                self.assertIn("(dry-run)", result.stdout)
+                self.assertTrue((runtime / "opc.yaml").exists())
+                self.assertEqual((runtime / "opc.yaml").read_text(), "fixture: legacy config\n")
+                self.assertFalse((runtime / "happyranch.yaml").exists())
+                self.assertEqual({p: p.read_bytes() for p in home.rglob("*") if p.is_file()}, before)
+                self.assertEqual((home / "daemon.lock").stat().st_ino, lock_inode)
+                self.assertIsNone(holder.poll())
+                self.assert_lock_held(home)
+
     def test_missing_or_stale_pid_refuses_held_lock(self) -> None:
         for entrypoint in ("shell", "migration"):
             for state in ("missing", "stale"):
