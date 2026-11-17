@@ -32,6 +32,8 @@ _DENY_STATUS = 403
 # Trusted connection metadata, scoped to the current handler/request thread.
 # HTTP fields can neither set nor override this context.
 ingress_node_identity: ContextVar[str | None] = ContextVar("ingress_node_identity", default=None)
+# Display-only metadata from the same protected WhoIs frame.
+ingress_device_label: ContextVar[str] = ContextVar("ingress_device_label", default="")
 _IDENTITY_PREFIXES = ("x-happyranch-", "x-tailscale-", "tailscale-", "x-tailnet-")
 
 
@@ -69,13 +71,13 @@ class IdentityUnixServer(ThreadingUnixStreamServer):
                 pass
 
 
-def _connection_identity(handler: BaseHTTPRequestHandler) -> str:
+def _connection_identity(handler: BaseHTTPRequestHandler) -> tuple[str, str]:
     credentials = handler.connection.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i"))
     _, uid, _ = struct.unpack("3i", credentials)
     if uid != handler.server.expected_uid:
         raise ValueError("peer refused")
     header = handler.rfile.read(7)
-    if len(header) != 7 or header[:5] != b"HRID\x01":
+    if len(header) != 7 or header[:4] != b"HRID" or header[4] not in (1, 2):
         raise ValueError("frame refused")
     size = int.from_bytes(header[5:7], "big")
     if not 0 < size <= 1017:
@@ -86,7 +88,21 @@ def _connection_identity(handler: BaseHTTPRequestHandler) -> str:
     identity = raw.decode("utf-8", errors="strict")
     if not identity.strip() or any(c in identity for c in "\r\n\x00"):
         raise ValueError("frame refused")
-    return identity
+    label = ""
+    if header[4] == 2:
+        length = handler.rfile.read(2)
+        if len(length) != 2:
+            raise ValueError("frame refused")
+        label_size = int.from_bytes(length, "big")
+        if 9 + size + label_size > 1024:
+            raise ValueError("frame refused")
+        label_raw = handler.rfile.read(label_size)
+        if len(label_raw) != label_size:
+            raise ValueError("frame refused")
+        # Invalid UTF-8 or excess frame bytes close, never guess a name.
+        from runtime.remote_access.authorization import normalize_device_label
+        label = normalize_device_label(label_raw.decode("utf-8", errors="strict"))
+    return identity, label
 
 
 
@@ -188,14 +204,18 @@ class BaseConnectorHandler(BaseHTTPRequestHandler):
             super().handle()
             return
         token = None
+        label_token = None
         try:
             self.connection.settimeout(2)
-            identity = _connection_identity(self)
+            identity, label = _connection_identity(self)
             token = ingress_node_identity.set(identity)
+            label_token = ingress_device_label.set(label)
             super().handle()
         except (OSError, ValueError, UnicodeError):
             return
         finally:
+            if label_token is not None:
+                ingress_device_label.reset(label_token)
             if token is not None:
                 ingress_node_identity.reset(token)
 

@@ -607,6 +607,75 @@ def pending_real(supervisor: Any, node: str = 'node-a') -> Any:
     return pending
 
 
+@pytest.mark.parametrize('node', ['node-a', 'n' * 200])
+def test_bound_legacy_label_fallback(monkeypatch: Any, node: str) -> None:
+    from datetime import datetime, timezone
+    with bound_control(monkeypatch) as (client, supervisor, path):
+        pending = pending_real(supervisor, node)
+        assert client.status().pending.label == node[:96]
+        mutate_real(client, 'ApprovePending')
+        assert client.status().devices[0].label == node[:96]
+        assert supervisor._pinned_pairing_manager.complete(
+            pending.completion_handle, node, 'protected-control', datetime.now(timezone.utc))
+
+
+@pytest.mark.parametrize('name,expected', [
+    ('  Alice\x00\r\n\t\x7f\x85电脑\u202e\u2066\u2069\u200b\u200d\ufeff  ', 'Alice电脑'),
+    ('x' * 200, 'x' * 96),
+    ('电脑' * 120, '电脑' * 48),
+    ('\x00\u202e\u2066\u200b  ', 'node-a'),
+    ('', 'node-a'),
+    ('<My & computer>', '<My & computer>'),
+])
+def test_bound_os_label_ceremony(monkeypatch: Any, name: str, expected: str) -> None:
+    import hashlib
+    from datetime import datetime, timedelta, timezone
+    from scripts.test_identity_ingress import exchange, frame_v2
+    from scripts.test_managed_admission import request, result
+    with bound_control(monkeypatch) as (client, supervisor, path):
+        manager = supervisor._pinned_pairing_manager
+        now = datetime.now(timezone.utc)
+        manager.issue_invite_record(hashlib.sha256(b'synthetic-label-invite').hexdigest(),
+                                    now + timedelta(minutes=4))
+        status, reply = result(exchange(str(path), frame_v2(b'node-a', name.encode()) + request(
+            '/pair/invite', body=b'synthetic-label-invite', headers=(
+                'X-HappyRanch-Device-Label: forged-name', 'X-Tailscale-Hostname: forged-name'))))
+        assert status == 200
+        assert set(reply) == {'state', 'completion_handle', 'comparison_phrase', 'expires_at'}
+        pending = client.status().pending
+        assert pending.label == expected and pending.stable_id == 'node-a'
+        assert pending.comparison_phrase == reply['comparison_phrase']
+        assert pending.public()['fingerprint'] == hashlib.sha256(b'node-a').hexdigest()[:24]
+        import html
+        assert pending.public()['label'] == html.escape(expected, quote=True)
+        before = Path(supervisor.config.state_path).read_bytes()
+        assert client.status().pending == pending
+        assert Path(supervisor.config.state_path).read_bytes() == before
+        mutate_real(client, 'ApprovePending')
+        state = supervisor.state_store.load()
+        device = next(iter(state.devices.values()))
+        stored_name = '' if expected == 'node-a' else expected
+        assert state.delivery.device_label == device.device_label == stored_name
+        assert client.status().devices[0].label == expected
+        status, complete = result(exchange(str(path), frame_v2(b'node-a', b'changed-name') + request(
+            '/pair/complete', body=reply['completion_handle'].encode())))
+        assert status == 200 and set(complete) == {'credential'}
+        assert supervisor.state_store.load().delivery is None
+        seen = []
+        original = manager.admit
+        def admit(credential: str, stable_node_id: str, control_plane_id: str, now: Any) -> Any:
+            seen.append((stable_node_id, control_plane_id))
+            return original(credential, stable_node_id, control_plane_id, now)
+        monkeypatch.setattr(manager, 'admit', admit)
+        raw = exchange(str(path), frame_v2(b'node-a', b'node-b') + request(
+            credential=complete['credential']))
+        # Admission runs before the synthetic loopback upstream is attempted.
+        assert raw and seen == [('node-a', 'protected-control')]
+        assert manager.admit(complete['credential'], 'node-a', 'protected-control', now).ok
+        assert not manager.admit(complete['credential'], 'node-b', 'protected-control', now).ok
+        assert supervisor.state_store.load().devices[device.device_id].device_label == stored_name
+
+
 def mutate_real(client: Any, method: str, *, before: Any = lambda: None) -> Any:
     snapshot = client.status()
     target = snapshot.devices[0] if method == 'RevokeSelected' else snapshot.pending

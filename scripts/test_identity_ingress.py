@@ -20,7 +20,7 @@ import pytest
 
 from runtime.remote_access import managed_provider as managed
 from runtime.remote_access.httpd import (
-    BaseConnectorHandler, IdentityUnixServer, ingress_node_identity, send_json,
+    BaseConnectorHandler, IdentityUnixServer, ingress_node_identity, ingress_device_label, send_json,
 )
 from runtime.remote_access.models import RemoteRequest
 from runtime.remote_access.systemd_unit import ConnectorUnitSpec, SidecarUnitSpec, render_connector_unit, render_sidecar_unit
@@ -30,10 +30,15 @@ def frame(identity: bytes = b"node-stable-1", version: int = 1) -> bytes:
     return b"HRID" + bytes([version]) + len(identity).to_bytes(2, "big") + identity
 
 
+def frame_v2(identity: bytes = b"node-stable-1", label: bytes = b"My computer") -> bytes:
+    return frame(identity, 2) + len(label).to_bytes(2, "big") + label
+
+
 class CaptureHandler(BaseConnectorHandler):
     def serve_request(self, request: RemoteRequest, now: datetime) -> None:
         self.server.observed.append((ingress_node_identity.get(), request))
         send_json(self, 200, {"node": ingress_node_identity.get()})
+        self.server.labels.append(ingress_device_label.get())
 
 
 @contextmanager
@@ -44,6 +49,7 @@ def listener(expected_uid: int | None = None) -> Iterator[tuple[str, IdentityUni
         server = IdentityUnixServer(path, CaptureHandler,
                                     os.getuid() if expected_uid is None else expected_uid)
         server.observed = []
+        server.labels = []
         thread = threading.Thread(target=server.serve_forever)
         thread.start()
         try:
@@ -97,7 +103,7 @@ def test_identity_is_frame_only_and_headers_are_stripped() -> None:
 
 
 @pytest.mark.parametrize("data", [
-    pytest.param(frame(version=2) + HTTP, id="unknown-version"),
+    pytest.param(frame(version=3) + HTTP, id="unknown-version"),
     pytest.param(b"HRID\x01\x04\x00" + b"a" * 1024 + HTTP, id="oversize"),
     pytest.param(b"HRID\x01\x00\x09short", id="truncated"),
     pytest.param(frame() + frame() + HTTP, id="duplicate"),
@@ -125,6 +131,56 @@ def test_frame_total_bound() -> None:
         assert len(server.observed[0][0]) == 1017
         assert exchange(path, frame(b"n" * 1018) + HTTP) == b""
         assert len(server.observed) == 1
+
+
+@pytest.mark.parametrize("label", [b"", "电脑".encode(), b"n" * 96])
+def test_v2_identity_accepted(label: bytes) -> None:
+    with listener() as (path, server):
+        assert b"200 OK" in exchange(path, frame_v2(label=label) + HTTP)
+        assert server.observed[0][0] == "node-stable-1"
+        assert server.labels == [label.decode()]
+        assert ingress_device_label.get() == ""
+        assert b"200 OK" in exchange(path, frame(b"other-node") + HTTP)
+        assert server.labels == [label.decode(), ""]
+
+
+@pytest.mark.parametrize("data", [
+    pytest.param(b"HRID\x02", id="short-header"),
+    pytest.param(frame(b"", 2) + b"\x00\x00", id="empty-id"),
+    pytest.param(frame(b" ", 2) + b"\x00\x00", id="blank-id"),
+    pytest.param(b"HRID\x02\x00\x09short", id="short-id"),
+    pytest.param(frame(b"\xff", 2) + b"\x00\x00", id="invalid-id-utf8"),
+    *[pytest.param(frame(b"node" + c, 2) + b"\x00\x00", id="id-" + name)
+      for c, name in [(b"\r", "cr"), (b"\n", "lf"), (b"\x00", "nul")]],
+    pytest.param(frame(version=2), id="missing-label-length"),
+    pytest.param(frame(version=2) + b"\x00", id="short-label-length"),
+    pytest.param(frame(version=2) + b"\x00\x08short", id="short-label"),
+    pytest.param(frame_v2(label=b"\xff"), id="invalid-label-utf8"),
+    pytest.param(frame_v2(b"n", b"a" * 1015) + HTTP, id="oversize-label"),
+    pytest.param(frame_v2(b"n" * 1016, b"") + HTTP, id="oversize-id"),
+    pytest.param(frame_v2() + frame_v2() + HTTP, id="duplicate-v2"),
+    pytest.param(frame_v2() + frame() + HTTP, id="duplicate-mixed"),
+])
+def test_malformed_v2_closes(data: bytes) -> None:
+    with listener() as (path, server):
+        assert exchange(path, data) == b""
+        assert server.observed == []
+
+
+def test_v2_total_frame_bound() -> None:
+    with listener() as (path, server):
+        assert b"200 OK" in exchange(path, frame_v2(b"n", b"a" * 1014) + HTTP)
+        assert server.labels == ["a" * 96]
+
+
+def test_peercred_refuses_before_any_frame_read() -> None:
+    with listener(os.getuid() + 1) as (path, server):
+        with socket.socket(socket.AF_UNIX) as client:
+            client.settimeout(1)
+            client.connect(path)
+            # No bytes or EOF: a parser-first implementation blocks here.
+            assert client.recv(1) == b""
+        assert server.observed == []
 
 
 def test_managed_listener_fixed_private_path(monkeypatch: pytest.MonkeyPatch) -> None:

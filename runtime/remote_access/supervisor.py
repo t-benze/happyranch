@@ -39,7 +39,7 @@ from typing import Callable, ContextManager
 from pydantic import ValidationError
 
 from runtime.remote_access.authorization import (
-    AuthorizationVerifier, DeviceAuthorization, PendingApproval, TrustState,
+    AuthorizationVerifier, DeviceAuthorization, PendingApproval, TrustState, normalize_device_label,
 )
 from runtime.remote_access.credentials import (
     CredentialUnavailable,
@@ -301,7 +301,8 @@ class _HelperOperations:
                  and supervisor.readiness_report().ready)
         pending = state.pending_approval
         projected_pending = None if pending is None else helper_control.Device(
-            f'pending-{pending.generation}', pending.stable_node_id, pending.stable_node_id[:96],
+            f'pending-{pending.generation}', pending.stable_node_id,
+            normalize_device_label(pending.device_label) or pending.stable_node_id[:96],
             pending.comparison_phrase, pending.expires_at.timestamp(),
         )
         # Historical DIY records have no managed pin and are NOT subject to the
@@ -310,7 +311,8 @@ class _HelperOperations:
         # Keep expired paired credentials selectable: their expiry blocks new
         # admissions, not an explicitly authorized deny and live-stream closure.
         devices = tuple(helper_control.Device(
-            device.device_id, device.stable_node_id, device.stable_node_id[:96],
+            device.device_id, device.stable_node_id,
+            normalize_device_label(device.device_label) or device.stable_node_id[:96],
             'paired device', device.expires_at.timestamp(),
         ) for device in sorted(state.devices.values(), key=lambda d: d.device_id)
                         if not device.re_pair_required and not device.revoked)

@@ -207,6 +207,20 @@ identity, WhoIs failure or malformed frame closes it. Pinned tsnet v1.78.0 expos
 `WhoIsResponse.Node` and `tailcfg.Node.StableID`; verify real Headscale v0.25.1 behavior in M2. No
 hostname/IP fallback if absent.
 
+Slice 4a-0 extends this private frame for display only: HRID v2 carries uint16
+big-endian StableID length + UTF-8 StableID, then uint16 label length + UTF-8 label,
+after `HRID` and byte `2`. The total remains at most 1024 bytes; v1 remains accepted
+with no recorded label. Select the name from the same WhoIs response, preferring
+`Node.Hostinfo.Hostname`, then `Node.ComputedName`, else empty. Invalid UTF-8 or a
+frame exceeding the bound closes. Python strips control/format/bidi characters,
+trims and caps the display name at 96 characters before recording/projecting it.
+Optional string `device_label` on pending/delivery/device records needs no snapshot
+version change or migration. Helper Status falls back to `stable_node_id[:96]`
+only when the name is empty. The name never participates in authorization,
+pinning, matching, revocation or stream registration; fingerprint and phrase
+remain the comparison authority. Real Headscale hostname behavior remains an
+acceptance check, not a claim from synthetic tests.
+
 `ExpectedPeer` visibility is removed from **Linux new-profile** enrollment and restart readiness,
 including health diagnostics' single-expected-peer assumption. Keep durable state/consumed marker,
 private DERP/control, connector liveness, listener and watchdog gates. An empty paired set is

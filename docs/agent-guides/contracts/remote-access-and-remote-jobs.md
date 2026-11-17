@@ -1008,16 +1008,22 @@ selection. An empty paired set grants no access.
 
 Each tsnet connection resolves `LocalClient.WhoIs(remote IP:port)` and requires a
 nonempty `Node.StableID`, with no hostname/IP fallback. It opens one fresh Unix
-connection and writes one frame: ASCII `HRID`, byte version 1, uint16 big-endian
-UTF-8 byte count, then StableID; total at most 1024 bytes. HTTP follows unchanged.
+connection and writes one v2 frame: ASCII `HRID`, byte `2`, uint16 big-endian
+UTF-8 StableID byte count + StableID, then uint16 big-endian label byte count +
+UTF-8 display label (possibly empty); total at most 1024 bytes. The label comes
+from that same WhoIs response: `Node.Hostinfo.Hostname`, else `Node.ComputedName`,
+else empty. The connector still accepts v1 (no label) exactly as before. HTTP follows unchanged.
 The Python listener lives in `diy_provider.py` with its managed transport override
 in `managed_provider.py`; the shared `httpd.py` handler checks SO_PEERCRED against
 the fixed happyranch service UID before frame parsing. Unknown version, missing,
-empty, oversize, invalid UTF-8, CR/LF/NUL, truncated or duplicate frames close.
+empty StableID, oversize frame, invalid UTF-8 in either field, CR/LF/NUL in
+StableID, truncated or duplicate frames close. Overlong label bytes that exceed
+the total frame bound close; valid longer names are normalized and capped below.
 Initial frame/request-line reads have a two-second socket timeout. The socket is
 0600 in an owned 0700 directory; existing/unsafe socket paths refuse rather than
 being overwritten. Identity lives only in the handler's request-local
-`ingress_node_identity` context; reserved HappyRanch/Tailscale identity headers
+`ingress_node_identity` context; the separate `ingress_device_label` context is
+display-only and never enters admission. Reserved HappyRanch/Tailscale identity headers
 are stripped, including duplicates, while the existing device-credential header
 continues to carry the device bearer. In the managed identity profile, slice
 2b-1 uses this verified frame for pinned pairing and every-request admission.
@@ -1075,9 +1081,18 @@ authorization.admit(store, credential, stable_node_id, control_plane_id, now) lo
 current anchored trust and checks digest, credential epoch, expiry, revocation,
 connector audience and exact pin. Its verdict carries device ID and epoch for stream
 registration. Identity comes only from trusted plain arguments: WhoIs StableID and
-connector-configured control-plane ID, never headers, hostname or address. Labels
-currently use bounded escaped identity text and a StableID fingerprint because this
-slice has no OS-label transport. Headscale membership grants no product authority.
+connector-configured control-plane ID, never headers, hostname or address.
+The private HRID v2 label is recorded on pending approval, delivery and paired
+device records as optional string `device_label`, without a snapshot version
+change or migration. Non-string values refuse; absent fields in v2/v3 stores
+load as empty. One Python normalizer strips Unicode Cc/Cf controls and format
+characters (including bidi overrides/isolates), drops invalid surrogate code
+points, trims and caps plain text at 96 characters before storage/projection.
+Helper Status uses this recorded name, with `stable_node_id[:96]` only for empty
+names. The existing helper public projection escapes markup; fingerprint and
+comparison phrase remain the comparison authority. Names never affect matching,
+pinning, authorization, revocation or stream registration. Historical device
+counts and expired grants remain loadable. Headscale membership grants no product authority.
 The managed identity listener wires this verdict into request/stream admission
 (slice 2b-1); existing DIY and legacy transport paths keep their versioned behavior.
 

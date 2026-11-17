@@ -164,6 +164,7 @@ assert len(store.load().devices) == 33
         state = None
     assert state is not None, "33 base-written DIY devices must remain loadable"
     assert len(state.devices) == 33
+    assert all(device.device_label == "" for device in state.devices.values())
     diy = PairingManager(state_store=store_at(path), identity=IDENTITY, now_fn=lambda: NOW)
     managed = manager_at(path)
     assert managed.status()["re_pair_required_count"] == 33
@@ -187,6 +188,80 @@ assert len(store.load().devices) == 33
     assert "legacy-1" not in state.devices
     assert diy.find_device_by_credential(f"hrpair_{2:032x}") is not None
     assert managed.status()["re_pair_required_count"] == 32
+
+
+@pytest.mark.parametrize("version,phase", [(2, "none"), (3, "none"), (3, "pending"), (3, "delivery")])
+def test_legacy_store_without_names_is_read_only(tmp_path: Path, version: int, phase: str) -> None:
+    path = tmp_path / "trust.json"
+    store = store_at(path)
+    state = store.load()
+    for i in range(33):
+        state.apply_pairing(DeviceAuthorization(f"diy-{i}", "tenant", "home", i + 1,
+                                               NOW - timedelta(days=30)))
+    store.save(state)
+    if version == 3:
+        manager = manager_at(path)
+        grant_for(manager)
+        # An expired managed grant remains a valid historical record.
+        from dataclasses import replace
+        with store.transaction() as tx:
+            for key, device in tx.state.devices.items():
+                if not device.re_pair_required:
+                    tx.state.devices[key] = replace(device, expires_at=NOW - timedelta(days=1))
+        if phase != "none":
+            pending = pending_for(manager, node="node-b", secret="synthetic-legacy")
+            if phase == "delivery":
+                assert manager.approve_pending(pending.generation, ("control", "node-b"))
+    def old_shape(envelope):
+        envelope["version"] = version
+        payload = envelope["payload"]
+        for device in payload["devices"].values():
+            device.pop("device_label")
+            if version == 2:
+                device.pop("control_plane_id")
+                device.pop("stable_node_id")
+        for key in ("invite_record", "pending_approval", "delivery"):
+            if version == 2:
+                payload.pop(key)
+            elif key != "invite_record" and payload[key] is not None:
+                payload[key].pop("device_label")
+    rewrite_payload(path, old_shape)
+    anchor = Path(str(path) + ".anchor")
+    before = (path.read_bytes(), anchor.read_bytes())
+    loaded = store_at(path).load()
+    assert len(loaded.devices) == (33 if version == 2 else 35 if phase == "delivery" else 34)
+    assert all(device.device_label == "" for device in loaded.devices.values())
+    assert all(device.expires_at < NOW for device in loaded.devices.values()
+               if device.device_id.startswith("diy-") or device.stable_node_id == "node-a")
+    record = loaded.pending_approval if phase == "pending" else loaded.delivery
+    if phase in {"pending", "delivery"}:
+        assert record is not None and record.device_label == ""
+    assert (path.read_bytes(), anchor.read_bytes()) == before
+
+
+@pytest.mark.parametrize("record", ["device", "pending", "delivery"])
+@pytest.mark.parametrize("value", [None, False, 7, [], {}, "", "  OS\x00\u202e\u200b computer  "])
+def test_label_type_is_strict(tmp_path: Path, record: str, value: object) -> None:
+    path = tmp_path / "trust.json"
+    manager = manager_at(path)
+    pending = pending_for(manager)
+    if record != "pending":
+        assert manager.approve_pending(pending.generation, ("control", "node-a"))
+    def mistype(envelope):
+        payload = envelope["payload"]
+        row = next(iter(payload["devices"].values())) if record == "device" else payload[record if record == "delivery" else "pending_approval"]
+        row["device_label"] = value
+    rewrite_payload(path, mistype)
+    if isinstance(value, str):
+        before = path.read_bytes()
+        state = store_at(path).load()
+        row = next(iter(state.devices.values())) if record == "device" else getattr(
+            state, "delivery" if record == "delivery" else "pending_approval")
+        assert row.device_label == ("" if value == "" else "OS computer")
+        assert path.read_bytes() == before
+    else:
+        with pytest.raises(CorruptTrustStateError):
+            store_at(path).load()
 
 
 def manager_at(path: Path, registry=None, now_fn=None):

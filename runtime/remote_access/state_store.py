@@ -144,12 +144,13 @@ _DEVICE_KEYS = frozenset(
         "credential_digest",
         "control_plane_id",
         "stable_node_id",
+        "device_label",
     }
 )
 # credential_digest is OPTIONAL (Unit 3A additive): pre-3A envelopes that
 # predate it must still load (absent = None); a present value is validated
 # strictly. Unknown keys are still rejected via ``_DEVICE_KEYS``.
-_DEVICE_REQUIRED_KEYS = _DEVICE_KEYS - {"credential_digest", "control_plane_id", "stable_node_id"}
+_DEVICE_REQUIRED_KEYS = _DEVICE_KEYS - {"credential_digest", "control_plane_id", "stable_node_id", "device_label"}
 _PENDING_KEYS = frozenset({"code_digest", "expires_at", "consumed"})
 
 
@@ -226,7 +227,7 @@ def _invite_from_payload(raw: Any) -> InviteRecord | None:
 def _approval_from_payload(raw: Any, *, delivery: bool) -> PendingApproval | None:
     if raw is None:
         return None
-    if not isinstance(raw, dict) or set(raw) != {
+    if not isinstance(raw, dict) or set(raw) - {"device_label"} != {
         "generation", "control_plane_id", "stable_node_id", "handle_digest",
         "comparison_phrase", "expires_at", "device_id",
     }:
@@ -241,7 +242,15 @@ def _approval_from_payload(raw: Any, *, delivery: bool) -> PendingApproval | Non
         generation, _require_identity_text(raw["control_plane_id"]),
         _require_identity_text(raw["stable_node_id"]), _digest(raw["handle_digest"]),
         _require_identity_text(raw["comparison_phrase"]), _require_tz_datetime(raw["expires_at"]), device_id,
+        device_label=_optional_device_label(raw),
     )
+
+
+def _optional_device_label(raw: dict[str, Any]) -> str:
+    value = raw.get("device_label", "")
+    if not isinstance(value, str):
+        raise CorruptTrustStateError("trust state device label must be a string")
+    return value
 
 
 def _record_payload(record: InviteRecord | PendingApproval | None) -> dict[str, Any] | None:
@@ -309,7 +318,7 @@ def _state_from_payload(payload: dict[str, Any], *, legacy: bool = False) -> Tru
         unknown_device = set(raw) - allowed_device
         if unknown_device:
             raise CorruptTrustStateError("trust state device record has unknown keys")
-        missing_device = (_DEVICE_REQUIRED_KEYS if legacy else _DEVICE_KEYS) - set(raw)
+        missing_device = (_DEVICE_REQUIRED_KEYS if legacy else _DEVICE_KEYS - {"device_label"}) - set(raw)
         if missing_device:
             raise CorruptTrustStateError("trust state device record incomplete")
         stored_id = _require_str(raw, "device_id")
@@ -354,6 +363,7 @@ def _state_from_payload(payload: dict[str, Any], *, legacy: bool = False) -> Tru
             credential_digest=credential_digest,
             control_plane_id=control_plane_id,
             stable_node_id=stable_node_id,
+            device_label=_optional_device_label(raw),
         )
 
     pending_raw = payload.get("pending_pairings")
@@ -446,6 +456,7 @@ def _payload_from_state(state: TrustState) -> dict[str, Any]:
                 "credential_digest": device.credential_digest,
                 "control_plane_id": device.control_plane_id,
                 "stable_node_id": device.stable_node_id,
+                "device_label": device.device_label,
             }
             for device_id, device in sorted(state.devices.items())
         },

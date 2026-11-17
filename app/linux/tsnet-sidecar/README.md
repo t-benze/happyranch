@@ -9,9 +9,13 @@ Linux adds an explicit `Profile: "linux-managed-identity-v1"`. In that profile,
 omit `ExpectedPeer` and `ConnectorAddr`: the endpoint is fixed at
 `/run/happyranch-connector/ingress.sock`. Each accepted tailnet connection calls
 LocalClient WhoIs with its remote IP:port, requires `Node.StableID`, opens one
-Unix connection, and writes `HRID` + version byte `1` + big-endian uint16 UTF-8
-byte length + StableID. The complete frame is at most 1024 bytes (1017 identity
-bytes). Empty, invalid UTF-8, CR/LF/NUL or oversize identities close without
+Unix connection, and writes `HRID` + version byte `2` + big-endian uint16 UTF-8
+byte length + StableID + uint16 UTF-8 label byte length + label. The display label
+comes from the same WhoIs response (`Node.Hostinfo.Hostname`, else
+`Node.ComputedName`, else empty); it never supplies identity or authorization.
+The connector also accepts legacy v1 frames without labels. The complete frame
+is at most 1024 bytes, including the nine-byte framing overhead. Empty StableID,
+invalid UTF-8 in either field, CR/LF/NUL in StableID or oversize frames close without
 forwarding; failed/absent WhoIs has no hostname/IP fallback. HTTP bytes follow
 unchanged and connections are never pooled. WhoIs and the initial frame write
 have five-second bounds.

@@ -562,6 +562,7 @@ class PinnedPairingManager:
 
     def redeem(
         self, invite_secret: str, stable_node_id: str, control_plane_id: str, now: datetime,
+        *, device_label: str = "",
     ) -> RedeemedInvite | None:
         """Consume first, then bind the actual identity. Never restore an invite."""
         import hmac
@@ -601,6 +602,7 @@ class PinnedPairingManager:
                 phrase = "pair-" + "-".join(phrase_digest[i:i+4] for i in range(0, 16, 4))
                 state.pending_approval = PendingApproval(
                     tx.generation, pin[0], pin[1], _sha256(handle), phrase, invite.expires_at,
+                    device_label=device_label,
                 )
                 tx.commit()  # no handle escapes before the anchored write succeeds
                 return RedeemedInvite(tx.generation, handle, phrase, invite.expires_at)
@@ -664,6 +666,7 @@ class PinnedPairingManager:
                 authorization_epoch=epoch, expires_at=now + timedelta(days=DEFAULT_CREDENTIAL_TTL_DAYS),
                 credential_digest=_sha256(credential), control_plane_id=pending.control_plane_id,
                 stable_node_id=pending.stable_node_id,
+                device_label=pending.device_label,
             ))
             state.current_device_id = None
             state.pending_approval = None
