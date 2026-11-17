@@ -1,0 +1,12 @@
+[
+  {
+    "node_id": 123,
+    "node_name": "<APPROVED_NODE_NAME>",
+    "user": "<HEADSCALE_USER>",
+    "owner": "<DEV_OWNER>",
+    "purpose": "<TEST_PURPOSE>",
+    "invited_home_machine": "<INVITED_HOME_MACHINE>",
+    "added_date": "2026-11-17",
+    "review_by": "2026-11-24"
+  }
+]
