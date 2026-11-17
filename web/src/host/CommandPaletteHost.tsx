@@ -17,10 +17,6 @@ import {
 } from '@/design-system/patterns/CommandPalette';
 import { useTranslation } from '@/hooks/i18n';
 import type { MessageKey, MessageParams } from '@/lib/i18n';
-// Cmd/Ctrl-K is unbound; the palette retains its explicit trigger.
-// The pre-overhaul command palette is retained but opened via a different
-// trigger; remove its ⌘K hotkey to avoid conflicts.
-// import { useCommandPaletteHotkey } from '@/hooks/command-palette';
 import type {
   AgentSummary,
   KBEntry,

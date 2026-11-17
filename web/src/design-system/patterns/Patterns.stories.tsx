@@ -9,7 +9,6 @@ import { CrescentMoonBadge } from './CrescentMoonBadge';
 import { EmptyState } from './EmptyState';
 import { FilterSidebar } from './FilterSidebar';
 import { FormField } from './FormField';
-import { HelpSheet } from './HelpSheet';
 import { IdBadge } from './IdBadge';
 import { InboxRow } from './InboxRow';
 import { KbdChip } from './KbdChip';
@@ -73,7 +72,6 @@ export const EmptyStateWithAction: Story = { render: () => <div className="h-64 
 function FilterExample(): JSX.Element { const [value, setValue] = useState<Record<string, string | null>>({ status: null }); return <FilterSidebar groups={[{ key: 'status', label: 'Status', options: [{ value: 'open', label: 'Open', count: 12 }, { value: 'archived', label: 'Archived', count: 3 }] }]} value={value} onChange={setValue} />; }
 export const FilterSidebarInteraction: Story = { render: () => <FilterExample /> };
 export const FormFieldStates: Story = { render: () => <div className="grid max-w-sm gap-5"><FormField label="Subject" htmlFor="subject"><input id="subject" className="input" /></FormField><FormField label="Executor" htmlFor="executor" error="Executor is required"><input id="executor" className="input" aria-invalid /></FormField></div> };
-export const HelpSheetInteraction: Story = { render: () => <HelpSheet open onClose={() => undefined} shortcuts={[{ keys: ['?'], description: 'Open help' }, { keys: ['Ctrl', 'Enter'], description: 'Send message' }]} /> };
 export const IdBadgeKinds: Story = { render: () => <div className="flex gap-3"><IdBadge id="THR-042" kind="thread" /><IdBadge id="TASK-6530" kind="task" /></div> };
 export const InboxRowStates: Story = { render: () => <div className="grid max-w-2xl gap-2"><InboxRow threadId="THR-042" subject="Refund policy review" lastSpeaker={{ name: 'engineering_manager', role: 'manager' }} meta="2m" status="open" needsYou active href="#" /><InboxRow threadId="THR-043" subject="Archived decision" status="archived" needsYou={false} active={false} href="#" layout="thread" /></div> };
 export const KbdChipCombinations: Story = { render: () => <div className="flex gap-3"><KbdChip keys={['?']} /><KbdChip keys={['Ctrl', 'Enter']} /></div> };

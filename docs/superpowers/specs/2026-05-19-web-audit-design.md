@@ -207,6 +207,8 @@ The former Threads → Audit deep link filtered by the **lead participant** as a
 
 ## 6. Keyboard + density
 
+> Superseded: keyboard shortcuts removed (THR-372).
+
 - `g a` → `/orgs/:slug/audit` (jump-key from umbrella §5.4; registered by `useGlobalJump('a', …)` inside `AuditPage`).
 - `/` → focus a search input — deferred to PR 13 polish.
 - `useDensity()` toggle affects `AuditRow` row height and `TraceTree` vertical spacing. The existing TopBar control already wires the toggle; no new UI.

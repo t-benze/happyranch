@@ -1,5 +1,7 @@
 # Web — Polish (density / theme / Cmd-K / jump-keys / a11y)
 
+> Superseded: keyboard shortcuts removed (THR-372).
+
 **Date:** 2026-05-19
 **Status:** Draft, pending implementation.
 **Extends:** `docs/superpowers/specs/2026-05-18-web-app-complete-feature-set-design.md` §6.7 (umbrella).

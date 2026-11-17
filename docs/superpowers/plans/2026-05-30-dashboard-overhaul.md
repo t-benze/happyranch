@@ -2208,6 +2208,8 @@ git commit -m "feat(web/dashboard): add OrgPulseTable component"
 
 ### Task 23: `EscalationInboxRow` component
 
+> Superseded: keyboard shortcuts removed (THR-372).
+
 **Files:**
 - Create: `web/src/features/dashboard/components/EscalationInboxRow.tsx`
 

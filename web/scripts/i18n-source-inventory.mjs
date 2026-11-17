@@ -87,9 +87,6 @@ export const COPY_EXCEPTIONS = [
   raw('design-system/layouts/AppShell/Sidebar.tsx', 'Sidebar', 'children', 'Happy', 'Brand wordmark bytes'),
   raw('design-system/layouts/AppShell/Sidebar.tsx', 'Sidebar', 'children', 'Ranch', 'Brand wordmark bytes'),
   raw('design-system/patterns/CommandPalette.tsx', 'CommandPalette', 'children', 'esc', 'Keyboard key name'),
-  raw('design-system/patterns/HelpSheet.tsx', 'HelpSheet', 'children-expression', 'Keyboard shortcuts', 'Prop fallback compatibility; mounted owner supplies title'),
-  raw('design-system/patterns/HelpSheet.tsx', 'HelpSheet', 'children-expression', 'List of keyboard shortcuts available on this screen.', 'Prop fallback compatibility; mounted owner supplies description'),
-  raw('design-system/patterns/HelpSheet.tsx', 'TabbedBody', 'children-expression', 'No shortcuts defined.', 'Prop fallback compatibility; mounted owner supplies emptyLabel'),
   raw('design-system/primitives/Dialog.tsx', 'DialogContent', 'default:closeLabel', 'Close', 'Standalone default compatibility; direct mounted callers supply closeLabel'),
   raw('design-system/patterns/Markdown.tsx', 'Markdown', 'default:mermaidLoadingLabel', 'Rendering diagram…', 'Standalone default compatibility; mounted callers supply mermaidLoadingLabel'),
   raw('design-system/patterns/TaskCard.tsx', 'TaskCard', 'children', 'supersedes', 'Standalone default compatibility; mounted caller supplies labels'),
@@ -100,7 +97,6 @@ export const COPY_EXCEPTIONS = [
   raw('design-system/patterns/InboxRow.tsx', 'InboxRow', 'children-expression', 'last', 'Standalone prop fallback; mounted owner supplies labels.last'),
   raw('design-system/patterns/InboxRow.tsx', 'InboxRow', 'aria-label', 'needs you', 'Standalone prop fallback; mounted owner supplies labels.needsYou'),
   raw('features/agents/instill/AgentKnowledge.tsx', 'AgentKnowledge', 'children', 'happyranch memory reindex', 'Literal CLI command'),
-  raw('features/agents/AgentDetailPane.tsx', 'AgentDetailPane', 'children', '⌘S', 'Keyboard shortcut'),
   raw('features/agents/TeamEscalationPolicyCard.tsx', 'V2HistorySection', 'children', 'v', 'Version prefix'),
   raw('features/artifacts/ArtifactsPage.tsx', 'ArtifactsPage', 'placeholder', 'dev_agent-2026-06-10-report.pdf', 'Filename example'),
   raw('features/artifacts/ArtifactsPage.tsx', 'ArtifactsPage', 'children', 'name', 'Sort key'),
@@ -447,7 +443,7 @@ export const ownedCopyPlugin = {
           }
           // Known default-bearing shared components. Preserve their standalone
           // bytes while refusing direct production mounts without presentation.
-          const required = { DialogContent: ['closeLabel'], Markdown: ['mermaidLoadingLabel'], TaskCard: ['labels'], HelpSheet: ['title', 'description', 'emptyLabel'], MessageBubble: ['labels'], InboxRow: ['labels'] };
+          const required = { DialogContent: ['closeLabel'], Markdown: ['mermaidLoadingLabel'], TaskCard: ['labels'], MessageBubble: ['labels'], InboxRow: ['labels'] };
           const sites = diskMatches ? inventory.mounts : [];
           if (!diskMatches) {
             const ast = parse(path, text), aliases = new Map();

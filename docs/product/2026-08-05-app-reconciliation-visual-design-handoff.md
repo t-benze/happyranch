@@ -105,6 +105,8 @@ These rules apply to every frame below.
 
 **Layout and interaction:** express the selected group as a text heading plus navigational structure, not a color-only sidebar treatment. Retain selected organization context and make current destination/group discoverable. Dashboard, assistant, summary cards, and evidence surfaces visibly hand off to their canonical record; they do not imply an action happened inside the triage surface. Command palette, help, top bar, and route highlight must stay aligned with the chosen crosswalk. Design the smallest founder-approved group/surfaces first; do not render all groups as an all-at-once shell replacement.
 
+> Superseded: keyboard shortcuts removed (THR-372).
+
 **Component/token mapping:** existing `AppShell`, `Sidebar`, `AppBar`/`TopBar`, `ContentWrap`, current navigation item/focus style, `CommandPalette`, `HelpSheet`, `IdBadge`, `StatusBadge`, and semantic shell/surface/type/spacing tokens. Reuse card/row patterns from the changed pilot families; no new navigation design system.
 
 **Accessibility and responsive:** semantic primary navigation and group labels; active route/group communicated with text and `aria-current`-appropriate semantics; keyboard path through organization switcher, navigation, command/help, and canonical handoffs; visible focus and non-color selected state. Desktop is the supported target; report, rather than conceal, narrow-width limitations.

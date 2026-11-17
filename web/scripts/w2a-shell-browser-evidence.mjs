@@ -13,7 +13,7 @@
  * It asserts, in both locales:
  *   - first-commit shell copy (`html.lang` + AppBar title + Sidebar nav labels);
  *   - the mounted shell DOM (nav/aria/org switcher/account/not-found/loading);
- *   - stable switching with typed slug / open help tab / typed palette query;
+ *   - stable switching with typed slug / typed palette query;
  *   - localized ErrorBoundary fallback with the raw stack preserved;
  *   - generated PNG screenshots at 1440x900 and 390x844, light and dark.
  *
@@ -1023,47 +1023,6 @@ async function main() {
       await closePage(enPage);
     }
 
-    // --- S6: help drawer zh-CN with a non-default tab, preserved across switch
-    {
-      const page = await openApp({
-        url: `${appUrl}orgs/demo-org/dashboard`,
-        env: DEV_ENVIRONMENTS.en,
-        initScript: `${seedLocale('en')}\n${seedTheme('light')}`,
-      });
-      await waitForValue(page.sessionId, `document.querySelector('[role="navigation"][aria-label="Primary navigation"]')`, { label: 'en shell' });
-      await evaluate(page.sessionId, `(() => { window.dispatchEvent(new KeyboardEvent('keydown', { key: '?' })); return true; })()`);
-      await waitForValue(page.sessionId, `!!document.querySelector('[id$="-trigger-tasks"]')`, { label: 'help task tab' });
-      // Move to the Tasks tab with a real pointer click on its Radix trigger id.
-      await clickSelector(page.sessionId, '[id$="-trigger-tasks"]');
-      await waitForValue(
-        page.sessionId,
-        `(() => { const t=[...document.querySelectorAll('[role="tab"]')].find(x=>x.getAttribute('data-state')==='active'); return t && t.textContent.trim()==='Tasks'; })()`,
-        { label: 'tasks tab active' },
-      );
-      await evaluate(page.sessionId, `document.querySelector('[data-testid="w2a-set-zh"]').click()`);
-      await waitForValue(page.sessionId, `document.querySelector('[role="tab"]') && document.querySelector('[role="tab"]').textContent.includes('全局')`, { label: 'zh help tabs' });
-      const helpSnap = await snapshot(page.sessionId);
-      checkTruthy('S6 zh help dialog open', helpSnap.dialogTexts.some((t) => t.includes('键盘快捷键')));
-      checkTruthy('S6 zh help Translations', helpSnap.dialogTexts.some((t) => t.includes('关闭打开的任务抽屉或对话框')));
-      const activeTab = await evaluate(
-        page.sessionId,
-        `(() => { const t=[...document.querySelectorAll('[role="tab"]')].find(x=>x.getAttribute('data-state')==='active'); return t ? t.textContent.trim() : null; })()`,
-      );
-      check('S6 preserved non-default tab across locale switch', activeTab, '任务');
-      const helpGeo = await geometry(page.sessionId);
-      notes.push({ helpDialogRect: helpGeo.dialogRect, helpViewport: { vw: helpGeo.vw, vh: helpGeo.vh } });
-      check(
-        'S6 help dialog stays inside the viewport',
-        Boolean(helpGeo.dialogRect) &&
-          helpGeo.dialogRect.top >= -1 &&
-          helpGeo.dialogRect.bottom <= helpGeo.vh + 1 &&
-          helpGeo.dialogRect.right <= helpGeo.vw + 1,
-        true,
-      );
-      await capture(page, 'zh-help-tasks-tab-1440-light');
-      await closePage(page);
-    }
-
     // --- S7: AddOrgDialog zh-CN, typed slug preserved across switch ----------
     {
       const page = await openApp({
@@ -1189,81 +1148,6 @@ async function main() {
       await closePage(zhPage);
     }
 
-    // --- S11: help dialog missing viewport/theme states + focus/identity ----
-    {
-      // zh narrow-light help on a nondefault tab, switched via storage.
-      const page = await openApp({
-        url: `${appUrl}orgs/demo-org/dashboard`,
-        env: DEV_ENVIRONMENTS.en,
-        initScript: `${seedLocale('zh-CN')}\n${seedTheme('light')}`,
-        width: 390,
-        height: 844,
-      });
-      await evaluate(page.sessionId, `(() => { window.dispatchEvent(new KeyboardEvent('keydown', { key: '?' })); return true; })()`);
-      await waitForValue(page.sessionId, `!!document.querySelector('[id$="-trigger-tasks"]')`, { label: 'zh narrow help tabs' });
-      await clickSelector(page.sessionId, '[id$="-trigger-tasks"]');
-      await waitForValue(
-        page.sessionId,
-        `(() => { const t=[...document.querySelectorAll('[role="tab"]')].find(x=>x.getAttribute('data-state')==='active'); return t && t.textContent.trim()==='任务'; })()`,
-        { label: 'zh tasks tab active' },
-      );
-      const helpTabIdentity = await tagIdentity(page.sessionId, '[role="tab"][data-state="active"]', 'helptab');
-      const helpTabFocus = await tagActiveElement(page.sessionId, 'helpfocus');
-      const helpCloseZh = await evaluate(page.sessionId, `(() => { const b=[...document.querySelectorAll('[role="dialog"] button')].find(x=>x.getAttribute('aria-label')==='关闭'); return b ? '关闭' : null; })()`);
-      check('S11 zh narrow help close control localized', helpCloseZh, '关闭');
-      const helpGeoNarrow = await geometry(page.sessionId);
-      check(
-        'S11 zh 390-help dialog stays inside viewport',
-        Boolean(helpGeoNarrow.dialogRect) &&
-          helpGeoNarrow.dialogRect.top >= -1 &&
-          helpGeoNarrow.dialogRect.bottom <= helpGeoNarrow.vh + 1 &&
-          helpGeoNarrow.dialogRect.right <= helpGeoNarrow.vw + 1,
-        true,
-      );
-      await capture(page, 'zh-help-tasks-390-light');
-      await switchLocaleViaStorage(page.sessionId, 'en');
-      await waitForValue(page.sessionId, `document.querySelector('[role="tab"]') && document.querySelector('[role="tab"]').textContent.includes('Global')`, { label: 'en help tabs' });
-      check('S11 help selected tab identity survives storage switch', await identityOf(page.sessionId, '[role="tab"][data-state="active"]'), helpTabIdentity);
-      check('S11 help selected tab focus survives storage switch', await tagActiveElement(page.sessionId, 'helpfocus'), helpTabFocus);
-      const helpActive = await evaluate(page.sessionId, `(() => { const t=[...document.querySelectorAll('[role="tab"]')].find(x=>x.getAttribute('data-state')==='active'); return t ? t.textContent.trim() : null; })()`);
-      check('S11 help selected tab value survives storage switch', helpActive, 'Tasks');
-      const helpCloseEn = await evaluate(page.sessionId, `(() => { const b=[...document.querySelectorAll('[role="dialog"] button')].find(x=>x.getAttribute('aria-label')==='Close'); return b ? 'Close' : null; })()`);
-      check('S11 en help close control localized', helpCloseEn, 'Close');
-      await closePage(page);
-
-      // en narrow-dark help.
-      const darkPage = await openApp({
-        url: `${appUrl}orgs/demo-org/dashboard`,
-        env: DEV_ENVIRONMENTS.zh,
-        initScript: `${seedLocale('en')}\n${seedTheme('dark')}`,
-        width: 390,
-        height: 844,
-      });
-      await evaluate(darkPage.sessionId, `(() => { window.dispatchEvent(new KeyboardEvent('keydown', { key: '?' })); return true; })()`);
-      await waitForValue(darkPage.sessionId, `!!document.querySelector('[role="dialog"]')`, { label: 'en narrow dark help' });
-      const darkGeo = await geometry(darkPage.sessionId);
-      check(
-        'S11 en 390-dark help dialog stays inside viewport',
-        Boolean(darkGeo.dialogRect) && darkGeo.dialogRect.top >= -1 && darkGeo.dialogRect.bottom <= darkGeo.vh + 1,
-        true,
-      );
-      await capture(darkPage, 'en-help-390-dark');
-      await closePage(darkPage);
-
-      // en wide-dark help.
-      const wideDark = await openApp({
-        url: `${appUrl}orgs/demo-org/dashboard`,
-        env: DEV_ENVIRONMENTS.zh,
-        initScript: `${seedLocale('en')}\n${seedTheme('dark')}`,
-        width: 1440,
-        height: 900,
-      });
-      await evaluate(wideDark.sessionId, `(() => { window.dispatchEvent(new KeyboardEvent('keydown', { key: '?' })); return true; })()`);
-      await waitForValue(wideDark.sessionId, `!!document.querySelector('[role="dialog"]')`, { label: 'en wide dark help' });
-      await capture(wideDark, 'en-help-1440-dark');
-      await closePage(wideDark);
-    }
-
     // --- S12: AddOrg typed data + mapped error across a storage switch ------
     {
       syntheticCreateOrgError = { status: 409, body: { code: 'org_exists', message: 'raw daemon detail' } };
@@ -1313,17 +1197,13 @@ async function main() {
       syntheticCreateOrgError = null;
     }
 
-    // --- S13: palette selection/query/identity + dormant hotkey, BOTH ways --
+    // --- S13: palette selection/query/identity, BOTH ways -------------------
     {
       const page = await openApp({
         url: `${appUrl}orgs/demo-org/dashboard`,
         env: DEV_ENVIRONMENTS.en,
         initScript: `${seedLocale('zh-CN')}\n${seedTheme('light')}`,
       });
-      // The shipping ⌘K hotkey stays dormant.
-      await evaluate(page.sessionId, `(() => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', metaKey: true })); return true; })()`);
-      await sleep(400);
-      check('S13 dormant ⌘K does not open the command palette', await evaluate(page.sessionId, `!!document.querySelector('input[role="combobox"]')`), false);
       await waitForValue(page.sessionId, `!!document.querySelector('[data-testid="w2a-open-palette"]')`, { label: 'palette control' });
       await clickSelector(page.sessionId, '[data-testid="w2a-open-palette"]');
       await waitForValue(page.sessionId, `!!document.querySelector('input[role="combobox"]')`, { label: 'palette input' });
@@ -1410,64 +1290,6 @@ async function main() {
       notes.push({ label: 'S15 zh wide dark nav fonts', fonts: fonts.map((f) => f.familyName) });
       checkTruthy('S15 zh 1440 dark nav glyphs use a CJK-capable platform font', fonts.some((f) => isCjkFamily(f.familyName)));
       await capture(page, 'zh-dashboard-1440-dark');
-      await closePage(page);
-    }
-
-    // --- S16: help non-default tab preserved in BOTH switch directions ------
-    {
-      const page = await openApp({
-        url: `${appUrl}orgs/demo-org/dashboard`,
-        env: DEV_ENVIRONMENTS.en,
-        initScript: `${seedLocale('en')}\n${seedTheme('light')}`,
-        width: 390,
-        height: 844,
-      });
-      await evaluate(page.sessionId, `(() => { window.dispatchEvent(new KeyboardEvent('keydown', { key: '?' })); return true; })()`);
-      await waitForValue(page.sessionId, `!!document.querySelector('[id$="-trigger-tasks"]')`, { label: 'S16 en help tabs' });
-      await clickSelector(page.sessionId, '[id$="-trigger-tasks"]');
-      await waitForValue(
-        page.sessionId,
-        `(() => { const t=[...document.querySelectorAll('[role="tab"]')].find(x=>x.getAttribute('data-state')==='active'); return t && t.textContent.trim()==='Tasks'; })()`,
-        { label: 'S16 en tasks tab active' },
-      );
-      const helpTabIdentity = await tagIdentity(page.sessionId, '[role="tab"][data-state="active"]', 'helptab2');
-      const helpTabFocus = await tagActiveElement(page.sessionId, 'helpfocus2');
-      check('S16 en active tab value', await evaluate(page.sessionId, `(() => { const t=[...document.querySelectorAll('[role="tab"]')].find(x=>x.getAttribute('data-state')==='active'); return t ? t.textContent.trim() : null; })()`), 'Tasks');
-      check('S16 en help dialog open before switch', await dialogOpen(page.sessionId), true);
-      const helpGeoEn = await geometry(page.sessionId);
-      check(
-        'S16 en 390 help dialog stays inside viewport',
-        Boolean(helpGeoEn.dialogRect) && helpGeoEn.dialogRect.top >= -1 && helpGeoEn.dialogRect.bottom <= helpGeoEn.vh + 1 && helpGeoEn.dialogRect.right <= helpGeoEn.vw + 1,
-        true,
-      );
-      await capture(page, 'en-help-tasks-390-light');
-      const beforeZh = networkRequests.length;
-      await switchLocaleViaStorage(page.sessionId, 'zh-CN');
-      await waitForValue(page.sessionId, `document.querySelector('[role="tab"]') && document.querySelector('[role="tab"]').textContent.includes('全局')`, { label: 'S16 zh help tabs' });
-      const zhWindow = switchRequestWindow(beforeZh);
-      check('S16 zh active tab identity survives switch', await identityOf(page.sessionId, '[role="tab"][data-state="active"]'), helpTabIdentity);
-      check('S16 zh active element identity survives switch', await tagActiveElement(page.sessionId, 'helpfocus2'), helpTabFocus);
-      check('S16 zh active tab value survives switch', await evaluate(page.sessionId, `(() => { const t=[...document.querySelectorAll('[role="tab"]')].find(x=>x.getAttribute('data-state')==='active'); return t ? t.textContent.trim() : null; })()`), '任务');
-      check('S16 zh dialog still open after switch', await dialogOpen(page.sessionId), true);
-      check('S16 no PUT /settings/org in zh switch window', zhWindow.settingsPut, 0);
-      check('S16 no POST /api/v1/orgs in zh switch window', zhWindow.orgCreate, 0);
-      const helpGeoZh = await geometry(page.sessionId);
-      check(
-        'S16 zh 390 help dialog stays inside viewport',
-        Boolean(helpGeoZh.dialogRect) && helpGeoZh.dialogRect.top >= -1 && helpGeoZh.dialogRect.bottom <= helpGeoZh.vh + 1 && helpGeoZh.dialogRect.right <= helpGeoZh.vw + 1,
-        true,
-      );
-      await capture(page, 'zh-help-tasks-s16-390-light');
-      const beforeEn = networkRequests.length;
-      await switchLocaleViaStorage(page.sessionId, 'en');
-      await waitForValue(page.sessionId, `document.querySelector('[role="tab"]') && document.querySelector('[role="tab"]').textContent.includes('Global')`, { label: 'S16 en help tabs again' });
-      const enWindow = switchRequestWindow(beforeEn);
-      check('S16 en active tab identity survives reverse switch', await identityOf(page.sessionId, '[role="tab"][data-state="active"]'), helpTabIdentity);
-      check('S16 en active element identity survives reverse switch', await tagActiveElement(page.sessionId, 'helpfocus2'), helpTabFocus);
-      check('S16 en active tab value survives reverse switch', await evaluate(page.sessionId, `(() => { const t=[...document.querySelectorAll('[role="tab"]')].find(x=>x.getAttribute('data-state')==='active'); return t ? t.textContent.trim() : null; })()`), 'Tasks');
-      check('S16 en dialog still open after reverse switch', await dialogOpen(page.sessionId), true);
-      check('S16 no PUT /settings/org in en reverse window', enWindow.settingsPut, 0);
-      check('S16 no POST /api/v1/orgs in en reverse window', enWindow.orgCreate, 0);
       await closePage(page);
     }
 
@@ -1563,9 +1385,6 @@ async function main() {
           height: combo.height,
         });
         await waitForValue(page.sessionId, `!!document.querySelector('[data-testid="w2a-open-palette"]')`, { label: `S18 ${label} palette control` });
-        await evaluate(page.sessionId, `(() => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', metaKey: true })); return true; })()`);
-        await sleep(400);
-        check(`S18 ${label} dormant CmdK does not open palette`, await evaluate(page.sessionId, `!!document.querySelector('input[role="combobox"]')`), false);
         await clickSelector(page.sessionId, '[data-testid="w2a-open-palette"]');
         await waitForValue(page.sessionId, `!!document.querySelector('input[role="combobox"]')`, { label: `S18 ${label} palette input` });
         await setInputValue(page.sessionId, 'input[role="combobox"]', 'TASK');

@@ -440,7 +440,7 @@ components:
     color_text:    "{colors.semantic.dark.text.primary}"
 
   kbd_chip:
-    # The little keycaps in the HelpDrawer and inline hints.
+    # The little keycaps for inline key labels.
     bg: "{colors.semantic.dark.surface.raised}"
     text: "{colors.semantic.dark.text.primary}"
     border: "1px solid {colors.semantic.dark.border.default}"
@@ -527,8 +527,8 @@ components:
     backdrop: "{colors.semantic.dark.surface.scrim}"
 
   drawer:
-    # Right-side slide-out. Reserved for HelpDrawer in v1; designed so the
-    # future "Agent detail" drawer (clicking an agent_chip) drops in.
+    # Right-side slide-out, designed so the future "Agent detail" drawer
+    # (clicking an agent_chip) drops in.
     width: "20rem"                # 320px
     elevation: "{elevation.3}"
     bg: "{colors.semantic.dark.surface.overlay}"
@@ -581,8 +581,8 @@ elevation, except where elevation actually means "this is floating
 above the page" (popovers, modals, drawers).
 
 Why this matters for HappyRanch specifically: every screen carries org slug,
-agent identity, IDs (THR-NNN / TASK-NNN), tier color, timestamps, status,
-keyboard hints. If the chrome is loud, the signal disappears. The design
+agent identity, IDs (THR-NNN / TASK-NNN), tier color, timestamps and
+status. If the chrome is loud, the signal disappears. The design
 language is built to make the *data* the foreground and the *UI* the
 parchment.
 
@@ -725,7 +725,7 @@ on intent for the founder-facing inventory:
 - **Dialog** is 512px wide, never page-wide. The product has dialogs for
   *actions*, not for content; if a screen needs a wider surface, it's a
   page, not a dialog.
-- **Drawer** is reserved for right-side panels: HelpDrawer today, future
+- **Drawer** is reserved for right-side panels, such as a future
   "Agent detail" sidecar from clicking an AgentChip.
 - **ToastQueue** docks bottom-right. 22rem wide. Variants are
   border-left-colored, not background-tinted — toasts are interruptive
@@ -773,7 +773,7 @@ tier/status/feedback semantic tokens or propose a new semantic token —
 do not invent a magenta because "we needed something different."
 
 **DON'T** all-caps form labels. Only the `overline` step is uppercase,
-used for section headers (INBOX, PARTICIPANTS, SHORTCUTS). Field labels
+used for section headers (INBOX, PARTICIPANTS). Field labels
 use the `label` step in title case.
 
 **DON'T** animate inbox/list state changes. Power users notice movement
@@ -787,5 +787,5 @@ sub-routes under Audit. If a sixth needs a top-level slot, we are
 designing a different product.
 
 **DON'T** use icon-only buttons for destructive actions. Archive and
-Abandon are text buttons with a keyboard hint. Icon-only is fine for
+Abandon are text buttons. Icon-only is fine for
 "refresh" and "filter clear"; never for "destroy this thread."

@@ -1011,6 +1011,8 @@ git commit -m "feat(web): KbPage list + filter sidebar + drawer detail"
 
 ## Task 11: Wire `g k` jump-key in TopBar
 
+> Superseded: keyboard shortcuts removed (THR-372).
+
 **Files:**
 - Modify: `web/src/design-system/layouts/AppShell/TopBar.tsx`
 

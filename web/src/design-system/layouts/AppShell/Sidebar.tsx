@@ -31,16 +31,12 @@ import {
   TooltipTrigger,
 } from '@/design-system/primitives/Tooltip';
 import { AddOrgDialog } from '@/features/orgs/AddOrgDialog';
-import { useAgentsRoutes } from '@/hooks/agents';
 import { useDashboardSummary } from '@/hooks/dashboard';
 import { useTranslation } from '@/hooks/i18n';
 import { identityInitials, useFounderName, useHasIdentityProvider } from '@/hooks/identities';
 
-import { useKbRoutes } from '@/hooks/kb';
 import { useOrgsList } from '@/hooks/orgs';
-import { useTasksRoutes } from '@/hooks/tasks';
 import { useThreadRoutes } from '@/hooks/threads';
-import { useGlobalJump } from '@/hooks/global-jump';
 import { useOrgSlugOptional } from '@/lib/orgSlug';
 import { features } from '@/config/features';
 
@@ -75,9 +71,6 @@ export function Sidebar(): JSX.Element {
   const orgsQuery = useOrgsList();
   const [addOrgOpen, setAddOrgOpen] = useState(false);
   const routes = useThreadRoutes();
-  const tasksRoutes = useTasksRoutes();
-  const agentsRoutes = useAgentsRoutes();
-  const kbRoutes = useKbRoutes();
 
   // BUG-08: Day-N comes from the SAME dashboard-summary query DashboardPage
   // consumes — React Query dedupes by key, so this is not a new data path.
@@ -85,28 +78,6 @@ export function Sidebar(): JSX.Element {
   // fetch.
   const summary = useDashboardSummary().data;
   const orgAgeDays = summary?.org_age_days;
-
-  // Global jump chords retained with the sidebar navigation.
-  useGlobalJump('d', () => {
-    if (activeSlug && !isPrototype) navigate(`/orgs/${activeSlug}/dashboard`);
-  });
-  useGlobalJump('i', () => {
-    if (activeSlug && !isPrototype) navigate(routes.inboxForOrg(activeSlug));
-  });
-  useGlobalJump('t', () => {
-    if (activeSlug && !isPrototype) navigate(tasksRoutes.inboxForOrg(activeSlug));
-  });
-  useGlobalJump('k', () => {
-    if (activeSlug && !isPrototype) navigate(kbRoutes.inboxForOrg(activeSlug));
-  });
-  useGlobalJump('l', () => {
-  });
-  useGlobalJump('a', () => {
-    if (activeSlug && !isPrototype) navigate(`/orgs/${activeSlug}/audit`);
-  });
-  useGlobalJump('g', () => {
-    if (activeSlug && !isPrototype) navigate(agentsRoutes.inboxForOrg(activeSlug));
-  });
 
   const switchEnabled = !orgsQuery.isLoading && (orgsQuery.data?.orgs.length ?? 0) > 0;
 

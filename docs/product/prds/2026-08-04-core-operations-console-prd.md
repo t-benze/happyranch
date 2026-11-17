@@ -53,6 +53,8 @@ On first entry, discover orgs → redirect dashboard or onboarding → establish
 
 ## UX and accessibility criteria
 
+> Superseded: keyboard shortcuts removed (THR-372).
+
 Desktop AppShell must provide semantic navigation, focus restoration for dialogs/drawers, labeled forms and destructive actions, keyboard shortcuts discoverable in help, non-color status cues, readable empty/error/retry messaging, and announced async outcome. Do not hide controls based on unverified client roles. Content-level responsive treatment does not imply a responsive navigation-shell target.
 
 ## Acceptance criteria

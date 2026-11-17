@@ -277,6 +277,8 @@ git commit -m "feat(web): useDensity hook backed by localStorage"
 
 ## Task 3: `useGlobalJump` hook
 
+> Superseded: keyboard shortcuts removed (THR-372).
+
 **Files:**
 - Create: `web/src/hooks/global-jump.ts`
 - Create: `web/src/hooks/global-jump.test.ts`

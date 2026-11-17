@@ -131,6 +131,8 @@ policy · finance · customer-care            ← tag chips (hidden in compact)
 
 ### 5.6 Jump key
 
+> Superseded: keyboard shortcuts removed (THR-372).
+
 `TopBar.tsx` already calls `useGlobalJump('t', …)`. Add `useGlobalJump('k', …)` pointing at `kbRoutes.inboxForOrg(activeSlug)`. The umbrella spec's PR 13 polish list owns the audit, but landing `g k` here is consistent with how `g t` shipped in PR 7.
 
 ## 6. Files touched

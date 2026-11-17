@@ -386,7 +386,7 @@ directions; every immediately scoped switch window proves zero
 settings/org/connect/mint mutations and zero `/api/` requests. A
 backward-compatible optional `DialogContent.closeLabel` supplies the
 localized accessible name for the built-in close control (defaulting to the
-legacy English `Close`); AddOrgDialog, HelpSheet and CommandPalette pass it from
+legacy English `Close`); AddOrgDialog and CommandPalette pass it from
 their callers and the patterns/primitives stay prop-driven with no locale hook
 import. The palette's container keydown defers Enter to natively-activatable
 descendants (`button`, `a[href]`, `[role="option"]`), so the localized X close

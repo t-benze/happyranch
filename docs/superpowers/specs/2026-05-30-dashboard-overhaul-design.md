@@ -253,6 +253,8 @@ These stay local because (a) Dashboard is their only consumer in v1 and (b) the 
 
 ### 4.6 Escalation reply flow
 
+> Superseded: keyboard shortcuts removed (THR-372).
+
 The Design Review §04 Q3 specifies the escalation-as-conversation loop. The
 backend route already exists: `POST /api/v1/orgs/{slug}/tasks/{task_id}/resolve-escalation`
 (handler `resolve_escalation_in_process` in `src/daemon/routes/tasks.py`).

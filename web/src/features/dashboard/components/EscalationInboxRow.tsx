@@ -92,10 +92,6 @@ export function EscalationInboxRow({
       onCollapse();
       e.preventDefault();
     }
-    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
-      void submit();
-      e.preventDefault();
-    }
   }
 
   return (

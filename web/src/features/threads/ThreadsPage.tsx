@@ -39,7 +39,6 @@ import { allocateArtifactName, attachmentContentType } from '@/lib/threadAttachm
 import type { PendingAttachment } from '@/design-system/patterns/Composer';
 import { useAgentsList } from '@/hooks/agents';
 import { useThreadFreshTokens } from '@/hooks/tokens';
-import { isGPrefixArmed } from '@/hooks/global-jump';
 import {
   useAbortReplies,
   useRenameThread,
@@ -341,7 +340,6 @@ export function ThreadsPage(): JSX.Element {
   const routes = useThreadRoutes();
   const navigate = useNavigate();
   const { slug, thread_id: threadId } = useParams<{ slug: string; thread_id: string }>();
-  const composerFocusRef = useRef<(() => void) | null>(null);
   const listScrollRef = useRef<HTMLDivElement | null>(null);
   const listSentinelRef = useRef<HTMLDivElement | null>(null);
   const refreshAnchorRef = useRef<{ scope: string; href: string; offset: number } | null>(null);
@@ -726,27 +724,6 @@ export function ThreadsPage(): JSX.Element {
     setShowNew(true);
   };
 
-  const openForward = () => {
-    if (!threadId || !activeThread.data) return;
-    const lastFounderMsg = messages
-      .filter((m) => m.kind === 'message' && m.body_markdown)
-      .at(-1);
-    const source = lastFounderMsg
-      ? `from ${threadId} by ${lastFounderMsg.speaker}\n\n${lastFounderMsg.body_markdown!}`
-      : `from ${threadId}`;
-    const quoted = source
-      .split(/\r\n|\r|\n/)
-      .map(line => line ? `> ${line}` : '>')
-      .join('\n');
-    setNewPrefill({
-      subject: `Fwd: ${activeThread.data.subject}`,
-      body: `${quoted}\n\n`,
-      forwarded_from_id: threadId,
-      forwarded_from_kind: 'thread',
-    });
-    setShowNew(true);
-  };
-
   const onSendFollowUp = async (markdown: string, attachments: PendingAttachment[]) => {
     if (!threadId || !slug) return;
     // Capture the destination + payload at first submit. A later thread/org
@@ -838,27 +815,6 @@ export function ThreadsPage(): JSX.Element {
       if (isCurrent()) setSubmissionPending(false);
     }
   };
-
-  // Keyboard shortcuts
-  useEffect(() => {
-    function onKey(e: KeyboardEvent) {
-      const target = e.target as HTMLElement | null;
-      const tag = target?.tagName?.toLowerCase();
-      if (tag === 'input' || tag === 'textarea' || target?.isContentEditable) return;
-      if (isGPrefixArmed()) return;
-      if (e.key === 'n' || e.key === 'N') { e.preventDefault(); openNew(); }
-      else if (threadId && (e.key === 'i' || e.key === 'I')) { e.preventDefault(); setShowInvite(true); }
-      else if (threadId && (e.key === 'a' || e.key === 'A')) { e.preventDefault(); setShowArchive(true); }
-      else if (threadId && (e.key === 'f' || e.key === 'F')) { e.preventDefault(); openForward(); }
-      else if (threadId && (e.key === 'r' || e.key === 'R') && !e.metaKey && !e.ctrlKey) {
-        e.preventDefault();
-        composerFocusRef.current?.();
-      }
-    }
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [threadId, activeThread.data, activeMessagesQuery.data]);
 
   // Inbox column — the full-width single-column conversation list shown on
   // /threads (no thread selected). When a thread IS selected the list column
@@ -1128,7 +1084,6 @@ export function ThreadsPage(): JSX.Element {
               onSend={onSendFollowUp}
               attachments={pendingAttachments}
               onAttachmentsChange={onAttachmentsChange}
-              registerFocus={(focus) => { composerFocusRef.current = focus; }}
               // "Abort reply" lives INSIDE the input pill (THR-099 Phase A).
               // Renders only while replies are in flight; one click aborts EVERY
               // in-flight reply (thread-level mutation, unchanged).

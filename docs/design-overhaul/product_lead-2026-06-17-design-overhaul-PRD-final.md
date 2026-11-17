@@ -250,6 +250,9 @@ four states honestly:
 > because a route failed is **Error**, never rendered as 0.
 
 #### 2.5.6 Keyboard & gesture baseline (NEW — applies app-wide)
+
+> Superseded: keyboard shortcuts removed (THR-372).
+
 - Global: `⌘K` (dock toggle), `Esc` (close any open overlay/dock/dialog).
 - **List surfaces (Tasks, Threads, Knowledge, Artifacts, Audit):** specify
   `↑/↓` to move selection, `Enter` to open the selected row, `Esc` to clear
