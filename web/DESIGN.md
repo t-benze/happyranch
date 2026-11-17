@@ -49,6 +49,13 @@
 # are the Pasture SegmentedControl primitive (accent-soft active option,
 # pill container); Tabs variant="segmented" shares its classes (see
 # DESIGN_SYSTEM.md).
+# THR-376 PR10 adds: one colour vocabulary. The semantic names are canonical;
+# every v3 / tier / status / feedback / agent / id / shadcn colour name in
+# tokens.css is now a var() alias of a semantic token (DESIGN_SYSTEM.md "One
+# colour vocabulary" has the alias map). Dark border.subtle and dark
+# tier.green_tint are SUPERSEDED (Pasture) and changed value: Pasture has no
+# subtle border, so dark --color-border-subtle = --color-border-default
+# (ds.css --border), and the green tint is ds.css --accent-soft at 60%.
 # The rest of this file is unchanged historical reference (Phase 4 rewrites it).
 
 name: HappyRanch Founder Console
@@ -121,7 +128,7 @@ colors:
     # orthogonal to status meaning.
     violet_500: "#8265c8"   # SUPERSEDED (Pasture, THR-376 PR9): agent manager = --color-info
     violet_300: "#b6a3e1"
-    teal_500:   "#2a9a93"   # SUPERSEDED (Pasture, THR-376 PR9): agent worker = --color-accent
+    teal_500:   "#2a9a93"   # SUPERSEDED (Pasture, THR-376 PR9): agent worker = --color-accent-default
     teal_300:   "#7cc4be"
 
   # Semantic tokens — these are the only names components reference.
@@ -139,7 +146,7 @@ colors:
         muted:         "{colors.palette.ink_400}"   # placeholders, disabled labels   # SUPERSEDED (Pasture): --color-text-muted (ink-3)
         inverse:       "{colors.palette.ink_900}"   # text on accent fills
       border:
-        subtle:        "{colors.palette.ink_800}"   # divider between siblings
+        subtle:        "{colors.palette.ink_800}"   # divider between siblings   # SUPERSEDED (Pasture, THR-376 PR10): --color-border-subtle = var(--color-border-default)
         default:       "{colors.palette.ink_700}"   # input border, card edge
         strong:        "{colors.palette.ink_600}"   # focused / hovered border
       accent:
@@ -149,14 +156,14 @@ colors:
         ring:          "rgba(24, 148, 211, 0.45)"   # focus ring
       tier:
         green:         "{colors.palette.green_500}"   # SUPERSEDED (Pasture): --color-tier-green (positive)
-        green_tint:    "rgba(46, 163, 106, 0.14)"
+        green_tint:    "rgba(46, 163, 106, 0.14)"   # SUPERSEDED (Pasture, THR-376 PR10): --color-accent-soft at 60%
         yellow:        "{colors.palette.amber_500}"
         yellow_tint:   "rgba(202, 167, 42, 0.14)"
         red:           "{colors.palette.red_500}"
         red_tint:      "rgba(208, 74, 58, 0.14)"
       agent:
         manager:       "{colors.palette.violet_500}"   # 6px dot   # SUPERSEDED (Pasture): --color-agent-manager = var(--color-info)
-        worker:        "{colors.palette.teal_500}"   # SUPERSEDED (Pasture): --color-agent-worker = var(--color-accent)
+        worker:        "{colors.palette.teal_500}"   # SUPERSEDED (Pasture): --color-agent-worker = var(--color-accent-default)
         founder:       "{colors.palette.signal_400}"   # founder is "you"   # SUPERSEDED (Pasture): --color-agent-founder (accent)
       status:
         open:          "{colors.palette.green_500}"   # SUPERSEDED (Pasture): --color-status-open (positive)
@@ -204,7 +211,7 @@ colors:
         red_tint:      "rgba(163, 55, 43, 0.10)"
       agent:
         manager:       "{colors.palette.violet_500}"   # SUPERSEDED (Pasture): --color-agent-manager = var(--color-info)
-        worker:        "{colors.palette.teal_500}"   # SUPERSEDED (Pasture): --color-agent-worker = var(--color-accent)
+        worker:        "{colors.palette.teal_500}"   # SUPERSEDED (Pasture): --color-agent-worker = var(--color-accent-default)
         founder:       "{colors.palette.signal_600}"   # SUPERSEDED (Pasture): --color-agent-founder (accent)
       status:
         open:          "{colors.palette.green_700}"   # SUPERSEDED (Pasture): --color-status-open (positive)

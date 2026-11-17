@@ -41,6 +41,78 @@ Feature compositions keep using the stable `@/design-system/...` import paths.
   the dark override block) do not count. Map a missing name to an existing semantic token; add a token only
   when none fits. `scripts/test-design-system-token-scanner.sh` is its fixture
   suite.
+- One colour vocabulary (THR-376 PR10). The semantic colour names are
+  canonical, and only they hold raw colour values in `tokens.css`:
+  `surface-canvas`, `surface-sunken`, `surface-raised`, `surface-overlay`,
+  `surface-scrim`, `surface-hover`, `surface-subtle`, `text-primary`,
+  `text-secondary`, `text-muted`, `text-inverse`, `text-disabled`,
+  `border-default`, `border-strong`, `border-subtle`, `accent-default`,
+  `accent-hover`, `accent-soft`, `accent-ring`, `accent-text`,
+  `brand-foreground`, `attention`, `attention-soft`, `attention-text`, `info`,
+  `info-soft`, `positive`, `danger`, `danger-soft`. Every other `--color-*`
+  name (v3, tier, status, feedback, agent, id, shadcn and duplicate
+  spellings) is an alias: `var(--color-<semantic>)`, or for an alpha tint
+  `color-mix(in oklab, var(--color-<semantic>) 60%, transparent)`, in both
+  themes. Aliases are slated for removal scheme by scheme: codemod the
+  utility classes to the semantic name, then delete the alias (v3 first).
+  New code uses the semantic names. `--scan-tokens` fails (exit 6) when a
+  non-semantic `--color-*` declaration holds a literal or aliases another
+  alias. The only exemption is `tier-slate-tint`: it has no semantic match and
+  no consumers, so it stays literal until its owner decides to map or delete
+  it. Alias map (light / dark target; one name when both themes agree):
+
+  | Scheme | Alias | Semantic target |
+  | --- | --- | --- |
+  | duplicate | `surface` | `surface-raised` |
+  | duplicate | `accent-muted` | `accent-soft` |
+  | v3 | `bg` | `surface-canvas` |
+  | v3 | `bg-subtle` | `surface-sunken` |
+  | v3 | `bg-raised` | `surface-raised` |
+  | v3 | `bg-muted` | `surface-sunken` / `surface-raised` |
+  | v3 | `border` | `border-default` |
+  | v3 | `fg` | `text-primary` |
+  | v3 | `fg-muted` | `text-secondary` |
+  | v3 | `fg-subtle` | `text-muted` |
+  | v3 | `accent` | `accent-default` |
+  | v3 | `accent-fg` | `text-inverse` |
+  | tier | `tier-green` | `positive` |
+  | tier | `tier-yellow` | `attention` |
+  | tier | `tier-red` | `danger` |
+  | tier | `tier-green-tint` | `accent-soft` at 60% |
+  | tier | `tier-yellow-tint` | `attention-soft` at 60% |
+  | tier | `tier-red-tint` | `danger-soft` at 60% |
+  | status | `status-open` | `positive` |
+  | status | `status-archiving`, `status-blocked` | `attention` |
+  | status | `status-archived` | `text-secondary` / `text-muted` |
+  | status | `status-abandoned`, `status-escalated` | `danger` |
+  | feedback | `feedback-success` | `positive` |
+  | feedback | `feedback-warning` | `attention` |
+  | feedback | `feedback-danger` | `danger` |
+  | feedback | `feedback-info` | `info` |
+  | agent | `agent-manager` | `info` |
+  | agent | `agent-worker`, `agent-founder` | `accent-default` |
+  | id | `id-thread`, `id-task` | `info` |
+  | shadcn | `background` | `surface-canvas` |
+  | shadcn | `foreground`, `card-foreground`, `popover-foreground`, `secondary-foreground` | `text-primary` |
+  | shadcn | `card`, `secondary` | `surface-raised` |
+  | shadcn | `popover` | `surface-overlay` |
+  | shadcn | `primary` | `accent-default` |
+  | shadcn | `primary-foreground`, `destructive-foreground` | `text-inverse` |
+  | shadcn | `muted` | `surface-sunken` |
+  | shadcn | `muted-foreground` | `text-muted` |
+  | shadcn | `destructive` | `danger` |
+  | shadcn | `input` | `border-default` |
+  | shadcn | `ring` | `accent-ring` |
+
+  Each alias points at the semantic token whose value it already had, so the
+  map is pixel-neutral except two dark values that now follow
+  `web/design/pasture-ds.css`. Pasture has no subtle border, so dark
+  `border-subtle` is `var(--color-border-default)` (ds.css `--border`; it
+  was 0.28). Dark `tier-green-tint` is `accent-soft` at 60% (it was
+  `oklch(0.30 0.05 152)`). `tier-green` maps to `positive` (Pasture
+  `--positive`), not `accent`: the two greens differ in dark by design.
+  `surface-hover` and `brand-foreground` stay semantic because each has its
+  own value in at least one theme.
 - Spacing is Tailwind's linear 4px scale: every numeric step `N` in
   `p-N`/`m-N`/`gap-N`/`space-*-N`/`h-N`/`w-N`/`size-N`/inset/translate and
   the other spacing utilities is `N x 0.25rem` (step 5 = 20px, step 6 = 24px,
@@ -179,7 +251,7 @@ Feature compositions keep using the stable `@/design-system/...` import paths.
   30px (11px), `lg` 34px (12px); 700 weight; 50% radius (ds.css Direction A).
   Tones: `founder` is the ds.css `.avatar` gradient (`--accent` → `--info`);
   `manager` / `worker` fill with `--color-agent-manager` / `-worker`, which
-  are now aliases of `--color-info` / `--color-accent` (the off-palette violet
+  are now aliases of `--color-info` / `--color-accent-default` (the off-palette violet
   and teal literals are gone); `soft` (`--accent-soft` + `--accent-text`) is
   for identities with no role field (Jobs, Todos); `neutral` (`--surface-2` +
   `--ink-2`) is for retired agents. Labels on solid/gradient tones use
@@ -201,7 +273,8 @@ Feature compositions keep using the stable `@/design-system/...` import paths.
   the visual authority for Direction A light/dark colour values; it is a
   reference copy only and is not imported by the app build. `tokens.css`
   carries its lightness values for the text and accent ramps (chroma/hue
-  unchanged), including every literal duplicate of the same semantic token:
+  unchanged). Since THR-376 PR10 the other names in this table are `var()`
+  aliases of the semantic token (see "One colour vocabulary" above):
 
   | Pasture token | tokens.css properties | Light | Dark |
   | --- | --- | --- | --- |
