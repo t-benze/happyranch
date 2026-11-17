@@ -1,5 +1,52 @@
 # Reusable workflow contracts
 
+## R1b1: own-task sequential start discovery
+
+`GET /api/v1/orgs/{slug}/workflows/sequential/start-context?session_id=SID`
+uses the CLI surface header and the session registry's own current ordinary
+task/principal. It requires an in-progress task owned by an executable team
+manager, matching native SID, no landed completion and fresh current authority.
+Ordinary thread-originated tasks qualify; direct thread invocation tokens,
+workers, foreign org/task/principal bindings, ended/stale/recovery sessions,
+browser Origin and any Authorization header refuse. No client task or principal
+selector is accepted. Founder projection routes retain their bearer requirement.
+
+The optional `definition` is an exact `identity@version` selector, currently
+`release/happyranch/coding@2`. The literal R1c MANIFEST supplies the catalog,
+roles/responsibilities, required inputs and full source/definition/ABI pins.
+The existing selected pin reader authenticates the latest saved settings,
+generation/digest, defaults, admission and limits. Defaults outside the source
+manager's team refuse before disclosure. Absent settings are Disabled, with
+empty defaults and null saved settings/limits; definition limits remain visible.
+There is no legacy Explicit-settings translation or Coding v1 admission.
+
+Successful responses use `workflow-sequential-start-context@1`. All responses
+include `Cache-Control: no-store`. Per-definition causes are `sequential_storage_unavailable`,
+`sequential_definition_not_registered`, `sequential_settings_absent`,
+`sequential_settings_disabled`, and `sequential_host_unavailable`. Unknown or
+tampered selectors refuse `sequential_definition_unavailable`; retired Coding
+`@1` refuses `coding_fresh_start_retired`. Authority uncertainty returns 409
+`sequential_authority_unverified` without context; invalid current role/team
+authority returns 403. Unverified history/budget exhaustion returns 409.
+
+One cooperative five-second deadline covers the read, including post-capture
+checks and async-lock waiting. It shares the existing 8192-row, 64 MiB accounted
+copy, 65536-work and 2000000-SQL-step allowance; payload cells retain the existing
+1 MiB cap. At most 16 manifest entries and 256 KiB of response are accepted.
+Current authority capture and synchronous locks/file I/O retain their existing
+behavior; these are cooperative limits, not hard wall-time/RSS guarantees.
+Beyond current authority/schema validation, data reads select the immutable
+registration/latest settings and bounded ordinary ancestry (20 tasks);
+unrelated run histories are not scanned. Exhaustion
+never becomes empty/available data. Every path has zero DML and zero COMMIT;
+owned read snapshots end with ROLLBACK and acquire no durable publication lease.
+
+This discovery grants no configuration or start effect. Start@1 still means one
+run, fixed assignments and old source-terminal semantics. R1b2 owns composition
+and prompt changes; @2, multi-run continuation and the Coding pilot are separate.
+The Web Contract classifies this route as agent-session, like
+repository-preflight; the TS mirror is types only, without a browser function.
+
 ## R1a: thread-originated ordinary sources and terminal return
 
 Start@1 accepts an otherwise eligible ordinary manager task whose own row or

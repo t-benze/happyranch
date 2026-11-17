@@ -25,6 +25,22 @@ export interface SequentialSettings {
   snapshot: { format: 'workflow-sequential-settings-storage@1'; definition: DefinitionPin;
     bindings: SequentialBinding[]; limits: SequentialLimits; admission: 'Disabled' | 'Allowed' };
 }
+/** Agent-session contract only, like repository-preflight. No browser client. */
+export interface SequentialStartContext {
+  format: 'workflow-sequential-start-context@1'; start_format: 'workflow-sequential-start@1';
+  max_runs: 1; assignments: 'fixed'; source_semantics: 'source-terminal';
+  definitions: {
+    selector: string; pin: DefinitionPin; description: string;
+    roles: { role: string; requirement: { kind: 'agent'; executable: true;
+      eligibility: 'worker' | 'registered-team-manager'; independent_of: string[] };
+      responsibilities: string[] }[];
+    required_inputs: { name: string; contract: 'bounded-text@1'; required: boolean }[];
+    definition_limits: SequentialLimits; registered: boolean; settings: SequentialSettings | null;
+    admission: 'Disabled' | 'Allowed'; defaults: SequentialBinding[]; limits: SequentialLimits | null;
+    unavailable_cause: 'sequential_storage_unavailable' | 'sequential_definition_not_registered'
+      | 'sequential_settings_absent' | 'sequential_settings_disabled' | 'sequential_host_unavailable' | null;
+  }[];
+}
 export interface SequentialRun {
   id: string; definition_id: string; definition: DefinitionPin; settings_id: string;
   settings: { generation: number; snapshot_digest: string };

@@ -61,6 +61,15 @@ if len(sys.argv) == 2 and sys.argv[1].startswith('--returned-storage='):
     returned_case = sys.argv[1].split('=', 1)[1]
     sys.argv[1:] = ['--returned-storage']
 
+start_context_case = None
+START_CONTEXT_CASES = ('manager_context', 'thread_origin_manager', 'foreign_context',
+    'direct_thread_refused', 'worker_refused', 'ended_or_recovery_sid_refused',
+    'bearer_audience_refused', 'definition_selector', 'unavailable_causes', 'zero_writes', 'bounds')
+if len(sys.argv) == 2 and sys.argv[1].startswith('--start-context='):
+    start_context_case = sys.argv[1].split('=', 1)[1]
+    assert start_context_case in ('all', *START_CONTEXT_CASES)
+    sys.argv[1:] = ['--start-context']
+
 bundled_case = None
 if len(sys.argv) == 2 and sys.argv[1].startswith('--bundled-catalog='):
     bundled_case = sys.argv[1].split('=', 1)[1]
@@ -158,7 +167,7 @@ if len(sys.argv) == 2 and sys.argv[1].startswith('--retained-corruption-phase=')
         uncommitted='between uncommitted')[sys.argv[1].split('=', 1)[1]]
     sys.argv[1:] = ['--retained-corruption']
 
-assert sys.argv[1:] in ([], ['--bundled-catalog'], ['--returned-storage'], ['--bootstrap-startup'], ['--bootstrap-worker'], ['--bootstrap-owners'], ['--bootstrap-discovery'], ['--bootstrap-selection'], ['--bootstrap-install'], ['--bootstrap-rehearsal'], ['--bootstrap-backup'], ['--bootstrap-journal'], ['--bootstrap-precommit'], ['--startup-isolation'], ['--fresh-catalog'], ['--org-access-fence'], ['--org-access-openers'], ['--org-access-native'], ['--org-access-guardian'], ['--org-access-profile'], ['--setup-status'], ['--daily-integrity'], ['--install-integrity'], ['--bounded-acquisition'], ['--trace-custody'], ['--sequential-reuse'], ['--sequential-load'], ['--sequential-freshness'], ['--sequential-faults'], ['--sequential-sql-exhaustion'], ['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--coding-authority-corruption'], ['--document-native-corruption'], ['--author-handoff-corruption'], ['--document-revision-corruption'], ['--coding-history-corruption'], ['--physical-corruption'], ['--sequential-uncommitted'], ['--i2-cutover'], ['--i2-native']), 'unknown schema-load selection'
+assert sys.argv[1:] in ([], ['--start-context'], ['--bundled-catalog'], ['--returned-storage'], ['--bootstrap-startup'], ['--bootstrap-worker'], ['--bootstrap-owners'], ['--bootstrap-discovery'], ['--bootstrap-selection'], ['--bootstrap-install'], ['--bootstrap-rehearsal'], ['--bootstrap-backup'], ['--bootstrap-journal'], ['--bootstrap-precommit'], ['--startup-isolation'], ['--fresh-catalog'], ['--org-access-fence'], ['--org-access-openers'], ['--org-access-native'], ['--org-access-guardian'], ['--org-access-profile'], ['--setup-status'], ['--daily-integrity'], ['--install-integrity'], ['--bounded-acquisition'], ['--trace-custody'], ['--sequential-reuse'], ['--sequential-load'], ['--sequential-freshness'], ['--sequential-faults'], ['--sequential-sql-exhaustion'], ['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--coding-authority-corruption'], ['--document-native-corruption'], ['--author-handoff-corruption'], ['--document-revision-corruption'], ['--coding-history-corruption'], ['--physical-corruption'], ['--sequential-uncommitted'], ['--i2-cutover'], ['--i2-native']), 'unknown schema-load selection'
 
 
 print('SCHEMA_RUNTIME', json.dumps(dict(python=sys.version, executable=sys.executable, sqlite=sqlite3.sqlite_version,
@@ -642,7 +651,7 @@ if sys.argv[1:] == ['--returned-storage']:
 
 
 # R1c uses private package data and real production readers/writers, with no launch.
-if sys.argv[1:] in ([], ['--bundled-catalog']):
+if sys.argv[1:] in ([], ['--bundled-catalog'], ['--start-context']):
     import asyncio
     from dataclasses import replace
     from runtime.daemon.routes.orgs import _seed_skeleton
@@ -668,7 +677,263 @@ if sys.argv[1:] in ([], ['--bundled-catalog']):
             raise AssertionError(label + ': unexpectedly admitted')
         print('PASS R1c', label, expected, flush=True)
 
-    async def bundled_catalog_cases():
+    async def start_context_cases(org, runtime, home, coding, save_settings):
+        import httpx
+        from runtime.models import ThreadRecord, ThreadInvocationPurpose
+        from runtime.daemon.app import create_app
+        from runtime.daemon.state import DaemonState
+        from runtime.workflows.sequential_run_validation import _pins, _selected_layout
+        conn = org.db._conn
+        state = DaemonState(runtime=runtime, settings=Settings())
+        state.orgs['scratch'] = org
+        state.profile_coordinator = org._profile_coordinator
+        app = create_app(state)
+        (home / 'daemon.token').write_text('synthetic-start-context-founder')
+        org.db.update_task('private-source', current_session_id='context-manager')
+        org.sessions.set_active('private-source', 'r1c_manager', 'context-manager', org_slug='scratch')
+        org.db.insert_thread(ThreadRecord(id='THR-private', subject='Private discovery thread'))
+        for task, principal in (('worker-source', 'r1c_dev'), ('thread-source', 'r1c_manager')):
+            org.db.insert_task(TaskRecord(id=task, assigned_agent=principal, team='engineering',
+                task_type='subtask' if task == 'worker-source' else 'task', status='in_progress',
+                brief='Private discovery audience', current_session_id='context-' + task,
+                origin_thread_id='THR-private' if task == 'thread-source' else None))
+            org.sessions.set_active(task, principal, 'context-' + task, org_slug='scratch')
+        url = '/api/v1/orgs/scratch/workflows/sequential/start-context'
+        cli = {'x-happyranch-surface': 'cli'}
+        selector = 'release/happyranch/coding@2'
+        chosen = start_context_case or 'all'
+
+        def inventory():
+            # All tables, schema and exact row bytes, including historical/native
+            # rows outside the sequential inventory; private bounded fixtures only.
+            return tuple(conn.iterdump())
+
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://asgi') as client:
+            async def read(sid='context-manager', *, headers=None, params=None, path=url,
+                           status=200, code=None, content=None):
+                before, changes, statements = inventory(), conn.total_changes, []
+                conn.set_trace_callback(statements.append)
+                try:
+                    response = await client.request('GET', path, headers=cli if headers is None else headers,
+                        params=[('session_id', sid)] if params is None else params, content=content)
+                finally:
+                    conn.set_trace_callback(None)
+                assert conn.total_changes == changes and inventory() == before, 'zero_writes: row/schema mutation'
+                assert not any(sql.lstrip().split(' ', 1)[0].upper() in
+                    ('INSERT', 'UPDATE', 'DELETE', 'REPLACE', 'COMMIT', 'END', 'CREATE', 'DROP', 'ALTER')
+                    for sql in statements), ('zero_writes: forbidden SQL', statements)
+                assert response.status_code == status, ('start-context route', response.status_code, response.text, status)
+                if path == url:
+                    assert response.headers.get('cache-control') == 'no-store', ('discovery refusal must not cache', sid, response.text, dict(response.headers))
+                body = response.json()
+                if code is not None:
+                    assert body['detail']['code'] == code, (body, code)
+                return body
+
+            # Absence is Disabled/unset. No successful-authority or route mock.
+            body = await read()
+            empty = body['definitions'][0]
+            assert empty['admission'] == 'Disabled' and empty['defaults'] == [] and empty['settings'] is None
+            assert empty['unavailable_cause'] == 'sequential_settings_absent'
+            cmd = save_settings(coding)
+            setting_id = conn.execute('SELECT id FROM workflow_seq_settings WHERE generation=1').fetchone()[0]
+            with org.db.coherent_read_view() as reader:
+                budget = _ReadBudget()
+                compiled, setting, snapshot = _pins(reader, _selected_layout(reader, budget),
+                    org_slug='scratch', definition_id=conn.execute('SELECT id FROM workflow_seq_definitions').fetchone()[0],
+                    settings_id=setting_id, budget=budget)
+
+            async def manager_context(sid='context-manager'):
+                body = await read(sid)
+                item = body['definitions'][0]
+                assert item['selector'] == selector and item['pin'] == compiled.pin.model_dump(mode='json')
+                assert item['settings']['generation'] == setting['generation'] == cmd.settings.generation
+                assert item['settings']['snapshot_digest'] == setting['snapshot_digest'] == cmd.settings.snapshot_digest
+                assert item['settings']['snapshot'] == snapshot.model_dump(mode='json')
+                assert item['admission'] == snapshot.admission == 'Allowed'
+                assert item['defaults'] == [b.model_dump(mode='json') for b in snapshot.bindings]
+                assert item['limits'] == snapshot.limits.model_dump(mode='json') and item['unavailable_cause'] is None
+                assert item['definition_limits'] == compiled.definition.limits.model_dump(mode='json')
+                assert {r['role']: r['requirement'] for r in item['roles']} == {
+                    role: requirement.model_dump(mode='json') for role, requirement in compiled.definition.roles}
+                for node in compiled.definition.nodes:
+                    role = next(r for r in item['roles'] if r['role'] == node.role)
+                    assert all(text in role['responsibilities'] for text in node.responsibilities)
+                assert body['start_format'] == 'workflow-sequential-start@1' and body['max_runs'] == 1
+                assert body['assignments'] == 'fixed' and body['source_semantics'] == 'source-terminal'
+
+            for case in START_CONTEXT_CASES:
+                if chosen not in ('all', case):
+                    continue
+                if case == 'manager_context':
+                    await manager_context()
+                elif case == 'thread_origin_manager':
+                    await manager_context('context-thread-source')
+                elif case == 'foreign_context':
+                    unknown_refusals = []
+                    for audience, headers in (('origin', {'origin': 'http://browser'}),
+                                              ('cli_unregistered_sid', cli)):
+                        body = await read('unregistered-sid', headers=headers,
+                            path=url.replace('/scratch/', '/not-loaded/'), status=404, code='unknown_org')
+                        unknown_refusals.append((audience, body))
+                    leaked = [(audience, body) for audience, body in unknown_refusals
+                        if 'available' in json.dumps(body)
+                        or any(slug in json.dumps(body) for slug in state.orgs_snapshot())]
+                    assert not leaked, ('unknown_slug refusal discloses loaded org inventory', leaked)
+                    assert all(body == {'detail': {'code': 'unknown_org'}}
+                        for _, body in unknown_refusals), unknown_refusals
+                    print('PASS R1b1 foreign_context unknown_slug origin + cli_unregistered_sid: '
+                          '404 code-only; zero writes and identical inventory', flush=True)
+                    for task, principal, slug in (('private-source', 'r1c_manager', 'foreign'),
+                            ('absent-task', 'r1c_manager', 'scratch'), ('private-source', 'r1c_dev', 'scratch')):
+                        sid = 'foreign-' + task + principal + slug
+                        org.sessions.set_active(task, principal, sid, org_slug=slug)
+                        await read(sid, status=404 if task == 'absent-task' else 403,
+                            code='task_not_found' if task == 'absent-task' else 'sequential_task_session_required')
+                    # A task/principal query cannot override the registry lookup.
+                    org.sessions.set_active('private-source', 'r1c_manager', 'context-manager', org_slug='scratch')
+                    await read(params=[('session_id', 'context-manager'), ('task_id', 'thread-source')],
+                        status=422, code='sequential_start_context_invalid')
+                elif case == 'direct_thread_refused':
+                    invocation = org.db.mint_thread_invocation(thread_id='THR-private', agent_name='r1c_manager',
+                        triggering_seq=0, purpose=ThreadInvocationPurpose.REPLY)
+                    assert org.db.get_pending_invocation(invocation.invocation_token) is not None
+                    # A genuine direct thread token supplies no task session.
+                    await read(invocation.invocation_token, status=403, code='sequential_task_session_required')
+                elif case == 'worker_refused':
+                    await read('context-worker-source', status=403, code='sequential_task_session_required')
+                    # A worker with task_type=task still has no manager authority.
+                    conn.execute("UPDATE tasks SET task_type=? WHERE id=?", ('task', 'worker-source'))
+                    conn.commit()
+                    await read('context-worker-source', status=403, code='sequential_task_session_required')
+                    conn.execute("UPDATE tasks SET task_type=? WHERE id=?", ('subtask', 'worker-source'))
+                    conn.commit()
+                elif case == 'ended_or_recovery_sid_refused':
+                    org.db.update_task('private-source', current_session_id='recovery')
+                    org.sessions.register_recovery_session('private-source', 'r1c_manager', 'recovery', org_slug='scratch')
+                    await read('recovery', status=403, code='sequential_task_session_required')
+                    await read('context-manager', status=403, code='sequential_task_session_required')
+                    org.db.update_task('private-source', current_session_id='context-manager')
+                    org.sessions.set_active('private-source', 'r1c_manager', 'context-manager', org_slug='scratch')
+                    org.db.update_task('private-source', status='completed')
+                    await read(status=403, code='sequential_task_session_required')
+                    org.db.update_task('private-source', status='in_progress')
+                    conn.execute("UPDATE tasks SET task_type=? WHERE id=?", ('subtask', 'private-source'))
+                    conn.commit()
+                    await read(status=403, code='sequential_task_session_required')
+                    conn.execute("UPDATE tasks SET task_type=? WHERE id=?", ('task', 'private-source'))
+                    conn.commit()
+                    org.sessions.clear('private-source', 'r1c_manager')
+                    await read(status=403, code='sequential_task_session_required')
+                    org.sessions.set_active('private-source', 'r1c_manager', 'context-manager', org_slug='scratch')
+                elif case == 'bearer_audience_refused':
+                    for headers in ({}, {**cli, 'authorization': 'Bearer synthetic-start-context-founder'},
+                                    {**cli, 'origin': 'http://browser'}):
+                        await read(headers=headers, status=403, code='sequential_task_session_required')
+                    founder = '/api/v1/orgs/scratch/workflows/sequential/definitions'
+                    await read(path=founder, params=[], status=401)
+                    body = await read(path=founder, params=[], headers={
+                        'authorization': 'Bearer synthetic-start-context-founder'})
+                    assert body['definitions'][0]['pin'] == coding.pin.model_dump(mode='json')
+                elif case == 'definition_selector':
+                    await read(params=[('session_id', 'context-manager'), ('definition', selector)])
+                    for value in ('release/happyranch/coding@1', 'coding.v1', selector + '0',
+                                  'release/unknown/workflow@2', selector + ':tampered'):
+                        await read(params=[('session_id', 'context-manager'), ('definition', value)],
+                            status=409, code='coding_fresh_start_retired' if value.endswith('@1')
+                                else 'sequential_definition_unavailable')
+                    await read(params=[('session_id', 'context-manager'), ('session_id', 'context-manager')],
+                        status=422, code='sequential_start_context_invalid')
+                    await read(content=b'x', status=422, code='sequential_start_context_invalid')
+                elif case == 'unavailable_causes':
+                    cache = dict(org.workflow_authority._cache)
+                    org.workflow_authority._cache.clear()
+                    try:
+                        await read(status=409, code='sequential_authority_unverified')
+                    finally:
+                        org.workflow_authority._cache.update(cache)
+                    dispatcher = org.orchestrator._workflow_sequential_dispatch
+                    org.orchestrator._workflow_sequential_dispatch = None
+                    try:
+                        assert (await read())['definitions'][0]['unavailable_cause'] == 'sequential_host_unavailable'
+                    finally:
+                        org.orchestrator._workflow_sequential_dispatch = dispatcher
+                    save_settings(coding, generation=2, admission='Disabled')
+                    disabled = (await read())['definitions'][0]
+                    assert disabled['admission'] == 'Disabled' and disabled['settings']['generation'] == 2
+                    assert disabled['unavailable_cause'] == 'sequential_settings_disabled'
+                    save_settings(coding, generation=3)
+                    # Restore exact original row/schema bytes after these
+                    # adversarial private inputs; guards are present at each read.
+                    before_fixture = inventory()
+                    saved = sqlite3.connect(':memory:')
+                    conn.backup(saved)
+                    try:
+                        for row in conn.execute("SELECT name FROM sqlite_schema WHERE type='trigger' AND tbl_name IN ('workflow_seq_definitions','workflow_seq_settings','workflow_seq_settings_operations')").fetchall():
+                            conn.execute('DROP TRIGGER "' + row[0] + '"')
+                        conn.execute('PRAGMA foreign_keys=OFF')
+                        conn.execute('DELETE FROM workflow_seq_settings_operations')
+                        conn.execute('DELETE FROM workflow_seq_settings')
+                        conn.execute('DELETE FROM workflow_seq_definitions')
+                        conn.commit()
+                        for row in saved.execute("SELECT sql FROM sqlite_schema WHERE type='trigger' AND tbl_name IN ('workflow_seq_definitions','workflow_seq_settings','workflow_seq_settings_operations')"):
+                            conn.execute(row[0])
+                        conn.execute('PRAGMA foreign_keys=ON')
+                        assert (await read())['definitions'][0]['unavailable_cause'] == 'sequential_definition_not_registered'
+                        from runtime.infrastructure.workflow_task_ownership import binding_view_ddl
+                        conn.execute('DROP VIEW workflow_task_owner_bindings')
+                        for kind, name in conn.execute("SELECT type,name FROM sqlite_schema WHERE name GLOB 'workflow_seq_*' AND type IN ('view','trigger')").fetchall():
+                            conn.execute('DROP ' + kind + ' "' + name + '"')
+                        conn.execute('PRAGMA foreign_keys=OFF')
+                        for name, in conn.execute("SELECT name FROM sqlite_schema WHERE name GLOB 'workflow_seq_*' AND type='table'").fetchall():
+                            conn.execute('DROP TABLE "' + name + '"')
+                        conn.execute(binding_view_ddl('J', coding_extension=True))
+                        conn.commit()
+                        conn.execute('PRAGMA foreign_keys=ON')
+                        assert (await read())['definitions'][0]['unavailable_cause'] == 'sequential_storage_unavailable'
+                    finally:
+                        conn.rollback()
+                        saved.backup(conn)
+                        saved.close()
+                        assert inventory() == before_fixture, 'private input restoration changed rows/schema'
+                elif case == 'bounds':
+                    # Production-shaped unrelated historical volume is not a
+                    # full-history prerequisite for one manager's exact context.
+                    conn.executemany("INSERT INTO org_settings(section,value_json,updated_at) VALUES (?,?, '2026-11-17T00:00:00Z')",
+                        [('unrelated-history-' + str(i), json.dumps({'historical': 'x' * 4096})) for i in range(2048)])
+                    conn.commit()
+                    started = time.monotonic()
+                    await read()
+                    print('R1b1 production-shaped rows=2048 payload_bytes>8388608 request_plus_inventory_seconds', round(time.monotonic()-started, 3), flush=True)
+                    # Existing test-side budget fault injection; no production
+                    # flag/export or successful-authority stub is introduced.
+                    from runtime.workflows import sequential_views
+                    real = sequential_views._ReadBudget
+                    for kwargs in (dict(deadline=time.monotonic()-1), dict(sql_limit=0),
+                                   dict(consumed=64*1048576), dict(traversed=65536)):
+                        with patch.object(sequential_views, '_ReadBudget', lambda **kw: real(**dict(kw, **kwargs))):
+                            await read(status=409, code='sequential_history_unverified')
+                elif case == 'zero_writes':
+                    # Historical native current-pointer bytes retain their old
+                    # grammar. This is model-valid Explicit snapshot input, not
+                    # a fabricated legacy execution/admission authority graph.
+                    from runtime.workflows._coding_settings_records import SettingsSnapshot
+                    from runtime.workflows._coding_role_records import Release
+                    legacy = SettingsSnapshot(format='workflow-coding-settings-snapshot@1',
+                        org_slug='scratch', generation=7, admission='explicit',
+                        release=Release(identity='release/happyranch/coding', version=1,
+                            definition_digest='6ee02be98738d3c95fe584b165abe07d0dbef66e510133c117ee0d62c953cad8'),
+                        mapping=dict(id='historical-mapping', generation=7, digest='1'*64),
+                        operation_key='historical-save', request_digest='2'*64, previous_snapshot_digest='3'*64,
+                        published_at='2026-11-14T00:00:00.000000Z', published_by='human:founder')
+                    conn.execute('INSERT INTO org_settings(section,value_json,updated_at,updated_by) VALUES (?,?,?,?)',
+                        ('coding', legacy.model_dump_json(), legacy.published_at, 'founder'))
+                    conn.commit()
+                    assert (await read())['definitions'][0]['pin']['version'] == 2
+                    await read('unknown', status=403, code='sequential_task_session_required')
+                print('PASS R1b1', case, 'real route/registry/authority/settings; zero DML/COMMIT and identical all-table inventory', flush=True)
+
+    async def bundled_catalog_cases(*, context_only=False):
         with tempfile.TemporaryDirectory(prefix='r1c-bundled-', dir='/tmp') as scratch:
             home = Path(scratch).resolve()
             runtime = RuntimeDir.init(home / 'runtime')
@@ -699,7 +964,7 @@ if sys.argv[1:] in ([], ['--bundled-catalog']):
                     db, conn = org.db, org.db._conn
                     coding = release.read_coding_release()
                     original_manifest = dict(getattr(release, 'MANIFEST', {}))
-                    selected = bundled_case or 'all'
+                    selected = 'start_context' if context_only else bundled_case or 'all'
 
                     def command(compiled, *, generation=1, admission='Allowed'):
                         bindings = [dict(role=role, principal=dict(developer='r1c_dev', reviewer='r1c_review',
@@ -731,6 +996,10 @@ if sys.argv[1:] in ([], ['--bundled-catalog']):
 
                     db.insert_task(TaskRecord(id='private-source', assigned_agent='r1c_manager', team='engineering',
                         task_type='task', status='in_progress', brief='Private no-launch source'))
+
+                    if selected == 'start_context':
+                        await start_context_cases(org, runtime, home, coding, save_settings)
+                        return
 
                     def inventory():
                         with _schema_snapshot(conn):
@@ -864,8 +1133,11 @@ if sys.argv[1:] in ([], ['--bundled-catalog']):
                         print('PASS R1c refusal matrix creates zero runs/visits/tasks', flush=True)
                 finally:
                     org.close()
-    asyncio.run(bundled_catalog_cases())
-    if sys.argv[1:] == ['--bundled-catalog']:
+    if sys.argv[1:] in ([], ['--start-context']):
+        asyncio.run(bundled_catalog_cases(context_only=True))
+    if sys.argv[1:] != ['--start-context']:
+        asyncio.run(bundled_catalog_cases())
+    if sys.argv[1:] in (['--bundled-catalog'], ['--start-context']):
         raise SystemExit(0)
 
 
