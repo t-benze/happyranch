@@ -14,7 +14,11 @@ from typing import Callable, Protocol
 from runtime.remote_access.invite_issuer import MintedKey, MintRefused
 
 _TIMEOUT_S = 5.0
-_MAX_KEYS = 128
+_MAX_CLEANUP_KEYS = 128
+# 366 days * 1440 mints/day = 527040 rows at the issuer's maximum rate.
+# Keep a bounded complete inventory with margin; see the operator reset in
+# the adapter contract. Creation reserves one slot for lost-reply recovery.
+_MAX_INVENTORY_KEYS = 600_000
 
 
 class AdminRefused(Exception):
@@ -123,28 +127,37 @@ class HeadscaleJoinKeyMinter:
         _utc(record.created_at)
         return record
 
-    def _list(self) -> tuple[PreAuthKey, ...]:
+    def _list(self, now: datetime, *, reserve_slot: bool) -> tuple[PreAuthKey, ...]:
         records = self._admin.list_pre_auth_keys(user=self._user, timeout_s=_TIMEOUT_S)
-        if type(records) is not tuple or len(records) > _MAX_KEYS:
+        if type(records) is not tuple or len(records) + int(reserve_slot) > _MAX_INVENTORY_KEYS:
             raise ValueError("inventory")
+        ids: set[str] = set()
+        usable: list[PreAuthKey] = []
         for record in records:
             self._record(record)
-        if len({record.id for record in records}) != len(records):
-            raise ValueError("inventory")
-        return records
+            if record.id in ids:
+                raise ValueError("inventory")
+            ids.add(record.id)
+            # Validate inert history too, but only usable keys consume the
+            # operational cap or require an expire RPC. Used reusable keys
+            # remain usable; no raw key is copied into validation errors.
+            if self._usable(record, now):
+                usable.append(record)
+                if len(usable) > _MAX_CLEANUP_KEYS:
+                    raise ValueError("inventory")
+        return tuple(usable)
 
     def _usable(self, record: PreAuthKey, now: datetime) -> bool:
         # Used single-use keys cannot enroll again. A reusable key can, even
         # when marked used; conservatively expire it too if one is encountered.
         return (not record.used or record.reusable) and record.expiration > now
 
-    def _cleanup(self) -> bool:
+    def _cleanup(self, *, reserve_slot: bool = False) -> bool:
         before = _utc(self._now_fn())
-        for record in self._list():
-            if self._usable(record, before):
-                self._admin.expire_pre_auth_key(user=self._user, key=record.key,
-                                                 timeout_s=_TIMEOUT_S)
-        records = self._list()  # RPC success alone is never revocation proof.
+        for record in self._list(before, reserve_slot=reserve_slot):
+            self._admin.expire_pre_auth_key(user=self._user, key=record.key,
+                                             timeout_s=_TIMEOUT_S)
+        records = self._list(before, reserve_slot=reserve_slot)  # RPC success is not revocation proof.
         after = _utc(self._now_fn())
         return after >= before and not any(self._usable(record, after) for record in records)
 
@@ -165,7 +178,7 @@ class HeadscaleJoinKeyMinter:
             raise MintRefused("refused")
         clean = False
         try:
-            clean = self._cleanup()
+            clean = self._cleanup(reserve_slot=True)
         except BaseException:
             pass
         if not clean:

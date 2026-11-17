@@ -1757,8 +1757,40 @@ deadline is uncertain; success returns the actual server expiration.
 
 UNPINNED -> restrictive choice:
 
-- Admin calls get a five-second timeout; at most 128 complete listed records
-  are accepted, with unique nonempty IDs. Larger/ambiguous inventories refuse.
+- Admin calls get a five-second timeout. Every row in each complete inventory
+  is validated, including inert expired keys and used single-use keys; all IDs
+  must be unique and nonempty. Only keys that can still enroll count toward the
+  128-key operational/cleanup cap, including used reusable and unused unexpired
+  keys. Inert history consumes no expire RPCs. Both pre-cleanup and independent
+  post-expire inventories must pass; malformed/unknown/ambiguous rows refuse
+  even when their apparent expiration or used flag suggests they are inert.
+- A separate whole-inventory ceiling is 600,000 rows. Sizing assumption: a
+  one-year lifecycle at the real issuer's maximum one mint/minute/home needs
+  at most `366 * 24 * 60 = 527,040` rows, leaving 72,960 rows of margin (about
+  50 days). This is a bounded lifecycle, not indefinite retention. Mint accepts
+  at most 599,999 existing rows so even a lost create reply leaves a complete
+  recoverable inventory of at most 600,000. At capacity, mint returns typed
+  `MintRefused("refused")` before reservation/create; recovery still processes
+  600,000 rows. Beyond the ceiling recovery returns False, never proof from a
+  truncated list; waiting for expiration cannot clear that whole-list refusal.
+  Validation is linear with a bounded ID set and at most 128 retained cleanup
+  candidates. This row bound does not certify transport byte/RSS or wall-time
+  limits; the concrete transport must bound decoding and honor its timeout,
+  refusing incomplete results. No filtered-success read is authorized.
+- Named operator remediation at that lifecycle ceiling: **retire and recreate
+  the dedicated invite user** in a separately authorized maintenance operation.
+  Retire its enrolled nodes first (disruptive: affected clients must re-enroll),
+  then use Headscale v0.25.1 `DeleteUser` and `CreateUser` for the same dedicated
+  name and re-establish the existing user/ACL bindings before resuming issuance.
+  [`DeleteUser`/`CreateUser` exist](https://github.com/juanfont/headscale/blob/v0.25.1/proto/headscale/v1/headscale.proto#L16-L41);
+  [`DestroyUser` refuses users with nodes, deletes their keys, then deletes the user](https://github.com/juanfont/headscale/blob/v0.25.1/hscontrol/db/users.go#L44-L77).
+  Node retirement is supported by the existing
+  [`DeleteNode` RPC](https://github.com/juanfont/headscale/blob/v0.25.1/hscontrol/grpcv1.go#L349-L379).
+  There is [no delete-preauthkey RPC in this tagged service](https://github.com/juanfont/headscale/blob/v0.25.1/proto/headscale/v1/headscale.proto#L43-L68).
+  Expire alone never removes history. This adapter performs no retention/reset,
+  adds no admin operation, and grants no live maintenance authority. Preserve
+  durable operation reservations and the issuer journal across maintenance;
+  reconcile any uncertain operation explicitly, never retry its create.
 - Zero UTC offset and complete typed timestamps/Booleans/strings are required;
   no JSON coercion, missing-field defaults, ACL tags or key-format fallback.
 - Expire all unused invite-user keys, including older operations, rather than

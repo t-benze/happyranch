@@ -19,6 +19,7 @@ from runtime.remote_access.home_minter import (
     AdminRefused, CreationWindow, HeadscaleJoinKeyMinter, MintUncertain, PreAuthKey,
 )
 from runtime.remote_access.invite_issuer import JoinKeyMinter, MintRefused
+from scripts.test_invite_issuer import category, record as issuer_record, setup as issuer_setup
 
 START = datetime(2026, 11, 17, 13, 0, 0, 750000, timezone.utc)
 USER = "synthetic-mac-invites"
@@ -105,6 +106,100 @@ def setup() -> tuple[HeadscaleJoinKeyMinter, Admin, Store, Clock, list]:
     admin = Admin(clock, events)
     minter = HeadscaleJoinKeyMinter(admin=admin, invite_user=USER, now_fn=clock, records=store)
     return minter, admin, store, clock, events
+
+
+def inert_history(count: int, *, used: bool = False) -> tuple[PreAuthKey, ...]:
+    return tuple(key_record(id=str(i + 1), key=f"{i + 1:048x}", used=used,
+                            expiration=START + timedelta(seconds=200) if used else START)
+                 for i in range(count))
+
+
+@pytest.mark.parametrize("used", [False, True], ids=["expired", "used-single-use"])
+def test_inert_history_above_old_cap_still_mints(used: bool) -> None:
+    minter, admin, store, _, events = setup()
+    history = inert_history(1024, used=used)
+    admin.keys = history + (key_record(id="live-unused", key="b2" * 24),
+                            key_record(id="live-reusable", key="c3" * 24, used=True, reusable=True))
+    minted = None
+    try:
+        minted = minter.mint("op", START + timedelta(seconds=300))
+    except MintRefused:
+        pass
+    assert minted is not None, "inert retained history must not refuse a new mint"
+    assert admin.keys[:1024] == history and "op" in store.windows
+    assert [e[0] for e in events] == ["list", "expire", "expire", "list", "reserve", "create"]
+    assert [e[1]["key"] for e in events if e[0] == "expire"] == ["b2" * 24, "c3" * 24]
+
+
+@pytest.mark.parametrize("history_size", [128, 4096])
+def test_lost_create_reply_large_history_recovers_real_issuer(tmp_path: Path, history_size: int) -> None:
+    issuer, _, pairing, _, clock = issuer_setup(tmp_path)
+    clock.now = START
+    events: list = []
+    store = Store(events)
+    admin = Admin(clock, events)
+    admin.keys = inert_history(history_size)
+    admin.create_error = TimeoutError(CANARY)
+    minter = HeadscaleJoinKeyMinter(admin=admin, invite_user=USER, now_fn=clock, records=store)
+    # Reuse the real issuer/pairing journals and only replace its injected minter.
+    issuer = type(issuer)(config=issuer._config, minter=minter, pairing=pairing,
+                          state_dir=tmp_path / "issuer", now_fn=clock)
+    assert category(issuer.issue) == "uncertain", "lost create reply must reach the real issuer journal"
+    journal = issuer_record(tmp_path)
+    operation = journal["operation_id"]
+    assert journal["outcome"] == "minting" and operation in store.windows
+    assert len(admin.keys) == history_size + 1
+    assert category(lambda: issuer.recover(operation)) is None, "complete large history must permit recovery"
+    assert issuer_record(tmp_path)["outcome"] == "recovered"
+    assert len([e for e in events if e[0] == "create"]) == 1
+    assert all(k.used and not k.reusable or k.expiration <= clock() for k in admin.keys)
+    assert [e[0] for e in events][-3:] == ["list", "expire", "list"]
+    assert category(lambda: issuer.issue(operation)) == "recovered"
+    clock.advance(60)
+    admin.create_error = None
+    assert category(issuer.issue) is None
+    assert len([e for e in events if e[0] == "create"]) == 2
+
+
+@pytest.mark.parametrize("bad", ["user", "key", "used-type", "time", "duplicate-id", "unknown"])
+def test_large_history_still_refuses_ambiguous_records(bad: str) -> None:
+    minter, admin, store, _, events = setup()
+    admin.keys = inert_history(1024)
+    assert minter.recover("control") is True, "valid large history must first be recoverable"
+    changes = {"user": {"user": "wrong"}, "key": {"key": "g" * 48},
+               "used-type": {"used": 1}, "time": {"expiration": None},
+               "duplicate-id": {"id": "1"}}
+    malformed = object() if bad == "unknown" else key_record(id="bad", expiration=START)
+    if bad != "unknown":
+        malformed = replace(malformed, **changes[bad])
+    # The bad row is inert-looking and late in a large otherwise valid list.
+    admin.list_result = admin.keys + (malformed,)
+    assert minter.recover("lost") is False
+    with pytest.raises(MintRefused):
+        minter.mint("op", START + timedelta(seconds=300))
+    assert store.windows == {} and not any(e[0] in ("create", "expire") for e in events)
+
+
+def test_inventory_ceiling_preserves_recovery_slot() -> None:
+    minter, admin, store, _, events = setup()
+    # Real configured ceiling, not a monkeypatched small substitute. More than
+    # 366 * 24 * 60 mints covers a leap year at the issuer's maximum rate.
+    admin.keys = inert_history(599999)
+    minted = None
+    try:
+        minted = minter.mint("last-slot", START + timedelta(seconds=300))
+    except MintRefused:
+        pass
+    assert minted is not None, "the last recovery-safe slot must permit creation"
+    assert len(admin.keys) == 600000 and minter.recover("last-slot") is True
+    with pytest.raises(MintRefused):
+        minter.mint("no-room", START + timedelta(seconds=300))
+    assert "no-room" not in store.windows
+    admin.keys += (key_record(id="overflow", expiration=START),)
+    assert minter.recover("last-slot") is False
+    with pytest.raises(MintRefused):
+        minter.mint("overflow", START + timedelta(seconds=300))
+    assert len([e for e in events if e[0] == "create"]) == 1
 
 
 def test_mint_sequence_and_server_expiry() -> None:
@@ -198,7 +293,9 @@ def test_cleanup_failure_refuses_create(failure: str) -> None:
     if failure == "malformed":
         admin.list_result = (key_record(user="wrong"),)
     if failure == "oversized":
-        admin.list_result = tuple(key_record(id=str(i)) for i in range(129))
+        admin.keys = inert_history(1024)
+        assert minter.recover("control") is True, "inert rows do not consume the operational cap"
+        admin.keys += tuple(key_record(id=f"live-{i}") for i in range(129))
     with pytest.raises(MintRefused):
         minter.mint("op", START + timedelta(seconds=300))
     assert not any(e[0] == "create" for e in events)
