@@ -300,8 +300,12 @@ Linux home transport (THR-327 1b) adds the optional protected config record
 to the identity profile. It requires the canonical control URL
 `https://control.happyranch.invalid:8443` and an RFC1918 IPv4. That home URL
 cannot use the legacy transport. Slice 3b owns generating this configuration,
-the home CA/server leaf and the private DERP map; this module generates none of
-those persistent objects. Existing non-home configs retain their transport.
+the home CA/server leaf and the private DERP map; the sidecar process generates
+none of those persistent objects. The root-run materializer at the fixed non-PATH
+`/opt/happyranch-desktop/libexec/remote-access/happyranch-home-ca` path provides
+`ensure`, `renew-leaf`, and `status` for the home CA/server leaf; see the
+[inert Linux home CA materializer contract](../../../docs/agent-guides/contracts/remote-access-and-remote-jobs.md#inert-linux-home-ca-materializer-thr-327-slice-3b-2e).
+Existing non-home configs retain their transport.
 
 Before constructing tsnet, Linux admits the fixed no-follow root-owned
 `/etc/happyranch/control-ca.pem` (single-link, at most 64 KiB, one valid CA with
