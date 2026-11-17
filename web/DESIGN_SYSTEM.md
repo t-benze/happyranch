@@ -44,6 +44,17 @@ Feature compositions keep using the stable `@/design-system/...` import paths.
   `--accent-soft`. Entity IDs follow Pasture `.id`: `--color-id-task` and
   `--color-id-thread` alias `--color-info`, and `IdBadge` also renders `job`,
   `schedule` and `run` IDs in `--color-info`.
+- `AppBar` renders the Pasture `.topbar` on every page: 56px tall, 26px
+  inline padding, a 1px `--border` bottom rule and a translucent `bg-bg/80`
+  background (ds.css `color-mix(in oklab, var(--bg) 80%, transparent)`), with
+  the page title in Newsreader 18/500. It has no `presentation` prop and no
+  page-local `.tasks-appbar` class. Optional `status` (rendered after the
+  title) and `actions` (rendered before the language/theme controls) slots
+  take a `ReactNode`; pages supply them instead of adding a per-page header.
+- The `Sidebar` active nav row follows Pasture `[data-dir="a"]
+  .nav-item.active`: `bg-accent-soft text-accent-text font-semibold`, with no
+  left bar or border. Nav rows use `text-nav` (13.5px) at weight 500, and the
+  brand mark is 30px.
 - Primitives wrap basic interaction and Radix behavior. Patterns combine them
   into reusable product language. Layouts own reusable geometry.
 - Components are pure props-in/events-out unless a documented role requires an

@@ -233,6 +233,12 @@
   --text-body-sm--line-height: 1.25rem;
   --text-body-sm--font-weight: 400;
 
+  /* THR-376 PR2: Pasture ds.css `.nav-item` row text (13.5px). Size only;
+     weight is set at the call site (500 rest / 600 active). Theme-independent,
+     so it has no dark override. */
+  --text-nav:                  0.84375rem;
+  --text-nav--line-height:     1.25rem;
+
   --text-label:                0.75rem;
   --text-label--line-height:   1rem;
   --text-label--font-weight:   500;
@@ -494,4 +500,3 @@
 .tasks-id span { font-size: 11.5px; }
 .tasks-row .text-task-title, .tasks-group-heading .text-task-group { letter-spacing: -0.1px; }
 .tasks-status > span { font-size: 11px; gap: 5px; padding: 3px 8px; white-space: nowrap; max-width: 100%; }
-.tasks-appbar { height: 56px; padding: 0 26px; gap: 14px; }
