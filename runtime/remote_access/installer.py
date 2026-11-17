@@ -1243,11 +1243,217 @@ class ManagedInstaller:
             except FileNotFoundError:
                 pass
 
+    def _headscale_cleanup_identity(self, receipt: dict | None) -> tuple[bool, bool]:
+        """Re-observe remaining identities; a receipt never licenses UID reuse."""
+        if self._headscale_receipt() != receipt:
+            raise headscale.HeadscaleServiceError("cleanup-uncertain")
+        owner = self._headscale_shape()
+        if receipt is None:
+            self._headscale_owner = owner
+            if owner is None:
+                try:
+                    self._lookup_group(headscale.ACCOUNT)
+                except KeyError:
+                    pass
+                else:
+                    raise headscale.HeadscaleServiceError("cleanup-uncertain")
+            return owner is not None, False
+        self._headscale_owner = receipt["uid"], receipt["gid"]
+        if owner is not None and owner != self._headscale_owner:
+            raise headscale.HeadscaleServiceError("cleanup-uncertain")
+        try:
+            group = self._lookup_group(headscale.ACCOUNT)
+        except KeyError:
+            group = None
+        if group is not None and (group.gr_name != headscale.ACCOUNT or group.gr_gid != receipt["gid"]
+                                  or set(group.gr_mem) - ({headscale.ACCOUNT} if owner else set())):
+            raise headscale.HeadscaleServiceError("cleanup-uncertain")
+        for database in ("passwd", "group"):
+            code, output = self._run(["getent", database], timeout=10.0)
+            if code or len(output) > 65536:
+                raise headscale.HeadscaleServiceError("cleanup-uncertain")
+            uid_names, gid_names = [], []
+            for line in output.splitlines():
+                fields = line.split(":")
+                if (len(fields) != (7 if database == "passwd" else 4)
+                        or not fields[2].isascii() or not fields[2].isdigit()
+                        or (database == "passwd" and (not fields[3].isascii() or not fields[3].isdigit()))):
+                    raise headscale.HeadscaleServiceError("cleanup-uncertain")
+                if database == "passwd" and int(fields[2]) == receipt["uid"]:
+                    uid_names.append(fields[0])
+                if int(fields[3 if database == "passwd" else 2]) == receipt["gid"]:
+                    gid_names.append(fields[0])
+            expected = [headscale.ACCOUNT] if (owner if database == "passwd" else group) else []
+            if gid_names != expected or (database == "passwd" and uid_names != expected):
+                raise headscale.HeadscaleServiceError("cleanup-uncertain")
+        # NSS enumeration may omit an entry that numeric lookup still resolves.
+        for database, identity, expected in (("passwd", receipt["uid"], bool(owner)),
+                                             ("group", receipt["gid"], group is not None)):
+            code, output = self._run(["getent", database, str(identity)], timeout=10.0)
+            if not expected:
+                if code != 2 or output:
+                    raise headscale.HeadscaleServiceError("cleanup-uncertain")
+            else:
+                fields = output.rstrip("\n").split(":")
+                if (code or len(output) > 65536 or len(fields) != (7 if database == "passwd" else 4)
+                        or fields[0] != headscale.ACCOUNT or fields[2] != str(identity)):
+                    raise headscale.HeadscaleServiceError("cleanup-uncertain")
+        return owner is not None, group is not None
+
+    def _headscale_stopped(self) -> None:
+        props = self.manager.show_properties(headscale.UNIT, (
+            "LoadState", "FragmentPath", "DropInPaths", "ActiveState", "SubState",
+            "MainPID", "ControlPID", "ControlGroup", "Job"))
+        if (props.get("LoadState") not in {"loaded", "not-found"}
+                or props.get("FragmentPath") != (str(self.root / _UNIT_DIR / headscale.UNIT)
+                                                  if props.get("LoadState") == "loaded" else "")
+                or props.get("DropInPaths") != ""
+                or props.get("ActiveState") not in {"inactive", "failed"}
+                or props.get("SubState") not in {"dead", "failed"}
+                or any(props.get(key) != "0" for key in ("MainPID", "ControlPID"))
+                or props.get("ControlGroup") != "" or props.get("Job") != ""):
+            raise headscale.HeadscaleServiceError("cleanup-uncertain")
+        code, output = self._run(["ps", "-eo", "ruid=,euid=,suid=,fuid="], timeout=10.0)
+        if code or len(output) > 65536:
+            raise headscale.HeadscaleServiceError("cleanup-uncertain")
+        for line in output.splitlines():
+            fields = line.split()
+            if (len(fields) != 4 or any(not field.isascii() or not field.isdigit() for field in fields)
+                    or self._headscale_owner[0] in map(int, fields)):
+                raise headscale.HeadscaleServiceError("cleanup-uncertain")
+
+    def cleanup_headscale(self) -> dict[str, str]:
+        """Disable/remove only the inert installation this installer can prove.
+
+        No config/DB/key/socket writer ships in this slice: those entries remain
+        foreign. Receipt retirement is last, including after a partial userdel.
+        """
+        if self.layout != "deb":
+            raise headscale.HeadscaleServiceError("deb-layout-required")
+        self._headscale_preparing = True
+        partial = False
+        try:
+            receipt = self._headscale_receipt()
+            user, group = self._headscale_cleanup_identity(receipt)
+            self._headscale_inventory()
+            present = unit_present = False
+            for path in (*headscale.CUSTODY, f"{_UNIT_DIR}/{headscale.UNIT}"):
+                try:
+                    with self._directory(str(Path(path).parent)) as parent:
+                        os.stat(Path(path).name, dir_fd=parent, follow_symlinks=False)
+                    present = True
+                    if path == f"{_UNIT_DIR}/{headscale.UNIT}":
+                        unit_present = True
+                except FileNotFoundError:
+                    pass
+            if receipt is None and not present:
+                return {"state": "preserved" if user else "absent",
+                        "account": "preserved: not created by HappyRanch" if user else "absent"}
+            if self._headscale_owner is None:
+                raise headscale.HeadscaleServiceError("cleanup-uncertain")
+            # Validate loaded custody BEFORE sending a command to any service.
+            props = self.manager.show_properties(headscale.UNIT, ("LoadState", "FragmentPath", "DropInPaths"))
+            if (props.get("LoadState") not in {"loaded", "not-found"} or props.get("DropInPaths") != ""
+                    or props.get("FragmentPath") != (str(self.root / _UNIT_DIR / headscale.UNIT)
+                                                      if props.get("LoadState") == "loaded" else "")):
+                raise headscale.HeadscaleServiceError("cleanup-uncertain")
+            if props["LoadState"] == "loaded" or unit_present:
+                # The exact on-disk fragment must still exist before stop/disable.
+                with self._directory(_UNIT_DIR) as parent:
+                    if self._read_file(parent, headscale.UNIT, owner=self.root_owner,
+                                       mode=0o644) != render_headscale_unit().encode():
+                        raise headscale.HeadscaleServiceError("cleanup-uncertain")
+                self.manager.stop(headscale.UNIT, timeout=50.0)
+                self.manager.disable(headscale.UNIT)
+            self._headscale_stopped()
+            user, group = self._headscale_cleanup_identity(receipt)
+            self._headscale_inventory()
+            if receipt:
+                partial = not user
+                if user:
+                    code, _ = self._run(["userdel", headscale.ACCOUNT], timeout=30.0)
+                    if code:
+                        raise headscale.HeadscaleServiceError("cleanup-uncertain")
+                    partial = True
+                self._headscale_stopped()
+                user, group = self._headscale_cleanup_identity(receipt)
+                if user:
+                    raise headscale.HeadscaleServiceError("cleanup-uncertain")
+                if group and receipt["group_created_with_user"]:
+                    code, _ = self._run(["groupdel", headscale.ACCOUNT], timeout=30.0)
+                    if code:
+                        raise headscale.HeadscaleServiceError("cleanup-uncertain")
+                if self._headscale_cleanup_identity(receipt) != (False, False):
+                    raise headscale.HeadscaleServiceError("cleanup-uncertain")
+            # Fresh identity, service and inventory checks precede each effect.
+            for path in headscale.CUSTODY:
+                identities = self._headscale_cleanup_identity(receipt)
+                if receipt and identities != (False, False):
+                    raise headscale.HeadscaleServiceError("cleanup-uncertain")
+                self._headscale_stopped()
+                self._headscale_inventory()
+                try:
+                    with self._directory(path) as directory:
+                        if path == headscale.CUSTODY[0] and os.listdir(directory):
+                            if self._read_file(directory, "policy.hujson", owner=self._headscale_owner,
+                                               mode=0o600) != headscale.render_policy():
+                                raise headscale.HeadscaleServiceError("cleanup-uncertain")
+                            os.unlink("policy.hujson", dir_fd=directory)
+                            os.fsync(directory)
+                        with self._directory(str(Path(path).parent)) as parent:
+                            named = os.stat(Path(path).name, dir_fd=parent, follow_symlinks=False)
+                            opened = os.fstat(directory)
+                            if (named.st_dev, named.st_ino) != (opened.st_dev, opened.st_ino):
+                                raise headscale.HeadscaleServiceError("cleanup-uncertain")
+                            os.rmdir(Path(path).name, dir_fd=parent)
+                            os.fsync(parent)
+                except FileNotFoundError:
+                    pass
+            identities = self._headscale_cleanup_identity(receipt)
+            if receipt and identities != (False, False):
+                raise headscale.HeadscaleServiceError("cleanup-uncertain")
+            self._headscale_stopped()
+            self._headscale_inventory()
+            try:
+                with self._directory(_UNIT_DIR) as parent:
+                    if self._read_file(parent, headscale.UNIT, owner=self.root_owner,
+                                       mode=0o644) != render_headscale_unit().encode():
+                        raise headscale.HeadscaleServiceError("cleanup-uncertain")
+                    os.unlink(headscale.UNIT, dir_fd=parent)
+                    os.fsync(parent)
+            except FileNotFoundError:
+                pass
+            self.manager.daemon_reload()
+            self._headscale_stopped()
+            self._headscale_inventory()
+            for path in (*headscale.CUSTODY, f"{_UNIT_DIR}/{headscale.UNIT}"):
+                try:
+                    with self._directory(str(Path(path).parent)) as parent:
+                        os.stat(Path(path).name, dir_fd=parent, follow_symlinks=False)
+                except FileNotFoundError:
+                    continue
+                raise headscale.HeadscaleServiceError("cleanup-uncertain")
+            if receipt:
+                if (self._headscale_cleanup_identity(receipt) != (False, False)
+                        or self._headscale_receipt() != receipt):
+                    raise headscale.HeadscaleServiceError("cleanup-uncertain")
+                with self._directory(headscale.INSTALLER_STATE) as parent:
+                    os.unlink(headscale.RECEIPT, dir_fd=parent)
+                    os.fsync(parent)
+            return {"state": "removed" if receipt else "preserved",
+                    "account": "removed" if receipt else "preserved: not created by HappyRanch"}
+        except (OSError, InstallerError, UnicodeError, ValueError, ServiceManagerError,
+                headscale.HeadscaleServiceError):
+            pass
+        finally:
+            self._headscale_preparing = False
+        raise headscale.HeadscaleServiceError("partial-cleanup-uncertain" if partial else "cleanup-uncertain")
+
     def prepare_headscale(self) -> dict[str, str]:
         """Explicit inert root-step, separate from all connector activation.
 
-        Never runs Headscale or a service command. Cleanup is not implemented in
-        this prefix. Existing accounts are never modified or adopted.
+        Never runs Headscale or a service command. Existing accounts are never
+        modified or adopted; cleanup separately proves deletion authority.
         """
         if self.layout != "deb":
             raise headscale.HeadscaleServiceError("deb-layout-required")
@@ -2313,9 +2519,11 @@ class ManagedInstaller:
             raise InstallerError(f"cannot verify post-start unit drift: {exc}") from exc
         return digests
 
-    def uninstall(self, *, purge: bool = False) -> None:
+    def uninstall(self, *, purge: bool = False) -> dict[str, str]:
         """Wait for services before unit removal. Only purge removes service state."""
         self._refuse_staged_identity()
+        headscale_result = (self.cleanup_headscale() if self.layout == "deb"
+                            else {"state": "absent", "account": "absent"})
         try:
             self._service_owner = self._account(create=False)
             self._preflight()
@@ -2365,6 +2573,7 @@ class ManagedInstaller:
                         pass
         except (OSError, ServiceManagerError) as exc:
             raise InstallerError(f"uninstall failed: {exc}; partial changes may remain") from exc
+        return headscale_result
 
     def _purge_contents(self, descriptor: int) -> None:
         for name in os.listdir(descriptor):
@@ -2390,7 +2599,7 @@ def main(argv: list[str] | None = None) -> int:
 
         return darwin_main(argv)
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("provision", "install", "uninstall", "check-drift", "prepare-headscale"))
+    parser.add_argument("command", choices=("provision", "install", "uninstall", "check-drift", "prepare-headscale", "disable-headscale"))
     parser.add_argument("--layout", choices=("source", "deb"), default="source")
     for option in ("connector-config", "sidecar-config", "policy-file", "daemon-token-source"):
         parser.add_argument(f"--{option}", type=Path, help="absolute input path (provision only)")
@@ -2415,12 +2624,16 @@ def main(argv: list[str] | None = None) -> int:
             if args.layout != "deb":
                 raise headscale.HeadscaleServiceError("deb-layout-required")
             print(json.dumps(installer.prepare_headscale(), sort_keys=True))
+        elif args.command == "disable-headscale":
+            print(json.dumps(installer.cleanup_headscale(), sort_keys=True))
         elif args.command == "provision":
             installer.provision(**inputs)
         elif args.command == "install":
             installer.install(enrollment_key_file=args.enrollment_key_file)
         elif args.command == "uninstall":
-            installer.uninstall(purge=args.purge)
+            result = installer.uninstall(purge=args.purge)
+            if result["state"] != "absent":
+                print(json.dumps(result, sort_keys=True))
         else:
             installer.check_drift()
     except (InstallerError, headscale.HeadscaleServiceError) as exc:

@@ -502,15 +502,26 @@ account unowned; there is no pre-creation intent. Shape mismatch, malformed or
 foreign/mismatched receipt, unsafe/foreign custody or differing unit refuses
 without repair or deletion.
 
-**Cleanup is an explicit remainder:** current disable/uninstall does not remove
-this prefix's objects. Future cleanup must preserve unowned accounts with that
-visible outcome. Owned deletion needs valid receipt plus fresh matching
-identity/shape, unshared group, stopped unit and no process as that UID; only
-then userdel and, if receipted and still unshared, groupdel. Remove the receipt
-only after successful deletion. Any mismatch or command failure must preserve
-account/receipt and report typed secret-free cleanup uncertainty, never success.
-Only installer-owned fixed custody may be deleted; foreign/unsafe entries stay.
-The inert payload and notices remain. No full turn-off acceptance is claimed.
-See the maintained remote-access contract's 3b-2f-1 subsection for A–D, exact
+**Owned cleanup:** `python -m runtime.remote_access.installer disable-headscale
+--layout deb` and legacy `uninstall --layout deb` stop/disable the exact owned
+Headscale unit and remove its canonical policy and empty fixed custody. The
+staged-profile uninstall refusal stays unchanged; helper Turn off remains later
+work. Unknown config/DB/Noise/DERP/key/socket entries are preserved and refused:
+this inert slice never creates them and cannot establish their ownership.
+
+A valid creation receipt plus fresh matching identity/shape, unshared group,
+stopped unit and no process using the UID permits userdel, then conditional
+groupdel. An unowned account/group stays with visible typed
+`preserved: not created by HappyRanch`. Before userdel succeeds, failures keep
+account/receipt. After userdel succeeds, groupdel failure keeps receipt and all
+remaining objects, never recreates the user, and reports typed secret-free
+`partial-cleanup-uncertain`, exit1. Retry freshly refuses UID reuse/changed
+identity or shared/mismatched group; absent user skips userdel and a matching
+empty group gets groupdel only. Already absent objects converge by removing the
+receipt last, only after every owned object is confirmed absent. Other failures
+are typed `cleanup-uncertain`, never success. No automatic repair/retry.
+
+The inert payload/notices and all unrelated data stay. See the maintained
+remote-access contract's 3b-2f-1 subsection for rulings A–E, exact
 paths/bytes, ports, bounded startup and tests. Real root/systemd/NSS/bind
 acceptance remains separate from temp-root verification.

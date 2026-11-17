@@ -1,4 +1,4 @@
-"""Standalone inert preparation; temp root and fake commands, never host effects.
+"""Standalone inert preparation/cleanup; temp root and fake commands, never host effects.
 
 Run: uv run --frozen --python /usr/bin/python3 pytest scripts/test_headscale_custody.py -v --tb=short
 """
@@ -90,6 +90,10 @@ class Fixture:
         self.locked = True
         self.shared = False
         self.exit_useradd = 0
+        self.exit_userdel = self.exit_groupdel = 0
+        self.reused_uid = False
+        self.busy = self.unit_busy = False
+        self.fail_service = False
         self.installer = module.ManagedInstaller(root=root, root_owner=(self.uid, self.gid), layout="deb",
                                                 run=self.run, lookup_user=self.lookup_user,
                                                 lookup_group=self.lookup_group)
@@ -115,13 +119,44 @@ class Fixture:
             if not self.exit_useradd:
                 self.present = self.group_present = True
             return self.exit_useradd, "synthetic private diagnostic"
+        if args[0] in {"userdel", "groupdel"}:
+            code = self.exit_userdel if args[0] == "userdel" else self.exit_groupdel
+            if not code:
+                if args[0] == "userdel": self.present = False
+                else: self.group_present = False
+            return code, "synthetic private diagnostic"
+        if args == ["ps", "-eo", "ruid=,euid=,suid=,fuid="]:
+            return 0, (f"{self.uid} {self.uid} {self.uid} {self.uid}\n" if self.busy else "")
+        if args[0] == "systemctl":
+            if self.fail_service: return 1, "synthetic private diagnostic"
+            if args[1] == "show":
+                unit = self.root / "etc/systemd/system" / home.UNIT
+                props = dict(LoadState="loaded" if unit.exists() else "not-found",
+                             FragmentPath=str(unit) if unit.exists() else "", DropInPaths="",
+                             ActiveState="active" if self.unit_busy else "inactive",
+                             SubState="running" if self.unit_busy else "dead", Job="",
+                             MainPID="12" if self.unit_busy else "0", ControlPID="0", ControlGroup="")
+                return 0, "\n".join(f"{key}={props[key]}" for key in
+                                    (arg.split("=", 1)[1] for arg in args if arg.startswith("--property=")))
+            return 0, ""
+        if args[:2] == ["getent", "passwd"] and len(args) == 3:
+            if self.reused_uid:
+                return 0, f"other:x:{self.uid}:{self.gid + 1}::/nonexistent:/usr/sbin/nologin\n"
+            return ((0, f"{home.ACCOUNT}:x:{self.uid}:{self.gid}::/nonexistent:/usr/sbin/nologin\n")
+                    if self.present else (2, ""))
+        if args[:2] == ["getent", "group"] and len(args) == 3:
+            return ((0, f"{home.ACCOUNT}:x:{self.group.gr_gid}:{','.join(self.group.gr_mem)}\n")
+                    if self.group_present else (2, ""))
         if args == ["getent", "passwd"]:
-            value = f"{home.ACCOUNT}:x:{self.uid}:{self.gid}::/nonexistent:/usr/sbin/nologin\n"
+            value = (f"{home.ACCOUNT}:x:{self.uid}:{self.gid}::/nonexistent:/usr/sbin/nologin\n"
+                     if self.present else "")
+            if self.reused_uid is True:
+                value += f"other:x:{self.uid}:{self.gid + 1}::/nonexistent:/usr/sbin/nologin\n"
             if self.shared:
                 value += f"other:x:{self.uid+1}:{self.gid}::/nonexistent:/usr/sbin/nologin\n"
             return 0, value
         if args == ["getent", "group"]:
-            return 0, f"{home.ACCOUNT}:x:{self.gid}:\n"
+            return 0, f"{home.ACCOUNT}:x:{self.group.gr_gid}:{','.join(self.group.gr_mem)}\n" if self.group_present else ""
         if args == ["passwd", "--status", home.ACCOUNT]:
             return 0, f"{home.ACCOUNT} {'L' if self.locked else 'P'} 2026-01-01 0 99999 7 -1\n"
         raise AssertionError(f"unexpected external command: {args[0]}")
@@ -131,6 +166,16 @@ class Fixture:
             patch.setattr(module, "ManagedInstaller", lambda **kw: self.installer)
             try:
                 code = module.main(["prepare-headscale", "--layout", "deb"])
+            except SystemExit as error:
+                code = error.code
+        output = capsys.readouterr()
+        return code, output.out + output.err
+
+    def cleanup(self, monkeypatch, capsys, command="disable-headscale"):
+        with monkeypatch.context() as patch:
+            patch.setattr(module, "ManagedInstaller", lambda **kw: self.installer)
+            try:
+                code = module.main([command, "--layout", "deb"])
             except SystemExit as error:
                 code = error.code
         output = capsys.readouterr()
@@ -179,6 +224,11 @@ def test_expected_account_without_receipt_is_unowned(fixture, monkeypatch, capsy
     assert json.loads(output)["preservation"] == "preserved: not created by HappyRanch"
     assert not fixture.receipt().exists()
     assert all(args[0] in {"getent", "passwd"} for args in fixture.calls)
+    code, output = fixture.cleanup(monkeypatch, capsys)
+    assert code == 0 and json.loads(output) == {
+        "state": "preserved", "account": "preserved: not created by HappyRanch"}
+    assert fixture.present and fixture.group_present and not fixture.receipt().exists()
+    assert not any(args[0] in {"userdel", "groupdel", "useradd"} for args in fixture.calls)
 
 
 @pytest.mark.parametrize("shape", ["uid", "gid", "shell", "home", "members", "primary", "password", "group-only"])
@@ -222,6 +272,11 @@ def test_receipt_tamper_preserves_account_and_receipt(fixture, monkeypatch, caps
     assert fixture.present and fixture.group_present
     assert receipt.read_bytes() == before
     assert all(args[0] in {"getent", "passwd"} for args in fixture.calls)
+    code, output = fixture.cleanup(monkeypatch, capsys)
+    assert code == 1 and "cleanup-uncertain" in output
+    assert "synthetic private diagnostic" not in output
+    assert fixture.present and fixture.group_present and receipt.read_bytes() == before
+    assert not any(args[0] in {"userdel", "groupdel", "useradd"} for args in fixture.calls)
 
 
 def test_crash_after_useradd_becomes_unowned(fixture, monkeypatch, capsys) -> None:
@@ -237,6 +292,10 @@ def test_crash_after_useradd_becomes_unowned(fixture, monkeypatch, capsys) -> No
     assert code == 0 and json.loads(output)["account"] == "unowned"
     assert not fixture.receipt().exists()
     assert all(args[0] in {"getent", "passwd"} for args in fixture.calls)
+    code, output = fixture.cleanup(monkeypatch, capsys)
+    assert code == 0 and json.loads(output)["account"] == "preserved: not created by HappyRanch"
+    assert fixture.present and fixture.group_present and not fixture.receipt().exists()
+    assert not any(args[0] in {"userdel", "groupdel", "useradd"} for args in fixture.calls)
 
 
 @pytest.mark.parametrize("entry", ["unknown", "policy", "link", "mode", "state", "unit", "dropin"])
@@ -261,6 +320,11 @@ def test_foreign_custody_preserved(fixture, monkeypatch, capsys, entry) -> None:
     assert code == 1 and ("foreign-" in output or "custody-uncertain" in output)
     assert sorted(str(p.relative_to(fixture.root)) for p in fixture.root.rglob("*")) == before
     assert all(args[0] in {"getent", "passwd"} for args in fixture.calls)
+    code, output = fixture.cleanup(monkeypatch, capsys)
+    assert code == 1 and "cleanup-uncertain" in output
+    assert sorted(str(p.relative_to(fixture.root)) for p in fixture.root.rglob("*")) == before
+    assert fixture.present and fixture.group_present and fixture.receipt().exists()
+    assert not any(args[0] in {"userdel", "groupdel", "useradd", "systemctl"} for args in fixture.calls)
 
 
 def test_policy_and_unit_exact_bytes() -> None:
@@ -327,3 +391,71 @@ def test_readiness_is_fixed_local_and_bounded(monkeypatch, ready) -> None:
         with pytest.raises(home.HeadscaleServiceError, match="^readiness-timeout$"):
             home.wait_ready()
         assert 30.0 <= clock[0] < 30.1 and closed
+
+
+@pytest.mark.parametrize("command", ["disable-headscale", "uninstall"])
+@pytest.mark.parametrize("case", ["created", "userdel-fail", "groupdel-fail-retry", "uid-reused",
+                                  "both-absent", "process", "unit", "group-member", "gid-changed",
+                                  "shape-changed", "service-fail", "objects-absent", "unit-absent",
+                                  "retry-group-member", "retry-gid-changed", "retry-primary-shared", "uid-numeric-reused"])
+def test_cleanup_receipted_transitions(fixture, monkeypatch, capsys, command, case) -> None:
+    assert fixture.prepare(monkeypatch, capsys)[0] == 0
+    receipt = fixture.receipt().read_bytes()
+    payload = fixture.root / "opt/happyranch-desktop/libexec/headscale/headscale"
+    notices = fixture.root / "opt/happyranch-desktop/licenses/headscale.txt"
+    for path in (payload, notices):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"synthetic inert package")
+    if case == "userdel-fail": fixture.exit_userdel = 1
+    if case == "groupdel-fail-retry": fixture.exit_groupdel = 1
+    if case in {"uid-reused", "both-absent", "objects-absent", "retry-group-member",
+                "retry-gid-changed", "retry-primary-shared", "uid-numeric-reused"}: fixture.present = False
+    if case == "uid-reused": fixture.reused_uid = True
+    if case == "uid-numeric-reused": fixture.reused_uid = "numeric-only"
+    if case in {"both-absent", "objects-absent"}: fixture.group_present = False
+    if case in {"objects-absent", "unit-absent"}:
+        (fixture.root / "etc/systemd/system" / home.UNIT).unlink()
+    if case == "objects-absent":
+        (fixture.root / home.CUSTODY[0] / "policy.hujson").unlink()
+        for path in home.CUSTODY: (fixture.root / path).rmdir()
+    if case == "retry-group-member": fixture.group.gr_mem = ["other"]
+    if case == "retry-gid-changed": fixture.group.gr_gid += 1
+    if case == "retry-primary-shared": fixture.shared = True
+    if case == "process": fixture.busy = True
+    if case == "unit": fixture.unit_busy = True
+    if case == "group-member": fixture.group.gr_mem = ["other"]
+    if case == "gid-changed": fixture.group.gr_gid += 1
+    if case == "shape-changed": fixture.user.pw_shell = "/bin/bash"
+    if case == "service-fail": fixture.fail_service = True
+    fixture.calls.clear()
+    code, output = fixture.cleanup(monkeypatch, capsys, command)
+    assert "synthetic private diagnostic" not in output
+    deletion = [args[0] for args in fixture.calls if args[0] in {"userdel", "groupdel", "useradd"}]
+    if case in {"created", "both-absent", "objects-absent", "unit-absent"}:
+        assert code == 0 and output.strip(), output
+        assert json.loads(output) == {"state": "removed", "account": "removed"}
+        assert deletion == (["userdel", "groupdel"] if case in {"created", "unit-absent"} else [])
+    else:
+        assert code == 1 and "cleanup-uncertain" in output
+        assert fixture.receipt().read_bytes() == receipt
+        assert (fixture.root / "etc/happyranch/headscale/policy.hujson").read_bytes() == EXPECTED_POLICY
+        assert (fixture.root / "etc/systemd/system" / home.UNIT).read_bytes() == EXPECTED_UNIT.encode()
+        if case == "groupdel-fail-retry":
+            assert "partial-cleanup-uncertain" in output
+            assert not fixture.present and fixture.group_present
+            assert deletion == ["userdel", "groupdel"]
+            fixture.exit_groupdel = 0
+            fixture.calls.clear()
+            code, output = fixture.cleanup(monkeypatch, capsys, command)
+            assert code == 0 and json.loads(output)["state"] == "removed"
+            assert [args[0] for args in fixture.calls if args[0] in {"userdel", "groupdel", "useradd"}] == ["groupdel"]
+        else:
+            assert deletion == (["userdel"] if case == "userdel-fail" else [])
+            assert fixture.present == (case not in {"uid-reused", "retry-group-member", "retry-gid-changed",
+                                                    "retry-primary-shared", "uid-numeric-reused"}) and fixture.group_present
+            return
+    assert not fixture.present and not fixture.group_present and not fixture.receipt().exists()
+    assert not any((fixture.root / path).exists() for path in home.CUSTODY)
+    assert not (fixture.root / "etc/systemd/system" / home.UNIT).exists()
+    assert payload.read_bytes() == notices.read_bytes() == b"synthetic inert package"
+    assert not any(args[0] == "systemctl" and args[1] in {"start", "enable", "restart"} for args in fixture.calls)

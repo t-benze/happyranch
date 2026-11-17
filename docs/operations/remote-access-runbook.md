@@ -171,12 +171,24 @@ explicit operator recovery; it does not overwrite existing files automatically.
 Use `uninstall --layout deb` (and optionally the existing `--purge`) to remove
 units/state. Configs, provisioning record, staged token, package, logs and account are retained.
 The release install record and verifier socket/service are removed.
-A missing package is not required for uninstall; unit safety checks still apply. The separately callable 3b-2f-1
-`prepare-headscale --layout deb` prefix has no cleanup implementation yet:
-its Headscale unit/custody/account/receipt remain on disable/uninstall. Full
-turn-off is an explicit remainder, governed by the account-ownership A–D rules
-in the [maintained contract](../agent-guides/contracts/remote-access-and-remote-jobs.md#inert-linux-headscale-custody-prefix-thr-327-slice-3b-2f-1);
-unowned accounts must be visibly preserved, and uncertainty must never be success.
+A missing package is not required for uninstall; unit safety checks still apply.
+The separately callable `disable-headscale --layout deb` root operator entry
+and legacy uninstall remove the proven inert Headscale unit/policy/empty custody,
+keeping package payload/notices. The staged-profile uninstall refusal remains;
+helper Turn off and activation-state cleanup remain later slices. Unknown
+config/DB/Noise/DERP/key/socket entries refuse and remain, because this slice never
+creates them. Only a valid creation receipt plus fresh identity/shape, unshared
+group, stopped unit and no process using its UID permits userdel then conditional
+groupdel. Unowned accounts remain visibly `preserved: not created by HappyRanch`.
+Before userdel succeeds, failures keep account/receipt. A later groupdel failure
+keeps receipt and remaining objects, never recreates the user, and returns typed
+secret-free `partial-cleanup-uncertain`, exit1. Explicit retry rechecks the valid
+receipt and all remaining objects, skips an absent user only when its UID is
+unused, refuses UID reuse/changed identity/shared or mismatched group, and deletes
+only a matching empty remaining group. Remove the receipt last after every owned
+object is confirmed absent; receipt-only retries converge. Other uncertainty is
+`cleanup-uncertain`, never success. No automatic repair/retry. See the
+[maintained A–E contract](../agent-guides/contracts/remote-access-and-remote-jobs.md#inert-linux-headscale-custody-prefix-thr-327-slice-3b-2f-1).
 
 Managed Linux no longer takes a fixed `daemon_port`. The connector and sidecar
 exclusion lists remain sorted, equal and always include DEV 8765 plus operator

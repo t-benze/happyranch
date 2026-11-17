@@ -892,7 +892,8 @@ observation is not later mutation authority. No Off/cleanup claim is made.
 Disable cleanup and token rotation/repair remain fail-closed, as do existing modern
 activation entries; journaled replacement closure is described below. The
 required temp-root/fake-manager checks remain in `scripts/test_installer_token_custody.py`.
-TODO (3b-2): owned local Headscale stop/cleanup; no callable seam is added here.
+Owned inert Headscale stop/cleanup is delivered separately in the 3b-2f-1
+subsection below; helper Turn off and activation-state cleanup remain later work.
 
 The 3b-1c Python-only replacement consumer implements **stop/intent, config
 quarantine, fixed state/enrollment, quarantined config and owned unit removal,
@@ -1364,9 +1365,13 @@ It only prepares fixed local custody and an inert unit. It never runs Headscale,
 creates database users, enables/starts/reloads a unit, or changes the staged
 connector bundle. Both exact `home control binding not provisioned; requires
 slice 3b-2` activation refusals and `SidecarUnitSpec.home_transport=False` remain.
-This is the brief-authorized **prefix delivery**: cleanup/account deletion is
-NOT implemented here, and existing disable/uninstall does not remove these
-new objects. Full 3b-2f-1 acceptance and turn-off remain open until that remainder.
+The separate root operator `disable-headscale --layout deb` entry and legacy
+`uninstall --layout deb` call `ManagedInstaller.cleanup_headscale`. They stop and
+disable only the exact owned Headscale unit, then remove the inert custody and
+receipted identity as below. The existing staged-profile uninstall refusal is
+unchanged; the explicit Headscale cleanup entry does not activate that profile.
+Helper Turn off, configuration/DB/Noise/DERP/leaf writers and their cleanup
+extension remain later slices. No live root/systemd acceptance is claimed.
 
 | Surface | Fixed contract |
 | --- | --- |
@@ -1381,21 +1386,51 @@ new objects. Full 3b-2f-1 acceptance and turn-off remain open until that remaind
 | Port preflight | `headscale_service.preflight_ports(dial_ip)` validates the same canonical RFC1918 IPv4 contract as the renderer, then samples exclusive AF_INET binds at dial_ip TCP8443/UDP3478 and 127.0.0.1 TCP19090/TCP50443. No reuse option, all probes closed. `occupied-port` on EADDRINUSE; other failures `port-check-uncertain`; invalid input `dial-ip`, no raw exceptions. No selection/wiring or real bind is performed by preparation. A check is an observation, not a reservation against a later binder. |
 | Preparation output/refusals | Secret-free JSON with `state=inert`, `account=created/owned/unowned`, and `preservation=receipt-recorded` or the visible unowned statement. Closed refusal categories: `deb-layout-required`, `account-shape`, `account-create-uncertain`, `account-receipt-uncertain`, `foreign-unit`, `foreign-custody`, `custody-uncertain`. Native command text/output and underlying exception contexts are discarded. Partial objects are preserved for operator inspection; no automatic repair/deletion. |
 
-**Manager account/custody ruling A–D (cleanup remainder, not yet implemented):**
-A is the unowned preservation rule above. B is post-useradd-only receipt publication
-with actual name/UID/GID/group-created binding; interrupted publication fails toward
-non-deletion. C requires a valid receipt **and fresh cleanup-time** matching
-name/UID/GID, full shape, unshared group, stopped Headscale unit and no process
-running under that UID before userdel. Groupdel is allowed only for a group the
-receipt says was created with the user, still present and unshared. Remove the
-receipt only after successful deletion. Any mismatch, malformed/foreign receipt
-or command failure preserves account and receipt and returns typed secret-free
-cleanup uncertainty, never success. D permits deletion only of installer-owned
-contents at the fixed Headscale paths; foreign/unsafe entries refuse and remain.
-The remainder must stop/disable and remove only the owned unit/config/DB/Noise/DERP/
-runtime state, preserve the inert package/notices, extend disable/uninstall, and
-add created→receipt→delete plus fresh process/unit/group and uncertainty tests.
-No cleanup PASS is claimed by preparation's visible preservation result.
+**Manager account/custody rulings A–E (cleanup):**
+A is the unowned preservation rule above. B publishes only the actually created
+identity; a crash between useradd and receipt publication leaves it unowned.
+C requires a valid receipt and fresh name/UID/GID, full shape and unshared-group
+observations. Before deletion the exact loaded unit fragment/drop-ins must be
+owned, stop and disable must succeed, and fresh systemd state must have no active
+job, process or control group. A bounded `ps -eo ruid=,euid=,suid=,fuid=` snapshot
+must contain no process with that UID (real/effective/saved/filesystem); failed,
+malformed or oversized observations refuse. These are sampled observations under
+the existing cooperative root-writer discipline, not an atomic process fence.
+
+Delete user first, then only the receipted group if still present and unshared.
+E defines partial failure: successful userdel followed by failed groupdel keeps
+the receipt, group and all other remaining objects; never recreate the user.
+Return `HeadscaleServiceError(partial-cleanup-uncertain)`, CLI exit1 with no native
+diagnostics. Before userdel succeeds, any failure preserves account and receipt
+and returns `cleanup-uncertain` (never success). On retry, re-read the valid
+receipt and fresh NSS identity: absent name plus no account using the receipt
+UID skips userdel. UID reuse under another name, changed same-name shape/UID/GID,
+changed group GID, supplementary members or another primary group user refuses
+and preserves. A remaining matching empty group gets groupdel only. When user
+and group are absent, continue the same fixed custody cleanup; when all objects
+are already absent, retire just the receipt. Receipt removal is last, after fresh
+confirmation that every receipted object is absent. No failure automatically
+retries or repairs anything.
+
+D permits only the exact installed unit and canonical policy, plus empty fixed
+custody directories, under the existing no-follow/mode/owner/single-link inventory.
+This inert slice creates no config, DB, Noise, DERP, key or socket file; those
+unknown entries refuse and remain for the owning later slice, even under a valid
+account receipt. Revalidate identity, stopped state and inventory before effects.
+Foreign/unsafe/unknown entries, pending/tampered receipts and differing units
+refuse before any stop/delete. Package payload/notices, installer-state parent,
+root-only CA material, connector/daemon/org data and unrelated Headscale installs
+are preserved. No recursive purge or adoption of an unrelated install.
+
+Cleanup JSON returns `state=removed, account=removed` only after owned convergence;
+`state=preserved, account="preserved: not created by HappyRanch"` visibly preserves
+an unowned account/group while removing the proven inert unit/custody. With no
+Headscale objects/account it returns `state=absent, account=absent`; legacy
+uninstall keeps its empty output in that case. Every uncertainty returns exit1.
+Temp-root/fake-command tests extend the existing owners for creation/deletion,
+unowned/crash preservation, tamper/foreign refusal, stopped/process/group checks,
+partial failure, UID reuse and group-only/receipt-only retry. Host acceptance and
+full helper turn-off remain NOT RUN.
 
 Tagged grammar: [v0.25.1 ACL fields](https://github.com/juanfont/headscale/blob/v0.25.1/hscontrol/policy/acls_types.go),
 [named-user expansion and protocol/port rules](https://github.com/juanfont/headscale/blob/v0.25.1/hscontrol/policy/acls.go).
@@ -1403,8 +1438,8 @@ Startup basis: [tagged serve command](https://github.com/juanfont/headscale/blob
 and [listener order](https://github.com/juanfont/headscale/blob/v0.25.1/hscontrol/app.go).
 System ranges: [Ubuntu useradd](https://manpages.ubuntu.com/manpages/resolute/en/man8/useradd.8.html).
 Standalone temp-root/fake-command checks: `uv run --frozen --python /usr/bin/python3
-pytest scripts/test_headscale_custody.py -v --tb=short`. They exercise preparation,
-not root acceptance, real NSS/user creation, real systemd or live binds. No
+pytest scripts/test_headscale_custody.py -v --tb=short`. They exercise preparation
+and cleanup, not root acceptance, real NSS/user creation, real systemd or live binds. No
 configuration/DERP/leaf/CA handoff/admin minter or activation is wired here.
 
 ### Inert Linux home CA materializer (THR-327 slice 3b-2e)
@@ -1430,7 +1465,7 @@ custody environment override. The installed binary is outside PATH and
 | Admission and bounds | Literal descriptor-relative `O_NOFOLLOW` directory/leaf opens; leaves also use nonblocking opens before type checks. Inventory reads at most five names to refuse more than the four fixed leaves. Files use same-FD bounded reads and metadata rechecks. Unknown entries refuse and are preserved. A nonblocking directory flock serializes cooperating commands without adding a lock file; this is not a fence against a separate root writer. |
 | Publication / recovery | Generate and validate before publication. Each member uses its exclusive same-directory `.<name>.pending`, exact 0600 owner/mode, file fsync, descriptor-relative rename, directory fsync. Publish the key durably **before** the certificate, for both CA creation and leaf rotation. A crash can leave a key-only pair (`incomplete-state`), pending residue (`unexpected-entry`), or old certificate/new key (`invalid-key` for write verbs); each refuses without further writes or automatic recovery/deletion. A complete CA without a leaf pair may safely issue its first leaf. No newly published CA certificate becomes usable without its already-durable matching key. |
 | Test isolation | Only same-package `_test.go` calls supply a temporary root, current test UID/GID and clock/euid observations to the unexported command logic. The shipped entry supplies literal `/`, root:root, actual euid and current time; there is no production flag/environment redirection. Temp-root checks prove owner/mode as observable by the unprivileged test process, not installed root acceptance. |
-| 3b-2f handoff | 3b-2f-1 now supplies explicit inert account/receipt/custody preparation, restrictive ACL and separate unit rendering (see above); it does not implement cleanup. 3b-2f-2 still owns validated copying of **only** the staged leaf cert/key into `/etc/happyranch/headscale` for locked `happyranch-headscale` service custody, plus protected CA-only `/etc/happyranch/control-ca.pem` publication. It must coordinate safe leaf handoff/reload and interrupted staging with authenticated lifecycle operations. CA signing key stays root-only in `home-ca/`; this command performs no Headscale copy, configuration, user/unit creation, start, reload or cleanup. 3b-2g owns later helper invocation. |
+| 3b-2f handoff | 3b-2f-1 now supplies explicit inert account/receipt/custody preparation, restrictive ACL and separate unit rendering and owned inert cleanup with A–E receipt retry (see above). 3b-2f-2 still owns validated copying of **only** the staged leaf cert/key into `/etc/happyranch/headscale` for locked `happyranch-headscale` service custody, plus protected CA-only `/etc/happyranch/control-ca.pem` publication. It must coordinate safe leaf handoff/reload and interrupted staging with authenticated lifecycle operations. CA signing key stays root-only in `home-ca/`; this command performs no Headscale copy, configuration, user/unit creation, start, reload or cleanup. 3b-2g owns later helper invocation. |
 
 ### Pure home Headscale renderers and LAN selector (THR-327 slice 3b-2a)
 
