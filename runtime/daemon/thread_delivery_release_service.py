@@ -1,7 +1,7 @@
-"""Private C1b serving owner. No HTTP/CLI, startup selection or automatic release.
+"""Separate narrow startup release and private C1b human serving owner.
 
-CURRENT guarded facts are not historical process/effect retirement. A separately
-previewed/confirmed human risk override is the only supported mutation mode.
+CURRENT guarded facts are not historical process/effect retirement. The human
+risk override retains its separate preview, confirmation and serving authority.
 Native return, settings restoration AND outer retirement own the DB lifetime;
 request cancellation and revoke timeout never discharge it.
 """
@@ -33,6 +33,78 @@ from runtime.orchestrator.team_move import TeamMoveCoordinator
 from runtime.orchestrator.thread_move import ThreadMoveAdmission, ThreadPreparation
 
 _GENERATIONS = itertools.count(1)
+
+
+class _StartupThreadReleases:
+    """Initial org population only, under main's already-held lifetime lock.
+
+    Constructed before ANY startup recovery/current-boot admission. The lock
+    excludes prior daemons; pre-admission ordering, never timestamps or missing
+    live maps, establishes previous-boot membership. Captured native rows also
+    exclude records minted or changed by this boot's earlier recovery steps.
+    Dynamic org load does not construct this owner. Consume exactly once.
+    """
+
+    def __init__(self, db: Database, slug: str, proof: Any) -> None:
+        import logging
+        from runtime.daemon.lifetime_lock import LockProof
+        self.db, self.slug, self.proof = db, slug, proof
+        self.records: tuple[dict, ...] = ()
+        self.used = False
+        self.audit_ceiling = 0
+        self.active: dict | None = None
+        self.log = logging.getLogger("happyranch.daemon")
+        if type(proof) is not LockProof or proof.proven is not True:
+            self.log.info("thread_startup_release org=%s skipped=lock_not_proven reason=%s",
+                          slug, proof.reason if type(proof) is LockProof else "proof_missing")
+            return
+        try:
+            with native_read(db, Budget()) as reader:
+                if db._conn.in_transaction:
+                    raise ReleaseUnavailable("database_owned")
+                # Complete bounded snapshot; an exhausted read is never an
+                # empty census. No current-boot thread producer exists yet.
+                reader.execute("BEGIN").close()
+                try:
+                    cur = reader.execute("SELECT coalesce(max(id),0) FROM audit_log")
+                    try:
+                        self.audit_ceiling = cur.fetchone()[0]
+                        reader.budget.integer(self.audit_ceiling)
+                        reader.budget.rows += 1
+                        reader.budget.raw_bytes += 8
+                    finally:
+                        cur.close()
+                    self.records = tuple(reader.rows("thread_invocations",
+                        "purpose='reply' AND status='pending' AND started_at IS NOT NULL", (), "id"))
+                finally:
+                    db._conn.rollback()
+        except Exception:
+            self.records = ()
+            self.log.warning("thread_startup_release org=%s skipped=capture_unavailable", slug)
+
+    def run(self) -> None:
+        if self.used:
+            return
+        self.used = True
+        budget = Budget()  # one allowance for the entire pass, no per-row reset
+        for original in self.records:
+            self.active = original
+            try:
+                self.db._release_startup_thread_delivery(self, original, budget)
+                self.log.info("thread_startup_release org=%s invocation=%s released", self.slug, original["id"])
+            except Exception as exc:
+                # No raw payload, token or exception text. Failed records retain
+                # their original lifecycle and normal diagnostic visibility.
+                if (getattr(self.db, "_thread_release_settings_unsafe", False)
+                        or isinstance(exc, ReleaseUnavailable) and exc.committed is not False):
+                    # Unknown COMMIT/restoration is not rollback evidence. Abort
+                    # startup rather than run another recovery writer on it.
+                    raise
+                reason = exc.code if type(exc) is ReleaseUnavailable else "evidence_unavailable"
+                self.log.info("thread_startup_release org=%s invocation=%s retained=%s",
+                              self.slug, original["id"], reason)
+            finally:
+                self.active = None
 
 
 @dataclass(eq=False)

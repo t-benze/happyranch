@@ -10,7 +10,10 @@ has a dormant service bound to the actual initial app/state/runtime/org-map,
 org/DB/path, supervisor/tracker and attachment generation. Only actual successful
 ASGI/listener startup admits it; construction/readiness performs no operation or
 selection. Native preview/show and the sole `release_exact_thread_delivery`
-transaction have no ACTIVE HTTP/CLI, startup, reaper or automatic release caller.
+human transaction have no ACTIVE HTTP/CLI, startup, reaper or automatic caller.
+THR-357 adds a separate narrow daemon startup transaction and record family; see
+[the lifecycle contract](runtime-lifecycle.md#narrow-previous-boot-thread-release-thr-357-fix-1--1136).
+It reuses strict selection and replacement validation, never human authority.
 Temporary, dynamic, custom, replaced and missing contexts refuse. Neither
 ambient credentials nor caller proof flags enable mutation. Proof-backed release
 is unavailable. The approved human risk override requires exact preview, stable
@@ -49,7 +52,8 @@ triggering_seq0 write followed by another participant's native_delivery_range
 refusal still rolls back the whole cutover, without reusing the prewrite view or
 changing resume's prior commit.
 
-The append-only version1 `thread_delivery_release` companion retains real thread
+The append-only version1 `thread_delivery_release` companion and separate daemon
+`thread_delivery_startup_release` companion retain real thread
 scope/permanent agent meanings and literal lifecycle-v1/unknown/retry history.
 Complete bounded five-column and native readers bind source prefix, original and
 optional genuine INTEGER replacement; invalid/foreign/orphan/duplicate/future or
@@ -70,6 +74,18 @@ a hard wall/RSS guarantee. C1-13 activation and C2 task-tail remain deferred;
 security proof is UNEXECUTED; integration INCLUDING callback is SKIPPED24342,
 Python units RETIRED. Only lint/static evidence and independent full review plus
 same-final-head scoped SOURCE QA can be attributed to this slice.
+
+THR-357 automatic records use complete thread-local delivery interpretation;
+the human family's org-wide validation and founder override APIs are unchanged.
+The no-thread startup preflight validates human records; automatic records are
+validated when cutover/recovery visits their thread. Automatic budget exhaustion
+returns an explicit unavailable thread with no partial releases and denies its
+pairs, retaining raw unknown evidence and queued obligations. It does not escape
+into unrelated delivery or prevent startup. The automatic transaction scopes
+its automatic inventory to the selected thread, while retaining complete human
+validation and the independent closing graph check. Later ordinary history is
+never mistaken for evidence absence or silently truncated. See the lifecycle
+contract for lock proof, eligibility and restoration-failure rules.
 
 C1-13 dormant adapter source adds an UNMOUNTED four-handler router and an
 UNCALLED `threads.register_release` with capability/preview/apply/show handlers,

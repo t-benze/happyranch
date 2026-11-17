@@ -1,5 +1,18 @@
 # Local CI
 
+## Focused thread startup release (THR-357 Fix 1)
+
+`uv run --frozen python -B -m unittest scripts.test_thread_startup_release -v`
+drives the real `_sweep_on_startup` with synthetic persistent lifecycle rows:
+previous-boot release and normal next-reply admission, unproven lock, unsettled
+attempt/producer, extra uncertainty, current-boot and contradictory history, and
+atomic rollback/no same-boot retry. The growth regression commits three real
+automatic releases, appends 4000 legitimate pin/unpin audit rows per thread,
+then observes unrelated arrival, a subsequent real sweep, and byte-exact
+retention of exhausted threads. No provider, live daemon or retired unit tree
+is used. Actual isolated-home spawn-to-serving timing is a separate task-scoped
+observation, not an integration-suite run or new CI trigger.
+
 ## Focused daemon lifetime lock (THR-357)
 
 ```sh

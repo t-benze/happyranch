@@ -1,9 +1,10 @@
-"""Dormant C1a delivery dispositions; never a cleanup/retirement certificate.
+"""Delivery dispositions; raw lifecycle facts remain unchanged.
 
-The native mutator has no external adapter. The private C1b service binds actual
-serving lifetime and current controls to each native operation. In particular
+The human mutator has no external adapter. A separate narrow startup mode
+consumes the daemon lifetime-lock proof before current-boot admission.
+The private C1b service binds actual serving lifetime and current controls to each native operation. In particular
 there is no caller callback, proof Boolean, ambient credential or local registry
-that enables mutation. Raw ThreadLifecycle and safety census remain unchanged.
+that enables human mutation. Raw ThreadLifecycle and safety census remain unchanged.
 """
 from __future__ import annotations
 
@@ -23,6 +24,8 @@ from pydantic import BeforeValidator, Field, ValidationError
 from runtime.infrastructure.thread_admission import Closed, ThreadAdmissionStore
 
 ACTION = "thread_delivery_release"
+STARTUP_ACTION = "thread_delivery_startup_release"
+STARTUP_REASON = "late_producer_failure_after_recorded_attempt_quiescence"
 RISKS = (
     "late_producer_and_session_writes",
     "overlapping_native_and_workspace_work",
@@ -166,14 +169,12 @@ class ReleaseCommand(PreviewRequest):
     confirmation: Confirmation
 
 
-class Companion(Closed):
+class _ReleaseRecord(Closed):
     version: Version
     org_slug: SafeID
     operation_key: Key
     command: Annotated[str, Field(max_length=16384)]
     command_digest: Digest
-    principal: Literal["founder"]
-    admission: Literal["native_serving_human_owner"]
     source_history_digest: Digest
     source_post_digest: Digest
     disposition: Literal["running_replaced", "historical_only"]
@@ -183,6 +184,27 @@ class Companion(Closed):
     poststate_digest: Digest
     wake_audit_id: Integer | None
     marker_audit_id: Integer | None
+
+
+class Companion(_ReleaseRecord):
+    principal: Literal["founder"]
+    admission: Literal["native_serving_human_owner"]
+
+
+class StartupCommand(Closed):
+    version: Version
+    operation_key: Key
+    selection: Selection
+    prefix: Prefix
+    native_digest: Digest
+    range: DeliveryRange
+    reason: Literal["late_producer_failure_after_recorded_attempt_quiescence"]
+
+
+class StartupCompanion(_ReleaseRecord):
+    principal: Literal["daemon"]
+    admission: Literal["proven_lock_before_startup_admission"]
+    disposition: Literal["running_replaced"]
 
 
 # Fixed native columns, not caller-selected SQL or a schema-filtering baseline.
@@ -466,8 +488,9 @@ class ReleaseReader:
     def __init__(self, reader: NativeRead, org_slug: str) -> None:
         self.reader, self.org_slug = reader, org_slug
         self.threads: dict[str, ThreadEvidence] = {}
-        self.records: dict[str, tuple[dict, Companion, ReleaseCommand]] = {}
+        self.records: dict[str, tuple[dict, Companion | StartupCompanion, ReleaseCommand | StartupCommand]] = {}
         self.current: dict[int, bool] = {}
+        self.unavailable_threads: set[str] = set()
 
     def thread(self, thread_id: str) -> ThreadEvidence:
         if thread_id in self.threads:
@@ -554,24 +577,33 @@ class ReleaseReader:
         self.threads[thread_id] = evidence
         return evidence
 
-    def inventory(self, family: list[dict] | None = None) -> None:
+    def inventory(self, family: list[dict] | None = None, *, automatic_thread_id: str | None = None) -> None:
         if family is None:
-            family = self.reader.rows("audit_log", "action=?", (ACTION,), "id")
-        owners: set[tuple] = set()
+            if automatic_thread_id is None:
+                family = self.reader.rows("audit_log", "action IN (?,?)", (ACTION, STARTUP_ACTION), "id")
+            else:
+                family = self.reader.rows("audit_log", "action=? OR (action=? AND task_id=?)",
+                    (ACTION, STARTUP_ACTION, automatic_thread_id), "id")
+        owners = {(cmd.selection.thread_id, cmd.selection.invocation_id, cmd.selection.agent_id,
+                   cmd.selection.session_id, cmd.selection.preparation_id)
+                  for _, _, cmd in self.records.values()}
         for row in family:
             self.reader.budget.check()
-            c = decode(Companion, row["payload"])
-            cmd = decode(ReleaseCommand, c.command)
+            automatic = row["action"] == STARTUP_ACTION
+            c = decode(StartupCompanion if automatic else Companion, row["payload"])
+            cmd = decode(StartupCommand if automatic else ReleaseCommand, c.command)
+            kind = STARTUP_ACTION if automatic else "human_delivery_release"
             s = cmd.selection
             if (type(c.version) is not int or type(cmd.version) is not int
                     or c.org_slug != self.org_slug or s.org_slug != self.org_slug
-                    or row["task_id"] != s.thread_id or row["agent"] != s.agent_id
+                    or row["task_id"] != s.thread_id or row["agent"] != ("daemon" if automatic else s.agent_id)
                     or c.operation_key != cmd.operation_key
                     or c.command.encode() != canonical(cmd.model_dump(mode="json"))
                     or digest(c.command.encode()) != c.command_digest
-                    or cmd.mode != "human_risk_override"):
+                    or (not automatic and cmd.mode != "human_risk_override")):
                 raise ReleaseUnavailable("companion_owner")
-            validate_confirmation(cmd)
+            if not automatic:
+                validate_confirmation(cmd)
             identity = (s.thread_id, s.invocation_id, s.agent_id, s.session_id, s.preparation_id)
             if cmd.operation_key in self.records or identity in owners:
                 raise ReleaseUnavailable("duplicate_disposition")
@@ -588,13 +620,15 @@ class ReleaseReader:
                     or not (source_history[-1][1].unknown or not source_history[-1][1].producer_settled)
                     or history_digest(source_history) != c.source_history_digest):
                 raise ReleaseUnavailable("source_history")
+            if automatic and not late_failure(source_history, self.reader.budget.check):
+                raise ReleaseUnavailable("startup_history")
             if fingerprint([inv]) != c.source_post_digest:
                 raise ReleaseUnavailable("source_poststate")
             if c.disposition == "running_replaced":
                 if (cmd.range.running_from is None or cmd.range.running_through is None
                         or not cmd.range.acknowledged <= cmd.range.running_from <= cmd.range.running_through <= cmd.range.required
                         or cmd.range.required <= cmd.range.acknowledged
-                        or inv["status"] != "failed" or inv["decline_reason"] != "human_delivery_release"
+                        or inv["status"] != "failed" or inv["decline_reason"] != kind
                         or inv["consumed_at"] is None or c.replacement_id is None
                         or c.replacement_token_digest is None or c.replacement_initial_digest is None
                         or c.wake_audit_id is None):
@@ -615,7 +649,7 @@ class ReleaseReader:
                 if (wake is None or not cmd.prefix.last_id < wake["id"] < row["id"]
                         or wake["agent"] != s.agent_id or wake["action"] != "thread_reply_wake_recovered"
                         or _wake_payload(wake["payload"]) != {
-                            "agent_name": s.agent_id, "kind": "human_delivery_release",
+                            "agent_name": s.agent_id, "kind": kind,
                             "from_seq": cmd.range.acknowledged + 1, "through_seq": cmd.range.required,
                             "token_prefix": replacement["invocation_token"][:8]}):
                     raise ReleaseUnavailable("wake_link")
@@ -629,7 +663,7 @@ class ReleaseReader:
                 d = dict(thread_id=s.thread_id, agent_name=s.agent_id,
                     acknowledged_through_seq=cmd.range.acknowledged, required_through_seq=cmd.range.required,
                     queued_invocation_token=replacement["invocation_token"], running_invocation_token=None,
-                    running_from_seq=None, running_through_seq=None, last_terminal_reason="human_delivery_release",
+                    running_from_seq=None, running_through_seq=None, last_terminal_reason=kind,
                     last_terminal_at=inv["consumed_at"], updated_at=inv["consumed_at"])
                 if fingerprint([inv, initial, d]) != c.poststate_digest:
                     raise ReleaseUnavailable("committed_poststate")
@@ -641,7 +675,7 @@ class ReleaseReader:
                         or marker["agent"] != s.agent_id
                         or marker["action"] != "thread_deferral_catchup_minted"
                         or _wake_payload(marker["payload"]) != {
-                            "agent_name": s.agent_id, "kind": "human_delivery_release",
+                            "agent_name": s.agent_id, "kind": kind,
                             "from_seq": cmd.range.acknowledged + 1, "through_seq": cmd.range.required,
                             "replacement_id": c.replacement_id}):
                     raise ReleaseUnavailable("marker_link")
@@ -691,6 +725,11 @@ def selected(e: ThreadEvidence, selection: Selection) -> tuple[dict, tuple]:
             or history[-1][1].session_id != selection.session_id):
         raise ReleaseUnavailable("selection")
     return inv, history
+
+
+def late_failure(history: tuple | list, check: Any) -> bool:
+    from runtime.daemon.cleanup_diagnostics import _late_failure
+    return _late_failure(tuple(state.model_dump(mode="json") for _, state in history), check)
 
 
 def history_digest(history: tuple | list) -> str:
@@ -802,39 +841,65 @@ def native_authority(db: Any, selection: Selection) -> Iterator[Any]:
 
 
 def delivery_view(db: Any, thread_id: str | None = None) -> ReleaseReader | None:
-    """Caller holds DB. No-companion path keeps literal legacy behavior."""
-    # Even the no-companion action-family census is bounded. An exhausted
-    # scan is never absence. No nested B/collection settings owner is stolen.
+    """Caller holds DB. Human census is global; automatic evidence is local.
+
+    Automatic exhaustion retains the entire requested thread, with no partial
+    permission. The startup preflight (no thread) leaves automatic validation
+    to the recovery/cutover readers that actually visit each thread.
+    """
     move = getattr(db, "_team_move_coordinator", None)
-    with native_read(db, Budget()) as native:
-        own_snapshot = not db._conn.in_transaction
-        if own_snapshot:
-            native.execute("BEGIN").close()
-        try:
-            family = native.rows("audit_log", "action=?", (ACTION,), "id")
-            if not family:
-                return None
-            if move is None:
-                raise ReleaseUnavailable("org_owner_unavailable")
-            view = ReleaseReader(native, move.store.org_slug)
-            view.inventory(family)
-            if thread_id is not None:
-                view.thread(thread_id)
-            return view
-        finally:
+    automatic = False
+    try:
+        with native_read(db, Budget()) as native:
+            own_snapshot = not db._conn.in_transaction
             if own_snapshot:
-                try:
-                    db._conn.rollback()  # SELECT-only snapshot; never outer TX
-                except BaseException:
-                    db._thread_release_settings_unsafe = True
-                    raise ReleaseUnavailable("read_snapshot_unrestored", committed=None,
-                        settings_restored=False) from None
+                native.execute("BEGIN").close()
+            try:
+                human = native.rows("audit_log", "action=?", (ACTION,), "id")
+                if human and move is None:
+                    raise ReleaseUnavailable("org_owner_unavailable")
+                view = ReleaseReader(native, move.store.org_slug if move is not None else "")
+                view.inventory(human)  # unchanged complete founder validation
+                if thread_id is not None:
+                    automatic = True
+                    family = native.rows("audit_log", "task_id=? AND action=?",
+                        (thread_id, STARTUP_ACTION), "id")
+                    automatic = bool(family)
+                    if not human and not family:
+                        return None  # complete relevant census, never exhaustion
+                    if move is None:
+                        raise ReleaseUnavailable("org_owner_unavailable")
+                    view.inventory(family)
+                    view.thread(thread_id)
+                elif not human:
+                    return None
+                return view
+            finally:
+                if own_snapshot:
+                    try:
+                        db._conn.rollback()  # SELECT-only snapshot; never outer TX
+                    except BaseException:
+                        db._thread_release_settings_unsafe = True
+                        raise ReleaseUnavailable("read_snapshot_unrestored", committed=None,
+                            settings_restored=False) from None
+    except ReleaseUnavailable as exc:
+        # Contain only automatic budget exhaustion AFTER native_read restored
+        # connection settings and our read snapshot. Human errors, unknown
+        # COMMIT and unsafe restoration retain their existing refusal semantics.
+        if (not automatic or exc.code != "budget_unavailable" or exc.committed is not False
+                or not exc.settings_restored or move is None or thread_id is None):
+            raise
+        retained = ReleaseReader(native, move.store.org_slug)
+        retained.unavailable_threads.add(thread_id)
+        return retained
 
 
 def pair_permission(view: ReleaseReader | None, thread_id: str, agent_id: str) -> bool:
     """Only release-linked pairs change; every other raw obstruction survives."""
     if view is None:
         return True
+    if thread_id in view.unavailable_threads:
+        return False
     evidence = view.threads[thread_id]
     if not any(cmd.selection.thread_id == thread_id and cmd.selection.agent_id == agent_id
                for _, _, cmd in view.records.values()):

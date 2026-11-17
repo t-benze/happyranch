@@ -56,7 +56,7 @@ time.sleep(30)
 from pathlib import Path
 from unittest.mock import patch
 import runtime.daemon.__main__ as entry
-def build(settings):
+def build(settings, *, lock_proof=None):
     (entry.paths.daemon_home() / 'build-reached').touch()
     raise AssertionError('startup reached before refusal')
 with patch.object(entry, '_build_state', build):
@@ -163,7 +163,9 @@ def competing_acquire():
         raise AssertionError('main did not retain the lifetime lock')
     finally:
         os.close(fd)
-def build(settings):
+def build(settings, *, lock_proof=None):
+    assert lock_proof is not None, 'main dropped the acquired lock proof'
+    assert lock_proof.proven is False and lock_proof.transition_boot is True
     competing_acquire()
     assert not entry.paths.pid_file().exists()
     assert not entry.paths.port_file().exists()
