@@ -1951,7 +1951,8 @@ their separate rendering paths. CLI transcript formatting is unchanged.
 The AppShell keeps the sidebar within the window height. Its organization
 switcher and Settings/account footer do not shrink; the primary navigation
 uses the remaining space and scrolls internally when needed. Navigation items
-and typography retain their existing sizes, order and destinations. The rail
+keep their order and destinations; their size and weight follow the Sidebar
+contract in `web/DESIGN_SYSTEM.md` (`text-nav`, 13.5px). The rail
 remains 244px wide on desktop and collapses to 56px below the `md` breakpoint.
 
 The navigation container uses `min-h-0` to permit flex shrinking and `relative`
