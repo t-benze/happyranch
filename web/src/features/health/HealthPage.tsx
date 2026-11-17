@@ -186,8 +186,8 @@ function SummaryCards({
             className="bg-surface border-border-default shadow-pasture-sm rounded-lg border p-4"
           >
             <div className="animate-pulse space-y-2">
-              <div className="bg-surface-raised h-3 w-20 rounded" />
-              <div className="bg-surface-raised h-12 w-16 rounded" />
+              <div className="bg-surface-raised h-3 w-20 rounded-sm" />
+              <div className="bg-surface-raised h-12 w-16 rounded-sm" />
             </div>
           </div>
         ) : (
@@ -234,7 +234,7 @@ function LoopsCard({
       {loading ? (
         <div className="animate-pulse space-y-2">
           {[1, 2, 3].map((i) => (
-            <div key={i} className="bg-surface-raised h-8 rounded" />
+            <div key={i} className="bg-surface-raised h-8 rounded-sm" />
           ))}
         </div>
       ) : rows.length === 0 ? (
@@ -314,7 +314,7 @@ function HttpCard({
       {loading ? (
         <div className="animate-pulse space-y-2">
           {[1, 2, 3, 4].map((i) => (
-            <div key={i} className="bg-surface-raised h-8 rounded" />
+            <div key={i} className="bg-surface-raised h-8 rounded-sm" />
           ))}
         </div>
       ) : rows.length === 0 ? (
@@ -503,9 +503,9 @@ function HistorySection({
               className="bg-surface border-border-default shadow-pasture-sm rounded-lg border p-4"
             >
               <div className="animate-pulse space-y-3">
-                <div className="bg-surface-raised h-3 w-24 rounded" />
-                <div className="bg-surface-raised h-12 w-16 rounded" />
-                <div className="bg-surface-raised h-10 w-full rounded" />
+                <div className="bg-surface-raised h-3 w-24 rounded-sm" />
+                <div className="bg-surface-raised h-12 w-16 rounded-sm" />
+                <div className="bg-surface-raised h-10 w-full rounded-sm" />
               </div>
             </div>
           ))}

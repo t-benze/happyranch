@@ -209,6 +209,14 @@
   --text-display--line-height: 2.25rem;
   --text-display--font-weight: 500;
 
+  /* Pasture `[data-dir="a"] .h1`: 26px / 500, -0.3px, inherited 1.5 line  */
+  /* height. Use with `font-display` (Newsreader). Top-level page titles     */
+  /* only; `display` (30px) stays the Home greeting (THR-376 PR5).           */
+  --text-page-title:                  1.625rem;
+  --text-page-title--line-height:     1.5;
+  --text-page-title--font-weight:     500;
+  --text-page-title--letter-spacing:  -0.3px;
+
   --text-h1:                   1.375rem;
   --text-h1--line-height:      1.75rem;
   --text-h1--font-weight:      600;
@@ -246,6 +254,13 @@
   --text-overline:             0.6875rem;
   --text-overline--line-height:1rem;
   --text-overline--font-weight:600;
+
+  /* Pasture `.eyebrow`: 11px / 600, 0.07em tracking, inherited 1.5 line    */
+  /* height. Use with `uppercase text-text-muted` (ink-3) (THR-376 PR5).    */
+  --text-eyebrow:                  0.6875rem;
+  --text-eyebrow--line-height:     1.5;
+  --text-eyebrow--font-weight:     600;
+  --text-eyebrow--letter-spacing:  0.07em;
 
   --text-caption:              0.75rem;
   --text-caption--line-height: 1rem;
@@ -311,8 +326,12 @@
 
   /* ====================================================================== */
   /* RADIUS — Pasture 8 / 12 / 18 / pill                                     */
+  /* THR-376 PR5: Tailwind's default radius scale is removed, so only these  */
+  /* names exist (`rounded`, `rounded-xl`, `rounded-2xl`, ... emit no CSS and */
+  /* fail `verify-design-system.sh --scan-tokens`).                          */
   /* ====================================================================== */
 
+  --radius-*: initial;
   --radius-none: 0;
   --radius-sm:   8px;
   --radius-md:   12px;
@@ -352,9 +371,12 @@
 
   /* ====================================================================== */
   /* SHADOWS — warm/soft Pasture scale (ds.css --shadow / --shadow-sm /     */
-  /* --shadow-lg)                                                            */
+  /* --shadow-lg). THR-376 PR5: Tailwind's default shadow scale is removed,  */
+  /* so `shadow`, `shadow-sm` ... `shadow-2xl` emit no CSS and fail           */
+  /* `verify-design-system.sh --scan-tokens`; only shadow-pasture-* exist.   */
   /* ====================================================================== */
 
+  --shadow-*: initial;
   --shadow-pasture-sm:  0 1px 2px rgba(40, 30, 20, 0.05);
   --shadow-pasture:     0 1px 3px rgba(40, 30, 20, 0.06),
                         0 8px 24px -12px rgba(40, 30, 20, 0.10);
@@ -479,23 +501,13 @@
   --color-info:         oklch(0.72 0.11 245);        /* bare info alias — same value as --color-feedback-info (dark) */
 }
 
-/* Opt-in Tasks standalone-list metrics. No shared spacing/type values change. */
+/* Opt-in Tasks standalone-list type metrics. They stay here because Tailwind */
+/* only builds `text-task-*` utilities from @theme in this root stylesheet;  */
+/* the page-local `.tasks-*` rules live in src/features/tasks/tasks.css,     */
+/* imported by the Tasks feature (THR-376 PR5).                              */
 @theme {
   --text-task-heading: 26px;
   --text-task-title: 13.5px;
   --text-task-meta: 11.5px;
   --text-task-group: 13px;
 }
-.tasks-grid { display: grid; grid-template-columns: 96px 88px minmax(0, 1fr) 120px 104px 48px; gap: 14px; }
-.tasks-row { padding: 13px 16px; }
-.tasks-column-header { padding: 0 16px 9px; font-size: 11px; }
-.tasks-heading { margin-bottom: 18px; }
-.tasks-eyebrow { font-size: 11px; margin-bottom: 8px; }
-.tasks-segment { padding: 3px; }
-.tasks-segment-button { padding: 5px 13px; font-size: 12.5px; font-weight: 600; }
-.tasks-group { margin-top: 18px; margin-bottom: 26px; }
-.tasks-group-heading { gap: 9px; }
-.tasks-group li:last-child > div { border-bottom: 0; }
-.tasks-id span { font-size: 11.5px; }
-.tasks-row .text-task-title, .tasks-group-heading .text-task-group { letter-spacing: -0.1px; }
-.tasks-status > span { font-size: 11px; gap: 5px; padding: 3px 8px; white-space: nowrap; max-width: 100%; }

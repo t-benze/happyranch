@@ -232,16 +232,16 @@ function TimelineSkeleton(): JSX.Element {
     <div className="space-y-4 p-4" aria-label={t('audit.timeline.loading')}>
       {[1, 2, 3].map((i) => (
         <div key={i}>
-          <div className="bg-surface-sunken mb-2 h-4 w-48 animate-pulse rounded" />
+          <div className="bg-surface-sunken mb-2 h-4 w-48 animate-pulse rounded-sm" />
           {[1, 2].map((j) => (
             <div
               key={j}
               className="border-border-subtle flex items-center gap-3 border-b px-3 py-2"
             >
-              <div className="bg-surface-sunken h-3 w-16 animate-pulse rounded" />
+              <div className="bg-surface-sunken h-3 w-16 animate-pulse rounded-sm" />
               <div className="bg-surface-sunken h-2 w-2 rounded-full" />
-              <div className="bg-surface-sunken h-3 w-24 animate-pulse rounded" />
-              <div className="bg-surface-sunken h-3 w-32 animate-pulse rounded" />
+              <div className="bg-surface-sunken h-3 w-24 animate-pulse rounded-sm" />
+              <div className="bg-surface-sunken h-3 w-32 animate-pulse rounded-sm" />
             </div>
           ))}
         </div>

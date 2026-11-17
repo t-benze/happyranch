@@ -105,7 +105,7 @@ function ThemeToggle(): JSX.Element {
       aria-label={label}
       title={label}
       onClick={() => setTheme(isDark ? 'light' : 'dark')}
-      className="text-fg-muted hover:bg-bg-raised hover:text-fg focus-visible:ring-border inline-flex h-button-icon-size w-button-icon-size items-center justify-center rounded transition-colors focus-visible:ring-1 focus-visible:outline-none"
+      className="text-fg-muted hover:bg-bg-raised hover:text-fg focus-visible:ring-border inline-flex h-button-icon-size w-button-icon-size items-center justify-center rounded-sm transition-colors focus-visible:ring-1 focus-visible:outline-none"
     >
       {isDark ? <Sun size={16} aria-hidden="true" /> : <Moon size={16} aria-hidden="true" />}
     </button>

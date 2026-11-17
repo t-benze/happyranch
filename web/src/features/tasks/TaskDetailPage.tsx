@@ -828,7 +828,7 @@ export function TaskStatusCard({
 
   return (
     <aside aria-label={t('tasks.rail.label')} className="min-w-0 lg:w-80 lg:shrink-0">
-      <div className="border-border-default bg-surface-raised min-w-0 rounded-xl border p-4">
+      <div className="border-border-default bg-surface-raised min-w-0 rounded-md border p-4">
         <h2 className="text-text-secondary mb-3 text-xs font-semibold tracking-wider uppercase">
           {t('tasks.rail.heading')}
         </h2>

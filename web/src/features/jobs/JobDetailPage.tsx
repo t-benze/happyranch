@@ -135,7 +135,7 @@ function PropertyRail({ job, slug }: { job: JobRecord; slug: string | undefined 
 
   return (
     <aside className="lg:w-72 lg:shrink-0">
-      <div className="border-border-default bg-surface-raised rounded-xl border p-4">
+      <div className="border-border-default bg-surface-raised rounded-md border p-4">
         {/* Curated approval-context — leads the rail per Direction-A. */}
         <dl className="space-y-3 text-sm">
           <RailRow label={t('jobs.rail.requestedBy')}>
@@ -193,7 +193,7 @@ function WaitingTasks({ slug, jobId }: { slug: string; jobId: string }): JSX.Ele
 
   function Card({ title, children }: { title: string; children: ReactNode }): JSX.Element {
     return (
-      <section className="border-border-default bg-surface-raised rounded-xl border p-4">
+      <section className="border-border-default bg-surface-raised rounded-md border p-4">
         <h3 className="text-text-primary mb-3 text-sm font-semibold">{title}</h3>
         {children}
       </section>
@@ -254,7 +254,7 @@ function WaitingTasks({ slug, jobId }: { slug: string; jobId: string }): JSX.Ele
 function LegacyPendingNotice(): JSX.Element {
   const { t } = useTranslation();
   return (
-    <div className="bg-attention-soft mt-6 rounded-xl p-4">
+    <div className="bg-attention-soft mt-6 rounded-md p-4">
       <div className="mb-2 flex items-center gap-2">
         <span className="bg-attention text-attention-text inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium">
           <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-current" />

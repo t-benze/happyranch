@@ -261,7 +261,25 @@ def theme_names(text: str) -> set[str]:
     return names
 
 
-defined = theme_names(tokens_path.read_text(encoding="utf-8")) | theme_names(default_theme_path.read_text(encoding="utf-8"))
+def theme_resets(text: str) -> set[str]:
+    """Namespaces that an @theme block clears with `--<namespace>-*: initial`."""
+    resets: set[str] = set()
+    text = re.sub(r"/\*.*?\*/", "", text, flags=re.S)
+    for match in re.finditer(r"@theme\b[^{;]*\{", text):
+        end = text.find("}", match.end())
+        resets.update(re.findall(r"(?m)^\s*--([a-z0-9-]+)-\*\s*:\s*initial\s*;", text[match.end():end if end >= 0 else len(text)]))
+    return resets
+
+
+# A namespace cleared in tokens.css (`--shadow-*: initial`, `--radius-*: initial`,
+# THR-376 PR5) drops every Tailwind default-theme name in it: `shadow-sm` or
+# `rounded-xl` then emit no CSS, so only the tokens.css re-declarations count.
+reset_namespaces = theme_resets(tokens_path.read_text(encoding="utf-8"))
+default_names = {
+    name for name in theme_names(default_theme_path.read_text(encoding="utf-8"))
+    if not any(name == namespace or name.startswith(namespace + "-") for namespace in reset_namespaces)
+}
+defined = theme_names(tokens_path.read_text(encoding="utf-8")) | default_names
 
 # Spacing is Tailwind's linear scale: step N is N x 0.25rem (THR-376 PR4). A
 # numeric --spacing-N declared in tokens.css with any other value silently
@@ -301,6 +319,10 @@ radius_roots = [
 # `outline-offset-2` is claimed (and skipped, numeric) before `outline`.
 roots = sorted(set(colour_roots + border_sides + spacing_roots + radius_roots + ["outline-offset", "ring-inset"]), key=len, reverse=True)
 css_keywords = {"transparent", "current", "inherit"}
+# Bare `shadow` / `rounded` (and bare side/corner radius utilities) read the
+# default theme too, so they also render nothing once their namespace is reset.
+bare_reset_utilities = (({"shadow"} if "shadow" in reset_namespaces else set())
+                        | (set(radius_roots) if "radius" in reset_namespaces else set()))
 side_keywords = {"x", "y", "t", "r", "b", "l", "s", "e"}
 corner_keywords = side_keywords | {"tl", "tr", "br", "bl", "ss", "se", "es", "ee"}
 # Non-token keyword values of each utility family (Tailwind v4 static utilities).
@@ -321,6 +343,15 @@ static_values = {
                 "prose", "lh", "reverse", "x-reverse", "y-reverse"},
     "radius": {"none", "full"},
 }
+
+
+def namespace_of(root: str) -> str:
+    """The @theme namespace a utility root reads its named values from."""
+    if root in radius_roots:
+        return "radius"
+    if root in spacing_roots:
+        return "spacing"
+    return root
 
 
 def namespace_defines(namespace: str, value: str) -> bool:
@@ -387,11 +418,18 @@ def unknown_utilities(text: str, suffix: str):
             candidate = re.sub(r"/\d+$", "", match.group().split(":")[-1].strip("!").lstrip("-"))
             if not utility.fullmatch(candidate):
                 continue
+            if candidate in bare_reset_utilities:
+                yield offset + match.start(), candidate
+                continue
             root = next((name for name in roots if candidate.startswith(name + "-")), None)
             if root is None:
                 continue
             value = candidate[len(root) + 1:]
-            if not value[0].isalpha():
+            # Numeric values (`p-4`, `ring-offset-2`) carry no token name. A digit
+            # followed by letters (`2xl`, `2xs`) is a named scale key, though: in a
+            # namespace cleared by tokens.css it must resolve like any other name.
+            if not value[0].isalpha() and not (
+                    namespace_of(root) in reset_namespaces and re.fullmatch(r"[0-9]+[a-z][a-z0-9-]*", value)):
                 continue
             # Bare side utilities (`border-b`, `rounded-tl`) carry no token name.
             if (root == "border" and value in side_keywords) or (root == "rounded" and value in corner_keywords):

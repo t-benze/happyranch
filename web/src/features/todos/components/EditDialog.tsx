@@ -311,13 +311,13 @@ export function EditDialog({
         <div className="mt-4 space-y-4">
           <div className="space-y-1">
             <Label className="text-fg-subtle text-xs">{t('todos.detail.normalized')}</Label>
-            <p className="border-border-subtle bg-bg-subtle text-fg rounded border px-3 py-2 text-sm">
+            <p className="border-border-subtle bg-bg-subtle text-fg rounded-sm border px-3 py-2 text-sm">
               {schedule.normalized_brief}
             </p>
           </div>
           <div className="space-y-1">
             <Label className="text-fg-subtle text-xs">{t('todos.detail.original')}</Label>
-            <p className="border-border-subtle bg-bg-subtle text-fg-muted rounded border px-3 py-2 text-sm italic">
+            <p className="border-border-subtle bg-bg-subtle text-fg-muted rounded-sm border px-3 py-2 text-sm italic">
               {schedule.source_instruction}
             </p>
           </div>
@@ -417,7 +417,7 @@ export function EditDialog({
           </div>
 
           {nextFirePreview && (
-            <div className="border-border-subtle bg-bg-subtle rounded border px-3 py-2">
+            <div className="border-border-subtle bg-bg-subtle rounded-sm border px-3 py-2">
               <span className="text-fg-subtle text-xs">
                 {t('todos.edit.preview', { timezone: nextFirePreview.tz })}
               </span>
@@ -428,7 +428,7 @@ export function EditDialog({
           )}
 
           {displayedError && (
-            <div className="border-tier-red bg-tier-red-tint text-tier-red rounded border px-3 py-2 text-sm">
+            <div className="border-tier-red bg-tier-red-tint text-tier-red rounded-sm border px-3 py-2 text-sm">
               {renderTodoError(displayedError, t)}
             </div>
           )}

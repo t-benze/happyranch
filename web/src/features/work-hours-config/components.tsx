@@ -116,7 +116,7 @@ export function RecoveryBanner({ reason }: { reason: string }): JSX.Element {
   return (
     <div
       role="alert"
-      className="border-tier-red bg-feedback-danger/10 text-tier-red flex items-start gap-2 rounded border p-3 text-sm"
+      className="border-tier-red bg-feedback-danger/10 text-tier-red flex items-start gap-2 rounded-sm border p-3 text-sm"
     >
       <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
       <div>

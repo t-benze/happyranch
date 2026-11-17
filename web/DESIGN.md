@@ -31,6 +31,13 @@
 # tier green, agent founder, status open/archived and feedback
 # success/info rows follow the founder-approved WCAG AA Pasture values in
 # web/design/pasture-ds.css (see DESIGN_SYSTEM.md "Colour contrast").
+# THR-376 PR5 adds: layout.radius sm/md/lg and every elevation shadow row
+# are SUPERSEDED. Radius is Pasture 8/12/18/pill (--radius-sm/md/lg/pill);
+# Tailwind's default radius and shadow scales are removed, and shadows are
+# the warm Pasture --shadow-pasture-sm/--shadow-pasture/--shadow-pasture-lg.
+# typography.scale display is the Home greeting only; Pasture page titles
+# are --text-page-title (26/500 Newsreader) and eyebrows --text-eyebrow
+# (11/600, 0.07em, uppercase). See DESIGN_SYSTEM.md.
 # The rest of this file is unchanged historical reference (Phase 4 rewrites it).
 
 name: HappyRanch Founder Console
@@ -234,15 +241,15 @@ typography:
   scale:
     # All scale steps name a use, not a size. Sizes are in rem so the
     # OS-level zoom respects them.
-    display:   { size: "1.875rem", line: "2.25rem",  weight: 600, tracking: "-0.01em" } # page H1 reserved for placeholders
-    h1:        { size: "1.375rem", line: "1.75rem",  weight: 600, tracking: "-0.005em" } # screen titles
+    display:   { size: "1.875rem", line: "2.25rem",  weight: 600, tracking: "-0.01em" } # page H1 reserved for placeholders   # SUPERSEDED (Pasture): Home greeting only
+    h1:        { size: "1.375rem", line: "1.75rem",  weight: 600, tracking: "-0.005em" } # screen titles   # SUPERSEDED (Pasture): page titles use --text-page-title 26/500 Newsreader
     h2:        { size: "1.125rem", line: "1.5rem",   weight: 600, tracking: "0" }
     h3:        { size: "1rem",     line: "1.5rem",   weight: 600, tracking: "0" }
     body_lg:   { size: "0.9375rem", line: "1.5rem",  weight: 400, tracking: "0" }     # message bodies — long-form reading
     body:      { size: "0.875rem", line: "1.375rem", weight: 400, tracking: "0" }     # default UI text
     body_sm:   { size: "0.8125rem", line: "1.25rem", weight: 400, tracking: "0" }     # inbox rows, dense tables
     label:     { size: "0.75rem",  line: "1rem",     weight: 500, tracking: "0.02em" }  # form labels (NOT all-caps by default)
-    overline:  { size: "0.6875rem", line: "1rem",    weight: 600, tracking: "0.08em", transform: "uppercase" } # section headers in left column
+    overline:  { size: "0.6875rem", line: "1rem",    weight: 600, tracking: "0.08em", transform: "uppercase" } # section headers in left column   # SUPERSEDED (Pasture): eyebrow = --text-eyebrow 11/600, 0.07em
     caption:   { size: "0.75rem",  line: "1rem",     weight: 400, tracking: "0" }     # timestamps, meta
     mono_md:   { size: "0.8125rem", line: "1.25rem", weight: 500, tracking: "0", family: "mono" } # IDs in headers
     mono_sm:   { size: "0.6875rem", line: "1rem",    weight: 500, tracking: "0", family: "mono" } # IDs in row badges, kbd chips
@@ -272,9 +279,9 @@ layout:
 
   radius:
     none:   "0"
-    sm:     "0.1875rem"  # 3px — kbd chips, badges. Small. Editorial. NOT pill.
-    md:     "0.3125rem"  # 5px — buttons, inputs, rows
-    lg:     "0.5rem"     # 8px — cards, modals, panels
+    sm:     "0.1875rem"  # 3px — kbd chips, badges. Small. Editorial. NOT pill.   # SUPERSEDED (Pasture): --radius-sm 8px
+    md:     "0.3125rem"  # 5px — buttons, inputs, rows   # SUPERSEDED (Pasture): --radius-md 12px
+    lg:     "0.5rem"     # 8px — cards, modals, panels   # SUPERSEDED (Pasture): --radius-lg 18px
     pill:   "999px"      # used only on badges, chips, tabs, tier dots, and status indicators
 
   grid:
@@ -321,19 +328,19 @@ elevation:
     bg: "{colors.semantic.dark.surface.raised}"
   "1":
     description: "Header bands, ThreadHeader, TopBar — visually separates without floating."
-    shadow: "0 1px 0 rgba(0, 0, 0, 0.35)"
+    shadow: "0 1px 0 rgba(0, 0, 0, 0.35)"   # SUPERSEDED (Pasture): --shadow-pasture-sm
     bg: "{colors.semantic.dark.surface.sunken}"
   "2":
     description: "Popovers, dropdown menus, command palette."
-    shadow: "0 8px 24px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(255, 255, 255, 0.04)"
+    shadow: "0 8px 24px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(255, 255, 255, 0.04)"   # SUPERSEDED (Pasture): --shadow-pasture
     bg: "{colors.semantic.dark.surface.overlay}"
   "3":
     description: "Modal dialog, side drawer."
-    shadow: "0 24px 64px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(255, 255, 255, 0.06)"
+    shadow: "0 24px 64px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(255, 255, 255, 0.06)"   # SUPERSEDED (Pasture): --shadow-pasture-lg
     bg: "{colors.semantic.dark.surface.overlay}"
 
   # Light-mode shadows are softer and warmer.
-  light_overrides:
+  light_overrides:   # SUPERSEDED (Pasture): one warm --shadow-pasture-* scale for both themes
     "1": { shadow: "0 1px 0 rgba(12, 13, 15, 0.06)" }
     "2": { shadow: "0 8px 20px rgba(12, 13, 15, 0.10), 0 0 0 1px rgba(12, 13, 15, 0.05)" }
     "3": { shadow: "0 24px 48px rgba(12, 13, 15, 0.15), 0 0 0 1px rgba(12, 13, 15, 0.08)" }

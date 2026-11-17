@@ -93,7 +93,7 @@ export function AgentDetailDrawer({ agentName }: AgentDetailDrawerProps): JSX.El
                 {Object.entries(agent.repos).map(([key, _url]) => (
                   <span
                     key={key}
-                    className="bg-bg-raised border-border text-fg-muted inline-flex items-center rounded border px-2 py-0.5 text-xs"
+                    className="bg-bg-raised border-border text-fg-muted inline-flex items-center rounded-sm border px-2 py-0.5 text-xs"
                   >
                     {key}
                   </span>

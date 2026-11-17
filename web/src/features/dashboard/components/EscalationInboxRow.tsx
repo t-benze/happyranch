@@ -120,7 +120,7 @@ export function EscalationInboxRow({
         </span>
         {isStale && (
           <span
-            className="border-tier-red text-status-escalated rounded border px-1 text-xs font-medium uppercase"
+            className="border-tier-red text-status-escalated rounded-sm border px-1 text-xs font-medium uppercase"
             title={t('dashboard.escalation.staleTitle')}
           >
             {t('dashboard.escalation.stale')}

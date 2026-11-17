@@ -60,7 +60,7 @@ export function FanoutBand({mode, counts, task}: FanoutBandProps): JSX.Element {
   const state = childWaitState(task) ?? 'unavailable';
   const title = mode === 'joined' ? t('tasks.fanout.joined')
     : applicable ? t(HEADLINES[state]) : t('tasks.fanout.recorded');
-  return <section aria-label={t('tasks.fanout.label')} className="border-border-default bg-surface-raised mt-4 rounded-xl border p-4">
+  return <section aria-label={t('tasks.fanout.label')} className="border-border-default bg-surface-raised mt-4 rounded-md border p-4">
     <div className="flex items-start gap-3">
       <span className="text-text-secondary mt-0.5 shrink-0"><BranchIcon /></span>
       <div className="min-w-0 flex-1">

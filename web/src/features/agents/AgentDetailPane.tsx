@@ -455,7 +455,7 @@ export function AgentDetailPane({ agentName, onClose, onStartThread, onRetired }
               value={displayExecutor}
               disabled={saving || !agentReady || executorOptions.state !== 'ready'}
               onChange={(e) => onExecutorChange(e.target.value)}
-              className="border-border-subtle bg-surface w-full max-w-xs rounded border p-2 text-sm"
+              className="border-border-subtle bg-surface w-full max-w-xs rounded-sm border p-2 text-sm"
               aria-label={t('agents.executor.label')}
             >
               {/* Stale current executor — visible but not assignable */}

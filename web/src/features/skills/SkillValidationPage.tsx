@@ -215,7 +215,7 @@ function EventRow({ row, slug }: { row: ValidationRow; slug: string }): JSX.Elem
         <h3 className="text-fg font-mono text-sm leading-snug font-semibold break-words">
           <Link
             to={`/orgs/${slug}/skills/${row.skillId}`}
-            className="hover:text-accent-text focus-visible:ring-accent rounded focus:outline-none focus-visible:ring-2"
+            className="hover:text-accent-text focus-visible:ring-accent rounded-sm focus:outline-none focus-visible:ring-2"
           >
             {row.skillName}
           </Link>

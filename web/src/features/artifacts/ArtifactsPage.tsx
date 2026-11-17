@@ -115,8 +115,8 @@ function ArtifactsSkeleton(): JSX.Element {
         >
           <div className="bg-surface-sunken h-28 animate-pulse" />
           <div className="flex flex-col gap-2 p-4">
-            <div className="bg-surface-sunken h-4 w-3/4 animate-pulse rounded" />
-            <div className="bg-surface-sunken h-3 w-1/2 animate-pulse rounded" />
+            <div className="bg-surface-sunken h-4 w-3/4 animate-pulse rounded-sm" />
+            <div className="bg-surface-sunken h-3 w-1/2 animate-pulse rounded-sm" />
           </div>
         </div>
       ))}
@@ -153,7 +153,7 @@ function ThumbnailHeader({ type }: { type: ArtifactType }): JSX.Element {
         {t(pill)}
       </span>
       <div
-        className={`bg-surface shadow-pasture-sm relative flex h-12 w-12 items-center justify-center rounded-xl ${tint}`}
+        className={`bg-surface shadow-pasture-sm relative flex h-12 w-12 items-center justify-center rounded-md ${tint}`}
       >
         <Icon size={22} aria-hidden="true" />
       </div>
@@ -346,7 +346,7 @@ function FolderRow({
       onClick={() => onOpen(folder.path)}
       className="bg-surface border-border-default shadow-pasture-sm hover:border-border-strong hover:bg-surface-hover flex items-center gap-3 rounded-lg border p-4 text-left transition-colors"
     >
-      <span className="bg-accent-muted text-accent-text flex h-9 w-9 flex-none items-center justify-center rounded-xl">
+      <span className="bg-accent-muted text-accent-text flex h-9 w-9 flex-none items-center justify-center rounded-md">
         <Folder size={19} aria-hidden="true" />
       </span>
       <span className="min-w-0">

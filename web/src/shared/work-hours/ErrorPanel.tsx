@@ -10,7 +10,7 @@ export function ErrorPanel({ errors }: { errors: string[] }): JSX.Element {
   return (
     <div
       role="alert"
-      className="border-tier-red bg-feedback-danger/10 text-tier-red mb-4 rounded border p-3 text-sm"
+      className="border-tier-red bg-feedback-danger/10 text-tier-red mb-4 rounded-sm border p-3 text-sm"
     >
       <p className="font-medium">{t('workHours.dialog.saveRejected')}</p>
       <ul className="mt-1 list-disc pl-6">

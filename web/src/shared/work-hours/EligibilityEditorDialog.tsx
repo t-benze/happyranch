@@ -138,7 +138,7 @@ export function EligibilityEditorDialog({
 
             <div
               role="status"
-              className="bg-surface-sunken rounded p-2 text-sm"
+              className="bg-surface-sunken rounded-sm p-2 text-sm"
             >
               {render('workHours.eligibilityEditor.liveResult', {
                 count: resulting.length,

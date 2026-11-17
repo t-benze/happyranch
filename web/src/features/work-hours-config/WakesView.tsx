@@ -129,13 +129,13 @@ function ScheduleSkeleton(): JSX.Element {
           key={i}
           className="bg-surface border-border-default shadow-pasture-sm animate-pulse space-y-3 rounded-lg border p-4"
         >
-          <div className="bg-surface-sunken h-4 w-24 rounded" />
+          <div className="bg-surface-sunken h-4 w-24 rounded-sm" />
           {[1, 2, 3].map((j) => (
             <div key={j} className="flex items-center gap-3">
-              <div className="bg-surface-sunken h-3 w-16 rounded" />
-              <div className="bg-surface-sunken h-3 w-12 rounded" />
-              <div className="bg-surface-sunken h-3 w-20 rounded" />
-              <div className="bg-surface-sunken h-3 w-28 rounded" />
+              <div className="bg-surface-sunken h-3 w-16 rounded-sm" />
+              <div className="bg-surface-sunken h-3 w-12 rounded-sm" />
+              <div className="bg-surface-sunken h-3 w-20 rounded-sm" />
+              <div className="bg-surface-sunken h-3 w-28 rounded-sm" />
             </div>
           ))}
         </div>
@@ -151,7 +151,7 @@ function ScheduleSkeleton(): JSX.Element {
 function WakeRow({ entry, slug }: { entry: WorkHourRecord; slug: string }): JSX.Element {
   const { t, locale } = useTranslation();
   return (
-    <div className="hover:bg-surface-hover flex items-center gap-3 rounded px-2 py-1.5 text-sm transition-colors">
+    <div className="hover:bg-surface-hover flex items-center gap-3 rounded-sm px-2 py-1.5 text-sm transition-colors">
       {/* Status pill */}
       <span
         className={[

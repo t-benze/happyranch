@@ -11,7 +11,7 @@ import { StatusBadge } from './StatusBadge';
 import type { Density } from './AuditRow';
 
 const DEPTH_PL = [
-  'pl-0', 'pl-4', 'pl-16', 'pl-12', 'pl-16',
+  'pl-0', 'pl-4', 'pl-8', 'pl-12', 'pl-16',
   'pl-20', 'pl-24', 'pl-28', 'pl-32', 'pl-36', 'pl-40',
 ] as const;
 

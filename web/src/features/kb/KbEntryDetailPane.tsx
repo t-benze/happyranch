@@ -146,9 +146,9 @@ export function KbEntryDetailPane({
             </div>
           ) : entryQuery.isLoading ? (
             <div className="animate-pulse space-y-4 p-2">
-              <div className="bg-bg-raised h-4 w-3/4 rounded" />
-              <div className="bg-bg-raised h-4 w-1/2 rounded" />
-              <div className="bg-bg-raised h-32 rounded" />
+              <div className="bg-bg-raised h-4 w-3/4 rounded-sm" />
+              <div className="bg-bg-raised h-4 w-1/2 rounded-sm" />
+              <div className="bg-bg-raised h-32 rounded-sm" />
             </div>
           ) : entryQuery.isError ? (
             <div className="text-center space-y-3 p-4">

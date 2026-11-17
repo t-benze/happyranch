@@ -32,9 +32,13 @@ Feature compositions keep using the stable `@/design-system/...` import paths.
   utility in a production class list (string literals and CSS `@apply`; not
   comments or the i18n copy catalogs). A name is defined when a `tokens.css`
   `@theme` block declares it, or when the Tailwind default theme that
-  `tokens.css` imports does (for example `rounded-xl`, `shadow-sm`); values
-  declared only outside `@theme` (such as the dark override block) do not
-  count. Map a missing name to an existing semantic token; add a token only
+  `tokens.css` imports does (for example `max-w-md`), unless a `tokens.css`
+  `@theme` block clears that namespace (`--radius-*: initial`,
+  `--shadow-*: initial`): then only the `tokens.css` names count, and bare
+  `rounded`/`shadow` fail too. Numeric values (`p-4`) are not token names and
+  are skipped, but a digit-led scale name in a cleared namespace
+  (`rounded-2xl`, `shadow-2xs`) is checked like any other name. Values declared only outside `@theme` (such as
+  the dark override block) do not count. Map a missing name to an existing semantic token; add a token only
   when none fits. `scripts/test-design-system-token-scanner.sh` is its fixture
   suite.
 - Spacing is Tailwind's linear 4px scale: every numeric step `N` in
@@ -47,6 +51,38 @@ Feature compositions keep using the stable `@/design-system/...` import paths.
   `--spacing-content`, button paddings) and linear-equal `--spacing-0..4`, but
   the `--scan-tokens` gate fails (exit 5) on any numeric `--spacing-N` whose
   value is not `N x 0.25rem`.
+- Radius is Pasture only (ds.css 8/12/18/pill): `rounded-sm` 8px,
+  `rounded-md` 12px, `rounded-lg` 18px, `rounded-pill` 999px, plus the
+  zero radius and Tailwind's static `rounded-full`. `tokens.css` clears
+  Tailwind's default radius scale (`--radius-*: initial`, THR-376 PR5), so
+  bare `rounded` (was 4px), `rounded-xs` and `rounded-xl`..`rounded-4xl`
+  render nothing and the `--scan-tokens` gate fails (exit 4) on them. PR5
+  rewrote every use: bare `rounded` to `rounded-sm` (4px to 8px, the Pasture
+  small radius) and `rounded-xl` to `rounded-md` (12px, unchanged); there
+  were no `rounded-2xl` uses.
+- Shadows are the warm Pasture scale only: `shadow-pasture-sm`,
+  `shadow-pasture` and `shadow-pasture-lg` (ds.css `--shadow-sm`, `--shadow`,
+  `--shadow-lg`), plus the `none` keyword and arbitrary values. `tokens.css` clears
+  Tailwind's default shadow scale (`--shadow-*: initial`, THR-376 PR5), so
+  bare `shadow` and `shadow-2xs`..`shadow-2xl` render nothing and fail the
+  `--scan-tokens` gate. PR5 rewrote every use to the closest Pasture step:
+  bare `shadow` and `shadow-sm` to `shadow-pasture-sm`, `shadow-md` to
+  `shadow-pasture`, `shadow-lg` and `shadow-xl` to `shadow-pasture-lg`.
+  tailwind-merge reads `shadow-pasture-*` as a shadow colour, so `cn()` does
+  not drop it in favour of a later `none` shadow; do not override a
+  primitive's shadow through `className`.
+- Type: `--text-page-title` is Pasture `[data-dir="a"] .h1`, 26px / 500,
+  -0.3px tracking, 1.5 line height; pair its `text-*` utility with
+  `font-display` (Newsreader) for top-level page titles. `--text-eyebrow` is
+  Pasture `.eyebrow`, 11px / 600, 0.07em tracking, 1.5 line height; pair it
+  with `uppercase` and `text-text-muted` (ink-3). `--text-display` (30px)
+  stays for the Home greeting only. PR5 only defines these tokens; the
+  Phase 3 `PageTitle` component adopts them across pages.
+- Page-local CSS does not live in `tokens.css`. The Tasks list's `.tasks-*`
+  layout rules are in `src/features/tasks/tasks.css`, imported by
+  `TasksPage.tsx`; `tokens.css` keeps only the Tasks `--text-task-*` type
+  tokens, because Tailwind builds `text-*` utilities only from `@theme` in
+  the root stylesheet.
 - `StatusBadge` routes every task/thread status through `semanticTone`
   (`open`/`in_progress` info, `pending`/`escalated` attention, `completed`
   positive, `failed` danger, the rest neutral) in the body font; there is no

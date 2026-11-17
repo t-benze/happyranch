@@ -151,7 +151,7 @@ export function TaskListColumnHeader(): JSX.Element {
   const { t } = useTranslation();
   return (
     <div
-      className={`${ROW_FLEX} text-text-muted border-border-default bg-surface-canvas tasks-column-header rounded-xl border shadow-sm font-semibold tracking-wide`}
+      className={`${ROW_FLEX} text-text-muted border-border-default bg-surface-canvas tasks-column-header rounded-md border shadow-pasture-sm font-semibold tracking-wide`}
     >
       <div className={COL.status}>{t('tasks.column.status')}</div>
       <div className={COL.task}>{t('tasks.column.task')}</div>

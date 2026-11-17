@@ -1,0 +1,17 @@
+/* Tasks list page-local layout rules (THR-376 PR5: moved verbatim out of
+ * src/design-system/tokens/tokens.css; the `text-task-*` type tokens stay in
+ * the tokens.css @theme). Unlayered, so they still win over Tailwind
+ * utilities exactly as before. Imported by TasksPage.tsx. */
+.tasks-grid { display: grid; grid-template-columns: 96px 88px minmax(0, 1fr) 120px 104px 48px; gap: 14px; }
+.tasks-row { padding: 13px 16px; }
+.tasks-column-header { padding: 0 16px 9px; font-size: 11px; }
+.tasks-heading { margin-bottom: 18px; }
+.tasks-eyebrow { font-size: 11px; margin-bottom: 8px; }
+.tasks-segment { padding: 3px; }
+.tasks-segment-button { padding: 5px 13px; font-size: 12.5px; font-weight: 600; }
+.tasks-group { margin-top: 18px; margin-bottom: 26px; }
+.tasks-group-heading { gap: 9px; }
+.tasks-group li:last-child > div { border-bottom: 0; }
+.tasks-id span { font-size: 11.5px; }
+.tasks-row .text-task-title, .tasks-group-heading .text-task-group { letter-spacing: -0.1px; }
+.tasks-status > span { font-size: 11px; gap: 5px; padding: 3px 8px; white-space: nowrap; max-width: 100%; }

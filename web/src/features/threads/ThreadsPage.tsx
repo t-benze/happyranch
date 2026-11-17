@@ -317,13 +317,13 @@ function InboxSkeleton(): JSX.Element {
       {[1, 2, 3, 4, 5].map((i) => (
         <div key={i} className="space-y-2 rounded-md px-3 py-2">
           <div className="flex items-center justify-between gap-2">
-            <div className="bg-bg-raised h-4 w-48 rounded" />
+            <div className="bg-bg-raised h-4 w-48 rounded-sm" />
             <div className="bg-bg-raised h-4 w-12 rounded-full" />
           </div>
           <div className="flex items-center gap-2">
-            <div className="bg-bg-raised h-3 w-16 rounded" />
-            <div className="bg-bg-raised h-3 w-20 rounded" />
-            <div className="bg-bg-raised ml-auto h-3 w-12 rounded" />
+            <div className="bg-bg-raised h-3 w-16 rounded-sm" />
+            <div className="bg-bg-raised h-3 w-20 rounded-sm" />
+            <div className="bg-bg-raised ml-auto h-3 w-12 rounded-sm" />
           </div>
         </div>
       ))}
@@ -1240,8 +1240,8 @@ function DetailColumn({
       <section className="flex h-full flex-col">
         {backNav}
         <div className="border-border-subtle animate-pulse space-y-2 border-b px-4 py-3">
-          <div className="bg-bg-raised h-6 w-64 rounded" />
-          <div className="bg-bg-raised h-3 w-48 rounded" />
+          <div className="bg-bg-raised h-6 w-64 rounded-sm" />
+          <div className="bg-bg-raised h-3 w-48 rounded-sm" />
         </div>
         <div className="flex flex-1 items-center justify-center">
           <p className="text-text-muted text-body">{t('threads.page.detail.loadingMessages')}</p>
@@ -1400,7 +1400,7 @@ function DetailColumn({
                             aria-label={t('threads.page.rail.removeParticipant', { name: p })}
                             title={t('threads.page.rail.removeParticipant', { name: p })}
                             onClick={() => onRemoveParticipant(p)}
-                            className="text-text-muted hover:text-feedback-danger rounded px-1 text-xs leading-none transition-colors"
+                            className="text-text-muted hover:text-feedback-danger rounded-sm px-1 text-xs leading-none transition-colors"
                           >
                             ✕
                           </button>

@@ -262,14 +262,14 @@ export function DreamDetailPane({
               {/* Skeleton header row */}
               <div className="flex items-center gap-2">
                 <div className="bg-surface-sunken h-3 w-3 rounded-full" />
-                <div className="bg-surface-sunken h-3 w-24 rounded" />
+                <div className="bg-surface-sunken h-3 w-24 rounded-sm" />
               </div>
-              <div className="bg-surface-sunken h-4 w-3/4 rounded" />
+              <div className="bg-surface-sunken h-4 w-3/4 rounded-sm" />
               {/* Skeleton stat row */}
               <div className="flex items-center gap-3">
-                <div className="bg-surface-sunken h-2.5 w-16 rounded" />
-                <div className="bg-surface-sunken h-2.5 w-16 rounded" />
-                <div className="bg-surface-sunken h-2.5 w-24 rounded" />
+                <div className="bg-surface-sunken h-2.5 w-16 rounded-sm" />
+                <div className="bg-surface-sunken h-2.5 w-16 rounded-sm" />
+                <div className="bg-surface-sunken h-2.5 w-24 rounded-sm" />
               </div>
               {/* Skeleton content cards */}
               <div className="bg-surface border-border-default shadow-pasture-sm h-24 rounded-lg border" />
