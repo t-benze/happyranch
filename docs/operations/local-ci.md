@@ -871,7 +871,8 @@ adds no shipped catalog file or production injection flag. The finite matrix
 observes unchanged Coding v2 pins; pin/size/provenance/resource refusal; unknown
 identity/version, Coding v1 and old-start refusal; fixture live-home isolation;
 missing registration, stale/Disabled settings, lost authority/native attachment;
-and exact-existing registration writing zero. No task execution is launched.
+and exact-existing two-entry registration writing zero. A2 retains the shipped
+Coding-only keeper. No task execution is launched.
 Start@1 retains one run/fixed assignments/old source-terminal semantics. Run
 `boundary-lint` and normal hooks; observe the two hosted lints without waiting or
 rerunning. This focused procedure adds no Product E2E, V3 or full-suite run.

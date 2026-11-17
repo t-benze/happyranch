@@ -732,7 +732,11 @@ if sys.argv[1:] in ([], ['--bundled-catalog']):
                     db.insert_task(TaskRecord(id='private-source', assigned_agent='r1c_manager', team='engineering',
                         task_type='task', status='in_progress', brief='Private no-launch source'))
 
-                    if selected in ('all', 'second_bundle'):
+                    def inventory():
+                        with _schema_snapshot(conn):
+                            return sequential_storage_inventory(conn)
+
+                    if selected in ('all', 'second_bundle', 'registration'):
                         # Private package resource + manifest override ONLY in this
                         # harness. The production reader, registrar, authority and
                         # precheck remain real. Nothing is added to shipped data.
@@ -767,6 +771,12 @@ if sys.argv[1:] in ([], ['--bundled-catalog']):
                             assert conn.execute('SELECT definition_bytes FROM workflow_seq_definitions WHERE identity=?',
                                 (second.pin.identity,)).fetchone()[0] == second.raw
                             print('PASS R1c second_bundle real package reader/registrar/Allowed/current-authority/native precheck zero writes', flush=True)
+                            if selected in ('all', 'registration'):
+                                store = builtin.SequentialBuiltinStore(org)
+                                before, changes = inventory(), conn.total_changes
+                                store.ensure_registered()
+                                assert conn.total_changes == changes and inventory() == before, 'exact_existing_zero_writes: registrar changed existing rows'
+                                print('PASS R1c exact_existing_zero_writes two manifest entries; complete inventory/rowid/bytes', flush=True)
 
                     if selected in ('all', 'pins'):
                         pin = coding.pin
@@ -811,17 +821,6 @@ if sys.argv[1:] in ([], ['--bundled-catalog']):
                         with patch.dict(os.environ, {'HAPPYRANCH_DAEMON_HOME': str(live_daemon_home()[0])}):
                             r1c_refuses('fixture_live_refused', lambda: start._fresh_start(org, fixture), 'sequential_venue_live_home')
                         r1c_refuses('fixture_marker_missing', lambda: start._fresh_start(org, fixture), 'sequential_venue_marker_absent')
-
-                    def inventory():
-                        with _schema_snapshot(conn):
-                            return sequential_storage_inventory(conn)
-
-                    if selected in ('all', 'registration'):
-                        store = builtin.SequentialBuiltinStore(org)
-                        before, changes = inventory(), conn.total_changes
-                        store.ensure_registered()
-                        assert conn.total_changes == changes and inventory() == before
-                        print('PASS R1c exact_existing_zero_writes complete inventory/rowid/bytes', flush=True)
 
                     if selected in ('all', 'admission'):
                         # Missing registration is observed with a real compiled
