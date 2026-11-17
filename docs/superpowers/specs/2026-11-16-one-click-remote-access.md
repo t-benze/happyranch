@@ -6,8 +6,8 @@ TASK-16298 revision 2's middle option: separate `happyranch` system user, system
 hardening, with desktop buttons behind fresh polkit authentication. TASK-16362's C1/D improvements
 are approved in principle. This proposal makes them part of pairing; C2 and the Go rewrite remain
 deferred. Round 5 records **R1 resolved to A, home-network access** (founder seq499/502) and
-**R2 APPROVED** (seq508, scope explained in seq506). Advanced-input **R3 remains FOUNDER-PENDING
-and disabled**. Round 7 (TASK-16744), addressing TASK-16733 F1, supersedes Round 6's direct-DNS
+**R2 APPROVED** (seq508, scope explained in seq506). **The custom-server option is removed** (founder seq526/529, 2026-11-17);
+future outside-home access uses a fixed operator server (§6). Round 7 (TASK-16744), addressing TASK-16733 F1, supersedes Round 6's direct-DNS
 recommendation: a matching-name public-root chain still passes its independent Let's Encrypt pool.
 **Recommend B, a same-process strict home-only TLS CONNECT forwarder on pinned v1.78.0, for both
 Linux and unsigned Mac; security/Product decision and implementation qualification pending.** R2 is not reopened.
@@ -29,12 +29,12 @@ polkit dialog showing the actual redeemed device, target runtime, stable-ID fing
 (TASK-16298/seq419). **Turn off remote access** and **Revoke device** each raise fresh polkit dialogs
 at those actions. No authentication grants later actions. Turn off removes this installation's
 remote-access configuration and authority. Everyday desktop setup needs no JSON or terminal/sudo
-commands. Advanced **Use my own server** adds operator-issued key input (§6); its server-side
-manual issuance is a test prerequisite, never an extra user pairing/terminal step in the apps.
+commands. Outside-home access is a separate future journey using a fixed operator server (§6);
+there is no custom-server option, URL field or key input in the apps.
 
 Assumptions: one release owner per Linux installation; default Headscale/private DERP is Linux-local;
-advanced mode uses the existing operator test server deployment; a healthy packaged release daemon is
-available. The root helper derives the owner from authenticated bus credentials, never an
+outside-home access will use an operator-provided fixed server, private testing now and production
+later, subject to §6's open gates; a healthy packaged release daemon is available. The root helper derives the owner from authenticated bus credentials, never an
 app-supplied username. It uses a validated existing root-owned release record, otherwise passwd-home + `.local/share/happyranch`. An arbitrary
 custom XDG home cannot be accepted from the desktop environment; unsupported locations fail visibly
 pending an approved protected binding flow. The founder-host default `.deb` layout is supported; DEV
@@ -101,19 +101,17 @@ Python/config and accepts no command-line settings. Bus/polkit uses system Pytho
 already-required `python3-gi`/Gio; installer work uses only the fixed bundled Python `-I` entry, not
 user site packages. A new dependency needs approval. D-Bus methods below have **zero input
 arguments**; reject extra arguments, FDs, environment overrides and unknown methods before effects.
-This is the polkit variant of the middle option; no second pkexec dialog. R3 proposes only the
-separately gated URL/key intake below; the default no-input contract is unchanged.
+This is the polkit variant of the middle option; no second pkexec dialog. The no-input contract
+is unchanged; outside-home key delivery remains an open founder/security gate (§6).
 
 | Exact method / polkit action suffix | Effect |
 | --- | --- |
 | `Status()` / none | Bounded redacted phase, readiness, device summaries and selected device; no secrets or mutation. |
 | `Enable()` / `enable` | Default home-network mode: derive LAN address, install/configure local Headscale/private DERP, locally mint Linux join key, enroll and verify exact system units/READY. Already-ready is inspect-only. |
 | `RefreshHomeAddress()` / `refresh-home-address` | Re-derive LAN address from kernel inventory, renew the leaf/SAN/config with the same private CA, verify readiness; no supplied address or new CA accepted. |
-| `EnableOwnServer()` / `enable-own-server` **R3-reserved** | Helper-owned URL/Linux join-key intake, then fresh auth bound to the displayed URL; enroll only, no mint capability. No local Headscale installed. |
 | `ReplaceFailed()` / `replace-failed` | Replace only a recognized failed/partial installation, with the explicit loss-of-pairings warning and transaction below. |
 | `Disable()` / `disable` | Stop admission, revoke devices, stop/remove owned remote units/config/state/credentials; never stop/delete the release daemon or package. |
 | `IssueInvite()` / `issue-invite` | Home mode: locally mint one-use join key and pairing secret after fresh auth; invalidate old invite, deliver once. |
-| `IssueOwnServerInvite()` / `issue-own-server-invite` **R3-reserved** | Intake a fresh operator-issued Mac join key for the protected server, fresh auth, then the same one-invite ceremony. |
 | `RetryPolicyRenewal()` / `retry-policy-renewal` **R2-approved** | Fresh auth retries only the fixed shipped-policy renewal; all readiness gates must pass before access resumes. |
 | `ApprovePending()` / `approve-pending` | Approve the sole redeemed pending identity captured before authentication, then atomically pin and issue its credential. |
 | `RejectPending()` / `reject-pending` | Permanently reject that captured pending identity and consume its invite. |
@@ -126,8 +124,7 @@ retained capabilities or general systemctl grants. Root calls `CheckAuthorizatio
 unique system-bus sender, with interaction allowed only for an explicit mutation. No bearer-based
 shortcut. Enable, invite issuance, redeemed-device approval, turn off and per-device revoke each
 authenticate at their own action; replacement, rejection, address refresh and policy Retry also use
-their listed fresh-auth actions. Advanced enable/invite authenticate after input validation, showing
-the normalized server URL; a cancelled prompt discards the input without enrollment or invitation.
+their listed fresh-auth actions.
 Policy/message files are root-owned package files. The helper supplies trusted
 `polkit.message` details: verb, derived/protected control URL/release owner, replacement effects, or actual
 device label + stable-ID fingerprint + comparison phrase. These details are supported by the [polkit
@@ -166,12 +163,12 @@ the existing 0600 check do not establish source UID ownership. Preserve TASK-162
 | Fixed object | Owner / mode; generation and writer |
 | --- | --- |
 | `/opt/happyranch-desktop` payload, helper, system-bus and polkit definitions in `/usr/share` | root:root, dirs/executables 0755, definitions 0644; dpkg only, never copied from the app or a checkout. |
-| `/etc/happyranch/{connector,sidecar,policy}.json` | root:hr 0640 under root:root 0755; helper generates IDs, socket settings, derived local or R3-authenticated protected control URL and bundled deny-by-default route artifact. No ExpectedPeer in the new Linux profile. |
+| `/etc/happyranch/{connector,sidecar,policy}.json` | root:hr 0640 under root:root 0755; helper generates IDs, socket settings, derived local control URL and bundled deny-by-default route artifact. No ExpectedPeer in the new Linux profile. |
 | `/etc/happyranch/{provision,install-transaction}.json` | root:root 0600; helper records layout/version/digests/phase, not secrets. No arbitrary path manifest. |
 | `/etc/happyranch/release-daemon.json` | root:root 0644; exact existing verifier fields, derived owner/home and packaged fragment. |
 | `/etc/happyranch/daemon.token` | hr:hr 0600; helper copies only the validated fixed release-home token; existing file provider, no change to daemon bearer custody. |
 | `/etc/happyranch/enrollment.key`, reserved `/etc/credstore/happyranch-tsnet-enrollment` link | root:root 0600 source and existing exact-target link; helper stages home-only key, existing LoadCredential handoff deletes source/link after durable enrollment/READY. |
-| `/etc/happyranch/invite-issuer.json` | root:root 0600; mode, local Headscale binding/CA fingerprint or R3-authenticated remote URL/system trust. No API/admin credential, key pool or standing remote mint capability. |
+| `/etc/happyranch/invite-issuer.json` | root:root 0600; mode, local Headscale binding/CA fingerprint. No API/admin credential, key pool or standing remote mint capability. |
 | `/etc/happyranch/control-ca.pem`, `/etc/happyranch/empty-ca-directory/` | Home mode only: root:hr 0640 PEM bundle containing ONLY this home's CA; root:root 0755 empty directory prevents Go's default CA-directory loading. Root helper writes/checks these; hr cannot replace them. No system trust-store mutation. |
 | `/etc/happyranch/headscale/`, `/var/lib/happyranch-headscale`, `/run/happyranch-headscale` | Protected local config, TLS and DB/Noise/DERP state/socket; dedicated locked `happyranch-headscale` user, dirs 0700, files 0600. Root retains CA signing key separately, server gets only its leaf key; socket owner is this service, root helper is its sole administrative client, no hr/founder access. |
 | Existing five connector/sidecar/target/verifier unit files in `/etc/systemd/system` | root:root 0644; shared renderer, exact unit names, helper only. Add separate bus-helper unit/definition with bounded lifecycle; no authority added to connector units. |
@@ -239,10 +236,10 @@ sequenceDiagram
     participant L as Linux desktop (untrusted UID)
     participant H as Root helper + polkit
     participant C as Connector + sidecar (hr)
-    participant I as Local Headscale / supplied remote key
+    participant I as Local Headscale
     participant M as Mac client
     L->>H: IssueInvite() + fresh admin authentication
-    H->>I: Local mint OR R3 fresh manual key intake, never remote admin key
+    H->>I: Local mint, never remote admin key
     H->>C: Persist invite digest (private root-peer IPC)
     H-->>L: One copyable invite (one delivery)
     L-->>M: User transfers invite
@@ -268,8 +265,7 @@ the invite: Mac explains **“Authorization did not finish. Create a new invite 
 re-issues an invite and repeats Linux approval; restart burns unfinished pending/delivery state.
 Reuse a still-valid, same-node persisted network membership with empty-key reopen only for joining,
 never to recover the spent invite or old grant. In home mode the helper removes abandoned partial
-nodes locally. Advanced mode cannot delete nodes/expire keys remotely: record operator cleanup
-pending. Each new Add a device still requires a fresh key, even if valid same-node membership is
+nodes locally. Each new Add a device still requires a fresh key, even if valid same-node membership is
 reused; do not consume that new key unnecessarily. A spent key is never a retry credential.
 Race/replay/expiry/store-corruption cases deny, never restore an invitation.
 
@@ -296,15 +292,15 @@ The remaining field names, size/TTL limits and one-invite ceremony stay as state
 Home `control_url` must be exactly `https://control.happyranch.invalid:8443` (optional trailing `/`
 normalizes away); reject other names, IP URLs, extra trust fields and mismatched mode/trust.
 Version 1 home/IP profiles require a new invite and approval; never silently reinterpret old
-protected URL bindings or consumed markers. Own-server intake remains disabled under R3; its
-future version negotiation needs a separate approved brief. No private key/admin token enters an invite.
+protected URL bindings or consumed markers. Custom-server intake does not exist and is not planned;
+a future fixed-server invite mode needs its own security-reviewed slice (§6 below). No private key/admin token enters an invite.
 Versioned mode/trust metadata supports later Services-issued keys in the same envelope/ceremony;
 unknown versions/fields refuse. Text transfer is sufficient; QR display is deferred if this larger
 certificate-bearing envelope cannot fit one symbol. No redirect/lookup service or separate pairing
 code. The Mac validates HTTPS URL, no userinfo/query/fragment/path except `/`, fixed tailnet runtime
 port 443, times and exact schema before connecting; shows the control host and release runtime.
 That fixed tailnet runtime port is distinct from the control server's HTTPS port: derived LAN 8443
-in home mode; public DNS 443 or the exact reviewed own-server endpoint below after R3.
+in home mode. Outside-home server configuration remains subject to the open gates below.
 Trusting an invite is trusting its sender for the target CA/home, not independent host attestation.
 
 ### v2 wire literals (pinned)
@@ -327,6 +323,11 @@ round-trip fixtures are the shared contract.
 | 11 | `home_endpoint` is canonical ASCII tailnet `host:443`, without scheme, userinfo, path, query, fragment or percent-escape. |
 | 12 | Total size is ≤4096 decoded JSON / ≤5500 encoded bytes including the prefix. There is no separate DER allowance. Never truncate. |
 | 13 | `control_url` is exactly `https://control.happyranch.invalid:8443`, with an optional single trailing `/`. |
+
+Row 3's R3 reference is historical: R3/own-server is superseded and removed.
+`{"kind":"system"}` stays refused by the shipped home-only parsers. Any future
+fixed-server trust mode needs separate security review; this gate remains **OPEN,
+not decided**, consistent with G1–G3 below.
 
 Known limitation: metadata-only recovery cannot observe invalidation of an
 unredeemed old invite. This is recorded, not solved by the pinned representations.
@@ -534,44 +535,39 @@ Turn off stops/removes the owned Headscale unit/config/DB/CA/leaf/Noise/DERP sta
 keeps inert package payload/notices. Never remove an unrelated Headscale installation. Cleanup
 uncertainty stays visible; release daemon/org data remain. Re-enable creates fresh authority.
 
-**Advanced: Use my own server (seq502–504; R3 input contract reserved).** Operator keeps Headscale on
-the operator test server and supplies its HTTPS URL and one ≤10-minute, single-use, non-ephemeral Linux join key
-at Enable; no local Headscale. Each Add a device requires another such Mac key; helper places it in
-the same invite with a fresh pairing secret. Invite lasts ≤5 minutes and never beyond the supplied
-key's operator-declared deadline. Manual issuance is an explicit operator prerequisite outside the
-app journey, using the server's admin console/authorized operator channel; no commands for users.
-Linux has no admin key, entitlement or credential that can mint/expire keys/delete remote nodes.
-Use system-verified HTTPS for this server and its private relay, no public relay fallback. Wrong,
-expired or already-used keys give **Ask the server operator for a fresh single-use key**. If joining
-consumes a key before authorization finishes, preserve only valid same-node membership, invalidate
-the attempt and require a new invite/key and Linux approval as in §5; failed Linux enrollment with
-no durable state requires a replacement Linux key. Unused superseded keys expire server-side;
-abandoned remote nodes remain pending operator cleanup. Never claim Linux revoked their membership.
+### Outside-home access (fixed operator server)
 
-**R3 proposed intake, not an exception granted here.** EnableOwnServer/IssueOwnServerInvite retain
-zero-input bus signatures; a fixed packaged helper-owned prompt collects URL/key only into private
-memory, followed by fresh operation-bound polkit showing normalized URL/purpose/target generation.
-URL is entered only at Enable; Add a device reads that protected URL and accepts key/deadline only.
-Changing server requires authenticated Turn off/Enable; invite intake cannot retarget it.
-Never accept app-owned files, argv/env, general stdin/FDs, caller config, shell or key-bearing bus
-arguments. Reject duplicate/extra fields, controls/whitespace, oversized URL (>2048 bytes), non-HTTPS,
-userinfo/query/fragment/non-root path. Accept a DNS host on HTTPS 443, plus the explicit reviewed
-non-443 case **`https://<TEST_CONTROL_HOST>:8443`** (Product seq511). No arbitrary-port allowance,
-IP-literal URL or `http:` URL follows. Home mode also rejects IP URLs: its fixed DNS URL and
-validated `control_tls.dial_ip` use B's separate home-only transport contract above.
-The reviewed DNS name must resolve only to public unicast addresses; pin validated resolution
-through the dial and verify TLS against the DNS SAN, including on 8443. Deny redirects/proxies and
-loopback/link-local/private/metadata targets to prevent root SSRF/rebinding. For v0.25.1 require the
-[48 lowercase hex join-key format](https://raw.githubusercontent.com/juanfont/headscale/v0.25.1/hscontrol/db/preauth_keys.go),
-not an API key; format cannot prove single-use/expiry, so the operator must attest those properties
-and deadline. No admin query is added to verify them. Freeze inputs before auth; revalidate after;
-changed/expired/disconnected attempts clear buffers and refuse. Persist only protected URL/trust and
-the existing root-owned one-time Linux enrollment handoff; Mac key stays memory-only until invite
-delivery. Never user-owned files/logs. Same-session input/clipboard capture remains possible: an
-agent observing a join key can use that key until consumed/expired, but it cannot mint more keys.
-This input path **does not satisfy “no caller-chosen inputs/settings”** in seq421/506: fixed methods
-alone do not fix it. R3 needs a separate explicit founder decision for slices 3a/3b/3c/4/5/6 before
-advanced implementation; do not represent seq502's product choice as approval of root intake.
+**Future plan, not shipped acceptance.** Founder seq526 (2026-11-17) removes the custom-server
+option; seq529 retains the existing test service for the dev team only. Servers are always fixed
+and operator-provided: one private test server for development/testing now, a production server
+later. Server identity (control URL, relay map and trust material) comes **only from build-time /
+private packaged configuration**. Internal test builds carry test configuration; public releases
+can never select or reach the test environment and carry production configuration only once
+available, otherwise none. No UI field, helper argument, app-owned file, environment or CLI override
+can select/retarget the server. Changing server means a different build. No URL/key intake path
+exists or is planned. Production join-key issuance via HappyRanch Services is deferred.
+
+**OPEN founder/security gates — not decided by this amendment:**
+
+- **G1:** how an operator-issued single-use, short-lived test join key reaches the Linux helper.
+  The seq421/506 no-caller-chosen-inputs principle stands; no delivery mechanism is selected here.
+- **G2:** TLS trust for the fixed server. No system-trust, pinning or CA model is selected here.
+- **G3:** the outside-home invite mode, an additive invite-contract change in its own
+  security-reviewed slice. The shipped home-only wire literals and refusals in this section stay fixed.
+
+**Dev-only test-service controls and acceptance PLAN (product seq531; not implemented or verified):**
+
+| Planned control / evidence | Ownership and gate |
+| --- | --- |
+| Approved test-device inventory recording each owner/purpose; remove obsolete devices and keep administration private. | Host steps: **founder-run, pending founder decision (seq530)**. |
+| Restrict peer-network access and relay use independently; demonstrate with a DERP check that an unauthorized client cannot relay. An optional IP allowlist is not decided. | Host steps: **founder-run, pending founder decision (seq530)**. |
+| Separate internal/private test configuration from public production builds; public artifacts cannot select or reach test. Keep test and production credentials separate. | Future build/packaging slice; any host/credential setup is **founder-run, pending founder decision (seq530)**. |
+| Preserve Linux approval of the actual device and per-device revoke; network membership never grants runtime access. | Runtime authorization unchanged; no implementation change authorized here. |
+| An outsider who knows the endpoint cannot enroll, reach peers or relay; a removed test device loses access. Record separate enrollment, peer, DERP and removed-device denial evidence without secrets. | Founder-run acceptance and all host steps: **founder-run, pending founder decision (seq530)**. |
+
+G1–G3 decisions and founder-run hardening must precede outside-home implementation/acceptance.
+No test-server identity belongs in tracked text, public artifacts or hosted fixtures. This plan
+performs no host/VM step and does not claim that endpoint secrecy alone restricts access.
 
 All modes enforce single-use invite redemption/approval in the existing cross-process transaction,
 one active invite/pending attempt per home, no raw invite at rest, digests/deadlines only. Local
@@ -581,10 +577,8 @@ cleanup failure but cannot pair or gain runtime access. No standing user/agent-r
 
 **Effective invite lifetime:** seq495's ten minutes was a UX suggestion, not this protocol's TTL.
 Home invite expiry is the earlier of issuance + five minutes and its locally minted key's expiry.
-Advanced expiry is the earlier of issuance + five minutes and the operator-declared key deadline
-(the supplied key may have up to ten minutes total). Display that actual deadline/countdown on
-Linux and Mac, including while waiting for approval; joining does not extend it. Advanced TTL is
-operator-attested, not remotely verified; earlier server rejection requires a fresh key/invite.
+Display that actual deadline/countdown on Linux and Mac, including while waiting for approval;
+joining does not extend it. Outside-home lifetime rules remain for the G3 security-reviewed slice.
 At expiry consume pending/delivery authority and show **Create new invite** on Linux / **Create new
 invite on Linux** on Mac. A replacement always invalidates the old invite/pending handle.
 
@@ -669,13 +663,13 @@ User-visible states/actions (Linux and Mac; no state below grants runtime access
 | State | Linux display / action | Mac display / action and effect |
 | --- | --- | --- |
 | Permission prompt cancelled/denied | **Action cancelled — no change**; return to the prior state. **Try again** starts a new fixed action and fresh polkit prompt; never queue it. | If waiting, remain **Waiting for Linux approval** until rejection/cancel/expiry; a cancelled Linux prompt is not approval. Mac Keychain cancellation shows **Saved access needs permission**, with **Retry**. |
-| Invite issued / expired | **Invite expires in m:ss** using §6's effective ≤5-minute deadline; **Create new invite** requires fresh auth and invalidates the old attempt. At zero: **Invite expired — Create new invite**; advanced mode also needs a fresh operator key. | Show the same deadline while joining/waiting; at zero **Invite expired — Create new invite on Linux**. Never retry the spent invite/key. |
+| Invite issued / expired | **Invite expires in m:ss** using §6's effective ≤5-minute deadline; **Create new invite** requires fresh auth and invalidates the old attempt. At zero: **Invite expired — Create new invite**. | Show the same deadline while joining/waiting; at zero **Invite expired — Create new invite on Linux**. Never retry the spent invite/key. |
 | Awaiting approval / user cancels waiting | Show actual OS label, stable-ID fingerprint, comparison phrase and target runtime; **Approve device** / **Reject device** each use fresh auth. Rejection consumes the attempt. | **Waiting for approval on [computer]** and comparison phrase; **Cancel** closes the local attempt and forgets its handle/secrets. Pending authority expires, is rejected on Linux, or is invalidated by **Create new invite**; no access or silent resume. |
-| Join key consumed / credential delivery lost | **Authorization did not finish — Create new invite**; local partial-node cleanup is recorded. Advanced: **Ask the server operator for a fresh single-use key** and show remote cleanup pending. | **Authorization did not finish — Create a new invite on Linux**; reuse only valid same-node membership, then a new invite and Linux approval. Never restore a spent handle/grant. Save/update failures use the explicit Keychain recovery in §6. |
+| Join key consumed / credential delivery lost | **Authorization did not finish — Create new invite**; local partial-node cleanup is recorded. | **Authorization did not finish — Create a new invite on Linux**; reuse only valid same-node membership, then a new invite and Linux approval. Never restore a spent handle/grant. Save/update failures use the explicit Keychain recovery in §6. |
 | Release daemon offline/restarting | **Remote access ready; HappyRanch offline/restarting**; open the normal runtime controls, then **Retry** after readiness/verifier succeeds. No credential reset. | **Home HappyRanch is offline/restarting — Retry** when known. If control/LAN is unreachable, use **Not on your home network, or home computer unavailable**; retry/network guidance, never **Connected**. |
 | Connected / disconnect / local removal | Device remains approved until **Revoke device** or **Turn off remote access**. | **Connected** only after authorized release web UI loads. **Disconnect** keeps saved access; **Remove saved computer** erases local access only. Deletion failure shows **Removal incomplete** and what remains, with **Retry removal**. |
 | Host revocation / turn off | **Revoke device** denies only that device and closes its streams. **Turn off remote access** invalidates all devices, invites and approvals, removes owned remote services/secrets, and preserves release runtime/org data. Both require fresh auth. | **Access revoked — Create new invite on Linux**; close access and erase saved material when observed. An offline Mac cannot prove local erasure, but host denial is already effective. |
-| Partial cleanup / uncertain stop | **Remote access cleanup incomplete** names safe paths/components and whether host denial is confirmed; never claim **Off** or **Removed** without proof. **Retry turn off** is the same fixed Disable action with fresh auth; unknown ownership needs operator recovery. | Close local sessions; show **Local cleanup incomplete** or **Host cleanup status unknown** as applicable. **Retry removal** erases only local state; host cleanup needs Linux. Advanced membership can stay **Server operator cleanup pending** after runtime denial. |
+| Partial cleanup / uncertain stop | **Remote access cleanup incomplete** names safe paths/components and whether host denial is confirmed; never claim **Off** or **Removed** without proof. **Retry turn off** is the same fixed Disable action with fresh auth; unknown ownership needs operator recovery. | Close local sessions; show **Local cleanup incomplete** or **Host cleanup status unknown** as applicable. **Retry removal** erases only local state; host cleanup needs Linux. |
 
 Enable first inventories only fixed managed destinations, exact unit fragments, drop-ins and package
 files, with no effects on unknown objects. Successful modern records resume idempotently; existing
@@ -694,8 +688,8 @@ only the exact journal generation. Do not roll back revoked credentials into ser
 
 Disable closes admission/revokes first, confirms connector/sidecar/verifier and owned local
 Headscale stopped, then removes only positively owned units, configs, enrollment sources/links,
-socket/runtime files and secret/trust state; reloads systemd and confirms absence. Advanced remote membership cleanup is operator-pending;
-local runtime revocation is immediate and does not depend on remote cleanup.
+socket/runtime files and secret/trust state; reloads systemd and confirms absence. Local runtime
+revocation is immediate and does not depend on remote cleanup.
 Remove a helper-created service account only when no other installation/files/processes use it;
 otherwise retain the locked nologin account and say so. Keep package/helper, non-secret audit and
 unrelated data; destroy quarantined secrets after successful replacement or disable. Any
@@ -717,8 +711,9 @@ over arbitrary user managers. No packaging edit in this design PR.
 Dependency order is 0 → 1a → 2 → 3a → 3b → 3c → 4 → 5 → 6, with **1b after renewed design/security
 approval of Round-7 B and before local-CA installation or home-mode acceptance**. Slice 1a's
 identity frame and explicit Linux profile need not wait for 1b; 1a merged in #1572 without CA
-changes. R1 is resolved and R2 approved (seq508); R3 founder-gates the advanced input path, which stays disabled.
-Round-7 trust/invite changes also await their own decision. Home mode need not wait for R3;
+changes. R1 is resolved and R2 approved (seq508). The custom-server path is removed.
+Round-7 trust/invite changes still await their own decision. Home-network delivery remains first;
+outside-home access depends separately on G1–G3 and founder-run hardening (§6). Home
 trust/Keychain feasibility and independent review remain separate gates, not another R2 decision.
 No new required CI check or automatic M1/M2 trigger; use existing authorized manual hosted acceptance. Every implementation
 slice needs independent review, scoped QA, normal hooks and the two required lint/static checks at
@@ -730,12 +725,12 @@ its exact head.
 | 1a protected ingress (merged #1572) | `app/linux/tsnet-sidecar/{sidecar,engine_tsnet,health}.go`, `runtime/remote_access/managed_provider.py`, `systemd_unit.py` and connector Unix listener/parser; WhoIs identity frame and explicit new Linux profile only, **no CA changes**. | Supported Go tests and real temporary Unix sockets: forged HTTP identity, wrong UID, malformed frame, absent WhoIs; empty-peer READY and loss/watchdog; exact hardening parity. Native Mac hosting profile unchanged. |
 | 1b Linux strict home-only transport (after Round-7 decision) | Sidecar startup/config + same-process CONNECT forwarder, explicit upstream home roots, ephemeral issuer/forced local fallback pool and immutable resolver before tsnet; fixed `SSL_CERT_FILE` + empty `SSL_CERT_DIR`; no dependency/fork or weakened units. | Execute the transport/admission matrix below against real pinned code; full tsnet proxy/root/resolver lifecycle and fail-closed teardown in addition to direct probes. Exact rendered-unit comparison allows only the two Environment lines; MDWE/all other directives identical. |
 | 2 trust ceremony | `pairing.py`, `authorization.py`, `state_store.py`, request/stream admission; no desktop or installer edits. | Retained standalone connector venue with synthetic state: two concurrent redeemers/approvals → exactly one grant; wrong node with valid bearer denied; A revoked closes A streams while B works; restart/torn/rollback/legacy cases refuse. |
-| 3a fixed helper | New helper module, system-bus/polkit definitions; status and guarded approval/revoke, no installation yet. | Standalone IPC plus disposable polkit: extra args refused, agent can prompt but not silently approve, actual target immutable across auth, fresh auth twice, wrong-UID and disconnect refusal; reserved R3 prompt input freeze/URL display, no files/FDs, SSRF/rebinding negatives. |
-| 3b generation/install | `installer.py` `_input()`/`_read_file()` source-UID/same-FD validation, generated config/transaction owner, package/helper wiring; after 3a/1b and merged packaging prerequisites. Coordinate renderer with 1a/1b; bundle pinned Headscale/notices, protected local CA/DB/admin socket, DNS-SAN leaf/server_url, fixed-name private DERP map and exact LAN bindings; R3 adds fixed advanced intake. | Temp-root/fake-manager clean/known FAILED/partial/foreign fixtures, foreign-owned 0600 token and parent/leaf swap or metadata-change refusal on enable/repair/replacement; safe `.deb` payload access, stop failure, interrupted replacement/disable, token rotation and exact unit/hardening parity. Assert generated DNS URL + explicit LAN DERP/STUN tuple, same-CA dial-IP refresh/old-cache teardown, CA/address recovery, port conflicts, full Headscale cleanup; R3 key-entry redaction and pending operator cleanup. |
-| 3c invite issuance | Local root-only Headscale mint + connector private invite IPC, v2 DNS URL + CA/fingerprint/dial_ip; after 2/3b, within approved R2. R3 adds operator-supplied per-device key, never API/admin minting or server deployment. | Synthetic local mint/idempotency/uncertainty/cleanup; fresh auth, v2 exact schema/CA size and round-trip, v1/IP-URL/unknown-field refusal, home_endpoint unchanged, effective countdown, no user mint capability, redaction/replay/expiry; R3 consumed key replacement, unverified TTL disclosure and no remote admin authority. |
-| 4 Linux UI/upgrade | `packaging/linux/desktop/happyranch_window.py`, package wiring after merged #1568/#1569; verify their installed behavior. | Existing standalone desktop checks; native GTK states/actions from §7, including prompt cancellation, countdown and partial cleanup. Separate fresh polkit prompts at enable, invite, actual-device comparison/approval, turn off and revoke; route-policy renewal paused + Retry. Home card/address refresh; R3 URL/key intake and per-device replacement; no admin-key prompt. No host service actions for maker. |
-| 5 Mac single invite | `app/mac/Sources/HappyRanchApp/{RemoteConnectionView,AppDelegate}.swift`, supervisor managed model/ClientBridge, `app/mac/tsnet-bridge` as needed; #1563. Dedicated-process strict CONNECT verifier + ephemeral local fallback roots/proxy/resolver, v2 parser/profile and unsigned login-Keychain ACL from §6, within approved R2; renewed security review/native feasibility required. R3 metadata only after approval. | Supported Swift/Go checks and actual unsigned build: join→pending→Connected; §7 cancellation/expiry/offline states; save/quit/reopen without invite, locked/denied Keychain, rebuilt code identity, signed migration and deletion failure. Linux revocation/turn off, lost delivery/new invite and partial-node cleanup/reuse; all §8 transport/admission negatives on native unsigned Mac, Noise-key mismatch, isolated homes, renewal/address recovery and secret-free diagnostics. #1564 stays queued. |
-| 6 hosted acceptance/docs | `scripts/ci/m1_install_ready_uninstall.sh`, `m2_tailnet_daemon.sh`, related fixtures/docs; builds on 1–5. | M1 uses helper-generated configs and no ExpectedPeer; clean plus known FAILED-manual fixture, exact hardening/READY/loaded units, disable residue, interrupted recovery and route-policy renewal failure closed. Separate home and the operator test server app acceptance below; M2 keeps real random-port daemon/verifier and squatter negative; adds two dynamically named stable-ID devices, one combined invite each, race/replay/expiry/wrong-node/revoke-survivor and join-success/delivery-loss recovery cases. |
+| 3a fixed helper | New helper module, system-bus/polkit definitions; status and guarded approval/revoke, no installation yet. | Standalone IPC plus disposable polkit: extra args refused, agent can prompt but not silently approve, actual target immutable across auth, fresh auth twice, wrong-UID and disconnect refusal. |
+| 3b generation/install | `installer.py` `_input()`/`_read_file()` source-UID/same-FD validation, generated config/transaction owner, package/helper wiring; after 3a/1b and merged packaging prerequisites. Coordinate renderer with 1a/1b; bundle pinned Headscale/notices, protected local CA/DB/admin socket, DNS-SAN leaf/server_url, fixed-name private DERP map and exact LAN bindings. | Temp-root/fake-manager clean/known FAILED/partial/foreign fixtures, foreign-owned 0600 token and parent/leaf swap or metadata-change refusal on enable/repair/replacement; safe `.deb` payload access, stop failure, interrupted replacement/disable, token rotation and exact unit/hardening parity. Assert generated DNS URL + explicit LAN DERP/STUN tuple, same-CA dial-IP refresh/old-cache teardown, CA/address recovery, port conflicts, full Headscale cleanup. |
+| 3c invite issuance | Local root-only Headscale mint + connector private invite IPC, v2 DNS URL + CA/fingerprint/dial_ip; after 2/3b, within approved R2. | Synthetic local mint/idempotency/uncertainty/cleanup; fresh auth, v2 exact schema/CA size and round-trip, v1/IP-URL/unknown-field refusal, home_endpoint unchanged, effective countdown, no user mint capability, redaction/replay/expiry. |
+| 4 Linux UI/upgrade | `packaging/linux/desktop/happyranch_window.py`, package wiring after merged #1568/#1569; verify their installed behavior. | Existing standalone desktop checks; native GTK states/actions from §7, including prompt cancellation, countdown and partial cleanup. Separate fresh polkit prompts at enable, invite, actual-device comparison/approval, turn off and revoke; route-policy renewal paused + Retry. Home card/address refresh; no admin-key prompt. No host service actions for maker. |
+| 5 Mac single invite | `app/mac/Sources/HappyRanchApp/{RemoteConnectionView,AppDelegate}.swift`, supervisor managed model/ClientBridge, `app/mac/tsnet-bridge` as needed; #1563. Dedicated-process strict CONNECT verifier + ephemeral local fallback roots/proxy/resolver, v2 parser/profile and unsigned login-Keychain ACL from §6, within approved R2; renewed security review/native feasibility required. | Supported Swift/Go checks and actual unsigned build: join→pending→Connected; §7 cancellation/expiry/offline states; save/quit/reopen without invite, locked/denied Keychain, rebuilt code identity, signed migration and deletion failure. Linux revocation/turn off, lost delivery/new invite and partial-node cleanup/reuse; all §8 transport/admission negatives on native unsigned Mac, Noise-key mismatch, isolated homes, renewal/address recovery and secret-free diagnostics. #1564 stays queued. |
+| 6 hosted acceptance/docs | `scripts/ci/m1_install_ready_uninstall.sh`, `m2_tailnet_daemon.sh`, related fixtures/docs; builds on 1–5. | M1 uses helper-generated configs and no ExpectedPeer; clean plus known FAILED-manual fixture, exact hardening/READY/loaded units, disable residue, interrupted recovery and route-policy renewal failure closed. Hosted fixtures remain home/synthetic; outside-home app acceptance is separately founder-run after G1–G3 and hardening below; M2 keeps real random-port daemon/verifier and squatter negative; adds two dynamically named stable-ID devices, one combined invite each, race/replay/expiry/wrong-node/revoke-survivor and join-success/delivery-loss recovery cases. |
 
 **Round-7 B falsifiable transport/admission matrix.** Required separately on Linux 1b and the
 native unsigned Mac home-bridge 5b; client logs alone are not refusal evidence. Use synthetic
@@ -757,7 +752,7 @@ with real pinned clients, then full startup/packaged venues. No live founder ser
 
 Hosted harness fixtures may provision bundled local Headscale and a test-side polkit
 authentication agent on disposable runners; production helper has no test flag, bypass action or
-alternate caller-supplied settings outside any explicitly approved R3 intake. Hosted authentication
+alternate caller-supplied settings. Hosted authentication
 simulation is not proof of the real desktop dialog; separate disposable desktop/native UI acceptance remains required. Retain existing
 secret artifact filters, private pipes, source/runtime receipts and bounded teardown. No founder
 host, live Headscale or production service is used. M3/M4 shared drivers need
@@ -771,18 +766,19 @@ evidence.
 | App case / venue | Observable result |
 | --- | --- |
 | Home-network fresh setup and today's recognized FAILED manual-install fixture, disposable Linux + Mac same LAN | Enable installs local Headscale/connector/sidecar with full hardening; Ready to invite; one invite, actual Linux approval, authorized release web UI loads. No user terminal/JSON/separate pairing. |
-| Outside-home, Linux home + Mac on a genuinely different network through the operator test server, after R3 | Operator records ≤10-minute/non-reusable issuance evidence without secret artifacts, supplies Linux/Mac keys; advanced app enable/Add a device → one invite → Linux approval → release web UI; capture direct/private-DERP route evidence separately. Retain this server until the test settles; no removal authorized. |
+| Outside-home, Linux home + Mac on a genuinely different network through the fixed operator test server; after G1–G3 decisions and founder-run hardening | Founder-run, pending founder decision (seq530): prove the seq531 outsider/DERP/removed-device denials in §6, then fixed-build app enable/Add a device → one invite → Linux approval → release web UI; capture direct/private-DERP route evidence separately. No URL/key input. Retain this server until the test settles; no removal authorized. |
 | Both flows: restart either app/daemon; add second Mac; revoke first; turn off/re-enable | Saved grant/membership reconnect without new invite after ordinary restart; daemon offline/restarting shown; A revocation cuts requests and live streams while B works; off invalidates both/invites, preserves release/org data; re-enable needs new invites. |
 | Both: cancel/expiry/replay, key consumed before approval/delivery, Keychain locked or update changes code identity, partial cleanup, policy renewal fails | §7's visible actions/countdown; clear retry/new-key/invite recovery, no restored spent authority; unsigned save/reopen and signed migration qualified separately; cleanup failures visible; expired policy pauses closed with Retry. |
 | Local trust/address recovery; cached approved client away | Full Round-7 refusal matrix above passes; fixed-name same-CA renewal/restart reconnects; changed dial IP needs explicit v2 refreshed invite, CA replacement reapproval; unavailable LAN state shown honestly; away cached success never advertised as supported outside-home acceptance. |
 
-**Timeline / risk, as of 2026-11-16:** target decisions/security + trust/packaging feasibility by
+**Timeline / risk, amended 2026-11-17:** target decisions/security + trust/packaging feasibility by
 11-18; slices 1a/1b–3c through 11-23; Linux/Mac slices 4–5 through 11-27; separate home-network acceptance
 by 11-28 and outside-home app/revocation test by **2026-12-01**, leaving 12-02 for authorized fixes.
 The operator test server term ends **2026-12-03**; outside-home acceptance must finish before that date,
 not merely join or start by then. These are targets, not a delivery commitment. R2 is approved;
 packaging #1568 and upgrade #1569 are merged,
-but installation/acceptance is unproven. R3, Round 7 strict trust/invite security/Product decision, slice 1b trust
+but installation/acceptance is unproven. G1–G3 and founder-run hardening (pending seq530),
+Round 7 strict trust/invite security/Product decision, slice 1b trust
 qualification and unsigned-Keychain/native acceptance remain unresolved. Slice 1a is merged;
 the TASK-16720 IP-SAN/LE failure and Round-7 forwarder/lifecycle work put the 11-23 integration target at risk.
 **The slice plan cannot currently guarantee that deadline.** EM must confirm feasibility by 11-25
@@ -807,8 +803,8 @@ Linux settings/window edits with its owner before slices 4/5; do not merge both 
 ## 9. Recorded decisions, remaining gates and exclusions
 
 - **R1 RESOLVED — A, home-network access.** Founder seq499, EM seq500 and Product seq501 select local
-  Headscale/local root minting now. No admin key stored anywhere. Seq502–504 retain the advanced
-  manual-key test on the operator test server; they do not reopen A or approve an input-contract exception.
+  Headscale/local root minting now. No admin key stored anywhere. Seq502–504's earlier manual-key
+  test proposal is superseded by seq526/529 below; A and its no-input contract remain unchanged.
 - **Production target, deferred:** HappyRanch Services sign-in → user token → authorized service-side
   join-key issuance; Headscale admin credential remains service-side. Preserve the versioned invite
   and host-approval journey. No Services account/infrastructure dependency for this milestone.
@@ -832,22 +828,30 @@ Linux settings/window edits with its owner before slices 4/5; do not merge both 
   fixed DNS/v2 `dial_ip`, private DERP and v1 re-pair policy. TASK-16733 F1 is addressed at Linux
   transport-spike/design level; native Mac/full lifecycle acceptance remains NOT RUN. Renew
   security/Product review and approve affected §8 cases before implementation, including #1575's
-  replacement design. R2 stays approved; R3 disabled. No changes to #1575/#1573 in this PR.
+  replacement design. R2 stays approved; the custom-server option is removed. No changes to #1575/#1573 in this PR.
   **A is only a conditional founder rescope**, accepting matching-name public-CA authentication;
   no such approval exists. Upgrade/`ts_omit_bakedroots` and fork/patch alternatives remain
   founder-reserved with costs above. No TLS bypass, dependency upgrade, host entry, new
   infrastructure or hardening exception is selected.
-- **R3 FOUNDER-RESERVED — advanced root intake:** §6's URL/key prompt is caller-selected data and
-  therefore outside the literal no-input/settings contract. Request this narrow exception explicitly;
-  it affects 3a (prompt/auth), 3b (protected URL/Linux enrollment), 3c (Mac key/invite), 4 (UI), 5
-  (validation/recovery), 6 (outside-home acceptance). Do not silently broaden R2 or weaken default
-  fixed actions. If declined, advanced enable/invites stay unavailable; do not fall back to files.
+- **R3 FOUNDER-RESERVED — advanced root intake (historical; SUPERSEDED 2026-11-17 by
+  founder seq526/529):** the earlier URL/key-prompt proposal required an exception to the
+  no-caller-chosen-inputs contract and was never approved or implemented. It is removed, not
+  awaiting approval; no own-server/custom-server input path is planned. The no-input principle
+  stands and G1 remains open for fixed-server test-key delivery.
+- **Fixed operator server ruling — 2026-11-17, founder seq526/529:** no custom-server option,
+  URL field or key input; one fixed operator test server now, production later. Seq529 retains
+  the existing test IP and restricts test Headscale to the dev team. No identity is published here.
+  Build/private configuration is the sole server source; public releases cannot select or reach
+  test. Production Services join-key issuance remains deferred. **G1–G3 are open, not decided** (§6).
+  Product seq531's device/peer/relay/build-separation controls and outsider/removed-device acceptance
+  are a plan, not shipped evidence. Every host step is **founder-run, pending founder decision
+  (seq530)**; no host/VM operation follows from this amendment.
 - **Not selected; founder-only if reopened:** dropping separate UID/system services, Headscale-only
   authorization, weaker hardening/verifier, network/agent containment, public relay/control fallback,
   connector-daemon merge/plain daemon socket, Go rewrite, connector LAN ingress, independent device
   crypto, arbitrary custom-home authority or other new top-level dependencies. Headscale bundling
   is the explicitly selected local-mode dependency; no additional dependency is authorized here.
 
-This spec PR changes one document only. Behavior, hosted M1/M2, native dialogs, Mac acceptance and
+This docs-only amendment changes the spec and its three companion docs. Behavior, hosted M1/M2, native dialogs, Mac acceptance and
 founder-host failed-install replacement are **NOT RUN**. Return the revised flow and independent
 security findings for Product review before finalizing; source review never establishes acceptance.
