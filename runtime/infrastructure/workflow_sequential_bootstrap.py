@@ -936,6 +936,7 @@ def require_bootstrap_idle_history(source: BootstrapSource) -> None:
     from runtime.infrastructure.producer_admission import ProducerAdmissionStore, NativeWriterStore
     from runtime.infrastructure.thread_admission import ThreadAdmissionStore
     from runtime.infrastructure.task_pause_controls import decode_journal
+    from runtime.infrastructure.db.tasks import TasksMixin, repository_preparation_closed
     from runtime.infrastructure.workflow_schema import _validate_coding_source_idle
 
     if source._history_started:
@@ -980,7 +981,7 @@ def require_bootstrap_idle_history(source: BootstrapSource) -> None:
             raise BootstrapEvidenceError('workflow_setup_inventory_exhausted')
         conn.set_progress_handler(progress, 1000)
         check()
-        actions = "('producer_move_lifecycle','team_move_native_writer','thread_move_lifecycle')"
+        actions = "('producer_move_lifecycle','team_move_native_writer','thread_move_lifecycle','repository_preparation')"
         audit_size = '+'.join('coalesce(length(CAST('+name+' AS BLOB)),0)'
                               for name in ('task_id', 'agent', 'payload'))
         bounds = conn.execute('SELECT count(*),coalesce(sum('+audit_size+'),0),'
@@ -1043,6 +1044,30 @@ def require_bootstrap_idle_history(source: BootstrapSource) -> None:
             if (not state.producer_settled or state.deferred or state.unknown
                     or any(not attempt.settled or not attempt.quiescent for attempt in state.attempts)):
                 raise BootstrapEvidenceError('writer_exclusion_unproven')
+        # Repository commands have independent original worker/outer custody.
+        # A terminal native producer or empty Pause journal cannot close them.
+        # Scalar-size the WHOLE collection above, then debit each original
+        # scoped reader before acquiring its variable-width payloads.
+        scopes = acquire('SELECT task_id,count(*),sum('+audit_size+') FROM audit_log '
+            "WHERE action='repository_preparation' GROUP BY task_id ORDER BY task_id")
+        for scope, count, size in scopes:
+            rows_read, bytes_read = rows_read+count, bytes_read+size
+            if rows_read > 8192 or bytes_read > 64*1048576:
+                raise BootstrapEvidenceError('workflow_setup_history_acquisition_exhausted')
+            check()
+            history = TasksMixin.repository_preparation_history_uncommitted(facade, scope)
+            obligations: dict[str, list] = {}
+            for item in history:
+                check()
+                event = item['event']
+                if event['owner']['org'] != source.fence.root.name:
+                    raise BootstrapEvidenceError('writer_exclusion_unproven')
+                obligations.setdefault(event['obligation'], []).append(event)
+            for stream in obligations.values():
+                check()
+                if stream[-1]['phase'] != 'closed' or not repository_preparation_closed(stream):
+                    raise BootstrapEvidenceError('writer_exclusion_unproven')
+            check()
         # Storage validity and native terminal history alone cannot exclude
         # queued/result/recovery work or retained publication/profile owners.
         # Bound the existing idle reader's whole collections BEFORE payload

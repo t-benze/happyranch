@@ -65,7 +65,9 @@ if len(sys.argv) == 2 and sys.argv[1].startswith('--bootstrap-owners='):
         'writer_rewrite', 'pause_prepared', 'pause_unknown', 'thread_settled', 'thread_active',
         'thread_unknown', 'thread_missing', 'thread_orphan', 'thread_rewrite', 'acquisition',
         'deadline', 'sql_budget', 'query_only', 'task_active', 'task_terminal',
-        'publication_lease', 'profile_lease', 'domain_acquisition')
+        'publication_lease', 'profile_lease', 'domain_acquisition', 'repository_opened',
+        'repository_started', 'repository_finished', 'repository_returned', 'repository_outer',
+        'repository_closed', 'repository_unsealed', 'repository_rewrite', 'repository_foreign', 'repository_acquisition')
     sys.argv[1:] = ['--bootstrap-owners']
 
 backup_case = None
@@ -2313,7 +2315,9 @@ if sys.argv[1:] in ([], ['--bootstrap-owners']):
         'writer_rewrite', 'pause_prepared', 'pause_unknown', 'thread_settled', 'thread_active',
         'thread_unknown', 'thread_missing', 'thread_orphan', 'thread_rewrite', 'acquisition',
         'deadline', 'sql_budget', 'query_only', 'task_active', 'task_terminal',
-        'publication_lease', 'profile_lease', 'domain_acquisition')
+        'publication_lease', 'profile_lease', 'domain_acquisition', 'repository_opened',
+        'repository_started', 'repository_finished', 'repository_returned', 'repository_outer',
+        'repository_closed', 'repository_unsealed', 'repository_rewrite', 'repository_foreign', 'repository_acquisition')
     for fault in cases:
         if owners_case is not None and owners_case != fault:
             continue
@@ -2343,6 +2347,55 @@ if sys.argv[1:] in ([], ['--bootstrap-owners']):
                 if fault == 'domain_acquisition':
                     db._conn.executemany('INSERT INTO workflow_authority_pointers VALUES (?,0,NULL,NULL,\'ready\',0)',
                         [('synthetic-namespace-'+str(n),) for n in range(4097)])
+                if fault.startswith('repository_'):
+                    from runtime.infrastructure.db.tasks import repository_preparation_event
+                    from runtime.models import TaskStatus
+                    # Original constructors and append validator create the
+                    # histories. This fixture grants no live owner clearance.
+                    for number in range(1366 if fault=='repository_acquisition' else 1):
+                        scope = 'TASK-synthetic-repository-'+str(number)
+                        db.insert_task(TaskRecord(id=scope, brief='private terminal repository preparation',
+                            status=TaskStatus.COMPLETED, assigned_agent='synthetic-agent'))
+                        owner = dict(org='elsewhere' if fault=='repository_foreign' else 'scratch', kind='task',
+                            scope=scope, agent='synthetic-agent', session_id='synthetic-sid',
+                            invocation_id='a'*32, attempt_id='b'*32, boot_id='synthetic-boot', native_id=scope, source='c'*64)
+                        repository = dict(path=str(private/'synthetic-repository'), device=1, inode=1)
+                        obligation, request = format(number+1, '032x'), 'd'*32
+                        events = []
+                        def event(phase, **facts):
+                            body = repository_preparation_event(owner, repository, obligation, len(events), phase, **facts)
+                            db.append_repository_preparation_uncommitted(body)
+                            events.append(body)
+                        event('opened')
+                        if fault != 'repository_opened':
+                            command = dict(command='probe', probe='target_type', request_ref=request)
+                            event('intent', **command)
+                            if fault == 'repository_acquisition':
+                                event('not_admitted', **command, complete=True)
+                            else:
+                                event('attempted', **command, attempted=True)
+                                identity = dict(pid=2147483647, handle_ref='e'*64, start_pin='f'*64)
+                                event('started', **command, **identity, attempted=True, started=True)
+                                if fault != 'repository_started':
+                                    returned = dict(attempted=True, started=True, consumed=True, returncode=0,
+                                        capture_complete=True)
+                                    event('consumed', **command, **identity, **returned)
+                                    event('finished', **command, **identity, **returned, complete=True,
+                                        receipt=dict(quiescent=True, survivors=0, cleanup_error=False, cleanup_status='clean'))
+                            if fault not in ('repository_started', 'repository_finished'):
+                                event('worker_returned', complete=True)
+                                if fault != 'repository_returned':
+                                    event('outer_closed', complete=fault!='repository_outer',
+                                        inventory=dict(intervals=[], retained=[], outer_closed=fault!='repository_outer'))
+                                    if fault not in ('repository_outer', 'repository_unsealed'):
+                                        event('closed', complete=True, state_digest='0'*64)
+                        if fault == 'repository_rewrite':
+                            # Deliberate historical corruption, not a validator
+                            # stub: the strict reader must retain its own cause.
+                            changed = json.loads(json.dumps(events[-1]))
+                            changed['owner']['source'] = '1'*64
+                            db._conn.execute("UPDATE audit_log SET payload=? WHERE id=(SELECT max(id) FROM audit_log "
+                                "WHERE action='repository_preparation')", (json.dumps(changed),))
                 if fault.startswith('producer_'):
                     store = ProducerAdmissionStore(db, 'scratch')
                     first = ProducerLifecycle(org_slug='scratch', kind='cleanup', source_id='synthetic-source',
@@ -2423,10 +2476,12 @@ if sys.argv[1:] in ([], ['--bootstrap-owners']):
                 source = bootstrap.BootstrapSource(fence=fence, deadline=time.monotonic()+119)
                 original_gate = bootstrap.require_bootstrap_idle_history
                 reached = []
+                history_sql = []
                 def observe(owner):
                     assert owner is source and owner.source.in_transaction, 'A4-N lost original snapshot'
                     assert owner.source.execute('PRAGMA query_only').fetchone()[0] == 1, 'A4-N native facade writable'
                     reached.append('original-history')
+                    owner.source.set_trace_callback(history_sql.append)
                     if fault == 'sql_budget':
                         source._inventory_steps = 640000000
                     if fault == 'query_only':
@@ -2451,7 +2506,8 @@ if sys.argv[1:] in ([], ['--bootstrap-owners']):
                             source.open()
                         except (ValueError, sqlite3.Error) as exc:
                             error = exc
-                    good = fault in ('empty', 'producer_settled', 'writer_settled', 'thread_settled', 'task_terminal')
+                    good = fault in ('empty', 'producer_settled', 'writer_settled', 'thread_settled', 'task_terminal',
+                                     'repository_closed')
                     assert reached == ['original-history'], ('A4-N original history gate missing', fault, reached)
                     assert (error is None) == good, ('A4-N accepted unclosed native history' if not good else 'A4-N rejected settled original history', fault, type(error).__name__)
                     if not good:
@@ -2459,7 +2515,8 @@ if sys.argv[1:] in ([], ['--bootstrap-owners']):
                             writer_rewrite='native writer identity changed', thread_rewrite='thread lifecycle identity changed',
                             thread_missing='thread history missing', acquisition='workflow_setup_history_acquisition_exhausted',
                             deadline='workflow_setup_history_deadline', sql_budget='workflow_setup_inventory_exhausted',
-                            query_only='workflow_setup_history_owner_invalid').get(fault, 'writer_exclusion_unproven')
+                            query_only='workflow_setup_history_owner_invalid', repository_rewrite='conflicting_history',
+                            repository_acquisition='workflow_setup_history_acquisition_exhausted').get(fault, 'writer_exclusion_unproven')
                         if fault in ('task_active', 'publication_lease', 'profile_lease'):
                             owner = dict(task_active='tasks:TASK-synthetic-domain',
                                 publication_lease='workflow_publication_leases', profile_lease='workflow_profile_leases')[fault]
@@ -2469,6 +2526,9 @@ if sys.argv[1:] in ([], ['--bootstrap-owners']):
                             if fault == 'domain_acquisition':
                                 expected = 'workflow_setup_history_acquisition_exhausted'
                             assert str(error) == expected, ('A4-N wrong native refusal cause', fault, type(error).__name__, str(error))
+                    if fault == 'repository_acquisition':
+                        assert not any('THEN payload END AS payload' in sql for sql in history_sql), \
+                            'A4-N acquired repository payload before whole bound'
                     assert source.failed == (not good), 'A4-N failure did not latch source'
                     assert source.source is not None and source.source.in_transaction, 'A4-N original source lost'
                     if fault != 'query_only':

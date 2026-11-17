@@ -12,6 +12,15 @@ deadline and cumulative install SQL ledger. Terminal history can pass this
 prerequisite without granting original host/process/preparation or cooperating
 host clearance. No historical state is rewritten or reconciled by this read.
 
+That same prerequisite also composes the existing complete repository-preparation
+history reader and original command/worker/outer closure validator. Every retained
+obligation must belong to this org and end in a validated `closed` record;
+successful command return, worker return or a terminal task alone cannot close it.
+The entire collection is scalar-sized before payload acquisition; scoped replay
+debits the same acquisition, SQL and deadline ledgers. Malformed history retains
+its original native refusal cause. This adds no live host clearance or automatic
+installation caller.
+
 `DaemonState.from_runtime` contains each org's construction and post-load binding
 before adding it to the runnable map. Expected SQLite/filesystem/data refusals
 and unexpected per-org exceptions produce closed sanitized reasons and allow

@@ -643,6 +643,36 @@ cooperating-host clearance. Supervisor/parent permission, final qualified
 registration/status, automatic mounting and whole-startup acceptance remain
 incomplete.
 
+### A4 repository-preparation prerequisite checkpoint
+
+The same `require_bootstrap_idle_history` snapshot now composes the existing
+`TasksMixin.repository_preparation_history_uncommitted` and
+`repository_preparation_closed` owners. Each original obligation must retain its
+complete immutable owner/repository/sequence and belong to the selected org, with
+positive original command receipts, worker return, outer interval closure and a
+final validated `closed` record. A valid unfinished prefix, dead process, terminal
+task or successful command cannot supply missing preparation/outer evidence.
+Malformed native history retains the original reader's cause; no event is
+rewritten, backfilled, settled or replayed.
+
+The whole repository collection is included in the original scalar row/byte/
+per-payload acquisition guard before native payload reads. Complete scoped replay
+is charged again to the SAME 8192-row/64MiB acquisition ledger and cumulative
+inventory SQL ledger, inside the original five-second native-history deadline.
+The facade exposes only the same raw query-only connection, never a writable
+Database. Refusal still precedes intent/backup and latches the original source.
+
+The existing `--bootstrap-owners` table adds repository_opened, repository_started,
+repository_finished, repository_returned, repository_outer, repository_closed,
+repository_unsealed, repository_rewrite, repository_foreign and
+repository_acquisition. Original native constructors/append validation build the
+private synthetic history fixtures;
+actual strict replay, exact unchanged source, no effects/no replay and positive
+original close remain observed. No successful validator is stubbed. This durable
+preparation prerequisite grants no live original host/process or registry/
+cooperating-host qualification. Supervisor/parent permission, final registration/
+status, startup mounting and whole-listener acceptance remain incomplete.
+
 ### A4 final entry startup isolation checkpoint
 
 The custody boundary also spans the actual daemon entry tail after

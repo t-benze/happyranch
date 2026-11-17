@@ -9,6 +9,13 @@ terminal labels or absent PIDs grant no original host closure. Automatic startup
 mounting and whole-listener acceptance remain incomplete; see the
 [current-domain checkpoint](../superpowers/specs/2026-11-14-automatic-workflow-setup.md#a4-current-domain-prerequisite-checkpoint).
 
+The prerequisite now also checks complete retained repository-preparation
+histories with their existing strict reader and command/worker/outer closure
+validator. Each obligation needs this org's original final `closed` record;
+terminal tasks or successful commands alone supply no release. Whole acquisition
+and scoped replay share the existing bounds and deadline, with no history rewrite
+or Database construction. See the [repository prerequisite](../superpowers/specs/2026-11-14-automatic-workflow-setup.md#a4-repository-preparation-prerequisite-checkpoint).
+
 Startup attachment construction now records the original SQLite connection
 before its first PRAGMA. A failed constructor closes once, preserves its primary
 cause and retains any unclosed handle in the daemon's attachment owner. Startup
