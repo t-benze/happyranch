@@ -173,7 +173,7 @@ function participantChipRole(name: string): 'worker' | 'founder' {
  * LATEST responder state (honest — the same responder_status the strip shows):
  * replied→accent green, working→info blue, declined→attention amber,
  * failed→danger red. Agents with no recorded state fall back to the neutral
- * worker color (also what the rail-chip test pins for a status-less agent).
+ * muted-text colour, never bg-agent-worker (= accent, the 'replied' colour).
  */
 function participantLed(name: string, status: string | null): string {
   if (name === 'founder') return 'bg-agent-founder';
@@ -187,7 +187,7 @@ function participantLed(name: string, status: string | null): string {
     case 'failed':
       return 'bg-danger';
     default:
-      return 'bg-agent-worker';
+      return 'bg-text-muted';
   }
 }
 
