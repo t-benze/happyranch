@@ -428,6 +428,19 @@ existing workflow. Version/build1.0.1 and minimumOS14.0 are declarations; actual
 Mac14 installation remains unproven. This unsigned internal candidate grants no
 signing, notarization, public upload/download or release approval.
 
+### Installing an unsigned internal candidate
+
+For an unsigned internal candidate copied/downloaded onto a Mac that macOS refuses
+to open because it is quarantined and unsigned, run after copying it to Applications:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/HappyRanch.app
+```
+
+This does not apply to signed and notarized builds: those must open normally.
+Never strip quarantine from a signed/notarized final ZIP or app, or during the
+quarantined-download acceptance case. The signing agent's hard rules remain unchanged.
+
 The existing workflow interface is unchanged:
 
 ```sh
@@ -668,6 +681,9 @@ The following original text preserves historical failures, investigations and
 superseded acceptance requirements. It does not control the current build.
 
 ## Internal candidate build
+
+For unsigned installation, use only the current
+[quarantine-removal step](#installing-an-unsigned-internal-candidate).
 
 Use a clean, independently reviewed full commit and tree. Version/build 1.0.1,
 arm64 and minimum 14.0 are candidate inputs, not compatibility acceptance.
@@ -1066,7 +1082,9 @@ artifact authority. Preserve distinct unsigned-app, signed-app, submission ZIP,
 notary UUID/log, stapled-app and final ZIP receipts. Parent TASK11196 owns public
 admission and anonymous download verification; local matching never sets
 `available=true` or an approved URL. No Gatekeeper-bypass installation procedure
-is supplied. See accepted TASK11214 C01–C18 for the full independent contract.
+is supplied for signed/public releases; unsigned internal candidates use only the
+documented [quarantine-removal step](#installing-an-unsigned-internal-candidate).
+See accepted TASK11214 C01–C18 for the full independent contract.
 
 The freezer operation observer uses the original-backed PyInstaller input and
 bounded independent archive reader described in
