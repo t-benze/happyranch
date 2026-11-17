@@ -4497,3 +4497,16 @@ captures before current-boot admission, appends a separate daemon release audit
 and uses normal reply replacement/admission without rewriting lifecycle history.
 See [the full contract](contracts/runtime-lifecycle.md#narrow-previous-boot-thread-release-thr-357-fix-1--1136)
 and [logging](contracts/observability.md#narrow-thread-startup-release-thr-357).
+
+## Prepared-only repository startup settlement (THR-357 Fix 2)
+
+Initial startup captures prepared non-job entries under the acquired PROVEN
+LockProof, then consumes them once immediately after Pause restore and before
+queue/runners/HTTP. A prepared phase proves the executor was never created;
+unfinished repository children still require positive kill0 death proof.
+Repository leases, Git lock files and task worktree registration must be clean.
+The new daemon closing receipt preserves original facts; only the journal entry
+is removed, admitting continuation through normal launch/refusal budgets.
+All ambiguous/exhausted candidates remain visible; exact filesystem blockers are
+logged. Dynamic loads, periodic passes, jobs and TASK-12738/TASK-12724 are excluded.
+See [the full predicate and bounds](contracts/runtime-lifecycle.md#prepared-only-startup-settlement-thr-357-fix-2--1247).

@@ -346,33 +346,8 @@ async def reconcile_preparation(task_id: str, request: Request, org: OrgDep):
                     current = org.db.repository_preparation_snapshot_uncommitted(task_id,
                         body["invocation_id"], body["attempt_id"])
                     _repository_require(current["state_digest"] == body["expected_state_digest"], "stale_state")
-                    missing = current["missing_predicates"]
-                    code = None
-                    if "original_owner" in missing:
-                        code = "original_owner_unavailable"
-                    elif "held" in missing:
-                        code = "held"
-                    elif "active_worker" in missing or "active_preparation" in missing:
-                        code = "active_owner"
-                    elif missing:
-                        code = "unresolved_preparation"
-                    elif native_binding != current["owner"]:
-                        code = "stale_state"
-                    else:
-                        from runtime.orchestrator.launch_refusals import _current
-                        if (store._live.get(live.identity) is not live or not _current(live)
-                                or live.move_reservation.cleanup_failed):
-                            code = "unresolved_preparation"
-                        else:
-                            store.held_uncommitted(task_id)
-                            live.orch._team_moves.revalidate_uncommitted(live.move_reservation)
-                            selected = list(live._repository_preparations.values())
-                            # Only the already-closed predicate branch is legal
-                            # here; no nested writer/plain binding acquisition
-                            # or local obligation mutation before durable proof.
-                            if (not selected or any(not e.closed for e in selected)
-                                    or not all(live.settle_repository_preparation(e) for e in selected)):
-                                code = "unresolved_preparation"
+                    from runtime.daemon.preparation_recovery import settle_preparation
+                    code = settle_preparation(current, live, native_binding)
                     response = dict(current, committed=code is None, code=code)
                     org.db.insert_audit_log_uncommitted(task_id, "founder", "repository_preparation_reconciliation",
                         {"command": body, "response": response})

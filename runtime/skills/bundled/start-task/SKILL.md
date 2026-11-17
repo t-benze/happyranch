@@ -1148,6 +1148,21 @@ are not covered by that rail — are documented in the **manage-agent** skill an
 
 ## Repository preparation evidence
 
+THR-357 Fix 2 permits one initial-startup prepared-only settlement under the
+acquired PROVEN daemon LockProof. The population is captured before Pause restore
+and consumed immediately after it, before queue/runners/HTTP; never on dynamic
+attachment or periodically. Prepared is positive evidence no executor was created
+because SID/session_start/possible_launch commit before spawn. Unfinished recorded
+repository children require valid PID/start pin and kill0 -> ProcessLookupError;
+no reboot inference, missing-PID clearance or prior task SID/PID reuse. Cooperative
+repository leases, no Git/ref/admin locks, and absent or valid registered task
+worktrees are mandatory. Errors/exhaustion retain visibility and log exact paths.
+The daemon appends repository_preparation_startup_closed with original/restored
+facts and removes only that journal entry; earlier unknown/failed facts and native
+receipts remain intact. Continuation uses normal launch and its three-attempt
+refusal budget. Human reconcile authority/behavior is unchanged. Jobs,
+possible_launch+ and historical TASK-12738/TASK-12724 remain excluded.
+
 Repository refresh uses the same original native preparation owner, cooperative
 common-Git-directory descriptor lease and configured host containment for all Git
 children/probes. Its original30s budget includes scan/queue/admission and siblings.
