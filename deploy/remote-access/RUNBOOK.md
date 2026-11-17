@@ -79,7 +79,7 @@ paths, including private `/var/lib/happyranch-tsnet-sidecar`. `sidecar.json` is:
 ```json
 {
   "StateDir": "/var/lib/happyranch-tsnet-sidecar",
-  "ControlURL": "https://47-242-34-153.sslip.io:8443",
+  "ControlURL": "https://<TEST_CONTROL_HOST>:8443",
   "RoleIdentity": "home-sidecar-YOUR-STABLE-ID",
   "ExpectedPeer": "YOUR-EXPECTED-PEER",
   "DERPPolicy": "private-only",
@@ -88,6 +88,8 @@ paths, including private `/var/lib/happyranch-tsnet-sidecar`. `sidecar.json` is:
   "ExcludedDaemonPorts": [8765]
 }
 ```
+
+The real `ControlURL` comes from private operator configuration outside this repository.
 
 Do not put an enrollment key or `CredentialFile` in this JSON. The existing
 systemd credential-file override supplies it. The operator supplies a fresh
