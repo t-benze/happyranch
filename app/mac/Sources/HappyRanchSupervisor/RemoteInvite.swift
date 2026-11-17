@@ -79,7 +79,7 @@ public struct RemoteInvite: Sendable, CustomStringConvertible, CustomDebugString
         try body(inviteIDBytes, joinKeyBytes, pairSecretBytes)
     }
 
-    /// Provisional issuer contract documented in README. Zero clock skew:
+    /// Normative v2 wire literals are pinned in spec section 6. Zero clock skew:
     /// issued <= now < expires, and a maximum five-minute issuance window.
     public static func parse(_ input: String, now: Date = Date()) throws -> Self {
         guard input.utf8.count <= 5500 else { throw RemoteInviteError.oversized }

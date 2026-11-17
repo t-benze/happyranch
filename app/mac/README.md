@@ -17,10 +17,13 @@ Retained historical source is nonshipping; it is not invoked indirectly.
 
 ### THR-327 slice 5: home invite UI, saved reconnect and address recovery
 
-The CLIENT form now defaults to **Home invite**. Paste one invite and choose
-Connect. The app validates it offline, displays the control host and release
-runtime, joins through the isolated home helper, pairs, shows the comparison
-phrase while awaiting Linux approval, then opens the verified session. **Connected**
+First launch offers **Run HappyRanch on this Mac** and **Connect to another
+computer**; the Daemon menu exposes the same role-switch wording. The CLIENT
+form defaults to **Home invite**. Paste one invite and choose Connect, without
+separate URL, key or pairing-code entry. The app validates it offline, displays
+the control host and release runtime, joins through the isolated home helper,
+pairs, shows the comparison phrase with **Waiting for approval on [computer]**,
+then **Opening runtime**. **Connected**
 is published only after the expected authorized main-frame web navigation
 finishes; network membership and health alone cannot publish it. Existing DIY
 Tailscale remains an explicit separate selection, never an error fallback. R3
@@ -90,7 +93,7 @@ then requires a new invite. HTTP 403 `revocation_denied` or
 `daemon_unavailable` on 403/503 identifies the release/daemon failure category.
 Unknown failures remain closed. Live interoperability is NOT RUN; no Linux
 source or protocol was changed. Slice 3c must hash the exact pair-secret text
-sent here; its issuer assumptions are listed below and in the PR body.
+sent here and conform to section 6's pinned v2 wire literals.
 
 **Same-CA address recovery (Go v2, leg 5f).** The canonical control URL is
 `https://control.happyranch.invalid:8443`; an optional root slash normalizes away
@@ -149,24 +152,20 @@ and approval. R3/system-trust envelopes parse only to a closed unsupported resul
 there is no own-server UI. Display/debug/mirror and diagnostics redact v1/v2
 invites and secrets. Swift/Data copies cannot promise cryptographic erasure.
 
-**Issuer assumptions still open for slice 3c.** Section 6 specifies base64url but
-not padding; this implementation retains canonical unpadded RFC4648 URL alphabet
-for envelope, DER, 16-byte invite ID and 32-byte pair secret. `control_tls` member
-names/discriminants (`kind`, `local_ca`, `system`, `ca_der`, `sha256`) and mode
-string `home` retain prior fixture conventions; the spec only pins the union's
-meaning and `dial_ip` spelling. SHA-256 is 64 lowercase hex. Identity strings
-are 1..128 ASCII alphanumeric/underscore/hyphen; the existing Go launcher expects
-that form. Join key is exactly 48 lowercase hex (24 bytes), matching the Go
-helper. Times are unsigned integer Unix seconds, zero future skew, with
-`issued_at <= now < expires_at` and a maximum 300-second interval. Tailnet
-`home_endpoint` is canonical ASCII host:443 without scheme/path/query/fragment
-or userinfo; the spec does not pin IP-vs-DNS representation. A single exact CA
-DER with CA:TRUE and current validity must fit the whole 4096-byte decoded JSON
-budget; there is no extra independent DER size allocation. CA SAN is not needed;
-B verifies the **server leaf's fixed DNS SAN**. Section-6 semantics are normative;
-these unspecified literal encodings remain open assumptions, not a claim of
-issuer compatibility. The PR body ties each assumption to the relevant sentence,
-including min(key expiry, pairing expiry), fresh auth, one-use and address refresh.
+**Normative issuer contract for slice 3c.** The [v2 wire literals (pinned)
+table in section 6](../../docs/superpowers/specs/2026-11-16-one-click-remote-access.md#v2-wire-literals-pinned)
+adopts the implemented representations. Slice 3c MUST conform; issuer/parser
+round-trip fixtures are the shared contract. `RemoteInviteTests` owns the Mac
+round-trip fixture and strict refusal cases, including padded envelopes, wrong
+union discriminators, float/string times and uppercase fingerprints.
+`TestHomeTransportAdmission/uppercase-fingerprint` independently checks the Go
+transport boundary. The helper's private launch frame is a separate protocol;
+its CA bytes use Go/Swift JSON Data encoding, not the invite's base64url spelling.
+CA SAN is not needed; B verifies the **server leaf's fixed DNS SAN**. The issuer
+must floor fractional deadlines so no response extends the envelope deadline.
+Known limitation: metadata-only recovery cannot observe invalidation of an
+unredeemed old invite. Slice 3c is not built yet; live issuer interoperability
+remains NOT RUN.
 
 `SavedDeviceCredentialStore` separates custody from UI/network work.
 `LoginKeychainDeviceStore` uses a separate local login-Keychain generic password,

@@ -89,7 +89,7 @@ struct HappyRanchApp: App {
     }
 
     /// Confirm and execute a role switch, gated by a confirmation callback.
-    /// Called from the "Switch to Client…" / "Switch to Home…" menu item.
+    /// Called from the "Connect to another computer…" / "Run HappyRanch on this Mac…" menu item.
     /// - Parameters:
     ///   - appDelegate: The AppDelegate on which to operate.
     ///   - confirmed: A closure that receives the alert title and body, and

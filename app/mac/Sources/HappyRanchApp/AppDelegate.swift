@@ -955,8 +955,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, SPUU
     /// The label for role-switch menu item — dynamic based on current role.
     var switchRoleMenuLabel: String {
         switch connectionRole {
-        case .home: return "Switch to Client…"
-        case .client: return "Switch to Home…"
+        case .home: return "Connect to another computer…"
+        case .client: return "Run HappyRanch on this Mac…"
         }
     }
 

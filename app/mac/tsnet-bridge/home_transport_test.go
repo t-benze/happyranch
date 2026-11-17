@@ -118,6 +118,7 @@ func TestHomeTransportAdmission(t *testing.T) {
 		fp, ip string
 	}{
 		{"fingerprint", ca.der, transportFingerprint(forged.der), "192.168.1.40"},
+		{"uppercase-fingerprint", ca.der, strings.ToUpper(transportFingerprint(ca.der)), "192.168.1.40"},
 		{"forged-ca", forged.der, transportFingerprint(ca.der), "192.168.1.40"},
 		{"not-ca", nonCA.der, transportFingerprint(nonCA.der), "192.168.1.40"},
 		{"expired-ca", expired.der, transportFingerprint(expired.der), "192.168.1.40"},

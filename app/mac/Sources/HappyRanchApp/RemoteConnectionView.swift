@@ -178,7 +178,7 @@ private struct HomeInviteForm: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
-                Text("Connect to your home computer").font(.title2).fontWeight(.semibold)
+                Text("Connect to another computer").font(.title2).fontWeight(.semibold)
                 Text(model.phase.message).accessibilityIdentifier("home-invite-status")
                 if let target = model.target {
                     Text("Control host: \(URL(string: target.controlURL)?.host ?? "")")

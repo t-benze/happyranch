@@ -152,14 +152,15 @@ struct ContentView: View {
                     VStack(spacing: 8) {
                         Image(systemName: "house.fill")
                             .font(.system(size: 28))
-                        Text("Run Daemon Here")
+                        Text("Run HappyRanch on this Mac")
                             .font(.headline)
+                            .multilineTextAlignment(.center)
                         Text("Host the HappyRanch runtime\non this machine")
                             .font(.caption)
                             .foregroundColor(.secondary)
                             .multilineTextAlignment(.center)
                     }
-                    .frame(width: 180, height: 140)
+                    .frame(width: 240, height: 140)
                 }
                 .buttonStyle(.borderedProminent)
 
@@ -170,14 +171,15 @@ struct ContentView: View {
                     VStack(spacing: 8) {
                         Image(systemName: "arrow.triangle.swap")
                             .font(.system(size: 28))
-                        Text("Connect to Remote")
+                        Text("Connect to another computer")
                             .font(.headline)
+                            .multilineTextAlignment(.center)
                         Text("Connect to a remote\nHappyRanch runtime")
                             .font(.caption)
                             .foregroundColor(.secondary)
                             .multilineTextAlignment(.center)
                     }
-                    .frame(width: 180, height: 140)
+                    .frame(width: 240, height: 140)
                 }
                 .buttonStyle(.bordered)
             }

@@ -80,6 +80,7 @@ final class RemoteInviteTests: XCTestCase {
         refusal(String(repeating: "a", count: 5501), .oversized, name: "encoded limit")
         refusal("hrinvite2:" + wire(Data(repeating: 32, count: 4097)), .oversized, name: "decoded limit")
         refusal("wrong:" + valid, .prefix, name: "prefix")
+        refusal(valid + "=", .encoding, name: "padded envelope")
         for bad in ["", "a", "AA=", "AA+_", "AA/_", "AA\n", "AB"] {
             refusal("hrinvite2:" + bad, .encoding, name: "base64url")
         }
@@ -129,6 +130,10 @@ final class RemoteInviteTests: XCTestCase {
         var trust = fixture()["control_tls"] as! [String: Any]
         trust["sha256"] = String(repeating: "0", count: 64); fields = fixture(); fields["control_tls"] = trust
         refusal(try encode(fields), .fingerprint, name: "fingerprint mismatch")
+        trust = fixture()["control_tls"] as! [String: Any]
+        trust["sha256"] = (trust["sha256"] as! String).uppercased()
+        fields = fixture(); fields["control_tls"] = trust
+        refusal(try encode(fields), .fingerprint, name: "uppercase fingerprint")
         for malformed in [Data([0x30, 0]), Data(base64Encoded: Self.certificate)! + Data([0])] {
             fields = fixture(); fields["control_tls"] = tls(malformed)
             refusal(try encode(fields), .certificate, name: "malformed or trailing DER")
@@ -140,6 +145,9 @@ final class RemoteInviteTests: XCTestCase {
             fields = fixture(); fields["control_tls"] = ["kind": kind]
             refusal(try encode(fields), .unsupported, name: "unsupported trust")
         }
+        trust = fixture()["control_tls"] as! [String: Any]; trust["kind"] = "LOCAL_CA"
+        fields = fixture(); fields["control_tls"] = trust
+        refusal(try encode(fields), .unsupported, name: "wrong union discriminator with valid members")
         for key in ["kind", "ca_der", "sha256", "dial_ip"] {
             trust = fixture()["control_tls"] as! [String: Any]; trust.removeValue(forKey: key)
             fields = fixture(); fields["control_tls"] = trust
@@ -154,8 +162,14 @@ final class RemoteInviteTests: XCTestCase {
         for (issued, expires) in [(1_800_000_000, 1_800_000_010), (1_800_000_011, 1_800_000_300),
             (1_800_000_000, 1_800_000_301), (1_800_000_000, 1_800_000_000), (-1, 100)] {
             var fields = fixture(); fields["issued_at"] = issued; fields["expires_at"] = expires
-            // Negative JSON tokens are outside the provisional unsigned timestamp grammar.
+            // Negative JSON tokens are outside the pinned nonnegative Int64 grammar.
             refusal(try encode(fields), issued < 0 ? .schema : .time, name: "time window")
+        }
+        for key in ["issued_at", "expires_at"] {
+            var fields = fixture(); fields[key] = key == "issued_at" ? "1800000000" : "1800000300"
+            refusal(try encode(fields), .time, name: "string \(key)")
+            fields = fixture(); fields[key] = key == "issued_at" ? 1_800_000_000.5 : 1_800_000_299.5
+            refusal(try encode(fields), .schema, name: "float \(key)")
         }
         for (key, count) in [("invite_id", 15), ("invite_id", 17), ("pair_secret", 31), ("pair_secret", 33)] {
             var fields = fixture(); fields[key] = wire(Data(repeating: 97, count: count))

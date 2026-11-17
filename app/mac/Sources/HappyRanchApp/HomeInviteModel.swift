@@ -17,7 +17,7 @@ final class HomeInviteModel: ObservableObject {
             case .joining: return "Joining network"
             case .pairing: return "Pairing"
             case .awaitingApproval: return "Awaiting Linux approval"
-            case .opening: return "Opening verified session"
+            case .opening: return "Opening runtime"
             case .connected: return "Connected"
             case .stopping: return "Closing local session"
             case .failed(let failure): return failure.localizedDescription
