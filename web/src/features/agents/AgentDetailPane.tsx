@@ -441,7 +441,7 @@ export function AgentDetailPane({ agentName, onClose, onStartThread, onRetired }
           <TeamEscalationPolicyEntryCard agent={policyAgent} />
         )}
         {/* Executor — live-derived dropdown (same source as AddAgentDialog) */}
-        <section className="bg-surface border-border-default shadow-pasture-sm rounded-lg border p-4">
+        <section className="bg-surface-raised border-border-default shadow-pasture-sm rounded-lg border p-4">
           <h3 className="text-overline text-text-muted mb-3 tracking-wider uppercase">
             {t('agents.executor.label')}
           </h3>
@@ -456,7 +456,7 @@ export function AgentDetailPane({ agentName, onClose, onStartThread, onRetired }
               value={displayExecutor}
               disabled={saving || !agentReady || executorOptions.state !== 'ready'}
               onChange={(e) => onExecutorChange(e.target.value)}
-              className="border-border-subtle bg-surface w-full max-w-xs rounded-sm border p-2 text-sm"
+              className="border-border-subtle bg-surface-raised w-full max-w-xs rounded-sm border p-2 text-sm"
               aria-label={t('agents.executor.label')}
             >
               {/* Stale current executor — visible but not assignable */}
@@ -518,7 +518,7 @@ export function AgentDetailPane({ agentName, onClose, onStartThread, onRetired }
         </section>
 
         {/* Model — freeform text input (executor-dependent, not a fixed enum) */}
-        <section className="bg-surface border-border-default shadow-pasture-sm rounded-lg border p-4">
+        <section className="bg-surface-raised border-border-default shadow-pasture-sm rounded-lg border p-4">
           <h3 className="text-overline text-text-muted mb-3 tracking-wider uppercase">
             {t('agents.detail.model')}
           </h3>
@@ -528,7 +528,7 @@ export function AgentDetailPane({ agentName, onClose, onStartThread, onRetired }
             disabled={saving || !selectionReady}
             onChange={(e) => onModelChange(e.target.value)}
             placeholder={displayExecutor !== '—' ? t('agents.detail.modelDefault', { executor: displayExecutor }) : t('agents.detail.modelUnset')}
-            className="border-border-subtle bg-surface w-full max-w-xs rounded-md border px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-accent-soft"
+            className="border-border-subtle bg-surface-raised w-full max-w-xs rounded-md border px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-accent-soft"
             aria-label={t('agents.detail.model')}
           />
           <p className="text-text-muted mt-2 text-xs">
@@ -536,7 +536,7 @@ export function AgentDetailPane({ agentName, onClose, onStartThread, onRetired }
           </p>
         </section>
 
-        <section className="bg-surface border-border-default shadow-pasture-sm rounded-lg border p-4">
+        <section className="bg-surface-raised border-border-default shadow-pasture-sm rounded-lg border p-4">
           <label htmlFor="agent-reasoning-effort" className="text-overline text-text-muted mb-3 block tracking-wider uppercase">
             {t('agents.detail.reasoningEffort')}
           </label>
@@ -545,7 +545,7 @@ export function AgentDetailPane({ agentName, onClose, onStartThread, onRetired }
             aria-describedby="agent-reasoning-effort-help"
             disabled={saving || !effortSupported}
             onChange={(event) => onEffortChange(event.target.value)}
-            className="border-border-subtle bg-surface w-full max-w-xs rounded-md border px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-accent-soft" />
+            className="border-border-subtle bg-surface-raised w-full max-w-xs rounded-md border px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-accent-soft" />
           <p id="agent-reasoning-effort-help" className="text-text-muted mt-2 text-xs">
             {t(effortHelpKey)}
             {effortSupported && effortOption?.kind === 'custom' && ` ${effortOption.reasoningEffortValues?.join(', ')}`}
@@ -560,7 +560,7 @@ export function AgentDetailPane({ agentName, onClose, onStartThread, onRetired }
 
         {/* Description — READ-ONLY */}
         {agent?.description && (
-          <section className="bg-surface border-border-default shadow-pasture-sm rounded-lg border p-4">
+          <section className="bg-surface-raised border-border-default shadow-pasture-sm rounded-lg border p-4">
             <h3 className="text-overline text-text-muted mb-2 tracking-wider uppercase">
               {t('agents.field.description')}
             </h3>
@@ -573,7 +573,7 @@ export function AgentDetailPane({ agentName, onClose, onStartThread, onRetired }
         )}
 
         {/* Repo chips — rounded-full tag pattern */}
-        <section className="bg-surface border-border-default shadow-pasture-sm rounded-lg border p-4">
+        <section className="bg-surface-raised border-border-default shadow-pasture-sm rounded-lg border p-4">
           <h3 className="text-overline text-text-muted mb-3 tracking-wider uppercase">
             {t('agents.detail.repos')}
           </h3>
@@ -609,13 +609,13 @@ export function AgentDetailPane({ agentName, onClose, onStartThread, onRetired }
           {showRepoAdd ? (
             <div className="bg-surface-sunken border-border-default space-y-2 rounded-lg border p-3">
               <input
-                className="border-border-subtle bg-surface w-full rounded-md border px-2.5 py-1.5 text-xs"
+                className="border-border-subtle bg-surface-raised w-full rounded-md border px-2.5 py-1.5 text-xs"
                 placeholder={t('agents.detail.repoNamePlaceholder')}
                 value={repoAddName}
                 onChange={(e) => setRepoAddName(e.target.value)}
               />
               <input
-                className="border-border-subtle bg-surface w-full rounded-md border px-2.5 py-1.5 text-xs"
+                className="border-border-subtle bg-surface-raised w-full rounded-md border px-2.5 py-1.5 text-xs"
                 placeholder={t('agents.detail.repoUrlPlaceholder')}
                 value={repoAddUrl}
                 onChange={(e) => setRepoAddUrl(e.target.value)}
@@ -642,7 +642,7 @@ export function AgentDetailPane({ agentName, onClose, onStartThread, onRetired }
         </section>
 
         {/* Accountability metrics — display font, card */}
-        <section className="bg-surface border-border-default shadow-pasture-sm rounded-lg border p-4">
+        <section className="bg-surface-raised border-border-default shadow-pasture-sm rounded-lg border p-4">
           <h3 className="text-overline text-text-muted mb-3 tracking-wider uppercase">
             {t('agents.detail.accountability')}
           </h3>
@@ -715,7 +715,7 @@ export function AgentDetailPane({ agentName, onClose, onStartThread, onRetired }
             : cleanupQuery.isError ? <div><p className="text-tier-red text-xs">{renderAgentError(classifyAgentError(cleanupQuery.error, 'agents.detail.cleanupError'), t)}</p><Button size="sm" variant="ghost" onClick={() => cleanupQuery.refetch()}>{t('common.retry')}</Button></div>
             : cleanupQuery.data?.activities.length ? <ul className="space-y-2">{cleanupQuery.data.activities.map((activity) => {
               const summary = activity.output_summary?.trim() || t('agents.detail.summaryUnavailable');
-              return <li key={activity.task_id} className="border-border-default bg-surface shadow-pasture-sm rounded-lg border p-3"><Link to={taskRoutes.detail(activity.task_id)} className="text-accent-text break-all text-sm hover:underline">{activity.task_id}</Link><p className="text-text-muted mt-1 text-xs">{t('agents.detail.cleanupRun', { date: formatDateShapeFor(locale, new Date(activity.created_at), 'monthDayYear'), status: activity.status })}{activity.result_status ? ` · ${t('agents.detail.cleanupResult', { result: activity.result_status })}` : ''}</p><p className="text-text-primary mt-2 break-words text-sm whitespace-pre-wrap">{summary}</p></li>;
+              return <li key={activity.task_id} className="border-border-default bg-surface-raised shadow-pasture-sm rounded-lg border p-3"><Link to={taskRoutes.detail(activity.task_id)} className="text-accent-text break-all text-sm hover:underline">{activity.task_id}</Link><p className="text-text-muted mt-1 text-xs">{t('agents.detail.cleanupRun', { date: formatDateShapeFor(locale, new Date(activity.created_at), 'monthDayYear'), status: activity.status })}{activity.result_status ? ` · ${t('agents.detail.cleanupResult', { result: activity.result_status })}` : ''}</p><p className="text-text-primary mt-2 break-words text-sm whitespace-pre-wrap">{summary}</p></li>;
             })}</ul> : <p className="text-text-muted text-xs">{t('agents.detail.noCleanup')}</p>}
         </section>
 
@@ -731,7 +731,7 @@ export function AgentDetailPane({ agentName, onClose, onStartThread, onRetired }
               {jobsQuery.data.jobs.map((j) => (
                 <li
                   key={j.id}
-                  className="border-border-default bg-surface shadow-pasture-sm rounded-lg border px-3 py-2"
+                  className="border-border-default bg-surface-raised shadow-pasture-sm rounded-lg border px-3 py-2"
                 >
                   {slug ? (
                     <Link
@@ -757,7 +757,7 @@ export function AgentDetailPane({ agentName, onClose, onStartThread, onRetired }
 
         {/* Retire — Founder-only; the daemon decides eligibility on confirm. */}
         {agent && (
-          <section className="bg-surface border-border-default shadow-pasture-sm rounded-lg border p-4">
+          <section className="bg-surface-raised border-border-default shadow-pasture-sm rounded-lg border p-4">
             <h3 className="text-overline text-text-muted mb-2 tracking-wider uppercase">
               {t('agents.retire.action')}
             </h3>

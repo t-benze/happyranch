@@ -51,7 +51,7 @@ function JobActionSummary({
     jobId && jobsBasePath ? (
       <Link
         to={`${jobsBasePath}/${jobId}`}
-        className="text-accent hover:underline font-mono"
+        className="text-accent-default hover:underline font-mono"
         onClick={(e) => e.stopPropagation()}
       >
         {jobId}
@@ -131,35 +131,35 @@ export function AuditRow({
           pad,
         )}
       >
-        <span className="text-fg-muted font-mono text-xs whitespace-nowrap">
+        <span className="text-text-secondary font-mono text-xs whitespace-nowrap">
           {formatTime(entry.timestamp)}
         </span>
-        {entry.agent && <span className="text-fg text-sm">{entry.agent}</span>}
+        {entry.agent && <span className="text-text-primary text-sm">{entry.agent}</span>}
         {isJobAction ? (
-          <span className="text-fg text-xs">
+          <span className="text-text-primary text-xs">
             <JobActionSummary entry={entry} jobsBasePath={jobsBasePath} />
           </span>
         ) : (
-          <span className="text-fg font-mono text-xs">{entry.action}</span>
+          <span className="text-text-primary font-mono text-xs">{entry.action}</span>
         )}
         {entry.task_id && (
           <IdBadge kind="task" id={entry.task_id} to={taskHref} />
         )}
-        <span className="text-fg-muted ml-auto text-xs">{open ? '▾' : '▸'}</span>
+        <span className="text-text-secondary ml-auto text-xs">{open ? '▾' : '▸'}</span>
       </button>
       {open && (
         <div className="bg-surface-sunken border-border-subtle border-t px-8 py-3">
-          <pre className="text-fg overflow-x-auto font-mono text-xs">
+          <pre className="text-text-primary overflow-x-auto font-mono text-xs">
 {JSON.stringify(entry.payload, null, 2)}
           </pre>
           <div className="mt-3 flex gap-3">
             {taskHref && entry.task_id && (
-              <a className="text-accent text-xs hover:underline" href={taskHref}>
+              <a className="text-accent-default text-xs hover:underline" href={taskHref}>
                 View task →
               </a>
             )}
             {agentHref && entry.agent && (
-              <a className="text-accent text-xs hover:underline" href={agentHref}>
+              <a className="text-accent-default text-xs hover:underline" href={agentHref}>
                 View agent activity →
               </a>
             )}

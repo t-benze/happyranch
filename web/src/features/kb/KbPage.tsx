@@ -49,7 +49,7 @@ const COMPOSE_ENABLED = features.kb_compose_ui;
 function CrescentMoonBadge({ className }: { className?: string }): JSX.Element {
   return (
     <svg
-      className={cn('text-accent inline-block shrink-0', className)}
+      className={cn('text-accent-default inline-block shrink-0', className)}
       width="16"
       height="16"
       viewBox="0 0 24 24"
@@ -143,7 +143,7 @@ function GroupedFolderRail({
     cn(
       'flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-sm',
       active
-        ? 'bg-accent-muted text-accent-text font-medium'
+        ? 'bg-accent-soft text-accent-text font-medium'
         : 'text-text-muted hover:bg-surface-raised',
     );
   const countClass = 'ml-auto font-mono text-xs tabular-nums';
@@ -151,7 +151,7 @@ function GroupedFolderRail({
     cn(
       'inline-flex items-center rounded-full border px-2.5 py-1 text-xs',
       active
-        ? 'border-transparent bg-accent-muted text-accent-text font-medium'
+        ? 'border-transparent bg-accent-soft text-accent-text font-medium'
         : 'border-border-subtle bg-surface-sunken text-text-muted hover:bg-surface-raised',
     );
 
@@ -249,11 +249,11 @@ function LoadingSkeleton(): JSX.Element {
       {[1, 2, 3, 4].map((i) => (
         <div key={i} className="space-y-2">
           <div className="flex items-center gap-2">
-            <div className="h-3 w-20 rounded-sm bg-bg-raised" />
-            <div className="h-3 w-16 rounded-sm bg-bg-raised" />
+            <div className="h-3 w-20 rounded-sm bg-surface-raised" />
+            <div className="h-3 w-16 rounded-sm bg-surface-raised" />
           </div>
-          <div className="h-4 w-3/4 rounded-sm bg-bg-raised" />
-          <div className="h-3 w-1/2 rounded-sm bg-bg-raised" />
+          <div className="h-4 w-3/4 rounded-sm bg-surface-raised" />
+          <div className="h-3 w-1/2 rounded-sm bg-surface-raised" />
         </div>
       ))}
     </div>
@@ -297,7 +297,7 @@ function DreamCandidateRow({
               <span className="text-xs text-text-primary font-medium font-mono">
                 {c.slug}
               </span>
-              <span className="text-2xs px-1 rounded-full font-medium bg-accent/10 text-accent ml-auto">
+              <span className="text-2xs px-1 rounded-full font-medium bg-accent-default/10 text-accent-default ml-auto">
                 {t('kb.pendingReview')}
               </span>
             </div>

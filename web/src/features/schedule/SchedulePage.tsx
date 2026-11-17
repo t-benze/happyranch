@@ -13,7 +13,7 @@
  * States: loading skeleton, calm empty ("No scheduled wakes"), error with Retry.
  *
  * Pasture vocabulary:
- *   Cards: bg-surface + border-border-default + shadow-pasture-sm + rounded-lg
+ *   Cards: bg-surface-raised + border-border-default + shadow-pasture-sm + rounded-lg
  *   Page heading: its own <h1> (font-display serif, text-display); PageHeader was removed in THR-376 PR6
  *   Agent names: font-display
  *   IDs / times / counts: font-mono tabular-nums
@@ -126,7 +126,7 @@ function ScheduleSkeleton(): JSX.Element {
       {[1, 2].map((i) => (
         <div
           key={i}
-          className="bg-surface border-border-default shadow-pasture-sm animate-pulse space-y-3 rounded-lg border p-4"
+          className="bg-surface-raised border-border-default shadow-pasture-sm animate-pulse space-y-3 rounded-lg border p-4"
         >
           <div className="bg-surface-sunken h-4 w-24 rounded-sm" />
           {[1, 2, 3].map((j) => (
@@ -221,7 +221,7 @@ function AgentGroupCard({
   slug: string;
 }): JSX.Element {
   return (
-    <div className="bg-surface border-border-default shadow-pasture-sm overflow-hidden rounded-lg border">
+    <div className="bg-surface-raised border-border-default shadow-pasture-sm overflow-hidden rounded-lg border">
       {/* Card header — agent name + count eyebrow */}
       <div className="border-border-default flex items-center justify-between border-b px-4 py-3">
         <Link

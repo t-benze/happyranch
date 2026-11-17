@@ -332,7 +332,7 @@ export function NewThreadDialog({ open, onClose, prefill, onCreated, agents = []
             />
           </FormField>
           <FormField label={t('threads.newThread.attachmentsLabel')} htmlFor={`${idBase}-attachments`}>
-            <label className="border-border-subtle bg-surface text-caption hover:bg-surface-hover inline-flex w-fit cursor-pointer items-center gap-2 rounded-md border px-2 py-1">
+            <label className="border-border-subtle bg-surface-raised text-caption hover:bg-surface-hover inline-flex w-fit cursor-pointer items-center gap-2 rounded-md border px-2 py-1">
               <Paperclip className="h-3.5 w-3.5" aria-hidden="true" />
               <span>{t('threads.newThread.attachFiles')}</span>
               <input

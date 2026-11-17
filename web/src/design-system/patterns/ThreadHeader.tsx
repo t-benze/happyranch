@@ -118,7 +118,7 @@ export function ThreadHeader({
         }}
         maxLength={120}
         aria-label={L.titleInput}
-        className="border-border-default bg-surface text-body-sm text-text-primary min-w-0 flex-1 rounded-md border px-2 py-1"
+        className="border-border-default bg-surface-raised text-body-sm text-text-primary min-w-0 flex-1 rounded-md border px-2 py-1"
       />
       <Button size="sm" onClick={onRenameSave} disabled={renameSaving || !renameDraft.trim()}>
         {L.save}

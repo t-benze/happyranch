@@ -24,7 +24,7 @@ import { BlockedReason, CoverageList, Notice, OperationStateBadge, useUtc } from
 import { KnowledgeDrawer, RetiredBadge, type KnowledgeView } from './KnowledgeDrawer';
 import { SOURCE_ERROR } from './knowledgeCopy';
 
-const card = 'bg-surface border-border-default shadow-pasture-sm overflow-hidden rounded-lg border';
+const card = 'bg-surface-raised border-border-default shadow-pasture-sm overflow-hidden rounded-lg border';
 
 function recordLabel(record: KnowledgeSourceRecord): string {
   const id = record.metadata.id;

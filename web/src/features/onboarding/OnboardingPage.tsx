@@ -351,7 +351,7 @@ function CreateStep({
   }
 
   return (
-    <section className="bg-surface border-border-default shadow-pasture-sm rounded-lg border p-16">
+    <section className="bg-surface-raised border-border-default shadow-pasture-sm rounded-lg border p-16">
       <p className="text-accent-text text-xs font-semibold tracking-wider uppercase">
         {t('onboarding.create.eyebrow')}
       </p>
@@ -433,9 +433,9 @@ function CreatingState({ slug }: { slug: string }): JSX.Element {
   return (
     <section
       aria-label={t('onboarding.creating.aria')}
-      className="bg-surface border-border-default shadow-pasture-sm flex flex-col items-center rounded-lg border px-16 py-16 text-center"
+      className="bg-surface-raised border-border-default shadow-pasture-sm flex flex-col items-center rounded-lg border px-16 py-16 text-center"
     >
-      <Spinner label={t('onboarding.loading')} className="text-accent h-16 w-16" />
+      <Spinner label={t('onboarding.loading')} className="text-accent-default h-16 w-16" />
       <h1 className="font-display text-h2 text-text-primary mt-6 font-medium">
         {render('onboarding.creating.heading', {
           slug: <span className="text-accent-text font-mono">{slug}</span>,
@@ -462,7 +462,7 @@ function SuccessStep({
   const { t, render } = useTranslation();
   const navigate = useNavigate();
   return (
-    <section className="bg-surface border-border-default shadow-pasture-sm rounded-lg border p-16">
+    <section className="bg-surface-raised border-border-default shadow-pasture-sm rounded-lg border p-16">
       <span
         aria-hidden="true"
         className="bg-feedback-success/15 text-feedback-success inline-flex h-11 w-11 items-center justify-center rounded-full"
@@ -551,7 +551,7 @@ function BrokenOrgCard({
   };
 
   return (
-    <li className="bg-surface border-border-default rounded-md border p-3">
+    <li className="bg-surface-raised border-border-default rounded-md border p-3">
       <p className="text-text-primary font-mono text-sm">{slug}</p>
       <p className="text-feedback-danger mt-1 font-mono text-xs break-words">
         {error}
@@ -602,7 +602,7 @@ function ExecutorPrereqPanel(): JSX.Element | null {
     return (
       <section
         aria-label={t('onboarding.prereqs.aria')}
-        className="border-border-default bg-surface mt-4 rounded-md border px-3 py-2.5"
+        className="border-border-default bg-surface-raised mt-4 rounded-md border px-3 py-2.5"
       >
         <p className="text-text-muted flex items-center gap-2 text-xs">
           <Spinner label={t('onboarding.loading')} className="text-text-muted h-3.5 w-3.5" />
@@ -626,7 +626,7 @@ function ExecutorPrereqPanel(): JSX.Element | null {
   return (
     <section
       aria-label={t('onboarding.prereqs.aria')}
-      className="border-border-default bg-surface mt-4 rounded-md border p-3"
+      className="border-border-default bg-surface-raised mt-4 rounded-md border p-3"
     >
       {/* FE-computed 'X of Y tools registered' summary — real data, no fabrication. */}
       <div

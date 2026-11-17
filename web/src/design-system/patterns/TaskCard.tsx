@@ -75,7 +75,7 @@ export interface TaskCardProps {
   };
 }
 
-/** Direction-A Pasture task card — ds.css .card (bg-surface, rounded-lg 18px, soft shadow). */
+/** Direction-A Pasture task card — ds.css .card (bg-surface-raised, rounded-lg 18px, soft shadow). */
 export function TaskCard({ task, agentLabel, to, active, density = 'comfortable', taskRoutes, labels, waitingQualifier }: TaskCardProps): JSX.Element {
   const pad = density === 'compact' ? 'px-3 py-2' : 'px-4 py-3';
   const rollup = severityRollupStatus(task);
@@ -84,7 +84,7 @@ export function TaskCard({ task, agentLabel, to, active, density = 'comfortable'
   return (
     <div
       className={cn(
-        'border-border-default bg-surface shadow-pasture-sm rounded-lg border',
+        'border-border-default bg-surface-raised shadow-pasture-sm rounded-lg border',
         pad,
         active && 'ring-accent-default ring-2',
       )}

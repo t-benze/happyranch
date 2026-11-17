@@ -80,7 +80,7 @@ function PrototypesLayout(): JSX.Element {
 
 function PrototypeBanner(): JSX.Element {
   return (
-    <div className="border-border-default bg-accent-muted text-caption text-text-secondary flex shrink-0 items-center gap-3 border-b px-4 py-1">
+    <div className="border-border-default bg-accent-soft text-caption text-text-secondary flex shrink-0 items-center gap-3 border-b px-4 py-1">
       <span className="text-text-primary font-semibold">Prototype sandbox</span>
       <span>—</span>
       <span>Mock data, no daemon.</span>

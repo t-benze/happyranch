@@ -46,7 +46,7 @@ function Loaded({ slug, detail }: { slug: string; detail: Detail }): JSX.Element
     </div>
     <ReadOnlyNote />
     {defQ.refreshFailed && def && <StaleNotice message="seqwf.defStale" error={defQ.refreshError} refetch={defQ.refetch} />}
-    <section aria-labelledby="seqwf-state" className="border-border-default bg-bg-raised mt-4 rounded-lg border p-4 text-sm wrap-anywhere">
+    <section aria-labelledby="seqwf-state" className="border-border-default bg-surface-raised mt-4 rounded-lg border p-4 text-sm wrap-anywhere">
       <h2 id="seqwf-state" className="text-h2 text-text-primary">{t('seqwf.currentState')}</h2>
       <p className="mt-2"><RunHeadlineText facts={facts} roleOf={roleOf} taskHref={id => `${base}/tasks/${encodeURIComponent(id)}`} /></p>
       {facts.headline.kind === 'exhausted' && <p className="mt-2">{t('seqwf.allowance', {
@@ -137,7 +137,7 @@ function VisitRow({ v, base, detail, active }: { v: Visit; base: string; detail:
   const { t } = useTranslation();
   const visitState = useVisitState();
   const outputs = detail.outputs.filter(o => o.visit_id === v.id);
-  return <li aria-current={active ? 'step' : undefined} className={`bg-bg-raised rounded-md border p-3 ${active ? 'border-accent-default' : 'border-border-default'}`}>
+  return <li aria-current={active ? 'step' : undefined} className={`bg-surface-raised rounded-md border p-3 ${active ? 'border-accent-default' : 'border-border-default'}`}>
     <div className="flex flex-wrap items-center gap-2">
       <span className="font-medium">{t('seqwf.visitLabel', { ordinal: v.ordinal })}</span>
       <span className="text-text-muted text-xs">{t('seqwf.revisionLabel', { epoch: v.epoch })}</span>

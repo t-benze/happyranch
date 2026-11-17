@@ -19,8 +19,8 @@ import { features } from '@/config/features';
  * the React hook lives in the `AppBar` consumer, never in the helper.
  *
  * THR-376 PR2: every page gets the Pasture `.topbar` (ds.css): 56px tall,
- * 26px inline padding, 14px gap, `--bg` at 80% (`bg-bg/80` compiles to the
- * same `color-mix(in oklab, var(--color-bg) 80%, transparent)`), and the
+ * 26px inline padding, 14px gap, `--bg` at 80% (`bg-surface-canvas/80` compiles to the
+ * same `color-mix(in oklab, var(--color-surface-canvas) 80%, transparent)`), and the
  * `.page-title` in Newsreader 18/500. There is no per-page presentation.
  * Optional `status` renders after the title and `actions` before the
  * language/theme controls; both are omitted when not supplied.
@@ -70,8 +70,8 @@ export function AppBar({ status, actions }: AppBarProps): JSX.Element {
   const title = pageTitleFromPath(location.pathname, locale);
 
   return (
-    <div className="border-border bg-bg/80 flex h-14 shrink-0 items-center gap-3.5 border-b px-6.5">
-      <span className="text-fg font-display text-lg font-medium">{title}</span>
+    <div className="border-border-default bg-surface-canvas/80 flex h-14 shrink-0 items-center gap-3.5 border-b px-6.5">
+      <span className="text-text-primary font-display text-lg font-medium">{title}</span>
       {status != null && <div className="flex min-w-0 items-center gap-2">{status}</div>}
       <div className="ml-auto flex shrink-0 items-center gap-2">
         {actions != null && <div className="flex items-center gap-2">{actions}</div>}
@@ -105,7 +105,7 @@ function ThemeToggle(): JSX.Element {
       aria-label={label}
       title={label}
       onClick={() => setTheme(isDark ? 'light' : 'dark')}
-      className="text-fg-muted hover:bg-bg-raised hover:text-fg focus-visible:ring-border inline-flex h-button-icon-size w-button-icon-size items-center justify-center rounded-sm transition-colors focus-visible:ring-1 focus-visible:outline-none"
+      className="text-text-secondary hover:bg-surface-raised hover:text-text-primary focus-visible:ring-border-default inline-flex h-button-icon-size w-button-icon-size items-center justify-center rounded-sm transition-colors focus-visible:ring-1 focus-visible:outline-none"
     >
       {isDark ? <Sun size={16} aria-hidden="true" /> : <Moon size={16} aria-hidden="true" />}
     </button>

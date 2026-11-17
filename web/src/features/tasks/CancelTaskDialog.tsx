@@ -39,7 +39,7 @@ export function CancelTaskDialog({ taskId, onClose }: Props): JSX.Element {
         <DialogHeader>
           <DialogTitle>{t('tasks.dialog.cancel.title')}</DialogTitle>
         </DialogHeader>
-        <p className="text-fg-muted text-sm">
+        <p className="text-text-secondary text-sm">
           {t('tasks.dialog.cancel.body')}
         </p>
         <Textarea

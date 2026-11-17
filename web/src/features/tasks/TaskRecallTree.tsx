@@ -38,13 +38,13 @@ function CollapsibleBody({
     ? body.slice(0, COLLAPSE_THRESHOLD).replace(/\s+\S*$/, '') + '…'
     : body;
   return (
-    <div className={muted ? 'text-fg-muted text-xs' : 'text-fg text-sm'}>
+    <div className={muted ? 'text-text-secondary text-xs' : 'text-text-primary text-sm'}>
       <Markdown body={shown} mermaidLoadingLabel={t('common.mermaidLoading')} />
       {shouldCollapse && (
         <button
           type="button"
           onClick={() => setExpanded((v) => !v)}
-          className="text-accent mt-1 text-xs hover:underline"
+          className="text-accent-default mt-1 text-xs hover:underline"
         >
           {expanded
             ? t(TOGGLE_KEYS[kind].hide)
@@ -64,7 +64,7 @@ export function TaskRecallTree({ node, depth = 0 }: { node: TaskRecallNode; dept
       <div className="flex items-center gap-2 text-sm">
         <IdBadge kind="task" id={node.task_id} to={routes.detail(node.task_id)} />
         {node.assigned_agent && (
-          <span className="text-fg-muted"><IdentityName canonicalId={node.assigned_agent} /></span>
+          <span className="text-text-secondary"><IdentityName canonicalId={node.assigned_agent} /></span>
         )}
         <StatusBadge status={node.status} />
       </div>
@@ -75,7 +75,7 @@ export function TaskRecallTree({ node, depth = 0 }: { node: TaskRecallNode; dept
       )}
       {node.output_summary && (
         <div className="mt-2 border-l-2 border-border-subtle pl-3">
-          <div className="text-fg-muted text-xs font-medium tracking-wider uppercase">
+          <div className="text-text-secondary text-xs font-medium tracking-wider uppercase">
             {t('tasks.recall.outcome')}
           </div>
           <CollapsibleBody body={node.output_summary} kind="summary" muted />

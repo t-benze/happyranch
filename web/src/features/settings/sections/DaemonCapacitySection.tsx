@@ -307,7 +307,7 @@ function RunningCard({ label, value, description }: { label: string; value: stri
 
 function Pill({ tone, children }: { tone: 'accent' | 'neutral'; children: React.ReactNode }): JSX.Element {
   const classes = tone === 'accent'
-    ? 'bg-accent-muted text-accent-text'
+    ? 'bg-accent-soft text-accent-text'
     : 'border-border-default text-text-secondary border';
   return (
     <span className={`inline-flex items-center gap-2 rounded-full px-3 py-1 text-xs font-medium ${classes}`}>
@@ -1412,7 +1412,7 @@ export function DaemonCapacitySection(): JSX.Element {
             </p>
           )}
           {outcome.kind === 'saved' && (
-            <div role="status" aria-live="polite" className="border-border-default bg-accent-muted text-accent-text rounded-md border p-3 text-sm">
+            <div role="status" aria-live="polite" className="border-border-default bg-accent-soft text-accent-text rounded-md border p-3 text-sm">
               <p className="font-medium">
                 {outcome.snapshot.restart_pending
                   ? t('settings.capacity.outcome.savedPending')

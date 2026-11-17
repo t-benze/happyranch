@@ -32,7 +32,7 @@ export function RetiredRoster({ selected, onSelect }: { selected: string | null;
                 aria-current={active ? 'true' : undefined}
                 onClick={() => onSelect(id)}
                 className={`hover:bg-surface-hover relative flex w-full items-center gap-2.5 overflow-hidden rounded-lg px-3 ${rowPad} text-left transition-colors ${
-                  active ? 'bg-accent-muted border-accent-muted shadow-pasture-sm border' : 'bg-surface border-surface hover:border-border-default border'
+                  active ? 'bg-accent-soft border-accent-soft shadow-pasture-sm border' : 'bg-surface-raised border-surface-raised hover:border-border-default border'
                 }`}
               >
                 <Avatar initials={identityInitials(name)} tone="neutral" size="lg" />

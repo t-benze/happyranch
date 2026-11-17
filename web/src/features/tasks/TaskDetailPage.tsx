@@ -12,7 +12,7 @@ import { IdentityName } from '@/shared/identities/IdentityName';
  * (current/done/blocked nodes, blocked node names its blocker), the brief,
  * execution subtasks (from recall), live events, and jobs cross-link.
  *
- * Uses ds.css .card styling (bg-surface, rounded-lg, shadow-pasture-sm).
+ * Uses ds.css .card styling (bg-surface-raised, rounded-lg, shadow-pasture-sm).
  * Title in serif font-display.
  */
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
@@ -89,7 +89,7 @@ function dotRing(state: TimelineNodeProps['state']): string {
     case 'done':
     case 'current':
     case 'blocked':
-      return 'ring-2 ring-offset-1 ring-offset-surface';
+      return 'ring-2 ring-offset-1 ring-offset-surface-raised';
     case 'pending':
       return '';
   }
@@ -451,7 +451,7 @@ interface ChainCardNode {
 function chainDotClass(state: ChainNodeState): string {
   switch (state) {
     case 'current':
-      return 'bg-accent-default ring-2 ring-offset-1 ring-offset-surface';
+      return 'bg-accent-default ring-2 ring-offset-1 ring-offset-surface-raised';
     case 'done':
       return 'bg-status-open';
     case 'pending':

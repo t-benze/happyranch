@@ -263,9 +263,9 @@ export function AdapterConnect({
   if (flow.state.stage === 'committing') {
     return (
       <div className="mt-8 max-w-lg">
-        <div className="border-accent/30 bg-accent/5 rounded-lg border p-4">
+        <div className="border-accent-default/30 bg-accent-default/5 rounded-lg border p-4">
           <div className="flex items-center gap-2">
-            <Spinner className="text-accent h-4 w-4" />
+            <Spinner className="text-accent-default h-4 w-4" />
             <p className="text-text-primary text-sm font-medium">
               {t('onboarding.connect.committing.title')}
             </p>
@@ -338,7 +338,7 @@ export function AdapterConnect({
 
   return (
     <div className="mt-8 max-w-lg">
-      <div className="border-accent/30 bg-accent/5 mb-4 rounded-r-md border-l-2 px-3 py-2">
+      <div className="border-accent-default/30 bg-accent-default/5 mb-4 rounded-r-md border-l-2 px-3 py-2">
         <p className="text-text-primary text-sm font-medium">
           {t('onboarding.connect.adapter.bannerTitle')}
         </p>
@@ -452,7 +452,7 @@ export function WaitingBody({
 
   return (
     <div className="mt-8 max-w-2xl">
-      <div className="border-border-default bg-surface shadow-pasture-sm overflow-hidden rounded-lg border">
+      <div className="border-border-default bg-surface-raised shadow-pasture-sm overflow-hidden rounded-lg border">
         <div className="border-border-default bg-surface-sunken flex items-center justify-between border-b px-4 py-2.5">
           <div className="flex items-center gap-2">
             <span aria-hidden="true" className="flex gap-1.5">
@@ -510,10 +510,10 @@ export function WaitingBody({
       ) : (
         <div
           aria-label={t('onboarding.connect.waiting.aria')}
-          className="border-border-default bg-surface mt-8 rounded-lg border p-4"
+          className="border-border-default bg-surface-raised mt-8 rounded-lg border p-4"
         >
           <div className="flex items-center gap-2">
-            <Spinner className="text-accent h-4 w-4" />
+            <Spinner className="text-accent-default h-4 w-4" />
             <p className="text-text-primary text-sm font-medium">
               {render('onboarding.connect.waiting.title', {
                 name: <span className="font-mono">{name}</span>,
@@ -584,7 +584,7 @@ export function AdapterWaitingBody({
 
   return (
     <div className="mt-8 max-w-2xl">
-      <div className="border-border-default bg-surface shadow-pasture-sm overflow-hidden rounded-lg border">
+      <div className="border-border-default bg-surface-raised shadow-pasture-sm overflow-hidden rounded-lg border">
         <div className="border-border-default bg-surface-sunken flex items-center justify-between border-b px-4 py-2.5">
           <div className="flex items-center gap-2">
             <span aria-hidden="true" className="flex gap-1.5">
@@ -642,10 +642,10 @@ export function AdapterWaitingBody({
       ) : (
         <div
           aria-label={t('onboarding.connect.adapter.waiting.aria')}
-          className="border-border-default bg-surface mt-8 rounded-lg border p-4"
+          className="border-border-default bg-surface-raised mt-8 rounded-lg border p-4"
         >
           <div className="flex items-center gap-2">
-            <Spinner className="text-accent h-4 w-4" />
+            <Spinner className="text-accent-default h-4 w-4" />
             <p className="text-text-primary text-sm font-medium">
               {t('onboarding.connect.adapter.waiting.title')}
             </p>
@@ -716,7 +716,7 @@ export function AdapterRetryableBody({
         </div>
       </div>
 
-      <div className="border-border-default bg-surface shadow-pasture-sm overflow-hidden rounded-lg border">
+      <div className="border-border-default bg-surface-raised shadow-pasture-sm overflow-hidden rounded-lg border">
         <div className="border-border-default bg-surface-sunken flex items-center justify-between border-b px-4 py-2.5">
           <div className="flex items-center gap-2">
             <span aria-hidden="true" className="flex gap-1.5">
@@ -881,7 +881,7 @@ export function FailedConnectionClearedBody({
     preserved_unsafe: 'onboarding.connect.cleared.preservedUnsafe',
   } as const;
   return (
-    <div className="mt-8 max-w-lg border-border-default bg-surface rounded-lg border p-4">
+    <div className="mt-8 max-w-lg border-border-default bg-surface-raised rounded-lg border p-4">
       <p className="text-text-primary text-sm font-medium">{t('onboarding.connect.cleared.title')}</p>
       <p className="text-text-secondary mt-2 text-sm">
         {render('onboarding.connect.cleared.body', {
@@ -929,7 +929,7 @@ export function ConnectedCard({
         {subtitle(connected.via)}
       </p>
 
-      <div className="bg-surface border-border-default shadow-pasture-sm mt-8 max-w-lg rounded-lg border p-4">
+      <div className="bg-surface-raised border-border-default shadow-pasture-sm mt-8 max-w-lg rounded-lg border p-4">
         <p className="text-text-muted text-caption font-semibold tracking-wider uppercase">
           {t('onboarding.connect.connected.name')}
         </p>

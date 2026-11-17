@@ -11,7 +11,7 @@
   }
 
   .input {
-    @apply rounded-sm border border-border bg-bg-raised px-2 py-1.5 text-sm text-fg placeholder:text-fg-subtle focus:border-accent focus:outline-none disabled:opacity-50;
+    @apply rounded-sm border border-border-default bg-surface-raised px-2 py-1.5 text-sm text-text-primary placeholder:text-text-muted focus:border-accent-default focus:outline-none disabled:opacity-50;
   }
 }
 

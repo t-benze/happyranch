@@ -64,7 +64,7 @@ const STATUS_TONE: Record<AgentEffectiveStatus, ValidationTone> = {
 const TONE_CHIP: Record<ValidationTone, string> = {
   positive: 'text-status-open bg-tier-green-tint',
   attention: 'text-attention-text bg-attention-soft',
-  neutral: 'text-fg-muted border border-border-default bg-transparent',
+  neutral: 'text-text-secondary border border-border-default bg-transparent',
 };
 
 const TONE_ICON: Record<ValidationTone, typeof BadgeCheck> = {
@@ -75,7 +75,7 @@ const TONE_ICON: Record<ValidationTone, typeof BadgeCheck> = {
 
 function Eyebrow({ children }: { children: ReactNode }): JSX.Element {
   return (
-    <div className="text-fg-subtle text-overline mb-2 tracking-wider uppercase">
+    <div className="text-text-muted text-overline mb-2 tracking-wider uppercase">
       {children}
     </div>
   );
@@ -104,8 +104,8 @@ export function SkillAssignmentPanel({
   const section = (body: ReactNode) => (
     <section className="border-border-default bg-surface-raised mt-4 rounded-md border p-6 md:p-8">
       <Eyebrow>{t('skills.assign.eyebrow')}</Eyebrow>
-      <h2 className="text-h2 text-fg mb-1">{t('skills.assign.title')}</h2>
-      <p className="text-fg-muted text-body-sm">{t('skills.assign.description')}</p>
+      <h2 className="text-h2 text-text-primary mb-1">{t('skills.assign.title')}</h2>
+      <p className="text-text-secondary text-body-sm">{t('skills.assign.description')}</p>
       {body}
     </section>
   );
@@ -121,11 +121,11 @@ export function SkillAssignmentPanel({
 
   if (status.isError || !status.data) {
     return section(
-      <p className="text-fg-muted border-border-subtle bg-surface-subtle text-body-sm mt-4 flex items-start gap-2.5 rounded-md border p-3">
+      <p className="text-text-secondary border-border-subtle bg-surface-subtle text-body-sm mt-4 flex items-start gap-2.5 rounded-md border p-3">
         <TriangleAlert
           size={15}
           aria-hidden="true"
-          className="text-fg-subtle mt-0.5 shrink-0"
+          className="text-text-muted mt-0.5 shrink-0"
         />
         {renderSkillErrorInContext(
           classifySkillError(status.error, 'skills.assign.unavailable'),
@@ -142,21 +142,21 @@ export function SkillAssignmentPanel({
   if (!status.data.validated) {
     return section(
       <div
-        className="text-fg-muted border-border-subtle bg-surface-subtle mt-4 rounded-md border p-4"
+        className="text-text-secondary border-border-subtle bg-surface-subtle mt-4 rounded-md border p-4"
         data-testid="assignment-not-validated"
       >
-        <div className="text-fg flex items-center gap-2 text-sm font-semibold">
+        <div className="text-text-primary flex items-center gap-2 text-sm font-semibold">
           <TriangleAlert
             size={15}
             aria-hidden="true"
-            className="text-fg-subtle shrink-0"
+            className="text-text-muted shrink-0"
           />
           {t('skills.assign.notValidatedTitle')}
         </div>
         <p className="text-body-sm mt-1.5">{t('skills.assign.notValidatedBody')}</p>
         <Link
           to={editRoutePath(slug, skillId)}
-          className="border-border-default bg-surface-subtle text-fg hover:bg-bg-subtle text-body-sm mt-3 inline-flex max-w-full items-start gap-1.5 rounded-md border px-3 py-1.5 font-semibold"
+          className="border-border-default bg-surface-subtle text-text-primary hover:bg-surface-sunken text-body-sm mt-3 inline-flex max-w-full items-start gap-1.5 rounded-md border px-3 py-1.5 font-semibold"
         >
           <Pencil size={14} aria-hidden="true" className="mt-0.5 shrink-0" />
           <span className="min-w-0 break-words">{t('skills.assign.revalidate')}</span>
@@ -218,10 +218,10 @@ export function SkillAssignmentPanel({
               className="border-border-subtle bg-surface-subtle flex flex-wrap items-start justify-between gap-x-4 gap-y-2 rounded-md border p-3"
             >
               <div className="min-w-0">
-                <div className="text-fg font-mono text-sm font-semibold break-all">
+                <div className="text-text-primary font-mono text-sm font-semibold break-all">
                   <IdentityName canonicalId={a.agent} />
                 </div>
-                <p className="text-fg-muted text-body-sm mt-1">{t(p.reason)}</p>
+                <p className="text-text-secondary text-body-sm mt-1">{t(p.reason)}</p>
               </div>
               <div className="flex min-w-0 flex-wrap items-center gap-2">
                 {changed && (
@@ -246,7 +246,7 @@ export function SkillAssignmentPanel({
                   onClick={() => toggle(a)}
                   disabled={applying}
                   aria-label={t('skills.assign.toggleAria', { action: t(label), agent: identityPresentation.label(a.agent) })}
-                  className="border-border-default bg-surface-subtle text-fg hover:bg-bg-subtle text-body-sm inline-flex items-center rounded-md border px-2.5 py-1 font-semibold disabled:opacity-60"
+                  className="border-border-default bg-surface-subtle text-text-primary hover:bg-surface-sunken text-body-sm inline-flex items-center rounded-md border px-2.5 py-1 font-semibold disabled:opacity-60"
                 >
                   {t(label)}
                 </button>
@@ -259,7 +259,7 @@ export function SkillAssignmentPanel({
       {/* ── Applied confirmation ─────────────────────────────────── */}
       {applied && pendingCount === 0 && (
         <p
-          className="text-status-open border-accent-muted bg-tier-green-tint text-body-sm mt-4 flex items-start gap-2.5 rounded-md border p-3"
+          className="text-status-open border-accent-soft bg-tier-green-tint text-body-sm mt-4 flex items-start gap-2.5 rounded-md border p-3"
           role="status"
         >
           <BadgeCheck size={15} aria-hidden="true" className="mt-0.5 shrink-0" />
@@ -269,17 +269,17 @@ export function SkillAssignmentPanel({
 
       {/* ── Config-review: review-before-commit summary ──────────── */}
       {pendingCount > 0 && (
-        <div className="border-border-default bg-bg-subtle mt-4 rounded-md border p-4">
+        <div className="border-border-default bg-surface-sunken mt-4 rounded-md border p-4">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <span className="text-fg text-body-sm inline-flex items-center gap-2 font-semibold">
-              <Users size={15} aria-hidden="true" className="text-fg-subtle" />
+            <span className="text-text-primary text-body-sm inline-flex items-center gap-2 font-semibold">
+              <Users size={15} aria-hidden="true" className="text-text-muted" />
               {t('skills.assign.toReview', { count: pendingCount })}
             </span>
             {!reviewOpen && (
               <button
                 type="button"
                 onClick={() => setReviewOpen(true)}
-                className="bg-accent text-accent-fg hover:bg-accent-hover text-body-sm inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 font-semibold"
+                className="bg-accent-default text-text-inverse hover:bg-accent-hover text-body-sm inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 font-semibold"
               >
                 <ClipboardCheck size={14} aria-hidden="true" />
                 {t('skills.assign.reviewApply')}
@@ -296,21 +296,21 @@ export function SkillAssignmentPanel({
                     data-review-agent={c.agent}
                     className="flex flex-wrap items-baseline gap-x-2 gap-y-1 p-3"
                   >
-                    <span className="text-fg text-body-sm font-semibold">
+                    <span className="text-text-primary text-body-sm font-semibold">
                       {t(c.label)}
                     </span>
-                    <span className="text-fg-muted text-body-sm min-w-0 break-words">
+                    <span className="text-text-secondary text-body-sm min-w-0 break-words">
                       {t(c.summary, { agent: identityPresentation.label(c.agent) })}
                     </span>
                   </li>
                 ))}
               </ul>
 
-              <p className="text-fg-muted border-border-subtle bg-surface-subtle text-body-sm mt-3 flex items-start gap-2.5 rounded-md border p-3">
+              <p className="text-text-secondary border-border-subtle bg-surface-subtle text-body-sm mt-3 flex items-start gap-2.5 rounded-md border p-3">
                 <Info
                   size={15}
                   aria-hidden="true"
-                  className="text-fg-subtle mt-0.5 shrink-0"
+                  className="text-text-muted mt-0.5 shrink-0"
                 />
                 {t(CONFIG_REVIEW_NOTE)}
               </p>
@@ -326,7 +326,7 @@ export function SkillAssignmentPanel({
                   type="button"
                   onClick={apply}
                   disabled={applying}
-                  className="bg-accent text-accent-fg hover:bg-accent-hover text-body-sm inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 font-semibold disabled:opacity-60"
+                  className="bg-accent-default text-text-inverse hover:bg-accent-hover text-body-sm inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 font-semibold disabled:opacity-60"
                 >
                   {applying
                     ? t('skills.assign.applying')
@@ -336,7 +336,7 @@ export function SkillAssignmentPanel({
                   type="button"
                   onClick={() => setReviewOpen(false)}
                   disabled={applying}
-                  className="text-fg-muted hover:text-fg text-body-sm inline-flex items-center rounded-md px-2 py-1.5 font-semibold disabled:opacity-60"
+                  className="text-text-secondary hover:text-text-primary text-body-sm inline-flex items-center rounded-md px-2 py-1.5 font-semibold disabled:opacity-60"
                 >
                   {t('skills.assign.keepEditing')}
                 </button>

@@ -255,7 +255,7 @@ function SetupForm({ slug, def, pin }: { slug: string; def: DefView; pin: Pin })
     {settings.refreshFailed && <StaleNotice error={settings.refreshError} refetch={settings.refetch} />}
 
     {/* Effective saved configuration (current read), or Last confirmed while uncertain. */}
-    <section aria-labelledby="seqwf-setup-current" className="border-border-default bg-bg-raised rounded-lg border">
+    <section aria-labelledby="seqwf-setup-current" className="border-border-default bg-surface-raised rounded-lg border">
       <header className="border-border-default flex flex-wrap items-baseline gap-x-3 gap-y-1 border-b px-4 py-3">
         <h2 id="seqwf-setup-current" className="text-text-primary font-medium">{t(uncertain ? 'seqwf.setup.lastConfirmed' : 'seqwf.setup.current')}</h2>
         <span className="text-text-muted text-xs">{t('seqwf.versionLink', { identity: pin.identity, version: pin.version })}</span>
@@ -338,7 +338,7 @@ function SetupForm({ slug, def, pin }: { slug: string; def: DefView; pin: Pin })
     </div>}
 
     {/* Default agents: one row per definition role. */}
-    {draft && <section aria-labelledby="seqwf-setup-agents" className="border-border-default bg-bg-raised rounded-lg border">
+    {draft && <section aria-labelledby="seqwf-setup-agents" className="border-border-default bg-surface-raised rounded-lg border">
       <header className="border-border-default flex flex-wrap items-baseline gap-x-3 gap-y-1 border-b px-4 py-3">
         <h2 id="seqwf-setup-agents" className="text-text-primary font-medium">{t('seqwf.setup.defaults')}</h2>
         <span className="text-text-muted text-xs">{t('seqwf.setup.defaultsHint', { count: def.roles.length })}</span>
@@ -383,7 +383,7 @@ function SetupForm({ slug, def, pin }: { slug: string; def: DefView; pin: Pin })
       {!locked && (incomplete || clash || conflictPending) && <p className="text-text-muted px-4 pb-3 text-xs">{t(conflictPending ? 'seqwf.setup.blockedConflict' : incomplete ? 'seqwf.setup.blockedIncomplete' : 'seqwf.setup.blockedClash')}</p>}
     </section>}
 
-    <section aria-labelledby="seqwf-setup-admission" className="border-border-default bg-bg-raised rounded-lg border px-4 py-3 text-sm">
+    <section aria-labelledby="seqwf-setup-admission" className="border-border-default bg-surface-raised rounded-lg border px-4 py-3 text-sm">
       <h2 id="seqwf-setup-admission" className="text-text-primary font-medium">{t('seqwf.setup.newRuns')}</h2>
       <p className="mt-1">{t('seqwf.setup.admissionBody')}</p>
     </section>

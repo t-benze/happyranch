@@ -60,7 +60,7 @@ function DefinitionsList({ base }: { base: string }): JSX.Element {
     if (!data.definitions.length) return <p className="text-text-muted">{t('seqwf.definitionsEmpty')}</p>;
     return <ul className="flex flex-col gap-3">{data.definitions.map(d => {
       const parsed = parseDefinition(d.definition_json);
-      return <li key={d.id} className="border-border-default bg-bg-raised rounded-lg border p-4 wrap-anywhere">
+      return <li key={d.id} className="border-border-default bg-surface-raised rounded-lg border p-4 wrap-anywhere">
         <div className="flex flex-wrap items-start justify-between gap-2">
           <div className="min-w-0"><h2 className="text-h2 text-text-primary">{t('seqwf.versionLink', { identity: d.pin.identity, version: d.pin.version })}</h2>
             {parsed && <p className="text-text-primary mt-1 text-sm">{parsed.description}</p>}
@@ -82,7 +82,7 @@ function RunsList({ slug }: { slug: string }): JSX.Element {
     if (!data.runs.length) return <p className="text-text-muted">{t('seqwf.runsEmpty')}</p>;
     return <ul className="flex flex-col gap-3" aria-label={t('seqwf.tab.runs')}>{data.runs.map(r => {
       const links = taskLinks(r);
-      return <li key={r.id} className="border-border-default bg-bg-raised rounded-lg border p-4 text-sm wrap-anywhere">
+      return <li key={r.id} className="border-border-default bg-surface-raised rounded-lg border p-4 text-sm wrap-anywhere">
         <div className="flex flex-wrap items-center gap-2">
           <Link className="text-accent-default font-mono font-medium hover:underline" to={`${base}/workflows/runs/${encodeURIComponent(r.id)}`}>{r.id}</Link>
           <RunStateBadge state={r.state} />
@@ -133,7 +133,7 @@ function DefinitionBody({ def }: { def: DefView }): JSX.Element {
     <p className="text-text-primary mt-3">{def.description}</p>
     <section className="mt-6" aria-labelledby="seqwf-process">
       <h2 id="seqwf-process" className="text-h2 text-text-primary">{t('seqwf.process')}</h2>
-      <ol className="mt-3 flex flex-col gap-3">{def.nodes.map((n, index) => <li key={n.id} className="border-border-default bg-bg-raised rounded-lg border p-4 text-sm wrap-anywhere">
+      <ol className="mt-3 flex flex-col gap-3">{def.nodes.map((n, index) => <li key={n.id} className="border-border-default bg-surface-raised rounded-lg border p-4 text-sm wrap-anywhere">
         <h3 className="font-medium">{t('seqwf.nodeHeading', { index: index + 1, node: n.id, role: n.role })}{n.id === def.entry ? ` · ${t('seqwf.entry')}` : ''}</h3>
         <p className="text-text-muted mt-2 text-xs">{t('seqwf.responsibilities')}</p>
         <ul className="ml-6 list-disc">{n.responsibilities.map((r, i) => <li key={i}>{r}</li>)}</ul>

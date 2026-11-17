@@ -35,7 +35,7 @@ const ROWS: { key: keyof SystemSettings; label: string }[] = [
 export function SystemSection({ sys }: Props): JSX.Element {
   return (
     <section>
-      <div className="bg-surface border-border-default shadow-pasture-sm divide-border-default divide-y rounded-lg border">
+      <div className="bg-surface-raised border-border-default shadow-pasture-sm divide-border-default divide-y rounded-lg border">
         {ROWS.map(({ key, label }) => {
           const entry = sys[key];
           const badge = entry.restart_required ? 'Restart required' : undefined;

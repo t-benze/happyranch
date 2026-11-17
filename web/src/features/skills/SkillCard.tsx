@@ -33,7 +33,7 @@ function SourceBadge({ item }: { item: CatalogSkillItem }): JSX.Element {
 function ContractBadge(): JSX.Element {
   const { t } = useTranslation();
   return (
-    <span className="text-2xs text-fg-muted bg-bg-subtle border-border-default inline-flex items-center gap-1 rounded-full border px-2 py-0.5 font-bold tracking-wide uppercase">
+    <span className="text-2xs text-text-secondary bg-surface-sunken border-border-default inline-flex items-center gap-1 rounded-full border px-2 py-0.5 font-bold tracking-wide uppercase">
       <Lock size={10} aria-hidden="true" />
       {t('skills.badge.systemContract')}
     </span>
@@ -46,7 +46,7 @@ export function SkillCard({ item }: { item: CatalogSkillItem }): JSX.Element {
   const bundled = isBundled(item);
   const SourceIcon = bundled ? Package : Sparkles;
   const iconTint = readOnly
-    ? 'bg-bg-subtle text-fg-muted'
+    ? 'bg-surface-sunken text-text-secondary'
     : bundled
       ? 'bg-info-soft text-info'
       : 'bg-accent-soft text-accent-text';
@@ -72,20 +72,20 @@ export function SkillCard({ item }: { item: CatalogSkillItem }): JSX.Element {
               including read-only/system_contract — read-only only suppresses
               INTERACTIVE controls (toggle/unassign), not this status label. */}
           <StatusBadge {...skillStatusBadge(item.validation_state, t)} />
-          <span className="text-mono-sm text-fg-subtle">v{item.version}</span>
+          <span className="text-mono-sm text-text-muted">v{item.version}</span>
         </div>
 
-        <h3 className="text-fg font-mono text-sm leading-snug font-semibold">
+        <h3 className="text-text-primary font-mono text-sm leading-snug font-semibold">
           {item.name}
         </h3>
-        <p className="text-fg-muted text-body-sm mt-1.5 max-w-2xl leading-relaxed">
+        <p className="text-text-secondary text-body-sm mt-1.5 max-w-2xl leading-relaxed">
           {item.summary}
         </p>
 
-        <div className="text-fg-subtle mt-3 flex flex-wrap items-center gap-x-3.5 gap-y-1.5 text-xs">
+        <div className="text-text-muted mt-3 flex flex-wrap items-center gap-x-3.5 gap-y-1.5 text-xs">
           <span className="inline-flex items-center gap-1.5">
             {t('skills.card.assigned')}{' '}
-            <span className="text-fg-muted font-semibold tabular-nums">
+            <span className="text-text-secondary font-semibold tabular-nums">
               {item.assigned_agent_count}
             </span>
           </span>
@@ -105,7 +105,7 @@ export function SkillCard({ item }: { item: CatalogSkillItem }): JSX.Element {
             </span>
           )}
           {readOnly && (
-            <span className="text-fg-subtle">
+            <span className="text-text-muted">
               {t('skills.card.readOnly')}
             </span>
           )}
@@ -119,7 +119,7 @@ export function SkillCard({ item }: { item: CatalogSkillItem }): JSX.Element {
         // scroller, inflating document height and window-scrolling the whole
         // surface (THR-092). Mirrors AuditTimeline's relative-wraps-absolute idiom.
         <div
-          className="text-fg-subtle relative mt-0.5 shrink-0 self-start"
+          className="text-text-muted relative mt-0.5 shrink-0 self-start"
           title={t('skills.card.readOnlyContract')}
         >
           <Lock size={15} aria-hidden="true" />

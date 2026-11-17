@@ -62,7 +62,7 @@ const STATUS_TONE: Record<AgentEffectiveStatus, ValidationTone> = {
 const TONE_CHIP: Record<ValidationTone, string> = {
   positive: 'text-status-open bg-tier-green-tint',
   attention: 'text-attention-text bg-attention-soft',
-  neutral: 'text-fg-muted border border-border-default bg-transparent',
+  neutral: 'text-text-secondary border border-border-default bg-transparent',
 };
 
 const TONE_ICON: Record<ValidationTone, typeof BadgeCheck> = {
@@ -74,7 +74,7 @@ const TONE_ICON: Record<ValidationTone, typeof BadgeCheck> = {
 /** Uppercase section caption — matches the catalog eyebrow styling. */
 function Eyebrow({ children }: { children: ReactNode }): JSX.Element {
   return (
-    <div className="text-fg-subtle text-overline mb-2 tracking-wider uppercase">
+    <div className="text-text-muted text-overline mb-2 tracking-wider uppercase">
       {children}
     </div>
   );
@@ -88,7 +88,7 @@ export function SkillDetailPage(): JSX.Element {
   const backLink = (
     <Link
       to={`/orgs/${slug ?? ''}/skills`}
-      className="text-fg-muted hover:text-fg text-body-sm mb-4 inline-flex items-center gap-1.5"
+      className="text-text-secondary hover:text-text-primary text-body-sm mb-4 inline-flex items-center gap-1.5"
     >
       <ArrowLeft size={15} aria-hidden="true" />
       {t('skills.detail.back')}
@@ -158,20 +158,20 @@ export function SkillDetailPage(): JSX.Element {
                 {t(SOURCE_LABEL_KEYS[source])}
               </span>
               {skill.system_contract && (
-                <span className="text-2xs text-fg-muted bg-bg-subtle border-border-default inline-flex items-center gap-1 rounded-full border px-2 py-0.5 font-bold tracking-wide uppercase">
+                <span className="text-2xs text-text-secondary bg-surface-sunken border-border-default inline-flex items-center gap-1 rounded-full border px-2 py-0.5 font-bold tracking-wide uppercase">
                   <Lock size={10} aria-hidden="true" />
                   {t('skills.badge.systemContract')}
                 </span>
               )}
               <StatusBadge {...skillStatusBadge(skill.validation_state, t)} />
-              <span className="text-mono-sm text-fg-subtle">
+              <span className="text-mono-sm text-text-muted">
                 v{skill.version}
               </span>
             </div>
-            <h1 className="text-fg font-mono text-lg leading-snug font-semibold break-all">
+            <h1 className="text-text-primary font-mono text-lg leading-snug font-semibold break-all">
               {skill.name}
             </h1>
-            <p className="text-fg-muted text-body-sm mt-2 max-w-2xl leading-relaxed">
+            <p className="text-text-secondary text-body-sm mt-2 max-w-2xl leading-relaxed">
               {skill.summary}
             </p>
           </div>
@@ -181,14 +181,14 @@ export function SkillDetailPage(): JSX.Element {
             {editable ? (
               <Link
                 to={editRoutePath(slug ?? '', skill.skill_id)}
-                className="border-border-default bg-surface-subtle text-fg hover:bg-bg-subtle text-body-sm inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 font-semibold"
+                className="border-border-default bg-surface-subtle text-text-primary hover:bg-surface-sunken text-body-sm inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 font-semibold"
               >
                 <Pencil size={14} aria-hidden="true" />
                 {t('skills.detail.editSkill')}
               </Link>
             ) : (
               <span
-                className="text-fg-subtle inline-flex items-center gap-1.5 text-xs"
+                className="text-text-muted inline-flex items-center gap-1.5 text-xs"
                 title={lockReason ? t(lockReason) : undefined}
               >
                 <Lock size={14} aria-hidden="true" />
@@ -200,7 +200,7 @@ export function SkillDetailPage(): JSX.Element {
 
         {/* Read-only rationale (bundled / system contract). */}
         {lockReason && (
-          <p className="text-fg-subtle border-border-subtle mt-4 border-t pt-3 text-xs">
+          <p className="text-text-muted border-border-subtle mt-4 border-t pt-3 text-xs">
             {t(lockReason)}
           </p>
         )}
@@ -216,11 +216,11 @@ export function SkillDetailPage(): JSX.Element {
             <TriangleAlert size={15} aria-hidden="true" />
             {t('skills.status.needsAttention')}
           </div>
-          <p className="text-fg-muted text-body-sm mt-1.5">
+          <p className="text-text-secondary text-body-sm mt-1.5">
             {t('skills.detail.attentionBody')}
           </p>
           {issues.length > 0 && (
-            <ul className="text-fg-muted text-body-sm mt-2 list-disc space-y-1 pl-6">
+            <ul className="text-text-secondary text-body-sm mt-2 list-disc space-y-1 pl-6">
               {issues.map((issue) => (
                 <li key={issue}>{issue}</li>
               ))}
@@ -232,12 +232,12 @@ export function SkillDetailPage(): JSX.Element {
       {/* ── Source / SKILL.md content ─────────────────────────── */}
       <section className="border-border-default bg-surface-raised mt-4 rounded-md border p-6 md:p-8">
         <Eyebrow>{t('skills.catalog.source')}</Eyebrow>
-        <p className="text-mono-sm text-fg-muted break-words">{skill.source}</p>
+        <p className="text-mono-sm text-text-secondary break-words">{skill.source}</p>
 
         {skill.when_to_use && (
           <div className="mt-6">
             <Eyebrow>{t('skills.detail.whenToUse')}</Eyebrow>
-            <p className="text-fg-muted text-body-sm leading-relaxed">
+            <p className="text-text-secondary text-body-sm leading-relaxed">
               {skill.when_to_use}
             </p>
           </div>
@@ -246,7 +246,7 @@ export function SkillDetailPage(): JSX.Element {
         {skill.description && (
           <div className="mt-6">
             <Eyebrow>{t('skills.detail.guidance')}</Eyebrow>
-            <p className="text-fg-muted text-body-sm leading-relaxed">
+            <p className="text-text-secondary text-body-sm leading-relaxed">
               {skill.description}
             </p>
           </div>
@@ -263,16 +263,16 @@ export function SkillDetailPage(): JSX.Element {
       ) : (
       <section className="border-border-default bg-surface-raised mt-4 rounded-md border p-6 md:p-8">
         <Eyebrow>{t('skills.detail.perAgent')}</Eyebrow>
-        <h2 className="text-h2 text-fg mb-1">{t('skills.detail.whereEffective')}</h2>
-        <p className="text-fg-muted text-body-sm">{t('skills.detail.perAgentDesc')}</p>
+        <h2 className="text-h2 text-text-primary mb-1">{t('skills.detail.whereEffective')}</h2>
+        <p className="text-text-secondary text-body-sm">{t('skills.detail.perAgentDesc')}</p>
 
         {assignments.length > 0 ? (
           <>
             {/* Rollup */}
-            <div className="text-fg-subtle mt-4 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs">
+            <div className="text-text-muted mt-4 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs">
               <span className="inline-flex items-center gap-1.5">
                 {t('skills.card.assigned')}{' '}
-                <span className="text-fg-muted font-semibold tabular-nums">
+                <span className="text-text-secondary font-semibold tabular-nums">
                   {rollup.assigned}
                 </span>
               </span>
@@ -304,10 +304,10 @@ export function SkillDetailPage(): JSX.Element {
                     className="border-border-subtle bg-surface-subtle flex flex-wrap items-start justify-between gap-x-4 gap-y-2 rounded-md border p-3"
                   >
                     <div className="min-w-0">
-                      <div className="text-fg font-mono text-sm font-semibold break-all">
+                      <div className="text-text-primary font-mono text-sm font-semibold break-all">
                         <IdentityName canonicalId={p.agent} />
                       </div>
-                      <p className="text-fg-muted text-body-sm mt-1">
+                      <p className="text-text-secondary text-body-sm mt-1">
                         {t(p.reason)}
                       </p>
                     </div>
@@ -325,12 +325,12 @@ export function SkillDetailPage(): JSX.Element {
             </ul>
           </>
         ) : skill.system_contract ? (
-          <p className="text-fg-muted border-border-subtle bg-surface-subtle text-body-sm mt-4 flex items-start gap-2.5 rounded-md border p-3">
-            <Info size={15} aria-hidden="true" className="text-fg-subtle mt-0.5 shrink-0" />
+          <p className="text-text-secondary border-border-subtle bg-surface-subtle text-body-sm mt-4 flex items-start gap-2.5 rounded-md border p-3">
+            <Info size={15} aria-hidden="true" className="text-text-muted mt-0.5 shrink-0" />
             {t('skills.detail.contextApplied')}
           </p>
         ) : (
-          <p className="text-fg-subtle text-body-sm mt-4">
+          <p className="text-text-muted text-body-sm mt-4">
             {t('skills.detail.noAgents')}
           </p>
         )}
@@ -338,10 +338,10 @@ export function SkillDetailPage(): JSX.Element {
       )}
 
       {/* ── Guidance-only footer ──────────────────────────────── */}
-      <div className="border-border-default bg-bg-subtle text-fg-muted text-body-sm mt-4 flex items-center gap-2.5 rounded-md border px-3 py-2.5">
-        <Info size={15} aria-hidden="true" className="text-fg-subtle shrink-0" />
+      <div className="border-border-default bg-surface-sunken text-text-secondary text-body-sm mt-4 flex items-center gap-2.5 rounded-md border px-3 py-2.5">
+        <Info size={15} aria-hidden="true" className="text-text-muted shrink-0" />
         <span>
-          <b className="text-fg font-semibold">{t('skills.guidanceOnly')}</b>{' '}
+          <b className="text-text-primary font-semibold">{t('skills.guidanceOnly')}</b>{' '}
           {t('skills.detail.footerBody')}
         </span>
       </div>

@@ -33,7 +33,7 @@ export function FilterSidebar({ groups, value, onChange }: FilterSidebarProps): 
                 className={cn(
                   'w-full rounded-full px-2.5 py-1 text-left text-sm',
                   value[g.key] == null
-                    ? 'bg-accent-muted text-accent-text font-medium'
+                    ? 'bg-accent-soft text-accent-text font-medium'
                     : 'text-text-muted hover:bg-surface-raised',
                 )}
               >
@@ -48,7 +48,7 @@ export function FilterSidebar({ groups, value, onChange }: FilterSidebarProps): 
                   className={cn(
                     'flex w-full items-center justify-between rounded-full px-2.5 py-1 text-left text-sm',
                     value[g.key] === o.value
-                      ? 'bg-accent-muted text-accent-text font-medium'
+                      ? 'bg-accent-soft text-accent-text font-medium'
                       : 'text-text-muted hover:bg-surface-raised',
                   )}
                 >

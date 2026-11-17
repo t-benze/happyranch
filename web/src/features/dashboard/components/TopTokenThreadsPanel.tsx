@@ -54,7 +54,7 @@ export function TopTokenThreadsPanel(): JSX.Element {
   const max = Math.max(...rows.map((r) => r.totalTokens), 1);
 
   return (
-    <section className="border-border-default bg-surface shadow-pasture-sm rounded-lg border p-6">
+    <section className="border-border-default bg-surface-raised shadow-pasture-sm rounded-lg border p-6">
       <header className="mb-4 flex items-baseline justify-between">
         <h2 className="text-text-secondary text-xs font-semibold tracking-wider uppercase">
           {t('dashboard.topTokens.title', { window: t(win.labelKey) })}
@@ -96,7 +96,7 @@ export function TopTokenThreadsPanel(): JSX.Element {
                     width={Math.max((r.totalTokens / max) * BAR_W, 1)}
                     height={BAR_H}
                     rx={1}
-                    className="fill-accent"
+                    className="fill-accent-default"
                   />
                 </svg>
                 <StatValue

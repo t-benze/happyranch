@@ -86,7 +86,7 @@ function Pill({
         'text-caption focus-visible:ring-accent-ring rounded-sm border px-3 py-1 font-mono transition-colors focus-visible:ring-2 focus-visible:outline-none',
         pressed
           ? 'bg-text-primary text-text-inverse border-text-primary'
-          : 'bg-surface border-border-default text-text-secondary hover:text-text-primary',
+          : 'bg-surface-raised border-border-default text-text-secondary hover:text-text-primary',
       )}
     >
       {children}
@@ -384,7 +384,7 @@ function EfficiencyTable({
         </caption>
         <thead>
           <tr>
-            <th scope="col" className={`${TH_CLASS} bg-surface sticky left-0 z-10 w-1/5 text-left`}>{t('usage.runType')}</th>
+            <th scope="col" className={`${TH_CLASS} bg-surface-raised sticky left-0 z-10 w-1/5 text-left`}>{t('usage.runType')}</th>
             <th scope="col" className={`${TH_CLASS} text-right`}>{t('usage.runs')}</th>
             <th scope="col" className={`${TH_CLASS} text-right`}>{t('usage.freshMedian')}<FootnoteMark n={1} /></th>
             <th scope="col" className={`${TH_CLASS} text-right`}>{t('usage.rereadMedian')}<FootnoteMark n={2} /></th>
@@ -537,7 +537,7 @@ export function EfficiencySection({ compare }: { compare: boolean }): JSX.Elemen
   } else if (chosen === null) {
     status = t('usage.efficiencyChooseCli');
     body = (
-      <div className="bg-surface border-border-default shadow-pasture-sm rounded-lg border p-6">
+      <div className="bg-surface-raised border-border-default shadow-pasture-sm rounded-lg border p-6">
         <p className="text-body text-text-primary">
           {t('usage.chooseCohort')}
         </p>

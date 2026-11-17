@@ -470,7 +470,7 @@ export function ItemBody({ item, archive, source, onOpen }: { item: CuratedKnowl
 function ItemCard({ item, archive, source, onOpen }: { item: CuratedKnowledgeItem; archive: KnowledgeArchive; source: RetiredKnowledgeSource; onOpen: (referenceId: string, label: string) => void }): JSX.Element {
   const { t } = useTranslation();
   return (
-    <li className="bg-surface border-border-default shadow-pasture-sm rounded-lg border p-4">
+    <li className="bg-surface-raised border-border-default shadow-pasture-sm rounded-lg border p-4">
       <div className="flex flex-wrap items-center gap-2">
         <span className="text-text-primary font-mono text-xs font-semibold">{item.item_id}</span>
         <span className="text-text-secondary text-xs">{ITEM_CATEGORY[item.category] ? t(ITEM_CATEGORY[item.category]) : item.category}</span>
@@ -552,7 +552,7 @@ function ArchiveView({ source, archiveId, onClose, onPush, top }: DrawerProps & 
             )).join(' · ') || '—'}
           </p>
           {excluded.length > 0 ? (
-            <details className="bg-surface border-border-default mt-2 rounded-lg border">
+            <details className="bg-surface-raised border-border-default mt-2 rounded-lg border">
               <summary className="text-accent-text cursor-pointer px-4 py-2.5 text-xs font-semibold">
                 {t('knowledge.archive.leftOut', { count: excluded.length })}
               </summary>
@@ -623,7 +623,7 @@ export function ReferenceRecord({ source, referenceId, label }: { source: Knowle
       {query.isLoading ? <LoadingBlock /> : query.isError ? <ErrorBlock error={query.error} onRetry={() => void query.refetch()} /> : query.data ? (
         query.data.available && record ? (
           <>
-            <blockquote className="border-accent bg-surface text-text-primary rounded-r-lg border-l-4 px-4 py-3 text-sm leading-relaxed whitespace-pre-wrap">
+            <blockquote className="border-accent-default bg-surface-raised text-text-primary rounded-r-lg border-l-4 px-4 py-3 text-sm leading-relaxed whitespace-pre-wrap">
               {record.body}
             </blockquote>
             <div className="mt-4">

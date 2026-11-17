@@ -353,7 +353,7 @@ radius_roots = [
     "rounded-tl", "rounded-tr", "rounded-br", "rounded-bl", "rounded-ss", "rounded-se", "rounded-es", "rounded-ee",
     "rounded-t", "rounded-r", "rounded-b", "rounded-l", "rounded-s", "rounded-e", "rounded",
 ]
-# Longest root first so `border-t-accent` splits as border-t + accent, and
+# Longest root first so `border-t-accent-default` splits as border-t + accent-default, and
 # `outline-offset-2` is claimed (and skipped, numeric) before `outline`.
 roots = sorted(set(colour_roots + border_sides + spacing_roots + radius_roots + ["outline-offset", "ring-inset"]), key=len, reverse=True)
 css_keywords = {"transparent", "current", "inherit"}

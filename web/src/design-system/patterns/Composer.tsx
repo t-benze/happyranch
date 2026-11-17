@@ -346,7 +346,7 @@ export function Composer({
           disabled={disabled || !canSend || pending}
           aria-label={L.send}
           title={L.sendTitle}
-          className="bg-accent text-accent-fg hover:bg-accent-hover disabled:bg-surface-hover disabled:text-text-muted mb-0.5 inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full transition-colors"
+          className="bg-accent-default text-text-inverse hover:bg-accent-hover disabled:bg-surface-hover disabled:text-text-muted mb-0.5 inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full transition-colors"
         >
           <ArrowRight className="h-4 w-4" aria-hidden="true" />
         </button>

@@ -7,8 +7,8 @@
  * (THR-030 / TASK-603 Leg A — design-system foundation; revised TASK-605)
  *
  * Token names are unchanged from the post-PR-#110 system; only VALUES flip
- * to the Pasture palette. v3 backwards-compat aliases, semantic names, and
- * shadcn generic-var aliasing all survive.
+ * to the Pasture palette. Semantic names and shadcn generic-var aliasing
+ * survive; the v3 aliases are retired (THR-376 PR11) except bg-muted.
  *
  * LIGHT is the default (values directly in @theme). Dark is a
  * [data-theme="dark"] override block on <html>.
@@ -72,7 +72,6 @@
   --color-surface-raised:  oklch(1 0 0);
   --color-surface-overlay: oklch(1 0 0);
   --color-surface-scrim:   rgba(40, 30, 20, 0.25);
-  --color-surface:         var(--color-surface-raised);            /* bare "surface" used by attachment labels */
   --color-surface-hover:   oklch(0.982 0.006 80);    /* hover on bare surface */
   --color-surface-subtle:  oklch(0.988 0.004 82);    /* skeleton-loading variant */
 
@@ -94,7 +93,6 @@
 
   --color-accent-default:  oklch(0.52 0.11 152);
   --color-accent-hover:    oklch(0.46 0.11 152);
-  --color-accent-muted:    var(--color-accent-soft);
   --color-accent-ring:     rgba(134, 172, 98, 0.45);  /* accent at ~45% */
   --color-accent-text:     oklch(0.46 0.10 152);       /* ds.css --accent-text */
 
@@ -154,25 +152,12 @@
   --color-feedback-info:    var(--color-info);
 
   /* ====================================================================== */
-  /* v3 BACKWARDS-COMPAT ALIASES — var() aliases of the semantic tokens     */
-  /* (THR-376 PR10). Kept so v3 class names work; codemod + removal is a     */
-  /* follow-on leg, scheme by scheme (DESIGN_SYSTEM.md "One colour vocabulary"). */
+  /* v3 vocabulary RETIRED (THR-376 PR11): every v3 utility was codemodded   */
+  /* to its semantic name and the aliases deleted. bg-muted is the one       */
+  /* deferred exception: light surface-sunken vs dark surface-raised, so no  */
+  /* single semantic rename is pixel-neutral (DESIGN_SYSTEM.md).             */
   /* ====================================================================== */
-
-  --color-bg:              var(--color-surface-canvas);
-  --color-bg-subtle:       var(--color-surface-sunken);
-  --color-bg-raised:       var(--color-surface-raised);
   --color-bg-muted:        var(--color-surface-sunken);    /* used in ErrorBoundary */
-
-  --color-border:          var(--color-border-default);
-
-  --color-fg:              var(--color-text-primary);
-  --color-fg-muted:        var(--color-text-secondary);
-  --color-fg-subtle:       var(--color-text-muted);
-
-  --color-accent:          var(--color-accent-default);
-  /* Note: --color-accent-fg used by bg-accent text-accent-fg pattern in Settings */
-  --color-accent-fg:       var(--color-text-inverse);
 
   /* ====================================================================== */
   /* TYPOGRAPHY — Hanken Grotesk UI, Newsreader display, JetBrains Mono      */
@@ -391,7 +376,6 @@
   --color-surface-raised:  oklch(0.245 0.012 70);
   --color-surface-overlay: oklch(0.275 0.013 70);
   --color-surface-scrim:   rgba(0, 0, 0, 0.55);
-  --color-surface:         var(--color-surface-raised);
   --color-surface-hover:   oklch(0.265 0.012 70);
   --color-surface-subtle:  oklch(0.215 0.010 72);
 
@@ -410,7 +394,6 @@
   /* ---- Semantic accent (dark) — brighter for dark bg ---- */
   --color-accent-default:  oklch(0.70 0.13 152);
   --color-accent-hover:    oklch(0.76 0.13 152);
-  --color-accent-muted:    var(--color-accent-soft);
   --color-accent-ring:     rgba(165, 207, 112, 0.45);
   --color-accent-text:     oklch(0.80 0.12 152);       /* ds.css --accent-text dark */
 
@@ -448,20 +431,8 @@
   --color-feedback-danger:  var(--color-danger);
   --color-feedback-info:    var(--color-info);
 
-  /* ---- v3 backwards-compat aliases (dark) ---- */
-  --color-bg:              var(--color-surface-canvas);
-  --color-bg-subtle:       var(--color-surface-sunken);
-  --color-bg-raised:       var(--color-surface-raised);
+  /* ---- v3 bg-muted, deferred (dark differs from light; THR-376 PR11) ---- */
   --color-bg-muted:        var(--color-surface-raised);
-
-  --color-border:          var(--color-border-default);
-
-  --color-fg:              var(--color-text-primary);
-  --color-fg-muted:        var(--color-text-secondary);
-  --color-fg-subtle:       var(--color-text-muted);
-
-  --color-accent:          var(--color-accent-default);
-  --color-accent-fg:       var(--color-text-inverse);
 
   /* ---- Semantic attention / info / danger soft + text companions (dark) ---- */
   --color-attention-soft: oklch(0.34 0.05 65);

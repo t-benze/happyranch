@@ -16,7 +16,7 @@ export function CustomSkillsPage(): JSX.Element {
   const query = useCustomSkillsCatalog(true, removed ? 'removed' : 'current');
   const skills = query.data?.skills ?? [];
   return <div className="h-full overflow-y-auto"><div className="mx-auto w-full max-w-5xl px-4 py-6 md:px-12 md:py-8">
-    <header className="mb-6 flex flex-wrap items-start justify-between gap-3"><div><div className="text-fg-subtle text-overline mb-1 tracking-wider uppercase">{t('skills.customList.overline', { label: t(removed ? 'skills.view.removed' : 'skills.customList.founderWorkspace'), count: skills.length })}</div><h1 className="text-h2 text-fg">{t('skills.customList.title')}</h1><p className="text-fg-muted text-body-sm mt-1">{t('skills.customList.description')}</p></div>{!removed && <Button asChild><Link to={`/orgs/${slug ?? ''}/skills/custom/new`}><Plus />{t('skills.addCustom')}</Link></Button>}</header>
+    <header className="mb-6 flex flex-wrap items-start justify-between gap-3"><div><div className="text-text-muted text-overline mb-1 tracking-wider uppercase">{t('skills.customList.overline', { label: t(removed ? 'skills.view.removed' : 'skills.customList.founderWorkspace'), count: skills.length })}</div><h1 className="text-h2 text-text-primary">{t('skills.customList.title')}</h1><p className="text-text-secondary text-body-sm mt-1">{t('skills.customList.description')}</p></div>{!removed && <Button asChild><Link to={`/orgs/${slug ?? ''}/skills/custom/new`}><Plus />{t('skills.addCustom')}</Link></Button>}</header>
     <SegmentedControl
       className="mb-4"
       aria-label={t('skills.view.label')}

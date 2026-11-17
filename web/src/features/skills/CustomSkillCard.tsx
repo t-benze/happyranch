@@ -13,7 +13,7 @@ export function CustomSkillCard({ skill, slug }: { skill: CustomSkill; slug: str
   return (
     <Link
       to={`/orgs/${slug}/skills/custom/${encodeURIComponent(skillId)}`}
-      className="focus-visible:ring-accent border-border-default bg-surface-raised hover:bg-bg-subtle block rounded-md border p-4 transition-colors focus:outline-none focus-visible:ring-2"
+      className="focus-visible:ring-accent-default border-border-default bg-surface-raised hover:bg-surface-sunken block rounded-md border p-4 transition-colors focus:outline-none focus-visible:ring-2"
       aria-label={removed ? t('skills.catalog.viewRemovedSkill', { slug: skill.slug }) : t('skills.catalog.viewSkill', { name: skill.name })}
     >
       <article data-source="custom" data-skill-id={skillId}>
@@ -24,12 +24,12 @@ export function CustomSkillCard({ skill, slug }: { skill: CustomSkill; slug: str
                 {t('skills.source.custom')}
               </span>
               <StatusBadge {...skillStatusBadge(removed ? 'permanently_removed' : hidden ? 'no_eligibility_policy' : skill.validation_state, t)} />
-              {!removed && skill.retired_at && <span className="text-mono-sm text-fg-muted">{t('skills.retired')}</span>}
+              {!removed && skill.retired_at && <span className="text-mono-sm text-text-secondary">{t('skills.retired')}</span>}
             </div>
-            <h3 className="text-fg font-mono text-sm font-semibold">{skill.name}</h3>
-            <p className="text-fg-muted text-body-sm mt-1.5">{skill.description || t('skills.noDescription')}</p>
+            <h3 className="text-text-primary font-mono text-sm font-semibold">{skill.name}</h3>
+            <p className="text-text-secondary text-body-sm mt-1.5">{skill.description || t('skills.noDescription')}</p>
           </div>
-          {removed ? <span className="text-mono-sm text-fg-subtle">{t('skills.reservationRetained')}</span> : <span className="text-mono-sm text-fg-subtle">v{skill.current_version_id}</span>}
+          {removed ? <span className="text-mono-sm text-text-muted">{t('skills.reservationRetained')}</span> : <span className="text-mono-sm text-text-muted">v{skill.current_version_id}</span>}
         </div>
       </article>
     </Link>

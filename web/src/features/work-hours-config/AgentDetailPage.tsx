@@ -56,7 +56,7 @@ export function AgentDetailPage(): JSX.Element {
   const allAgentNames = useMemo(() => agents.map((a) => a.name), [agents]);
 
   if (settingsQuery.isLoading) {
-    return <div className="text-fg-muted p-8">{t('workHours.loading')}</div>;
+    return <div className="text-text-secondary p-8">{t('workHours.loading')}</div>;
   }
 
   if (settingsQuery.isError || !wh) {
@@ -163,10 +163,10 @@ export function AgentDetailPage(): JSX.Element {
             role="region"
             aria-label={t('workHours.detail.scrollLabel')}
             tabIndex={0}
-            className="border-border focus-visible:ring-accent-ring overflow-x-auto rounded-md border focus-visible:ring-2 focus-visible:outline-none"
+            className="border-border-default focus-visible:ring-accent-ring overflow-x-auto rounded-md border focus-visible:ring-2 focus-visible:outline-none"
           >
             <table className="w-full text-sm">
-              <thead className="bg-bg-subtle text-text-muted text-xs uppercase">
+              <thead className="bg-surface-sunken text-text-muted text-xs uppercase">
                 <tr>
                   <Th>{t('workHours.detail.col.leaf')}</Th>
                   <Th>{t('workHours.provenance.org')}</Th>
@@ -179,7 +179,7 @@ export function AgentDetailPage(): JSX.Element {
                   <Th>{t('workHours.detail.col.effective')}</Th>
                 </tr>
               </thead>
-              <tbody className="divide-border divide-y">
+              <tbody className="divide-border-default divide-y">
                 {rec.rows.map((row) => (
                   <tr key={row.leaf} className="hover:bg-surface-hover">
                     <td className="text-text-primary px-3 py-1.5 font-mono text-xs">
@@ -214,7 +214,7 @@ export function AgentDetailPage(): JSX.Element {
           <h2 className="text-text-primary mb-2 text-sm font-semibold">
             {t('workHours.detail.nextWakes')}
           </h2>
-          <div className="border-border bg-bg-subtle rounded-md border p-3 text-sm">
+          <div className="border-border-default bg-surface-sunken rounded-md border p-3 text-sm">
             {nextWakesQuery.isLoading && (
               <span className="text-text-muted">{t('workHours.detail.computing')}</span>
             )}
@@ -235,7 +235,7 @@ export function AgentDetailPage(): JSX.Element {
               {t('workHours.detail.routineReadOnly')}
             </span>
           </h2>
-          <div className="border-border bg-bg-subtle rounded-md border p-3 text-sm">
+          <div className="border-border-default bg-surface-sunken rounded-md border p-3 text-sm">
             <p className="text-text-muted mb-2 text-xs">
               {t('workHours.detail.routineInfo')}
             </p>

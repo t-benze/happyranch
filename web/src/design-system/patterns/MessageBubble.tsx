@@ -60,7 +60,7 @@ function fmtTs(iso: string): string {
 }
 
 const VARIANT_CONTAINER: Record<MessageVariant, string> = {
-  founder: 'rounded-lg border border-accent-ring bg-accent-muted p-4',
+  founder: 'rounded-lg border border-accent-ring bg-accent-soft p-4',
   worker: 'rounded-lg border border-border-subtle bg-surface-raised p-4',
   manager: 'rounded-lg border border-border-subtle bg-surface-raised p-4',
   decline: 'rounded-lg border border-tier-red bg-tier-red-tint p-4',
@@ -125,7 +125,7 @@ export function MessageBubble(props: MessageBubbleProps): JSX.Element {
                 type="button"
                 key={attachment.thread_attachment_id ?? attachment.artifact_name}
                 onClick={() => onAttachmentDownload?.(attachment)}
-                className="border-border-subtle bg-surface text-caption hover:bg-surface-hover inline-flex max-w-full items-center gap-2 rounded-md border px-2 py-1 cursor-pointer"
+                className="border-border-subtle bg-surface-raised text-caption hover:bg-surface-hover inline-flex max-w-full items-center gap-2 rounded-md border px-2 py-1 cursor-pointer"
               >
                 <span className="max-w-64 truncate">{attachment.display_name}</span>
                 {formattedSize && (

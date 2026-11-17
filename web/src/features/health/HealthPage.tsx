@@ -162,7 +162,7 @@ function StatCard({
   hint?: string;
 }): JSX.Element {
   return (
-    <div className="bg-surface border-border-default shadow-pasture-sm rounded-lg border p-4">
+    <div className="bg-surface-raised border-border-default shadow-pasture-sm rounded-lg border p-4">
       <p className="text-text-secondary text-xs font-semibold tracking-wider uppercase">{label}</p>
       <p className="font-display text-h2 text-text-primary mt-2 font-medium tabular-nums">{value}</p>
       {hint && <p className="text-text-muted text-2xs mt-1">{hint}</p>}
@@ -184,7 +184,7 @@ function SummaryCards({
         loading || !snapshot ? (
           <div
             key={stat.key}
-            className="bg-surface border-border-default shadow-pasture-sm rounded-lg border p-4"
+            className="bg-surface-raised border-border-default shadow-pasture-sm rounded-lg border p-4"
           >
             <div className="animate-pulse space-y-2">
               <div className="bg-surface-raised h-3 w-20 rounded-sm" />
@@ -228,7 +228,7 @@ function LoopsCard({
   }, [loops]);
 
   return (
-    <section className="bg-surface border-border-default shadow-pasture-sm rounded-lg border p-4">
+    <section className="bg-surface-raised border-border-default shadow-pasture-sm rounded-lg border p-4">
       <h2 className="text-text-secondary mb-3 text-xs font-semibold tracking-wider uppercase">
         {t('health.loops.title')}
       </h2>
@@ -308,7 +308,7 @@ function HttpCard({
   }, [http]);
 
   return (
-    <section className="bg-surface border-border-default shadow-pasture-sm rounded-lg border p-4">
+    <section className="bg-surface-raised border-border-default shadow-pasture-sm rounded-lg border p-4">
       <h2 className="text-text-secondary mb-3 text-xs font-semibold tracking-wider uppercase">
         {t('health.http.title')}
       </h2>
@@ -439,7 +439,7 @@ function TrendCard({
   const current = series.length > 0 ? series[series.length - 1]! : null;
   const peak = series.length > 0 ? Math.max(...series) : null;
   return (
-    <div className="bg-surface border-border-default shadow-pasture-sm rounded-lg border p-4">
+    <div className="bg-surface-raised border-border-default shadow-pasture-sm rounded-lg border p-4">
       <div className="flex items-baseline justify-between gap-2">
         <p className="text-text-secondary text-xs font-semibold tracking-wider uppercase">{t(def.label)}</p>
         <p className="text-text-muted text-2xs tabular-nums">
@@ -493,7 +493,7 @@ function HistorySection({
         )}
       </div>
       {error ? (
-        <div className="bg-surface border-border-default shadow-pasture-sm rounded-lg border p-8">
+        <div className="bg-surface-raised border-border-default shadow-pasture-sm rounded-lg border p-8">
           <p className="text-feedback-danger text-sm">{t('health.trends.error')}</p>
         </div>
       ) : loading ? (
@@ -501,7 +501,7 @@ function HistorySection({
           {[1, 2, 3].map((i) => (
             <div
               key={i}
-              className="bg-surface border-border-default shadow-pasture-sm rounded-lg border p-4"
+              className="bg-surface-raised border-border-default shadow-pasture-sm rounded-lg border p-4"
             >
               <div className="animate-pulse space-y-3">
                 <div className="bg-surface-raised h-3 w-24 rounded-sm" />
@@ -512,7 +512,7 @@ function HistorySection({
           ))}
         </div>
       ) : sampleCount === 0 ? (
-        <div className="bg-surface border-border-default shadow-pasture-sm rounded-lg border p-8">
+        <div className="bg-surface-raised border-border-default shadow-pasture-sm rounded-lg border p-8">
           <p className="text-text-muted text-sm">{t('health.trends.empty')}</p>
         </div>
       ) : (

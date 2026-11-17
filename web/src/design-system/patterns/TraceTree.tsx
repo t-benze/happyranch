@@ -77,17 +77,17 @@ function Node({
           to={taskHref ? taskHref(node.task_id) : undefined}
         />
         {node.assigned_agent && (
-          <span className="text-fg-muted">{node.assigned_agent}</span>
+          <span className="text-text-secondary">{node.assigned_agent}</span>
         )}
         <StatusBadge status={node.status} />
         {cost && (
-          <span className="text-fg-muted ml-auto font-mono text-xs">
-            <StatValue value={cost.tokens} align="inline" className="text-fg-muted" /> tok
+          <span className="text-text-secondary ml-auto font-mono text-xs">
+            <StatValue value={cost.tokens} align="inline" className="text-text-secondary" /> tok
             {cost.usd != null ? ` · ${fmtUsd(cost.usd)}` : ''}
           </span>
         )}
       </div>
-      <p className="text-fg mt-1 text-sm">{node.brief}</p>
+      <p className="text-text-primary mt-1 text-sm">{node.brief}</p>
       {node.children.map((c) => (
         <Node
           key={c.task_id}

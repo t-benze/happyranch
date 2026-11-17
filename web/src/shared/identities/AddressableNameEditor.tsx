@@ -78,7 +78,7 @@ export function AddressableNameEditor({ canonicalId, kind = 'agent' }: { canonic
   }
   const statusKey: MessageKey | null = query.isLoading ? 'identity.loading' : query.isError ? 'identity.loadError' : !identity || identity.lifecycle === 'absent' ? 'identity.absent' : !ready ? 'identity.unavailable' : null;
   return (
-    <section className="border-border-default bg-surface min-w-0 space-y-3 rounded-lg border p-4" aria-label={t(kind === 'founder' ? 'identity.founderHeading' : 'identity.agentHeading')}>
+    <section className="border-border-default bg-surface-raised min-w-0 space-y-3 rounded-lg border p-4" aria-label={t(kind === 'founder' ? 'identity.founderHeading' : 'identity.agentHeading')}>
       <h3 className="text-text-primary text-sm font-medium">{t(kind === 'founder' ? 'identity.founderHeading' : 'identity.agentHeading')}</h3>
       <p className="text-text-secondary break-all text-sm">{t('identity.immutableId')}: <code>{canonicalId}</code></p>
       {kind === 'founder' && <p className="text-text-muted text-xs">{t('identity.founderHelp')}</p>}

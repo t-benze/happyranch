@@ -23,7 +23,7 @@ import type { DreamKbCandidate } from '@/hooks/dreams';
 function CrescentMoonBadge({ className }: { className?: string }): JSX.Element {
   return (
     <svg
-      className={cn('text-accent inline-block shrink-0', className)}
+      className={cn('text-accent-default inline-block shrink-0', className)}
       width="14"
       height="14"
       viewBox="0 0 24 24"

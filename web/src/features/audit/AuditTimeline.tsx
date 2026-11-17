@@ -185,7 +185,7 @@ function TimelineRow({ entry, legendColor, slug }: TimelineRowProps): JSX.Elemen
         <span
           className={cn(
             'relative mt-3 h-2 w-2 rounded-full',
-            DOT_COLOR_CLASS[legendColor as keyof typeof DOT_COLOR_CLASS] ?? 'bg-fg-muted',
+            DOT_COLOR_CLASS[legendColor as keyof typeof DOT_COLOR_CLASS] ?? 'bg-text-secondary',
           )}
         />
       </div>
@@ -363,7 +363,7 @@ export function AuditTimeline({ legendMap, sinceISO }: AuditTimelineProps): JSX.
 function AllClearBanner(): JSX.Element {
   const { t } = useTranslation();
   return (
-    <div className="bg-surface border-border-default shadow-pasture-sm mx-4 mt-4 flex shrink-0 items-center gap-3 rounded-lg border p-4">
+    <div className="bg-surface-raised border-border-default shadow-pasture-sm mx-4 mt-4 flex shrink-0 items-center gap-3 rounded-lg border p-4">
       <span
         aria-hidden="true"
         className="bg-positive inline-block h-2.5 w-2.5 rounded-full"
@@ -429,7 +429,7 @@ function TimelineBody({
     <div ref={scrollRef} className="flex-1 overflow-y-auto" aria-label={t('audit.timeline.label')}>
       {days.map(({ date, entries: dayEntries }) => (
         <div key={date}>
-          <h3 className="text-text-muted bg-surface sticky top-0 z-10 px-4 pt-4 pb-2 text-xs font-medium tracking-wide uppercase">
+          <h3 className="text-text-muted bg-surface-raised sticky top-0 z-10 px-4 pt-4 pb-2 text-xs font-medium tracking-wide uppercase">
             {formatDateHeader(date, locale, t)}
           </h3>
           {dayEntries.map((e) => (

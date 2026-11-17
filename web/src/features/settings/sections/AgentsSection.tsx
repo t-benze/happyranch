@@ -11,7 +11,7 @@
 export function AgentsSection(): JSX.Element {
   return (
     <section className="space-y-4">
-      <div className="bg-surface border-border-default shadow-pasture-sm rounded-lg border p-4">
+      <div className="bg-surface-raised border-border-default shadow-pasture-sm rounded-lg border p-4">
         <div className="flex items-start gap-3">
           <div className="flex-1">
             <h3 className="text-sm font-medium text-text-primary">Founder handle</h3>
@@ -30,11 +30,11 @@ export function AgentsSection(): JSX.Element {
       </div>
 
       {/* Gap notice */}
-      <div className="bg-surface border-border-default shadow-pasture-sm rounded-lg border p-4">
+      <div className="bg-surface-raised border-border-default shadow-pasture-sm rounded-lg border p-4">
         <h3 className="text-sm font-medium text-text-primary">Agent roster</h3>
         <p className="text-text-secondary mt-1 text-sm">
           Add, edit, or remove agents from the{' '}
-          <a href="../agents" className="text-accent hover:underline">
+          <a href="../agents" className="text-accent-default hover:underline">
             Agents page
           </a>.
           Agent configuration is not editable from Settings.

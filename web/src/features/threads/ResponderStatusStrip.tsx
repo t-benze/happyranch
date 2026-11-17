@@ -121,7 +121,7 @@ function dotClass(s: ResponderStatusEntry): string {
     case 'working':
       return 'bg-info';
     case 'replied':
-      return 'bg-accent';
+      return 'bg-accent-default';
     case 'declined':
       return 'bg-attention';
     case 'failed':

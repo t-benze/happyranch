@@ -113,7 +113,7 @@ function ArtifactsSkeleton(): JSX.Element {
       {[1, 2, 3, 4, 5, 6].map((i) => (
         <div
           key={i}
-          className="bg-surface border-border-default overflow-hidden rounded-lg border"
+          className="bg-surface-raised border-border-default overflow-hidden rounded-lg border"
         >
           <div className="bg-surface-sunken h-28 animate-pulse" />
           <div className="flex flex-col gap-2 p-4">
@@ -151,11 +151,11 @@ function ThumbnailHeader({ type }: { type: ArtifactType }): JSX.Element {
         </defs>
         <rect width="100%" height="100%" fill={`url(#${patternId})`} opacity="0.45" />
       </svg>
-      <span className="bg-surface text-text-secondary border-border-subtle absolute top-3 left-3 rounded-full border px-2 py-0.5 text-xs lowercase">
+      <span className="bg-surface-raised text-text-secondary border-border-subtle absolute top-3 left-3 rounded-full border px-2 py-0.5 text-xs lowercase">
         {t(pill)}
       </span>
       <div
-        className={`bg-surface shadow-pasture-sm relative flex h-12 w-12 items-center justify-center rounded-md ${tint}`}
+        className={`bg-surface-raised shadow-pasture-sm relative flex h-12 w-12 items-center justify-center rounded-md ${tint}`}
       >
         <Icon size={22} aria-hidden="true" />
       </div>
@@ -195,7 +195,7 @@ function ArtifactCard({
   const hasProvenance = Boolean(prov.threadId || prov.agent);
 
   return (
-    <article className="bg-surface border-border-default shadow-pasture-sm hover:border-border-strong flex flex-col overflow-hidden rounded-lg border transition-colors">
+    <article className="bg-surface-raised border-border-default shadow-pasture-sm hover:border-border-strong flex flex-col overflow-hidden rounded-lg border transition-colors">
       <ThumbnailHeader type={type} />
 
       <div className="flex flex-1 flex-col p-4">
@@ -346,9 +346,9 @@ function FolderRow({
     <button
       type="button"
       onClick={() => onOpen(folder.path)}
-      className="bg-surface border-border-default shadow-pasture-sm hover:border-border-strong hover:bg-surface-hover flex items-center gap-3 rounded-lg border p-4 text-left transition-colors"
+      className="bg-surface-raised border-border-default shadow-pasture-sm hover:border-border-strong hover:bg-surface-hover flex items-center gap-3 rounded-lg border p-4 text-left transition-colors"
     >
-      <span className="bg-accent-muted text-accent-text flex h-9 w-9 flex-none items-center justify-center rounded-md">
+      <span className="bg-accent-soft text-accent-text flex h-9 w-9 flex-none items-center justify-center rounded-md">
         <Folder size={19} aria-hidden="true" />
       </span>
       <span className="min-w-0">
@@ -511,7 +511,7 @@ export function ArtifactsPage(): JSX.Element {
         {showUpload && (
           <section
             aria-label={t('artifacts.uploadTitle')}
-            className="bg-surface border-border-default shadow-pasture-sm mt-4 flex flex-col gap-3 rounded-lg border p-4"
+            className="bg-surface-raised border-border-default shadow-pasture-sm mt-4 flex flex-col gap-3 rounded-lg border p-4"
           >
             <h3 className="text-text-primary text-sm font-semibold">{t('artifacts.uploadTitle')}</h3>
             <div className="flex flex-col gap-1">

@@ -8,7 +8,7 @@ import { IdentityName } from '@/shared/identities/IdentityName';
  * Accept/Dismiss review gate, and a link to the reflection thread.
  *
  * Pasture vocabulary:
- *   Cards: bg-surface + border-border-default + shadow-pasture-sm + rounded-lg
+ *   Cards: bg-surface-raised + border-border-default + shadow-pasture-sm + rounded-lg
  *   Headings: font-display serif (Newsreader) where appropriate
  *   Dream ID / counts: font-mono tabular-nums
  *   Status pills: rounded-full bg-accent-soft/text-accent-text (completed)
@@ -93,7 +93,7 @@ function CandidateCard({
         : candidate.status;
 
   return (
-    <div className="kb-cand bg-surface border-border-default shadow-pasture-sm rounded-lg border p-4">
+    <div className="kb-cand bg-surface-raised border-border-default shadow-pasture-sm rounded-lg border p-4">
       {/* Header with dream marker */}
       <div className="mb-2 flex items-center gap-2">
         <CrescentMoonBadge className="h-3 w-3" label={t('dreams.badge')} />
@@ -272,8 +272,8 @@ export function DreamDetailPane({
                 <div className="bg-surface-sunken h-2.5 w-24 rounded-sm" />
               </div>
               {/* Skeleton content cards */}
-              <div className="bg-surface border-border-default shadow-pasture-sm h-24 rounded-lg border" />
-              <div className="bg-surface border-border-default shadow-pasture-sm h-20 rounded-lg border" />
+              <div className="bg-surface-raised border-border-default shadow-pasture-sm h-24 rounded-lg border" />
+              <div className="bg-surface-raised border-border-default shadow-pasture-sm h-20 rounded-lg border" />
             </div>
           ) : dreamQ.isError ? (
             <div className="space-y-3 p-4 text-center">
@@ -301,7 +301,7 @@ export function DreamDetailPane({
 
               {/* Quiet-dream indicator — Pasture card */}
               {isQuiet && (
-                <div className="bg-surface border-border-default shadow-pasture-sm rounded-lg border p-4">
+                <div className="bg-surface-raised border-border-default shadow-pasture-sm rounded-lg border p-4">
                   <p className="text-text-primary text-sm font-medium">{t('dreams.quiet.title')}</p>
                   <p className="text-text-muted mt-1 text-xs">{t('dreams.quiet.body')}</p>
                 </div>
@@ -329,7 +329,7 @@ export function DreamDetailPane({
 
               {/* Transcript — Pasture card */}
               {dream.transcript && (
-                <div className="text-text-secondary bg-surface border-border-default shadow-pasture-sm rounded-lg border p-4 font-mono text-xs whitespace-pre-wrap">
+                <div className="text-text-secondary bg-surface-raised border-border-default shadow-pasture-sm rounded-lg border p-4 font-mono text-xs whitespace-pre-wrap">
                   {dream.transcript}
                 </div>
               )}

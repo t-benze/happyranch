@@ -111,13 +111,13 @@ export function InboxRow({
 
   const shellCls = `group relative block w-full ${layout === 'thread' ? 'px-3 py-2' : 'rounded-sm border px-3 py-2'} text-left no-underline ${
     active
-      ? `bg-accent-muted ${layout === 'thread' ? '' : 'border-accent-muted shadow-pasture-sm'}`
-      : `bg-surface ${layout === 'thread' ? '' : 'border-border-default shadow-pasture-sm hover:border-border-strong'}`
+      ? `bg-accent-soft ${layout === 'thread' ? '' : 'border-accent-soft shadow-pasture-sm'}`
+      : `bg-surface-raised ${layout === 'thread' ? '' : 'border-border-default shadow-pasture-sm hover:border-border-strong'}`
   }`;
   const activeMarker = active && (
     <span
       aria-hidden="true"
-      className="bg-accent absolute inset-y-1 left-0 w-0.5 rounded-full"
+      className="bg-accent-default absolute inset-y-1 left-0 w-0.5 rounded-full"
     />
   );
 
@@ -125,7 +125,7 @@ export function InboxRow({
     // id-first two-line row (a-threads `.thread`). Status-driven leading dot
     // (open=green accent, archived=grey); status badge routed through the shared
     // semanticTone vocabulary; inline `from dream` + `last <last_speaker>`.
-    const dotCls = status === 'open' ? 'bg-accent' : 'bg-border-strong';
+    const dotCls = status === 'open' ? 'bg-accent-default' : 'bg-border-strong';
     const rowEl = (
       <a
         href={href}
@@ -197,7 +197,7 @@ export function InboxRow({
           {needsYou && (
             <span
               aria-label={labels?.needsYou ?? 'needs you'}
-              className="bg-accent inline-block h-1.5 w-1.5 shrink-0 rounded-full"
+              className="bg-accent-default inline-block h-1.5 w-1.5 shrink-0 rounded-full"
             />
           )}
           <span className="text-body-sm text-text-primary truncate font-medium">
