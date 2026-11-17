@@ -5,10 +5,12 @@ from runtime.infrastructure.thread_archive import after_thread_invocations_commi
 import uuid
 import time
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from runtime.orchestrator.teams import TeamsRegistry
+    from runtime.daemon.thread_delivery_release_service import _StartupThreadReleases
+    from runtime.infrastructure.thread_delivery_release import Budget
 
 from runtime.infrastructure.db._shared import (
     _late_database_now as _now,
@@ -218,6 +220,101 @@ class ReplyDeliveryMixin:
             finally:
                 owner.move.gate.release()
 
+    def _release_startup_thread_delivery(
+        self, startup: _StartupThreadReleases, original: dict[str, Any], budget: Budget,
+    ) -> None:
+        """Automatic-only atomic disposition; never enters the founder service."""
+        from runtime.daemon.thread_delivery_release_service import _StartupThreadReleases
+        from runtime.daemon.lifetime_lock import LockProof
+        from runtime.infrastructure.thread_delivery_release import (
+            STARTUP_ACTION, STARTUP_REASON, PreviewRequest, ReleaseReader, ReleaseUnavailable,
+            Selection, StartupCommand, StartupCompanion, canonical, digest, fingerprint,
+            history_digest, late_failure, native_read, preview, selected,
+        )
+        if (type(startup) is not _StartupThreadReleases or startup.db is not self
+                or not startup.used or startup.active is not original
+                or type(startup.proof) is not LockProof or startup.proof.proven is not True):
+            raise ReleaseUnavailable("startup_owner_unavailable")
+        move = getattr(self, "_team_move_coordinator", None)
+        if move is None or not move.gate.acquire(timeout=budget.lock_timeout()):
+            raise ReleaseUnavailable("move_busy")
+        try:
+            with native_read(self, budget) as reader:
+                if self._conn.in_transaction:
+                    raise ReleaseUnavailable("database_owned")
+                committing = False
+                try:
+                    reader.execute("BEGIN IMMEDIATE").close()
+                    view = ReleaseReader(reader, startup.slug)
+                    view.inventory()
+                    e = view.thread(original["thread_id"])
+                    history = e.histories.get(original["id"])
+                    inv = next((v for v in e.invocations if v["id"] == original["id"]), None)
+                    if (inv != original or not history or history[-1][0] > startup.audit_ceiling
+                            or not late_failure(history, budget.check)):
+                        raise ReleaseUnavailable("not_previous_boot_late_failure")
+                    # A contradictory active control is not erased by the lock.
+                    if reader.rows("team_move_operations", "active_slot=1", (), "operation_id"):
+                        raise ReleaseUnavailable("team_move_held")
+                    from runtime.infrastructure.task_pause_controls import decode_journal
+                    for row in reader.rows("task_pause_controls", "1=1", (), "root_task_id"):
+                        if (type(row["schema_version"]) is not int or row["schema_version"] != 1
+                                or type(row["held"]) is not int or row["held"] != 0
+                                or type(row["generation"]) is not int or row["generation"] < 0
+                                or row["release_pending_generation"] is not None
+                                or decode_journal(row["admission_journal_json"])["entries"]):
+                            raise ReleaseUnavailable("pause_control_unsettled")
+                        budget.check()
+                    if move.threads.live or move.producers.live or move.producers.writers:
+                        raise ReleaseUnavailable("current_boot_owner")
+                    final = history[-1][1]
+                    selection = Selection(org_slug=startup.slug, thread_id=inv["thread_id"],
+                        invocation_id=inv["id"], agent_id=inv["agent_name"], session_id=inv["session_id"],
+                        preparation_id=final.preparation_id, token_digest=digest(inv["invocation_token"].encode()))
+                    # Reuse the human reader/selection/range/conflict checks, not
+                    # human confirmation, command type or serving authority.
+                    fresh = preview(view, PreviewRequest(version=1,
+                        operation_key="startup-" + str(inv["id"]), mode="proof_backed", selection=selection))
+                    inputs = fresh["inputs"]
+                    cmd = StartupCommand(version=1, operation_key=inputs["operation_key"], selection=selection,
+                        prefix=inputs["prefix"], native_digest=inputs["native_digest"],
+                        range=inputs["range"], reason=STARTUP_REASON)
+                    selected(e, selection)
+                    command = canonical(cmd.model_dump(mode="json"))
+                    replacement, wake_id, marker_id = self._replace_exact_running_reply_uncommitted(
+                        reader, inv, e, cmd, _now().isoformat(), kind=STARTUP_ACTION)
+                    source = reader.one("thread_invocations", "id=?", (inv["id"],), "id")
+                    delivery = reader.rows("thread_reply_delivery_state", "thread_id=? AND agent_name=?",
+                        (selection.thread_id, selection.agent_id), "agent_name")
+                    payload = StartupCompanion(version=1, org_slug=startup.slug, operation_key=cmd.operation_key,
+                        command=command.decode(), command_digest=digest(command), principal="daemon",
+                        admission="proven_lock_before_startup_admission", source_history_digest=history_digest(history),
+                        source_post_digest=fingerprint([source]), disposition="running_replaced",
+                        replacement_id=replacement["id"],
+                        replacement_token_digest=digest(replacement["invocation_token"].encode()),
+                        replacement_initial_digest=fingerprint([replacement]),
+                        poststate_digest=fingerprint([source, replacement] + delivery),
+                        wake_audit_id=wake_id, marker_audit_id=marker_id)
+                    self._insert_thread_release_audit_uncommitted(reader, selection.thread_id, "daemon",
+                        STARTUP_ACTION, payload.model_dump(mode="json"))
+                    closing = ReleaseReader(reader, startup.slug)
+                    closing.inventory()  # independent prospective graph validation
+                    budget.check()
+                    committing = True
+                    self._conn.commit()
+                except BaseException as exc:
+                    try:
+                        self._conn.rollback()
+                    except BaseException:
+                        self._thread_release_settings_unsafe = True
+                        raise ReleaseUnavailable("rollback_unavailable", committed=None,
+                            settings_restored=False) from exc
+                    if committing:
+                        raise ReleaseUnavailable("commit_readback_required", committed=None) from exc
+                    raise
+        finally:
+            move.gate.release()
+
     def _insert_thread_release_audit_uncommitted(self, reader, thread_id, agent_id, action, payload):
         """Measure AuditMixin's ACTUAL json.dumps representation before INSERT."""
         import json
@@ -230,7 +327,10 @@ class ReplyDeliveryMixin:
         reader.budget.statement()
         return self.insert_audit_log_uncommitted(thread_id, agent_id, action, payload)
 
-    def _replace_exact_running_reply_uncommitted(self, reader, inv, evidence, cmd, now):
+    def _replace_exact_running_reply_uncommitted(
+        self, reader: Any, inv: dict, evidence: Any, cmd: Any, now: str, *,
+        kind: str = "human_delivery_release",
+    ) -> tuple[dict, int, int | None]:
         """Narrow interruption leaf. No acknowledgement/breaker/exchange reset."""
         from runtime.infrastructure.thread_delivery_release import ReleaseUnavailable
         if not self._conn.in_transaction:
@@ -238,10 +338,10 @@ class ReplyDeliveryMixin:
         s, r = cmd.selection, cmd.range
         token = inv["invocation_token"]
         changed = reader.change(
-            "UPDATE thread_invocations SET status='failed',decline_reason='human_delivery_release',consumed_at=? "
+            "UPDATE thread_invocations SET status='failed',decline_reason=?,consumed_at=? "
             "WHERE id=? AND thread_id=? AND agent_name=? AND invocation_token=? AND purpose='reply' "
             "AND status='pending' AND started_at IS NOT NULL AND session_id=?",
-            (now, s.invocation_id, s.thread_id, s.agent_id, token, s.session_id))
+            (kind, now, s.invocation_id, s.thread_id, s.agent_id, token, s.session_id))
         if changed != 1:
             raise ReleaseUnavailable("invocation_cas")
         reader.budget.statement()
@@ -251,16 +351,16 @@ class ReplyDeliveryMixin:
             raise ReleaseUnavailable("replacement_missing")
         changed = reader.change(
             "UPDATE thread_reply_delivery_state SET running_invocation_token=NULL,running_from_seq=NULL,"
-            "running_through_seq=NULL,queued_invocation_token=?,last_terminal_reason='human_delivery_release',"
+            "running_through_seq=NULL,queued_invocation_token=?,last_terminal_reason=?,"
             "last_terminal_at=?,updated_at=? WHERE thread_id=? AND agent_name=? AND running_invocation_token=? "
             "AND queued_invocation_token IS NULL AND acknowledged_through_seq=? AND required_through_seq=? "
             "AND running_from_seq=? AND running_through_seq=?",
-            (replacement_token, now, now, s.thread_id, s.agent_id, token,
+            (replacement_token, kind, now, now, s.thread_id, s.agent_id, token,
              r.acknowledged, r.required, r.running_from, r.running_through))
         if changed != 1:
             raise ReleaseUnavailable("slot_cas")
         wake_id = self._insert_thread_release_audit_uncommitted(reader, s.thread_id, s.agent_id,
-            "thread_reply_wake_recovered", dict(agent_name=s.agent_id, kind="human_delivery_release",
+            "thread_reply_wake_recovered", dict(agent_name=s.agent_id, kind=kind,
                 from_seq=r.acknowledged + 1, through_seq=r.required, token_prefix=replacement_token[:8]))
         marker_id = None
         markers = [d for d in evidence.deferrals if d["agent_name"] == s.agent_id and d["catchup_pending"] == 1]
@@ -273,7 +373,7 @@ class ReplyDeliveryMixin:
             if changed != len(markers):
                 raise ReleaseUnavailable("marker_cas")
             marker_id = self._insert_thread_release_audit_uncommitted(reader, s.thread_id, s.agent_id,
-                "thread_deferral_catchup_minted", dict(agent_name=s.agent_id, kind="human_delivery_release",
+                "thread_deferral_catchup_minted", dict(agent_name=s.agent_id, kind=kind,
                     from_seq=r.acknowledged + 1, through_seq=r.required, replacement_id=replacement["id"]))
         return replacement, wake_id, marker_id
 

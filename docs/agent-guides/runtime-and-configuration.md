@@ -1112,7 +1112,11 @@ has a dormant service bound to the actual initial app/state/runtime/org-map,
 org/DB/path, supervisor/tracker and attachment generation. Only actual successful
 ASGI/listener startup admits it; construction/readiness performs no operation or
 selection. Native preview/show and the sole `release_exact_thread_delivery`
-transaction have no ACTIVE HTTP/CLI, startup, reaper or automatic release caller.
+human transaction have no ACTIVE HTTP/CLI, startup, reaper or automatic caller.
+THR-357 adds a separate narrow proven-lock startup release; its exact predicate,
+append-only daemon record and refusal rules are in the maintained
+[lifecycle contract](contracts/runtime-lifecycle.md#narrow-previous-boot-thread-release-thr-357-fix-1--1136).
+The human command/confirmation/serving authority is unchanged.
 Temporary, dynamic, custom, replaced and missing contexts refuse. Neither
 ambient credentials nor caller proof flags enable mutation. Proof-backed release
 is unavailable. The approved human risk override requires exact preview, stable
@@ -4483,3 +4487,13 @@ runtime switch cannot consume another runtime's same-day attempt.
 ## Cooperative org access (A1)
 
 Supported org loads, fresh/reclaim routes and raw maintenance/offline openers acquire an org access fence before opening SQLite or constructing Database. Normal org connections retain SH through local close; explicit offline schema operations take EX without replacing their existing confirmation/lifecycle gates. Profile writers acquire affected org SH descriptors in stable key order before profile/publication/DB locks. Startup cache reads gate the metadata-only runtime org inventory before loading orgs; writers refuse unloaded dependencies. Original dynamic attachment includes exactly its own loaded, unpublished candidate in the sorted fence/membership capture; unrelated unloaded dependencies still refuse. Input/skeleton and existing-directory refusals close their route fence when no DB/native operation began or the original probe positively closed; probe errors without closure proof and unknown ownership stay held. Generic Database and machine-global stores remain workflow-free. See the [A1 contract](../superpowers/specs/2026-11-14-automatic-workflow-setup.md#a1-cooperative-org-access-fence).
+
+## Proven-lock thread startup release (THR-357 Fix 1)
+
+The initial startup sweep may release only previous-boot pending replies with
+recorded settled/quiescent attempts, a settled producer and the diagnostics' exact
+late `failed_cleanup` predicate. A NOT PROVEN lock releases nothing. The pass
+captures before current-boot admission, appends a separate daemon release audit
+and uses normal reply replacement/admission without rewriting lifecycle history.
+See [the full contract](contracts/runtime-lifecycle.md#narrow-previous-boot-thread-release-thr-357-fix-1--1136)
+and [logging](contracts/observability.md#narrow-thread-startup-release-thr-357).

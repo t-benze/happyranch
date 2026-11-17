@@ -28,7 +28,11 @@ from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
 from datetime import datetime, timezone
 from types import FrameType
-from typing import Iterator
+from typing import TYPE_CHECKING, Iterator
+
+if TYPE_CHECKING:
+    from runtime.daemon.lifetime_lock import LockProof
+    from runtime.daemon.thread_delivery_release_service import _StartupThreadReleases
 
 # Frozen repository children must reach their resource limits/Git exec before
 # importing the daemon. This is the existing fixed helper dispatch, not serve.
@@ -178,6 +182,7 @@ async def discover_completed_workflow_handoffs(state: DaemonState) -> None:
 def _sweep_on_startup(
     db: Database, queue: TaskQueue, slug: str,
     orchestrator: Orchestrator | None = None,
+    *, startup_releases: _StartupThreadReleases | None = None,
 ) -> list[str]:
     """Post-restart recovery for a single org (Path B — THR-037 Change B).
 
@@ -567,10 +572,15 @@ def _sweep_on_startup(
 
             # C1a: orphan/raw reaper paths below may never visit a participant
             # pair. Validate the COMPLETE companion family before any thread
-            # recovery/rekeying. This is a reader, never an automatic release.
+            # recovery/rekeying. The narrow automatic pass follows this validation.
             from runtime.infrastructure.thread_delivery_release import delivery_view
             with db._lock:
                 delivery_view(db)
+
+            # THR-357 Fix 1: one captured pre-admission population, only with
+            # proven lifetime-lock exclusion and recorded late-failure proof.
+            if startup_releases is not None:
+                startup_releases.run()
 
             # 6a. Activate per-pair reply delivery state for every OPEN thread
             # (idempotent cutover: seeds/coalesces legacy pending REPLYs).
@@ -693,7 +703,7 @@ def _publish_v2_generations_on_startup(org, queue: TaskQueue) -> None:
 
 
 @_startup_span("build_state")
-def _build_state(settings: Settings) -> DaemonState:
+def _build_state(settings: Settings, *, lock_proof: LockProof | None = None) -> DaemonState:
     reg = runtimes.load()
     if reg.active is None:
         # Auto-provision a default runtime on first launch so the daemon
@@ -728,7 +738,7 @@ def _build_state(settings: Settings) -> DaemonState:
         primary._attachment_owner = owner
         raise
     try:
-        _initialize_runnable_startup(state)
+        _initialize_runnable_startup(state, lock_proof=lock_proof)
     except BaseException as primary:
         state._fail_construction(owner, primary)
         primary._attachment_owner = owner
@@ -736,8 +746,13 @@ def _build_state(settings: Settings) -> DaemonState:
     return state
 
 
-def _initialize_runnable_startup(state: DaemonState) -> None:
-    for org in state.orgs_snapshot().values():
+def _initialize_runnable_startup(state: DaemonState, *, lock_proof: LockProof | None = None) -> None:
+    from runtime.daemon.thread_delivery_release_service import _StartupThreadReleases
+    # Initial org construction admits no producers. Capture all populations
+    # before any recovery step can mint a current-boot invocation.
+    initial = [(org, _StartupThreadReleases(org.db, org.slug, lock_proof))
+               for org in state.orgs_snapshot().values()]
+    for org, startup_releases in initial:
         # THR-229 checkpoint C3d4b: bind the REAL owning-process boot marker
         # (the existing ``authority_v2_origin_boot_id``) and the existing
         # server-owned permission-surface reader before any startup recovery or
@@ -763,6 +778,7 @@ def _initialize_runnable_startup(state: DaemonState) -> None:
                 )
         recovered_tokens = _sweep_on_startup(
             org.db, state.queue, org.slug, org.orchestrator,
+            startup_releases=startup_releases,
         )
         # THR-229 checkpoint C3d4b: publish every pending v2 generation for this
         # org after the sweep (covers ordinary continuations with no recovery Q,
@@ -1103,7 +1119,7 @@ def main(argv: list[str] | None = None) -> int:
         # executor is constructed (issue #254).
         from runtime.orchestrator.executors import _normalize_path
         _normalize_path()
-        state = _build_state(settings)
+        state = _build_state(settings, lock_proof=proof)
         app = create_app(state)
 
         sock, port = _bind_port(settings.daemon_bind_host, settings.daemon_port)

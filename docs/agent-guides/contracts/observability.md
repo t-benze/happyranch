@@ -49,3 +49,14 @@ If both sinks fail, the sanitized log is
 `workflow_integrity_report_unavailable`; no persistence is claimed. Stale latest
 retains its date. Reports have no automatic retention cleanup. A3 owns the later
 independent setup-status projection; this change adds no Audit UI.
+
+### Narrow thread startup release (THR-357)
+
+`thread_startup_release` logs an unproven-lock skip with its proof reason, a
+capture-unavailable category, or each attempted invocation's released/retained
+category. It never logs invocation tokens, command bodies or raw exceptions.
+`thread_delivery_startup_release` is the append-only daemon audit in existing
+thread scope. Raw `failed_cleanup` history and selected-history cleanup diagnostics
+remain available after release; delivery permission is a separate interpretation.
+Before-COMMIT failures retain the obstruction; unknown COMMIT/restoration aborts
+startup without retry. See [the lifecycle contract](runtime-lifecycle.md#narrow-previous-boot-thread-release-thr-357-fix-1--1136).

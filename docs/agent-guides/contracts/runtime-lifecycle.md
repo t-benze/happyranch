@@ -21,12 +21,12 @@ registry/SQLite access, within its existing redacted failure boundary, and
 retains its additional PID guard; it never writes serving PID/port markers.
 
 `lifetime_lock.LockProof` records `proven`, `transition_boot`, `reason` and
-`previous_pid`; startup logs the result without consuming it. A held lock
+`previous_pid`; startup logs the result and the narrow thread pass below consumes it. A held lock
 excludes all earlier lock-holding daemons, so records already present at
 acquisition belong to a previous boot. It says nothing about later records or
 surviving children/external processes, and is not sufficient release authority.
-Fix 1/Fix 2 are separate future consumers; no release, status/schema change or
-audit write is introduced here.
+Fix 2 preparation recovery remains separate; no task state or schema changes
+are introduced by the thread pass.
 
 A valid `happyranch-daemon-lock@1` marker in that same locked inode identifies
 lock-era operation. **Assumption:** pre-lock binaries are not subsequently run
@@ -63,6 +63,47 @@ are added. In-repo Mac managed restart waits for its actual exit callback;
 Linux desktop waits/reaps its child (60+2 seconds), and service restart delegates
 to synchronous systemd stop/start with `TimeoutStopSec=60`. Connector/sidecar
 units and disposable test cleanup are separate lifetimes.
+
+### Narrow previous-boot thread release (THR-357 Fix 1 / #1136)
+
+Before startup recovery can mint current-boot thread invocations, the initial org
+population captures pending started REPLY rows and an audit-ID boundary under
+main's already-held daemon lifetime lock. Dynamic org loads do not run this pass.
+Only `LockProof.proven is True` permits capture; unproven transition boots release
+nothing and log the lock reason. This relies on the lock's cooperating-daemon and
+no-downgrade assumptions above, plus no current-boot admission before the sweep;
+PID absence, timestamps, terminal task status and ended sessions are never proof.
+Changed native rows or later lifecycle appends are excluded.
+
+Next to `recover_reply_delivery_state`, after complete release-family validation
+and before cutover/queues/runners/HTTP admission, consume that population once.
+Reuse the diagnostics' exact `_late_failure` predicate: a final `failed_cleanup`,
+a settled producer, nonempty attempts all settled AND quiescent, and an earlier
+non-failed row with identical stable preparation/session/phase/retry/attempt facts.
+Shared strict release selection also rejects missing/malformed/conflicting history,
+unsafe ranges, unrelated owners, held deferrals and unsafe breaker/exchange state.
+Active move/Pause controls and current producers also refuse.
+
+One `BEGIN IMMEDIATE` transaction appends `thread_delivery_startup_release`
+(agent `daemon`, task_id = the existing real thread ID), applies the existing
+running-slot CAS and mints one covering queued replacement, with its wake audit.
+The companion uses a separate daemon command/record, never founder confirmation.
+An independent reader validates the prospective complete graph before COMMIT.
+Original lifecycle rows, sticky `failed_cleanup`, history and earlier audits stay
+byte-for-byte intact. Existing invocation `failed`/normal replacement admission
+are reused; acknowledgement, breaker and held state are not reset. No TaskStatus
+or transition is added. Later ORIGINAL lifecycle writes revoke delivery permission;
+raw safety/diagnostic census remains unchanged.
+
+Capture and the whole release pass each use the existing cooperative bounded
+reader allowance (3s/1024 rows/4MiB/256 statements/5M steps), without per-record
+budget renewal. Every captured record gets at most one attempt this boot; no
+retry loop, timer or dynamic rescan exists. Exhaustion/error before COMMIT rolls
+back the entire record transaction and retains diagnostic visibility. Unknown
+COMMIT or unsafe rollback/settings restoration aborts startup; it never authorizes
+a retry in that boot. These are cooperative bounds, not hard OS I/O guarantees.
+The broader dormant founder risk override and active #1273 attestation keep their
+existing authority and behavior. Source delivery does not repair a live daemon.
 
 ### Ordinary Pause-unknown crash recovery (THR-350)
 
