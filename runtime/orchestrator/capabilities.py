@@ -14,6 +14,7 @@ def build_capabilities_prompt(
     name_metadata=None,
     reviewer_configuration_state: str = "invalid",
     missing_reviewer_agents: list[str] | None = None,
+    workflow_start_available: bool = False,
 ) -> str:
     """Build the prompt sent to a task owner for each decision step.
 
@@ -283,7 +284,7 @@ def build_capabilities_prompt(
         "Use the manage-agent skill to write a JSON file and call `happyranch manage-agent --from-file <path>`.",
         "Enrollment requires founder approval before the agent becomes active. "
         "This is a side-channel capability, not one of the decision shapes above — "
-        "your `decision` field must be one of delegate/done/escalate/fanout.\n",
+        "your `decision` field must use one of the supported decision shapes above.\n",
         "### Constraints\n",
         f"- This is orchestration step {step_number}.",
         "- Org-specific authority limits (budget, jurisdictional, content)"
@@ -291,6 +292,21 @@ def build_capabilities_prompt(
         " block. Escalate to the founder anything outside the bounds your"
         " role describes.",
     ])
+
+    if workflow_start_available:
+        sections.extend([
+            "**workflow_start** -- Available for your own ordinary manager task, subject to fresh discovery and callback admission:",
+            "Read your CLI-surface GET /api/v1/orgs/ORG/workflows/sequential/start-context?session_id=SID",
+            "and select an available bundled definition with Allowed settings. Preserve its exact selector and settings generation/digest.",
+            "Compose with `happyranch workflows sequential start-compose --org ORG --session-id SID --from-file ABS --json`.",
+            "The bounded canonical input holds definition (identity@version), settings (generation/snapshot_digest),",
+            "operation_key, request, inputs and optional lower_limits. The composer only reads; it never starts a run or reports completion.",
+            "Place its closed decision object, unchanged, in your OWN FINAL report-completion `decision`.",
+            "Preserve composed bytes/pins and the stable key; a settings conflict never silently adopts a newer generation.",
+            "@1 limits: one run per source, fixed assignments, source-terminal semantics: the source task ends when the run returns.",
+            "Thread-originated ordinary tasks have only a partial thread tail, with no redelivery guarantee.",
+            "Unavailable discovery grants no setup authority. Retired coding.v1 and old fresh workflow-coding-start@1/@2 stay refused.\n",
+        ])
 
     if prior_steps:
         sections.append("\n### Prior Steps\n")

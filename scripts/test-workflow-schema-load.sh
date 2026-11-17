@@ -61,6 +61,14 @@ if len(sys.argv) == 2 and sys.argv[1].startswith('--returned-storage='):
     returned_case = sys.argv[1].split('=', 1)[1]
     sys.argv[1:] = ['--returned-storage']
 
+start_compose_case = None
+START_COMPOSE_CASES = ('compose_no_write', 'compose_stale_settings_conflict', 'compose_refusals',
+    'compose_parses_at_dispatch', 'prompt_manager_offers', 'prompt_worker_refuses')
+if len(sys.argv) == 2 and sys.argv[1].startswith('--start-compose='):
+    start_compose_case = sys.argv[1].split('=', 1)[1]
+    assert start_compose_case in ('all', *START_COMPOSE_CASES)
+    sys.argv[1:] = ['--start-compose']
+
 start_context_case = None
 START_CONTEXT_CASES = ('manager_context', 'thread_origin_manager', 'foreign_context',
     'direct_thread_refused', 'worker_refused', 'ended_or_recovery_sid_refused',
@@ -167,7 +175,7 @@ if len(sys.argv) == 2 and sys.argv[1].startswith('--retained-corruption-phase=')
         uncommitted='between uncommitted')[sys.argv[1].split('=', 1)[1]]
     sys.argv[1:] = ['--retained-corruption']
 
-assert sys.argv[1:] in ([], ['--start-context'], ['--bundled-catalog'], ['--returned-storage'], ['--bootstrap-startup'], ['--bootstrap-worker'], ['--bootstrap-owners'], ['--bootstrap-discovery'], ['--bootstrap-selection'], ['--bootstrap-install'], ['--bootstrap-rehearsal'], ['--bootstrap-backup'], ['--bootstrap-journal'], ['--bootstrap-precommit'], ['--startup-isolation'], ['--fresh-catalog'], ['--org-access-fence'], ['--org-access-openers'], ['--org-access-native'], ['--org-access-guardian'], ['--org-access-profile'], ['--setup-status'], ['--daily-integrity'], ['--install-integrity'], ['--bounded-acquisition'], ['--trace-custody'], ['--sequential-reuse'], ['--sequential-load'], ['--sequential-freshness'], ['--sequential-faults'], ['--sequential-sql-exhaustion'], ['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--coding-authority-corruption'], ['--document-native-corruption'], ['--author-handoff-corruption'], ['--document-revision-corruption'], ['--coding-history-corruption'], ['--physical-corruption'], ['--sequential-uncommitted'], ['--i2-cutover'], ['--i2-native']), 'unknown schema-load selection'
+assert sys.argv[1:] in ([], ['--start-compose'], ['--start-context'], ['--bundled-catalog'], ['--returned-storage'], ['--bootstrap-startup'], ['--bootstrap-worker'], ['--bootstrap-owners'], ['--bootstrap-discovery'], ['--bootstrap-selection'], ['--bootstrap-install'], ['--bootstrap-rehearsal'], ['--bootstrap-backup'], ['--bootstrap-journal'], ['--bootstrap-precommit'], ['--startup-isolation'], ['--fresh-catalog'], ['--org-access-fence'], ['--org-access-openers'], ['--org-access-native'], ['--org-access-guardian'], ['--org-access-profile'], ['--setup-status'], ['--daily-integrity'], ['--install-integrity'], ['--bounded-acquisition'], ['--trace-custody'], ['--sequential-reuse'], ['--sequential-load'], ['--sequential-freshness'], ['--sequential-faults'], ['--sequential-sql-exhaustion'], ['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--coding-authority-corruption'], ['--document-native-corruption'], ['--author-handoff-corruption'], ['--document-revision-corruption'], ['--coding-history-corruption'], ['--physical-corruption'], ['--sequential-uncommitted'], ['--i2-cutover'], ['--i2-native']), 'unknown schema-load selection'
 
 
 print('SCHEMA_RUNTIME', json.dumps(dict(python=sys.version, executable=sys.executable, sqlite=sqlite3.sqlite_version,
@@ -651,7 +659,7 @@ if sys.argv[1:] == ['--returned-storage']:
 
 
 # R1c uses private package data and real production readers/writers, with no launch.
-if sys.argv[1:] in ([], ['--bundled-catalog'], ['--start-context']):
+if sys.argv[1:] in ([], ['--bundled-catalog'], ['--start-context'], ['--start-compose']):
     import asyncio
     from dataclasses import replace
     from runtime.daemon.routes.orgs import _seed_skeleton
@@ -677,7 +685,7 @@ if sys.argv[1:] in ([], ['--bundled-catalog'], ['--start-context']):
             raise AssertionError(label + ': unexpectedly admitted')
         print('PASS R1c', label, expected, flush=True)
 
-    async def start_context_cases(org, runtime, home, coding, save_settings):
+    async def start_context_cases(org, runtime, home, coding, save_settings, *, compose_only=False):
         import httpx
         from runtime.models import ThreadRecord, ThreadInvocationPurpose
         from runtime.daemon.app import create_app
@@ -761,6 +769,175 @@ if sys.argv[1:] in ([], ['--bundled-catalog'], ['--start-context']):
                     assert all(text in role['responsibilities'] for text in node.responsibilities)
                 assert body['start_format'] == 'workflow-sequential-start@1' and body['max_runs'] == 1
                 assert body['assignments'] == 'fixed' and body['source_semantics'] == 'source-terminal'
+
+            if compose_only:
+                from cli.main import build_parser
+                from runtime.models import NextStep
+                from runtime.orchestrator import run_step
+                from runtime.orchestrator.capabilities import build_capabilities_prompt
+                from runtime.orchestrator.org_config import OrgConfig
+                from runtime.daemon.thread_runner import build_thread_prompt, build_thread_delta_prompt
+                loop = asyncio.get_running_loop()
+                real_client = httpx.Client
+                requests = []
+                payload = dict(definition=selector, settings=cmd.settings.model_dump(mode='json'),
+                    operation_key='stable-compose', request='Private request 中文', inputs=[])
+                input_path = home / 'compose.json'
+                from runtime.runtime import port_file
+                port_file().write_text('43210')
+
+                def transport(request):
+                    requests.append((request.method, request.url.path, tuple(request.url.params.multi_items())))
+                    assert request.method == 'GET' and request.url.path == url, 'composer attempted a write transport'
+                    assert request.headers['x-happyranch-surface'] == 'cli'
+                    assert 'authorization' not in request.headers and 'origin' not in request.headers
+                    response = asyncio.run_coroutine_threadsafe(client.send(request), loop).result(timeout=10)
+                    return httpx.Response(response.status_code, content=response.content, headers=response.headers)
+
+                async def compose(body=None, *, sid='context-manager', raw=None, path=None, error=None):
+                    input_path.write_bytes(_bytes(payload if body is None else body) if raw is None else raw)
+                    argv = ['workflows', 'sequential', 'start-compose', '--org', 'scratch',
+                        '--session-id', sid, '--from-file', str(input_path) if path is None else path, '--json']
+                    before, changes, statements = inventory(), conn.total_changes, []
+                    original_input = input_path.read_bytes()
+                    out, err = io.StringIO(), io.StringIO()
+                    def invoke():
+                        with redirect_stdout(out), redirect_stderr(err), patch.object(httpx, 'Client',
+                                lambda **kw: real_client(transport=httpx.MockTransport(transport), **kw)):
+                            try:
+                                args = build_parser().parse_args(argv)
+                                args.func(args)
+                            except SystemExit as exc:
+                                return exc.code
+                        return 0
+                    conn.set_trace_callback(statements.append)
+                    try:
+                        status = await asyncio.to_thread(invoke)
+                    finally:
+                        conn.set_trace_callback(None)
+                    assert conn.total_changes == changes and inventory() == before, 'compose_no_write: all-table mutation'
+                    assert input_path.read_bytes() == original_input, 'composer changed input bytes'
+                    assert not any(sql.lstrip().split(' ', 1)[0].upper() in
+                        ('INSERT', 'UPDATE', 'DELETE', 'REPLACE', 'COMMIT', 'END', 'CREATE', 'DROP', 'ALTER')
+                        for sql in statements), ('composer forbidden SQL', statements)
+                    if error is not None:
+                        assert status != 0 and not out.getvalue() and error in err.getvalue(), (status, out.getvalue(), err.getvalue(), error)
+                        return
+                    assert status == 0, ('compose_no_write: composer command absent or refused', status, err.getvalue())
+                    raw = out.getvalue().removesuffix('\n').encode('utf8')
+                    decision = json.loads(raw)
+                    assert raw == _bytes(decision), 'composer decision not canonical'
+                    return decision, raw
+
+                for case in START_COMPOSE_CASES:
+                    if start_compose_case not in (None, 'all', case):
+                        continue
+                    if case in ('compose_no_write', 'compose_parses_at_dispatch'):
+                        discovered = (await read())['definitions'][0]
+                        decision, raw = await compose()
+                        workflow = decision['workflow']
+                        assert set(decision) == {'action', 'workflow'} and decision['action'] == 'workflow_start'
+                        assert workflow['definition'] == discovered['pin']
+                        assert workflow['settings'] == {k: discovered['settings'][k] for k in ('generation', 'snapshot_digest')}
+                        assert workflow['bindings'] == discovered['defaults'] and workflow['lower_limits'] == discovered['limits']
+                        assert workflow['request'] == payload['request'] and workflow['operation_key'] == 'stable-compose'
+                        assert (await compose())[1] == raw, 'same input/pins changed composed bytes'
+                        if case == 'compose_parses_at_dispatch':
+                            # The actual closed Decision validator and canonical @1 parser
+                            # used by run_step; no consume/executor/result is invoked.
+                            parsed = NextStep.model_validate_json(raw)
+                            assert parsed.model_dump(mode='json') == decision
+                            assert start.SequentialStartDecision.model_validate(decision).workflow == parse_start(_bytes(parsed.workflow))
+                            start.precheck_start(org, parsed.workflow, source_task_id='private-source')
+                        else:
+                            lowered = dict(payload, lower_limits=dict(content_returns=0, max_content_epochs=1,
+                                max_visits=1, max_events=1))
+                            assert (await compose(lowered))[0]['workflow']['lower_limits'] == lowered['lower_limits']
+                        assert conn.execute('SELECT count(*) FROM workflow_seq_runs').fetchone()[0] == 0
+                        assert conn.execute('SELECT count(*) FROM task_results').fetchone()[0] == 0
+                    elif case == 'compose_stale_settings_conflict':
+                        original, raw = await compose()
+                        save_settings(coding, generation=2)
+                        await compose(error='sequential_settings_conflict')
+                        assert original['workflow']['settings'] == payload['settings'] and _bytes(original) == raw
+                        tampered = dict(payload, settings=dict(generation=2, snapshot_digest='0'*64))
+                        await compose(tampered, error='sequential_settings_conflict')
+                        # Keep the existing writer's append-only generations; restore
+                        # current expected discovery only for later independent cases.
+                        current = (await read())['definitions'][0]['settings']
+                        payload['settings'] = {k: current[k] for k in ('generation', 'snapshot_digest')}
+                    elif case == 'compose_refusals':
+                        await compose(sid='unknown', error='sequential_task_session_required')
+                        # Use an ordinary task-owning worker so the role, rather
+                        # than an earlier subtask guard, owns this refusal.
+                        org.db.update_task('worker-source', task_type='task')
+                        await compose(sid='context-worker-source', error='sequential_task_session_required')
+                        org.db.update_task('worker-source', task_type='subtask')
+                        org.sessions.set_active('private-source', 'r1c_manager', 'foreign', org_slug='foreign')
+                        await compose(sid='foreign', error='sequential_task_session_required')
+                        org.sessions.register_recovery_session('private-source', 'r1c_manager', 'recovery', org_slug='scratch')
+                        org.db.update_task('private-source', current_session_id='recovery')
+                        await compose(sid='recovery', error='sequential_task_session_required')
+                        org.sessions.set_active('private-source', 'r1c_manager', 'context-manager', org_slug='scratch')
+                        org.db.update_task('private-source', current_session_id='context-manager', status='completed')
+                        await compose(error='sequential_task_session_required')
+                        org.db.update_task('private-source', status='in_progress')
+                        for retired in ('coding.v1', 'release/happyranch/coding@1', 'workflow-coding-start@1', 'workflow-coding-start@2'):
+                            await compose(dict(payload, definition=retired), error='sequential_start_context_refused:409')
+                        for raw in (b'{', b'{}', b'x'*1048577, b'{"operation_key":"a","operation_key":"b"}'):
+                            await compose(raw=raw, error='sequential_compose_input_invalid')
+                        await compose(path='relative.json', error='must be absolute')
+                        await compose(dict(payload, inputs=[dict(name='unknown', contract='bounded-text@1', value='x')]),
+                            error='unknown_start_input')
+                        await compose(dict(payload, request='x'*16385), error='sequential_compose_input_invalid')
+                        await compose(dict(payload, bindings=[]), error='sequential_compose_input_invalid')
+                        await compose(dict(payload, settings=dict(generation=True, snapshot_digest='0'*64)),
+                            error='sequential_compose_input_invalid')
+                        await compose(dict(payload, lower_limits=dict(content_returns=2, max_content_epochs=3,
+                            max_visits=64, max_events=4096)), error='sequential_lower_limits_exceed_settings')
+                        generation = payload['settings']['generation'] + 1
+                        disabled = save_settings(coding, generation=generation, admission='Disabled')
+                        await compose(dict(payload, settings=disabled.settings.model_dump(mode='json')),
+                            error='sequential_settings_disabled')
+                        restored = save_settings(coding, generation=generation+1)
+                        payload['settings'] = restored.settings.model_dump(mode='json')
+                    elif case == 'prompt_manager_offers':
+                        # Real task-owner builder, team/active agent files and DB;
+                        # no eligibility or successful-authority substitutes.
+                        prompt = run_step._build_agent_prompt(org.orchestrator, org.db.get_task('private-source'), 'r1c_manager')
+                        for text in ('**workflow_start**', 'start-compose --org ORG --session-id SID --from-file ABS --json',
+                                     'one run per source', 'fixed assignments', 'source task ends when the run returns',
+                                     'no redelivery guarantee', 'FINAL report-completion'):
+                            assert text in prompt, ('prompt_manager_offers', text)
+                    elif case == 'prompt_worker_refuses':
+                        prompts = [build_capabilities_prompt([], 1, manager_name='r1c_dev', self_only=True, workflow_start_available=True),
+                            run_step._build_agent_prompt(org.orchestrator, org.db.get_task('worker-source'), 'r1c_dev')]
+                        org.db.update_task('worker-source', task_type='task')
+                        prompts.append(run_step._build_agent_prompt(org.orchestrator, org.db.get_task('worker-source'), 'r1c_dev'))
+                        org.db.update_task('worker-source', task_type='subtask')
+                        thread = org.db.get_thread('THR-private')
+                        prompts.append(build_thread_prompt(thread=thread, participants=[], messages=[],
+                            invocation_token='private-thread-token', invoked_agent='r1c_manager', purpose='reply',
+                            triggering_seq=0, org_config=OrgConfig()))
+                        prompts.append(build_thread_delta_prompt(thread=thread, new_messages=[],
+                            invocation_token='private-thread-token', invoked_agent='r1c_manager', purpose='reply',
+                            triggering_seq=0, triggering_message=None, org_config=OrgConfig()))
+                        from runtime.daemon.wake_runner import build_wake_prompt
+                        from runtime.daemon.dream_runner import build_dream_prompt
+                        from runtime.models import DreamRecord
+                        from datetime import datetime, timezone
+                        now = datetime.now(timezone.utc)
+                        prompts.append(build_wake_prompt(org_slug='scratch', work_hour_id='private-hour',
+                            agent_name='r1c_manager', role='manager', team='engineering', local_date='2026-11-17',
+                            slot='private', mode='normal', preamble='', routines=[], org_config=OrgConfig()))
+                        prompts.append(build_dream_prompt(org_slug='scratch',
+                            dream=DreamRecord(id='private-dream', agent_name='r1c_manager', local_date='2026-11-17',
+                                scheduled_for=now, window_end=now), workspace=home, recent_audit=[],
+                            task_history='', org_config=OrgConfig()))
+                        for prompt in prompts:
+                            assert '**workflow_start**' not in prompt and 'start-compose' not in prompt, 'ineligible prompt offers workflow_start'
+                    print('PASS R1b2', case, 'real private route/registry/settings/prompt; zero composer changes and identical inventory', flush=True)
+                return
 
             for case in START_CONTEXT_CASES:
                 if chosen not in ('all', case):
@@ -933,7 +1110,7 @@ if sys.argv[1:] in ([], ['--bundled-catalog'], ['--start-context']):
                     await read('unknown', status=403, code='sequential_task_session_required')
                 print('PASS R1b1', case, 'real route/registry/authority/settings; zero DML/COMMIT and identical all-table inventory', flush=True)
 
-    async def bundled_catalog_cases(*, context_only=False):
+    async def bundled_catalog_cases(*, context_only=False, compose_only=False):
         with tempfile.TemporaryDirectory(prefix='r1c-bundled-', dir='/tmp') as scratch:
             home = Path(scratch).resolve()
             runtime = RuntimeDir.init(home / 'runtime')
@@ -964,7 +1141,7 @@ if sys.argv[1:] in ([], ['--bundled-catalog'], ['--start-context']):
                     db, conn = org.db, org.db._conn
                     coding = release.read_coding_release()
                     original_manifest = dict(getattr(release, 'MANIFEST', {}))
-                    selected = 'start_context' if context_only else bundled_case or 'all'
+                    selected = 'start_context' if context_only or compose_only else bundled_case or 'all'
 
                     def command(compiled, *, generation=1, admission='Allowed'):
                         bindings = [dict(role=role, principal=dict(developer='r1c_dev', reviewer='r1c_review',
@@ -998,7 +1175,7 @@ if sys.argv[1:] in ([], ['--bundled-catalog'], ['--start-context']):
                         task_type='task', status='in_progress', brief='Private no-launch source'))
 
                     if selected == 'start_context':
-                        await start_context_cases(org, runtime, home, coding, save_settings)
+                        await start_context_cases(org, runtime, home, coding, save_settings, compose_only=compose_only)
                         return
 
                     def inventory():
@@ -1135,9 +1312,11 @@ if sys.argv[1:] in ([], ['--bundled-catalog'], ['--start-context']):
                     org.close()
     if sys.argv[1:] in ([], ['--start-context']):
         asyncio.run(bundled_catalog_cases(context_only=True))
-    if sys.argv[1:] != ['--start-context']:
+    if sys.argv[1:] in ([], ['--start-compose']):
+        asyncio.run(bundled_catalog_cases(compose_only=True))
+    if sys.argv[1:] not in (['--start-context'], ['--start-compose']):
         asyncio.run(bundled_catalog_cases())
-    if sys.argv[1:] in (['--bundled-catalog'], ['--start-context']):
+    if sys.argv[1:] in (['--bundled-catalog'], ['--start-context'], ['--start-compose']):
         raise SystemExit(0)
 
 

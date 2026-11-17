@@ -42,10 +42,55 @@ never becomes empty/available data. Every path has zero DML and zero COMMIT;
 owned read snapshots end with ROLLBACK and acquire no durable publication lease.
 
 This discovery grants no configuration or start effect. Start@1 still means one
-run, fixed assignments and old source-terminal semantics. R1b2 owns composition
-and prompt changes; @2, multi-run continuation and the Coding pilot are separate.
+run, fixed assignments and old source-terminal semantics. R1b2 below supplies
+composition and prompt guidance; @2, multi-run continuation and the Coding pilot are separate.
 The Web Contract classifies this route as agent-session, like
 repository-preflight; the TS mirror is types only, without a browser function.
+
+## R1b2: read-only start composition and manager guidance
+
+`happyranch workflows sequential start-compose --org ORG --session-id SID --from-file ABS --json`
+reads R1b1 through the CLI surface for the caller's own current ordinary manager
+session. It prints one canonical closed `workflow_start` decision containing the
+existing `workflow-sequential-start@1` command, using the shared parser,
+canonicalizer and decision model. It never POSTs, allocates a run/task/result,
+invokes report-completion or writes a file/database. Parsing is not admission.
+
+The absolute input file is canonical UTF8 JSON (sorted keys, compact separators,
+Unicode verbatim, no duplicate keys or trailing newline), at most 1048576 bytes.
+It has exactly `definition` (the discovered `identity@version` selector),
+`settings` (`generation` and `snapshot_digest` copied from discovery),
+`operation_key` (one stable key), `request`, `inputs`, and optional `lower_limits`.
+For example, fill the settings digest from your own successful discovery:
+
+```json
+{"definition":"release/happyranch/coding@2","inputs":[],"operation_key":"my-stable-key","request":"Implement the authorized brief","settings":{"generation":1,"snapshot_digest":"<discovered 64-character digest>"}}
+```
+
+Request and input values retain the @1 nonblank 16384-byte bounds; at most 32
+inputs use `{name,contract:"bounded-text@1",value}` and must satisfy the selected
+definition's declared inputs. Optional lower limits contain all four existing
+fields (`content_returns`, `max_content_epochs`, `max_visits`, `max_events`) and
+cannot exceed saved limits. Omission uses the saved limits. Assignments come
+only from discovered defaults; definition/source/ABI pins come only from the
+selected bundled release. Settings must still match the supplied generation AND
+digest; otherwise composition refuses `sequential_settings_conflict:409` with
+no decision. Disabled/unset/unavailable definitions and retired Coding v1/old
+fresh `workflow-coding-start@1/@2` selectors stay refused.
+
+Place the emitted object unchanged in your OWN genuine FINAL report-completion
+`decision`, using the actual task/agent/SID. Preserve the composed bytes/pins,
+input file and stable key. Do not silently replace settings pins on retry.
+Discovery and composition reserve nothing: a later settings change can still
+refuse callback admission through the existing stale-generation check.
+
+Only the ordinary task-owner prompt path offers `workflow_start` to executable
+registered managers; worker/self-only, subtask, thread, wake and dream prompts
+do not offer it. This guidance grants no setup or start authority. @1 still
+means one run per source, fixed assignments and source-terminal semantics:
+the source task ends when the run returns. Thread-originated ordinary sources
+retain the partial thread tail with no redelivery guarantee. @2, multiple runs,
+continuation/control redesign, live setup and the Coding pilot remain separate.
 
 ## R1a: thread-originated ordinary sources and terminal return
 

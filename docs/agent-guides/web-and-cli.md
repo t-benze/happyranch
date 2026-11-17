@@ -5196,3 +5196,26 @@ their original date; missing or unavailable evidence never means today's
 success. No raw integrity diagnostics cross the route. Setup/report evidence
 grants no workflow permission. English and Simplified Chinese share this
 behavior. No page, Audit UI, notification or required check is added.
+
+## Sequential manager start composer (R1b2)
+
+`happyranch workflows sequential start-compose --org ORG --session-id SID --from-file ABS --json`
+is a read-only own-current ordinary manager task command. It consumes the
+CLI-surface R1b1 start-context GET and emits the closed canonical `workflow_start`
+decision for that manager's OWN genuine FINAL report-completion. It does not
+start a run, write records or invoke the callback.
+
+The absolute canonical UTF8 JSON input is at most 1 MiB and has exactly
+`definition` (discovered identity@version), `settings` (discovered generation and
+snapshot_digest), `operation_key`, `request`, `inputs`, and optional
+`lower_limits`. Saved defaults supply fixed assignments. The shared @1 parser
+checks request/input/limit bounds. A changed generation or digest conflicts
+without emitting a decision or silently replacing pins. Preserve the input,
+stable key and composed bytes; later callback admission may still refuse stale
+settings. Foreign/ended/recovery SIDs, workers and retired selectors refuse.
+
+@1 permits one run per source, fixed assignments and source-terminal semantics
+(the source task ends when the run returns). Thread-originated ordinary tasks
+retain only a partial thread tail with no redelivery guarantee. No thread, wake
+or dream prompt offers the decision. See [R1b2 contracts](contracts/reusable-workflows.md#r1b2-read-only-start-composition-and-manager-guidance)
+for the input example and exact boundaries.

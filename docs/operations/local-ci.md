@@ -854,6 +854,28 @@ fixture, so it proves neither serving time nor production-size savings.
 It starts no daemon/worker and adds no CI selection, trigger or dependency;
 retired Python units, general integration and Product E2E are not executed.
 
+R1b2 extends the same private R1b1 org/session/ASGI route fixture with a
+read-only composer and real task-owner prompt cases:
+
+```bash
+WORKFLOW_SCHEMA_PYTHON=3.12 bash scripts/test-workflow-schema-load.sh --start-compose=all
+WORKFLOW_SCHEMA_PYTHON=3.14 bash scripts/test-workflow-schema-load.sh --start-compose=all
+```
+
+The individual cases are `compose_no_write`, `compose_stale_settings_conflict`,
+`compose_refusals`, `compose_parses_at_dispatch`, `prompt_manager_offers`, and
+`prompt_worker_refuses`. CLI transport forwards only to the real private ASGI
+route; no successful-authority mock or production test seam is used. Composer
+calls compare total_changes, traced SQL and all-table inventories, check exact
+discovered pins/canonical bytes and reuse the actual Decision/@1 parser without
+running an executor. Prompts use the actual task-owner builder and separate
+thread builders. Record intended command-absent/prompt-absent RED, restored GREEN
+and a credible mutation's byte-exact restoration hashes in the PR body. Run
+`--start-context=all`, `--bundled-catalog=all`, `--returned-storage=all` on both
+runtimes, `boundary-lint`, OpenAPI snapshot `--check`, diff check/stat and guard.
+Full schema-load and local_ci all are reserved for the manager's final approved
+head. Product E2E, V3, retired Python/Web units and live setup are NOT RUN.
+
 R1b1 own-task discovery uses the existing private schema-load case table:
 
 ```bash
