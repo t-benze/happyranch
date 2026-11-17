@@ -67,7 +67,7 @@ export function TopTokenThreadsPanel(): JSX.Element {
               onClick={() => setWinIdx(i)}
               aria-pressed={i === winIdx}
               className={cn(
-                'rounded px-1.5 py-0.5',
+                'rounded-sm px-1.5 py-0.5',
                 i === winIdx
                   ? 'bg-surface-raised text-text-primary'
                   : 'text-text-muted hover:text-text-primary',

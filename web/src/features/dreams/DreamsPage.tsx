@@ -200,11 +200,11 @@ function LoadingSkeleton(): JSX.Element {
         >
           <div className="flex items-center gap-2">
             <div className="bg-surface-sunken h-3.5 w-3.5 rounded-full" />
-            <div className="bg-surface-sunken h-3 w-16 rounded" />
-            <div className="bg-surface-sunken h-3 w-24 rounded" />
+            <div className="bg-surface-sunken h-3 w-16 rounded-sm" />
+            <div className="bg-surface-sunken h-3 w-24 rounded-sm" />
           </div>
-          <div className="bg-surface-sunken h-3 w-3/4 rounded" />
-          <div className="bg-surface-sunken h-3 w-1/2 rounded" />
+          <div className="bg-surface-sunken h-3 w-3/4 rounded-sm" />
+          <div className="bg-surface-sunken h-3 w-1/2 rounded-sm" />
         </div>
       ))}
     </div>
@@ -237,7 +237,7 @@ function DreamsRail({ dreams }: { dreams: DreamRecord[] }): JSX.Element {
       aria-label={t('dreams.rail.label')}
       className="lg:w-rail lg:shrink-0"
     >
-      <div className="border-border-default bg-surface-raised space-y-4 rounded-xl border p-4">
+      <div className="border-border-default bg-surface-raised space-y-4 rounded-md border p-4">
         {/* Overview — totals summed from the loaded feed (data-backed) */}
         <section>
           <h2 className="text-text-muted mb-2 text-xs font-semibold tracking-wider uppercase">

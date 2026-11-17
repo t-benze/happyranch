@@ -123,7 +123,7 @@ export function OverviewPage(): JSX.Element {
             aria-hidden="true"
           >
             <span
-              className={`inline-block h-3.5 w-3.5 rounded-full bg-white shadow ${
+              className={`inline-block h-3.5 w-3.5 rounded-full bg-white shadow-pasture-sm ${
                 wh.enabled ? 'ml-auto mr-0.5' : 'ml-0.5'
               }`}
             />

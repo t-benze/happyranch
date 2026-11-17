@@ -191,7 +191,7 @@ export function TableSkeleton({ columns, rows = 4 }: { columns: string[]; rows?:
       </div>
       <div className="animate-pulse space-y-3 px-4 py-4">
         {Array.from({ length: rows }, (_, i) => (
-          <div key={i} className="bg-surface-sunken h-6 rounded" />
+          <div key={i} className="bg-surface-sunken h-6 rounded-sm" />
         ))}
       </div>
     </div>

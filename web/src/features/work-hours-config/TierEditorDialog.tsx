@@ -347,7 +347,7 @@ export function TierEditorDialog({
                           type="button"
                           aria-pressed={selected}
                           onClick={() => toggleDay(d)}
-                          className={`rounded px-2 py-0.5 text-xs font-medium ${
+                          className={`rounded-sm px-2 py-0.5 text-xs font-medium ${
                             selected
                               ? 'bg-accent text-accent-fg'
                               : 'bg-bg-raised text-fg-muted border-border border'
@@ -422,7 +422,7 @@ export function TierEditorDialog({
                 }`}
               >
                 <span
-                  className={`inline-block h-3.5 w-3.5 rounded-full bg-white shadow transition-transform ${
+                  className={`inline-block h-3.5 w-3.5 rounded-full bg-white shadow-pasture-sm transition-transform ${
                     catchUp ? 'translate-x-4' : 'translate-x-0.5'
                   }`}
                 />

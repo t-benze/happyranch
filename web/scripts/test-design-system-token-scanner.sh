@@ -93,6 +93,35 @@ if grep -F -- '--spacing-4' "$scratch/remap.out"; then
 fi
 cp "$fixture/src/design-system/tokens/tokens.css" "$scratch/src/design-system/tokens/tokens.css"
 
+# Clearing a namespace in tokens.css removes Tailwind's defaults (THR-376 PR5):
+# with `--shadow-*: initial` the default `shadow-sm` and bare `shadow` render no
+# CSS and fail, while a shadow re-declared in tokens.css (`shadow-soft`) passes.
+cp "$fixture/src/App.tsx" "$scratch/src/App.tsx"
+cp "$fixture/src/styles.css" "$scratch/src/styles.css"
+sed 's/^  --shadow-soft: /  --shadow-*: initial;\n  --shadow-soft: /' \
+  "$fixture/src/design-system/tokens/tokens.css" > "$scratch/src/design-system/tokens/tokens.css"
+expect_exit 4 'default shadow scale removed' "$scratch/shadow-reset.out" run_scan "$scratch/src" "$scratch/theme.css"
+grep -F 'hits=9' "$scratch/shadow-reset.out"
+grep -F 'unknown token utility: App.tsx:6:70	shadow-sm' "$scratch/shadow-reset.out"
+grep -F 'unknown token utility: App.tsx:6:187	shadow' "$scratch/shadow-reset.out"
+if grep -F 'shadow-soft' "$scratch/shadow-reset.out"; then
+  echo 'a shadow re-declared in tokens.css failed after the reset' >&2
+  exit 1
+fi
+# The same for radius: `rounded-xl`, bare `rounded` and bare `rounded-tl` fail.
+sed 's/^  --radius-card: /  --radius-*: initial;\n  --radius-card: /' \
+  "$fixture/src/design-system/tokens/tokens.css" > "$scratch/src/design-system/tokens/tokens.css"
+expect_exit 4 'default radius scale removed' "$scratch/radius-reset.out" run_scan "$scratch/src" "$scratch/theme.css"
+grep -F 'hits=10' "$scratch/radius-reset.out"
+grep -F 'unknown token utility: App.tsx:6:59	rounded-xl' "$scratch/radius-reset.out"
+grep -F 'unknown token utility: App.tsx:6:48	rounded-tl' "$scratch/radius-reset.out"
+grep -F 'unknown token utility: App.tsx:6:194	rounded' "$scratch/radius-reset.out"
+if grep -F 'rounded-card' "$scratch/radius-reset.out"; then
+  echo 'a radius re-declared in tokens.css failed after the reset' >&2
+  exit 1
+fi
+cp "$fixture/src/design-system/tokens/tokens.css" "$scratch/src/design-system/tokens/tokens.css"
+
 # A missing scan input is a hard failure, never a silent pass.
 expect_exit 1 'missing default theme' "$scratch/missing.out" run_scan "$scratch/src" "$scratch/absent-theme.css"
 grep -F 'unknown-token scan input missing' "$scratch/missing.out"

@@ -127,8 +127,8 @@ export function TodoDetailPage({
     return (
       <ContentWrap>
         <div className="animate-pulse space-y-4">
-          <div className="bg-bg-subtle h-8 w-32 rounded" />
-          <div className="bg-bg-subtle h-16 w-96 rounded" />
+          <div className="bg-bg-subtle h-8 w-32 rounded-sm" />
+          <div className="bg-bg-subtle h-16 w-96 rounded-sm" />
           <div className="bg-bg-subtle h-24 rounded-lg" />
         </div>
       </ContentWrap>
@@ -204,7 +204,7 @@ export function TodoDetailPage({
             <StatusPill status={schedule.status} />
             <span
               aria-hidden="true"
-              className="bg-tier-green-tint text-status-open inline-flex size-6 shrink-0 items-center justify-center rounded text-xs font-semibold"
+              className="bg-tier-green-tint text-status-open inline-flex size-6 shrink-0 items-center justify-center rounded-sm text-xs font-semibold"
             >
               {agentInitials(schedule.agent_name)}
             </span>
@@ -302,7 +302,7 @@ export function TodoDetailPage({
             !schedule.indefinite &&
             schedule.expires_at &&
             schedule.status !== 'expired' && (
-              <div className="border-attention-soft bg-attention-soft/30 text-attention-text mb-6 flex items-start gap-2 rounded border px-3 py-2 text-sm">
+              <div className="border-attention-soft bg-attention-soft/30 text-attention-text mb-6 flex items-start gap-2 rounded-sm border px-3 py-2 text-sm">
                 <Clock
                   size={14}
                   className="mt-0.5 shrink-0"
@@ -366,7 +366,7 @@ export function TodoDetailPage({
                   <Link
                     key={taskId}
                     to={`/orgs/${org}/tasks/${taskId}`}
-                    className="bg-bg-subtle text-fg-muted hover:text-fg inline-flex items-center rounded px-2 py-1 font-mono text-xs"
+                    className="bg-bg-subtle text-fg-muted hover:text-fg inline-flex items-center rounded-sm px-2 py-1 font-mono text-xs"
                   >
                     {taskId}
                   </Link>

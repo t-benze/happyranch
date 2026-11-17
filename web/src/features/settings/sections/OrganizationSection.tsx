@@ -338,12 +338,12 @@ export function OrganizationSection({ org }: Props): JSX.Element {
       <div className="mb-4"><AddressableNameEditor kind="founder" canonicalId="founder" /></div>
       {identityError && <p role="alert" className="text-feedback-danger mb-4 text-sm">{renderThreadErrorDetail(identityError, t)}</p>}
       {saveState.phase === 'error' && (
-        <div className="border-tier-red bg-feedback-danger/10 text-tier-red mb-4 rounded border p-3 text-sm">
+        <div className="border-tier-red bg-feedback-danger/10 text-tier-red mb-4 rounded-sm border p-3 text-sm">
           {t('settings.organization.saveFailed', { detail: saveState.message })}
         </div>
       )}
       {saveState.phase === 'saved' && (
-        <div className="border-tier-green bg-feedback-success/10 text-tier-green mb-4 rounded border p-3 text-sm">
+        <div className="border-tier-green bg-feedback-success/10 text-tier-green mb-4 rounded-sm border p-3 text-sm">
           {t('settings.organization.saved')}
         </div>
       )}
@@ -358,7 +358,7 @@ export function OrganizationSection({ org }: Props): JSX.Element {
             value={fields.timeout}
             onChange={(e) => update('timeout', e.target.value)}
             placeholder={t('settings.organization.session.timeoutPlaceholder')}
-            className="bg-bg-raised border-border text-fg w-32 rounded border px-2 py-0.5 text-sm"
+            className="bg-bg-raised border-border text-fg w-32 rounded-sm border px-2 py-0.5 text-sm"
           />
         </EditableRow>
       </div>
@@ -375,7 +375,7 @@ export function OrganizationSection({ org }: Props): JSX.Element {
             value={fields.dreamTime}
             onChange={(e) => update('dreamTime', e.target.value)}
             placeholder="HH:MM"
-            className="bg-bg-raised border-border text-fg w-24 rounded border px-2 py-0.5 text-sm"
+            className="bg-bg-raised border-border text-fg w-24 rounded-sm border px-2 py-0.5 text-sm"
           />
         </EditableRow>
         <EditableRow label={t('settings.organization.dreaming.scheduleTimezone')} badge={t('settings.organization.badge.live')}>
@@ -384,7 +384,7 @@ export function OrganizationSection({ org }: Props): JSX.Element {
             value={fields.dreamTz}
             onChange={(e) => update('dreamTz', e.target.value)}
             placeholder="UTC"
-            className="bg-bg-raised border-border text-fg w-48 rounded border px-2 py-0.5 text-sm"
+            className="bg-bg-raised border-border text-fg w-48 rounded-sm border px-2 py-0.5 text-sm"
           />
         </EditableRow>
         <EditableRow label={t('settings.organization.dreaming.catchUp')} badge={t('settings.organization.badge.live')}>
@@ -411,7 +411,7 @@ export function OrganizationSection({ org }: Props): JSX.Element {
             agents={identityOptions}
             restrictToOptions
             placeholder={t('settings.organization.dreaming.addAgentsPlaceholder')}
-            className="bg-bg-raised border-border text-fg w-56 rounded border px-2 py-0.5 text-sm"
+            className="bg-bg-raised border-border text-fg w-56 rounded-sm border px-2 py-0.5 text-sm"
           />
         </EditableRow>
         <EditableRow label={t('settings.organization.dreaming.excluded')} badge={t('settings.organization.badge.live')}>
@@ -421,7 +421,7 @@ export function OrganizationSection({ org }: Props): JSX.Element {
             agents={identityOptions}
             restrictToOptions
             placeholder={t('settings.organization.dreaming.addAgentsPlaceholder')}
-            className="bg-bg-raised border-border text-fg w-56 rounded border px-2 py-0.5 text-sm"
+            className="bg-bg-raised border-border text-fg w-56 rounded-sm border px-2 py-0.5 text-sm"
           />
         </EditableRow>
       </div>
@@ -467,13 +467,13 @@ export function OrganizationSection({ org }: Props): JSX.Element {
           </p>
         )}
         {reviewerConfig.state === 'missing' && (
-          <div role="alert" className="border-feedback-warning/30 bg-feedback-warning/5 text-feedback-warning mt-2 rounded border p-2 text-xs">
+          <div role="alert" className="border-feedback-warning/30 bg-feedback-warning/5 text-feedback-warning mt-2 rounded-sm border p-2 text-xs">
             <p>{t('settings.organization.reviewer.missing', { agents: reviewerConfig.missing_agents.join(', ') })}</p>
             <p className="mt-1">{t('settings.organization.reviewer.missingRepair')}</p>
           </div>
         )}
         {reviewerConfig.state === 'invalid' && (
-          <div role="alert" className="border-feedback-warning/30 bg-feedback-warning/5 text-feedback-warning mt-2 rounded border p-2 text-xs">
+          <div role="alert" className="border-feedback-warning/30 bg-feedback-warning/5 text-feedback-warning mt-2 rounded-sm border p-2 text-xs">
             {t('settings.organization.reviewer.invalid')}
           </div>
         )}
@@ -481,7 +481,7 @@ export function OrganizationSection({ org }: Props): JSX.Element {
           <p role="status" className="text-text-secondary mt-2 text-xs">{t('settings.organization.reviewer.loading')}</p>
         )}
         {rosterState === 'error' && (
-          <div role="alert" className="border-tier-red bg-feedback-danger/10 text-tier-red mt-2 rounded border p-2 text-xs">
+          <div role="alert" className="border-tier-red bg-feedback-danger/10 text-tier-red mt-2 rounded-sm border p-2 text-xs">
             {t('settings.organization.reviewer.error')}
           </div>
         )}
@@ -495,7 +495,7 @@ export function OrganizationSection({ org }: Props): JSX.Element {
                 <li
                   key={id}
                   data-reviewer-id={id}
-                  className={`flex max-w-full min-w-0 items-center gap-1 rounded border px-1.5 py-0.5 text-xs ${
+                  className={`flex max-w-full min-w-0 items-center gap-1 rounded-sm border px-1.5 py-0.5 text-xs ${
                     unavailable
                       ? 'border-feedback-warning/40 bg-feedback-warning/5 text-feedback-warning'
                       : 'border-border bg-bg-raised text-fg'
@@ -510,7 +510,7 @@ export function OrganizationSection({ org }: Props): JSX.Element {
                     onClick={() => removeReviewer(id)}
                     disabled={!reviewerEditable}
                     aria-label={t('settings.organization.reviewer.remove', { agent: label })}
-                    className="text-fg-muted hover:text-fg shrink-0 rounded px-1 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+                    className="text-fg-muted hover:text-fg shrink-0 rounded-sm px-1 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
                   >
                     ×
                   </button>
@@ -576,7 +576,7 @@ export function OrganizationSection({ org }: Props): JSX.Element {
           {whError && (
             <div
               role="alert"
-              className="border-tier-red bg-feedback-danger/10 text-tier-red mb-4 rounded border p-3 text-sm"
+              className="border-tier-red bg-feedback-danger/10 text-tier-red mb-4 rounded-sm border p-3 text-sm"
             >
               {whError}
             </div>
@@ -632,7 +632,7 @@ export function OrganizationSection({ org }: Props): JSX.Element {
             type="button"
             onClick={handleSave}
             disabled={saveState.phase === 'saving'}
-            className="bg-accent text-accent-fg hover:bg-accent-hover rounded px-4 py-1.5 text-sm font-medium transition-colors disabled:opacity-50"
+            className="bg-accent text-accent-fg hover:bg-accent-hover rounded-sm px-4 py-1.5 text-sm font-medium transition-colors disabled:opacity-50"
           >
             {saveState.phase === 'saving' ? t('settings.organization.saveBar.saving') : t('settings.organization.saveBar.save')}
           </button>
@@ -640,7 +640,7 @@ export function OrganizationSection({ org }: Props): JSX.Element {
             type="button"
             onClick={handleDiscard}
             disabled={saveState.phase === 'saving'}
-            className="text-fg-muted hover:text-fg rounded px-4 py-1.5 text-sm transition-colors disabled:opacity-50"
+            className="text-fg-muted hover:text-fg rounded-sm px-4 py-1.5 text-sm transition-colors disabled:opacity-50"
           >
             {t('settings.organization.saveBar.discard')}
           </button>
@@ -725,7 +725,7 @@ function EditableRow({
       <span className="flex items-center gap-2">
         {children}
         {badge && (
-          <span className="bg-bg-raised text-tier-green rounded px-1.5 py-0.5 text-xs font-medium">
+          <span className="bg-bg-raised text-tier-green rounded-sm px-1.5 py-0.5 text-xs font-medium">
             {badge}
           </span>
         )}
@@ -772,7 +772,7 @@ const BooleanToggle = forwardRef<HTMLButtonElement, {
       }`}
     >
       <span
-        className={`inline-block h-3.5 w-3.5 rounded-full bg-white shadow transition-transform ${
+        className={`inline-block h-3.5 w-3.5 rounded-full bg-white shadow-pasture-sm transition-transform ${
           value ? 'translate-x-4' : 'translate-x-0.5'
         }`}
       />

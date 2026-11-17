@@ -293,7 +293,7 @@ export function LoadingBlock(): JSX.Element {
   const { t } = useTranslation();
   return (
     <div role="status" aria-label={t('knowledge.common.loading')} className="animate-pulse space-y-3">
-      <div className="bg-surface-sunken h-8 w-1/3 rounded" />
+      <div className="bg-surface-sunken h-8 w-1/3 rounded-sm" />
       <div className="bg-surface-sunken h-20 w-full rounded-lg" />
       <div className="bg-surface-sunken h-40 w-full rounded-lg" />
     </div>

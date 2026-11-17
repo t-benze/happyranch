@@ -37,6 +37,7 @@ import { useOrgSlugOptional } from '@/lib/orgSlug';
 import { useTranslation } from '@/hooks/i18n';
 import { NewTaskDialog } from './NewTaskDialog';
 import type { MessageKey, MessageParams } from '@/lib/i18n';
+import './tasks.css';
 
 type GroupBy = 'status' | 'agent' | 'thread';
 type Translate = (key: MessageKey, params?: MessageParams) => string;
@@ -561,7 +562,7 @@ function TasksList({ groupBy, setGroupBy, filters, setFilters }: {
                   </div>
                   <section
                     aria-labelledby="waiting-on-you-heading"
-                    className="border-border-default bg-surface-raised rounded-xl border shadow-sm"
+                    className="border-border-default bg-surface-raised rounded-md border shadow-pasture-sm"
                   >
                     <ul>
                       {attentionTasks.map((task) => (
@@ -594,7 +595,7 @@ function TasksList({ groupBy, setGroupBy, filters, setFilters }: {
                     count={tasks.length}
                     dot={groupDot(key, groupBy)}
                   />
-                  <section className="border-border-default bg-surface-raised rounded-xl border shadow-sm">
+                  <section className="border-border-default bg-surface-raised rounded-md border shadow-pasture-sm">
                     <ul>
                       {tasks.map((t) => (
                         <li key={t.task_id}>

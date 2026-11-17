@@ -248,11 +248,11 @@ function LoadingSkeleton(): JSX.Element {
       {[1, 2, 3, 4].map((i) => (
         <div key={i} className="space-y-2">
           <div className="flex items-center gap-2">
-            <div className="h-3 w-20 rounded bg-bg-raised" />
-            <div className="h-3 w-16 rounded bg-bg-raised" />
+            <div className="h-3 w-20 rounded-sm bg-bg-raised" />
+            <div className="h-3 w-16 rounded-sm bg-bg-raised" />
           </div>
-          <div className="h-4 w-3/4 rounded bg-bg-raised" />
-          <div className="h-3 w-1/2 rounded bg-bg-raised" />
+          <div className="h-4 w-3/4 rounded-sm bg-bg-raised" />
+          <div className="h-3 w-1/2 rounded-sm bg-bg-raised" />
         </div>
       ))}
     </div>

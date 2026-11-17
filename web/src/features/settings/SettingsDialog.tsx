@@ -201,7 +201,7 @@ function EditableOrgSection({
               value={timeout}
               onChange={(e) => setTimeout_(e.target.value)}
               placeholder="use system default"
-              className="bg-bg-raised border-border text-fg w-32 rounded border px-2 py-0.5 text-sm"
+              className="bg-bg-raised border-border text-fg w-32 rounded-sm border px-2 py-0.5 text-sm"
             />
           </EditableRow>
         </div>
@@ -218,7 +218,7 @@ function EditableOrgSection({
               value={dreamTime}
               onChange={(e) => setDreamTime(e.target.value)}
               placeholder="HH:MM"
-              className="bg-bg-raised border-border text-fg w-24 rounded border px-2 py-0.5 text-sm"
+              className="bg-bg-raised border-border text-fg w-24 rounded-sm border px-2 py-0.5 text-sm"
             />
           </EditableRow>
           <EditableRow label="Schedule timezone">
@@ -227,7 +227,7 @@ function EditableOrgSection({
               value={dreamTz}
               onChange={(e) => setDreamTz(e.target.value)}
               placeholder="UTC"
-              className="bg-bg-raised border-border text-fg w-48 rounded border px-2 py-0.5 text-sm"
+              className="bg-bg-raised border-border text-fg w-48 rounded-sm border px-2 py-0.5 text-sm"
             />
           </EditableRow>
           <EditableRow label="Catch up on startup">
@@ -250,7 +250,7 @@ function EditableOrgSection({
               value={dreamInclude}
               onChange={(e) => setDreamInclude(e.target.value)}
               placeholder="comma-separated"
-              className="bg-bg-raised border-border text-fg w-48 rounded border px-2 py-0.5 text-sm"
+              className="bg-bg-raised border-border text-fg w-48 rounded-sm border px-2 py-0.5 text-sm"
             />
           </EditableRow>
           <EditableRow label="Excluded agents">
@@ -259,7 +259,7 @@ function EditableOrgSection({
               value={dreamExclude}
               onChange={(e) => setDreamExclude(e.target.value)}
               placeholder="comma-separated"
-              className="bg-bg-raised border-border text-fg w-48 rounded border px-2 py-0.5 text-sm"
+              className="bg-bg-raised border-border text-fg w-48 rounded-sm border px-2 py-0.5 text-sm"
             />
           </EditableRow>
         </div>
@@ -286,7 +286,7 @@ function EditableOrgSection({
           <button
             type="submit"
             disabled={mutation.isPending}
-            className="bg-accent text-accent-fg hover:bg-accent-hover rounded px-4 py-1.5 text-sm font-medium transition-colors disabled:opacity-50"
+            className="bg-accent text-accent-fg hover:bg-accent-hover rounded-sm px-4 py-1.5 text-sm font-medium transition-colors disabled:opacity-50"
           >
             {mutation.isPending ? 'Saving…' : 'Save'}
           </button>
@@ -333,7 +333,7 @@ function SettingsRow({
           {value}
         </span>
         {badge && (
-          <span className="bg-bg-raised text-accent rounded px-1.5 py-0.5 text-xs font-medium">
+          <span className="bg-bg-raised text-accent rounded-sm px-1.5 py-0.5 text-xs font-medium">
             {badge}
           </span>
         )}
@@ -375,7 +375,7 @@ function BooleanToggle({
       }`}
     >
       <span
-        className={`inline-block h-3.5 w-3.5 rounded-full bg-white shadow transition-transform ${
+        className={`inline-block h-3.5 w-3.5 rounded-full bg-white shadow-pasture-sm transition-transform ${
           value ? 'translate-x-4' : 'translate-x-0.5'
         }`}
       />
@@ -399,7 +399,7 @@ export function SettingsTriggerButton({
       aria-label={label}
       title={label}
       onClick={onClick}
-      className="text-fg-muted hover:bg-bg-raised hover:text-fg focus-visible:ring-accent inline-flex h-12 w-12 items-center justify-center rounded transition-colors focus-visible:ring-2 focus-visible:outline-none"
+      className="text-fg-muted hover:bg-bg-raised hover:text-fg focus-visible:ring-accent inline-flex h-12 w-12 items-center justify-center rounded-sm transition-colors focus-visible:ring-2 focus-visible:outline-none"
     >
       <Settings size={16} aria-hidden="true" />
     </button>

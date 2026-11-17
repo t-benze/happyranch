@@ -32,7 +32,7 @@ export const DrawerContent = React.forwardRef<
       ref={ref}
       className={cn(
         'fixed right-0 top-0 z-50 flex h-full w-[clamp(480px,45vw,720px)] flex-col',
-        'bg-surface-raised border-l border-border-subtle shadow-xl',
+        'bg-surface-raised border-l border-border-subtle shadow-pasture-lg',
         'data-[state=open]:animate-in data-[state=closed]:animate-out',
         'data-[state=closed]:slide-out-to-right data-[state=open]:slide-in-from-right',
         className,

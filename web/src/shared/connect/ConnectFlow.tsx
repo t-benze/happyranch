@@ -709,7 +709,7 @@ export function AdapterRetryableBody({
             name: <span className="font-mono">{name}</span>,
           })}
         </p>
-        <div className="bg-surface-sunken mt-3 rounded p-3">
+        <div className="bg-surface-sunken mt-3 rounded-sm p-3">
           <p className="text-feedback-danger font-mono text-xs">
             {t('onboarding.connect.error.label', { detail: reason })}
           </p>
@@ -822,7 +822,7 @@ export function AdapterBindFailedBody({
             categoryMessage,
           })}
         </p>
-        <div className="bg-surface-sunken mt-3 rounded p-3">
+        <div className="bg-surface-sunken mt-3 rounded-sm p-3">
           <p className="text-text-muted font-mono text-xs">
             {t('onboarding.connect.failed.operation', { operationId: adapterId })}
           </p>

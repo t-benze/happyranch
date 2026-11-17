@@ -152,7 +152,7 @@ function KindRow({ kind, entry }: KindRowProps): JSX.Element {
           <p className="text-text-secondary text-sm">
             {render('settings.executors.binaries.registeredPath', {
               path: (
-                <code className="text-text-primary bg-surface-sunken rounded px-1 font-mono text-xs break-all">
+                <code className="text-text-primary bg-surface-sunken rounded-sm px-1 font-mono text-xs break-all">
                   {entry?.path}
                 </code>
               ),
@@ -331,7 +331,7 @@ export function ExecutorBinariesSection(): JSX.Element {
                       </span>
                     ),
                     command: (
-                      <code className="text-text-primary bg-surface-sunken rounded px-1 font-mono text-xs">
+                      <code className="text-text-primary bg-surface-sunken rounded-sm px-1 font-mono text-xs">
                         which claude
                       </code>
                     ),

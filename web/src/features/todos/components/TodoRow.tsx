@@ -128,7 +128,7 @@ export function TodoRow({ schedule }: TodoRowProps): JSX.Element {
           <span className="inline-flex items-center gap-1">
             <span
               aria-hidden="true"
-              className="bg-tier-green-tint text-status-open inline-flex size-4 shrink-0 items-center justify-center rounded text-xs font-semibold"
+              className="bg-tier-green-tint text-status-open inline-flex size-4 shrink-0 items-center justify-center rounded-sm text-xs font-semibold"
             >
               {agentInitials(schedule.agent_name)}
             </span>

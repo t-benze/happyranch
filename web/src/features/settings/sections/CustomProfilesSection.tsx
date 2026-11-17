@@ -163,7 +163,7 @@ function ProfileRow({
           <p className="text-text-secondary text-sm">
             {render('settings.executors.profiles.executable', {
               value: (
-                <code className="text-text-primary bg-surface-sunken rounded px-1 font-mono text-xs break-all">
+                <code className="text-text-primary bg-surface-sunken rounded-sm px-1 font-mono text-xs break-all">
                   {executable}
                 </code>
               ),
@@ -181,7 +181,7 @@ function ProfileRow({
           <p className="text-text-secondary mt-1 text-sm">
             {render('settings.executors.profiles.path', {
               value: (
-                <code className="text-text-primary bg-surface-sunken rounded px-1 font-mono text-xs break-all">
+                <code className="text-text-primary bg-surface-sunken rounded-sm px-1 font-mono text-xs break-all">
                   {profile.path}
                 </code>
               ),

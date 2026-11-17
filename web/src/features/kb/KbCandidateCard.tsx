@@ -135,7 +135,7 @@ export function KbCandidateCard({
 
       {/* Error */}
       {mutationError && (
-        <div className="rounded border border-feedback-danger/30 bg-feedback-danger/5 p-3 mb-2">
+        <div className="rounded-sm border border-feedback-danger/30 bg-feedback-danger/5 p-3 mb-2">
           <p className="text-feedback-danger text-xs">{renderKbError(mutationError, t)}</p>
           <div className="flex gap-2 mt-2">
             <Button size="sm" onClick={handleAccept} disabled={anyPending}>

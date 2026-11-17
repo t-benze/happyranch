@@ -241,7 +241,7 @@ export function AddAgentDialog({ open, onOpenChange }: Props): JSX.Element {
                   id="agent-team"
                   value={team}
                   onChange={(e) => setTeam(e.target.value)}
-                  className="border-border-subtle bg-bg-subtle w-full rounded border p-2 text-sm"
+                  className="border-border-subtle bg-bg-subtle w-full rounded-sm border p-2 text-sm"
                 >
                   <option value="">{t('agents.add.selectTeam')}</option>
                   {teams.map((entry) => (
@@ -302,7 +302,7 @@ export function AddAgentDialog({ open, onOpenChange }: Props): JSX.Element {
                 id="agent-executor"
                 value={executor}
                 onChange={(e) => setExecutor(e.target.value)}
-                className="border-border-subtle bg-bg-subtle w-full rounded border p-2 text-sm"
+                className="border-border-subtle bg-bg-subtle w-full rounded-sm border p-2 text-sm"
               >
                 {executorOptions.selectable.map((opt) => (
                   <option key={opt.name} value={opt.name}>

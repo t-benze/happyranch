@@ -93,7 +93,7 @@ export function TodosPage(): JSX.Element {
               className={cn(
                 'rounded-md px-3 py-1.5 text-sm font-medium transition-colors',
                 activeFilter === fg.key
-                  ? 'bg-bg-raised text-fg shadow-sm'
+                  ? 'bg-bg-raised text-fg shadow-pasture-sm'
                   : 'text-fg-muted hover:text-fg',
               )}
             >
@@ -145,13 +145,13 @@ export function TodosPage(): JSX.Element {
               <div className="flex items-start justify-between gap-4">
                 <div className="flex items-center gap-2.5">
                   <div className="bg-bg-subtle h-6 w-16 rounded-full" />
-                  <div className="bg-bg-subtle h-6 w-72 rounded" />
+                  <div className="bg-bg-subtle h-6 w-72 rounded-sm" />
                 </div>
-                <div className="bg-bg-subtle h-12 w-24 rounded" />
+                <div className="bg-bg-subtle h-12 w-24 rounded-sm" />
               </div>
               <div className="mt-2 flex items-center gap-2">
                 <div className="bg-bg-subtle size-4 rounded-full" />
-                <div className="bg-bg-subtle h-4 w-44 rounded" />
+                <div className="bg-bg-subtle h-4 w-44 rounded-sm" />
               </div>
             </div>
           ))}

@@ -125,7 +125,7 @@ export function RetiredAgentDetail({ sourceId }: { sourceId: string }): JSX.Elem
       <div className="space-y-6 px-8 py-4">
         <BackLink onClick={() => navigate(`${routes.inbox()}?view=terminated`)} />
         <header className="border-border-subtle flex items-start gap-4 border-b pb-4">
-          <span aria-hidden="true" className="bg-surface-sunken text-text-secondary flex h-12 w-12 shrink-0 items-center justify-center rounded-xl text-base font-semibold">
+          <span aria-hidden="true" className="bg-surface-sunken text-text-secondary flex h-12 w-12 shrink-0 items-center justify-center rounded-md text-base font-semibold">
             {identityInitials(source.name)}
           </span>
           <div className="min-w-0 flex-1">

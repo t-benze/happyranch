@@ -39,7 +39,7 @@ export function AgentAvatar({
   // the intended 36px roster / 48px hero chips (Direction-A `a-agents`).
   const sizing =
     size === 'lg'
-      ? 'h-12 w-12 rounded-xl text-base'
+      ? 'h-12 w-12 rounded-md text-base'
       : 'h-9 w-9 rounded-lg text-xs';
   return (
     <span
