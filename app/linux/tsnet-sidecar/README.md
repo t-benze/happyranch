@@ -74,10 +74,13 @@ the Go sidecar and `home_transport=False` are unchanged. TODO (3b-2): owned loca
 Headscale stop/cleanup, with no callable seam implemented in this sub-part.
 
 The 3b-1c Python-only replacement consumer implements **stop/intent, config
-quarantine, fixed state/enrollment, quarantined config and owned unit removal**,
+quarantine, fixed state/enrollment, quarantined config and owned unit removal,
+and fresh inert staging**,
 not completed failed-install replacement. The v1
 record still has exactly `version`, `layout`, `digests` and `phase`, with the six
-original fixed-file digests (including provision.json) unchanged throughout.
+original fixed-file digests (including provision.json) unchanged through unit
+removal. Staging replaces only each current new file's digest; the record format
+and version do not change.
 Ordinary transaction publication still accepts only `prepared`. Only this
 consumer advances the closed linear sequence:
 
@@ -101,7 +104,7 @@ consumer advances the closed linear sequence:
 
 Root:root 0600 journal metadata and exact bytes are checked repeatedly. All
 replacement phases require exact generated canonical bytes; `journal_generation`
-hashes those bytes. Except for the exact current/completed removal intents,
+hashes those bytes. Except for exact current/completed removal and staging intents,
 missing files refuse. Unknown/malformed/mismatched records, wrong placements
 and pending entries refuse before mutation. Clean, successful modern
 staged-inert/recorded and intact manual installs still refuse; an unjournaled
@@ -195,11 +198,41 @@ unit intent can recognize an absent unit with systemd's cached own fragment,
 empty drop-ins and inactive/failed state; quiescence still requires no job,
 zero PIDs and no cgroup. No cached foreign fragment or ordinary lifecycle is admitted.
 
-At `replacement-units-removed`, the consumer raises exactly
+At `replacement-units-removed`, unit removal still raises exactly
 `replacement paused after unit removal; fresh staging and transaction closure unavailable`.
+A subsequent call stages fresh inert files through `replacement-discard-token` →
+`replacement-discard-provision` → `replacement-stage-connector` →
+`replacement-stage-sidecar` → `replacement-stage-policy` → `replacement-stage-token` →
+`replacement-stage-provision` → `replacement-staged`. The old managed token copy
+and provisioning record are individually unlinked/fsynced behind their own intents.
+The validated release record remains fixed. The existing `_generated_configs`
+generator supplies fresh random UUIDs and the bundled deny-default policy; the
+new sidecar identity refers only to the newly staged connector. No original-ID
+comparison is required or possible from v1's six whole-file digests. No old config,
+quarantined bytes, keys, trust or control settings are read or reused. Enrollment
+stays absent: later enrollment requires a fresh single-use key and re-pairing.
+
+Each fresh file uses the existing exclusive-pending atomic writer, its exact mode
+and its own preceding fsynced journal digest intent. Only the current destination's
+digest may be rebound, and only while that destination and its pending entry are
+absent. This permits fresh generation after loss of unpublished UUID bytes; it
+never overwrites or regenerates a published file. Completed files must remain
+present and byte-bound; future destinations must remain absent. All other digest
+slots remain unchanged. The final modern `provision.json` binds the five actual
+staged files and the retained journal binds all six. Custody through the same-FD
+source-UID reader, full bounded inventory, retired-state/unit/enrollment absence,
+quiescence and pinned no-follow parents are rechecked before intent publication
+and file effects, including after the pending-file fsync. Unknown/pending residue
+refuses; substituted pending entries are never cleaned up. Only the writer's own
+exclusive inode receives its existing exception cleanup. Fresh instances resume
+published intents and completed effects; uncatchable machine-crash durability and
+unsafe/partial pending-residue recovery are not claimed.
+
+At `replacement-staged`, the consumer raises exactly
+`replacement paused after fresh staging; transaction closure unavailable`.
 Repeating this boundary rechecks token/quiescence without changing files or journal
-bytes. Fresh DISTINCT IDs/config/policy generation and safe transaction closure
-remain undelivered and fail-closed. This state is not modern staged-inert.
+bytes. Safe journal closure remains undelivered and fail-closed. This retained
+transaction is not ordinary modern staged-inert.
 No revoked credentials/trust are restored into service. Ordinary inventory/stop/
 provision/install/uninstall/drift and all ten fixed legacy system supervisor
 lifecycle entries retain their final/pending transaction refusals. Modern
