@@ -16,7 +16,7 @@ class TaskStatus(StrEnum):
     # vocabulary collapses into a model that stores what is actually true. A
     # parent waiting on its own children/jobs is IN_PROGRESS, not BLOCKED; the
     # waiting reason is preserved in the `block_kind` discriminant. See
-    # docs/superpowers/specs/2026-06-27-task-status-pathB-stored-design.md.
+    # docs/specs/2026-06-27-task-status-pathB-stored-design.md.
     PENDING = "pending"
     # Two-valued, discriminated by `block_kind` (see BlockKind):
     #   block_kind IS NULL                       ⟺ a subprocess is running now.
@@ -48,7 +48,7 @@ class TaskStatus(StrEnum):
     # Phase 3 (THR-037): BLOCKED and BlockKind.ESCALATED were fully retired
     # after the transition soak. No live row carries 'blocked' after the
     # idempotent boot migration. See
-    # docs/superpowers/specs/2026-06-27-task-status-pathB-stored-design.md §I.
+    # docs/specs/2026-06-27-task-status-pathB-stored-design.md §I.
     SUPERSEDED = "superseded"
 
 
@@ -131,7 +131,7 @@ class TaskRecord(BaseModel):
     # Provenance, NOT a behavior label: "subtask" iff spawned from an ongoing
     # task; "task" otherwise (founder-dispatched root). The orchestration gate
     # in run_step keys on this — see
-    # docs/superpowers/specs/2026-06-03-subtask-composite-task-design.md.
+    # docs/specs/2026-06-03-subtask-composite-task-design.md.
     task_type: Literal["task", "subtask"] = "task"
     brief: str
     parent_task_id: str | None = None
@@ -140,7 +140,7 @@ class TaskRecord(BaseModel):
     block_kind: BlockKind | None = None
     blocked_on_job_ids: str | None = None
     # In-flight inline delegation chain (JSON-serialized ChainState). NULL when no
-    # chain is active on this parent. See docs/superpowers/specs/2026-05-30-inline-
+    # chain is active on this parent. See docs/specs/2026-05-30-inline-
     # delegation-chain-design.md.
     active_chain: str | None = None
     # In-flight fan-out metadata (JSON-serialized FanoutState). NULL when no
@@ -4409,7 +4409,7 @@ class ScheduleRecord(BaseModel):
     """THR-105 Phase 1: a persisted, agent-owned scheduled work commitment.
 
     Internal primitive is ``Schedule``; user-facing label is "Todos".
-    See docs/superpowers/specs/2026-07-18-agent-scheduled-work-design.md
+    See docs/specs/2026-07-18-agent-scheduled-work-design.md
     and docs/product/prds/2026-07-19-agent-todos.md.
     """
     id: str

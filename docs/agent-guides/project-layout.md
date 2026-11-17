@@ -83,7 +83,7 @@ resources, output, deadline and actual cleanup. Independent full review,
 behavioral QA, applicable checks, normal publication and guarded merge remain.
 
 
-[Current contract](../superpowers/specs/2026-10-09-identity-names-core.md).
+[Current contract](../specs/2026-10-09-identity-names-core.md).
 
 **Document revision C1 — Founder THR139seq493/490, ROOT TASK10693.**
 The same current Founder owner explicitly returns a fully collected, objected
@@ -161,7 +161,7 @@ A single runtime container hosts multiple orgs under `<runtime>/orgs/<slug>/`. E
 Implementation, request models, OpenAPI, and behavior tests own runtime rules.
 The six guides in this directory explain the corresponding code surfaces; use
 CLAUDE.md's "Read When Touching" table to select one. Historical designs in
-`docs/superpowers/specs/` do not override implemented behavior.
+`docs/specs/` do not override implemented behavior.
 
 Bundled instructions live in `runtime/skills/bundled/`. They teach agents to use
 implemented workflows; a prose instruction alone does not enforce a requirement.
@@ -226,7 +226,7 @@ Tracked source is split by product surface:
 |   |-- manual/                  # documentation-site source
 |   |-- operations/              # operator runbooks and release checklists
 |   |-- product/                 # product notes and PRDs
-|   |-- superpowers/specs/        # retained current and referenced designs
+|   |-- specs/                    # retained current and referenced designs
 |   `-- local-ci.md, jenkins-jobs.md # supported development/CI operations
 |-- examples/orgs/hk-macau-tourism/  # canonical sample org tree
 `-- tests/                       # Python tests; see the forward-only placement rules below
@@ -373,7 +373,7 @@ HTTP routes are per org under `/api/v1/orgs/<slug>/...`; container routes are un
 
 ## Root task Pause and Resume (THR-292)
 
-runtime/infrastructure/task_pause_controls.py owns the literal org-only table, closed journal, generation control and read projection. runtime/orchestrator/task_pause.py owns private producer arbitration and durable deferred discovery. Integration stays in existing admission, workflow dispatch, jobs, origin actions and startup/reaper owners. CLI controls live in cli/commands/tasks.py; TS transport in web/src/lib/api/{types,tasks}.ts; schema/route snapshots in tests/contract. The current design is docs/superpowers/specs/2026-10-10-root-task-pause-resume.md. No generic Database initializer or platform/auth/permission backend is introduced.
+runtime/infrastructure/task_pause_controls.py owns the literal org-only table, closed journal, generation control and read projection. runtime/orchestrator/task_pause.py owns private producer arbitration and durable deferred discovery. Integration stays in existing admission, workflow dispatch, jobs, origin actions and startup/reaper owners. CLI controls live in cli/commands/tasks.py; TS transport in web/src/lib/api/{types,tasks}.ts; schema/route snapshots in tests/contract. The current design is docs/specs/2026-10-10-root-task-pause-resume.md. No generic Database initializer or platform/auth/permission backend is introduced.
 
 ## Retired knowledge source owner (S1)
 

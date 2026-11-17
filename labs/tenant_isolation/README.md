@@ -2,7 +2,7 @@
 
 **Status:** non-production lab/harness — strictly additive. No production code,
 deployment, auth/schema, dependency, permission, or default is touched.
-**Merge unit A (normative contract):** `docs/superpowers/specs/2026-08-26-managed-remote-access-contract.md`
+**Merge unit A (normative contract):** `docs/specs/2026-08-26-managed-remote-access-contract.md`
 + shipped `runtime/remote_access/route_policy.json` and `tests/contract/managed_remote_access/*.json` (read-only inputs).
 **Sibling unit:** `labs/managed-remote-access/capacity/` (merge unit D) is a
 separate, unrelated lab; this harness does not reuse or depend on it.

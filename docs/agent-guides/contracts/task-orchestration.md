@@ -49,7 +49,7 @@ correction retains its exact accepted-result/audit binding. Historical omitted
 keys still match without normalization. Auto-advance stores the saved setting;
 the unchanged PR1 pre-launch check refuses invalidated choices with
 `saved model no longer valid for this agent` before executor construction.
-See [THR-356](../../superpowers/specs/2026-11-13-task-model-reasoning-overrides.md).
+See [THR-356](../../specs/2026-11-13-task-model-reasoning-overrides.md).
 
 ## Creation-time task ownership (THR320 seq432/433, seq436/437)
 
@@ -214,7 +214,7 @@ are separate from lint gates and behavioral Pause acceptance. No live control,
 deployment/restart or historical closure is authorized. See the current Pause spec.
 
 
-Root Pause/Resume (THR-292) is an org-owned control, separate from TaskStatus/BlockKind. New Pause requires a NULL-parent in_progress root; Pending refuses409 without claiming it. Descendants inherit only actual ancestry. Final producer commitment arbitrates with the hold before ordinary/v2/workflow admission and binding. Committed work and genuine results drain; every retry retains the original SID/G/count/owner and budget and checks again. Unknown host/tree/ACTION evidence remains a blocker, including terminal diagnostics. Only actual ordinary-purpose running sessions (including normal v2-admitted manager sessions) captured by that hold generation retain the unreviewed job exception; founder work-starting origin actions refuse before mutation. Separate manager successor roots remain unheld. Org-only installation leaves generic Database/runtime-audit unchanged and requires a compatible reader for rollback. Read-only overview/CLI/TS contract is in docs/superpowers/specs/2026-10-10-root-task-pause-resume.md; PR2 owns web controls. Python unit source/gates are RETIRED under THR-291 seq40, never PASS; corrected product E2E behavior remains pending after historical failures. Required current CI and independent exact-head review/QA remain.
+Root Pause/Resume (THR-292) is an org-owned control, separate from TaskStatus/BlockKind. New Pause requires a NULL-parent in_progress root; Pending refuses409 without claiming it. Descendants inherit only actual ancestry. Final producer commitment arbitrates with the hold before ordinary/v2/workflow admission and binding. Committed work and genuine results drain; every retry retains the original SID/G/count/owner and budget and checks again. Unknown host/tree/ACTION evidence remains a blocker, including terminal diagnostics. Only actual ordinary-purpose running sessions (including normal v2-admitted manager sessions) captured by that hold generation retain the unreviewed job exception; founder work-starting origin actions refuse before mutation. Separate manager successor roots remain unheld. Org-only installation leaves generic Database/runtime-audit unchanged and requires a compatible reader for rollback. Read-only overview/CLI/TS contract is in docs/specs/2026-10-10-root-task-pause-resume.md; PR2 owns web controls. Python unit source/gates are RETIRED under THR-291 seq40, never PASS; corrected product E2E behavior remains pending after historical failures. Required current CI and independent exact-head review/QA remain.
 
 Pause reads all current non-recovery tracker bindings inside the serialized root/DB writer and keeps the short tracker mutex through COMMIT. Durable positively-running evidence, exact current task/agent/SID and server-admitted ordinary purpose must agree. New or moved bindings are considered there; ended or replaced SIDs are excluded. Advisory pre-request snapshots never decide capture. The tracker mutex is a leaf lock: no binding lease is acquired beneath root/DB, and no await, host/provider operation or backoff runs under these locks. Duplicate Pause preserves capture; Resume followed by a new Pause replaces previous-generation capture.
 
@@ -350,7 +350,7 @@ continue to exclude non-legacy owners. Missing storage/marks, dual bindings,
 read errors and missing/wrong-org dispatcher never become ordinary.
 
 See [the U3a boundary](reusable-workflows.md#u3a-ownership-union-and-holding-attachment)
-and [source pointer](../../superpowers/specs/2026-11-08-sequential-engine-u3a.md).
+and [source pointer](../../specs/2026-11-08-sequential-engine-u3a.md).
 
 
 ## U3b creation-time sequential marks (THR336 msg85/95)
@@ -385,7 +385,7 @@ business refusals as durable Held after positive outer COMMIT; U4b2 separately
 records pre-result repository refusals without terminal/result proof. U4a receipt bytes alone neither bind
 the run nor change its lifecycle. There is no four-role duty-access checkpoint
 or readiness label. Later disclosures/publication/actions still require current
-authority/access. See the [U4 split and native ordering contract](../../superpowers/specs/2026-11-11-sequential-coding-u4.md).
+authority/access. See the [U4 split and native ordering contract](../../specs/2026-11-11-sequential-coding-u4.md).
 
 The inert observer checks literal no-follow clone/object metadata before Git
 and at close. Common-directory/gitdir indirection, gitfiles, object alternates,
@@ -562,7 +562,7 @@ positive original null-visit source-outer evidence. U3e-1b-ii owns that separate
 producer and manager skill instructions. Existing U3e-1a cancellation, U3e-2
 caller return, default Disabled admission, repository/mixed U5 successful-output hold,
 Pause backout remains controlling. The stale-settings continuation limit is
-historical and superseded by [U9 Option A](../../superpowers/specs/2026-11-12-sequential-coding-u9.md#mounted-atomic-boundary-and-pin-compatibility-repair-task-15624):
+historical and superseded by [U9 Option A](../../specs/2026-11-12-sequential-coding-u9.md#mounted-atomic-boundary-and-pin-compatibility-repair-task-15624):
 admission replay, lifecycle and the cancel fence retain admitted original Allowed
 pins after newer Allowed or Disabled settings; fresh selection and engine
 prepare-admission still require latest Allowed settings. Marker removal refuses
@@ -663,7 +663,7 @@ callback route, completion DTO, skill staging command or native identity exists.
 The bundled skill adds one document paragraph; the carrier stays unchanged.
 
 The [current U3f contract](reusable-workflows.md#u3f--u5a-document-witnesses-and-addressed-delivery)
-and [source record](../../superpowers/specs/2026-11-09-sequential-document-witness-u3f.md)
+and [source record](../../specs/2026-11-09-sequential-document-witness-u3f.md)
 cover per-scope SB-5 and the separate open F-U3f-ENTRY, F-U3f-AUTH and
 F-U3f-MOVE follow-ups.
 Under R-U3f-SB5-2, node_instruction starts its original reader budget before
@@ -751,7 +751,7 @@ No native preparation, execution enforcement or public transport changes. U7 own
 the unavailable adapter; U4b3 below attaches successful code-change
 declarations/current-authority disclosure. U5 retains review/QA capability and merge. Disposable synthetic-native
 scratch diagnostics are not full native first-edit/callback/correction/V3 proof.
-Details: [U4b2 subject contract](../../superpowers/specs/2026-11-11-sequential-coding-u4.md).
+Details: [U4b2 subject contract](../../specs/2026-11-11-sequential-coding-u4.md).
 
 
 ## U4b3 current-authority publication and addressed disclosure
@@ -792,7 +792,7 @@ interpreting callback content, native ownership or current authority. They are
 inert history readers; their inventory is not a cancellation write set. The
 existing ordinary-ancestor mixed refusal and direct selected-run cancellation
 remain unchanged. U6b owns mixed cascade/audit/CAS/native-tail integration, and
-U5b2b2/U7 remain separate. [U6 source contract](../../superpowers/specs/2026-11-11-sequential-coding-u6.md).
+U5b2b2/U7 remain separate. [U6 source contract](../../specs/2026-11-11-sequential-coding-u6.md).
 
 
 ## U6b1 producer interface; Founder attachment still U6b2
@@ -804,7 +804,7 @@ Coding work refuses. Ordinary point stops still refuse sequential/Coding-depende
 ancestors. It neither replaces nor changes the existing task-cancel route.
 U6b2 still owns live retained-family writer composition, cross-family overlay
 closure, Founder route attachment and native-tail consumption. See the
-[precise U6 split](../../superpowers/specs/2026-11-11-sequential-coding-u6.md).
+[precise U6 split](../../specs/2026-11-11-sequential-coding-u6.md).
 
 
 ## U6b2a one-owner interface; mixed route remains unavailable
@@ -818,7 +818,7 @@ Coding/ordinary/document owners; nobody newly reaches U6b1 `cancel_mixed`.
 U6b2b must compose live retained-family writers/cross-family overlays, aggregate
 all original owners and attach the complete route/native tail. Hidden live work
 and coding-dependent ordinary point stops still refuse. See the
-[U6 remainder](../../superpowers/specs/2026-11-11-sequential-coding-u6.md).
+[U6 remainder](../../specs/2026-11-11-sequential-coding-u6.md).
 
 
 ## U6b2b existing Founder-route composition (TASK-15349)
@@ -834,7 +834,7 @@ Original committed callbacks only drain unchanged. There is no new endpoint or
 Retry/Resume/Reassign/cleanup transport. The original root captures go through
 all-original-owner qualification, never one-owner clearance; ordinary/document
 positive-proof unavailability stays UNSETTLED as specified by manager Option B.
-See the [current U6 contract](../../superpowers/specs/2026-11-11-sequential-coding-u6.md#u6b2b-mounted-composition-task-15349).
+See the [current U6 contract](../../specs/2026-11-11-sequential-coding-u6.md#u6b2b-mounted-composition-task-15349).
 
 
 ## U7d ordinary sequential-start completion (TASK-15578)
@@ -863,9 +863,9 @@ flag shortcut or historical engine fallback. Admitted old @1/@2, original return
 source/thread association, U7a/U7b/U7c, Pause/U6 and LOCAL Final/receipt uncertainty
 are unchanged; thread sources still refuse, notifications remain excluded.
 No new route/schema/credential/permission/access observer or daemon network I/O.
-See the [current U7 source and evidence limits](../../superpowers/specs/2026-11-11-sequential-coding-u7.md#u7d-ordinary-source-completion-consumer-task-15578).
+See the [current U7 source and evidence limits](../../specs/2026-11-11-sequential-coding-u7.md#u7d-ordinary-source-completion-consumer-task-15578).
 
 
 U4c supersedes the earlier unmounted repository adapter checkpoint only: see
-[repository transport](../../superpowers/specs/2026-11-12-sequential-coding-u4c.md).
+[repository transport](../../specs/2026-11-12-sequential-coding-u4c.md).
 The callback and native settlement contracts above remain unchanged.

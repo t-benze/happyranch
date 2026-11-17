@@ -242,8 +242,9 @@ and a new permission prompt. If transport was lost, use **Refresh** to observe
 the current helper state. Closing the window cancels its in-flight requests.
 
 Enable, Create invite and Turn off are omitted until their helper methods
-arrive in later slices. Own-server, URL and manual-key input remain unavailable
-under R3. The window uses only Status, NextDevice, ApprovePending,
+arrive in later slices. Custom-server URL/manual-key input does not exist and is not
+planned; outside-home access uses a fixed build-configured server (see
+[the spec](../specs/2026-11-16-one-click-remote-access.md#outside-home-access-fixed-operator-server)). The window uses only Status, NextDevice, ApprovePending,
 RejectPending and RevokeSelected, with no input arguments. Native GTK rendering
 and real polkit dialogs require a desktop acceptance venue; the standalone
 command above uses GI/transport doubles and does not prove those dialogs.

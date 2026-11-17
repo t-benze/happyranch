@@ -1,6 +1,6 @@
 """End-to-end multi-job blocked-by-job test.
 
-Spec: docs/superpowers/specs/2026-05-28-task-blocked-by-job-design.md §9.2
+Spec: docs/specs/2026-05-28-task-blocked-by-job-design.md §9.2
 
 Verifies the ALL-terminal predicate: the task stays blocked when only the
 FIRST of two review_required=true jobs is approved, and resumes only after

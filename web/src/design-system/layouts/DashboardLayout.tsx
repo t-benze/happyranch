@@ -7,7 +7,7 @@
  * this app to desktop, but the responsive collapse keeps narrow windows
  * usable without forking layouts.
  *
- * Spec: `docs/superpowers/specs/2026-05-19-web-dashboard-design.md` §4.
+ * Spec: `docs/specs/2026-05-19-web-dashboard-design.md` §4.
  */
 import type { ReactNode } from 'react';
 

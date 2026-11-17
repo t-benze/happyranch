@@ -1,7 +1,7 @@
 """HostSessionSupervisor: daemon-wide admission + session lifecycle core.
 
 Slice A (THR-207 rulings 1/2/3/4/5/6 as amended; governing spec
-``docs/superpowers/specs/2026-08-24-host-resource-concurrency.md``, with the
+``docs/specs/2026-08-24-host-resource-concurrency.md``, with the
 founder-approved real-caller amendment THR-207 seq 41-44) ships the
 platform-neutral core plus **exactly one** wired production producer; Slice B
 ships the real backends behind the capability factory:

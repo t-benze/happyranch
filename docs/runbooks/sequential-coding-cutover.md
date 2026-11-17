@@ -35,7 +35,7 @@ Allowed NEW settings. Noncatalog V3 fixtures retain `check_venue_start`; a marke
 never supplies Coding authority or bypasses release selection. Authenticated
 admitted replay precedes fresh gates and preserves original pins. Source delivery
 grants no live operation or genuine execution acceptance. See the
-[U9 compatibility table and caller inventory](../superpowers/specs/2026-11-12-sequential-coding-u9.md).
+[U9 compatibility table and caller inventory](../specs/2026-11-12-sequential-coding-u9.md).
 
 ## Install and setup sequence
 
@@ -167,7 +167,7 @@ steps instead of the unchanged 32M default. Ordinary history contributes no rows
 or payload bytes to the preservation copy. Disable, original-key replay/readback
 stay available in the sized ordinary-history envelope; invalid/exhausted workflow
 history still refuses. Replay/readback require no backup/hash. See the explicit
-[10x sizing arithmetic and caller inventory](../superpowers/specs/2026-11-12-sequential-coding-u9.md#retained-history-repair-task-15618).
+[10x sizing arithmetic and caller inventory](../specs/2026-11-12-sequential-coding-u9.md#retained-history-repair-task-15618).
 These are cooperative limits, not hard OS-I/O or unbounded-history guarantees.
 
 Setup exits: **0** observed publication/read; **1** refused; **2** usage;
@@ -361,7 +361,7 @@ pre-COMMIT preservation is `not_installed`; rollback/close/equality uncertainty
 is `unknown`. No post-COMMIT physical veto or restore is added. This changes no
 Coding setup/admission authority. I2 removes inline physical checks; full FKs
 and parts 2–7 remain on complete reads. The daily report belongs to I1b. See the
-[I1a contract](../superpowers/specs/2026-11-14-automatic-workflow-setup.md).
+[I1a contract](../specs/2026-11-14-automatic-workflow-setup.md).
 
 
 ## I1b daily integrity is advisory
@@ -380,4 +380,4 @@ projection and A4's automatic setup remain separately owned.
 
 ## Org access fence (A1)
 
-Before source SQLite access, supported offline schema writers take EX and check-only paths take SH; sequential Coding registration/admission retains its original EX interval through the complete operation. Human-host/disposable-venue exclusion still runs first. Existing explicit confirmation, backup/lifecycle/native custody and all storage/authority/Save/Allow gates remain unchanged. Normal runtime attachments and daily checks hold SH, native jobs inherit their original descriptor, and the host guardian retains original custody through confirmed cleanup or HOLD on uncertainty. A free EX lock alone proves neither old-owner closure nor automatic setup eligibility. See the [A1 contract](../superpowers/specs/2026-11-14-automatic-workflow-setup.md#a1-cooperative-org-access-fence).
+Before source SQLite access, supported offline schema writers take EX and check-only paths take SH; sequential Coding registration/admission retains its original EX interval through the complete operation. Human-host/disposable-venue exclusion still runs first. Existing explicit confirmation, backup/lifecycle/native custody and all storage/authority/Save/Allow gates remain unchanged. Normal runtime attachments and daily checks hold SH, native jobs inherit their original descriptor, and the host guardian retains original custody through confirmed cleanup or HOLD on uncertainty. A free EX lock alone proves neither old-owner closure nor automatic setup eligibility. See the [A1 contract](../specs/2026-11-14-automatic-workflow-setup.md#a1-cooperative-org-access-fence).

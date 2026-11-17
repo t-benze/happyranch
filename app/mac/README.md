@@ -26,8 +26,10 @@ pairs, shows the comparison phrase with **Waiting for approval on [computer]**,
 then **Opening runtime**. **Connected**
 is published only after the expected authorized main-frame web navigation
 finishes; network membership and health alone cannot publish it. Existing DIY
-Tailscale remains an explicit separate selection, never an error fallback. R3
-URL/key intake is absent; QR transfer remains deferred.
+Tailscale remains an explicit separate selection, never an error fallback. Custom-server
+URL/key intake does not exist and is not planned; outside-home access uses a fixed
+build-configured server (see [the spec](../../docs/specs/2026-11-16-one-click-remote-access.md#outside-home-access-fixed-operator-server)).
+QR transfer remains deferred.
 
 `HomeInviteModel` owns attempt IDs, the actual invite-expiry countdown and cancel
 fencing. `ManagedHomeInviteSession` uses the 5b helper and the existing managed
@@ -133,7 +135,7 @@ same visible result. CA changes still say **Home identity changed — approve ag
 ### THR-327 slice 5g: v2 invite and saved trust
 
 `RemoteInvite.parse(_:now:)` accepts only `hrinvite2:` plus strict bounded JSON
-under [section 6](../../docs/superpowers/specs/2026-11-16-one-click-remote-access.md).
+under [section 6](../../docs/specs/2026-11-16-one-click-remote-access.md).
 The exact top-level keys are `v`, `mode`, `control_url`, `control_plane_id`,
 `control_tls`, `home_endpoint`, `home_id`, `connector_id`, `invite_id`, `join_key`,
 `pair_secret`, `issued_at`, `expires_at`; `v` must be 2. Home control URL is exactly
@@ -148,12 +150,12 @@ The parser refuses >4096 decoded or >5500 encoded UTF-8 bytes including prefix,
 never truncates, and refuses duplicate/missing/unknown keys, noncanonical encoding,
 wrong types/versions, mode/trust mismatches, malformed/non-CA/expired DER,
 fingerprint mismatch and invalid invite times. `hrinvite1:` requires new invite
-and approval. R3/system-trust envelopes parse only to a closed unsupported result;
-there is no own-server UI. Display/debug/mirror and diagnostics redact v1/v2
+and approval. System-trust envelopes and non-home modes refuse with a closed unsupported result;
+there is no URL/key intake UI. Display/debug/mirror and diagnostics redact v1/v2
 invites and secrets. Swift/Data copies cannot promise cryptographic erasure.
 
 **Normative issuer contract for slice 3c.** The [v2 wire literals (pinned)
-table in section 6](../../docs/superpowers/specs/2026-11-16-one-click-remote-access.md#v2-wire-literals-pinned)
+table in section 6](../../docs/specs/2026-11-16-one-click-remote-access.md#v2-wire-literals-pinned)
 adopts the implemented representations. Slice 3c MUST conform; issuer/parser
 round-trip fixtures are the shared contract. `RemoteInviteTests` owns the Mac
 round-trip fixture and strict refusal cases, including padded envelopes, wrong
@@ -285,7 +287,7 @@ this Linux host. No hosted Mac/managed-m4 build is dispatched.
 `build-app.sh` builds `Contents/Helpers/happyranch-home-bridge` from the existing
 `tsnet-bridge` Go module, alongside its C archive. Only the separate executable's
 fixed `--home-bridge-v2` mode installs fallback roots; the archive never runs
-`main`. No dependency, entitlement, CA installation, public-root mode or R3
+`main`. No dependency, entitlement, CA installation, public-root mode or URL/key
 intake is added. Optional signing inventories include the helper; signing is
 not needed for this milestone.
 

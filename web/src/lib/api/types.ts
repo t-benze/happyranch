@@ -1,6 +1,6 @@
 /**
  * Hand-mirrored from ``src/models.py``. See
- * ``docs/superpowers/specs/2026-05-14-web-ui-design.md`` §8 (the OpenAPI
+ * ``docs/specs/2026-05-14-web-ui-design.md`` §8 (the OpenAPI
  * contract test catches drift).
  *
  * Naming: type names mirror the Pydantic class names exactly; field names

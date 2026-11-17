@@ -13,7 +13,7 @@ and independent RO original-inventory equality; uncertain proof is `unknown`
 The existing offline backup remains operator-created and untouched; A4 owns
 automatic bootstrap/phase publication. I2 removes inline physical checks;
 the daily read-only report is I1b. See the
-[I1a contract](../superpowers/specs/2026-11-14-automatic-workflow-setup.md).
+[I1a contract](../specs/2026-11-14-automatic-workflow-setup.md).
 
 Database owns composed native trace registration through `observe_trace`; native
 connection type, constructor and independent authorizer/progress slots stay exact.
@@ -33,7 +33,7 @@ never PASS. Retain the once-only original pre-A0b-2 observation of that private
 image; continuation and head re-verification must not repeat it.
 Installed happyranch FIRST/NEXT/Pause/all-org-tail capacity acceptance belongs to
 I2, on its fresh base and capture; all other A0b-2 cases remain required. No cap,
-check, deadline or caller changes here. The current [I2 policy](../superpowers/specs/2026-11-14-automatic-workflow-setup.md#i2-load-and-revalidation-policy)
+check, deadline or caller changes here. The current [I2 policy](../specs/2026-11-14-automatic-workflow-setup.md#i2-load-and-revalidation-policy)
 requires successful primary/tail reads under the 10s all-org envelope.
 Automatic install stays size-guarded/held for over-budget orgs; no setup or
 operating authority follows.
