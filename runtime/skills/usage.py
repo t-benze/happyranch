@@ -22,7 +22,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 MAX_BYTES = 4 * 1024 * 1024
-MAX_LINE_BYTES = 64 * 1024
+# Production prompt/metadata lines measured up to 318,269 bytes (THR-203).
+# Keep headroom within the unchanged total budget; never skip hidden boundaries.
+MAX_LINE_BYTES = 512 * 1024
 MAX_LINES = 20_000
 MAX_SIGNALS = 256
 MAX_SECONDS = 0.1
@@ -202,7 +204,9 @@ def _codex_signals(
         for raw_path in _read_paths(command):
             path = Path(raw_path)
             if not path.is_absolute():
-                path = workspace / path
+                # The launch workspace does not establish a command's cwd.
+                # Existing command events supply no verified cwd here.
+                continue
             for root in (".agents", ".claude"):
                 try:
                     parts = path.relative_to(workspace / root / "skills").parts

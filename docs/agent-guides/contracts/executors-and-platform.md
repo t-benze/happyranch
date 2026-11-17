@@ -52,7 +52,7 @@ missing table and then its index idempotently; no table rebuild or backfill.
 | Executor | Signal and seam | Coverage limits |
 | --- | --- | --- |
 | Claude | `invoked`: assistant `tool_use` named `Skill`, read after return from `~/.claude/projects/<cwd-slug>/<provider-session-id>.jsonl` | Exact submitted user prompt must occur once; only subsequent assistant entries before the next user text count. Provider identity must match. This distinguishes resumed provider history from the runtime invocation. |
-| Codex | `opened_skill_file`: successful completed `command_execution` in existing `exec --json` stdout | Only simple `cat`, `sed -n N[,N]p`, or `head -n N` reads of the workspace's `.agents/skills/<slug>/SKILL.md` or `.claude/skills/<slug>/SKILL.md`, optionally wrapped in `sh/bash/zsh -c/-lc`. Complex shell, other read tools, external roots and rollout-only reads are gaps. This records an open, not invocation/compliance. |
+| Codex | `opened_skill_file`: successful completed `command_execution` in existing `exec --json` stdout | Only simple `cat`, `sed -n N[,N]p`, or `head -n N` reads using absolute paths under the workspace's `.agents/skills/<slug>/SKILL.md` or `.claude/skills/<slug>/SKILL.md`, optionally wrapped in `sh/bash/zsh -c/-lc`. Relative paths are unobserved because the command's cwd is not verified; the launch workspace is insufficient evidence. Complex shell, other read tools, external roots and rollout-only reads are gaps. This records an open, not invocation/compliance. |
 | OpenCode | No signal recorded | Existing JSON output is used for usage/session identity; no verified skill-specific observation seam is implemented. |
 | Pi | No signal recorded | No verified skill-specific observation seam is implemented. |
 
@@ -70,9 +70,14 @@ The optional observer runs in at most two daemon threads, with no join on the
 session path. Busy workers/DB, shutdown and missing/unreadable inputs lose the
 observation. Transcript parents and leaf are opened no-follow; only a stable,
 singly linked regular file at the expected session path is accepted. Each parse
-has 4 MiB total, 64 KiB per line, 20,000 lines, 256 signals and a cooperative
+has 4 MiB total, 512 KiB per line, 20,000 lines, 256 signals and a cooperative
 100 ms deadline; a failure discards the entire batch and logs only the exception
-class. These are cooperative work bounds, not hard OS I/O guarantees. Files are
+class. The line budget leaves headroom above the measured production maximum
+of 318,269 bytes (20 transcripts, 436,610–2,772,852 bytes and 43–425 lines).
+A line over 512 KiB still discards all signals, including a valid prefix: skipping
+it could hide a user boundary or provider mismatch and misattribute later use.
+This deliberately undercounts oversized sessions. These are cooperative work
+bounds, not hard OS I/O guarantees. Files are
 read before acquiring a DB writer. A separate existing-DB connection uses zero
 busy waiting and a separate cooperative 100 ms write budget with rollback on
 failure. Observation never drives completion, retry, callbacks or accounting;

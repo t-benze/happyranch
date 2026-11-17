@@ -6,6 +6,7 @@ import json
 import os
 import re
 import sqlite3
+import subprocess
 import tempfile
 import threading
 import unittest
@@ -93,14 +94,14 @@ class SkillUsageTests(unittest.TestCase):
 
     def test_codex_opens_bundled_unknown_and_rejects_mentions(self) -> None:
         events = [{"type": "thread.started", "thread_id": "provider-current"},
-                  self.command("item-1", "cat .agents/skills/start-task/SKILL.md"),
-                  self.command("item-2", "/bin/zsh -lc 'sed -n 1,20p .claude/skills/external-note/SKILL.md'"),
-                  self.command("item-3", "cat .agents/skills/failed/SKILL.md", 1),
-                  self.command("item-4", "echo .agents/skills/mentioned/SKILL.md"),
+                  self.command("item-1", f"cat {self.workspace}/.agents/skills/start-task/SKILL.md"),
+                  self.command("item-2", f"/bin/zsh -lc 'sed -n 1,20p {self.workspace}/.claude/skills/external-note/SKILL.md'"),
+                  self.command("item-3", f"cat {self.workspace}/.agents/skills/failed/SKILL.md", 1),
+                  self.command("item-4", f"echo {self.workspace}/.agents/skills/mentioned/SKILL.md"),
                   self.command("item-5", "cat /elsewhere/.agents/skills/foreign/SKILL.md"),
-                  self.command("item-6", "false; cat .agents/skills/compound/SKILL.md"),
-                  self.command("item-7", "cat .agents/skills/../unsafe/SKILL.md"),
-                  self.command("item-8", "cat # .agents/skills/commented/SKILL.md")]
+                  self.command("item-6", f"false; cat {self.workspace}/.agents/skills/compound/SKILL.md"),
+                  self.command("item-7", f"cat {self.workspace}/.agents/skills/../unsafe/SKILL.md"),
+                  self.command("item-8", f"cat # {self.workspace}/.agents/skills/commented/SKILL.md")]
         capture = self.capture("codex", events)
         self.record(capture)
         self.record(capture)
@@ -109,6 +110,49 @@ class SkillUsageTests(unittest.TestCase):
         with closing(sqlite3.connect(self.db.db_path)) as conn, conn:
             self.assertEqual(conn.execute("SELECT skill_source FROM skill_use_events ORDER BY id").fetchall(),
                              [("bundled",), ("unknown",)])
+
+    def test_claude_production_dimensions_record_invocation(self) -> None:
+        self.prompt = "Synthetic daemon prompt " + "p" * 310_000
+        large = {"type": "file-history-snapshot", "snapshot": {"padding": "m" * 310_000}}
+        result = {"type": "user", "sessionId": "provider-current", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "tool-read", "content": "r" * 310_000}
+        ]}}
+        self.write([self.user(self.prompt), *[large] * 3,
+                    *[{"type": "file-history-snapshot", "snapshot": {}}] * 50,
+                    self.skill("start-task", "tool-current"), *[result] * 4])
+        data = self.transcript.read_bytes()
+        self.assertGreater(len(data), 2_400_000)
+        self.assertLess(len(data), 2_600_000)
+        self.assertEqual(sum(len(line) > 300_000 for line in data.splitlines()), 8)
+        self.record(self.capture())
+        self.assertEqual(self.rows(), [("start-task", "invoked", "sess-current")])
+
+    def test_codex_alternate_cwd_rejects_relative_and_accepts_absolute(self) -> None:
+        relative = ".agents/skills/start-task/SKILL.md"
+        other = self.root / "other-directory"
+        unrelated = other / relative
+        unrelated.parent.mkdir(parents=True)
+        unrelated.write_text("Synthetic unrelated skill\n")
+        expected = self.workspace / relative
+        self.assertFalse(expected.exists())
+        with closing(sqlite3.connect(self.db.db_path)) as conn, conn:
+            conn.execute("INSERT INTO custom_skills (id,org_slug,slug,name,policy_class,origin_kind,created_at,created_by) "
+                         "VALUES ('CS-original','synthetic-org','start-task','Start','standard_operational','human','now','founder')")
+        read = subprocess.run(["cat", relative], cwd=other, capture_output=True, text=True, check=True)
+        self.assertEqual(read.stdout, "Synthetic unrelated skill\n")
+        started = {"type": "thread.started", "thread_id": "provider-current"}
+        self.record(self.capture("codex", [started, self.command("item-relative", f"cat {relative}")]))
+        self.assertEqual(self.rows(), [])
+
+        expected.parent.mkdir(parents=True)
+        expected.write_text("Synthetic expected skill\n")
+        read = subprocess.run(["cat", str(expected)], cwd=other, capture_output=True, text=True, check=True)
+        self.assertEqual(read.stdout, "Synthetic expected skill\n")
+        self.record(self.capture("codex", [started, self.command("item-absolute", f"cat {expected}")]))
+        with closing(sqlite3.connect(self.db.db_path)) as conn, conn:
+            self.assertEqual(conn.execute("SELECT skill_slug,skill_source,custom_skill_id,signal_kind "
+                                          "FROM skill_use_events").fetchall(),
+                             [("start-task", "custom", "CS-original", "opened_skill_file")])
 
     def test_bad_sources_discard_entire_batch(self) -> None:
         valid = [self.user(self.prompt), self.skill("start-task", "tool-current")]
@@ -155,6 +199,11 @@ class SkillUsageTests(unittest.TestCase):
                     if case == "deadline":
                         with patch.object(usage, "MAX_SECONDS", 0), self.assertRaises(ValueError):
                             self.record(self.capture())
+                    elif case == "long-line":
+                        # Even a valid prefix is discarded: an oversized record
+                        # could conceal a user boundary or provider mismatch.
+                        with self.assertRaisesRegex(ValueError, "skill use line byte bound"):
+                            self.record(self.capture())
                     else:
                         with self.assertRaises((ValueError, OSError)):
                             self.record(self.capture())
@@ -174,7 +223,7 @@ class SkillUsageTests(unittest.TestCase):
         from runtime.orchestrator.executors import _run_command, _parse_codex_session_id, _parse_codex_usage
 
         events = [{"type": "thread.started", "thread_id": "provider-current"},
-                  self.command("item-read", "head -n 20 .agents/skills/start-task/SKILL.md"),
+                  self.command("item-read", f"head -n 20 {self.workspace}/.agents/skills/start-task/SKILL.md"),
                   {"type": "item.completed", "item": {"type": "agent_message", "text": "x" * 3000}},
                   {"type": "turn.completed", "usage": {"input_tokens": 30, "cached_input_tokens": 5,
                                                        "output_tokens": 7}}]
