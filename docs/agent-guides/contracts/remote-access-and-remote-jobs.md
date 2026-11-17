@@ -874,9 +874,14 @@ executing old config/argv. Reads are bounded (64 KiB configs/units, 64 shallow
 entries per managed directory); opaque state leaves receive metadata checks only.
 The result is clean, modern staged-inert/recorded, known failed/partial, intact
 manual requiring migration, or `manual-install-conflict` with non-secret paths.
-Stopped intact manual installs, including legacy-provisioned ones, still need
-explicit migration. Unsafe/unknown entries, digests, fragments/drop-ins or final/
-pending transactions refuse; release-home tokens are never read by inventory.
+Safe unrecorded config subsets, including actual interrupted generated writer
+prefixes, are known failed/partial after validating each present artifact.
+Complete unrecorded legacy configs support modes 0600/0640/0644; recorded
+provisioning still requires exact 0640 configs. Owner, no-follow, regular-file,
+single-link and group/world-write checks remain mandatory. Stopped intact manual
+installs, including legacy-provisioned ones, still need explicit migration.
+Unsafe/unknown entries, digests, fragments/drop-ins or final/pending transactions
+refuse; release-home tokens are never read by inventory.
 
 For recognized installations only, stop target, connector, sidecar, verifier
 socket and verifier service, prove dead inactive/failed state and no queued jobs,

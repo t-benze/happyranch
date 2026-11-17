@@ -58,8 +58,12 @@ The first 3b-1c sub-part adds Python-only installer inventory and stop/quiescenc
 prerequisites. They inspect fixed managed paths, exact unit bytes and loaded
 fragments/drop-ins, with bounded shallow reads and safe metadata; unknown/unsafe
 residue or transaction records yield `manual-install-conflict` naming paths only.
-Intact manual installs require migration even when stopped. The stop API refuses
-those installs/conflicts before effects; recognized installations stop the target,
+Safe unrecorded config subsets, including interrupted generated writer prefixes,
+are known failed/partial after each present artifact is validated. Complete
+unrecorded legacy configs accept 0600/0640/0644, with unchanged owner, no-follow,
+regular-file, single-link and group/world-write checks; recorded provisioning
+retains exact 0640. Intact manual installs require migration even when stopped.
+The stop API refuses those installs/conflicts before effects; recognized installations stop the target,
 connector, sidecar and both verifier units, prove dead inactive/failed states,
 no queued jobs, zero service PIDs and no service cgroups, then re-inventory.
 All files remain intact on stop/proof failure. Inventory reads no release-home

@@ -542,6 +542,11 @@ ownership/types/links/modes, digest drift, loaded-fragment/drop-in uncertainty
 and final/pending transactions refuse with paths only. Known opaque state leaves
 are checked by metadata, never executed or replayed. An intact manual install,
 with or without legacy provenance, is never inferred failed just because stopped.
+Safe unrecorded config subsets, including interrupted generated writer prefixes,
+are known failed/partial after independent validation of each present artifact.
+Complete unrecorded legacy configs accept 0600/0640/0644; recorded provisioning
+retains exact 0640. Owner, no-follow, regular-file, single-link and refusal of
+group/world-write remain unchanged.
 Inventory never reads the release-home token or grants deletion authority.
 The connector runtime directory accepts both the legacy 0755 and identity
 profile's stricter 0700 mode, with the same validated service ownership.

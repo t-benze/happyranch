@@ -120,7 +120,7 @@ class ManagedInstaller:
         self._service_owner: tuple[int, int] | None = None
 
     def _inventory_files(
-        self, relative: str, allowed: dict[str, tuple[tuple[int, int] | None, int, bool | None]],
+        self, relative: str, allowed: dict[str, tuple[tuple[int, int] | None, int | tuple[int, ...], bool | None]],
     ) -> dict[str, bytes]:
         """Bounded, shallow inventory of one fixed directory; no unknown reads."""
         files: dict[str, bytes] = {}
@@ -144,7 +144,13 @@ class ManagedInstaller:
                                     raise InstallerError(path)
                                 files[entry.name] = b""
                             else:
-                                files[entry.name] = self._read_file(parent, entry.name, owner=owner, mode=mode)
+                                if isinstance(mode, tuple):
+                                    actual_mode = stat.S_IMODE(os.stat(entry.name, dir_fd=parent, follow_symlinks=False).st_mode)
+                                    if actual_mode not in mode:
+                                        raise InstallerError(path)
+                                else:
+                                    actual_mode = mode
+                                files[entry.name] = self._read_file(parent, entry.name, owner=owner, mode=actual_mode)
                         except (OSError, InstallerError):
                             raise InstallerError(path) from None
         except FileNotFoundError:
@@ -231,7 +237,7 @@ class ManagedInstaller:
     def inventory(self) -> InstallInventory:
         """Classify only fixed managed destinations without executing old inputs.
 
-        Unknown, torn or transaction-bearing inventories refuse. Stopped intact
+        Unknown, unsafe or transaction-bearing inventories refuse. Stopped intact
         manual installs still require migration. This supplies no replacement,
         cleanup, source-token read or activation authority.
         """
@@ -242,7 +248,8 @@ class ManagedInstaller:
             service = self._service_owner
             config_owner = None if service is None else (self.root_owner[0], service[1])
             files = self._inventory_files("etc/happyranch", {
-                **{name: (config_owner, 0o640, False) for name in ("connector.json", "sidecar.json", "policy.json")},
+                **{name: (config_owner, (0o600, 0o640, 0o644), False)
+                   for name in ("connector.json", "sidecar.json", "policy.json")},
                 "release-daemon.json": (self.root_owner, 0o644, False),
                 "provision.json": (self.root_owner, 0o600, False),
                 "daemon.token": (service, 0o600, False),
@@ -254,6 +261,14 @@ class ManagedInstaller:
             modern = False
             required = {"connector.json", "sidecar.json", "policy.json", "release-daemon.json", "daemon.token"}
             if provenance is not None:
+                # Recorded provisioning retains its exact mode contract. Only
+                # unrecorded legacy configs may use the other safe modes above.
+                with self._directory("etc/happyranch") as parent:
+                    for name in ("connector.json", "sidecar.json", "policy.json"):
+                        if name in files:
+                            location = str(self.root / "etc/happyranch" / name)
+                            if self._read_file(parent, name, owner=config_owner, mode=0o640) != files[name]:
+                                raise InstallerError(location)
                 location = str(self.root / "etc/happyranch/provision.json")
                 self._validate_install_record("provision.json", provenance)
                 record = self._json(provenance)
@@ -269,8 +284,10 @@ class ManagedInstaller:
                     if name in files and hashlib.sha256(files[name]).hexdigest() != digest:
                         raise InstallerError(str(self.root / "etc/happyranch" / name))
             elif files:
-                # Without provenance, only complete shipping config shapes qualify.
-                self._validate_configs(files, staged=True)
+                # Interrupted publication may precede the next config or record.
+                # Validate every present artifact, including cross-config checks
+                # when both are present; absence alone is a known partial state.
+                self._validate_configs(files, staged=True, partial=True)
             if "release-daemon.json" in files:
                 from runtime.remote_access.release_verifier import validate_record
                 location = str(self.root / "etc/happyranch/release-daemon.json")
@@ -577,47 +594,57 @@ class ManagedInstaller:
         except (ValueError, UnicodeError):
             raise InstallerError("invalid provisioning JSON object") from None
 
-    def _validate_configs(self, files: dict[str, bytes], *, staged: bool = False) -> None:
+    def _validate_configs(self, files: dict[str, bytes], *, staged: bool = False, partial: bool = False) -> None:
         # Reuse shipping connector/policy validators; never start a supervisor.
         from runtime.remote_access.managed_provider import ManagedProviderConfig
         from runtime.remote_access.policy import PolicyEnvelope, RoutePolicyConsumer
         from runtime.remote_access.supervisor import ConnectorConfig
 
         try:
-            raw = self._json(files["connector.json"])
-            managed = raw.pop("managed")
-            if not isinstance(managed, dict) or raw.get("lab") is not None or raw.get("diy") is not None:
-                raise ValueError
-            cfg = ConnectorConfig(**raw, managed=ManagedProviderConfig(**managed))
-            cfg.validate()
-            if (any(not isinstance(value, str) or not value.strip() for value in (cfg.tenant_id, cfg.home_id, cfg.connector_id))
-                    or cfg.system is not True or cfg.service_user != "happyranch" or cfg.service_group != "happyranch"
-                    or cfg.daemon_port is not None
-                    or not 1 <= cfg.managed.bind_port <= 65535
-                    or cfg.daemon_token_path != "/etc/happyranch/daemon.token"
-                    or cfg.policy_path != "/etc/happyranch/policy.json"
-                    or cfg.state_path != "/var/lib/happyranch-connector/trust-state.json"
-                    or cfg.credentials_directory is not None or cfg.exec_start is not None
-                    or cfg.managed_dir_root is not None or cfg.unit_name != UNITS[0]
-                    or any(value != "happyranch-connector" for value in (cfg.state_dir, cfg.run_dir, cfg.logs_dir))
-                    or any(type(value) not in (int, float) or not math.isfinite(value) or value <= 0
-                           for value in (cfg.watchdog_sec, cfg.poll_seconds, cfg.restart_sec))):
-                raise ValueError
-            policy = RoutePolicyConsumer.from_envelope(PolicyEnvelope(**self._json(files["policy.json"])))
-            policy.require_current(datetime.now(timezone.utc))
+            cfg = None
+            if not partial or "connector.json" in files:
+                raw = self._json(files["connector.json"])
+                managed = raw.pop("managed")
+                if not isinstance(managed, dict) or raw.get("lab") is not None or raw.get("diy") is not None:
+                    raise ValueError
+                cfg = ConnectorConfig(**raw, managed=ManagedProviderConfig(**managed))
+                cfg.validate()
+                if (any(not isinstance(value, str) or not value.strip() for value in (cfg.tenant_id, cfg.home_id, cfg.connector_id))
+                        or cfg.system is not True or cfg.service_user != "happyranch" or cfg.service_group != "happyranch"
+                        or cfg.daemon_port is not None
+                        or not 1 <= cfg.managed.bind_port <= 65535
+                        or cfg.daemon_token_path != "/etc/happyranch/daemon.token"
+                        or cfg.policy_path != "/etc/happyranch/policy.json"
+                        or cfg.state_path != "/var/lib/happyranch-connector/trust-state.json"
+                        or cfg.credentials_directory is not None or cfg.exec_start is not None
+                        or cfg.managed_dir_root is not None or cfg.unit_name != UNITS[0]
+                        or any(value != "happyranch-connector" for value in (cfg.state_dir, cfg.run_dir, cfg.logs_dir))
+                        or any(type(value) not in (int, float) or not math.isfinite(value) or value <= 0
+                               for value in (cfg.watchdog_sec, cfg.poll_seconds, cfg.restart_sec))):
+                    raise ValueError
+                if (cfg.managed.profile == "linux-managed-identity-v1"
+                        and (cfg.excluded_daemon_ports != [8765] or not cfg.managed.control_plane_id)):
+                    raise ValueError
+            if not partial or "policy.json" in files:
+                policy = RoutePolicyConsumer.from_envelope(PolicyEnvelope(**self._json(files["policy.json"])))
+                policy.require_current(datetime.now(timezone.utc))
+            if partial and "sidecar.json" not in files:
+                return
             sidecar = self._json(files["sidecar.json"])
-            if cfg.managed.profile == "linux-managed-identity-v1":
+            profile = cfg.managed.profile if cfg is not None else sidecar.get("Profile")
+            if profile == "linux-managed-identity-v1":
                 # An inert staged bundle, not a runnable home transport. In
                 # particular, never publish a URL without its protected CA.
                 if (sidecar.keys() != {"Profile", "StateDir", "RoleIdentity", "DERPPolicy",
                                       "ListenAddr", "ExcludedDaemonPorts"}
-                        or sidecar["Profile"] != cfg.managed.profile
+                        or sidecar["Profile"] != profile
                         or sidecar["StateDir"] != "/var/lib/happyranch-tsnet-sidecar"
-                        or sidecar["RoleIdentity"] != f"home-sidecar-{cfg.home_id}"
+                        or not isinstance(sidecar["RoleIdentity"], str)
+                        or not sidecar["RoleIdentity"].startswith("home-sidecar-")
+                        or len(sidecar["RoleIdentity"]) <= len("home-sidecar-")
+                        or (cfg is not None and sidecar["RoleIdentity"] != f"home-sidecar-{cfg.home_id}")
                         or sidecar["DERPPolicy"] != "private-only" or sidecar["ListenAddr"] != ":443"
-                        or cfg.excluded_daemon_ports != [8765]
-                        or sidecar["ExcludedDaemonPorts"] != [8765]
-                        or not cfg.managed.control_plane_id):
+                        or sidecar["ExcludedDaemonPorts"] != [8765]):
                     raise ValueError
                 return
             required = {"StateDir", "ControlURL", "RoleIdentity", "ExpectedPeer", "DERPPolicy", "ListenAddr", "ConnectorAddr"}
@@ -628,11 +655,11 @@ class ManagedInstaller:
             if (not isinstance(sidecar_excluded, list)
                     or any(type(port) is not int or not 1 <= port <= 65535 for port in sidecar_excluded)):
                 raise ValueError
-            excluded = sorted({8765, *cfg.excluded_daemon_ports, *sidecar_excluded})
-            if (cfg.managed.bind_port in excluded
+            excluded = sorted({8765, *(cfg.excluded_daemon_ports if cfg is not None else []), *sidecar_excluded})
+            if cfg is not None and (cfg.managed.bind_port in excluded
                     or sidecar["ConnectorAddr"] != f"127.0.0.1:{cfg.managed.bind_port}"):
                 raise ValueError
-            if (staged and self.layout == "deb"
+            if (cfg is not None and staged and self.layout == "deb"
                     and (cfg.excluded_daemon_ports != excluded or sidecar_excluded != excluded)):
                 raise ValueError
             control = urlsplit(sidecar["ControlURL"])
@@ -645,7 +672,7 @@ class ManagedInstaller:
                     or not sidecar["ExpectedPeer"].strip() or sidecar["DERPPolicy"] != "private-only"
                     or sidecar["StateDir"] != "/var/lib/happyranch-tsnet-sidecar"
                     or listen is None or not 1 <= int(listen[1]) <= 65535
-                    or ingress is None or not 1 <= int(ingress[1]) <= 65535 or int(ingress[1]) == 8765):
+                    or ingress is None or not 1 <= int(ingress[1]) <= 65535 or int(ingress[1]) in excluded):
                 raise ValueError
         except Exception:
             # Validators can include input values. Keep all diagnostics secret-free.

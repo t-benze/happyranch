@@ -788,13 +788,35 @@ def inventory_units(fixture: Fixture, *, modern: bool = False, missing: str | No
 @pytest.mark.parametrize("case, expected", [
     ("clean", "clean"), ("staged", "modern"), ("staged-private-runtime", "modern"), ("recorded", "modern"),
     ("failed", "known-failed-or-partial"), ("partial-unit", "known-failed-or-partial"),
-    ("partial-config", "known-failed-or-partial"), ("manual-active", "healthy-manual"),
+    ("partial-config", "known-failed-or-partial"),
+    ("before-sidecar.json", "known-failed-or-partial"), ("before-policy.json", "known-failed-or-partial"),
+    ("manual-active", "healthy-manual"), ("manual-0600", "healthy-manual"), ("manual-0644", "healthy-manual"),
     ("manual-stopped", "healthy-manual"), ("manual-recorded", "healthy-manual"),
     ("unit-only", "known-failed-or-partial"),
 ])
-def test_fixed_inventory_classifies_without_effects(fixture: Fixture, case: str, expected: str) -> None:
+def test_fixed_inventory_classifies_without_effects(
+    fixture: Fixture, monkeypatch: pytest.MonkeyPatch, case: str, expected: str,
+) -> None:
     manager = lifecycle_fixture(fixture)
-    if case in {"staged", "staged-private-runtime", "recorded", "partial-config"}:
+    interrupted = case.startswith("before-")
+    if interrupted:
+        writer = fixture.installer._write_provision_file
+        writes: list[str] = []
+
+        def fail_before(name: str, data: bytes, owner: tuple[int, int], mode: int) -> None:
+            if name == case.removeprefix("before-"):
+                raise OSError("synthetic publication interruption")
+            writer(name, data, owner, mode)
+            writes.append(name)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(fixture.installer, "_write_provision_file", fail_before)
+            with pytest.raises(module.InstallerError, match="provisioning failed"):
+                generated_bundle(fixture)
+        prefix = ["connector.json"] + (["sidecar.json"] if case == "before-policy.json" else [])
+        assert writes == prefix
+        assert {path.name for path in (fixture.root / "etc/happyranch").iterdir()} == set(prefix)
+    elif case in {"staged", "staged-private-runtime", "recorded", "partial-config"}:
         parent = generated_bundle(fixture)
         if case == "partial-config":
             (parent / "sidecar.json").unlink()
@@ -802,9 +824,12 @@ def test_fixed_inventory_classifies_without_effects(fixture: Fixture, case: str,
             (fixture.root / "run/happyranch-connector").chmod(0o700)
     elif case not in {"clean", "unit-only"}:
         fixture.provision()
-        if case in {"manual-active", "manual-stopped"}:
+        if case in {"manual-active", "manual-stopped", "manual-0600", "manual-0644"}:
             (fixture.root / "etc/happyranch/provision.json").unlink()
-    if case not in {"clean", "staged", "staged-private-runtime", "partial-config"}:
+        if case in {"manual-0600", "manual-0644"}:
+            for name in ("connector.json", "sidecar.json", "policy.json"):
+                (fixture.root / "etc/happyranch" / name).chmod(int(case.removeprefix("manual-"), 8))
+    if not interrupted and case not in {"clean", "staged", "staged-private-runtime", "partial-config"}:
         inventory_units(fixture, modern=case == "recorded",
                         missing=module.UNITS[1] if case == "partial-unit" else None)
     if case == "failed":
@@ -814,6 +839,10 @@ def test_fixed_inventory_classifies_without_effects(fixture: Fixture, case: str,
     before = staged_inventory(fixture)
     result = fixture.installer.inventory()
     assert result.state == expected
+    if interrupted:
+        assert result.detail == "partial"
+    if case.startswith("manual-"):
+        assert result.detail == "migration-required"
     if case in {"staged", "recorded"}:
         assert result.detail == ("staged-inert" if case == "staged" else "recorded")
     assert staged_inventory(fixture) == before
@@ -822,7 +851,9 @@ def test_fixed_inventory_classifies_without_effects(fixture: Fixture, case: str,
 
 @pytest.mark.parametrize("case", ["unsafe-mode", "foreign-owner", "unreadable", "unknown-config", "unit-content", "dropin", "runtime-dropin",
                                  "vendor-fragment", "transaction", "pending-transaction", "digest", "unknown-state",
-                                 "state-symlink", "dangling-link", "unit-symlink"])
+                                 "state-symlink", "dangling-link", "unit-symlink", "modern-0600", "modern-0644",
+                                 "unrecorded-extra",
+                                 "unrecorded-connector", "unrecorded-sidecar", "unrecorded-policy"])
 def test_fixed_inventory_conflicts_name_only_safe_paths(
     fixture: Fixture, monkeypatch: pytest.MonkeyPatch, case: str,
 ) -> None:
@@ -830,7 +861,19 @@ def test_fixed_inventory_conflicts_name_only_safe_paths(
     parent = generated_bundle(fixture)
     inventory_units(fixture, modern=True)
     path = parent / "connector.json"
-    if case == "unsafe-mode":
+    if case.startswith("unrecorded-"):
+        (parent / "provision.json").unlink()
+        if case == "unrecorded-extra":
+            path = parent / "sidecar.json"
+            value = json.loads(path.read_bytes())
+            value["synthetic-secret"] = True
+            path.write_text(json.dumps(value))
+        else:
+            path = parent / (case.removeprefix("unrecorded-") + ".json")
+            path.write_bytes(b'{"synthetic-secret":true}')
+    elif case in {"modern-0600", "modern-0644"}:
+        path.chmod(int(case.removeprefix("modern-"), 8))
+    elif case == "unsafe-mode":
         path.chmod(0o666)
     elif case == "foreign-owner":
         target, fstat = path.stat(), os.fstat
@@ -902,7 +945,7 @@ def test_fixed_inventory_conflicts_name_only_safe_paths(
               for p in fixture.root.rglob("*")}
     result = fixture.installer.inventory()
     assert result.state == "manual-install-conflict"
-    assert result.paths == (str(path),)
+    assert result.paths == (str(parent if case.startswith("unrecorded-") else path),)
     assert "synthetic-secret" not in repr(result)
     assert {str(p): (p.lstat().st_ino, p.lstat().st_mode,
                      os.readlink(p) if p.is_symlink() else p.read_bytes() if p.is_file() else None)
