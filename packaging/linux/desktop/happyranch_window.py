@@ -7,6 +7,7 @@ import ast
 import fcntl
 import hashlib
 import http.client
+import html
 import json
 import logging
 import os
@@ -14,6 +15,7 @@ from pathlib import Path
 import queue
 import re
 import signal
+import socket
 import stat
 import subprocess
 import sys
@@ -655,6 +657,245 @@ def stop_child(child: subprocess.Popen, home: Path, term_timeout: float = 5,
             os.close(fd)
 
 
+class RemoteAccessPanel:
+    """Unprivileged presentation of the helper's fixed, no-input interface.
+
+    A dedicated bus connection keeps its selection cursor private to this window.
+    No local state, hostname, label or fingerprint is sent as mutation authority.
+    """
+
+    bus_name = "ai.happyranch.RemoteAccess1"
+    object_path = "/ai/happyranch/RemoteAccess1"
+    mutations = frozenset({"ApprovePending", "RejectPending", "RevokeSelected"})
+
+    def __init__(self, tr: Callable[[str, str], str]) -> None:
+        from gi.repository import Gio, GLib, Gtk
+        self.Gio, self.GLib, self.Gtk, self.tr = Gio, GLib, Gtk, tr
+        self.box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        self.box.set_border_width(12)
+        self.connection = None
+        self.cancellable = Gio.Cancellable()
+        self.snapshot = None
+        self.busy, self.closed, self.expanded = False, False, False
+        self.state = tr("Checking remote access…", "正在检查远程访问…")
+        self.notice = ""
+        self.target = tr("HappyRanch on ", "此电脑上的 HappyRanch：") + self.plain(socket.gethostname())
+        self.refresh()
+
+    @staticmethod
+    def plain(value: str) -> str:
+        # Helper metadata is already HTML-escaped. Decode once into a *plain*
+        # Gtk.Label; markup is never enabled. Bound local hostname the same way.
+        return "".join(c for c in html.unescape(value)[:96] if c.isprintable())
+
+    @staticmethod
+    def read_snapshot(value: object) -> dict:
+        if (not isinstance(value, dict) or set(value) != {"phase", "ready", "devices", "pending", "selected"}
+                or value["phase"] not in ("off", "pending", "ready", "paused", "failed")
+                or type(value["ready"]) is not bool or not isinstance(value["devices"], list)
+                or len(value["devices"]) > 32):
+            raise ValueError("invalid helper status")
+        for device in [*value["devices"], value["pending"], value["selected"]]:
+            if device is None:
+                continue
+            if (not isinstance(device, dict) or set(device) != {"label", "fingerprint", "comparison_phrase"}
+                    or any(not isinstance(v, str) or len(v) > 576 for v in device.values())
+                    or re.fullmatch("[0-9a-f]{24}", device["fingerprint"]) is None):
+                raise ValueError("invalid helper device")
+        if (any(device is None for device in value["devices"])
+                or value["selected"] is not None and value["selected"] not in value["devices"]):
+            raise ValueError("invalid helper selection")
+        return value
+
+    def refresh(self) -> None:
+        if self.closed or self.busy:
+            return
+        if self.connection is not None and self.connection.is_closed():
+            self.connection = None
+        if self.connection is not None:
+            self.request("Status")
+            return
+        self.busy = True
+        self.render()
+        try:
+            self.Gio.DBusConnection.new_for_address("unix:path=/run/dbus/system_bus_socket",
+                self.Gio.DBusConnectionFlags.AUTHENTICATION_CLIENT |
+                self.Gio.DBusConnectionFlags.MESSAGE_BUS_CONNECTION,
+                None, self.cancellable, self.connected, None)
+        except Exception:
+            self.unavailable()
+
+    def connected(self, _source: object, result: object, _data: object) -> None:
+        try:
+            connection = self.Gio.DBusConnection.new_for_address_finish(result)
+            if self.closed:
+                connection.close(None, None, None)
+                return
+            connection.set_exit_on_close(False)
+            self.connection, self.busy = connection, False
+            self.request("Status")
+        except Exception as error:
+            if not self.closed:
+                self.unavailable(error)
+
+    def unavailable(self, error: Exception | None = None) -> None:
+        self.busy, self.snapshot = False, None
+        remote = ""
+        if error is not None and isinstance(error, self.GLib.Error):
+            remote = self.Gio.DBusError.get_remote_error(error)
+        self.state = (self.tr("Not set up", "尚未设置") if remote in {
+            "org.freedesktop.DBus.Error.ServiceUnknown", "org.freedesktop.DBus.Error.NameHasNoOwner"}
+            else self.tr("Remote access unavailable — Retry", "远程访问不可用 — 重试"))
+        self.render()
+
+    def request(self, method: str) -> None:
+        if (self.closed or self.busy or self.connection is None
+                or method not in {"Status", "NextDevice", *self.mutations}):
+            return
+        # UI eligibility is convenience only. The helper independently captures
+        # the current tuple, asks polkit, revalidates and commits (or refuses).
+        if method in self.mutations:
+            key = "selected" if method == "RevokeSelected" else "pending"
+            if self.snapshot is None or self.snapshot[key] is None:
+                return
+        self.busy = True
+        self.notice = (self.tr("Waiting for system permission…", "正在等待系统授权…")
+                       if method in self.mutations else "")
+        self.render()
+        try:
+            self.connection.call(self.bus_name, self.object_path, self.bus_name, method,
+                None, self.GLib.VariantType.new("(s)"),
+                self.Gio.DBusCallFlags.ALLOW_INTERACTIVE_AUTHORIZATION if method in self.mutations
+                else self.Gio.DBusCallFlags.NONE,
+                122000 if method in self.mutations else 3000, self.cancellable, self.replied, method)
+        except Exception:
+            self.failed(method)
+
+    def replied(self, connection: object, result: object, method: str) -> None:
+        if self.closed:
+            return
+        try:
+            raw, = connection.call_finish(result).unpack()
+            if not isinstance(raw, str) or len(raw.encode("utf-8")) > 32768:
+                raise ValueError("invalid helper reply")
+            value = json.loads(raw)
+            if method in self.mutations:
+                if value != "ok":
+                    raise ValueError("unsuccessful helper reply")
+                # Never predict the resulting list from a click. Only the next
+                # successful Status reply supplies the new displayed devices.
+                self.snapshot, self.busy = None, False
+                self.state = self.tr("Refreshing remote access…", "正在刷新远程访问…")
+                self.request("Status")
+            else:
+                self.snapshot = self.read_snapshot(value)
+                self.busy = False
+                if value["phase"] == "off":
+                    self.state = self.tr("Not set up", "尚未设置")
+                elif value["phase"] == "failed":
+                    self.state = self.tr("Remote access unavailable — Retry", "远程访问不可用 — 重试")
+                elif not value["ready"]:
+                    self.state = self.tr("Remote access ready; HappyRanch offline/restarting",
+                                         "远程访问已就绪；HappyRanch 已离线或正在重启")
+                else:
+                    self.state = self.tr("Ready to invite", "可邀请设备")
+                self.render()
+        except Exception as error:
+            self.failed(method, error)
+
+    def failed(self, method: str, error: Exception | None = None) -> None:
+        self.busy = False
+        if method in self.mutations:
+            # No retry queue, timer or optimistic local approval, including on
+            # malformed replies, prompt denial, timeout or transport loss.
+            self.notice = self.tr("Action cancelled — no change", "操作已取消 — 未作更改")
+            self.render()
+        else:
+            self.unavailable(error)
+
+    def render(self) -> None:
+        Gtk, tr = self.Gtk, self.tr
+        for child in self.box.get_children():
+            self.box.remove(child)
+
+        def text(parent: object, value: str) -> None:
+            label = Gtk.Label(label=value)
+            label.set_line_wrap(True)
+            label.set_xalign(0)
+            label.set_selectable(True)
+            parent.pack_start(label, False, False, 0)
+
+        def button(parent: object, en: str, zh: str, callback: Callable,
+                   available: bool = True) -> None:
+            widget = Gtk.Button(label=tr(en, zh))
+            widget.set_sensitive(available and not self.busy)
+            widget.connect("clicked", lambda _button: callback())
+            parent.pack_start(widget, False, False, 0)
+
+        def device(parent: object, value: dict) -> None:
+            text(parent, tr("Device: ", "设备：") + self.plain(value["label"]))
+            text(parent, tr("Stable-ID fingerprint: ", "稳定 ID 指纹：") + value["fingerprint"])
+            text(parent, tr("Comparison phrase: ", "比对短语：") + self.plain(value["comparison_phrase"]))
+
+        text(self.box, tr("Remote access", "远程访问"))
+        text(self.box, self.state)
+        if self.notice:
+            text(self.box, self.notice)
+        if self.snapshot is not None:
+            pending = self.snapshot["pending"] is not None
+            text(self.box, tr("Pending device", "待批准设备") if pending else
+                 tr("No pending device", "没有待批准设备"))
+            count = len(self.snapshot["devices"])
+            text(self.box, tr(f"Devices with access ({count})", f"有访问权限的设备（{count}）"))
+        button(self.box, "Back to status" if self.expanded else "Settings and devices",
+               "返回状态" if self.expanded else "设置与设备", self.toggle)
+        if self.expanded:
+            details = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+            text(details, self.target)
+            text(details, tr("Home-network access", "家庭网络访问"))
+            button(details, "Refresh", "刷新", self.refresh)
+            if self.snapshot is not None:
+                pending = self.snapshot["pending"]
+                if pending is not None:
+                    text(details, tr("Pending device", "待批准设备"))
+                    device(details, pending)
+                    button(details, "Approve device", "批准设备", lambda: self.request("ApprovePending"))
+                    button(details, "Reject device", "拒绝设备", lambda: self.request("RejectPending"))
+                text(details, tr("Approved devices remain approved until revoked.",
+                                 "已批准的设备将保留访问权限，直到被撤销。"))
+                for item in self.snapshot["devices"]:
+                    device(details, item)
+                button(details, "Next device", "下一台设备", lambda: self.request("NextDevice"),
+                       bool(self.snapshot["devices"]))
+                if self.snapshot["selected"] is not None:
+                    text(details, tr("Selected device", "已选设备"))
+                    device(details, self.snapshot["selected"])
+                    button(details, "Revoke device", "撤销设备", lambda: self.request("RevokeSelected"))
+            scroll = Gtk.ScrolledWindow()
+            scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+            scroll.set_min_content_height(180)
+            scroll.set_max_content_height(320)
+            scroll.set_propagate_natural_height(True)
+            scroll.add(details)
+            self.box.pack_start(scroll, False, False, 0)
+        self.box.show_all()
+
+    def toggle(self) -> None:
+        self.expanded = not self.expanded
+        if self.expanded:
+            self.refresh()
+        else:
+            self.render()
+
+    def close(self) -> None:
+        if self.closed:
+            return
+        self.closed = True
+        self.cancellable.cancel()
+        if self.connection is not None:
+            self.connection.close(None, None, None)
+
+
 def run_gui(prefix: Path, home: Path) -> int:
     # Lazy imports keep lifecycle functions runnable without GI or a display.
     import gi
@@ -679,6 +920,16 @@ def run_gui(prefix: Path, home: Path) -> int:
     service = ServiceMode(home)
     requests = queue.Queue()
     controls = None
+    remote = None
+
+    def attach_remote(box: object) -> None:
+        nonlocal remote
+        if remote is None:
+            remote = RemoteAccessPanel(tr)
+        parent = remote.box.get_parent()
+        if parent is not None:
+            parent.remove(remote.box)
+        box.pack_start(remote.box, False, False, 0)
 
     def message(title: str, detail: str = "") -> None:
         for widget in window.get_children():
@@ -692,6 +943,8 @@ def run_gui(prefix: Path, home: Path) -> int:
         body.set_selectable(True)
         box.pack_start(heading, False, False, 0)
         box.pack_start(body, False, False, 0)
+        if not closing:
+            attach_remote(box)
         window.add(box)
         window.show_all()
 
@@ -781,6 +1034,7 @@ def run_gui(prefix: Path, home: Path) -> int:
         controls.set_margin_top(12)
         controls.set_margin_bottom(12)
         box.pack_start(controls, False, False, 0)
+        attach_remote(box)
         box.pack_start(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL), False, False, 0)
         view = WebKit2.WebView()
         def load_failed(*_args: object) -> bool:
@@ -903,6 +1157,8 @@ def run_gui(prefix: Path, home: Path) -> int:
     def request_close(*_args: object) -> bool:
         nonlocal closing
         closing = True
+        if remote is not None:
+            remote.close()
         cancel.set()
         if worker is None:
             app.quit()
@@ -943,6 +1199,8 @@ def run_gui(prefix: Path, home: Path) -> int:
     try:
         return app.run([])
     finally:
+        if remote is not None:
+            remote.close()
         cancel.set()
         if worker is not None:
             worker.join(8)

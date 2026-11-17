@@ -212,6 +212,42 @@ which continues to run bundled CPython 3.12.10.
 /usr/bin/python3 -B packaging/linux/desktop/test_happyranch_window.py -v
 ```
 
+The main window has a compact **Remote access** card, including while the
+release daemon is starting or unavailable. Open **Settings and devices** for
+home-network status, pending approval and the device list; opening it reads
+fresh helper status. **Ready to invite** means remote access is ready for
+invitation; it does not assert that a Mac has
+opened an authorized session. **Remote access ready; HappyRanch
+offline/restarting** means use the normal runtime controls, then **Refresh**.
+An absent helper or an off installation shows **Not set up**. An unavailable or
+failed helper shows a bounded retry message; **Refresh** reads status again.
+
+For a pending device, compare **Device**, **Stable-ID fingerprint** and
+**Comparison phrase** with the requesting computer. The target text is
+**HappyRanch on <this computer's hostname>**. That local hostname is display
+only. **Device** displays the helper's bounded label; real OS-label delivery
+depends on runtime slice **4a-0**, so this UI slice alone does not establish
+founder acceptance. The UI does not invent a name from the fingerprint.
+Choose **Approve device** or **Reject device**. Each asks the fixed root helper
+for a fresh system polkit prompt. No app admin-key prompt or input is involved.
+
+Devices with access remain approved until revoked; this list does not claim an
+active session. **Next device** advances the helper's selection. Read the
+**Selected device** details, then choose **Revoke device** for that device's
+fresh polkit prompt. Approval, rejection and revocation update the display only
+from a successful helper reply and a fresh status read. A cancelled, denied or
+failed action shows **Action cancelled — no change**, preserves the prior view
+and queues nothing. Click the action again only when you want a new attempt
+and a new permission prompt. If transport was lost, use **Refresh** to observe
+the current helper state. Closing the window cancels its in-flight requests.
+
+Enable, Create invite and Turn off are omitted until their helper methods
+arrive in later slices. Own-server, URL and manual-key input remain unavailable
+under R3. The window uses only Status, NextDevice, ApprovePending,
+RejectPending and RevokeSelected, with no input arguments. Native GTK rendering
+and real polkit dialogs require a desktop acceptance venue; the standalone
+command above uses GI/transport doubles and does not prove those dialogs.
+
 The release home is `$XDG_DATA_HOME/happyranch` for an absolute XDG value,
 otherwise `~/.local/share/happyranch`, with `desktop.lock` in that home.
 Service mode selects XDG from the user manager, including when it differs from
