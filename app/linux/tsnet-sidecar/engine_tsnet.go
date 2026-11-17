@@ -108,15 +108,27 @@ func expectedPeerVisible(c EngineConfig, status *ipnstate.Status) bool {
 	return false
 }
 
-func (e *TSNetEngine) peerIdentity(ctx context.Context, remote string) (string, error) {
+type peerMetadata struct {
+	stableID string
+	label    string // Display only, from the SAME WhoIs observation as stableID.
+}
+
+func (e *TSNetEngine) peerIdentity(ctx context.Context, remote string) (peerMetadata, error) {
 	if e.identityClient == nil {
-		return "", ErrEngine
+		return peerMetadata{}, ErrEngine
 	}
 	response, err := e.identityClient.WhoIs(ctx, remote)
 	if err != nil || response == nil || response.Node == nil || response.Node.StableID == "" {
-		return "", ErrEngine
+		return peerMetadata{}, ErrEngine
 	}
-	return string(response.Node.StableID), nil
+	label := ""
+	if response.Node.Hostinfo.Valid() {
+		label = response.Node.Hostinfo.Hostname()
+	}
+	if label == "" {
+		label = response.Node.ComputedName
+	}
+	return peerMetadata{string(response.Node.StableID), label}, nil
 }
 
 func newTSNetServer(c EngineConfig, credential []byte) *tsnet.Server {

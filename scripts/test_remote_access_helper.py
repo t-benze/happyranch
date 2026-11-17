@@ -607,11 +607,140 @@ def pending_real(supervisor: Any, node: str = 'node-a') -> Any:
     return pending
 
 
+@pytest.mark.parametrize('node', ['node-a', 'n' * 200])
+def test_bound_legacy_label_fallback(monkeypatch: Any, node: str) -> None:
+    from datetime import datetime, timezone
+    with bound_control(monkeypatch) as (client, supervisor, path):
+        pending = pending_real(supervisor, node)
+        assert client.status().pending.label == node[:96]
+        mutate_real(client, 'ApprovePending')
+        assert client.status().devices[0].label == node[:96]
+        assert supervisor._pinned_pairing_manager.complete(
+            pending.completion_handle, node, 'protected-control', datetime.now(timezone.utc))
+
+
+@pytest.mark.parametrize('name,expected', [
+    ('  Alice\x00\r\n\t\x7f\x85电脑\u202e\u2066\u2069\u200b\u200d\ufeff  ', 'Alice电脑'),
+    ('x' * 200, 'x' * 96),
+    ('电脑' * 120, '电脑' * 48),
+    ('\x00\u202e\u2066\u200b  ', 'node-a'),
+    ('', 'node-a'),
+    ('<My & computer>', '<My & computer>'),
+])
+def test_bound_os_label_ceremony(monkeypatch: Any, name: str, expected: str) -> None:
+    import hashlib
+    from datetime import datetime, timedelta, timezone
+    from scripts.test_identity_ingress import exchange, frame_v2
+    from scripts.test_managed_admission import request, result
+    with bound_control(monkeypatch) as (client, supervisor, path):
+        manager = supervisor._pinned_pairing_manager
+        now = datetime.now(timezone.utc)
+        manager.issue_invite_record(hashlib.sha256(b'synthetic-label-invite').hexdigest(),
+                                    now + timedelta(minutes=4))
+        status, reply = result(exchange(str(path), frame_v2(b'node-a', name.encode()) + request(
+            '/pair/invite', body=b'synthetic-label-invite', headers=(
+                'X-HappyRanch-Device-Label: forged-name', 'X-Tailscale-Hostname: forged-name'))))
+        assert status == 200
+        assert set(reply) == {'state', 'completion_handle', 'comparison_phrase', 'expires_at'}
+        pending = client.status().pending
+        assert pending.label == expected and pending.stable_id == 'node-a'
+        assert pending.comparison_phrase == reply['comparison_phrase']
+        assert pending.public()['fingerprint'] == hashlib.sha256(b'node-a').hexdigest()[:24]
+        import html
+        assert pending.public()['label'] == html.escape(expected, quote=True)
+        before = Path(supervisor.config.state_path).read_bytes()
+        assert client.status().pending == pending
+        assert Path(supervisor.config.state_path).read_bytes() == before
+        mutate_real(client, 'ApprovePending')
+        state = supervisor.state_store.load()
+        device = next(iter(state.devices.values()))
+        stored_name = '' if expected == 'node-a' else expected
+        assert state.delivery.device_label == device.device_label == stored_name
+        assert client.status().devices[0].label == expected
+        status, complete = result(exchange(str(path), frame_v2(b'node-a', b'changed-name') + request(
+            '/pair/complete', body=reply['completion_handle'].encode())))
+        assert status == 200 and set(complete) == {'credential'}
+        assert supervisor.state_store.load().delivery is None
+        seen = []
+        original = manager.admit
+        def admit(credential: str, stable_node_id: str, control_plane_id: str, now: Any) -> Any:
+            seen.append((stable_node_id, control_plane_id))
+            return original(credential, stable_node_id, control_plane_id, now)
+        monkeypatch.setattr(manager, 'admit', admit)
+        raw = exchange(str(path), frame_v2(b'node-a', b'node-b') + request(
+            credential=complete['credential']))
+        # Admission runs before the synthetic loopback upstream is attempted.
+        assert raw and seen == [('node-a', 'protected-control')]
+        assert manager.admit(complete['credential'], 'node-a', 'protected-control', now).ok
+        assert not manager.admit(complete['credential'], 'node-b', 'protected-control', now).ok
+        assert supervisor.state_store.load().devices[device.device_id].device_label == stored_name
+
+
 def mutate_real(client: Any, method: str, *, before: Any = lambda: None) -> Any:
     snapshot = client.status()
     target = snapshot.devices[0] if method == 'RevokeSelected' else snapshot.pending
     client.mutate(method, snapshot, target, time.monotonic() + 60, before)
     return target
+
+
+@pytest.mark.parametrize('method', ['ApprovePending', 'RejectPending', 'RevokeSelected'])
+@pytest.mark.parametrize('legacy', [False, True])
+def test_bound_os_labels_at_capacity(monkeypatch: Any, method: str, legacy: bool) -> None:
+    import hashlib
+    from datetime import datetime, timedelta, timezone
+    from scripts.test_identity_ingress import exchange, frame_v2
+    from scripts.test_managed_admission import request, result
+    with bound_control(monkeypatch) as (client, supervisor, path):
+        manager = supervisor._pinned_pairing_manager
+        name = '\U0001f60a' * 96  # Each accepted character costs 12 JSON-escaped bytes.
+        legacy_node = 'legacy-' + name if legacy else ''
+        for count in range(1, 33):
+            node, secret = f'node-{count}', f'synthetic-capacity-{count}'
+            if legacy and count == 1:
+                node = legacy_node
+            recorded_name = '' if node == legacy_node else name
+            now = datetime.now(timezone.utc)
+            manager.issue_invite_record(hashlib.sha256(secret.encode()).hexdigest(),
+                                        now + timedelta(minutes=4))
+            status, reply = result(exchange(str(path), frame_v2(node.encode(), recorded_name.encode()) + request(
+                '/pair/invite', body=secret.encode())))
+            assert status == 200
+            if count < 32:
+                # Populate through the real core so a projection failure cannot
+                # prevent reaching the capacity boundary under test.
+                pending = supervisor.state_store.load().pending_approval
+                assert manager.approve_pending(pending.generation, ('protected-control', node))
+                assert manager.complete(reply['completion_handle'], node, 'protected-control', now)
+        before = supervisor.state_store.load()
+        assert len(before.devices) == 31 and before.pending_approval.device_label == name
+        assert all(device.device_label == ('' if device.stable_node_id == legacy_node else name)
+                   for device in before.devices.values())
+        snapshot = client.status()
+        assert snapshot.ready and len(snapshot.devices) == 31 and snapshot.pending is not None
+        for record in (*snapshot.devices, snapshot.pending):
+            if record.stable_id == legacy_node:
+                assert record.label == legacy_node[:96], 'legacy fallback must keep its exact byte cost'
+            else:
+                assert record.label and name.startswith(record.label)
+            assert record.public()['fingerprint'] == hashlib.sha256(record.stable_id.encode()).hexdigest()[:24]
+        assert snapshot == client.status(), 'projection must be stable across snapshot comparisons'
+        target = mutate_real(client, method)
+        after = supervisor.state_store.load()
+        if method == 'ApprovePending':
+            assert after.pending_approval is None and len(after.devices) == 32
+            assert manager.complete(reply['completion_handle'], node, 'protected-control', now)
+            assert len(client.status().devices) == 32
+        elif method == 'RejectPending':
+            assert after.pending_approval is None and after.delivery is None
+            assert after.devices == before.devices and len(client.status().devices) == 31
+        else:
+            assert after.pending_approval == before.pending_approval
+            assert after.devices[target.record_id].revoked
+            assert all(device == before.devices[key] for key, device in after.devices.items()
+                       if key != target.record_id)
+            assert len(client.status().devices) == 30
+        assert all(device.device_label == ('' if device.stable_node_id == legacy_node else name)
+                   for device in after.devices.values())
 
 
 @pytest.mark.parametrize('operation', ['ApprovePending', 'RejectPending'])

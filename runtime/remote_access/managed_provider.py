@@ -23,7 +23,7 @@ from runtime.remote_access.credentials import DaemonCredentialProvider
 from runtime.remote_access.forwarding import LoopbackForwarder
 from runtime.remote_access.gateway import GatewayContext
 from runtime.remote_access.httpd import (
-    BaseConnectorHandler, IdentityUnixServer, ingress_node_identity, send_json, serve_decision,
+    BaseConnectorHandler, IdentityUnixServer, ingress_node_identity, ingress_device_label, send_json, serve_decision,
 )
 from runtime.remote_access.identity import ConnectorIdentity, DeviceProof, ProofVerdict, SingleUseGuard
 from runtime.remote_access.models import RemoteRequest
@@ -166,7 +166,8 @@ class ManagedProviderAdapter(DiyProviderAdapter):
                         value = ""
                     manager = self.server.pairing
                     if request.path == "/pair/invite":
-                        pending = manager.redeem(value, node, self.server.control_plane_id, now)
+                        pending = manager.redeem(value, node, self.server.control_plane_id, now,
+                                                 device_label=ingress_device_label.get())
                         payload = None if pending is None else {
                             "state": "pending-approval",
                             "completion_handle": pending.completion_handle,

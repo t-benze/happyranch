@@ -407,7 +407,7 @@ func (s *Sidecar) proxy(ctx context.Context, inbound net.Conn) {
 			s.mu.Unlock()
 		}()
 		resolver, ok := s.engine.(interface {
-			peerIdentity(context.Context, string) (string, error)
+			peerIdentity(context.Context, string) (peerMetadata, error)
 		})
 		if !ok {
 			return
@@ -418,7 +418,7 @@ func (s *Sidecar) proxy(ctx context.Context, inbound net.Conn) {
 		if err != nil {
 			return
 		}
-		frame, err = identityFrame(identity)
+		frame, err = identityFrame(identity.stableID, identity.label)
 		if err != nil {
 			return
 		}
@@ -535,16 +535,19 @@ func (s *Sidecar) dialConnector(ctx context.Context) (net.Conn, error) {
 	return s.dialer.DialContext(ctx, "tcp", s.cfg.ConnectorAddr)
 }
 
-// Wire: HRID, version byte 1, big-endian uint16 UTF-8 byte length, StableID.
-// The bound includes the seven-byte header. HTTP begins immediately afterward.
-func identityFrame(stableID string) ([]byte, error) {
-	if strings.TrimSpace(stableID) == "" || !utf8.ValidString(stableID) || len(stableID)+7 > identityFrameLimit || strings.ContainsAny(stableID, "\r\n\x00") {
+// Wire v2: HRID, byte 2, uint16 StableID length + UTF-8 StableID,
+// uint16 display-label length + UTF-8 label. HTTP follows; total <= 1024.
+func identityFrame(stableID, label string) ([]byte, error) {
+	if strings.TrimSpace(stableID) == "" || !utf8.ValidString(stableID) || !utf8.ValidString(label) || len(stableID)+len(label)+9 > identityFrameLimit || strings.ContainsAny(stableID, "\r\n\x00") {
 		return nil, ErrEngine
 	}
-	frame := make([]byte, 7+len(stableID))
+	frame := make([]byte, 9+len(stableID)+len(label))
 	copy(frame, "HRID")
-	frame[4] = 1
+	frame[4] = 2
 	binary.BigEndian.PutUint16(frame[5:7], uint16(len(stableID)))
 	copy(frame[7:], stableID)
+	labelStart := 7 + len(stableID)
+	binary.BigEndian.PutUint16(frame[labelStart:labelStart+2], uint16(len(label)))
+	copy(frame[labelStart+2:], label)
 	return frame, nil
 }

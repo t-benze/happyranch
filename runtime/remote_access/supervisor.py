@@ -31,7 +31,7 @@ import sys
 import threading
 import time
 import uuid
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, ContextManager
@@ -39,7 +39,7 @@ from typing import Callable, ContextManager
 from pydantic import ValidationError
 
 from runtime.remote_access.authorization import (
-    AuthorizationVerifier, DeviceAuthorization, PendingApproval, TrustState,
+    AuthorizationVerifier, DeviceAuthorization, PendingApproval, TrustState, normalize_device_label,
 )
 from runtime.remote_access.credentials import (
     CredentialUnavailable,
@@ -299,9 +299,19 @@ class _HelperOperations:
                  and state.connector_identity == supervisor._configured_identity())
         ready = (owned and not supervisor._shutdown and supervisor._listener_running()
                  and supervisor.readiness_report().ready)
+        recorded_labels: dict[str, str] = {}
+
+        def label(record_id: str, recorded: str, stable_id: str) -> str:
+            normalized = normalize_device_label(recorded)
+            if normalized:
+                recorded_labels[record_id] = normalized
+                return ''  # Fill after budgeting the complete mutation envelope.
+            return stable_id[:96]
+
         pending = state.pending_approval
         projected_pending = None if pending is None else helper_control.Device(
-            f'pending-{pending.generation}', pending.stable_node_id, pending.stable_node_id[:96],
+            f'pending-{pending.generation}', pending.stable_node_id,
+            label(f'pending-{pending.generation}', pending.device_label, pending.stable_node_id),
             pending.comparison_phrase, pending.expires_at.timestamp(),
         )
         # Historical DIY records have no managed pin and are NOT subject to the
@@ -310,7 +320,8 @@ class _HelperOperations:
         # Keep expired paired credentials selectable: their expiry blocks new
         # admissions, not an explicitly authorized deny and live-stream closure.
         devices = tuple(helper_control.Device(
-            device.device_id, device.stable_node_id, device.stable_node_id[:96],
+            device.device_id, device.stable_node_id,
+            label(device.device_id, device.device_label, device.stable_node_id),
             'paired device', device.expires_at.timestamp(),
         ) for device in sorted(state.devices.values(), key=lambda d: d.device_id)
                         if not device.re_pair_required and not device.revoked)
@@ -320,6 +331,37 @@ class _HelperOperations:
             'paused' if not ready else 'pending' if pending is not None else 'ready')
         snapshot = helper_control.Snapshot(generation, record['uid'], owned, phase,
                                           ready and not failed, projected_pending, devices)
+        if recorded_labels:
+            records = (*devices, *((projected_pending,) if projected_pending is not None else ()))
+            largest = max(records, key=lambda item: len(json.dumps(asdict(item), separators=(',', ':'))))
+            # Blank only recorded names; exact legacy fallbacks already count in
+            # the fixed cost. Reserve the largest duplicate target, longest method,
+            # a 24-byte finite float deadline and the terminating newline.
+            fixed_bytes = len(json.dumps({
+                'method': max(helper_control.MUTATIONS.values(), key=len),
+                'snapshot': asdict(snapshot), 'record': asdict(largest),
+                'deadline': -sys.float_info.max,
+            }, separators=(',', ':')).encode()) + 1
+            budget = (helper_control.MAX_FRAME - fixed_bytes) // (len(recorded_labels) + 1)
+
+            def bounded(item: helper_control.Device) -> helper_control.Device:
+                name = recorded_labels.get(item.record_id)
+                if name is None:
+                    return item
+                prefix, used = [], 0
+                for character in name:
+                    cost = len(json.dumps(character)) - 2  # Default ASCII escaping, without quotes.
+                    if used + cost > budget:
+                        break
+                    prefix.append(character)
+                    used += cost
+                if not prefix:
+                    raise helper_control.Refused('unavailable')
+                return replace(item, label=''.join(prefix))
+
+            snapshot = replace(snapshot,
+                pending=None if projected_pending is None else bounded(projected_pending),
+                devices=tuple(bounded(item) for item in devices))
         # Validate the entire projection before exposing it. Oversized/unsafe
         # metadata refuses this request only; it cannot veto legacy store load.
         value = json.loads(json.dumps(asdict(snapshot)))
