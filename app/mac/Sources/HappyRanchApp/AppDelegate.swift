@@ -72,9 +72,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, SPUU
     /// The client loopback bridge (only active in CLIENT role).
     var clientBridge: ClientBridge?
     let managedJoin = ManagedJoinModel()
-    @Published var clientLane: ClientBridge.Lane = .diy
+    let homeInvite = HomeInviteModel()
+    @Published var clientLane: ClientBridge.Lane = .managed
     private var remoteHealthTask: Task<Void, Never>?
     private var managedJoinObservation: AnyCancellable?
+    private var homeInviteObservations: Set<AnyCancellable> = []
 
     override init() {
         super.init()
@@ -82,6 +84,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, SPUU
             guard let self, self.clientLane == .managed else { return }
             self.connectionState = phase.connectionState
         }
+        homeInvite.$webURL.sink { [weak self] url in
+            guard let self, self.clientLane == .managed else { return }
+            self.webViewURL = url?.absoluteString
+        }.store(in: &homeInviteObservations)
+        homeInvite.$phase.sink { [weak self] phase in
+            guard let self, self.clientLane == .managed else { return }
+            self.connectionState = phase == .connected ? .online : (phase == .idle ? .tailnetNotDetected : .offline)
+        }.store(in: &homeInviteObservations)
     }
 
     /// Connection state manager for the remote-connection surface.
@@ -630,15 +640,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, SPUU
     }
 
     /// Preflight check for the bundled daemon binary.
-    /// Returns an actionable error message naming the fix if the binary is
-    /// missing or not executable; nil if it is present and executable.
+    /// Returns an actionable error message naming the checked path, filesystem
+    /// details and fix if missing or not executable; nil if present and executable.
     /// This is a pure seam — testable without a real Bundle.
     nonisolated static func bundledDaemonPreflightError(path: String) -> String? {
         if _testSkipBundledDaemonPreflight { return nil }
-        if !FileManager.default.isExecutableFile(atPath: path) {
-            return "Bundled daemon binary missing or not executable — rebuild the app with app/mac/scripts/build-app.sh; this build is incomplete."
+        let files = FileManager.default
+        if files.isExecutableFile(atPath: path) { return nil }
+
+        let details: String
+        do {
+            // attributesOfItem does not follow a final symlink, so report the
+            // actual item at the checked path even when its target is missing.
+            let attributes = try files.attributesOfItem(atPath: path)
+            let itemType = attributes[.type] as? FileAttributeType
+            let fileType: String
+            if itemType == .typeRegular {
+                fileType = "regular file"
+            } else if itemType == .typeDirectory {
+                fileType = "directory"
+            } else if itemType == .typeSymbolicLink {
+                fileType = "symlink"
+            } else {
+                fileType = "other"
+            }
+            let owner = attributes[.ownerAccountName] as? String ?? "unknown"
+            let uid = (attributes[.ownerAccountID] as? NSNumber)?.stringValue ?? "unknown"
+            let gid = (attributes[.groupOwnerAccountID] as? NSNumber)?.stringValue ?? "unknown"
+            let mode = (attributes[.posixPermissions] as? NSNumber).map {
+                String(format: "%04o", $0.uint32Value)
+            } ?? "unknown"
+            details = "\(fileType), owner \(owner) (uid \(uid)), group id \(gid), POSIX mode \(mode); not executable by the current user"
+        } catch {
+            let fileError = error as NSError
+            if fileError.domain == NSCocoaErrorDomain &&
+                (fileError.code == NSFileNoSuchFileError || fileError.code == NSFileReadNoSuchFileError) {
+                details = "path does not exist; attributes could not be read: \(error.localizedDescription)"
+            } else {
+                details = "attributes could not be read: \(error.localizedDescription); not executable by the current user"
+            }
         }
-        return nil
+        return "Bundled daemon binary missing or not executable at \(path): \(details) — rebuild the app with app/mac/scripts/build-app.sh; this build is incomplete."
     }
 
     /// Returns the filesystem path to the bundled web/dist directory inside the .app bundle.
@@ -667,7 +709,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, SPUU
     /// Launch the frozen daemon binary from inside the .app bundle (bundled mode).
     private func launchBundledDaemon(pc: ProcessControlling) {
         guard let daemonPath = Self.bundledDaemonPath() else {
-            stateText = "Bundled daemon not found in app bundle"
+            let launchError = "App bundle Resources directory could not be resolved; no bundled daemon path was checked — rebuild the app with app/mac/scripts/build-app.sh; this build is incomplete."
+            stateText = launchError
+            diagnostics.recordLaunchLog(launchError)
             return
         }
 
@@ -945,8 +989,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, SPUU
     /// The label for role-switch menu item — dynamic based on current role.
     var switchRoleMenuLabel: String {
         switch connectionRole {
-        case .home: return "Switch to Client…"
-        case .client: return "Switch to Home…"
+        case .home: return "Connect to another computer…"
+        case .client: return "Run HappyRanch on this Mac…"
         }
     }
 
@@ -957,7 +1001,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, SPUU
             return supervisor.isManagedBySelf &&
                    (supervisor.state == .running || supervisor.state == .starting || supervisor.state == .unhealthy)
         case .client:
-            return clientBridge != nil || managedJoin.bridge != nil || managedJoin.busy
+            return clientBridge != nil || managedJoin.bridge != nil || managedJoin.busy || homeInvite.busy || homeInvite.phase == .connected
         }
     }
 
@@ -997,7 +1041,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, SPUU
             }
         case .client:
             // Disconnect client bridge if active.
-            if clientBridge != nil || managedJoin.bridge != nil || managedJoin.busy {
+            if clientBridge != nil || managedJoin.bridge != nil || managedJoin.busy || homeInvite.busy || homeInvite.phase == .connected {
                 disconnectRemote()
             }
         }
@@ -1229,6 +1273,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, SPUU
 
     /// Disconnect from the remote home runtime (CLIENT role).
     func disconnectRemote() {
+        homeInvite.cancel()
         remoteHealthTask?.cancel()
         remoteHealthTask = nil
         isConnecting = false

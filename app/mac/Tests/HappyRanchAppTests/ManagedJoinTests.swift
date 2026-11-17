@@ -94,10 +94,11 @@ struct ManagedJoinTests {
         #expect(object["phase"] == "draft")
     }
 
-    @Test("DIY remains the default lane with the original blank connect form")
-    func diyDefaultKeeper() {
+    @Test("Home invite is the default; the explicitly selected DIY form keeps blank legacy fields")
+    func homeInviteDefaultAndDIYFields() {
         let delegate = AppDelegate()
-        #expect(delegate.clientLane == .diy)
+        #expect(delegate.clientLane == .managed)
+        #expect(delegate.homeInvite.phase == .idle)
         #expect(delegate.clientHomeHost.isEmpty)
         #expect(delegate.clientHomePort == "8443")
         #expect(delegate.clientPairingCode.isEmpty)

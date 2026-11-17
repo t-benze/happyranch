@@ -8,6 +8,8 @@ present must match the rendered units; interrupted installs need operator care.
 from __future__ import annotations
 
 import argparse
+import ctypes
+import errno
 import grp
 import hashlib
 import json
@@ -232,22 +234,36 @@ class ManagedInstaller:
     @staticmethod
     @contextmanager
     def _input_parent(path: Path) -> Iterator[int]:
-        if not path.is_absolute() or ".." in path.parts or path == Path("/"):
+        if path.anchor != "/" or ".." in path.parts or path == Path("/"):
             raise InstallerError("provisioning inputs require absolute literal file paths")
         parent = os.open("/", _DIR_FLAGS)
+        opened = [parent]
+        parents = []
         try:
             for part in path.parts[1:-1]:
+                named = os.stat(part, dir_fd=parent, follow_symlinks=False)
                 child = os.open(part, _DIR_FLAGS, dir_fd=parent)
-                os.close(parent)
+                opened.append(child)
+                info = os.fstat(child)
+                if (named.st_dev, named.st_ino) != (info.st_dev, info.st_ino):
+                    raise InstallerError("input parent changed while opening")
+                parents.append((parent, part, child, (info.st_dev, info.st_ino)))
                 parent = child
             yield parent
+            for ancestor, name, child, identity in parents:
+                named, info = os.stat(name, dir_fd=ancestor, follow_symlinks=False), os.fstat(child)
+                if (not stat.S_ISDIR(named.st_mode)
+                        or (named.st_dev, named.st_ino) != identity
+                        or (info.st_dev, info.st_ino) != identity):
+                    raise InstallerError("input parent changed during read")
         finally:
-            os.close(parent)
+            for descriptor in reversed(opened):
+                os.close(descriptor)
 
     @staticmethod
     def _read_file(
         parent: int, name: str, *, owner: tuple[int, int] | None = None,
-        mode: int | None = None,
+        mode: int | None = None, source_uid: int | None = None,
     ) -> bytes:
         named = os.stat(name, dir_fd=parent, follow_symlinks=False)
         if not stat.S_ISREG(named.st_mode):
@@ -257,23 +273,31 @@ class ManagedInstaller:
             info = os.fstat(descriptor)
             if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size > 65536
                     or info.st_mode & 0o022 or (owner is not None and (info.st_uid, info.st_gid) != owner)
+                    or (source_uid is not None and info.st_uid != source_uid)
                     or (mode is not None and stat.S_IMODE(info.st_mode) != mode)
                     or (named.st_dev, named.st_ino) != (info.st_dev, info.st_ino)):
                 raise InstallerError("unsafe provisioning file ownership, mode, links or size")
             with os.fdopen(descriptor, "rb", closefd=False) as stream:
-                data = stream.read(65537)
+                data = stream.read(65536)
             after = os.fstat(descriptor)
+            named_after = os.stat(name, dir_fd=parent, follow_symlinks=False)
+            def signature(value: os.stat_result) -> tuple[int, ...]:
+                return (value.st_dev, value.st_ino, value.st_uid, value.st_gid, value.st_mode,
+                        value.st_nlink, value.st_size, value.st_mtime_ns, value.st_ctime_ns)
             if (len(data) > 65536 or not data.strip()
-                    or (info.st_size, info.st_mtime_ns, info.st_ctime_ns)
-                    != (after.st_size, after.st_mtime_ns, after.st_ctime_ns)):
+                    or len(data) != info.st_size or signature(named) != signature(info)
+                    or signature(info) != signature(after) or signature(info) != signature(named_after)):
                 raise InstallerError("empty, oversized or changing provisioning file")
             return data
         finally:
             os.close(descriptor)
 
-    def _input(self, path: Path, *, token: bool = False) -> bytes:
+    def _input(self, path: Path, *, token: bool = False, source_uid: int | None = None) -> bytes:
+        if token and (type(source_uid) is not int or not 0 < source_uid < 2**32 - 1):
+            raise InstallerError("daemon token source requires the release UID")
         with self._input_parent(path) as parent:
-            data = self._read_file(parent, path.name, mode=0o600 if token else None)
+            data = self._read_file(parent, path.name, mode=0o600 if token else None,
+                                   source_uid=source_uid)
         if token:
             try:
                 if not data.decode("utf-8").strip():
@@ -411,20 +435,165 @@ class ManagedInstaller:
                 finally:
                     os.close(descriptor)
 
+    @contextmanager
+    def _publication_parent(self) -> Iterator[tuple[int, Callable[[], None]]]:
+        """Pin every literal ancestor until the last pre-rename validation."""
+        descriptor = os.open("/", _DIR_FLAGS)
+        opened = [descriptor]
+        parents = []
+        layout = self._layout()
+        path = Path("/")
+        try:
+            for part in (self.root / "etc/happyranch").parts[1:]:
+                named = os.stat(part, dir_fd=descriptor, follow_symlinks=False)
+                child = os.open(part, _DIR_FLAGS, dir_fd=descriptor)
+                opened.append(child)
+                info = os.fstat(child)
+                if (named.st_dev, named.st_ino) != (info.st_dev, info.st_ino):
+                    raise InstallerError("publication parent changed while opening")
+                path /= part
+                relative = str(path.relative_to(self.root)) if path.is_relative_to(self.root) else None
+                if relative is not None:
+                    self._check_directory(child, str(self.root) if relative == "." else relative,
+                                          layout.get(relative))
+                parents.append((descriptor, part, child, info))
+                descriptor = child
+
+            def revalidate() -> None:
+                try:
+                    for ancestor, name, child, before in parents:
+                        named = os.stat(name, dir_fd=ancestor, follow_symlinks=False)
+                        current = os.fstat(child)
+                        expected = (before.st_dev, before.st_ino, before.st_uid, before.st_gid, before.st_mode)
+                        for info in (named, current):
+                            if ((info.st_dev, info.st_ino, info.st_uid, info.st_gid, info.st_mode) != expected
+                                    or not stat.S_ISDIR(info.st_mode)):
+                                raise InstallerError("publication parent changed before rename")
+                except OSError:
+                    raise InstallerError("publication parent unavailable before rename") from None
+
+            yield descriptor, revalidate
+        finally:
+            for descriptor in reversed(opened):
+                os.close(descriptor)
+
+    @staticmethod
+    def _refuse_provision_entry(parent: int, name: str) -> None:
+        for entry in (name, f".{name}.pending"):
+            try:
+                os.stat(entry, dir_fd=parent, follow_symlinks=False)
+            except FileNotFoundError:
+                continue
+            raise InstallerError("provisioning destination or pending entry exists; inspect partial files before retrying")
+
     def _write_provision_file(self, name: str, data: bytes, owner: tuple[int, int], mode: int) -> None:
-        with self._directory("etc/happyranch") as parent:
-            descriptor = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+        # Closed fresh-install destinations only. Transaction updates/replacement
+        # are deliberately not selectable until their recovery owner ships.
+        metadata = {
+            **{key: ((self.root_owner[0], self._service_owner[1]), 0o640)
+               for key in ("connector.json", "sidecar.json", "policy.json")
+               if self._service_owner is not None},
+            "release-daemon.json": (self.root_owner, 0o644),
+            "daemon.token": (self._service_owner, 0o600),
+            "provision.json": (self.root_owner, 0o600),
+            "install-transaction.json": (self.root_owner, 0o600),
+        }
+        if (name not in metadata or metadata[name] != (owner, mode)
+                or owner is None or not 0 < len(data) <= 65536):
+            raise InstallerError("invalid provisioning publication")
+        if name in ("provision.json", "install-transaction.json"):
+            self._validate_install_record(name, data)
+        with self._publication_parent() as (parent, revalidate):
+            self._refuse_provision_entry(parent, name)
+            pending = f".{name}.pending"
+            descriptor = os.open(pending, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
                                  0o600, dir_fd=parent)
+            created = os.fstat(descriptor)
             try:
                 os.fchown(descriptor, *owner)
                 with os.fdopen(descriptor, "wb", closefd=False) as stream:
-                    stream.write(data)
+                    if stream.write(data) != len(data):
+                        raise InstallerError("incomplete provisioning write")
                     stream.flush()
                     os.fchmod(descriptor, mode)
                     os.fsync(descriptor)
+                info = os.fstat(descriptor)
+                named = os.stat(pending, dir_fd=parent, follow_symlinks=False)
+                expected = (created.st_dev, created.st_ino, *owner, stat.S_IFREG | mode, 1, len(data))
+                for value in (info, named):
+                    if ((value.st_dev, value.st_ino, value.st_uid, value.st_gid,
+                         value.st_mode, value.st_nlink, value.st_size) != expected):
+                        raise InstallerError("unsafe or changed pending provisioning file")
+                revalidate()
+                # Recheck the final name after staging; never overwrite a late arrival.
+                try:
+                    os.stat(name, dir_fd=parent, follow_symlinks=False)
+                except FileNotFoundError:
+                    pass
+                else:
+                    raise InstallerError("provisioning destination appeared before rename")
+                # Plain rename can clobber a target arriving after the check.
+                # Preserve the legacy O_EXCL refusal atomically; no fallback.
+                try:
+                    rename = ctypes.CDLL(None, use_errno=True).renameat2
+                except AttributeError:
+                    raise InstallerError("atomic no-replace rename is unavailable") from None
+                rename.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+                rename.restype = ctypes.c_int
+                if rename(parent, os.fsencode(pending), parent, os.fsencode(name), 1):  # RENAME_NOREPLACE
+                    error = ctypes.get_errno()
+                    if error == errno.EEXIST:
+                        raise InstallerError("provisioning destination appeared before rename")
+                    raise OSError(error, "atomic provisioning rename failed")
+                os.fsync(parent)
             finally:
                 os.close(descriptor)
-            os.fsync(parent)
+                # Only our exclusive inode may be removed. A substituted pending
+                # entry belongs to the unknown inventory, never automatic cleanup.
+                try:
+                    named = os.stat(pending, dir_fd=parent, follow_symlinks=False)
+                except FileNotFoundError:
+                    pass
+                else:
+                    if (named.st_dev, named.st_ino) == (created.st_dev, created.st_ino):
+                        os.unlink(pending, dir_fd=parent)
+                        os.fsync(parent)
+
+    def _validate_install_record(self, name: str, data: bytes) -> None:
+        """Destination-bound v1 records, with the existing provenance kept verbatim.
+
+        Publication alone supplies no service, transaction-update or recovery
+        authority. The future generator computes these fixed digests; no path
+        manifest, secret field or later transaction phase is accepted here.
+        """
+        record = self._json(data)
+        if name == "provision.json" and "version" not in record:
+            # Preserve the legacy provision() output and its reader contract.
+            if record.keys() != {"layout", "token_source", "token_sha256", "configs"} or record["layout"] != self.layout:
+                raise InstallerError("invalid legacy provisioning record")
+            return
+        keys = {"connector.json", "sidecar.json", "policy.json", "release-daemon.json", "daemon.token"}
+        phase = "provisioned"
+        if name == "install-transaction.json":
+            keys.add("provision.json")
+            phase = "prepared"
+        digests = record.get("digests")
+        if (record.keys() != {"version", "layout", "digests", "phase"}
+                or type(record["version"]) is not int or record["version"] != 1
+                or record["layout"] not in ("source", "deb") or record["layout"] != self.layout
+                or record["phase"] != phase
+                or not isinstance(digests, dict) or digests.keys() != keys
+                or any(not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None
+                       for value in digests.values())):
+            raise InstallerError("invalid versioned installation record")
+
+    def _refuse_install_transaction(self) -> None:
+        """Any transaction inventory is inert until its recovery owner ships."""
+        try:
+            with self._directory("etc/happyranch") as parent:
+                self._refuse_provision_entry(parent, "install-transaction.json")
+        except FileNotFoundError:
+            pass
 
     def _release_record(self, user_name: str, data_home: Path | None) -> dict:
         from runtime.remote_access.release_verifier import FRAGMENT, UNIT, validate_record
@@ -484,18 +653,16 @@ class ManagedInstaller:
             for name, value in (("connector.json", connector), ("sidecar.json", sidecar)):
                 files[name] = json.dumps(value, sort_keys=True).encode()
             self._validate_configs(files, staged=True)
-            token = self._input(daemon_token_source, token=True)
+            if any(not 0 < len(data) <= 65536 for data in files.values()):
+                raise InstallerError("rendered provisioning config exceeds publication bound")
+            token = self._input(daemon_token_source, token=True, source_uid=release['uid'])
             self._check_deb_payload()
             self._service_owner = self._account(create=False)
             self._preflight()
             try:
                 with self._directory("etc/happyranch") as parent:
                     for name in (*files, "daemon.token", "provision.json", "release-daemon.json"):
-                        try:
-                            os.stat(name, dir_fd=parent, follow_symlinks=False)
-                        except FileNotFoundError:
-                            continue
-                        raise InstallerError("provisioning destination exists; inspect partial files before retrying")
+                        self._refuse_provision_entry(parent, name)
             except FileNotFoundError:
                 pass
             self._service_owner = self._account(create=True)
@@ -518,7 +685,7 @@ class ManagedInstaller:
 
     def _check_provisioning(self) -> None:
         try:
-            self._check_release_record()
+            release = self._check_release_record()
             with self._directory("etc/happyranch") as parent:
                 record = self._json(self._read_file(parent, "provision.json", owner=self.root_owner, mode=0o600))
                 if record.keys() != {"layout", "token_source", "token_sha256", "configs"} or record["layout"] != self.layout:
@@ -531,7 +698,7 @@ class ManagedInstaller:
                     raise InstallerError("provisioned configuration drift")
                 self._validate_configs(files, staged=True)
                 staged = self._read_file(parent, "daemon.token", owner=self._service_owner, mode=0o600)
-            source = self._input(Path(record["token_source"]), token=True)
+            source = self._input(Path(record["token_source"]), token=True, source_uid=release['uid'])
             if (hashlib.sha256(source).hexdigest() != record["token_sha256"]
                     or hashlib.sha256(staged).hexdigest() != record["token_sha256"]):
                 raise InstallerError("daemon token drift; source rotation requires explicit reprovisioning")
@@ -549,6 +716,7 @@ class ManagedInstaller:
     def _preflight(self) -> None:
         # Check every existing destination before account creation or systemctl.
         # This is not transactional recovery or a concurrent-root-writer fence.
+        self._refuse_install_transaction()
         for path in (*self._layout(), _UNIT_DIR):
             try:
                 with self._directory(path):
@@ -737,6 +905,7 @@ class ManagedInstaller:
         """
         digests: dict[str, str] = {}
         try:
+            self._refuse_install_transaction()
             if self._has_provisioning():
                 with self._directory("etc/happyranch") as parent:
                     record = self._json(self._read_file(parent, "provision.json", owner=self.root_owner, mode=0o600))

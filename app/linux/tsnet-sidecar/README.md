@@ -9,9 +9,13 @@ Linux adds an explicit `Profile: "linux-managed-identity-v1"`. In that profile,
 omit `ExpectedPeer` and `ConnectorAddr`: the endpoint is fixed at
 `/run/happyranch-connector/ingress.sock`. Each accepted tailnet connection calls
 LocalClient WhoIs with its remote IP:port, requires `Node.StableID`, opens one
-Unix connection, and writes `HRID` + version byte `1` + big-endian uint16 UTF-8
-byte length + StableID. The complete frame is at most 1024 bytes (1017 identity
-bytes). Empty, invalid UTF-8, CR/LF/NUL or oversize identities close without
+Unix connection, and writes `HRID` + version byte `2` + big-endian uint16 UTF-8
+byte length + StableID + uint16 UTF-8 label byte length + label. The display label
+comes from the same WhoIs response (`Node.Hostinfo.Hostname`, else
+`Node.ComputedName`, else empty); it never supplies identity or authorization.
+The connector also accepts legacy v1 frames without labels. The complete frame
+is at most 1024 bytes, including the nine-byte framing overhead. Empty StableID,
+invalid UTF-8 in either field, CR/LF/NUL in StableID or oversize frames close without
 forwarding; failed/absent WhoIs has no hostname/IP fallback. HTTP bytes follow
 unchanged and connections are never pooled. WhoIs and the initial frame write
 have five-second bounds.
@@ -20,13 +24,96 @@ This profile keeps enrollment/durable consumption, private-only configuration,
 connector probe, listener, notify/watchdog and systemd BindsTo gates. Empty peers
 are READY; health selects no single expected peer and emits no peer-specific
 ping. Identity metadata grants no access: pairing/pin enforcement is a later
-slice. No CA, TLS, DERP or control trust behavior changes here. The connector's
+slice. Identity framing itself changes no CA, TLS, DERP or control trust behavior; the
+separate home transport below owns those changes. The connector's
 matching `managed.profile` is `linux-managed-identity-v1`; it runs as the fixed
 `happyranch` service UID and requires a 0700 runtime directory and 0600 socket.
 The renderer's matching `ConnectorUnitSpec.ingress_profile` adds only
 `RuntimeDirectoryMode=0700`; AF_UNIX is already allowed. The existing installer
-still admits legacy configs; generation/migration and profile/unit wiring belong
-to slice 3b, with no automatic migration or deployment in this change.
+still admits legacy configs; generation/migration and connector profile/unit
+wiring belong to slice 3b-1 and remain pending after its token-reader,
+per-file atomic provisioning-writer and records-first sub-parts. The writer can
+publish closed version-1 provision/install-transaction records (layout, fixed
+digests and one literal phase only), but the generator does not emit them yet.
+Final or pending transaction inventory refuses all legacy installer operations;
+it supplies no recovery or helper action and selects no profile. Legacy units
+remain unchanged, including `SidecarUnitSpec.home_transport=False`.
+Home `control_tls` generation and `home_transport=True` selection belong to
+slice 3b-2. No automatic migration or deployment occurs in either sub-part.
+
+Linux home transport (THR-327 1b) adds the optional protected config record
+`"control_tls":{"dial_ip":"192.168.1.10","ca_sha256":"<64 lowercase hex>"}`
+to the identity profile. It requires the canonical control URL
+`https://control.happyranch.invalid:8443` and an RFC1918 IPv4. That home URL
+cannot use the legacy transport. Slice 3b owns generating this configuration,
+the home CA/server leaf and the private DERP map; this module generates none of
+those persistent objects. Existing non-home configs retain their transport.
+
+Before constructing tsnet, Linux admits the fixed no-follow root-owned
+`/etc/happyranch/control-ca.pem` (single-link, at most 64 KiB, one valid CA with
+the exact DER fingerprint, root:happyranch and exact mode 0640) and
+`/etc/happyranch/empty-ca-directory` (root:root, empty and exact mode 0755).
+Fixed parents must be real protected root-owned directories. Setup failure is
+an `ErrConfiguration` startup error before tsnet construction or a remote dial;
+the sidecar preserves that classification and does not consume enrollment.
+Only home-profile units (`SidecarUnitSpec.home_transport=True`) supply exactly
+those `SSL_CERT_FILE` and `SSL_CERT_DIR` paths. The flag defaults to false:
+legacy/non-home units remain byte-identical, with no SSL_CERT environment
+overrides, preserving OS system-root lookup. Slice 3b must set the flag when it
+generates the home profile. These lines locate the protected home trust files;
+the explicit upstream home-only verifier remains the authentication boundary.
+Inherited upper/lower `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY`,
+`SSLKEYLOGFILE`, `GODEBUG` and every `TS_` variable refuse startup without
+echoing their values. Refusing the whole `TS_` namespace covers the pinned
+TLS/proxy/DERP/debug and authentication knobs, including future spellings.
+
+The process creates an in-memory issuer/leaf and holds a new `127.0.0.1:0`
+CONNECT listener. Only `control.happyranch.invalid:8443` and `:443` are accepted;
+both dial the admitted literal `dial_ip:8443`. Normal upstream TLS verifies
+only the admitted home CA, fixed DNS SAN, time and server usage, before 200.
+Local TLS then re-presents the ephemeral leaf and relays opaque duplex bytes.
+Absolute HTTP (including Noise's HTTP/80 attempt), other targets/methods,
+malformed headers and headers over 8192 bytes close. Setup/handshakes have a
+ten-second bound; at most 128 raw local/upstream sockets are owned at once.
+
+Setup sets `GODEBUG=x509usefallbackroots=1` before the single
+`x509.SetFallbackRoots` call with only the ephemeral issuer, then installs the
+owned HTTP/HTTPS proxy and in-memory fixed-name resolver before clients. No
+host DNS or trust-store change occurs. Upstream and local root pools stay
+separate; pinned baked roots never authenticate a remote leaf. Listener,
+verifier or upstream dial failure closes the listener and owned streams;
+engine cancellation/shutdown closes both transport and tsnet. Malformed local
+TLS after an accepted CONNECT also seals admission; EOF or a local TCP reset
+from a cancelled controlhttp/DERP connection attempt closes only that attempt.
+Closed home engines reject new listeners, including after pinned tsnet's own Close. The dedicated
+process cannot initialize another home in place: address/home change requires
+a supervisor-owned process restart. Canonical URL/node/consumed identity never
+includes the random port or local issuer. Darwin home transport remains slice 5b.
+
+`hometransport_linux_test.go` uses synthetic temporary certificates and separate
+processes for real pinned `/key`/Noise registration and DERP region clients,
+including matching-name/wildcard public-equivalent chains, same-CA leaf renewal,
+redirects and receipt counters. An independent loopback TCP decoy detects direct
+fallback to the resolved control/DERP address, including with the proxy down.
+`hometransport_lifecycle_linux_test.go` composes synthetic temporary trust with
+the real tsnet server and shipping engine lifecycle: /key, Noise registration,
+map, Running and private DERP, then cancellation/shutdown/listener/verifier/local
+TLS failure and refusal to reopen admission. The lifecycle cases first reset a
+real local TCP handshake, then wait for the fixture's real DERP receipt within
+the existing Up context before triggering
+teardown; Running alone does not establish DERP readiness. Separate simultaneous
+processes use distinct local ports/issuers; a restart on a renewed endpoint retains
+node identity and exact consumed-marker bytes, drops the enrollment key and observes
+the new resolver mapping without requests to the old endpoint.
+
+Run from this module:
+`GOTOOLCHAIN=go1.23.12 CGO_ENABLED=0 GOFLAGS=-mod=readonly GOWORK=off go test -count=1 ./...`.
+The module's language declaration remains Go 1.23.1; execution uses 1.23.12.
+These component compositions do not execute successful protected-path admission
+through TSNetEngine.Start on an installed system. Exact root-owned installed
+paths, full packaged lifecycle/MDWE, generated Headscale map, packet-wide absence
+of public/DNS fallback traffic and native Darwin acceptance require their
+authorized venues and remain NOT RUN here.
 
 Only an omitted profile or an empty JSON string retains the legacy Linux and
 Darwin behavior below. Non-string values (including null) and unknown strings

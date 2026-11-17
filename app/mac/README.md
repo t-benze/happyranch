@@ -15,6 +15,192 @@ Retained historical source is nonshipping; it is not invoked indirectly.
 
 ## Development
 
+### THR-327 slice 5: home invite UI, saved reconnect and address recovery
+
+First launch offers **Run HappyRanch on this Mac** and **Connect to another
+computer**; the Daemon menu exposes the same role-switch wording. The CLIENT
+form defaults to **Home invite**. Paste one invite and choose Connect, without
+separate URL, key or pairing-code entry. The app validates it offline, displays
+the control host and release runtime, joins through the isolated home helper,
+pairs, shows the comparison phrase with **Waiting for approval on [computer]**,
+then **Opening runtime**. **Connected**
+is published only after the expected authorized main-frame web navigation
+finishes; network membership and health alone cannot publish it. Existing DIY
+Tailscale remains an explicit separate selection, never an error fallback. R3
+URL/key intake is absent; QR transfer remains deferred.
+
+`HomeInviteModel` owns attempt IDs, the actual invite-expiry countdown and cancel
+fencing. `ManagedHomeInviteSession` uses the 5b helper and the existing managed
+peer-only bridge for every ceremony, health and product request. Native/helper
+join has a 120-second bound, each ceremony request and opening navigation a
+10-second bound, and approval cannot outlive the invite. Cancel forgets draft,
+pairing material and handle; late results cannot reconnect. A failed join,
+including a helper TLS-close failure, reaches a closed failure with Retry (#1563).
+A spent join key is never retried. A retained same-trust unfinished membership,
+or a saved computer, reopens with an empty key. An interrupted first enrollment
+is checked explicitly without a key; if that check refuses, a fresh invite may
+use its new key in a new profile after confirmed teardown. The old key/profile
+is never repaired or replayed. Fresh pairing still needs Linux approval. #1564 Home-mode Start Connector is outside this path
+and remains queued; this change does not reproduce or repair that crash.
+
+After durable approval/delivery, the existing local login-Keychain store saves
+the grant, exact home/control/node binding, CA/trust and native profile UUID in
+one record. Discovery reads those protected records, with no plaintext index.
+Valid computers remain available when another item is denied, obsolete or invalid;
+closed per-item recovery messages remain visible. There is no service-wide 32-item
+failure threshold. Each item still requires consent and exact ACL validation;
+inaccessible items are retained, and fresh approval requires explicit consent.
+There is no synchronized/shared item, CA installation, plaintext fallback or
+signing prerequisite. Reads retain normal unlock/consent UI and the sole-current-
+executable ACL validation from 5a. Changed executable identity/denial stays visible;
+there is no silent ACL expansion or replacement. A fresh delivered grant may
+replace an obsolete local item only after explicit consent. Failed saving offers
+Retry while delivery remains in memory; process loss before saving needs a new
+invite. Signed-release migration is still **REMAINING**, not automatic behavior.
+
+One saved computer reconnects on ordinary reopen without an invite. Multiple
+computers require selection. Disconnect keeps saved access. Remove saved computer
+stops the session, removes only its owned private flat native profile under the
+native flock, then deletes its exact Keychain item and verifies absence. Unknown,
+unsafe or future nested layouts refuse visibly. Failed native deletion retains
+the protected record for retry; failed Keychain deletion names that remaining
+storage. Revocation observed through the closed connector code closes access
+and runs local removal for the exact active credential/profile, including a
+newly delivered credential whose save failed. Picker selection never chooses an
+automatic deletion target. Failed removal retains that exact target for Retry;
+new connection attempts wait for removal. Local removal never claims host revocation.
+
+**Pairing wire reconciled against merged Linux** (`origin/main` at
+`19c952c05502c1b091f8dc66e8acdd2f9a7de838`, PRs #1574/#1578): POST
+`/pair/invite` sends only the raw UTF-8 base64url pair-secret text, with no JSON,
+invite ID or identity header. HTTP 200 returns exactly `state: pending-approval`,
+`completion_handle`, `comparison_phrase`, and an ISO-8601 aware `expires_at`
+(with or without fractional seconds). POST `/pair/complete` sends only the raw
+UTF-8 handle; HTTP 200 returns exactly `credential`. The helper reports actual
+local tsnet Self StableID in its bounded private readiness frame; the Mac binds
+the delivered bearer to it and the admitted home/control-plane profile. Linux
+independently pins the HRID WhoIs identity, never a Mac-supplied identity header.
+The runtime uses the existing `X-HappyRanch-Device-Credential` header, stripped
+by Linux before forwarding. Home/connector identity is established by admitted
+trust and peer transport, not invented response fields.
+
+The merged completion route returns the same HTTP 403 `pairing_denied` before
+approval, after rejection and after lost/spent delivery. Only that exact closed
+response is polled with the same handle until the original expiry; no new
+redemption occurs. Rejection/handle loss cannot be distinguished early; expiry
+then requires a new invite. HTTP 403 `revocation_denied` or
+`revocation_stream_closed` triggers exact active-grant cleanup (F4).
+`daemon_unavailable` on 403/503 identifies the release/daemon failure category.
+Unknown failures remain closed. Live interoperability is NOT RUN; no Linux
+source or protocol was changed. Slice 3c must hash the exact pair-secret text
+sent here and conform to section 6's pinned v2 wire literals.
+
+**Same-CA address recovery (Go v2, leg 5f).** The canonical control URL is
+`https://control.happyranch.invalid:8443`; an optional root slash normalizes away
+(F2). The CA/fingerprint, home/control-plane IDs and saved node distinguish homes,
+never the shared DNS alias. A refreshed v2 invite supplies a new RFC1918 `dialIP`
+for the same home/CA; recovery uses an empty join key and discards the new invite's
+unused enrollment/pair material. Linux owns its expiry/cleanup. The runtime
+`home_endpoint` keeps its existing tailnet host:443 meaning.
+
+The dedicated helper validates protected v2 bindings and the consumed marker under
+the native flock, then uses existing membership through the fresh forwarder. It
+checks tsnet Self StableID and the saved grant on the fixed connector
+`/api/v1/health` route through peer-only dialing. Only HTTP 200 permits an atomic,
+fsynced `profile.json` replacement of `dialIP`/`previousDialIP`. Canonical URL,
+protected IDs/CA fingerprint, version, hostname/profile UUID, stable node,
+`tailscaled.state` and the v2 consumed-marker bytes stay unchanged. There is no
+marker migration. Failed replacement retains the old committed metadata; an
+unknown pending writer refuses a later write. An exact committed old/new/node
+receipt supports retry after a failed Keychain update, with another live grant
+check. Replayed metadata, changed home/CA/node, redirects and invalid grants refuse.
+
+Saved v1 IP profiles (including the original unversioned format) return the closed
+`-21` / `home_reapproval_required` outcome: obtain a new v2 invite and Linux
+approval in a new profile. Never rewrite a v1 marker/profile into v2 or repin from
+the DNS alias. Ordinary v2 restart and same-CA leaf renewal at the same address
+need no invite. Address/home changes require a new dedicated process, flushing
+old connections/resolver caches and generating a new local port/issuer.
+
+Swift now sends the exact v2 frame below and saves version 2 plus `dialIP`
+in the protected Keychain trust record. Same-CA recovery changes only `dialIP`
+in that record; canonical URL, IDs, CA, bearer, node, profile UUID and ACL stay
+bound. Old/unversioned saved trust decodes to the closed **New invite and approval
+required** result. The service name remains unchanged to discover/report those
+items; no v1 binding or consumed marker is converted. The helper's `-21` has the
+same visible result. CA changes still say **Home identity changed — approve again**.
+
+### THR-327 slice 5g: v2 invite and saved trust
+
+`RemoteInvite.parse(_:now:)` accepts only `hrinvite2:` plus strict bounded JSON
+under [section 6](../../docs/superpowers/specs/2026-11-16-one-click-remote-access.md).
+The exact top-level keys are `v`, `mode`, `control_url`, `control_plane_id`,
+`control_tls`, `home_endpoint`, `home_id`, `connector_id`, `invite_id`, `join_key`,
+`pair_secret`, `issued_at`, `expires_at`; `v` must be 2. Home control URL is exactly
+`https://control.happyranch.invalid:8443`, with only an optional trailing slash
+normalized away. Other names, IP URLs, userinfo/query/fragment/paths refuse.
+`control_tls` local trust is exactly `{kind: local_ca, ca_der, sha256, dial_ip}`;
+RFC1918 canonical dotted IPv4 `dial_ip` is a separate upstream address.
+`home_endpoint` remains the tailnet runtime on 443. The trust display names the
+control host, dial IP, home/control-plane identity and release runtime.
+
+The parser refuses >4096 decoded or >5500 encoded UTF-8 bytes including prefix,
+never truncates, and refuses duplicate/missing/unknown keys, noncanonical encoding,
+wrong types/versions, mode/trust mismatches, malformed/non-CA/expired DER,
+fingerprint mismatch and invalid invite times. `hrinvite1:` requires new invite
+and approval. R3/system-trust envelopes parse only to a closed unsupported result;
+there is no own-server UI. Display/debug/mirror and diagnostics redact v1/v2
+invites and secrets. Swift/Data copies cannot promise cryptographic erasure.
+
+**Normative issuer contract for slice 3c.** The [v2 wire literals (pinned)
+table in section 6](../../docs/superpowers/specs/2026-11-16-one-click-remote-access.md#v2-wire-literals-pinned)
+adopts the implemented representations. Slice 3c MUST conform; issuer/parser
+round-trip fixtures are the shared contract. `RemoteInviteTests` owns the Mac
+round-trip fixture and strict refusal cases, including padded envelopes, wrong
+union discriminators, float/string times and uppercase fingerprints.
+`TestHomeTransportAdmission/uppercase-fingerprint` independently checks the Go
+transport boundary. The helper's private launch frame is a separate protocol;
+its CA bytes use Go/Swift JSON Data encoding, not the invite's base64url spelling.
+CA SAN is not needed; B verifies the **server leaf's fixed DNS SAN**. The issuer
+must floor fractional deadlines so no response extends the envelope deadline.
+Known limitation: metadata-only recovery cannot observe invalidation of an
+unredeemed old invite. Slice 3c is not built yet; live issuer interoperability
+remains NOT RUN.
+
+`SavedDeviceCredentialStore` separates custody from UI/network work.
+`LoginKeychainDeviceStore` uses a separate local login-Keychain generic password,
+non-synchronizing, without an access group or plaintext fallback. Its service
+and length-delimited hashed account bind home/control-plane/stable-node identity.
+The record includes endpoint, CA DER/fingerprint and delivered bearer together.
+At creation, `SecAccessCreate` restricts access to the current executable as the
+sole trusted application via `kSecAttrAccess`. Reads allow normal consent UI,
+then inspect the decrypt ACL, executable identity and exact saved trust binding.
+No ACL update, item replacement or CA trust-store installation occurs. A duplicate
+save only reads/verifies the same record/bearer; it never overwrites it.
+Deletion is exact and absence is checked; failure remains visible.
+
+`SavedAccessModel.saveAfterDelivery` must be called only after durable Linux
+approval and credential delivery. Save failure retains the in-memory grant for
+Retry; process loss needs a new invite. Not-found, cancellation, denial, locked
+Keychain, identity/ACL mismatch and removal failure remain distinct closed
+outcomes. Custody state never implies runtime access or Connected.
+Explicit replacement consent and same-CA address migration are integrated as
+described above. Signed-release migration remains a separate release acceptance
+item; unsigned access has no signing prerequisite. No automatic CA migration or
+storage downgrade exists.
+
+The dedicated process receives validated v2 CA/profile/dial-IP data and applies
+B to `/key` and DERP while retaining Noise authentication. Source-level Linux
+wire reconciliation is complete; native execution and live interop remain unverified.
+
+On an authorized macOS host, the existing XCTest venue is:
+`swift test --package-path app/mac --filter 'RemoteInviteTests|SavedDeviceAccessTests|HomeInviteProtocolTests|HomeBridgeProcessTests|HomeInviteModelTests'`.
+The maker Linux host has no Swift/macOS Security framework: tests, failure/pass
+mutation proof and unsigned Keychain quit/reopen acceptance are **NOT RUN**.
+`build-mac-app.yml` can compile an independently reviewed exact SHA/tree but does
+not run Swift tests; `ci.yml` is lint-only and `managed-m4.yml` tests the C ABI,
+not Swift. Mac-mini unsigned artifact acceptance belongs to slice 6.
+
 Xcode 16 / Swift 6 and a macOS build host are required. From `app/mac`, use
 `swift build` and `swift run HappyRanchApp`. Existing development weak tsnet
 stubs remain available when no Go archive exists. When the freshly built
@@ -24,6 +210,139 @@ including paths with spaces. Darwin `-u` roots each unchanged ABI export against
 SwiftPM release dead stripping. Retained native sources can inspect ABI exports; the simplified shipping build
 uses basic bundle checks. Native tests remain separate from automated lint/static
 merge checks.
+
+## THR-327 slices 5e/5f: strict home-only transport and startup
+
+`tsnet-bridge/home_transport.go` implements section 6 B as a separately owned
+transport. `newHomeTransport` validates exactly one current CA DER/fingerprint
+and an RFC1918 IPv4, binds its own `127.0.0.1:0` listener, and creates an
+in-memory ephemeral CA and fixed `control.happyranch.invalid` DNS leaf. `Addr`
+exposes the owned proxy address; `LocalCA` returns only public issuer DER for
+the dedicated helper's isolated fallback pool. The caller must call `Close`; it cancels setup,
+closes the listener and both sides of all owned streams, then waits for handlers.
+Keys are never serialized, installed or logged.
+
+Only CONNECT for that exact name on 443 or 8443 is admitted; both use the same
+validated literal `dial_ip:8443`. Absolute HTTP (including Noise HTTP/80), other
+methods/authorities, bodies and malformed/oversize headers refuse before dialing.
+Headers are capped at 8 KiB, concurrent streams at 128 and setup at 10 seconds.
+An explicit upstream pool contains only the admitted home CA. Standard TLS
+checks the fixed DNS name, validity and server-auth purpose before CONNECT 200
+or any application byte. Then local TLS presents only the ephemeral leaf;
+the duplex relay preserves arbitrary upgrade/Noise/DERP bytes and TLS half-close.
+There is no public-root, redirect or direct retry path in this transport.
+
+`home_helper.go` now wires this transport only in the dedicated executable.
+Startup validates the bounded exact v2 frame and CA/pin/dial IP, binds loopback,
+then creates the ephemeral issuer. It sets owned `GODEBUG=x509usefallbackroots=1`
+**before** the single `x509.SetFallbackRoots` call with only that local issuer.
+It clears inherited upper/lowercase proxy, trust and debug overrides, then sets
+`HTTP_PROXY` and `HTTPS_PROXY` to its owned listener. Registered upstream debug
+caches are reset too. A nonempty inherited `SSLKEYLOGFILE` refuses before roots
+or clients: pinned tlsdial caches it at package init, so clearing it later would
+not revoke key logging. No keylog file is opened. The immutable process resolver
+and `dnscache.Get().Forward` answer only the fixed home name with admitted IPv4,
+return empty AAAA and refuse other names through in-memory pipes. No host DNS
+configuration or resolver socket changes. Only then is tsnet constructed with
+the canonical URL. The C archive installs none of these globals.
+
+Listener/upstream dial/verifier failure, parent EOF, shutdown or cancellation
+closes tsnet admission, exported streams, the proxy and its owned streams. The
+runtime socket also seals and closes its tracked local streams; relay peer ends
+close with them. Keys are released after TLS handlers exit. Local issuer expiry
+(24 hours) cancels this owner, requiring a fresh dedicated process; no expired
+issuer or direct/public fallback remains admitted. One home per process; a
+second initialization refuses and each start uses a new random port and issuer.
+The transport needs no root, signing, entitlement or trust-store installation.
+Real pinned controlclient `/key`/Noise and DERP region clients run through these
+proxy/root/resolver APIs against synthetic loopback upstreams on Linux. Full tsnet
+netmap/startup and native unsigned Darwin, save/reopen/rebuild and sequential-home
+acceptance remain **NOT RUN**, not inferred from these checks.
+
+Socket tests use synthetic CAs and owned loopback upstream fakes, checking the
+constructor's fixed RFC1918:8443 target independently before test-side endpoint
+isolation. Matching-name and wildcard public-equivalent chains independently
+verify in a separate synthetic public pool and are refused by the home verifier.
+No real public-CA private keys or production test hooks are used.
+
+```sh
+cd app/mac/tsnet-bridge
+GOTOOLCHAIN=go1.23.12 CGO_ENABLED=0 GOFLAGS=-mod=readonly GOWORK=off go test -count=1 home_transport.go home_transport_test.go
+GOTOOLCHAIN=go1.23.12 CGO_ENABLED=1 GOFLAGS=-mod=readonly GOWORK=off go test -count=1 ./...
+GOTOOLCHAIN=go1.23.12 CGO_ENABLED=1 GOFLAGS=-mod=readonly GOWORK=off go vet ./...
+```
+
+The module declares Go 1.23.1; the existing documented verification pin is
+Go 1.23.12. `CGO_ENABLED=0 go test ./...` cannot compile this module because
+existing `bridge.go` C exports supply symbols used by `health.go` and the
+helper. The PR records that failed command separately; no cgo stubs were added.
+The two self-contained transport files also run directly with cgo disabled.
+Swift build/XCTest and actual unsigned Mac transport acceptance are NOT RUN on
+this Linux host. No hosted Mac/managed-m4 build is dispatched.
+
+## THR-327 slice 5b: isolated home trust process
+
+`build-app.sh` builds `Contents/Helpers/happyranch-home-bridge` from the existing
+`tsnet-bridge` Go module, alongside its C archive. Only the separate executable's
+fixed `--home-bridge-v2` mode installs fallback roots; the archive never runs
+`main`. No dependency, entitlement, CA installation, public-root mode or R3
+intake is added. Optional signing inventories include the helper; signing is
+not needed for this milestone.
+
+The v2 launch frame is uint32 big-endian byte length (1..16384), then exact JSON.
+Required keys: `version` (2), `caDER` (standard JSON base64 bytes), `fingerprint`,
+`dialIP`, `homeID`, `controlPlaneID`, `controlURL`, `hostname`, `stateDirectory`,
+`joinKey` (empty for saved membership), `socketPath`, `target`. Optional `recovery`
+contains exactly `previousDialIP`, `stableNodeID`, `bearer`. Unknown/duplicate,
+case-aliased, missing/null or extra trust fields, trailing JSON, IP control URLs
+and v1 frames refuse. The control URL accepts only the fixed DNS URL above,
+with its optional trailing slash. No secret enters argv/env or an IPC file.
+EOF/cancellation ends the helper. Changed trust stops/reaps it before replacement;
+uncertain stop retains ownership. `HomeBridgeProcess` sends that exact frame
+with fixed argv `--home-bridge-v2` and an empty child environment; no inherited
+proxy, SSL/trust, keylog or GODEBUG setting enters Go package initialization.
+Go creates its own derived settings before clients/roots. Success is the bounded
+private ASCII line `0 <Self-StableID>\n` (at most 260 bytes); failure remains a
+closed numeric line. The native ID is nonsecret, checked before saving or
+opening a grant, and never read from the invitation or Linux HTTP response.
+
+After membership readiness, a 0600 Unix socket in a newly allocated 0700 private
+temporary directory carries streams to the single configured runtime on 443.
+It calls existing peer-only `managedDialPeer`, retains its node pin and rechecks
+before every write; there is no arbitrary host/port dial command.
+`ClientBridge.joinManagedNetwork` / `resumeManagedNetwork` select the process
+only when passed both `homeTrust` and `helper`; inconsistent selection refuses.
+Pairing, HTTP, SSE and upgrade I/O use this same helper. Monotonic handle IDs
+prevent stale stream IDs from reusing new FDs. Stop closes streams and confirms
+process exit before releasing the profile. Readiness never means Connected.
+
+The slice-5 UI now uses v2 invites/saved records through this seam.
+Go leg 5f implements the same-CA, same-node, saved-grant metadata recovery above;
+protected marker conflicts still refuse. Signed credential migration
+and native acceptance remain separate.
+
+Supported commands with the existing readonly Go graph:
+
+```sh
+cd app/mac/tsnet-bridge
+GOTOOLCHAIN=local go build -mod=readonly -o /tmp/happyranch-home-bridge .
+GOTOOLCHAIN=local go test -mod=readonly -v ./...
+GOTOOLCHAIN=local go vet -mod=readonly ./...
+```
+
+The new Go tests drive actual upstream controlclient `/key`/Noise registration
+and a separate embedded DERP server using synthetic TLS certificates. Startup
+subprocesses prove exactly-once roots before engine admission and reject empty,
+multiple, invalid, non-CA, expired and pin-mismatched input. Synthetic secret
+canaries stay out of output. The PR records intended-failure/restored-pass
+proof. Launcher tests use the existing fake process controller. Swift build and
+XCTest are NOT RUN on this Linux host; the existing exact-reviewed-SHA/tree
+packaging workflow compiles Swift without XCTest, while ci.yml and managed-m4
+provide no Swift test job. Actual unsigned Mac/Keychain acceptance remains
+NOT RUN, owed to slice 6/native qualification: unsigned bootstrap/DERP matrix,
+save/quit/reopen, rebuilt executable identity, address refresh, two sequential
+homes, signed migration and packaged acceptance. Linux transport checks do not
+establish any of those gates. No live Headscale or Mac-mini operation is authorized.
 
 ## Daemon child environment
 
@@ -38,7 +357,7 @@ ephemeral daemon port after sanitization. See the
 
 ## Managed daemon Stop and health
 
-Stop sends TERM to the app's current managed child, waits up to five seconds,
+Stop sends TERM to the app's current managed child, waits up to sixty seconds,
 then sends KILL if it is still running and waits up to two more seconds. The
 waits use elapsed monotonic time. Diagnostics record the observed exit status
 and actual uncaught signal, including an exit during the TERM grace. A signal
@@ -108,6 +427,19 @@ Swift6, bootstrap Python3.12–3.14, uv, Node24/npm and Go1.23.12 as pinned by t
 existing workflow. Version/build1.0.1 and minimumOS14.0 are declarations; actual
 Mac14 installation remains unproven. This unsigned internal candidate grants no
 signing, notarization, public upload/download or release approval.
+
+### Installing an unsigned internal candidate
+
+For an unsigned internal candidate copied/downloaded onto a Mac that macOS refuses
+to open because it is quarantined and unsigned, run after copying it to Applications:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/HappyRanch.app
+```
+
+This does not apply to signed and notarized builds: those must open normally.
+Never strip quarantine from a signed/notarized final ZIP or app, or during the
+quarantined-download acceptance case. The signing agent's hard rules remain unchanged.
 
 The existing workflow interface is unchanged:
 
@@ -349,6 +681,9 @@ The following original text preserves historical failures, investigations and
 superseded acceptance requirements. It does not control the current build.
 
 ## Internal candidate build
+
+For unsigned installation, use only the current
+[quarantine-removal step](#installing-an-unsigned-internal-candidate).
 
 Use a clean, independently reviewed full commit and tree. Version/build 1.0.1,
 arm64 and minimum 14.0 are candidate inputs, not compatibility acceptance.
@@ -747,7 +1082,9 @@ artifact authority. Preserve distinct unsigned-app, signed-app, submission ZIP,
 notary UUID/log, stapled-app and final ZIP receipts. Parent TASK11196 owns public
 admission and anonymous download verification; local matching never sets
 `available=true` or an approved URL. No Gatekeeper-bypass installation procedure
-is supplied. See accepted TASK11214 C01–C18 for the full independent contract.
+is supplied for signed/public releases; unsigned internal candidates use only the
+documented [quarantine-removal step](#installing-an-unsigned-internal-candidate).
+See accepted TASK11214 C01–C18 for the full independent contract.
 
 The freezer operation observer uses the original-backed PyInstaller input and
 bounded independent archive reader described in
@@ -1266,7 +1603,11 @@ zero-before-free is source reviewed, not observed after free or through a
 production test hook. Keychain/UI/screenshots remain PR2; release pins and
 owner-run signing remain PR3. No manual main-only Mac workflow is dispatched.
 
-## Managed join and pairing screen (PR2)
+## Managed join and pairing screen (PR2, superseded)
+
+This historical manual-managed UI description is superseded by the single-invite
+5c flow above. Its model compatibility seams/tests remain; the current home form
+does not expose URL/key or separate pairing-code entry.
 
 In the existing CLIENT “Connect to Remote Runtime” form, DIY Tailscale remains
 selected by default. Select Managed network explicitly. Enter a trusted HTTPS

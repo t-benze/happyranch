@@ -451,6 +451,55 @@ After `daemon-reload`, target enablement and blocking start, each unit must have
 
 ### Managed Linux enrollment credential handoff (THR-327 seq187/227)
 
+The THR-327 slice 3b-1 token-reader sub-part hardens the separate daemon-token
+input used by provisioning, install admission and drift checks. Its opened
+inode must match the validated release UID, exact 0600, regular type, one link,
+nonempty UTF-8 and the 64 KiB limit. Every parent and leaf is opened no-follow
+relative to a pinned directory descriptor, with named/opened device and inode
+comparison. After the bounded read, parent identities and file identity, owner,
+group, mode, links, size, mtime and ctime must still match. Only bytes read from
+that FD can be staged; unsafe or changed inputs refuse before publication or
+service effects. Rotation still requires explicit reprovisioning and is not
+automatically accepted. Generated configs, replacement/disable transactions and
+the fixed helper's installation wiring remain pending; this sub-part adds no
+helper input or home-transport selection. H2 still requires the future helper's
+token path to be derived from the authenticated/recorded release home.
+
+The 3b-1b writer sub-part now publishes each of the existing six provisioning
+files through one fresh-install owner: connector/sidecar/policy JSON (root:hr
+0640), release-daemon JSON (root:root 0644), daemon token (hr:hr 0600), and
+provision JSON (root:root 0600). Every literal parent stays descriptor-pinned;
+its identity/owner/mode is rechecked before descriptor-relative rename. Only an
+exclusive 0600 pending inode is written, bounded to 64 KiB, assigned its exact
+final owner/mode, and fsynced before Linux `renameat2(RENAME_NOREPLACE)` and
+parent fsync. Missing libc/kernel support refuses without fallback. A target
+arriving at rename cannot be overwritten. Existing final or
+pending entries always refuse without repair; preflight checks all six names
+before any file publication. Normalized configs are also size-checked together
+before staging. A failed write removes only its own pending inode,
+never a substituted entry. Interrupted process death can leave pending residue
+that requires inspection. This is per-file atomic publication, not a multi-file
+transaction: later I/O failures can leave earlier complete files. Config
+generation and profile/unit selection remain unfinished. No
+repair/replacement/helper method is enabled here. The
+legacy provenance schema, config validators and unit bytes remain unchanged.
+
+The 3b-1b-2 records-first sub-part extends only that writer's fixed map with
+`install-transaction.json`, root:root 0600. New version-1 records have exactly
+`version`, `layout`, `digests` and `phase`. Layout must match `source` or `deb`;
+digests are lowercase SHA-256 for exactly connector/sidecar/policy JSON,
+release-daemon JSON and daemon.token. Transaction records additionally bind
+provision.json. The sole provision phase is `provisioned`, and the sole
+transaction phase is `prepared`. Extra/duplicate fields, other versions/phases,
+arbitrary digest paths, secret fields and non-digest values refuse before publication. The existing
+unversioned `provision` output and its reader remain unchanged. Generation does
+not yet emit the new schemas, and the legacy reader rejects versioned provenance.
+Any final or pending transaction entry blocks provision/install/uninstall and
+drift before file publication or service calls, without parsing or recovering
+it. These inert records provide no transaction update, resume, replacement,
+disable recovery or helper operation; those remain 3b-1c/3b-1d. Per-file atomicity
+still supplies no multi-file rollback. Home transport remains 3b-2.
+
 The root operator supplies `install --enrollment-key-file /absolute/input.key`; the input must be a root:root, single-link regular `0600` file, nonempty and at most 64 KiB. Literal no-follow parent traversal and nonblocking/no-follow file opens refuse symlinks and special files. Every install, including reinstall, requires explicit input; this command does not infer a keyless reinstall from persisted state. Use ordinary service restart for an enrolled host; installing a new key over a consumed marker still refuses at the existing marker-plus-input gate. The customer cell issues the single-use, short-expiry key; the installer does not provision it. The original operator input remains the operator's responsibility to remove promptly.
 
 The installer first creates and fsyncs the root-owned link `/etc/credstore/happyranch-tsnet-enrollment` pointing only to `/etc/happyranch/enrollment.key`, then exclusively stages that fixed source as root:root `0600` and fsyncs it and its directory. Cleanup unlinks and fsyncs the source before removing the link, so interrupted staging/cleanup preserves lookup for any surviving source. `/etc/credstore` is created root-owned `0700`; existing safe `0700` or `0755` is retained. The credential name is reserved to this installation: no inherited or other credstore credential may use it. The sidecar renders `LoadCredential=enrollment-key:happyranch-tsnet-enrollment` and `--credential-file ${CREDENTIALS_DIRECTORY}/enrollment-key`, overriding the JSON credential path before validation. Only the path enters argv; the key never enters argv or environment. Credential-name lookup, unlike an absolute missing source, is nonfatal when absent in both [systemd 255](https://www.freedesktop.org/software/systemd/man/255/systemd.exec.html#LoadCredential=) and this host's systemd 259. After source/link deletion, systemd may also remove the empty per-unit credential directory while still exporting its path in `CREDENTIALS_DIRECTORY` ([v255 directory removal](https://github.com/systemd/systemd/blob/v255/src/core/exec-credential.c#L927-L932), [environment export](https://github.com/systemd/systemd/blob/v255/src/core/exec-invoke.c#L1881-L1891)). The sidecar handles that absent-directory state without creating a directory or an empty credential file. A remaining source/link yields a present copy, which the existing consumed-marker gate refuses.

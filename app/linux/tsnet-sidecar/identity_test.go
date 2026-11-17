@@ -37,7 +37,7 @@ type identityEngine struct {
 	resolver *TSNetEngine
 }
 
-func (e *identityEngine) peerIdentity(ctx context.Context, remote string) (string, error) {
+func (e *identityEngine) peerIdentity(ctx context.Context, remote string) (peerMetadata, error) {
 	return e.resolver.peerIdentity(ctx, remote)
 }
 
@@ -141,7 +141,7 @@ func TestIdentityRefusalsCloseBeforeLocalDial(t *testing.T) {
 func TestIdentityOneRemoteOneUnixStream(t *testing.T) {
 	local, dialer := unixFixture(t)
 	inbound := inboundListener(t)
-	lookup := &identityLookup{response: &apitype.WhoIsResponse{Node: &tailcfg.Node{StableID: "node-123"}}, remote: make(chan string, 2)}
+	lookup := &identityLookup{response: &apitype.WhoIsResponse{Node: &tailcfg.Node{StableID: "node-123", Hostinfo: (&tailcfg.Hostinfo{Hostname: "OS computer"}).View(), ComputedName: "dns-name"}}, remote: make(chan string, 2)}
 	s := New(managedConfig(t), managedEngine(t, inbound, lookup), dialer)
 	defer s.Stop()
 	if err := s.Start(context.Background()); err != nil {
@@ -162,9 +162,30 @@ func TestIdentityOneRemoteOneUnixStream(t *testing.T) {
 			go func(c net.Conn) {
 				defer c.Close()
 				c.SetDeadline(time.Now().Add(2 * time.Second))
-				b := make([]byte, 19)
+				b := make([]byte, 7)
 				_, err := io.ReadFull(c, b)
 				if err == nil {
+					rest := make([]byte, int(binary.BigEndian.Uint16(b[5:7])))
+					if _, err := io.ReadFull(c, rest); err != nil {
+						return
+					}
+					b = append(b, rest...)
+					if b[4] == 2 {
+						length := make([]byte, 2)
+						if _, err := io.ReadFull(c, length); err != nil {
+							return
+						}
+						label := make([]byte, int(binary.BigEndian.Uint16(length)))
+						if _, err := io.ReadFull(c, label); err != nil {
+							return
+						}
+						b = append(append(b, length...), label...)
+					}
+					http := make([]byte, 4)
+					if _, err := io.ReadFull(c, http); err != nil {
+						return
+					}
+					b = append(b, http...)
 					seen <- string(b)
 					c.Write([]byte("ok"))
 				}
@@ -191,7 +212,7 @@ func TestIdentityOneRemoteOneUnixStream(t *testing.T) {
 	for _, node := range []string{"node-123", "node-456"} {
 		select {
 		case got := <-seen:
-			if got != "HRID\x01\x00\x08"+node+"HTTP" {
+			if got != "HRID\x02\x00\x08"+node+"\x00\x0bOS computerHTTP" {
 				t.Fatalf("wire=%q", got)
 			}
 		case <-time.After(2 * time.Second):
@@ -265,16 +286,56 @@ func TestIdentityProfileReadinessAndLegacyGate(t *testing.T) {
 	s.Stop()
 }
 func TestIdentityFrameEncodingBound(t *testing.T) {
-	for _, size := range []int{1, 1017} {
-		b, err := identityFrame(strings.Repeat("n", size))
-		if err != nil || len(b) > 1024 || string(b[:5]) != "HRID\x01" || int(binary.BigEndian.Uint16(b[5:7])) != size {
+	for _, size := range []int{1, 1015} {
+		b, err := identityFrame(strings.Repeat("n", size), "")
+		if err != nil || len(b) > 1024 || string(b[:5]) != "HRID\x02" || int(binary.BigEndian.Uint16(b[5:7])) != size || string(b[len(b)-2:]) != "\x00\x00" {
 			t.Fatalf("frame size=%d %v", len(b), err)
 		}
 	}
-	for name, id := range map[string]string{"empty": "", "blank": " ", "oversize": strings.Repeat("n", 1018), "control-character": "node\nforged", "invalid-utf8": "\xff"} {
+	for name, id := range map[string]string{"empty": "", "blank": " ", "oversize": strings.Repeat("n", 1016), "cr": "node\rforged", "lf": "node\nforged", "nul": "node\x00forged", "invalid-utf8": "\xff"} {
 		t.Run(name, func(t *testing.T) {
-			if _, err := identityFrame(id); err == nil {
+			if _, err := identityFrame(id, ""); err == nil {
 				t.Fatal("invalid identity encoded")
+			}
+		})
+	}
+	for _, label := range []string{"", "电脑", strings.Repeat("a", 1014)} {
+		b, err := identityFrame("n", label)
+		if err != nil || len(b) != 10+len(label) || int(binary.BigEndian.Uint16(b[8:10])) != len(label) || string(b[10:]) != label {
+			t.Fatalf("display label frame size=%d err=%v", len(b), err)
+		}
+	}
+	for _, label := range []string{"\xff", strings.Repeat("a", 1015)} {
+		if _, err := identityFrame("n", label); err == nil {
+			t.Fatal("invalid/oversize label encoded")
+		}
+	}
+}
+
+func TestWhoIsDisplayLabelSource(t *testing.T) {
+	for _, tc := range []struct {
+		name, host, computed, want string
+		noHostinfo                 bool
+	}{
+		{"os-first", "OS computer", "dns-name", "OS computer", false},
+		{"computed-fallback", "", "dns-name", "dns-name", false},
+		{"missing-hostinfo", "", "dns-name", "dns-name", true},
+		{"empty", "", "", "", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			node := &tailcfg.Node{StableID: "node-stable", ComputedName: tc.computed, Name: "not-a-label-source"}
+			if !tc.noHostinfo {
+				node.Hostinfo = (&tailcfg.Hostinfo{Hostname: tc.host}).View()
+			}
+			lookup := &identityLookup{response: &apitype.WhoIsResponse{Node: node}, remote: make(chan string, 2)}
+			e := &TSNetEngine{identityClient: lookup}
+			peer, err := e.peerIdentity(context.Background(), "100.64.0.1:1234")
+			if err != nil || peer.stableID != "node-stable" || peer.label != tc.want || len(lookup.remote) != 1 {
+				t.Fatalf("WhoIs source/lookup count incorrect: %v", err)
+			}
+			b, err := identityFrame(peer.stableID, peer.label)
+			if err != nil || string(b[20:]) != tc.want {
+				t.Fatalf("WhoIs label not emitted: %v", err)
 			}
 		})
 	}

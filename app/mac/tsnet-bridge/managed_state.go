@@ -19,10 +19,18 @@ var errManagedState = errors.New("managed state refused")
 var profileUUID = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 
 type profileRecord struct {
-	ControlURL string `json:"controlURL"`
-	Hostname   string `json:"hostname"`
-	UUID       string `json:"uuid"`
-	Phase      string `json:"phase"`
+	HomeID             string `json:"homeID,omitempty"`
+	ControlPlaneID     string `json:"controlPlaneID,omitempty"`
+	CAFingerprint      string `json:"caFingerprint,omitempty"`
+	DialIP             string `json:"dialIP,omitempty"`
+	PreviousDialIP     string `json:"previousDialIP,omitempty"`
+	Version            int    `json:"version,omitempty"`
+	StableNodeID       string `json:"stableNodeID,omitempty"`
+	PreviousControlURL string `json:"previousControlURL,omitempty"`
+	ControlURL         string `json:"controlURL"`
+	Hostname           string `json:"hostname"`
+	UUID               string `json:"uuid"`
+	Phase              string `json:"phase"`
 }
 type managedProfile struct {
 	path      string
@@ -79,6 +87,10 @@ func privateFile(dir *os.File, name string, flags int) (*os.File, error) {
 	return os.NewFile(uintptr(fd), name), nil
 }
 func openManagedProfile(path, hostname, control string, fresh bool) (*managedProfile, error) {
+	return openBoundManagedProfile(path, hostname, control, fresh, nil)
+}
+
+func openBoundManagedProfile(path, hostname, control string, fresh bool, home *homeLaunch) (*managedProfile, error) {
 	dir, err := openProfileDir(path, fresh)
 	if err != nil {
 		return nil, err
@@ -102,6 +114,11 @@ func openManagedProfile(path, hostname, control string, fresh bool) (*managedPro
 	}
 	p.record = profileRecord{ControlURL: control, Hostname: hostname, UUID: filepath.Base(path), Phase: "draft"}
 	if fresh {
+		if home != nil {
+			p.record.Version = 2
+			p.record.HomeID, p.record.ControlPlaneID = home.HomeID, home.ControlPlaneID
+			p.record.CAFingerprint, p.record.DialIP = home.Fingerprint, home.DialIP
+		}
 		names, err := os.ReadDir(path)
 		if err != nil {
 			return nil, err
@@ -122,7 +139,23 @@ func openManagedProfile(path, hostname, control string, fresh bool) (*managedPro
 		expected := p.record
 		dec := json.NewDecoder(bytes.NewReader(raw))
 		dec.DisallowUnknownFields()
-		if dec.Decode(&p.record) != nil || dec.Decode(new(any)) != io.EOF || p.record.ControlURL != expected.ControlURL || p.record.Hostname != expected.Hostname || p.record.UUID != expected.UUID {
+		if dec.Decode(&p.record) != nil || dec.Decode(new(any)) != io.EOF {
+			return nil, errManagedState
+		}
+		if home != nil && p.record.Version != 2 {
+			return nil, errHomeReapproval
+		}
+		if p.record.ControlURL != expected.ControlURL || p.record.Hostname != expected.Hostname || p.record.UUID != expected.UUID {
+			return nil, errManagedState
+		}
+		if p.record.Version == 2 {
+			if home == nil || !matchesHomeProfile(p.record, *home) || p.record.StableNodeID == "" {
+				return nil, errManagedState
+			}
+		} else if p.record.Version != 0 && p.record.Version != 1 ||
+			p.record.Version == 0 && (p.record.StableNodeID != "" || p.record.PreviousControlURL != "") ||
+			p.record.Version == 1 && (p.record.StableNodeID == "" || p.record.PreviousControlURL == "") ||
+			p.record.HomeID != "" || p.record.ControlPlaneID != "" || p.record.CAFingerprint != "" || p.record.DialIP != "" || p.record.PreviousDialIP != "" {
 			return nil, errManagedState
 		}
 		if p.record.Phase != "joined" && p.record.Phase != "submitting" {
@@ -248,6 +281,15 @@ func (p *managedProfile) phase(phase string) error {
 	return nil
 }
 func (p *managedProfile) marker() string {
+	if p.record.Version == 2 {
+		// Address is metadata, never consumed authority. Recovery preserves these bytes.
+		sum := sha256.Sum256([]byte("home-v2\x00" + p.record.UUID + "\x00" + p.record.StableNodeID + "\x00" + p.record.Hostname + "\x00" + p.record.ControlURL + "\x00" + p.record.HomeID + "\x00" + p.record.ControlPlaneID + "\x00" + p.record.CAFingerprint))
+		return "v2:" + hex.EncodeToString(sum[:]) + "\n"
+	}
+	if p.record.Version == 1 {
+		sum := sha256.Sum256([]byte("home-address-v1\x00" + p.record.UUID + "\x00" + p.record.StableNodeID + "\x00" + p.record.Hostname + "\x00" + p.record.ControlURL))
+		return "v1:" + hex.EncodeToString(sum[:]) + "\n"
+	}
 	sum := sha256.Sum256([]byte(p.record.Hostname + "\x00" + p.record.ControlURL))
 	return hex.EncodeToString(sum[:]) + "\n"
 }

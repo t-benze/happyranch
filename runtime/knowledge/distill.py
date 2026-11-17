@@ -12,12 +12,14 @@ from typing import TYPE_CHECKING
 from fastapi import HTTPException
 
 from runtime.infrastructure.audit_logger import AuditLogger
+from runtime.infrastructure.task_attachment_store import TaskAttachmentStore
 from runtime.knowledge.archives import ArchiveError, KnowledgeArchiveStore
-from runtime.knowledge.curation import CurationError, build_curation_input
+from runtime.knowledge.curation import CurationError, build_curation_input, capture_bytes
 from runtime.knowledge.lifecycle_models import DistillOperation, DistillSubmission
 from runtime.knowledge.sources import Coverage, RetiredSource, capture_retired_source
 from runtime.models import TaskStatus
 from runtime.orchestrator.orchestrator import completion_report_from_result_row
+from runtime.orchestrator._paths import OrgPaths
 
 if TYPE_CHECKING:
     from runtime.daemon.org_state import OrgState
@@ -86,10 +88,26 @@ class DistillLifecycle:
             self.store.fail(operation['operation_id'], 'processor_ineligible_choose_existing_owner')
             return
         try:
-            brief = build_curation_input(capture)
-            task = persist_root_task(self.org, SubmitTask(owner=processor, brief=brief),
-                                     bind=lambda task: self.store.bind_task_uncommitted(
-                                         operation['operation_id'], processor, task.id))
+            storage_key = operation['operation_id'] + '-snapshot.json'
+
+            def bind(task) -> None:
+                # Root submission owns BEGIN IMMEDIATE and the DB lock. Build
+                # with the actual task ID before any file/claim effect.
+                task.brief = build_curation_input(capture, org_slug=self.org.slug,
+                                                 task_id=task.id, storage_key=storage_key)
+                attachments = TaskAttachmentStore(OrgPaths(self.org.root).task_attachments_dir)
+                size = attachments.put(storage_key, capture_bytes(capture))
+                self.org.db._insert_task_attachments_txn(task.id, [{
+                    'ordinal': 0, 'storage_key': storage_key, 'display_name': 'knowledge-capture.json',
+                    'size_bytes': size, 'content_type': 'application/json',
+                }], uploaded_by='daemon')
+                self.org.db._conn.execute('UPDATE tasks SET brief=? WHERE id=?', (task.brief, task.id))
+                self.store.bind_task_uncommitted(operation['operation_id'], processor, task.id)
+                # A rollback/crash before COMMIT can leave only unclaimed bytes
+                # at this Queued operation's stable key. Redispatch overwrites
+                # that same file from capture_json; never delete on uncertain COMMIT.
+
+            task = persist_root_task(self.org, SubmitTask(owner=processor, brief='Curation binding pending'), bind=bind)
         except CurationError as error:
             self.store.fail(operation['operation_id'], error.code)
             return

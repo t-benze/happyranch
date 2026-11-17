@@ -10,6 +10,9 @@ public struct DiagnosticsRedactor: Sendable {
     /// Patterns to match for redaction. Each element is a tuple of
     /// (regex pattern, description of what is matched).
     private static let patterns: [(pattern: String, description: String)] = [
+        (#"hrinvite[12]:[^\r\n]*"#, "raw invite including malformed envelope"),
+        (#"hr(?:pin|pair|session)_[A-Za-z0-9_.-]+"#, "device or session bearer"),
+        (#"[\"']?(?:join_key|pair_secret|completion_handle|raw_invite|credential|bearer)[\"']?\s*[:=]\s*[^,}\r\n]*"#, "ceremony field including malformed JSON"),
         // daemon.token file content (hr_token_ prefix)
         ("hr_token_[A-Za-z0-9_\\-\\.]+", "daemon token"),
         // Bearer tokens: "Bearer <value>" or "bearer <value>" or "Bearer token: <value>"
@@ -42,6 +45,10 @@ public struct DiagnosticsRedactor: Sendable {
 
     /// Redacts all values in a dictionary of strings recursively.
     public static func redactStrings(in dict: [String: String]) -> [String: String] {
-        dict.mapValues { redact($0) }
+        dict.reduce(into: [:]) { result, item in
+            let key = item.key.lowercased().filter { $0.isLetter || $0.isNumber }
+            let sensitive = ["invite", "rawinvite", "joinkey", "pairsecret", "completionhandle", "bearer", "credential", "devicecredential", "authorization"]
+            result[item.key] = sensitive.contains(key) ? redactedMarker : redact(item.value)
+        }
     }
 }

@@ -1,5 +1,24 @@
 # Local CI
 
+## Focused jobs shutdown mitigation (#1276)
+
+```sh
+uv run --frozen python -B -m unittest scripts.test_job_shutdown -v
+```
+
+These standalone checks reuse the synthetic-org/real-job venue, with real
+SQLite and owned Linux subprocesses. A controlled lifespan uses stand-in
+background producers without a server, listeners or providers to observe TERM
+before runner drain and KILL/finalizer completion before DB close. The job
+terminal check drives the real production writer and resume hook, including a
+normal-resume positive control with an open queue. Clock waiting is accelerated
+for the 30-second policy check; shell signals/sleeps and migration signals are
+intercepted for the 60-second wrapper checks. The generated daemon service bytes
+and desktop child/control waits are checked as well. Mac managed-child stop
+execution remains a separate macOS native venue. These checks add no required
+CI check or E2E trigger; retired Python units and skipped general integration
+are not run.
+
 ## Focused memory compaction and writer salience (THR-366 PR-B/C)
 
 ```sh
@@ -3448,10 +3467,45 @@ checks change systemd hardening, required CI selection or workflow triggers.
 
 ## Fixed remote-access helper (THR-327 slice 3a)
 
+The slice 3b-1 token-reader sub-part uses the existing standalone venue:
+`uv run --frozen pytest scripts/test_installer_token_custody.py -v --tb=short`.
+It drives real temp-root provisioning, install admission and drift with a fake
+service manager, real FDs, source swaps and metadata changes. Foreign ownership
+is simulated at the OS stat boundary without chown or sudo. Refusal must leave
+the managed file inventory unchanged and make zero service calls. It also checks
+the exact 64 KiB read bound, same-FD copying and rotation refusal. Enable/repair/
+ReplaceFailed helper integration, installed root startup, native polkit dialogs
+and packaged runtime acceptance remain NOT RUN; this adds no required CI check.
+
 `uv run --frozen --python /usr/bin/python3 pytest scripts/test_remote_access_helper.py -v --tb=short`
 uses the existing standalone script venue with a disposable private dbus-daemon,
 a fake polkit Authority, and temporary Unix sockets. System Python needs the
 already-required python3-gi/Gio; tests load its fixed distribution library path.
 No host bus, installed polkit definition, service, or live Headscale is touched.
-Native authentication dialogs and real slice-2 operation binding are NOT RUN.
+Native authentication dialogs are NOT RUN. Slice 2b-2 below covers the real
+operation binding using the retained temporary-socket venue.
 The source policy/bus definitions are not installed or wired into the package.
+
+
+THR-327 slice 2b-2 helper binding standalone verification (no system-bus/polkit
+install, live Headscale or Product E2E):
+
+```bash
+PYTHONPATH=$PWD uv run --frozen pytest scripts/test_pinned_pairing.py scripts/test_identity_ingress.py scripts/test_managed_admission.py scripts/test_remote_access_helper.py -v --tb=short
+```
+
+Use the existing system-Python Gio venue (`uv run --frozen --python
+/usr/bin/python3 pytest ...`) to prepare a compatible task-local environment
+when the default interpreter cannot load system `gi`. Bound tests use real
+private Unix sockets/store/manager/registry and the retained private Gio bus;
+only root-peer and protected-release-record observations are simulated. They
+cover immutable approval/rejection, anchored CAS at actual mutation admission,
+read-only status/cursor, targeted revoke/incomplete cleanup, legacy projection,
+Unicode/frame bounds, private socket custody, and kernel wrong-UID refusal.
+The expired-grant regression opens A/B HTTP, SSE and attributed WS streams before
+A's valid persisted credential deadline, crosses it with the real clock, then
+revokes A through private Gio or directly through the control listener. It checks
+fresh helper authorization, continued selection of expired grants, durable deny
+before A's closures and continued B delivery. No production clock seam is added.
+Installed package activation and native password dialogs remain NOT RUN.
+Required hosted checks remain Source Boundary Lint and Web Lint (Node 24).

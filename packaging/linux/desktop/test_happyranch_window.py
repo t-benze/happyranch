@@ -899,7 +899,8 @@ class ServiceTests(unittest.TestCase):
                 gi, repository = ModuleType("gi"), ModuleType("gi.repository")
                 gi.require_version = lambda *_args: None
                 repository.Gio = SimpleNamespace(ApplicationFlags=SimpleNamespace(FLAGS_NONE=0),
-                    SimpleAction=SimpleNamespace(new=lambda *_args: Widget()))
+                    SimpleAction=SimpleNamespace(new=lambda *_args: Widget()),
+                    Cancellable=lambda: SimpleNamespace(cancel=lambda: None))
                 repository.GLib = SimpleNamespace(set_prgname=lambda *_args: None, PRIORITY_DEFAULT=0,
                     unix_signal_add=lambda *_args: None,
                     idle_add=lambda callback, *args: callbacks.put((callback, args)))
@@ -1469,7 +1470,8 @@ class ServiceTests(unittest.TestCase):
         gi.require_version = lambda *_args: None
         repository = ModuleType("gi.repository")
         repository.Gio = SimpleNamespace(ApplicationFlags=SimpleNamespace(FLAGS_NONE=0),
-                                         SimpleAction=SimpleNamespace(new=lambda *_args: Widget()))
+                                         SimpleAction=SimpleNamespace(new=lambda *_args: Widget()),
+                                         Cancellable=lambda: SimpleNamespace(cancel=lambda: None))
         repository.GLib = SimpleNamespace(set_prgname=lambda *_args: None, PRIORITY_DEFAULT=0,
                                           unix_signal_add=lambda *_args: None,
                                           idle_add=lambda callback, *args: callbacks.put((callback, args)))
@@ -1607,6 +1609,334 @@ class ServiceTests(unittest.TestCase):
             with self.assertRaisesRegex(window.LaunchError, "different hand-written"):
                 self.service.remove_legacy()
             self.assertEqual(path.read_bytes(), b"changed after offer")
+
+
+class RemoteAccessTests(unittest.TestCase):
+    """Drive the shipped window with GI/transport doubles, never a host bus."""
+
+    @staticmethod
+    def snapshot(phase: str = "pending", ready: bool = True) -> dict:
+        device = {"label": "Travel laptop", "fingerprint": "0123456789abcdef01234567",
+                  "comparison_phrase": "clay meadow river"}
+        return {"phase": phase, "ready": ready, "devices": [dict(device, label="Paired laptop")],
+                "pending": device if phase == "pending" else None, "selected": None}
+
+    def exercise(self, check: Callable, snapshot: dict | None = None, *,
+                 chinese: bool = False, connect_error: bool = False,
+                 hostname: str = "home-host") -> None:
+        self.data = snapshot if snapshot is not None else self.snapshot()
+        self.calls, self.pending, self.callbacks = [], [], queue.Queue()
+        test = self
+
+        class Widget:
+            def __init__(self, **kwargs: object) -> None:
+                self.label = kwargs.get("label", "")
+                self.children, self.signals = [], {}
+                self.parent, self.sensitive = None, True
+
+            def connect(self, name: str, callback: Callable) -> None:
+                self.signals[name] = callback
+
+            def get_children(self) -> list:
+                return self.children[:]
+
+            def get_parent(self) -> object:
+                return self.parent
+
+            def add(self, child: object) -> None:
+                child.parent = self
+                self.children.append(child)
+
+            def pack_start(self, child: object, *_args: object) -> None:
+                self.add(child)
+
+            def remove(self, child: object) -> None:
+                self.children.remove(child)
+                child.parent = None
+
+            def set_sensitive(self, value: bool) -> None:
+                self.sensitive = value
+
+            def set_markup(self, _value: str) -> None:
+                test.fail("device metadata must use plain GTK text")
+
+            def __getattr__(self, _name: str) -> Callable:
+                return lambda *_args: None
+
+        class Reply:
+            def __init__(self, value: object) -> None:
+                self.value = value
+
+            def unpack(self) -> tuple:
+                return (json.dumps(self.value),)
+
+        class Error(Exception):
+            pass
+
+        class Connection:
+            closed = False
+
+            def is_closed(self) -> bool:
+                return self.closed
+
+            def set_exit_on_close(self, value: bool) -> None:
+                test.assertFalse(value, "system-bus loss must not terminate the window")
+
+            def call(self, *args: object) -> None:
+                test.calls.append(args)
+                method, callback = args[3], args[-2]
+                if method in {"Status", "NextDevice"}:
+                    test.callbacks.put((callback, (self, Reply(test.data), args[-1])))
+                else:
+                    test.pending.append((callback, args[-1]))
+
+            def call_finish(self, result: object) -> Reply:
+                if isinstance(result, Exception):
+                    raise result
+                return result
+
+            def close(self, *_args: object) -> None:
+                self.closed = True
+
+        class Cancellable:
+            cancelled = False
+
+            def cancel(self) -> None:
+                self.cancelled = True
+
+        connection = Connection()
+        self.connection = connection
+        self.Error = Error
+        self.cancel = Cancellable()
+        shell, app = Widget(), Widget()
+        self.shell = shell
+
+        def descendants(widget: Widget) -> list:
+            return [widget] + [item for child in widget.children for item in descendants(child)]
+
+        self.labels = lambda: [widget.label for widget in descendants(shell) if widget.label]
+
+        def pump() -> None:
+            for _ in range(50):
+                if self.callbacks.empty():
+                    return
+                callback, args = self.callbacks.get_nowait()
+                callback(*args)
+            self.fail("unexpected automatic retry or queued action")
+
+        def find_button(label: str) -> Widget:
+            matches = [w for w in descendants(shell) if w.label == label and "clicked" in w.signals]
+            self.assertEqual(len(matches), 1, f"missing or duplicate action: {label}; {self.labels()}")
+            return matches[0]
+
+        def click(label: str) -> None:
+            widget = find_button(label)
+            self.assertTrue(widget.sensitive, f"disabled action: {label}")
+            widget.signals["clicked"](widget)
+            pump()
+
+        self.click, self.find_button = click, find_button
+
+        def respond(value: object) -> None:
+            self.assertEqual(len(self.pending), 1)
+            callback, method = self.pending.pop()
+            callback(connection, value if isinstance(value, Exception) else Reply(value), method)
+            pump()
+
+        self.respond = respond
+
+        def connect_bus(*args: object) -> None:
+            self.assertEqual(args[0], "unix:path=/run/dbus/system_bus_socket")
+            callback = args[-2]
+            self.callbacks.put((callback, (None, None, None)))
+
+        def finish_connect(_result: object) -> Connection:
+            if connect_error:
+                raise Error("org.freedesktop.DBus.Error.ServiceUnknown")
+            return connection
+
+        def run_app(_args: list) -> int:
+            app.signals["activate"](app)
+            try:
+                pump()
+                check()
+                return 0
+            finally:
+                shell.signals["delete-event"]()
+
+        app.run = run_app
+        gi, repository = ModuleType("gi"), ModuleType("gi.repository")
+        gi.require_version = lambda *_args: None
+        repository.Gio = SimpleNamespace(ApplicationFlags=SimpleNamespace(FLAGS_NONE=0),
+            SimpleAction=SimpleNamespace(new=lambda *_args: Widget()), Cancellable=lambda: self.cancel,
+            DBusConnection=SimpleNamespace(new_for_address=connect_bus,
+                new_for_address_finish=finish_connect),
+            DBusConnectionFlags=SimpleNamespace(AUTHENTICATION_CLIENT=1, MESSAGE_BUS_CONNECTION=2),
+            DBusCallFlags=SimpleNamespace(NONE=0, ALLOW_INTERACTIVE_AUTHORIZATION=1),
+            DBusError=SimpleNamespace(get_remote_error=lambda error: str(error)))
+        repository.GLib = SimpleNamespace(set_prgname=lambda *_args: None, PRIORITY_DEFAULT=0,
+            unix_signal_add=lambda *_args: None, Error=Error,
+            VariantType=SimpleNamespace(new=lambda signature: signature),
+            idle_add=lambda callback, *args: self.callbacks.put((callback, args)))
+        repository.Gtk = SimpleNamespace(Application=lambda **_kwargs: app,
+            ApplicationWindow=lambda **_kwargs: shell, Box=Widget, Label=Widget, Button=Widget,
+            ScrolledWindow=Widget, Separator=Widget, Orientation=SimpleNamespace(VERTICAL=0, HORIZONTAL=1),
+            PolicyType=SimpleNamespace(NEVER=0, AUTOMATIC=1))
+        repository.WebKit2 = SimpleNamespace()
+        # Startup remains idle: these checks own remote UI, not daemon lifecycle.
+        thread = SimpleNamespace(start=lambda: None, join=lambda *_args: None)
+        with tempfile.TemporaryDirectory() as scratch, \
+                patch.dict(sys.modules, {"gi": gi, "gi.repository": repository}), \
+                patch.dict(os.environ, {"LANG": "zh_CN.UTF-8" if chinese else "en_US.UTF-8"}), \
+                patch.object(window.threading, "Thread", return_value=thread), \
+                patch.object(window, "ServiceMode"), \
+                patch("socket.gethostname", return_value=hostname):
+            self.assertEqual(window.run_gui(Path("/synthetic-payload"), Path(scratch)), 0)
+
+    def open_details(self) -> None:
+        self.click("Settings and devices")
+
+    def verbs(self) -> list[str]:
+        return [call[3] for call in self.calls]
+
+    def test_remote_states_and_target_in_both_languages(self) -> None:
+        cases = (("off", False, "Not set up", "尚未设置"),
+                 ("ready", True, "Ready to invite", "可邀请设备"),
+                 ("pending", True, "Ready to invite", "可邀请设备"),
+                 ("paused", False, "Remote access ready; HappyRanch offline/restarting",
+                  "远程访问已就绪；HappyRanch 已离线或正在重启"),
+                 ("failed", False, "Remote access unavailable — Retry", "远程访问不可用 — 重试"))
+        for phase, ready, english, chinese in cases:
+            for zh in (False, True):
+                with self.subTest(phase=phase, chinese=zh):
+                    def check() -> None:
+                        self.assertIn(chinese if zh else english, self.labels())
+                        self.click("设置与设备" if zh else "Settings and devices")
+                        self.assertIn("此电脑上的 HappyRanch：home-host" if zh else
+                                      "HappyRanch on home-host", self.labels())
+                        self.assertFalse(any("admin" in str(label).lower() for label in self.labels()))
+                        self.assertEqual(self.verbs(), ["Status", "Status"])
+                    self.exercise(check, self.snapshot(phase, ready), chinese=zh)
+        self.exercise(lambda: self.assertIn("Not set up", self.labels()), connect_error=True)
+
+    def test_remote_metadata_is_plain_bounded_and_not_derived_from_fingerprint(self) -> None:
+        data = self.snapshot()
+        data["pending"]["label"] = "&lt;b&gt;OS device&lt;/b&gt;" + "x" * 100
+        data["pending"]["comparison_phrase"] = "&lt;meadow&gt;"
+        def check() -> None:
+            self.open_details()
+            self.assertIn("Device: " + ("<b>OS device</b>" + "x" * 100)[:96], self.labels())
+            self.assertIn("Comparison phrase: <meadow>", self.labels())
+            self.assertIn("Stable-ID fingerprint: 0123456789abcdef01234567", self.labels())
+            self.assertNotIn("Device: 0123456789abcdef01234567", self.labels())
+            self.assertIn("Devices with access (1)", self.labels())
+            self.assertIn("HappyRanch on " + ("<host>" + "h" * 100)[:96], self.labels())
+        self.exercise(check, data, hostname="<host>" + "h" * 100)
+
+    def test_remote_approval_requires_successful_helper_reply(self) -> None:
+        def check() -> None:
+            self.open_details()
+            stale_button = self.find_button("Approve device")
+            self.click("Approve device")
+            # A click delivered from the removed/disabled widget cannot queue work.
+            stale_button.signals["clicked"](stale_button)
+            self.assertIn("Waiting for system permission…", self.labels())
+            self.assertIn("Pending device", self.labels())
+            self.assertEqual(self.verbs(), ["Status", "Status", "ApprovePending"])
+            self.respond("not-ok")
+            self.assertIn("Action cancelled — no change", self.labels())
+            self.assertIn("Pending device", self.labels())
+            self.assertEqual(self.verbs(), ["Status", "Status", "ApprovePending"])
+        self.exercise(check)
+
+    def test_remote_cancel_preserves_state_and_queues_nothing(self) -> None:
+        for label, method in (("Approve device", "ApprovePending"),
+                              ("Reject device", "RejectPending"), ("Revoke device", "RevokeSelected")):
+            with self.subTest(method=method):
+                data = self.snapshot()
+                data["selected"] = data["devices"][0]
+                def check() -> None:
+                    self.open_details()
+                    before = self.labels()
+                    self.click(label)
+                    self.respond(self.Error("org.freedesktop.PolicyKit1.Error.Cancelled"))
+                    self.assertIn("Action cancelled — no change", self.labels())
+                    for text in before:
+                        self.assertIn(text, self.labels())
+                    self.assertEqual(self.verbs(), ["Status", "Status", method])
+                    self.assertEqual(self.pending, [])
+                    self.assertTrue(self.callbacks.empty())
+                    # Only a new deliberate click requests a fresh helper/polkit action.
+                    self.click(label)
+                    self.assertEqual(self.verbs(), ["Status", "Status", method, method])
+                    self.respond(self.Error("denied"))
+                self.exercise(check, data)
+
+    def test_remote_success_and_selection_come_only_from_fresh_helper_status(self) -> None:
+        for label, method, count in (("Approve device", "ApprovePending", 2),
+                                     ("Reject device", "RejectPending", 1),
+                                     ("Revoke device", "RevokeSelected", 0)):
+            with self.subTest(method=method):
+                def check() -> None:
+                    self.open_details()
+                    self.assertNotIn("Revoke device", self.labels())
+                    self.data = self.snapshot()
+                    self.data["selected"] = self.data["devices"][0]
+                    self.click("Next device")
+                    self.click(label)
+                    self.assertIn("Device: Paired laptop", self.labels())
+                    self.data = self.snapshot("ready")
+                    if count == 2:
+                        self.data["devices"].append(dict(self.snapshot()["pending"]))
+                    elif count == 0:
+                        self.data["devices"] = []
+                    self.respond("ok")
+                    self.assertIn(f"Devices with access ({count})", self.labels())
+                    self.assertIn("No pending device", self.labels())
+                    self.assertNotIn("Revoke device", self.labels())
+                    self.assertEqual(self.verbs(), ["Status", "Status", "NextDevice", method, "Status"])
+                    for call in self.calls:
+                        self.assertEqual(call[:3], ("ai.happyranch.RemoteAccess1",
+                            "/ai/happyranch/RemoteAccess1", "ai.happyranch.RemoteAccess1"))
+                        self.assertIsNone(call[4], "helper methods have no input arguments")
+                        self.assertEqual(call[6], 1 if call[3] == method else 0)
+                self.exercise(check)
+
+    def test_remote_errors_do_not_log_secrets_or_fingerprints(self) -> None:
+        canary = "synthetic-credential-invite-hrinvite2-secret"
+        fingerprint = "0123456789abcdef01234567"
+        output = io.StringIO()
+        handler = window.logging.StreamHandler(output)
+        root = window.logging.getLogger()
+        self.addCleanup(root.setLevel, root.level)
+        root.setLevel(window.logging.DEBUG)
+        root.addHandler(handler)
+        self.addCleanup(root.removeHandler, handler)
+        def check() -> None:
+            self.open_details()
+            self.click("Approve device")
+            self.respond(self.Error(canary + fingerprint))
+            self.assertIn("Action cancelled — no change", self.labels())
+            # A malformed read must not become display or logs either.
+            self.data = {"secret": canary, "fingerprint": fingerprint}
+            self.click("Refresh")
+            self.assertIn("Remote access unavailable — Retry", self.labels())
+            self.assertFalse(any(canary in label for label in self.labels()))
+        with contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
+            self.exercise(check)
+        self.assertNotIn(canary, output.getvalue())
+        self.assertNotIn(fingerprint, output.getvalue())
+
+    def test_remote_close_cancels_inflight_and_ignores_late_reply(self) -> None:
+        def check() -> None:
+            self.open_details()
+            self.click("Approve device")
+            self.shell.signals["delete-event"]()
+            self.assertTrue(self.cancel.cancelled)
+            self.assertTrue(self.connection.closed)
+            self.respond("ok")
+            self.assertEqual(self.verbs(), ["Status", "Status", "ApprovePending"])
+        self.exercise(check)
 
 
 if __name__ == "__main__":

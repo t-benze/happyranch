@@ -181,6 +181,7 @@ class SidecarUnitSpec:
     restart_sec: int = _DEFAULT_RESTART_SEC
     watchdog_sec: int = _DEFAULT_WATCHDOG_SEC
     binary_path: str = "/opt/happyranch/bin/happyranch-tsnet-sidecar"
+    home_transport: bool = False
 
 
 def render_sidecar_unit(spec: SidecarUnitSpec) -> str:
@@ -202,6 +203,10 @@ def render_sidecar_unit(spec: SidecarUnitSpec) -> str:
         "LoadCredential=enrollment-key:happyranch-tsnet-enrollment",
         "User=happyranch",
         "Group=happyranch",
+        *([
+            "Environment=SSL_CERT_FILE=/etc/happyranch/control-ca.pem",
+            "Environment=SSL_CERT_DIR=/etc/happyranch/empty-ca-directory",
+        ] if spec.home_transport else []),
         "NotifyAccess=main",
         f"RestartSec={spec.restart_sec}",
         f"WatchdogSec={spec.watchdog_sec}",

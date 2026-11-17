@@ -167,6 +167,20 @@ The post-terminal journal writer records ended producers without clearing unknow
 See [the lifecycle contract](contracts/runtime-lifecycle.md#ordinary-pause-unknown-crash-recovery-thr-350).
 This source change grants no restart, deploy or historical-row repair.
 
+## Graceful daemon stop (THR-357 Fix 3)
+
+Teardown closes runner/attachment and queue producer admission synchronously,
+then fences job-terminal resumes and sends job TERM before its first await and
+runner drain. The existing queue consumer/native drain remains in place. The
+final job phase waits the remainder of 30 seconds from TERM, sends KILL and
+waits for finalizers before diagnostics drain and DB close. Waiters remain
+`in_progress(blocked_on_job)` for startup recovery; no task transition is added.
+Daemon shell, packaged Linux service/desktop, in-repo Mac managed-child and
+legacy migration stops allow 60 seconds before KILL. The separate
+`happyranch-app` repo needs its own inventory/change; connector, sidecar and
+verifier units are separate processes. See [the shutdown contract](contracts/runtime-lifecycle.md).
+This mitigates graceful shutdown only; #1276 stays open.
+
 ## Frozen cleanup helpers (THR-346 S3)
 
 The hidden `--cleanup-helper` entry dispatches only `disk-sweep`,

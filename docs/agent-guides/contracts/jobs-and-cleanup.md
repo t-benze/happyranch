@@ -5,6 +5,18 @@
 > extends an earlier one, the later section controls; sections marked
 > "Historical" are retained evidence, not current instructions.
 
+## Graceful job shutdown (THR-357 Fix 3)
+
+After the existing runner/producer admission fence, `begin_job_shutdown()`
+suppresses job-terminal task resumes and sends TERM before runner drain. A
+spawn already awaiting its Process receives TERM on binding. After the
+unchanged queue consumer/native drain, `terminate_all_inflight()` waits the
+remainder of the 30-second grace, sends KILL and awaits finalizers before
+cleanup diagnostics and DB close. Shutdown never claims a parked task; startup
+recovery owns the next resume. Signal ownership and first-cause rules are
+unchanged. Daemon wrappers allow 60 seconds; task-terminal and runtime-timeout
+job grace remain 5 seconds. The full #1276 fix remains on hold.
+
 ## Jobs — automatic admission (THR309seq1)
 
 Obtain required content authorization in a thread BEFORE submission. From a

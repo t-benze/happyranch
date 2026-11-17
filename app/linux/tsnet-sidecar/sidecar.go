@@ -38,7 +38,8 @@ const ConnectorSocket = "/run/happyranch-connector/ingress.sock"
 const identityFrameLimit = 1024
 
 type Config struct {
-	Profile                                             string `json:",omitempty"`
+	ControlTLS                                          *HomeControlTLS `json:"control_tls,omitempty"`
+	Profile                                             string          `json:",omitempty"`
 	StateDir, CredentialFile, ControlURL, RoleIdentity  string
 	ExpectedPeer, ListenAddr, ConnectorAddr, DERPPolicy string
 	ExcludedDaemonPorts                                 []int `json:",omitempty"`
@@ -50,6 +51,9 @@ func (c Config) Validate() error {
 		return ErrConfiguration
 	}
 	if c.Profile != "" && (c.Profile != LinuxIdentityProfile || runtime.GOOS != "linux") {
+		return ErrConfiguration
+	}
+	if c.ControlTLS != nil && (c.Profile != LinuxIdentityProfile || c.ControlURL != homeURL || !c.ControlTLS.valid()) || strings.EqualFold(u.Hostname(), homeName) && c.ControlTLS == nil {
 		return ErrConfiguration
 	}
 	if !strings.HasPrefix(c.RoleIdentity, "home-sidecar-") || len(c.RoleIdentity) <= len("home-sidecar-") || (c.Profile == "" && strings.TrimSpace(c.ExpectedPeer) == "") {
@@ -84,7 +88,10 @@ func (c Config) Validate() error {
 	return nil
 }
 
-type EngineConfig struct{ StateDir, ControlURL, RoleIdentity, ExpectedPeer, Profile string }
+type EngineConfig struct {
+	StateDir, ControlURL, RoleIdentity, ExpectedPeer, Profile string
+	ControlTLS                                                *HomeControlTLS
+}
 type RedemptionReceipt struct{ Redeemed, Durable, ExpectedPeerVisible bool }
 type Engine interface {
 	Start(context.Context, EngineConfig, []byte) (RedemptionReceipt, error)
@@ -141,12 +148,15 @@ func (s *Sidecar) Start(ctx context.Context) error {
 	if err != nil {
 		return ErrCredential
 	}
-	receipt, err := s.engine.Start(ctx, EngineConfig{s.cfg.StateDir, s.cfg.ControlURL, s.cfg.RoleIdentity, s.cfg.ExpectedPeer, s.cfg.Profile}, credential)
+	receipt, err := s.engine.Start(ctx, EngineConfig{s.cfg.StateDir, s.cfg.ControlURL, s.cfg.RoleIdentity, s.cfg.ExpectedPeer, s.cfg.Profile, s.cfg.ControlTLS}, credential)
 	for i := range credential {
 		credential[i] = 0
 	}
 	if err != nil || !receipt.Redeemed || !receipt.Durable || (s.cfg.Profile == "" && !receipt.ExpectedPeerVisible) {
 		s.closeEngine()
+		if errors.Is(err, ErrConfiguration) {
+			return err
+		}
 		return ErrCredential
 	}
 	// Empty input means an already-consumed enrollment. Its marker must stay
@@ -397,7 +407,7 @@ func (s *Sidecar) proxy(ctx context.Context, inbound net.Conn) {
 			s.mu.Unlock()
 		}()
 		resolver, ok := s.engine.(interface {
-			peerIdentity(context.Context, string) (string, error)
+			peerIdentity(context.Context, string) (peerMetadata, error)
 		})
 		if !ok {
 			return
@@ -408,7 +418,7 @@ func (s *Sidecar) proxy(ctx context.Context, inbound net.Conn) {
 		if err != nil {
 			return
 		}
-		frame, err = identityFrame(identity)
+		frame, err = identityFrame(identity.stableID, identity.label)
 		if err != nil {
 			return
 		}
@@ -525,16 +535,19 @@ func (s *Sidecar) dialConnector(ctx context.Context) (net.Conn, error) {
 	return s.dialer.DialContext(ctx, "tcp", s.cfg.ConnectorAddr)
 }
 
-// Wire: HRID, version byte 1, big-endian uint16 UTF-8 byte length, StableID.
-// The bound includes the seven-byte header. HTTP begins immediately afterward.
-func identityFrame(stableID string) ([]byte, error) {
-	if strings.TrimSpace(stableID) == "" || !utf8.ValidString(stableID) || len(stableID)+7 > identityFrameLimit || strings.ContainsAny(stableID, "\r\n\x00") {
+// Wire v2: HRID, byte 2, uint16 StableID length + UTF-8 StableID,
+// uint16 display-label length + UTF-8 label. HTTP follows; total <= 1024.
+func identityFrame(stableID, label string) ([]byte, error) {
+	if strings.TrimSpace(stableID) == "" || !utf8.ValidString(stableID) || !utf8.ValidString(label) || len(stableID)+len(label)+9 > identityFrameLimit || strings.ContainsAny(stableID, "\r\n\x00") {
 		return nil, ErrEngine
 	}
-	frame := make([]byte, 7+len(stableID))
+	frame := make([]byte, 9+len(stableID)+len(label))
 	copy(frame, "HRID")
-	frame[4] = 1
+	frame[4] = 2
 	binary.BigEndian.PutUint16(frame[5:7], uint16(len(stableID)))
 	copy(frame[7:], stableID)
+	labelStart := 7 + len(stableID)
+	binary.BigEndian.PutUint16(frame[labelStart:labelStart+2], uint16(len(label)))
+	copy(frame[labelStart+2:], label)
 	return frame, nil
 }

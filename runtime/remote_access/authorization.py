@@ -20,6 +20,12 @@ if TYPE_CHECKING:
 from runtime.remote_access.identity import ConnectorIdentity
 
 
+def normalize_device_label(value: str) -> str:
+    """Bound plain display text; never an authorization or identity input."""
+    import unicodedata
+    return "".join(c for c in value if unicodedata.category(c) not in {"Cc", "Cf", "Cs"}).strip()[:96]
+
+
 @dataclass(frozen=True)
 class DeviceAuthorization:
     """A paired device's authorization record.
@@ -41,6 +47,10 @@ class DeviceAuthorization:
     credential_digest: str | None = None
     control_plane_id: str | None = None
     stable_node_id: str | None = None
+    device_label: str = ""
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "device_label", normalize_device_label(self.device_label))
 
     @property
     def re_pair_required(self) -> bool:
@@ -63,6 +73,10 @@ class PendingApproval:
     comparison_phrase: str
     expires_at: datetime
     device_id: str | None = None  # set only after durable approval
+    device_label: str = ""
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "device_label", normalize_device_label(self.device_label))
 
 
 @dataclass(frozen=True)

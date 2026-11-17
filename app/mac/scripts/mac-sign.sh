@@ -340,6 +340,9 @@ capture() {
 code_inventory() {
     local kind typ ident rel
     while IFS=$'\t' read -r kind typ ident rel; do
+        if [ "$kind" = main ] && [ -f "$RUN/baseline/HappyRanch.app/Contents/Helpers/happyranch-home-bridge" ]; then
+            printf 'exec\t2\tai.happyranch.HappyRanchApp.nested.12\tContents/Helpers/happyranch-home-bridge\n'
+        fi
         if [ "$kind" = main ] && [ -f "$RUN/baseline/HappyRanch.app/Contents/Helpers/happyranch-tsnet-sidecar" ]; then
             printf 'exec\t2\tai.happyranch.HappyRanchApp.nested.11\tContents/Helpers/happyranch-tsnet-sidecar\n'
         fi

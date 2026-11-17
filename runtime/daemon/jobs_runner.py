@@ -125,6 +125,7 @@ class _JobRegistration:
     output_process: asyncio.subprocess.Process | None = None
     output_error: Exception | None = None
     org_fence_fd: int | None = None
+    shutdown_term_at: float | None = None
 
     @property
     def key(self):
@@ -387,6 +388,7 @@ _HEAD_CAP_BYTES = 65536  # spec §3.1, §6.2
 
 _RESUME_MAIN_LOOP: asyncio.AbstractEventLoop | None = None
 _ORCH_RESOLVER: "Callable[[str], Orchestrator | None] | None" = None
+_JOBS_SHUTTING_DOWN = False
 
 
 def attach_jobs_resume_main_loop(
@@ -399,7 +401,8 @@ def attach_jobs_resume_main_loop(
     wired up.  Mirrors ``_attach_thread_queue_wiring`` / ``attach_thread_queue``
     in decoupling the runner from the daemon state.
     """
-    global _RESUME_MAIN_LOOP, _ORCH_RESOLVER
+    global _RESUME_MAIN_LOOP, _ORCH_RESOLVER, _JOBS_SHUTTING_DOWN
+    _JOBS_SHUTTING_DOWN = False
     _RESUME_MAIN_LOOP = loop
     _ORCH_RESOLVER = orch_resolver
 
@@ -417,6 +420,8 @@ def fire_resume_check_for_job(org: "object", job_id: str) -> None:
     Safe to call even when no orchestrator is attached (e.g., in tests that
     don't wire a full daemon); silently no-ops in that case.
     """
+    if _JOBS_SHUTTING_DOWN:
+        return  # Startup recovery owns these waiters after this daemon stops.
     orch = getattr(org, "orchestrator", None)
     if orch is None:
         return
@@ -701,6 +706,10 @@ async def run_job(
 
     proc.stdin.write(script_text.encode("utf-8"))
     proc.stdin.close()
+    if registration is not None and _JOBS_SHUTTING_DOWN:
+        # A spawn already awaiting its Process at the early fence still owns
+        # its original registration; signal it as soon as it binds.
+        _term_for_shutdown(registration)
 
     stdout_head: list[bytes] = []
     stderr_head: list[bytes] = []
@@ -902,24 +911,46 @@ async def terminate_jobs_for_task(
     return [r.job_id for r in signalled]
 
 
+def _term_for_shutdown(registration: _JobRegistration) -> None:
+    if registration.shutdown_term_at is not None:
+        return
+    try:
+        if _signal_registered_job(registration, 'daemon_shutdown'):
+            registration.shutdown_term_at = asyncio.get_running_loop().time()
+    except Exception:
+        logging.getLogger(__name__).exception('Retaining unattributable job shutdown ownership')
+
+
+def begin_job_shutdown() -> None:
+    """Fence terminal-job resumes and send TERM without delaying runner drain.
+
+    Called after DaemonState's admission fence, before its first shutdown await.
+    Repeated calls retain the original TERM time and first actual signal cause.
+    """
+    global _JOBS_SHUTTING_DOWN
+    _JOBS_SHUTTING_DOWN = True
+    for registration in tuple(_INFLIGHT.values()):
+        _term_for_shutdown(registration)
+
+
 async def terminate_all_inflight(
-    *, grace_seconds: int = 5, persist_timeout_seconds: float = 5.0,
+    *, grace_seconds: int = 30, persist_timeout_seconds: float = 5.0,
 ) -> None:
-    logger = logging.getLogger(__name__)
-    signalled = []
-    for r in tuple(_INFLIGHT.values()):
-        try:
-            if _signal_registered_job(r, 'daemon_shutdown'):
-                signalled.append(r)
-        except Exception:
-            logger.exception('Retaining unattributable job shutdown ownership')
-    if signalled:
-        await asyncio.sleep(grace_seconds)
+    # Also covers callers without the early phase and any Process that bound
+    # during the runner drain. Grace is measured from each actual TERM, so a
+    # slow drain spends that grace rather than adding another 30 seconds.
+    begin_job_shutdown()
+    signalled = [r for r in tuple(_INFLIGHT.values()) if r.shutdown_term_at is not None]
+    now = asyncio.get_running_loop().time()
+    remaining = max((r.shutdown_term_at + grace_seconds - now for r in signalled
+                     if r.process is not None and r.process.returncode is None), default=0)
+    if remaining > 0:
+        await asyncio.sleep(remaining)
     for r in signalled:
         try:
             _signal_registered_job(r, 'daemon_shutdown', signal.SIGKILL)
         except Exception:
-            logger.exception('Retaining changed job shutdown ownership')
+            logging.getLogger(__name__).exception('Retaining changed job shutdown ownership')
     runners = [r.task for r in tuple(_RUNNER_TASKS.values()) if not r.task.done()]
     if runners:
         # Timeout does not cancel finalization or certify cleanup.

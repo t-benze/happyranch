@@ -7,6 +7,12 @@ produces a **different signed/notarized/stapled ZIP with a new SHA256**.
 Signing is not publication. Only the founder performs the publication steps below;
 the local agent never uploads or publishes.
 
+For an unsigned internal candidate that macOS refuses to open, follow the
+[unsigned-candidate installation step](../../app/mac/README.md#installing-an-unsigned-internal-candidate).
+It does not apply to signed and notarized builds, which must open normally;
+never strip quarantine from a signed/notarized final ZIP or app, or during the
+quarantined-download acceptance case. The signing agent's hard rules below are unchanged.
+
 The app embeds pinned **Sparkle 2.10.1**. The updater starts only when the
 bundle's `SUPublicEDKey` is canonical base64 of exactly 32 bytes. Optional build
 argument `--sparkle-public-key PUBLIC_KEY` retains strict validation. With a
@@ -751,7 +757,9 @@ mini's existing Jenkins workspace under `retained/<SOURCE_SHA>-<run-id>/`.
 Compare its byte size and SHA256 with that record and adjacent `identity.json`
 before extraction, then compare the recorded app-executable, daemon and CLI
 SHA256 values. These ZIP bytes passed the ordinary strict shipping verifier;
-they are unsigned internal builds, not public releases. Scratch cleanup leaves
+they are unsigned internal builds, not public releases; use the
+[unsigned-candidate installation step](../../app/mac/README.md#installing-an-unsigned-internal-candidate)
+only if macOS refuses to open one because it is quarantined and unsigned. Scratch cleanup leaves
 this workspace copy intact, including after a later runtime-probe failure.
 Only two ZIPs are retained; a future build may evict the older one. The ZIP is
 not a Jenkins archived artifact. If the recorded copy is gone, a rebuild is a

@@ -809,6 +809,36 @@ trust state is fixed under `/var/lib/happyranch-connector`, sidecar state under
 no key generation, pairing or secret diagnostics are added. Existing files
 refuse; partial failure has no automatic rollback or overwrite recovery.
 
+The 3b-1b writer sub-part uses exclusive `.<fixed-name>.pending` files under
+the protected `/etc/happyranch` directory. It bounds each write to 64 KiB,
+sets the exact final owner/mode, fsyncs the complete file, revalidates pinned
+literal parent identities/owners/modes and the pending regular single-link
+inode, then uses descriptor-relative Linux `renameat2(RENAME_NOREPLACE)` and
+fsyncs the parent. Missing libc/kernel support refuses without fallback; even a
+target arriving at rename is retained. Fresh preflight
+refuses any existing final or pending entry across all six provisioning files
+before publication; normalized config sizes are checked before staging. It
+never repairs foreign metadata. Ordinary write failure
+removes only the inode it exclusively created, preserving a substituted entry.
+A crash can retain pending residue; a later file failure can retain earlier
+complete files. There is no multi-file recovery transaction. Generated identity
+configs and unit-profile selection remain pending. The records-first follow-up
+adds only `install-transaction.json` to the fixed writer map, root:root 0600;
+arbitrary destinations still refuse. Version-1 provision and transaction bodies
+contain exactly `version`, matching `layout`, `digests` and `phase`, with fixed
+lowercase SHA-256 digest keys for connector/sidecar/policy JSON, release-daemon
+JSON and daemon.token (plus provision.json for a transaction). Only provision
+phase `provisioned` and transaction phase `prepared` are accepted. Unknown,
+duplicate or secret fields, paths, versions and phases refuse before writing.
+The legacy provision command still emits its original unversioned provenance;
+generation of the new records/configs and their install selection remain pending.
+The legacy provenance reader does not admit versioned records. Any final or
+pending transaction entry refuses provision/install/uninstall/drift before
+publication or service calls, without reading it as recovery authority.
+Legacy provenance/config/unit contracts remain unchanged.
+Replacement/disable recovery (3b-1c), zero-input helper/package wiring with H2
+(3b-1d) and home transport (3b-2) remain unavailable in this sub-part.
+
 Deb install refuses incomplete/unsafe/changed provisioning before unit writes
 or service start. Source installs without a provisioning record retain their
 independently provisioned configs, but also require the root-owned release install
@@ -902,6 +932,16 @@ selects `FileDaemonCredentialProvider`, as on main.
 The root verifier reads no token and has no `LoadCredential`. The root installer
 copies the validated provisioning input (default `<data_home>/daemon.token`) to
 `/etc/happyranch/daemon.token`, owned by `happyranch:happyranch`, mode 0600.
+Provisioning, install admission and drift checks require the opened source inode
+to belong to the validated release UID: exact 0600, regular, single-link,
+nonempty UTF-8, at most 64 KiB. The reader pins every literal no-follow parent
+and checks named/opened device and inode before and after reading. It rechecks
+file owner, group, mode, link count, size, mtime and ctime, returns only bytes
+from that FD, and refuses before publication or service calls when validation
+fails. A changed source digest still refuses; this sub-part does not add token
+rotation, generated configuration, transactional replacement/disable or helper
+installation methods. The future fixed helper must derive the token path from
+the authenticated/recorded release home, never a requester-supplied path (H2).
 The connector reads this validated copy through the unchanged file provider;
 it never reads the provisioning input directly. Daemon-token custody is unchanged
 from main. File/PID hints alone are
@@ -942,6 +982,56 @@ installation, daemon/service restart, package build or Mac acceptance was
 performed by this source slice. The retained standalone installer-script tests
 cover temp-root/fake-manager behavior; required PR checks remain lint/static.
 
+### Linux home control/DERP transport (THR-327 slice 1b)
+
+The Linux identity profile accepts a protected sidecar `control_tls` record with
+`dial_ip` (RFC1918 IPv4) and `ca_sha256` (64 lowercase hex CA DER fingerprint),
+only with `ControlURL=https://control.happyranch.invalid:8443`. The canonical home
+name requires that record. The dedicated process admits the fixed root-owned,
+single-link, bounded exact-one-CA `/etc/happyranch/control-ca.pem` and protected
+empty `/etc/happyranch/empty-ca-directory` before constructing clients (exact
+root:happyranch 0640 CA file and root:root 0755 empty directory). Setup refuses
+with an `ErrConfiguration` error before tsnet construction/dial, preserved by
+the sidecar without consuming enrollment. Only home-profile units, selected with
+`SidecarUnitSpec.home_transport=True`, add the two fixed
+`SSL_CERT_FILE`/`SSL_CERT_DIR` Environment lines. The flag defaults to false;
+legacy/non-home units remain byte-identical and retain OS system-root lookup
+without SSL_CERT overrides. Slice 3b must set the flag when generating the home
+profile. These lines locate the home trust files; the explicit home-only
+upstream verifier supplies authentication. All other hardening, including MDWE,
+is unchanged.
+
+An ephemeral loopback CONNECT forwarder verifies upstream TLS with only the
+admitted home CA and fixed DNS identity, before returning 200. Its only targets
+are `control.happyranch.invalid:8443` and `:443`, both mapped to literal
+`dial_ip:8443`; absolute HTTP and other/malformed/oversize requests close. It
+re-presents a process-local in-memory leaf to pinned tsnet, using a separate
+ephemeral-only forced fallback pool. Internally owned proxy/root/resolver setup
+precedes clients. Ambient proxy/bypass/keylog/GODEBUG and all `TS_` overrides
+refuse without value echo. There is no direct/public retry or host trust/DNS
+change. Upstream verification/dial or listener failure closes owned streams;
+shutdown/cancellation closes transport and tsnet. Malformed local TLS after
+CONNECT also seals admission; EOF or a local TCP reset from a cancelled
+controlhttp/DERP attempt closes only its own stream. Closed home engines cannot
+create new listeners. Home/address changes require a new dedicated process,
+retaining canonical durable identities.
+
+The supported Go tests exercise synthetic CA/environment admission, real pinned
+control `/key` + Noise registration/canary and independent DERP region clients
+in fresh subprocesses, plus CONNECT rejection/closure, same-CA renewal, redirects
+and an independent loopback direct-TCP fallback decoy. Synthetic full tsnet
+compositions reach Running/map/private DERP and close admission on failure or
+cancellation. Each lifecycle case first cancels a local handshake with a real
+TCP reset, then waits for the fixture's DERP receipt within the Up context before
+triggering teardown; Running alone does not establish DERP readiness.
+Two processes isolate ports/issuers; a renewed-endpoint restart
+retains node identity and consumed authority while replacing local issuer/DNS
+state. Slice 3b owns protected config/CA/leaf/map generation and transactional
+protected dial-IP publication. Successful installed-path startup, full packaged
+lifecycle/MDWE, generated Headscale maps, packet-wide public/DNS egress exclusion
+and native Darwin remain NOT RUN. See the [sidecar README](../../../app/linux/tsnet-sidecar/README.md) and
+[Round-7 specification](../../superpowers/specs/2026-11-16-one-click-remote-access.md#6-invite-selected-bootstrap-and-secret-handling).
+
 ### Linux managed identity ingress v1 (THR-327 slice 1a)
 
 The explicit `linux-managed-identity-v1` profile uses the fixed
@@ -958,16 +1048,22 @@ selection. An empty paired set grants no access.
 
 Each tsnet connection resolves `LocalClient.WhoIs(remote IP:port)` and requires a
 nonempty `Node.StableID`, with no hostname/IP fallback. It opens one fresh Unix
-connection and writes one frame: ASCII `HRID`, byte version 1, uint16 big-endian
-UTF-8 byte count, then StableID; total at most 1024 bytes. HTTP follows unchanged.
+connection and writes one v2 frame: ASCII `HRID`, byte `2`, uint16 big-endian
+UTF-8 StableID byte count + StableID, then uint16 big-endian label byte count +
+UTF-8 display label (possibly empty); total at most 1024 bytes. The label comes
+from that same WhoIs response: `Node.Hostinfo.Hostname`, else `Node.ComputedName`,
+else empty. The connector still accepts v1 (no label) exactly as before. HTTP follows unchanged.
 The Python listener lives in `diy_provider.py` with its managed transport override
 in `managed_provider.py`; the shared `httpd.py` handler checks SO_PEERCRED against
 the fixed happyranch service UID before frame parsing. Unknown version, missing,
-empty, oversize, invalid UTF-8, CR/LF/NUL, truncated or duplicate frames close.
+empty StableID, oversize frame, invalid UTF-8 in either field, CR/LF/NUL in
+StableID, truncated or duplicate frames close. Overlong label bytes that exceed
+the total frame bound close; valid longer names are normalized and capped below.
 Initial frame/request-line reads have a two-second socket timeout. The socket is
 0600 in an owned 0700 directory; existing/unsafe socket paths refuse rather than
 being overwritten. Identity lives only in the handler's request-local
-`ingress_node_identity` context; reserved HappyRanch/Tailscale identity headers
+`ingress_node_identity` context; the separate `ingress_device_label` context is
+display-only and never enters admission. Reserved HappyRanch/Tailscale identity headers
 are stripped, including duplicates, while the existing device-credential header
 continues to carry the device bearer. In the managed identity profile, slice
 2b-1 uses this verified frame for pinned pairing and every-request admission.
@@ -1025,9 +1121,29 @@ authorization.admit(store, credential, stable_node_id, control_plane_id, now) lo
 current anchored trust and checks digest, credential epoch, expiry, revocation,
 connector audience and exact pin. Its verdict carries device ID and epoch for stream
 registration. Identity comes only from trusted plain arguments: WhoIs StableID and
-connector-configured control-plane ID, never headers, hostname or address. Labels
-currently use bounded escaped identity text and a StableID fingerprint because this
-slice has no OS-label transport. Headscale membership grants no product authority.
+connector-configured control-plane ID, never headers, hostname or address.
+The private HRID v2 label is recorded on pending approval, delivery and paired
+device records as optional string `device_label`, without a snapshot version
+change or migration. Non-string values refuse; absent fields in v2/v3 stores
+load as empty. One Python normalizer strips Unicode Cc/Cf controls and format
+characters (including bidi overrides/isolates), drops invalid surrogate code
+points, trims and caps plain text at 96 characters before storage/projection.
+Helper Status uses this recorded name, with `stable_node_id[:96]` only for empty
+names. Recorded names also have a per-snapshot JSON-escaped byte budget: serialize
+the complete mutation envelope with recorded names empty, exact legacy fallbacks
+intact, the largest duplicate target, the longest mutation method, a 24-byte
+finite-float deadline and the newline. If this fixed cost is `F` and there are
+`N` recorded names, each projected name gets at most
+`floor((32768 - F) / (N + 1))` bytes under the helper's existing ASCII escaping.
+Keep the longest whole-character prefix within that budget (at most the original
+96 characters); the extra name slot covers the duplicated target. Stored names
+are unchanged. This keeps Status and all three mutations within the existing
+32768-byte frame at the 32-device capacity. Legacy fallbacks are never shortened;
+unrepresentable non-label metadata still refuses the projection without vetoing
+store load. The existing helper public projection escapes markup; fingerprint and
+comparison phrase remain the comparison authority. Names never affect matching,
+pinning, authorization, revocation or stream registration. Historical device
+counts and expired grants remain loadable. Headscale membership grants no product authority.
 The managed identity listener wires this verdict into request/stream admission
 (slice 2b-1); existing DIY and legacy transport paths keep their versioned behavior.
 
@@ -1063,8 +1179,9 @@ one-use `credential` only for the same tuple after durable approval. Failures
 return HTTP 403 `pairing_denied`. These exact paths accept no query string.
 The legacy `POST /pair` ceremony grants no authority on this listener.
 
-Framing and pin validation have different bounds: HRID accepts at most 1017
-UTF-8 bytes, rejects blank identity and CR/LF/NUL; pins accept at most 256
+Framing and pin validation have different bounds: HRID v1 accepts at most 1017
+UTF-8 identity bytes; v2 accepts at most 1015 minus the label's UTF-8 byte count.
+Both reject blank identity and CR/LF/NUL; pins accept at most 256
 characters and reject every C0 character, DEL and surrogate. A frame-valid
 identity that pins refuse (for example 257 ASCII characters or a nonblank
 identity containing TAB) receives a clean 403, without identity/secret echo or
@@ -1097,8 +1214,9 @@ unfinished ceremonies still burn. Standalone verification:
 These tests use real temporary Unix sockets, synthetic protected state and
 controlled upstream handles. The WS attribution case supplies a synthetic
 permitted template to reach registration, separately from the shipped policy's
-deny gate. Native WS protocol behavior, live Headscale, helper binding,
-installation and service recovery remain separate acceptance work.
+deny gate. Native WS protocol behavior, live Headscale,
+installation and service recovery remain separate acceptance work. The helper
+binding is covered in the slice 2b-2 section below.
 
 ## Fixed Linux helper source (THR-327 slice 3a)
 
@@ -1116,8 +1234,8 @@ The helper captures caller/UID, target, ownership and snapshot generation before
 authorization, then revalidates after it. The 120-second deadline cancels an
 outstanding polkit check; uncertain cancellation seals further mutations until
 cancellation is acknowledged or that check's terminal reply arrives. A terminal
-reply releases the dialog slot even if subsequent deadline/target expiry refuses
-the mutation; a late reply never authorizes an expired mutation. One dialog
+reply releases the dialog slot even if the authorization deadline or pending-request
+expiry refuses the mutation; a late reply never authorizes an expired request. One dialog
 is allowed globally. Per-unique-name cursors disappear on disconnect. Status
 contains only bounded public summaries. Error/log categories are closed.
 IssueInvite and all install/lifecycle/R3 methods are absent, so invite issuance's
@@ -1130,9 +1248,97 @@ calling the operation. A ready/commit handshake keeps the connector lock held
 while root rechecks the live caller UID and deadline. After its final potentially
 blocking status revalidation, the handler checks the monotonic deadline again
 immediately before the operation, still under that lock.
-The real binding to slice 2 is a serial integration leg
-after both slices merge; no current connector listener installs this handler.
-It must preserve generation/ownership/expiry checks, transactional approval and
-revocation stream closure. Fixed production control path:
+Slice 2b-2 binds this interface in the Linux system HRID supervisor to its
+existing serving PinnedPairingManager, AtomicFileTrustStateStore and attributed
+registry. It does not construct a second ceremony owner for Status/NextDevice or
+diagnostics. The supervisor starts/stops a service-owned 0600 private Unix socket
+inside the service-owned 0700 runtime directory; existing entries/aliases refuse,
+and cleanup removes only its own socket inode. Kernel UID 0 is checked before
+parsing. No new network listener or app-selected configuration is introduced.
+The release UID comes from the existing fixed root-owned release record through
+the verifier's no-follow bounded reader/validator, and the helper independently
+compares its own protected UID. Provisioning/activation remain slice 3b.
+
+Snapshot reads validate state plus anchored generation under a shared file lock,
+without publishing or recovering ceremony state. The helper projection excludes
+legacy unpinned rows (including historical stores with more than 32 DIY devices);
+32 managed summaries and the 32768-byte frame remain hard request bounds. An
+oversized projection refuses the control request, never truncates/rejects the
+underlying legacy store. Labels never reconstruct authority: mutations reload
+the real pending generation and exact control-plane/StableID tuple. Snapshot and
+pending generations remain distinct, and None/False core results are refusals.
+
+The live manager RLock spans ready/commit and final revalidation, sharing local
+serialization with redeem/complete/invite. Each actual mutation also compares
+the expected anchored generation inside its exclusive file transaction, so a
+cross-process writer after final revalidation refuses. The file flock is never
+held across IPC or transport-close callbacks. Revoke maps the actual device ID,
+persists its deny before closing only that device's streams, and retains
+RevocationIncomplete as an unavailable result and failed control phase. The
+helper and control listener distinguish pending-request expiry from paired-credential
+expiry: expired grants remain listed and revocable, including their existing HTTP,
+SSE and attributed WS streams. Fresh polkit, captured identity/ownership, the
+authorization deadline and actual-admission anchored CAS still apply to revocation.
+ApprovePending and RejectPending both refuse expired pending requests.
+The serving loop retains incomplete-cleanup reporting/reconciliation without
+terminating other devices. Expired pending authority remains visibly failed and
+cannot be approved; read-only observations never burn it. Fixed production control path:
 `/run/happyranch-connector/control.sock`; no credential is returned by this
-control protocol. Native dialogs and the real operation binding remain unproven.
+control protocol. Native dialogs and installed service/package activation remain unproven.
+
+## Home invite encoder (THR-327 slice 3c-1)
+
+`runtime.remote_access.invite_v2.encode` is a pure, home-only envelope encoder.
+The normative schema, representations and bounds are the [section 6 v2 wire
+literals table](../../superpowers/specs/2026-11-16-one-click-remote-access.md#v2-wire-literals-pinned).
+It generates the invite ID and pairing secret with `secrets`, serializes compact
+sorted JSON without escaping slashes, and returns the private `invite_text`,
+`pair_secret_digest` and integer `expires_at`. The digest hashes the exact
+base64url secret's UTF-8 text, as consumed by `PinnedPairingManager.redeem`.
+For `issue_invite_record`, the caller converts that integer deadline to an aware
+UTC datetime. Callers floor fractional datetime deadlines before invoking the
+integer-only encoder; the encoder refuses floats and booleans. It never extends
+a deadline or truncates an oversized invite. The runtime endpoint is validated
+as canonical IPv4, an ASCII DNS/tailnet name (LDH labels of 1..63 bytes,
+253 bytes total), or bracketed IPv6, followed by exactly `:443`. Empty labels,
+edge hyphens, other host punctuation, IPv6 zone IDs and noncanonical IPv4
+refuse. Accepted endpoints are preserved byte-for-byte; the endpoint is not
+the control dial IP.
+
+`decode(invite_text, now=integer_unix_seconds)` uses an explicit clock, refuses
+v1 and reserved own-server/system trust, and checks the same schema, encodings,
+addresses, entropy, fingerprint, times and size limits. Both APIs perform no
+I/O or network access. Encoding always emits the fixed control URL without a
+slash; decoding also accepts the table's optional single trailing slash and
+normalizes only that URL. Results are immutable slotted primitive-field objects,
+with redacted display/repr and no Pydantic validation/copy/update API. Invalid
+construction, reinitialization, assignment and deletion raise constant-message
+`InviteError` refusals; those model refusal frames release input references
+before raising and retain no input-bearing structured or chained library error.
+Codec parsing refusals also leave library exception handlers before raising
+their closed category, so neither cause nor context retains a raw library
+exception, including malformed JSON, UTF-8 and address diagnostics.
+Explicit transport fields must never be logged or persisted as diagnostics.
+
+Assumption and division of checks (TASK-16835 manager ruling): row 5's
+“Exactly one CA DER with CA:TRUE” remains unchanged. A private bounded,
+forward-only DER TLV walker follows the reviewed Mac
+`RemoteInvite.swift` `InviteCertificate.validate` field order. It requires one
+complete Certificate SEQUENCE, no trailing bytes, a correctly ordered TBS and
+extensions wrapper, unique extension OIDs, and basicConstraints with cA exactly
+DER TRUE (`ff`). It rejects indefinite, nonminimal, truncated and overrunning
+lengths. The structure has fixed depth; extension iterations consume input.
+This is structural issuance validation, not full X.509 admission. It does not
+parse validity dates, signatures or keys: the Go sidecar's
+`homeTrustPolicy.admit` performs full `crypto/x509` parsing, CA/key-usage and
+validity checks at protected home-CA admission; the Mac verifier retains
+Security parsing plus its typed walker/validity checks. Those remain the trust
+boundary. No dependency or subprocess parser is added.
+
+Focused standalone verification:
+`uv run --frozen pytest scripts/test_invite_v2.py -v`. The tests copy the public
+Swift CA bytes and inline field vectors with source citations, check canonical
+encoder bytes using fixed test-side entropy, and hand the digest/deadline to the
+real pairing manager against temporary synthetic state. Swift's CA-expiration
+refusal is a downstream verifier check under the division above. This slice
+adds no issuance handler, helper operation, UI, service action or live 3c-2 flow.

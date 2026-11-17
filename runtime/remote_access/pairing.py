@@ -57,7 +57,7 @@ import secrets
 import threading
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
-from typing import Callable
+from typing import Callable, ContextManager
 
 from runtime.remote_access.authorization import (
     AuthorizationVerdict,
@@ -562,6 +562,7 @@ class PinnedPairingManager:
 
     def redeem(
         self, invite_secret: str, stable_node_id: str, control_plane_id: str, now: datetime,
+        *, device_label: str = "",
     ) -> RedeemedInvite | None:
         """Consume first, then bind the actual identity. Never restore an invite."""
         import hmac
@@ -601,6 +602,7 @@ class PinnedPairingManager:
                 phrase = "pair-" + "-".join(phrase_digest[i:i+4] for i in range(0, 16, 4))
                 state.pending_approval = PendingApproval(
                     tx.generation, pin[0], pin[1], _sha256(handle), phrase, invite.expires_at,
+                    device_label=device_label,
                 )
                 tx.commit()  # no handle escapes before the anchored write succeeds
                 return RedeemedInvite(tx.generation, handle, phrase, invite.expires_at)
@@ -627,9 +629,24 @@ class PinnedPairingManager:
                 and type(pin) is tuple and len(pin) == 2
                 and (pending.control_plane_id, pending.stable_node_id) == pin)
 
-    def approve_pending(self, expected_pending_generation: int, expected_tuple: tuple[str, str]) -> str | None:
+    def mutation_lock(self) -> ContextManager[None]:
+        """Serialize helper capture/handshake with all local ceremony writers.
+
+        This is the manager lock, never the auto-publishing file transaction.
+        Cross-process changes are checked in each actual mutation transaction.
+        """
+        return self._lock
+
+    @staticmethod
+    def _expect_generation(actual: int, expected: int | None) -> None:
+        if expected is not None and actual != expected + 1:
+            raise PairingError("trust_changed")
+
+    def approve_pending(self, expected_pending_generation: int, expected_tuple: tuple[str, str],
+                        *, expected_generation: int | None = None) -> str | None:
         """Approve only the tuple captured BEFORE fresh human authentication."""
         with self._lock, self._store.transaction() as tx:
+            self._expect_generation(tx.generation, expected_generation)
             state = tx.state
             pending = state.pending_approval
             if not self._matches(pending, expected_pending_generation, expected_tuple):
@@ -649,6 +666,7 @@ class PinnedPairingManager:
                 authorization_epoch=epoch, expires_at=now + timedelta(days=DEFAULT_CREDENTIAL_TTL_DAYS),
                 credential_digest=_sha256(credential), control_plane_id=pending.control_plane_id,
                 stable_node_id=pending.stable_node_id,
+                device_label=pending.device_label,
             ))
             state.current_device_id = None
             state.pending_approval = None
@@ -657,8 +675,10 @@ class PinnedPairingManager:
             self._delivery[device_id] = credential
             return device_id
 
-    def reject_pending(self, expected_pending_generation: int, expected_tuple: tuple[str, str]) -> bool:
+    def reject_pending(self, expected_pending_generation: int, expected_tuple: tuple[str, str],
+                       *, expected_generation: int | None = None) -> bool:
         with self._lock, self._store.transaction() as tx:
+            self._expect_generation(tx.generation, expected_generation)
             if not self._matches(tx.state.pending_approval, expected_pending_generation, expected_tuple):
                 tx.abort()
                 return False
@@ -693,7 +713,7 @@ class PinnedPairingManager:
         except StateStoreError:
             return None
 
-    def revoke_device(self, device_id: str) -> RevokeOutcome:
+    def revoke_device(self, device_id: str, *, expected_generation: int | None = None) -> RevokeOutcome:
         """Persist invalidation, then close ONLY this device before success."""
         if getattr(self._in_revoke, "active", False):
             raise RuntimeError("re-entrant revocation transaction rejected")
@@ -709,6 +729,7 @@ class PinnedPairingManager:
                 # the captured epoch under EX; a concurrent writer cannot lose
                 # its update or turn this snapshot into mutation authority.
                 with self._store.transaction() as tx:
+                    self._expect_generation(tx.generation, expected_generation)
                     current = tx.state
                     if ((current.pairing_epoch, current.revocation_epoch) != captured_epochs
                             or device_id not in current.devices):

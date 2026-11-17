@@ -207,6 +207,26 @@ identity, WhoIs failure or malformed frame closes it. Pinned tsnet v1.78.0 expos
 `WhoIsResponse.Node` and `tailcfg.Node.StableID`; verify real Headscale v0.25.1 behavior in M2. No
 hostname/IP fallback if absent.
 
+Slice 4a-0 extends this private frame for display only: HRID v2 carries uint16
+big-endian StableID length + UTF-8 StableID, then uint16 label length + UTF-8 label,
+after `HRID` and byte `2`. The total remains at most 1024 bytes; v1 remains accepted
+with no recorded label. Select the name from the same WhoIs response, preferring
+`Node.Hostinfo.Hostname`, then `Node.ComputedName`, else empty. Invalid UTF-8 or a
+frame exceeding the bound closes. Python strips control/format/bidi characters,
+trims and caps the display name at 96 characters before recording/projecting it.
+Optional string `device_label` on pending/delivery/device records needs no snapshot
+version change or migration. Helper Status falls back to `stable_node_id[:96]`
+only when the name is empty. The name never participates in authorization,
+pinning, matching, revocation or stream registration; fingerprint and phrase
+remain the comparison authority. Real Headscale hostname behavior remains an
+acceptance check, not a claim from synthetic tests.
+
+The helper projection further bounds recorded names by their JSON-escaped byte
+cost so the complete snapshot plus duplicate mutation target fits the unchanged
+32768-byte helper frame at capacity. This projection may shorten a recorded
+96-character name; persistence and the exact legacy fallback stay unchanged.
+The per-snapshot budget arithmetic is maintained in the remote-access contract.
+
 `ExpectedPeer` visibility is removed from **Linux new-profile** enrollment and restart readiness,
 including health diagnostics' single-expected-peer assumption. Keep durable state/consumed marker,
 private DERP/control, connector liveness, listener and watchdog gates. An empty paired set is
@@ -265,7 +285,7 @@ matching hostname, address or old credential. Existing unpinned managed devices 
 
 ## 6. Invite, selected bootstrap and secret handling
 
-**Round-7 proposed home wire contract (pending approval):** one text string, `hrinvite2:` +
+**Round-7 approved home wire contract (PR #1577):** one text string, `hrinvite2:` +
 base64url strict JSON with `v=2`, ≤4096 decoded / 5500 encoded bytes including
 prefix; refuse oversize, never truncate. Exact fields: `v`, `mode`, `control_url`, `control_plane_id`,
 `control_tls`, `home_endpoint`, `home_id`, `connector_id`, `invite_id` (128 random bits), `join_key`,
@@ -286,6 +306,30 @@ port 443, times and exact schema before connecting; shows the control host and r
 That fixed tailnet runtime port is distinct from the control server's HTTPS port: derived LAN 8443
 in home mode; public DNS 443 or the exact reviewed own-server endpoint below after R3.
 Trusting an invite is trusting its sender for the target CA/home, not independent host attestation.
+
+### v2 wire literals (pinned)
+
+These representations are normative. Slice 3c's issuer MUST conform; issuer/parser
+round-trip fixtures are the shared contract.
+
+| # | Pinned representation |
+| --- | --- |
+| 1 | Exactly one `hrinvite2:` prefix plus canonical **unpadded** RFC4648 base64url (`A-Z a-z 0-9 - _`). Refuse `=`, whitespace, `+`, `/` and noncanonical trailing bits. The same encoding applies to inner `ca_der`, `invite_id` and `pair_secret`. |
+| 2 | UTF-8 strict JSON object with exactly the 13 top-level keys listed above; field order is irrelevant. Refuse duplicate, extra or missing keys and trailing data. `v` is integer `2`; identity, endpoint and secret values are strings; times are integers. No floats, booleans or null. |
+| 3 | `mode="home"`; `control_tls` has exactly `{"kind":"local_ca","ca_der":…,"sha256":…,"dial_ip":…}`. `{"kind":"system"}` is reserved and always refused in home mode / while R3 is disabled. No extra members. |
+| 4 | `dial_ip` is canonical dotted-decimal RFC1918 IPv4: no leading zeros, port, IPv6, mapped addresses, CGNAT or loopback. |
+| 5 | `sha256` is 64 lowercase hex characters: SHA-256 of the exact decoded CA DER, without prefix or separators. Exactly one CA DER with CA:TRUE. |
+| 6 | `home_id`, `control_plane_id` and `connector_id` are 1..128 ASCII `[A-Za-z0-9_-]`. |
+| 7 | `invite_id` decodes to exactly 16 bytes; `pair_secret` to exactly 32 bytes. |
+| 8 | `issued_at` and `expires_at` are nonnegative Int64 Unix seconds, with zero future skew (`issued_at <= now < expires_at`) and `0 < expires_at - issued_at <= 300`. The issuer floors fractional deadlines so no response can extend the envelope deadline. |
+| 9 | The connector stores SHA-256 of the exact `pair_secret` base64url UTF-8 text. The Mac sends that text raw. |
+| 10 | `join_key` is exactly 48 lowercase hex characters. |
+| 11 | `home_endpoint` is canonical ASCII tailnet `host:443`, without scheme, userinfo, path, query, fragment or percent-escape. |
+| 12 | Total size is ≤4096 decoded JSON / ≤5500 encoded bytes including the prefix. There is no separate DER allowance. Never truncate. |
+| 13 | `control_url` is exactly `https://control.happyranch.invalid:8443`, with an optional single trailing `/`. |
+
+Known limitation: metadata-only recovery cannot observe invalidation of an
+unredeemed old invite. This is recorded, not solved by the pinned representations.
 
 **Default: home-network access (R1 resolved, seq499/501).** Enable installs bundled Headscale,
 creates the private control plane and locally mints the Linux node's ≤5-minute, single-use,
