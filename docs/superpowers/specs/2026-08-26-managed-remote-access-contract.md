@@ -531,6 +531,33 @@ installs retain their existing behavior. Recovery/rotation (3b-1c), helper/packa
 H2 wiring (3b-1d) and home URL/local-CA/Headscale/DERP/LAN generation (3b-2) remain
 unavailable. No renderer, provider admission or Go sidecar change follows.
 
+Slice 3b-1c's first Python-only sub-part adds `ManagedInstaller.inventory()` and
+`stop_and_confirm()`. Inventory classifies clean, modern staged-inert/recorded,
+known failed/partial, intact manual (explicit migration required), or
+`manual-install-conflict`. It inspects only fixed installer config/state/runtime
+destinations, the exact five unit fragments, their fixed systemd override
+locations and enable links. Config/unit reads are bounded to 64 KiB; managed
+directories are shallow and bounded to 64 entries. Unknown entries, unsafe
+ownership/types/links/modes, digest drift, loaded-fragment/drop-in uncertainty
+and final/pending transactions refuse with paths only. Known opaque state leaves
+are checked by metadata, never executed or replayed. An intact manual install,
+with or without legacy provenance, is never inferred failed just because stopped.
+Inventory never reads the release-home token or grants deletion authority.
+The connector runtime directory accepts both the legacy 0755 and identity
+profile's stricter 0700 mode, with the same validated service ownership.
+
+The stop API refuses conflicts and intact manual installs before service effects.
+For recognized installations it stops target, connector, sidecar, verifier socket
+and verifier service, then requires inactive/failed dead states, no queued jobs
+and zero main/control PIDs with no service cgroup. It inventories again before
+returning. Stop/proof failure preserves all files and reports unconfirmed
+quiescence, never Off. This is a sampled prerequisite, not a cached mutation
+permit or a concurrent-root-writer fence. Existing CLI/helper/supervisor activation
+and transaction refusals remain unchanged. Journaled replacement, Disable cleanup
+and authenticated token rotation/repair remain undelivered and fail-closed;
+helper/package selection remains 3b-1d. TODO (3b-2): implement owned local
+Headscale stop/cleanup; this sub-part provides no callable seam for it.
+
 The root operator supplies `install --enrollment-key-file /absolute/input.key`; the input must be a root:root, single-link regular `0600` file, nonempty and at most 64 KiB. Literal no-follow parent traversal and nonblocking/no-follow file opens refuse symlinks and special files. Every install, including reinstall, requires explicit input; this command does not infer a keyless reinstall from persisted state. Use ordinary service restart for an enrolled host; installing a new key over a consumed marker still refuses at the existing marker-plus-input gate. The customer cell issues the single-use, short-expiry key; the installer does not provision it. The original operator input remains the operator's responsibility to remove promptly.
 
 The installer first creates and fsyncs the root-owned link `/etc/credstore/happyranch-tsnet-enrollment` pointing only to `/etc/happyranch/enrollment.key`, then exclusively stages that fixed source as root:root `0600` and fsyncs it and its directory. Cleanup unlinks and fsyncs the source before removing the link, so interrupted staging/cleanup preserves lookup for any surviving source. `/etc/credstore` is created root-owned `0700`; existing safe `0700` or `0755` is retained. The credential name is reserved to this installation: no inherited or other credstore credential may use it. The sidecar renders `LoadCredential=enrollment-key:happyranch-tsnet-enrollment` and `--credential-file ${CREDENTIALS_DIRECTORY}/enrollment-key`, overriding the JSON credential path before validation. Only the path enters argv; the key never enters argv or environment. Credential-name lookup, unlike an absolute missing source, is nonfatal when absent in both [systemd 255](https://www.freedesktop.org/software/systemd/man/255/systemd.exec.html#LoadCredential=) and this host's systemd 259. After source/link deletion, systemd may also remove the empty per-unit credential directory while still exporting its path in `CREDENTIALS_DIRECTORY` ([v255 directory removal](https://github.com/systemd/systemd/blob/v255/src/core/exec-credential.c#L927-L932), [environment export](https://github.com/systemd/systemd/blob/v255/src/core/exec-invoke.c#L1881-L1891)). The sidecar handles that absent-directory state without creating a directory or an empty credential file. A remaining source/link yields a present copy, which the existing consumed-marker gate refuses.

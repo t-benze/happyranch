@@ -21,7 +21,7 @@ import stat
 import sys
 import uuid
 from contextlib import contextmanager
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Iterator
@@ -58,6 +58,15 @@ _FILE_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
 
 class InstallerError(RuntimeError):
     """An unsafe path, incompatible account, command failure, or unit drift."""
+
+
+@dataclass(frozen=True)
+class InstallInventory:
+    """Read-only classification, never authority to remove or replay files."""
+
+    state: str
+    detail: str
+    paths: tuple[str, ...]
 
 
 def managed_units(layout: str = "source", *, connector_config: dict | None = None) -> dict[str, str]:
@@ -109,6 +118,246 @@ class ManagedInstaller:
         self.units = managed_units(layout)
         self.layout = layout
         self._service_owner: tuple[int, int] | None = None
+
+    def _inventory_files(
+        self, relative: str, allowed: dict[str, tuple[tuple[int, int] | None, int, bool | None]],
+    ) -> dict[str, bytes]:
+        """Bounded, shallow inventory of one fixed directory; no unknown reads."""
+        files: dict[str, bytes] = {}
+        try:
+            with self._directory(relative) as parent:
+                with os.scandir(parent) as entries:
+                    for index, entry in enumerate(entries):
+                        path = str(self.root / relative / entry.name)
+                        if index >= 64 or entry.name not in allowed:
+                            raise InstallerError(path if index < 64 else str(self.root / relative))
+                        owner, mode, socket = allowed[entry.name]
+                        if owner is None:
+                            raise InstallerError(path)
+                        try:
+                            if socket is not False:
+                                info = os.stat(entry.name, dir_fd=parent, follow_symlinks=False)
+                                known_type = stat.S_ISSOCK if socket else stat.S_ISREG
+                                if (not known_type(info.st_mode) or info.st_nlink != 1
+                                        or (info.st_uid, info.st_gid) != owner
+                                        or stat.S_IMODE(info.st_mode) != mode):
+                                    raise InstallerError(path)
+                                files[entry.name] = b""
+                            else:
+                                files[entry.name] = self._read_file(parent, entry.name, owner=owner, mode=mode)
+                        except (OSError, InstallerError):
+                            raise InstallerError(path) from None
+        except FileNotFoundError:
+            return files
+        except OSError:
+            raise InstallerError(str(self.root / relative)) from None
+        return files
+
+    def _inventory_units(self, connector: dict) -> tuple[set[str], dict[str, dict[str, str]]]:
+        if connector and not isinstance(connector.get("managed"), dict):
+            raise InstallerError(str(self.root / "etc/happyranch/connector.json"))
+        expected = managed_units(self.layout, connector_config=connector)
+        present: set[str] = set()
+        properties: dict[str, dict[str, str]] = {}
+        for name, text in expected.items():
+            path = str(self.root / _UNIT_DIR / name)
+            try:
+                with self._directory(_UNIT_DIR) as parent:
+                    if self._read_unit(parent, name) != text.encode():
+                        raise InstallerError(path)
+                    present.add(name)
+            except FileNotFoundError:
+                pass
+            except (OSError, InstallerError):
+                raise InstallerError(path) from None
+            # Inspect only these unit names, never neighboring custom units.
+            for base in (_UNIT_DIR, "run/systemd/system", "usr/local/lib/systemd/system", "usr/lib/systemd/system"):
+                dropins = f"{base}/{name}.d"
+                try:
+                    with self._directory(dropins) as parent:
+                        with os.scandir(parent) as entries:
+                            entry = next(entries, None)
+                            if entry is not None:
+                                raise InstallerError(str(self.root / dropins / entry.name))
+                    if base != _UNIT_DIR:
+                        with self._directory(base) as parent:
+                            os.stat(name, dir_fd=parent, follow_symlinks=False)
+                            raise InstallerError(str(self.root / base / name))
+                except FileNotFoundError:
+                    # A missing drop-in directory says nothing about a fragment.
+                    if base != _UNIT_DIR:
+                        try:
+                            with self._directory(base) as parent:
+                                os.stat(name, dir_fd=parent, follow_symlinks=False)
+                                raise InstallerError(str(self.root / base / name))
+                        except FileNotFoundError:
+                            pass
+                except (OSError, InstallerError) as exc:
+                    if isinstance(exc, InstallerError) and str(exc).startswith(str(self.root) + "/"):
+                        raise
+                    raise InstallerError(str(self.root / dropins)) from None
+            try:
+                props = self.manager.show_properties(name, (
+                    "FragmentPath", "DropInPaths", "NeedDaemonReload", "LoadState", "ActiveState",
+                ))
+            except (ServiceManagerError, OSError):
+                raise InstallerError(path) from None
+            loaded = name in present
+            if (props.get("FragmentPath") != (path if loaded else "")
+                    or props.get("DropInPaths") != "" or props.get("NeedDaemonReload") != "no"
+                    or props.get("LoadState") != ("loaded" if loaded else "not-found")
+                    or props.get("ActiveState") not in ({"active", "inactive", "failed"} if loaded else {"inactive"})):
+                # Manager strings can contain arbitrary data: report fixed paths only.
+                raise InstallerError(path)
+            properties[name] = props
+        for directory, name in (("multi-user.target.wants", UNITS[2]),
+                                (f"{UNITS[2]}.wants", UNITS[3])):
+            path = str(self.root / _UNIT_DIR / directory / name)
+            try:
+                with self._directory(f"{_UNIT_DIR}/{directory}") as parent:
+                    info = os.stat(name, dir_fd=parent, follow_symlinks=False)
+                    if (not stat.S_ISLNK(info.st_mode) or info.st_nlink != 1
+                            or (info.st_uid, info.st_gid) != self.root_owner or name not in present
+                            or os.readlink(name, dir_fd=parent) not in {f"../{name}", str(self.root / _UNIT_DIR / name)}):
+                        raise InstallerError(path)
+            except FileNotFoundError:
+                pass
+            except (OSError, InstallerError) as exc:
+                if isinstance(exc, InstallerError) and str(exc).startswith(str(self.root) + "/"):
+                    raise
+                raise InstallerError(path) from None
+        return present, properties
+
+    def inventory(self) -> InstallInventory:
+        """Classify only fixed managed destinations without executing old inputs.
+
+        Unknown, torn or transaction-bearing inventories refuse. Stopped intact
+        manual installs still require migration. This supplies no replacement,
+        cleanup, source-token read or activation authority.
+        """
+        location = str(self.root / "etc/happyranch")
+        paths: list[str] = []
+        try:
+            self._service_owner = self._account(create=False)
+            service = self._service_owner
+            config_owner = None if service is None else (self.root_owner[0], service[1])
+            files = self._inventory_files("etc/happyranch", {
+                **{name: (config_owner, 0o640, False) for name in ("connector.json", "sidecar.json", "policy.json")},
+                "release-daemon.json": (self.root_owner, 0o644, False),
+                "provision.json": (self.root_owner, 0o600, False),
+                "daemon.token": (service, 0o600, False),
+                "enrollment.key": (self.root_owner, 0o600, False),
+            })
+            paths.extend(str(self.root / "etc/happyranch" / name) for name in files)
+            connector = self._json(files["connector.json"]) if "connector.json" in files else {}
+            provenance = files.get("provision.json")
+            modern = False
+            required = {"connector.json", "sidecar.json", "policy.json", "release-daemon.json", "daemon.token"}
+            if provenance is not None:
+                location = str(self.root / "etc/happyranch/provision.json")
+                self._validate_install_record("provision.json", provenance)
+                record = self._json(provenance)
+                modern = "version" in record
+                digests = record["digests"] if modern else {
+                    **record["configs"], "daemon.token": record["token_sha256"],
+                }
+                if (set(digests) != (required if modern else required - {"release-daemon.json"})
+                        or any(not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None
+                               for value in digests.values())):
+                    raise InstallerError(location)
+                for name, digest in digests.items():
+                    if name in files and hashlib.sha256(files[name]).hexdigest() != digest:
+                        raise InstallerError(str(self.root / "etc/happyranch" / name))
+            elif files:
+                # Without provenance, only complete shipping config shapes qualify.
+                self._validate_configs(files, staged=True)
+            if "release-daemon.json" in files:
+                from runtime.remote_access.release_verifier import validate_record
+                location = str(self.root / "etc/happyranch/release-daemon.json")
+                validate_record(self._json(files["release-daemon.json"]))
+            for relative, names in (
+                (_STATE_DIRS[0], ("trust-state.json", "trust-state.json.anchor", "trust-state.json.lock")),
+                (_STATE_DIRS[1], ("tailscaled.state", "credential.consumed", "tailscaled.log.conf",
+                                  "tailscaled.log1.txt", "tailscaled.log2.txt")),
+            ):
+                location = str(self.root / relative)
+                # State contents are never interpreted, replayed or copied.
+                state = self._inventory_files(relative, {name: (service, 0o600, None) for name in names})
+                paths.extend(str(self.root / relative / name) for name in state)
+            for relative, entries in (
+                ("run/happyranch-connector", {name: (service, 0o600, True) for name in ("ingress.sock", "control.sock")}),
+                ("run/happyranch-tsnet-sidecar", {"health.json": (service, 0o644, False)}),
+                ("run/happyranch-release-verifier", {"control.sock": (
+                    None if service is None else (self.root_owner[0], service[1]), 0o660, True)}),
+            ):
+                location = str(self.root / relative)
+                runtime = self._inventory_files(relative, entries)
+                paths.extend(str(self.root / relative / name) for name in runtime)
+            location = str(self.root / _CREDSTORE / _CREDENTIAL_NAME)
+            self._check_enrollment()
+            with_enrollment = False
+            try:
+                with self._directory(_CREDSTORE) as parent:
+                    os.stat(_CREDENTIAL_NAME, dir_fd=parent, follow_symlinks=False)
+                    with_enrollment = True
+                    paths.append(location)
+            except FileNotFoundError:
+                pass
+            location = str(self.root / _UNIT_DIR)
+            units, properties = self._inventory_units(connector)
+            paths.extend(str(self.root / _UNIT_DIR / name) for name in units)
+            complete = required <= files.keys()
+            failed = any(props["ActiveState"] == "failed" for props in properties.values())
+            if modern and complete and len(units) in {0, len(UNITS)} and not failed:
+                managed = connector.get("managed")
+                profile = managed.get("profile") if isinstance(managed, dict) else None
+                if profile != "linux-managed-identity-v1":
+                    raise InstallerError(str(self.root / "etc/happyranch/connector.json"))
+                return InstallInventory("modern", "recorded" if units else "staged-inert", tuple(sorted(paths)))
+            if not files and not units and not paths and not with_enrollment:
+                return InstallInventory("clean", "absent", ())
+            if complete and len(units) == len(UNITS) and not failed:
+                return InstallInventory("healthy-manual", "migration-required", tuple(sorted(paths)))
+            return InstallInventory("known-failed-or-partial", "failed" if failed else "partial", tuple(sorted(paths)))
+        except (OSError, ValueError, TypeError, KeyError, InstallerError) as exc:
+            # Only our fixed diagnostic paths escape; never config/manager values.
+            if isinstance(exc, InstallerError) and str(exc).startswith(str(self.root) + "/"):
+                location = str(exc)
+            return InstallInventory("manual-install-conflict", "unsafe-or-unrecognized", (location,))
+
+    def stop_and_confirm(self) -> InstallInventory:
+        """Stop only recognized remote units and prove manager quiescence.
+
+        No filesystem mutation or admission reopening is performed. Callers must
+        not cache this sampled observation as later file-mutation authority.
+        """
+        inventory = self.inventory()
+        if inventory.state in {"manual-install-conflict", "healthy-manual"}:
+            raise InstallerError(f"{inventory.state}: " + ", ".join(inventory.paths))
+        order = (UNITS[2], UNITS[0], UNITS[1], UNITS[3], UNITS[4])
+        for name in order:
+            try:
+                props = self.manager.show_properties(name, ("LoadState",))
+                if props.get("LoadState") != "not-found":
+                    self.manager.stop(name, timeout=50.0)
+            except (ServiceManagerError, OSError):
+                raise InstallerError(f"quiescence unconfirmed: {self.root / _UNIT_DIR / name}") from None
+        for name in order:
+            process_keys = ("MainPID", "ControlPID", "ControlGroup") if name in (UNITS[0], UNITS[1], UNITS[4]) else ()
+            try:
+                props = self.manager.show_properties(name, ("ActiveState", "SubState", "Job", *process_keys))
+            except (ServiceManagerError, OSError):
+                props = {}
+            if (props.get("ActiveState") not in {"inactive", "failed"}
+                    or props.get("SubState") not in {"dead", "failed"}
+                    or (process_keys and (props.get("MainPID") != "0" or props.get("ControlPID") != "0"
+                                          or props.get("ControlGroup") != ""))
+                    or props.get("Job") != ""):
+                raise InstallerError(f"quiescence unconfirmed: {self.root / _UNIT_DIR / name}")
+        confirmed = self.inventory()
+        if confirmed.state in {"manual-install-conflict", "healthy-manual"}:
+            raise InstallerError(f"{confirmed.state}: " + ", ".join(confirmed.paths))
+        return confirmed
 
     def _account(self, *, create: bool) -> tuple[int, int] | None:
         try:
@@ -206,9 +455,10 @@ class ManagedInstaller:
         allowed_modes = (expected[0],) if expected else ()
         if expected and path == _CREDSTORE:
             allowed_modes += (0o755,)
-        if expected and path == _STATE_DIRS[0]:
+        if expected and path in {_STATE_DIRS[0], "run/happyranch-connector"}:
             # Creation follows systemd's mode; the trust-state store tightens
-            # this directory to owner-only on save. Preserve either safe mode.
+            # state on save; the identity unit also tightens its runtime dir.
+            # Preserve either known safe mode without changing ownership.
             allowed_modes += (0o700,)
         if ((owner is not None and (info.st_uid, info.st_gid) != owner) or info.st_mode & 0o022
                 or (expected and stat.S_IMODE(info.st_mode) not in allowed_modes)):
