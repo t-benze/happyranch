@@ -630,15 +630,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, SPUU
     }
 
     /// Preflight check for the bundled daemon binary.
-    /// Returns an actionable error message naming the fix if the binary is
-    /// missing or not executable; nil if it is present and executable.
+    /// Returns an actionable error message naming the checked path, filesystem
+    /// details and fix if missing or not executable; nil if present and executable.
     /// This is a pure seam — testable without a real Bundle.
     nonisolated static func bundledDaemonPreflightError(path: String) -> String? {
         if _testSkipBundledDaemonPreflight { return nil }
-        if !FileManager.default.isExecutableFile(atPath: path) {
-            return "Bundled daemon binary missing or not executable — rebuild the app with app/mac/scripts/build-app.sh; this build is incomplete."
+        let files = FileManager.default
+        if files.isExecutableFile(atPath: path) { return nil }
+
+        let details: String
+        do {
+            // attributesOfItem does not follow a final symlink, so report the
+            // actual item at the checked path even when its target is missing.
+            let attributes = try files.attributesOfItem(atPath: path)
+            let itemType = attributes[.type] as? FileAttributeType
+            let fileType: String
+            if itemType == .typeRegular {
+                fileType = "regular file"
+            } else if itemType == .typeDirectory {
+                fileType = "directory"
+            } else if itemType == .typeSymbolicLink {
+                fileType = "symlink"
+            } else {
+                fileType = "other"
+            }
+            let owner = attributes[.ownerAccountName] as? String ?? "unknown"
+            let uid = (attributes[.ownerAccountID] as? NSNumber)?.stringValue ?? "unknown"
+            let gid = (attributes[.groupOwnerAccountID] as? NSNumber)?.stringValue ?? "unknown"
+            let mode = (attributes[.posixPermissions] as? NSNumber).map {
+                String(format: "%04o", $0.uint32Value)
+            } ?? "unknown"
+            details = "\(fileType), owner \(owner) (uid \(uid)), group id \(gid), POSIX mode \(mode); not executable by the current user"
+        } catch {
+            let fileError = error as NSError
+            if fileError.domain == NSCocoaErrorDomain &&
+                (fileError.code == NSFileNoSuchFileError || fileError.code == NSFileReadNoSuchFileError) {
+                details = "path does not exist; attributes could not be read: \(error.localizedDescription)"
+            } else {
+                details = "attributes could not be read: \(error.localizedDescription); not executable by the current user"
+            }
         }
-        return nil
+        return "Bundled daemon binary missing or not executable at \(path): \(details) — rebuild the app with app/mac/scripts/build-app.sh; this build is incomplete."
     }
 
     /// Returns the filesystem path to the bundled web/dist directory inside the .app bundle.
@@ -667,7 +699,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, SPUU
     /// Launch the frozen daemon binary from inside the .app bundle (bundled mode).
     private func launchBundledDaemon(pc: ProcessControlling) {
         guard let daemonPath = Self.bundledDaemonPath() else {
-            stateText = "Bundled daemon not found in app bundle"
+            stateText = "App bundle Resources directory could not be resolved; no bundled daemon path was checked"
             return
         }
 

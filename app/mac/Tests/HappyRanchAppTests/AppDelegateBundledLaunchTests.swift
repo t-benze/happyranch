@@ -631,8 +631,11 @@ struct BundledDaemonPreflightTests {
 
     @Test("bundledDaemonPreflightError returns fix-naming message for missing path")
     func preflightErrorReturnsMessageForMissingPath() {
-        let error = AppDelegate.bundledDaemonPreflightError(path: "/nonexistent/path/happyranch-daemon")
+        let path = "/nonexistent/path/happyranch-daemon"
+        let error = AppDelegate.bundledDaemonPreflightError(path: path)
         #expect(error != nil, "Should return error for non-existent path")
+        #expect(error?.contains(path) == true, "Error must name the exact checked path")
+        #expect(error?.contains("path does not exist") == true)
         #expect(error?.contains("build-app.sh") == true,
                 "Error message must name the fix command (build-app.sh), got \(error ?? "nil")")
         #expect(error?.contains("rebuild") == true,
@@ -648,11 +651,26 @@ struct BundledDaemonPreflightTests {
 
     @Test("bundledDaemonPreflightError returns message for non-executable file")
     func preflightErrorReturnsMessageForNonExecutableFile() throws {
-        // /etc/hosts is a plain data file, never executable
-        let error = AppDelegate.bundledDaemonPreflightError(path: "/etc/hosts")
-        #expect(error != nil, "Should return error for non-executable file /etc/hosts")
+        let files = FileManager.default
+        let directory = files.temporaryDirectory
+            .appendingPathComponent("test-bundled-preflight-\(UUID().uuidString)")
+        try files.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? files.removeItem(at: directory) }
+        let path = directory.appendingPathComponent("happyranch-daemon").path
+        try #require(files.createFile(atPath: path, contents: Data(), attributes: [.posixPermissions: 0o600]))
+        try files.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path)
+
+        let error = AppDelegate.bundledDaemonPreflightError(path: path)
+        #expect(error != nil, "Should return error for non-executable file \(path)")
+        #expect(error?.contains(path) == true)
+        #expect(error?.contains("regular file") == true)
+        #expect(error?.contains("0600") == true)
+        #expect(error?.contains(NSUserName()) == true)
+        #expect(error?.contains("not executable by the current user") == true)
         #expect(error?.contains("build-app.sh") == true,
                 "Error message must name the fix command")
+        #expect(error?.contains("rebuild") == true,
+                "Error message must be actionable")
     }
 
     @Test("startDaemon with preflight active detects missing binary and prevents launch")
@@ -685,7 +703,11 @@ struct BundledDaemonPreflightTests {
                 "Preflight must prevent launch when daemon binary is missing, got launchCallCount \(fake.launchCallCount)")
 
         // (b) stateText contains the production error message
-        let expectedMsg = "Bundled daemon binary missing or not executable — rebuild the app with app/mac/scripts/build-app.sh; this build is incomplete."
+        let daemonPath = try #require(AppDelegate.bundledDaemonPath())
+        let expectedMsg = try #require(AppDelegate.bundledDaemonPreflightError(path: daemonPath))
+        #expect(expectedMsg.contains(daemonPath))
+        #expect(expectedMsg.contains("build-app.sh"))
+        #expect(expectedMsg.contains("rebuild"))
         #expect(delegate.stateText == expectedMsg,
                 "stateText must match the production build-app.sh error message, got \(delegate.stateText)")
 
