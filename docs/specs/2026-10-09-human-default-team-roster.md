@@ -267,7 +267,7 @@ boundaries remain preserved; a design JSON is not a checked manifest or receipt.
 The extra PR1022-only CI job selects L1/L4/L5/L7/L8/L9/W10 through the existing
 closed parent at the actual PR head. Explicit validated b317 reader and pinned
 browser/Node bindings reach C5/C10 without ambient PATH/config inheritance or
-stub-guard changes. Owned evidence survives parent cleanup. See `docs/local-ci.md`
+stub-guard changes. Owned evidence survives parent cleanup. See `docs/operations/local-ci.md`
 for exact selection/tool/provenance and retention contracts. Baseline/failure is
 a real observation; it does not satisfy missing causal controls, repetitions,
 bilingual screenshot review, M capability or independent review/QA gates.

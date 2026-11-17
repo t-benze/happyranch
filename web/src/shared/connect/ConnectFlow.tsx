@@ -153,12 +153,12 @@ export function BuiltinConnect({
   }
 
   return (
-    <div className="mt-6 max-w-lg">
+    <div className="mt-8 max-w-lg">
       <p className="text-text-secondary text-base leading-relaxed">
         {t('onboarding.connect.builtin.intro')}
       </p>
 
-      <div className="mt-6 space-y-2">
+      <div className="mt-8 space-y-2">
         <Label htmlFor="builtin-kind">{t('onboarding.connect.builtin.label')}</Label>
         <select
           id="builtin-kind"
@@ -186,7 +186,7 @@ export function BuiltinConnect({
         </p>
       )}
 
-      <div className="mt-6 flex flex-wrap items-center gap-3">
+      <div className="mt-8 flex flex-wrap items-center gap-3">
         <Button
           type="button"
           disabled={!kind || flow.mint.isPending}
@@ -262,7 +262,7 @@ export function AdapterConnect({
   // Committing state — the receipt landed; finishing the connection.
   if (flow.state.stage === 'committing') {
     return (
-      <div className="mt-6 max-w-lg">
+      <div className="mt-8 max-w-lg">
         <div className="border-accent/30 bg-accent/5 rounded-lg border p-4">
           <div className="flex items-center gap-2">
             <Spinner className="text-accent h-4 w-4" />
@@ -337,7 +337,7 @@ export function AdapterConnect({
   // Form state
 
   return (
-    <div className="mt-6 max-w-lg">
+    <div className="mt-8 max-w-lg">
       <div className="border-accent/30 bg-accent/5 mb-4 rounded-r-md border-l-2 px-3 py-2">
         <p className="text-text-primary text-sm font-medium">
           {t('onboarding.connect.adapter.bannerTitle')}
@@ -347,7 +347,7 @@ export function AdapterConnect({
         </p>
       </div>
       <form
-        className="mt-6 space-y-2"
+        className="mt-8 space-y-2"
         onSubmit={(e) => {
           e.preventDefault();
           generate();
@@ -451,7 +451,7 @@ export function WaitingBody({
   };
 
   return (
-    <div className="mt-6 max-w-2xl">
+    <div className="mt-8 max-w-2xl">
       <div className="border-border-default bg-surface shadow-pasture-sm overflow-hidden rounded-lg border">
         <div className="border-border-default bg-surface-sunken flex items-center justify-between border-b px-4 py-2.5">
           <div className="flex items-center gap-2">
@@ -491,7 +491,7 @@ export function WaitingBody({
       </div>
 
       {expired ? (
-        <div className="border-feedback-warning/30 bg-feedback-warning/5 mt-6 rounded-lg border p-4">
+        <div className="border-feedback-warning/30 bg-feedback-warning/5 mt-8 rounded-lg border p-4">
           <p className="text-text-primary text-sm font-semibold">
             {t('onboarding.connect.expired.title')}
           </p>
@@ -510,7 +510,7 @@ export function WaitingBody({
       ) : (
         <div
           aria-label={t('onboarding.connect.waiting.aria')}
-          className="border-border-default bg-surface mt-6 rounded-lg border p-4"
+          className="border-border-default bg-surface mt-8 rounded-lg border p-4"
         >
           <div className="flex items-center gap-2">
             <Spinner className="text-accent h-4 w-4" />
@@ -538,7 +538,7 @@ export function WaitingBody({
         </div>
       )}
 
-      <div className="mt-5 flex items-center gap-4">
+      <div className="mt-6 flex items-center gap-4">
         <button
           type="button"
           onClick={onBack}
@@ -583,7 +583,7 @@ export function AdapterWaitingBody({
   };
 
   return (
-    <div className="mt-6 max-w-2xl">
+    <div className="mt-8 max-w-2xl">
       <div className="border-border-default bg-surface shadow-pasture-sm overflow-hidden rounded-lg border">
         <div className="border-border-default bg-surface-sunken flex items-center justify-between border-b px-4 py-2.5">
           <div className="flex items-center gap-2">
@@ -623,7 +623,7 @@ export function AdapterWaitingBody({
       </div>
 
       {expired ? (
-        <div className="border-feedback-warning/30 bg-feedback-warning/5 mt-6 rounded-lg border p-4">
+        <div className="border-feedback-warning/30 bg-feedback-warning/5 mt-8 rounded-lg border p-4">
           <p className="text-text-primary text-sm font-semibold">
             {t('onboarding.connect.expired.title')}
           </p>
@@ -642,7 +642,7 @@ export function AdapterWaitingBody({
       ) : (
         <div
           aria-label={t('onboarding.connect.adapter.waiting.aria')}
-          className="border-border-default bg-surface mt-6 rounded-lg border p-4"
+          className="border-border-default bg-surface mt-8 rounded-lg border p-4"
         >
           <div className="flex items-center gap-2">
             <Spinner className="text-accent h-4 w-4" />
@@ -656,7 +656,7 @@ export function AdapterWaitingBody({
         </div>
       )}
 
-      <div className="mt-5 flex items-center gap-4">
+      <div className="mt-6 flex items-center gap-4">
         <button
           type="button"
           onClick={onBack}
@@ -696,7 +696,7 @@ export function AdapterRetryableBody({
     window.setTimeout(() => setCopied(false), 1600);
   };
   return (
-    <div className="mt-6 max-w-2xl">
+    <div className="mt-8 max-w-2xl">
       <div className="border-feedback-warning/30 bg-feedback-warning/5 mb-4 rounded-lg border p-4">
         <div className="flex items-center gap-2">
           <AlertTriangle className="text-feedback-warning h-4 w-4" />
@@ -755,7 +755,7 @@ export function AdapterRetryableBody({
         </Button>
       </div>
 
-      <div className="mt-5 flex items-center gap-4">
+      <div className="mt-6 flex items-center gap-4">
         <button
           type="button"
           onClick={onBack}
@@ -808,7 +808,7 @@ export function AdapterBindFailedBody({
   } as const;
   const categoryMessage = t(categoryMessageKey[category]);
   return (
-    <div className="mt-6 max-w-lg">
+    <div className="mt-8 max-w-lg">
       <div className="border-feedback-danger/30 bg-feedback-danger/5 rounded-lg border p-4">
         <div className="flex items-center gap-2">
           <AlertTriangle className="text-feedback-danger h-4 w-4" />
@@ -881,7 +881,7 @@ export function FailedConnectionClearedBody({
     preserved_unsafe: 'onboarding.connect.cleared.preservedUnsafe',
   } as const;
   return (
-    <div className="mt-6 max-w-lg border-border-default bg-surface rounded-lg border p-4">
+    <div className="mt-8 max-w-lg border-border-default bg-surface rounded-lg border p-4">
       <p className="text-text-primary text-sm font-medium">{t('onboarding.connect.cleared.title')}</p>
       <p className="text-text-secondary mt-2 text-sm">
         {render('onboarding.connect.cleared.body', {
@@ -929,7 +929,7 @@ export function ConnectedCard({
         {subtitle(connected.via)}
       </p>
 
-      <div className="bg-surface border-border-default shadow-pasture-sm mt-6 max-w-lg rounded-lg border p-4">
+      <div className="bg-surface border-border-default shadow-pasture-sm mt-8 max-w-lg rounded-lg border p-4">
         <p className="text-text-muted text-caption font-semibold tracking-wider uppercase">
           {t('onboarding.connect.connected.name')}
         </p>
@@ -944,7 +944,7 @@ export function ConnectedCard({
         </p>
       </div>
 
-      <div className="mt-6 flex items-center gap-2">
+      <div className="mt-8 flex items-center gap-2">
         {primaryAction}
         <Button variant="outline" onClick={onReset}>
           {t('onboarding.connect.connectAnother')}
@@ -962,7 +962,7 @@ export function ConnectedCard({
 function HowThisWorks(): JSX.Element {
   const { t, render } = useTranslation();
   return (
-    <details className="group mt-5">
+    <details className="group mt-6">
       <summary className="text-text-secondary hover:text-text-primary flex cursor-pointer list-none items-center gap-1.5 text-xs">
         <ChevronRight
           aria-hidden="true"
@@ -971,7 +971,7 @@ function HowThisWorks(): JSX.Element {
         />
         {t('onboarding.connect.how.title')}
       </summary>
-      <p className="text-text-muted mt-2 max-w-lg pl-5 text-xs leading-relaxed">
+      <p className="text-text-muted mt-2 max-w-lg pl-6 text-xs leading-relaxed">
         {render('onboarding.connect.how.body', {
           duration: (
             <span className="text-text-secondary font-medium">

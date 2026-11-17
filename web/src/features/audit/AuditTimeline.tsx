@@ -299,7 +299,7 @@ export function AuditTimeline({ legendMap, sinceISO }: AuditTimelineProps): JSX.
   // Error
   if (auditQuery.isError) {
     return (
-      <div className="flex flex-col items-center justify-center gap-3 p-8 text-center">
+      <div className="flex flex-col items-center justify-center gap-3 p-16 text-center">
         <p className="text-tier-red text-sm">
           {renderAuditLoadError(classifyAuditError(auditQuery.error, 'audit.error.load'), t)}
         </p>

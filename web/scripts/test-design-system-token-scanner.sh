@@ -77,6 +77,22 @@ sed 's/text-nope/text-surface/' "$fixture/src/styles.css" > "$scratch/src/styles
 expect_exit 0 'all mapped' "$scratch/clean.out" run_scan "$scratch/src" "$scratch/theme.css"
 grep -F 'hits=0' "$scratch/clean.out"
 
+# Numeric spacing steps must stay on Tailwind's linear scale (THR-376 PR4):
+# a linear --spacing-N passes, a re-mapped one (the removed t-shirt remap) fails.
+sed 's/^  --spacing-gutter: 20px;$/  --spacing-0: 0;\n  --spacing-4: 1rem;\n  --spacing-gutter: 20px;/' \
+  "$fixture/src/design-system/tokens/tokens.css" > "$scratch/src/design-system/tokens/tokens.css"
+expect_exit 0 'linear numeric spacing' "$scratch/linear.out" run_scan "$scratch/src" "$scratch/theme.css"
+grep -F 'hits=0' "$scratch/linear.out"
+sed 's/^  --spacing-gutter: 20px;$/  --spacing-4: 1rem;\n  --spacing-5: 1.5rem;\n  --spacing-gutter: 20px;/' \
+  "$fixture/src/design-system/tokens/tokens.css" > "$scratch/src/design-system/tokens/tokens.css"
+expect_exit 5 'remapped numeric spacing' "$scratch/remap.out" run_scan "$scratch/src" "$scratch/theme.css"
+grep -F 'non-linear spacing token: --spacing-5: 1.5rem (linear scale is 1.25rem)' "$scratch/remap.out"
+if grep -F -- '--spacing-4' "$scratch/remap.out"; then
+  echo 'a linear spacing step was reported as a remap' >&2
+  exit 1
+fi
+cp "$fixture/src/design-system/tokens/tokens.css" "$scratch/src/design-system/tokens/tokens.css"
+
 # A missing scan input is a hard failure, never a silent pass.
 expect_exit 1 'missing default theme' "$scratch/missing.out" run_scan "$scratch/src" "$scratch/absent-theme.css"
 grep -F 'unknown-token scan input missing' "$scratch/missing.out"

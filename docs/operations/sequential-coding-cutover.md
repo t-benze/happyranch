@@ -72,7 +72,7 @@ authority or genuine Coding execution acceptance.
    installation, separate from registration/admission/loaded identity/acceptance.
    Exit1 refuses; exit4 preserves uncertainty. Never delete sidecars or reset
    ownership. Existing startup does not install the sequential extension.
-   The installer now selects its own finite retained-history allowance (TASK-15719):
+   The installer now selects its own finite retained-history allowance:
    8,388,608 total rows, 16GiB encoded cells including tags/rowids/schema,
    32MiB raw bytes per row, <=32GiB verified backup and one original 900s deadline.
    Every retained row is hashed; ownership is copied in SQL through file-backed
@@ -381,3 +381,9 @@ projection and A4's automatic setup remain separately owned.
 ## Org access fence (A1)
 
 Before source SQLite access, supported offline schema writers take EX and check-only paths take SH; sequential Coding registration/admission retains its original EX interval through the complete operation. Human-host/disposable-venue exclusion still runs first. Existing explicit confirmation, backup/lifecycle/native custody and all storage/authority/Save/Allow gates remain unchanged. Normal runtime attachments and daily checks hold SH, native jobs inherit their original descriptor, and the host guardian retains original custody through confirmed cleanup or HOLD on uncertainty. A free EX lock alone proves neither old-owner closure nor automatic setup eligibility. See the [A1 contract](../specs/2026-11-14-automatic-workflow-setup.md#a1-cooperative-org-access-fence).
+
+## History
+
+Citations removed from the body, with the section they supported:
+
+- `TASK-15719` — Install and setup sequence (original line 75).

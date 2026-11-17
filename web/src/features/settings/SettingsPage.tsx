@@ -87,9 +87,9 @@ export function SettingsPage(): JSX.Element {
 
   const gated = (panel: ReactNode): JSX.Element => (
     <>
-      {settingsQuery.isLoading && <div className="text-text-secondary flex-1 p-6 text-sm">{t('settings.page.loading')}</div>}
+      {settingsQuery.isLoading && <div className="text-text-secondary flex-1 p-8 text-sm">{t('settings.page.loading')}</div>}
       {settingsQuery.isError && (
-        <div className="text-feedback-danger flex-1 p-6 text-sm">
+        <div className="text-feedback-danger flex-1 p-8 text-sm">
           {t('settings.page.loadError')}
           {settingsQuery.error?.message && <> {settingsQuery.error.message}</>}
         </div>
@@ -206,13 +206,13 @@ import type { OrgSettings } from '@/lib/api/types';
 function DaemonCapacityPanel(): JSX.Element {
   // The capacity section owns its own heading and description, matching the
   // approved desktop target. Repeating them here produced two stacked headers.
-  return <div className="max-w-3xl p-6"><DaemonCapacitySection /></div>;
+  return <div className="max-w-3xl p-8"><DaemonCapacitySection /></div>;
 }
 
 function OrganizationPanel({ org }: { org: OrgSettings }): JSX.Element {
   const { t } = useTranslation();
   return (
-    <div className="max-w-2xl p-6">
+    <div className="max-w-2xl p-8">
       <h2 className="font-display mb-4 text-lg font-semibold">{t('settings.panel.organization.title')}</h2>
       <p className="text-text-secondary mb-4 text-sm">
         {t('settings.panel.organization.description')}
@@ -225,9 +225,9 @@ function OrganizationPanel({ org }: { org: OrgSettings }): JSX.Element {
 function ExecutorsPanel(): JSX.Element {
   const { t } = useTranslation();
   return (
-    <div className="max-w-2xl p-6">
+    <div className="max-w-2xl p-8">
       <h2 className="font-display mb-1 text-lg font-semibold">{t('settings.panel.executors.title')}</h2>
-      <p className="text-text-secondary mb-6 text-sm">
+      <p className="text-text-secondary mb-8 text-sm">
         {t('settings.panel.executors.description')}
       </p>
       <ExecutorsSection />
@@ -238,9 +238,9 @@ function ExecutorsPanel(): JSX.Element {
 function CodingPanel(): JSX.Element {
   const { t } = useTranslation();
   return (
-    <div className="max-w-2xl min-w-0 p-4 break-words sm:p-6">
+    <div className="max-w-2xl min-w-0 p-4 break-words sm:p-8">
       <h2 className="font-display mb-1 text-lg font-semibold">{t('settings.panel.coding.title')}</h2>
-      <p className="text-text-secondary mb-6 text-sm">
+      <p className="text-text-secondary mb-8 text-sm">
         {t('settings.panel.coding.description')}
       </p>
       <CodingSection />
@@ -251,9 +251,9 @@ function CodingPanel(): JSX.Element {
 function PreferencesPanel(): JSX.Element {
   const { t } = useTranslation();
   return (
-    <div className="max-w-2xl min-w-0 p-4 break-words sm:p-6">
+    <div className="max-w-2xl min-w-0 p-4 break-words sm:p-8">
       <h2 className="font-display mb-1 text-lg font-semibold">{t('settings.panel.preferences.title')}</h2>
-      <p className="text-text-secondary mb-6 text-sm">
+      <p className="text-text-secondary mb-8 text-sm">
         {t('settings.panel.preferences.description')}
       </p>
       <PreferencesSection />

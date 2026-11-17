@@ -1,4 +1,4 @@
-"""Focused no-launch founder cancel route checks; see docs/local-ci.md."""
+"""Focused no-launch founder cancel route checks; see docs/operations/local-ci.md."""
 from __future__ import annotations
 
 import asyncio

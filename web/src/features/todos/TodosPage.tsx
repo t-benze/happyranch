@@ -72,7 +72,7 @@ export function TodosPage(): JSX.Element {
 
   return (
     <ContentWrap>
-      <div className="mb-5">
+      <div className="mb-6">
         <p className="text-fg-subtle text-overline mb-2 font-mono tracking-wider uppercase">
           {t('todos.list.eyebrow')}
         </p>
@@ -83,7 +83,7 @@ export function TodosPage(): JSX.Element {
         <p className="text-fg-subtle mt-1.5 text-sm">{t('todos.list.trustLine')}</p>
       </div>
 
-      <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
+      <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
         <div className="bg-bg-subtle inline-flex rounded-lg p-1">
           {FILTER_GROUPS.map((fg) => (
             <button
@@ -140,14 +140,14 @@ export function TodosPage(): JSX.Element {
           {[1, 2, 3].map((i) => (
             <div
               key={i}
-              className="border-border bg-bg-raised animate-pulse rounded-lg border px-5 py-4"
+              className="border-border bg-bg-raised animate-pulse rounded-lg border px-6 py-4"
             >
               <div className="flex items-start justify-between gap-4">
                 <div className="flex items-center gap-2.5">
-                  <div className="bg-bg-subtle h-5 w-16 rounded-full" />
-                  <div className="bg-bg-subtle h-5 w-72 rounded" />
+                  <div className="bg-bg-subtle h-6 w-16 rounded-full" />
+                  <div className="bg-bg-subtle h-6 w-72 rounded" />
                 </div>
-                <div className="bg-bg-subtle h-7 w-24 rounded" />
+                <div className="bg-bg-subtle h-12 w-24 rounded" />
               </div>
               <div className="mt-2 flex items-center gap-2">
                 <div className="bg-bg-subtle size-4 rounded-full" />
@@ -162,7 +162,7 @@ export function TodosPage(): JSX.Element {
         <div className="flex flex-col items-center justify-center py-16 text-center">
           <AlertCircle size={32} className="text-feedback-danger mb-3" aria-hidden="true" />
           <h3 className="text-h3 text-fg">{t('todos.list.errorTitle')}</h3>
-          <p className="text-body text-fg-muted mt-2 mb-5">{t('todos.list.errorBody')}</p>
+          <p className="text-body text-fg-muted mt-2 mb-6">{t('todos.list.errorBody')}</p>
           <Button onClick={() => refetch()}>
             <RefreshCw size={14} className="mr-1.5" />
             {t('todos.retry')}
@@ -192,7 +192,7 @@ export function TodosPage(): JSX.Element {
         <div className="space-y-4">
           {sections.map((sec) => (
             <div key={sec.key}>
-              <div className="text-fg-subtle text-overline px-5 py-1 font-semibold tracking-wider uppercase">
+              <div className="text-fg-subtle text-overline px-6 py-1 font-semibold tracking-wider uppercase">
                 {t(sec.labelKey)} · {formatCountFor(locale, sec.items.length)}
               </div>
               <div

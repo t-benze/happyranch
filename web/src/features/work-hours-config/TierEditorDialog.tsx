@@ -257,7 +257,7 @@ export function TierEditorDialog({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-xl min-w-0" closeLabel={t('common.close')}>
-        <DialogHeader className="min-w-0 pr-5">
+        <DialogHeader className="min-w-0 pr-6">
           <DialogTitle className="min-w-0 break-words">{title}</DialogTitle>
           <DialogDescription className="min-w-0 break-words">
             {t('workHours.tier.description', { tier: t(TIER_KIND_KEYS[tier.kind]) })}
@@ -296,7 +296,7 @@ export function TierEditorDialog({
                 value={mode ?? UNSET}
                 onValueChange={(v) => setMode(v === UNSET ? null : v)}
               >
-                <SelectTrigger className="h-auto min-h-6 w-40 max-w-full [&>span]:line-clamp-none [&>span]:min-w-0 [&>span]:text-left [&>span]:whitespace-normal [&>span]:break-all [&>svg]:shrink-0">
+                <SelectTrigger className="h-auto min-h-8 w-40 max-w-full [&>span]:line-clamp-none [&>span]:min-w-0 [&>span]:text-left [&>span]:whitespace-normal [&>span]:break-all [&>svg]:shrink-0">
                   <SelectValue placeholder={t('workHours.tier.inherited')} />
                 </SelectTrigger>
                 <SelectContent>
@@ -371,7 +371,7 @@ export function TierEditorDialog({
                 value={timezone ?? UNSET}
                 onValueChange={(v) => setTimezone(v === UNSET ? null : v)}
               >
-                <SelectTrigger className="h-auto min-h-6 w-56 max-w-full [&>span]:line-clamp-none [&>span]:min-w-0 [&>span]:text-left [&>span]:whitespace-normal [&>span]:break-all [&>svg]:shrink-0">
+                <SelectTrigger className="h-auto min-h-8 w-56 max-w-full [&>span]:line-clamp-none [&>span]:min-w-0 [&>span]:text-left [&>span]:whitespace-normal [&>span]:break-all [&>svg]:shrink-0">
                   <SelectValue placeholder={t('workHours.tier.inherited')} />
                 </SelectTrigger>
                 <SelectContent>
@@ -417,7 +417,7 @@ export function TierEditorDialog({
                 role="switch"
                 aria-checked={catchUp ?? false}
                 onClick={() => setCatchUp((p) => (p === null ? true : !p))}
-                className={`inline-flex h-5 w-9 items-center rounded-full transition-colors ${
+                className={`inline-flex h-6 w-9 items-center rounded-full transition-colors ${
                   catchUp ? 'bg-accent' : 'bg-bg-raised border-border border'
                 }`}
               >

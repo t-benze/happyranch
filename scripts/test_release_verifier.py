@@ -86,7 +86,10 @@ class ReleaseVerifierTests(unittest.TestCase):
         report = ReadinessReport(False, {'daemon_loopback': GateResult(
             False, 'daemon_unavailable', 'synthetic-secret-detail')})
         stderr = StringIO()
-        with patch.object(supervisor, 'readiness_report', return_value=report), \
+        transaction_reader = ManagedInstaller(root=self.home,
+                                              root_owner=(os.getuid(), os.getgid()))
+        with patch('runtime.remote_access.installer.ManagedInstaller', return_value=transaction_reader), \
+                patch.object(supervisor, 'readiness_report', return_value=report), \
                 patch.object(supervisor, '_reconcile_revocation'), redirect_stderr(stderr):
             code = supervisor.run(max_iterations=2, wait_fn=lambda _: None)
         message = 'waiting for readiness; failing_gates=daemon_loopback:daemon_unavailable\n'

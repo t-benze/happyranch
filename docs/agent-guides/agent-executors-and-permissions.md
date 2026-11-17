@@ -341,7 +341,7 @@ helper, while preserving thread delivery and breaker continuity.
 > allocates ONE reviewed main-only dispatch under TASK-11897. This entry grants
 > no standing execution authority; actual health remains separately observed.
 > Retained platform/callback sources are not automatic merge gates. See
-> [coverage gaps](../python-test-reset.md) and [current lanes](../local-ci.md).
+> [coverage gaps](../operations/python-test-reset.md) and [current lanes](../operations/local-ci.md).
 
 ## Naming v1 core, API and routing source
 
@@ -1067,7 +1067,7 @@ explicit approved plan bytes, and the tested-source callback CLI. Pi/custom prov
 are unavailable until a separately authored deterministic fixture exists. No real
 agent executable, model request, agentic download, production registry/configuration
 or credential inheritance is allowed. This test fence does not modify production
-permissions, resolver policy or `_nested_daemon_env`. See `docs/local-ci.md`.
+permissions, resolver policy or `_nested_daemon_env`. See `docs/operations/local-ci.md`.
 
 The separately authorized THR-291 standalone `e2e/run.py` lane is outside pytest.
 It uses public runtime/org/agent initialization and executor-binary registration,
@@ -1111,7 +1111,7 @@ all existing copies of that directory are removed from PATH, then exactly one
 copy is placed first, ahead of the standard directories. Without that signal,
 source-mode behavior is unchanged. Frozen bundles continue to derive their
 first CLI directory from `sys.executable`, with precedence over the env signal.
-See the [Linux build handbook](../runbooks/linux-release-handbook.md).
+See the [Linux build handbook](../operations/linux-release-handbook.md).
 
 **Preserved:** ``PATH`` (including daemon-normalized bundled and standard tool directories),
 ``HAPPYRANCH_ORG_SLUG``, and all other ``HAPPYRANCH_*`` runtime variables.

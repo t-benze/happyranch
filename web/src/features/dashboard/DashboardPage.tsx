@@ -93,7 +93,7 @@ interface PanelProps {
 /** Direction-A Pasture card — matches ds.css .card (bg-surface, rounded-lg 18px, soft shadow). */
 function Panel({ title, meta, variant = 'eyebrow', children }: PanelProps): JSX.Element {
   return (
-    <section className="border-border-default bg-surface shadow-pasture-sm rounded-lg border p-5">
+    <section className="border-border-default bg-surface shadow-pasture-sm rounded-lg border p-6">
       <header className="mb-4 flex items-baseline justify-between">
         {variant === 'title' ? (
           <h2 className="font-display text-h3 text-text-primary font-medium">
@@ -162,11 +162,11 @@ export function DashboardPage(): JSX.Element {
       : '—';
 
   if (q.isLoading) {
-    return <p className="text-text-muted p-6 text-sm">{t('dashboard.loading')}</p>;
+    return <p className="text-text-muted p-8 text-sm">{t('dashboard.loading')}</p>;
   }
   if (q.isError || !q.data) {
     return (
-      <div className="flex flex-col items-center justify-center gap-3 p-8 text-center">
+      <div className="flex flex-col items-center justify-center gap-3 p-16 text-center">
         <p className="text-tier-red text-sm">{t('dashboard.error')}</p>
         <Button
           size="sm"
@@ -198,7 +198,7 @@ export function DashboardPage(): JSX.Element {
     pendingReviewJobs.length === 0
   ) {
     return (
-      <div className="mx-auto max-w-2xl p-8">
+      <div className="mx-auto max-w-2xl p-16">
         <EmptyState
           title={t('dashboard.firstRun.title')}
           body={t('dashboard.firstRun.body')}
@@ -243,7 +243,7 @@ export function DashboardPage(): JSX.Element {
             </span>
           )}
         </p>
-        <h1 className="font-display text-display text-text-primary mb-8 font-medium">
+        <h1 className="font-display text-display text-text-primary mb-16 font-medium">
           {statusSummary(locale, pendingCount)}
         </h1>
 
@@ -370,7 +370,7 @@ export function DashboardPage(): JSX.Element {
                 />
               </div>
               {/* Counter tiles — ds.css display-num / mono pattern */}
-              <div className="border-border-default mt-5 grid grid-cols-5 gap-3 border-t pt-4">
+              <div className="border-border-default mt-6 grid grid-cols-5 gap-3 border-t pt-4">
                 <div className="text-center">
                   <div className="font-display text-h1 text-text-primary font-medium tabular-nums">
                     {s.narrative_counts.completed_today}

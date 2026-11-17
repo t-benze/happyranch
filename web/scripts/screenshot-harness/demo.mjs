@@ -34,8 +34,8 @@ async function runB() {
   <button class="bg-primary text-primary-foreground hover:bg-primary/90 focus-visible:ring-ring inline-flex h-9 items-center justify-center gap-2 rounded-md px-3 py-1.5 text-sm font-medium focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none">Primary</button>
   <button class="bg-secondary text-secondary-foreground border-border inline-flex h-9 items-center justify-center gap-2 rounded-md border px-3 py-1.5 text-sm font-medium">Secondary</button>
   <div class="flex flex-col gap-2">
-    <span class="bg-accent h-8 w-24 rounded-md"></span>
-    <span class="bg-surface-raised border-border-subtle h-8 w-24 rounded-md border"></span>
+    <span class="bg-accent h-16 w-24 rounded-md"></span>
+    <span class="bg-surface-raised border-border-subtle h-16 w-24 rounded-md border"></span>
   </div>`;
   return modeBDistCss({ markup, outDir: OUT, name: 'mode-b' });
 }

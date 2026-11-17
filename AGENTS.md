@@ -26,6 +26,7 @@ current-source and status conventions live in `docs/agent-guides/contracts/READM
 | Web app, OpenAPI pinning, CLI behavior, agent callbacks | `docs/agent-guides/web-and-cli.md` |
 | KB, learnings, artifacts, revisit, threads, jobs | `docs/agent-guides/features-and-invariants.md` |
 | Task output folder: what to write, size, citing, retention | `docs/agent-guides/task-output-practice.md` |
+| Operator runbooks, releases and CI procedures | `docs/operations/README.md` |
 | Detailed feature contracts (coding workflow, document workflows, authority policy, team move, threads/naming, cleanup, memory census, remote access, CI) | `docs/agent-guides/contracts/README.md` |
 
 ## Architecture essentials
@@ -103,7 +104,7 @@ uv run python scripts/generate_openapi_snapshot.py --check  # default, never wri
 uv run python scripts/generate_openapi_snapshot.py --write  # reviewed intentional change only
 ```
 
-Full guide: `docs/local-ci.md`.
+Full guide: `docs/operations/local-ci.md`.
 
 `scripts/local_ci.sh all`, full suites, and pushes whose hooks run such
 verification must run as durable jobs whenever they may exceed one minute. Follow
@@ -270,7 +271,7 @@ Stop and escalate before touching permission-model generation, auth or credentia
 One line per area; read the linked contract before changing it.
 
 - **Coding workflow** (disabled by default; built-in definition, historical Founder settings at `/orgs/:slug/settings/coding` — since U8b a pointer to Workflows → Setup with read-only original-save recovery — `scripts/setup_coding.py`): [coding-workflow.md](docs/agent-guides/contracts/coding-workflow.md)
-- **Sequential Coding cutover** (atomic v2 fresh-start selection/old-fresh fence; separate offline setup/admission): [operator install/backout](docs/runbooks/sequential-coding-cutover.md)
+- **Sequential Coding cutover** (atomic v2 fresh-start selection/old-fresh fence; separate offline setup/admission): [operator install/backout](docs/operations/sequential-coding-cutover.md)
 - **Workflow schema, activation and document review** (F–J; fresh combined storage, existing migrations stay explicit until A4): [document-workflows.md](docs/agent-guides/contracts/document-workflows.md), [automatic setup](docs/specs/2026-11-14-automatic-workflow-setup.md#a2-fresh-creation-and-definition-only-catalog).
 - **Escalation authority policy** (THR-181/229/277/279; THR308 T-0 ordinary callbacks omit attempt/admitted audit/token, retained escalation and lineage admission): [authority-policy.md](docs/agent-guides/contracts/authority-policy.md)
 - **Task orchestration** (attachments, retries, root Pause/Resume, creation-time ownership marks): [task-orchestration.md](docs/agent-guides/contracts/task-orchestration.md)

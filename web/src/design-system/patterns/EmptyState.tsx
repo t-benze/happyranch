@@ -25,7 +25,7 @@ export function EmptyState({ icon, title, body, cta }: EmptyStateProps): JSX.Ele
       <h3 className="text-h3 text-text-secondary">{title}</h3>
       <div className="text-body text-text-muted mt-2">{body}</div>
       {cta && (
-        <div className="mt-5">
+        <div className="mt-6">
           <Button onClick={cta.onClick}>{cta.label}</Button>
         </div>
       )}

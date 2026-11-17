@@ -35,7 +35,7 @@ controller/launcher/export/collector/optional-diagnostic instructions are supers
 Retained pytest integration collection and execution use deterministic external CLI stubs through
 `tests/helpers/integration_parent.py` before pytest/runtime imports. Use disposable
 GitHub runners or a separately authorized Mac Linux guest; the live Linux daemon
-host cannot run integration tests, including through jobs. See `docs/local-ci.md`
+host cannot run integration tests, including through jobs. See `docs/operations/local-ci.md`
 for parent isolation, explicit plans, source/callback identity and bounded two-org
 exception observation. General integration remains SKIPPED under THR-243 seq42;
 a focused task authorization does not establish full-suite health.
@@ -98,7 +98,7 @@ for the launcher and Health by seq659. The retained private content checks still
 require genuine browser input; no relay/public/SQL/DOM substitution is accepted.
 Native Product E2E behavior remains NOT RUN by source/static checks; synthetic
 body/standard-trace evidence must identify the actual adapter/browser venue.
-See `e2e/README.md` and `docs/local-ci.md`. Old units remain retired.
+See `e2e/README.md` and `docs/operations/local-ci.md`. Old units remain retired.
 
 Founder THR-291 seq69 makes automated PR/main merge CI **lint/static only**.
 Required checks at the final PR head and exact merge on main are exactly
@@ -116,7 +116,7 @@ Normal hooks stay enabled; never bypass hooks or the guarded worktree.
 The `all` target's temporary-filesystem inode advisory reads GNU inode columns
 on Linux and BSD `iused`/`ifree`/`%iused` columns on macOS (total = used + free).
 It warns at 90%, remains fail-open on unavailable or malformed measurements,
-and never cleans files. See `docs/local-ci.md` for the focused fixture command
+and never cleans files. See `docs/operations/local-ci.md` for the focused fixture command
 and `ci/jenkins/mac-native-probe/README.md` for the S9 native suite, which runs
 all 12 rows (nine portable fixtures followed by three real-df checks).
 Independent full code review and scoped QA remain mandatory. Static checks
@@ -171,8 +171,8 @@ workflows, outside PR/main. Manual/tag macOS packaging is a separate release
 activity and invokes no fresh E2E.
 The Nightly integration workflow (schedule and manual lanes) was retired under THR-291; daily Product E2E (`e2e.yml`, 19:00 UTC) is the behavioral lane.
 
-See [the reset coverage gap record](../../python-test-reset.md) and
-[Local CI](../../local-ci.md) for retained selectors and evidence limits.
+See [the reset coverage gap record](../../operations/python-test-reset.md) and
+[Local CI](../../operations/local-ci.md) for retained selectors and evidence limits.
 
 Source boundary enforcement: `python scripts/check_source_boundaries.py` and
 `python scripts/validate_source_boundaries.py` use only stdlib (local Python 3.12+).
@@ -191,7 +191,7 @@ scans return 0. No product imports occur. `boundary-lint` and `all` run
 (`scripts/validate_source_boundaries.py` and `scripts/validate_private_operator_endpoints.py`);
 unconditional PR/push-main hosted
 `Source Boundary Lint` uses Python 3.14 without project dependency installation.
-See the project-layout boundary section and [Local CI](../../local-ci.md).
+See the project-layout boundary section and [Local CI](../../operations/local-ci.md).
 
 PR1022's TASK10553 continuation retains all 224 C4 parameters and the finite
 L/W source. Historical PR shards are superseded by merged PR1025's THR291seq69
@@ -202,7 +202,7 @@ selection using observed adjacent agent/team text. Founder THR296 seq316 retires
 moving agents between teams; the offline maintenance cases C6/C8/C9 and their
 observers are removed with that utility. C1–C5, C7, settings and C10 browser
 sources remain for founder-managed Default and human-manager behavior. See
-`docs/local-ci.md`; retained source is not executed behavioral evidence.
+`docs/operations/local-ci.md`; retained source is not executed behavioral evidence.
 
 W10's owned HTTP proxy forwards actual daemon SSE headers and frames as streams.
 Finite-request settlement excludes only streams whose headers were forwarded;
@@ -214,6 +214,6 @@ it is partial diagnostic evidence, never the completed 29-row browser receipt.
 The M4 macOS observer-probe workflow and pre-enrollment tcpdump/lsof gate are
 removed (TASK-15886). The manual/main-only/non-required managed-m4.yml lane now
 uses authenticated home-VM UDP enforcement and a fresh exact native-daemon200;
-see scripts/ci/README-m4-tailnet.md. VM-only premerge controls do not close native
+see docs/operations/ci-m4-tailnet.md. VM-only premerge controls do not close native
 acceptance. Required lints, Product E2E and all spent run budgets are unchanged.
 Source delivery authorizes no dispatch.

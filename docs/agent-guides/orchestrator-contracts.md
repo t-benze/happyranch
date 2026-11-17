@@ -1513,7 +1513,7 @@ full cumulative independent review, honest same-head QA and guarded merge.
 > Test-policy update (THR-291 seq40): former Python unit tests and unit-only
 > fixtures referenced in historical implementation evidence below are retired.
 > Product contracts are unchanged; replacement E2E is PENDING. See
-> [coverage gaps](../python-test-reset.md) and [current lanes](../local-ci.md).
+> [coverage gaps](../operations/python-test-reset.md) and [current lanes](../operations/local-ci.md).
 
 ## Current name context in task prompts
 

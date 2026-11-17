@@ -298,7 +298,7 @@ export function DreamsPage(): JSX.Element {
             statement title, mirroring the KB-02 / AUDIT-03 / THREADS-04 /
             SCHED-02 header idiom. The "Next run tonight" pill is omitted: no
             next-run field is on the dreams payload the page loads. */}
-        <header className="border-border-default mb-6 border-b pb-4">
+        <header className="border-border-default mb-8 border-b pb-4">
           <p className="text-text-muted text-xs font-medium tracking-wide uppercase">
             {t('dreams.header.eyebrow', { count: nightCount })}
           </p>
@@ -308,7 +308,7 @@ export function DreamsPage(): JSX.Element {
         </header>
 
         {/* Single-column reflection feed + right-side rail (DREAMS-02) */}
-        <div className="flex flex-col gap-6 lg:flex-row lg:items-start">
+        <div className="flex flex-col gap-8 lg:flex-row lg:items-start">
           {/* Reflection feed — the single main column */}
           <main className="min-w-0 flex-1">
             {dreamsQ.isLoading ? (

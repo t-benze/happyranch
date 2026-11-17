@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Native main-only M4 runner. Public artifact request, OAEP-only PR handoff.
 
-No cloud/admin/daemon credential is accepted. See README-m4-tailnet.md.
+No cloud/admin/daemon credential is accepted. See ../../docs/operations/ci-m4-tailnet.md.
 """
 from __future__ import annotations
 

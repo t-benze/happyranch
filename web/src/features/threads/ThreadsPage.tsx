@@ -265,7 +265,7 @@ function TurnAvatar({ name }: { name: string }): JSX.Element {
   return (
     <span
       aria-hidden="true"
-      className={`text-overline flex h-6 w-6 shrink-0 items-center justify-center rounded-full font-bold text-white ${bg}`}
+      className={`text-overline flex h-8 w-8 shrink-0 items-center justify-center rounded-full font-bold text-white ${bg}`}
     >
       {speakerInitials(name, founderName)}
     </span>
@@ -898,7 +898,7 @@ export function ThreadsPage(): JSX.Element {
               value={filter}
               onChange={(e) => changeFilter(e.target.value)}
               placeholder={t('threads.page.filterPlaceholder')}
-              className="text-caption h-7 w-full shrink-0 px-2 py-1 sm:w-44"
+              className="text-caption h-12 w-full shrink-0 px-2 py-1 sm:w-44"
               aria-label={t('threads.page.filterAria')}
             />
           </div>
@@ -1240,7 +1240,7 @@ function DetailColumn({
       <section className="flex h-full flex-col">
         {backNav}
         <div className="border-border-subtle animate-pulse space-y-2 border-b px-4 py-3">
-          <div className="bg-bg-raised h-5 w-64 rounded" />
+          <div className="bg-bg-raised h-6 w-64 rounded" />
           <div className="bg-bg-raised h-3 w-48 rounded" />
         </div>
         <div className="flex flex-1 items-center justify-center">

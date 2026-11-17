@@ -2,7 +2,7 @@
 
 > Test-policy amendment (THR-291 seq40): Python unit source and gates cited below
 > are retired. Product invariants and acceptance obligations remain unchanged;
-> replacement E2E coverage is PENDING. See [the coverage gap record](../python-test-reset.md).
+> replacement E2E coverage is PENDING. See [the coverage gap record](../operations/python-test-reset.md).
 
 > Status: current
 > Current Source: `runtime/infrastructure/database.py`, `runtime/infrastructure/db/reply_delivery.py`, `runtime/infrastructure/thread_delivery_release.py`, unmounted `runtime/daemon/routes/thread_delivery_releases.py`, dormant `cli/thread_delivery_release_requests.py`

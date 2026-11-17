@@ -8,7 +8,7 @@ msg95 continues it. This unit delivers only the explicit operator script,
 workflow compatibility-owner installer and maintained contract/runbook parity.
 
 Current contract: [reusable workflows](../agent-guides/contracts/reusable-workflows.md#u2b-explicit-installercheck-source).
-Operator prerequisites and limits: [storage runbook](../runbooks/sequential-workflow-storage.md).
+Operator prerequisites and limits: [storage runbook](../operations/sequential-workflow-storage.md).
 The original sequential/ownership DDL literals and complete readers remain owners;
 U2a history is preserved in 2026-11-08-sequential-storage-u2a.md.
 

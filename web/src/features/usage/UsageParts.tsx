@@ -111,7 +111,7 @@ export function UsageSection({
   return (
     // `relative` contains the absolutely positioned sr-only status below, so it
     // cannot escape ContentWrap's scroller and make the whole window scroll.
-    <section aria-labelledby={headingId} className="relative mb-7">
+    <section aria-labelledby={headingId} className="relative mb-12">
       <h2 id={headingId} className="font-display text-display text-text-primary">
         {title}
       </h2>
@@ -191,7 +191,7 @@ export function TableSkeleton({ columns, rows = 4 }: { columns: string[]; rows?:
       </div>
       <div className="animate-pulse space-y-3 px-4 py-4">
         {Array.from({ length: rows }, (_, i) => (
-          <div key={i} className="bg-surface-sunken h-5 rounded" />
+          <div key={i} className="bg-surface-sunken h-6 rounded" />
         ))}
       </div>
     </div>

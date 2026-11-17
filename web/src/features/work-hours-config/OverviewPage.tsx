@@ -78,7 +78,7 @@ export function OverviewPage(): JSX.Element {
 
   // Loading.
   if (settingsQuery.isLoading) {
-    return <div className="text-fg-muted p-6">{t('workHours.loading')}</div>;
+    return <div className="text-fg-muted p-8">{t('workHours.loading')}</div>;
   }
 
   // Config-broken-on-disk recovery: the settings query errored (e.g. the live
@@ -117,7 +117,7 @@ export function OverviewPage(): JSX.Element {
             {t('workHours.statusBar.label')}
           </span>
           <span
-            className={`inline-flex h-5 w-9 items-center rounded-full ${
+            className={`inline-flex h-6 w-9 items-center rounded-full ${
               wh.enabled ? 'bg-accent' : 'bg-bg-raised border-border border'
             }`}
             aria-hidden="true"
@@ -152,7 +152,7 @@ export function OverviewPage(): JSX.Element {
                 setTier({ kind: 'team', team: v });
               }}
             >
-              <SelectTrigger className="h-8 w-40">
+              <SelectTrigger className="h-16 w-40">
                 <SelectValue placeholder={t('workHours.editTeamPlaceholder')} />
               </SelectTrigger>
               <SelectContent>

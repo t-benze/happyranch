@@ -148,7 +148,7 @@ export function AuditRow({
         <span className="text-fg-muted ml-auto text-xs">{open ? '▾' : '▸'}</span>
       </button>
       {open && (
-        <div className="bg-surface-sunken border-border-subtle border-t px-6 py-3">
+        <div className="bg-surface-sunken border-border-subtle border-t px-8 py-3">
           <pre className="text-fg overflow-x-auto font-mono text-xs">
 {JSON.stringify(entry.payload, null, 2)}
           </pre>

@@ -296,7 +296,7 @@ function PickView({ recipient, archives, history, historyError, chosen, onChoose
         {archives.isLoading ? <LoadingBlock /> : archives.isError ? (
           <ErrorBlock error={archives.error} onRetry={archives.refetch} />
         ) : list.length === 0 ? (
-          <div className="bg-surface border-border-default flex flex-col items-center gap-2 rounded-lg border px-6 py-8 text-center">
+          <div className="bg-surface border-border-default flex flex-col items-center gap-2 rounded-lg border px-8 py-16 text-center">
             <ArchiveX size={20} aria-hidden="true" className="text-text-muted" />
             <p className="font-display text-text-primary text-lg">{t('knowledge.instill.pick.emptyTitle')}</p>
             <p className="text-text-secondary max-w-sm text-sm">{t('knowledge.instill.pick.emptyBody', { name: recipient.name })}</p>

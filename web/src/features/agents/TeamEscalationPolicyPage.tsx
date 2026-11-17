@@ -18,21 +18,21 @@ export function TeamEscalationPolicyPage(): JSX.Element {
   const [dirty, setDirty] = useState(false);
   const blocker = useBlocker(dirty);
 
-  if (agents.isLoading || teams.isLoading) return <div className="text-text-muted p-6">{t('agents.policy.loadingAgent')}</div>;
+  if (agents.isLoading || teams.isLoading) return <div className="text-text-muted p-8">{t('agents.policy.loadingAgent')}</div>;
   const agent = agents.data?.agents.find((item) => item.name === agentName);
   const eligibleAgent = agent?.team && agent.role
     ? { name: agent.name, team: agent.team, role: agent.role }
     : undefined;
   if (agents.isError || teams.isError || !isEligiblePolicyManager(eligibleAgent, teams.data?.teams)) {
-    return <div className="text-text-muted p-6">{render('agents.policy.notFound', { link: <Link className="text-accent-text underline" to={routes.inbox()}>{t('agents.policy.backToAgents')}</Link> })}</div>;
+    return <div className="text-text-muted p-8">{render('agents.policy.notFound', { link: <Link className="text-accent-text underline" to={routes.inbox()}>{t('agents.policy.backToAgents')}</Link> })}</div>;
   }
   const policyAgent = eligibleAgent!;
 
   return (
     <div className="bg-surface-canvas h-full overflow-y-auto">
-      <section className="mx-auto w-full max-w-4xl p-4 sm:p-6" aria-labelledby="team-policy-page-heading">
+      <section className="mx-auto w-full max-w-4xl p-4 sm:p-8" aria-labelledby="team-policy-page-heading">
         <Button asChild variant="ghost" size="sm"><Link to={routes.detail(policyAgent.name)}>{t('agents.policy.backTo', { name: policyAgent.name })}</Link></Button>
-        <header className="mt-4 mb-5">
+        <header className="mt-4 mb-6">
           <h1 id="team-policy-page-heading" className="font-display text-text-primary text-2xl font-medium">{t('agents.policy.title')}</h1>
           <p className="text-text-muted mt-1 text-sm">{policyAgent.team} · <IdentityName canonicalId={policyAgent.name} /></p>
         </header>

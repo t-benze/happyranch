@@ -187,7 +187,7 @@ function SummaryCards({
           >
             <div className="animate-pulse space-y-2">
               <div className="bg-surface-raised h-3 w-20 rounded" />
-              <div className="bg-surface-raised h-7 w-16 rounded" />
+              <div className="bg-surface-raised h-12 w-16 rounded" />
             </div>
           </div>
         ) : (
@@ -234,7 +234,7 @@ function LoopsCard({
       {loading ? (
         <div className="animate-pulse space-y-2">
           {[1, 2, 3].map((i) => (
-            <div key={i} className="bg-surface-raised h-6 rounded" />
+            <div key={i} className="bg-surface-raised h-8 rounded" />
           ))}
         </div>
       ) : rows.length === 0 ? (
@@ -314,7 +314,7 @@ function HttpCard({
       {loading ? (
         <div className="animate-pulse space-y-2">
           {[1, 2, 3, 4].map((i) => (
-            <div key={i} className="bg-surface-raised h-6 rounded" />
+            <div key={i} className="bg-surface-raised h-8 rounded" />
           ))}
         </div>
       ) : rows.length === 0 ? (
@@ -492,7 +492,7 @@ function HistorySection({
         )}
       </div>
       {error ? (
-        <div className="bg-surface border-border-default shadow-pasture-sm rounded-lg border p-6">
+        <div className="bg-surface border-border-default shadow-pasture-sm rounded-lg border p-8">
           <p className="text-feedback-danger text-sm">{t('health.trends.error')}</p>
         </div>
       ) : loading ? (
@@ -504,14 +504,14 @@ function HistorySection({
             >
               <div className="animate-pulse space-y-3">
                 <div className="bg-surface-raised h-3 w-24 rounded" />
-                <div className="bg-surface-raised h-7 w-16 rounded" />
+                <div className="bg-surface-raised h-12 w-16 rounded" />
                 <div className="bg-surface-raised h-10 w-full rounded" />
               </div>
             </div>
           ))}
         </div>
       ) : sampleCount === 0 ? (
-        <div className="bg-surface border-border-default shadow-pasture-sm rounded-lg border p-6">
+        <div className="bg-surface border-border-default shadow-pasture-sm rounded-lg border p-8">
           <p className="text-text-muted text-sm">{t('health.trends.empty')}</p>
         </div>
       ) : (
@@ -582,25 +582,25 @@ export function HealthPage(): JSX.Element {
   return (
     <div className="bg-surface-canvas h-full overflow-y-auto">
       {/* a-health hl-wrap: 1120 centered cap (THR-099 Slice 7). */}
-      <div className="max-w-content-wide mx-auto p-6">
-        <header className="mb-6 flex items-start justify-between gap-3">
+      <div className="max-w-content-wide mx-auto p-8">
+        <header className="mb-8 flex items-start justify-between gap-3">
           <PageHeader title={t('health.title')} meta={t('health.meta')} />
           <WindowToggle winIdx={winIdx} onChange={onChangeWindow} />
         </header>
 
         {liveQ.isError && (
-          <div className="border-feedback-danger/30 bg-feedback-danger/5 mb-6 rounded-lg border p-4">
+          <div className="border-feedback-danger/30 bg-feedback-danger/5 mb-8 rounded-lg border p-4">
             <p className="text-feedback-danger text-sm">{t('health.liveError')}</p>
           </div>
         )}
 
         {/* Summary cards */}
-        <div className="mb-6">
+        <div className="mb-8">
           <SummaryCards snapshot={snapshot} loading={liveQ.isLoading} />
         </div>
 
         {/* Loop + HTTP tables */}
-        <div className="mb-6 grid grid-cols-1 gap-4 lg:grid-cols-2">
+        <div className="mb-8 grid grid-cols-1 gap-4 lg:grid-cols-2">
           <LoopsCard loops={snapshot?.loops} loading={liveQ.isLoading} />
           <HttpCard http={snapshot?.http} loading={liveQ.isLoading} />
         </div>

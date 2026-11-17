@@ -68,7 +68,7 @@ function CodingMoved({ orgSlug }: { orgSlug: string }): JSX.Element {
 
   return (
     <section className="flex flex-col gap-4" aria-labelledby="coding-moved-title">
-      <div className="border-border-default bg-bg-raised rounded-lg border p-4 sm:p-6">
+      <div className="border-border-default bg-bg-raised rounded-lg border p-4 sm:p-8">
         <h3 id="coding-moved-title" className="font-display text-text-primary text-lg font-semibold">{t('settings.coding.moved.title')}</h3>
         <p className="text-text-secondary mt-2 text-sm">{t('settings.coding.moved.body')}</p>
         <div className="mt-4 flex flex-wrap items-center gap-3">

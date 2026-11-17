@@ -349,10 +349,10 @@ the OS cause of a particular bootstrap failure; native lifecycle proof is requir
 
 - **Managed remote access (normative contract, THR-097 merge unit A).** Fixed invariants: one Headscale cell per customer is the primary hostile-tenant boundary; the shared DERP fleet observes/relays only network metadata and WireGuard ciphertext and never grants reachability; the home connector is a **supervised portable Python companion** (never an in-process daemon listener) that enforces an explicit allow-by-method+normalized-template remote allow-list, current paired/current-device identity, and current policy/revocation epoch, failing closed; the daemon stays **loopback-only**; the daemon bearer is injected **only** by the connector on the final connector→127.0.0.1 hop and must never appear in remote input, client, Services, Headscale, DERP, network, fixture secrets, logs, errors, or audit. Revocation denies/closes before or atomically with node removal; never success early. Governing spec: `docs/specs/2026-08-26-managed-remote-access-contract.md`; shipped route policy: `runtime/remote_access/route_policy.json` (118 allow entries; THR-327 R1 v1 excludes executor-binary registration, custom-CLI commit, runtime use, adapter deletion and org deletion; required Source Boundary Lint checks policy consistency); hostile threat fixtures: `tests/contract/managed_remote_access/` (consumed by the retained hostile lab; the former Python contract validator is retired). `route-classification.json` `included` (web coverage) is NOT remotely-allowed-equivalent; Swift `SurfaceAllowList` is legacy deny-list evidence, not authority. **Implementation status:** the portable supervised Python connector core (merge unit C / TASK-5724 phase unit 2) ships in `runtime/remote_access/` with a loopback-only harness and tests at `tests/remote_access/` — strict parser/canonical normalization, versioned route-policy consumer (locked nine-step decision order + every security-relevant nested value validated by exact canonical equality against the Unit-A semantics — contradictory non-empty prose and altered allowed-template lists rejected at load — plus operational state; schema/digest/version/staleness drift fails closed; unknown states never active), connector identity + device-proof verifier seam, current authorization/revocation with live-stream closure via one authoritative `RevocationCoordinator` transaction (the registry seals the retained stream wrapper fail closed before trust-state application — a raising transport close leaves the externally retained handle irrevocably rejecting receive/send, surfaced as `RevocationIncomplete`; the transaction is serialized across concurrent revocations and the stream registry shares/persists the complete cleanup terminal result, so no caller returns success while an in-flight or completed cleanup failure relevant to the sealed generation is unreported; old public `apply_revocation` bypass removed; admission and EVERY ownership/membership mutation — `open` admission, duplicate-id replacement, `close(stream_id)`, the retained-wrapper public `close`, and `close_all` — share ONE atomic lifecycle boundary: the lifecycle lock guards both the sealed flag and registry membership, every mutation seals the affected wrapper(s) atomically with its membership transition (no pop-without-seal ownership escape), any admission not fully registered before the seal fails closed and never returns a usable wrapper, transport open/close and duplicate-replacement callbacks never run under the lifecycle lock but remain INSIDE the revocation acknowledgement barrier (outside-lock transport closes that linearized before the seal are terminal before `close_all` success — revocation never reports success early), and same-thread re-entrant `close_all` from an unfinished transport cleanup callback MUST return fail-closed non-success (founder ruling THR-097 seq140): it may not exclude its own in-flight cleanup and publish success, may not mark the cleanup terminal with an incomplete failed-id set, and may not erase a callback failure that becomes terminal after the re-entrant call — the failure is persisted on the registry and re-surfaced by a later close_all/revoke (REV-007/REV-008), and derived `is_open`/`raise_if_open` are synchronized on the same lock; the gateway never double-closes a handle the registry owns), allow-list enforcement, remote-auth/hop-by-hop stripping, daemon-credential-provider seam, and a forwarder that targets only literal 127.0.0.1 and normalizes every forward/open/stream failure (connection refusal, timeouts, hostile exception text) into stable secret-free denials while deterministically closing partial resources; in-memory persistence abstraction only, no tailnet/external bind, no Headscale/DERP/Services integration, no packaging. **Linux supervised connector packaging (phase unit 3) is IMPLEMENTED** in the same package: an atomic, corruption-detecting, owner-only local trust-state store (``AtomicFileTrustStateStore`` satisfies the ``TrustStateStore`` protocol with a schema-agnostic non-normative envelope — atomic replace/fsync, sha256 corruption detection, symlink/loose-permission rejection, plus a founder-approved (THR-097 seq163) **non-database companion monotonic generation/digest anchor** at ``<state>.anchor`` outside the replaceable snapshot: the envelope generation must equal the anchored generation AND the anchor digest covers the exact snapshot bytes, so any previously valid OLDER snapshot replayed after a newer revocation/generation — including across a new store/process instance — is deterministically rejected, and missing/mismatched/corrupt/stale anchors, partial snapshot/anchor pairs, symlinked anchors, and loose anchor permissions all fail closed; a crash between the snapshot and anchor writes leaves a mismatched pair that load() rejects (the crash-consistency contract is documented in the module); NOT the founder-gated managed persistent schema — no DB, no migration), a ``SystemdCredentialProvider`` (``LoadCredential=`` injection — the service user never reads the daemon home), a five-gate readiness evaluator (``ConnectorReadiness``: daemon literal-127.0.0.1 reachability, credential permissions, current policy, bind identity, non-corrupt trust state — **no listener unless ALL pass**), a least-privilege systemd unit renderer (dedicated service user, empty capability bounding set/ambient capabilities, ``ProtectSystem=strict``, ``NoNewPrivileges``, ``LoadCredential=``, ``Type=notify``+``WatchdogSec``+``Restart=on-failure``; user-mode renders omit the directives the user manager cannot apply — ``PrivateDevices``/``ProtectKernelModules``/capability directives — verified on real systemd), an injectable ``SystemdServiceManager`` (install/uninstall/start/stop/restart/enable/disable/status + upgrade with auto-rollback and rollback), a **LAB-ONLY** conformance provider adapter (explicit ``lab_only`` + concrete lab bind address required; wildcard binds refused; runs the full gateway pipeline and forwards to literal loopback with bearer injection on the final hop; 403 category-only denials; never a product/Supported-DIY lane and NOT closure of THR-034), a ``ConnectorSupervisor`` (readiness-gated foreground loop with sd_notify READY/WATCHDOG/STOPPING — ``READY=1`` is emitted ONLY after the provider actually started and the listener is proven bound, never after a bind/start failure; expected operational listener failures — occupied bind port, permission, unavailable address — are normalized from the socket ``OSError`` to the documented ``LabProviderError`` category at the ``LabProviderAdapter.start()`` boundary (category-only message), so a REAL bind conflict keeps the loop retrying with ``STATUS=provider failed to start; no listener`` and no process exit (no systemd restart-throttle; the listener comes up once the conflict clears) while unexpected defects still propagate loudly; fail-closed listener stop on readiness loss; redacted ``diagnose``; ``install`` stages the service config/policy/state into the declared systemd-managed ``StateDirectory`` location accessible to the dedicated service user and the rendered unit points ``--config`` there — never at a ``~/.happyranch`` path the hardened unit cannot read; the source trust-state pair is only an INITIAL SEED when no managed pair exists — once a managed snapshot+anchor pair exists it is AUTHORITATIVE and reinstall never overwrites/rolls it back with a stale operator source pair (stale = refused, same-generation-different-bytes = refused, identical = no-op, strictly newer = adopted) and stages any advance transactionally (fail closed, no usable mixed pair); the service path automatically consumes ``$CREDENTIALS_DIRECTORY``/``LoadCredential=`` with no redundant config and no daemon-home token read; a provider-less ``run`` configuration is rejected at startup (fail closed, never ``READY=1``)), and the ``python -m runtime.remote_access.cli`` operator surface (run/install/uninstall/start/stop/restart/enable/disable/status/readiness/diagnose/upgrade/rollback; ``run`` requires ``--lab-only`` when a lab provider is configured and refuses to run with no provider at all). Real user-systemd conformance tests run under ``-m integration`` gated on an operational probe with explicit skip reasons: one launches the **ACTUAL rendered ``ConnectorSupervisor``** through the real ``Type=notify`` READY contract and proves the lab listener is bound, an end-to-end request reaches the literal-loopback daemon, restart, and stop-with-listener-gone (upgrade/rollback round-trip, enable/disable, daemon-reload also run against the real user manager); unit tests are deterministic with fakes. The hostile tenant-isolation harness (tranche unit B) ships at `labs/tenant_isolation/`. Provisioning/defaults/retirement remain unimplemented and outside any current PR; the capacity spike (tranche unit D) is deferred with no claim. **Supported-DIY customer-owned-network adapter (phase unit 3A) is IMPLEMENTED** (TASK-6032, fix-forward TASK-6039) as the PRODUCTION Supported-DIY lane in the same package: a customer-network address resolver/validator (`network.py` — the ENCRYPTED `tailscale ip -4` mode ONLY; the former plaintext explicit concrete-address mode is REMOVED and fails closed with a migration message, because bare HTTP on an arbitrary LAN/public interface would breach the fixed no-plaintext-service-path invariant — the customer-owned network is the customer's own WireGuard-encrypted Tailscale/headscale tailnet; wildcard/loopback/multicast/link-local/reserved/broadcast refused, fail closed), the local pairing ceremony engine (`pairing.py` — single-use expiring 8-char codes stored as digests only; redemption issues per-device `hrpair_` credentials at a MONOTONIC epoch, re-pairing invalidates old authority, and every ceremony mutation is SERIALIZED in-process AND across processes through the store's owner-only inter-process transaction (an fcntl.flock on `<state>.lock` making load, generation validation, snapshot publication, and anchor publication ONE serialized mutation boundary — the check-then-save race is closed, so concurrent redemption of one code from threads OR separate processes yields EXACTLY ONE credential, concurrent mutations are never lost, and the snapshot+anchor pair is always published consistently and loadable); revocation through the authoritative `RevocationCoordinator` closes live streams before the persisted epoch advance, per-device and all-devices revocation survive restart, `remove-device` REVOKES FIRST (streams close, epoch advances, persisted) and THEN deletes the record — a removed/lost device can never retain an open stream and the revocation survives restart — and removal denies identically to absent — no existence oracle), the production `DiyProviderAdapter` (`diy_provider.py` — binds ONLY the tailscale-resolved customer-owned-network address, serves the inherited THR-034 wire contract `POST /pair` + `X-HappyRanch-Device-Credential`, consumes/strips the credential at the boundary so it never reaches the daemon, runs the full locked gateway pipeline per request, forwards to literal 127.0.0.1 with bearer injection on the final hop), shared secret-free HTTP serving (`httpd.py` — the lab and diy adapters share one serving path; the lab provider is UNCHANGED in role and remains LAB-ONLY), additive OPTIONAL trust-state envelope fields (`credential_digest` on device records, `pending_pairings` in the payload — pre-3A envelopes still load; digests only, never raw credentials), `ConnectorConfig.diy` (mutually exclusive with lab; `run` requires the explicit `--diy` opt-in; provider-less run still rejected, never `READY=1`), a supervisor that owns ONE authoritative live-stream registry and ONE pairing manager per process shared by the gateway ctx factory, the provider, and the ceremony surface (in-process revocation closes the REAL shipping streams, never an unrelated empty registry), a cross-process revocation reconciliation in the `run` loop (a CLI `revoke`/`remove-device` in a separate process persists the epoch; the connector closes its live streams on the next loop pass bounded by `poll_seconds`, fail closed, and — because the registry is ONE-SHOT — ROTATES the authoritative runtime at a fail-closed lifecycle boundary the moment the registry is sealed: the listener is stopped first (no request/stream is admitted during the handoff), the cached registry and pairing manager are dropped, and the provider and every captured ctx-factory reference are rebuilt and restarted only when readiness passes, so a re-paired or unaffected device opens NEW streams in the same process lifetime and a revoked-with-no-live-streams revoke causes no listener gap), and the CLI ceremony surface (`pair`/`list-devices`/`revoke`/`remove-device`/`pairing-status`/`recovery --factory-reset` — truthful secret-free lifecycle states; `revoke` NEVER claims cross-process stream closure it cannot prove — it reports the persisted epoch and the connector's next-reconciliation closure; recovery deletes BOTH snapshot+anchor files per the store's crash-consistency contract). A REAL-network acceptance (`tests/remote_access/test_diy_acceptance.py`, `-m integration`) runs the away-client wire contract over a real network path to the real `cli run --diy` connector and a real loopback daemon — the customer-network address resolved through the REAL shipping tailscale-mode resolver path with a stub `tailscale ip -4` executable (no tailnet on the host) — proving allowed/forbidden routes, direct daemon/bearer attempts, restart-with-persisted-revocation, re-pair invalidation, replayed/removed credentials, outage fail-closed listener stop + supervised recovery, credential/token leakage scans, and (fix-forward) a GENUINE cross-process SSE negative: a live in-flight stream served by the connector process is closed by a `revoke` from a separate CLI process within one poll interval, and the CLI output carries no false success. The signed-macOS-binary and tailnet-transport hops remain honest residual gaps (this Linux host has no macOS build and no Tailscale client/network; THR-034 signed acceptance is NOT closed), and the macOS production app is unchanged by this PR.
 
-- **VM reboot acceptance (THR-327 goal B).** The authorized VM-only driver `scripts/ci/m3_reboot.sh` and host runner `scripts/ci/m3_reboot_aliyun.py` extend M2/M3 with two clean passes and two reboots per pass. Persistent test units/state, saved pairing and Headscale identity/enrollment checks, automatic notify-READY, disabled-target inactivity for 30 seconds, explicit re-enable and purge residue are described in [the runbook](../../../scripts/ci/README-m3-reboot.md). Source delivery alone is not VM acceptance; exact-head phase/boot/identity receipts are required. No product unit or GitHub trigger changes.
+- **VM reboot acceptance (THR-327 goal B).** The authorized VM-only driver `scripts/ci/m3_reboot.sh` and host runner `scripts/ci/m3_reboot_aliyun.py` extend M2/M3 with two clean passes and two reboots per pass. Persistent test units/state, saved pairing and Headscale identity/enrollment checks, automatic notify-READY, disabled-target inactivity for 30 seconds, explicit re-enable and purge residue are described in [the runbook](../../operations/ci-m3-reboot.md). Source delivery alone is not VM acceptance; exact-head phase/boot/identity receipts are required. No product unit or GitHub trigger changes.
 
 - **M4 native macOS outside-client procedure (THR-327 goal C).**
-  [The M4 runbook](../../../scripts/ci/README-m4-tailnet.md) owns the main-only
+  [The M4 runbook](../../operations/ci-m4-tailnet.md) owns the main-only
   manual `managed-m4.yml` workflow and host Cloud Assistant coordinator. The
   GitHub-hosted Mac builds the unchanged shipped Go C archive and uses its C ABI
   headlessly against trusted443/private DERP999/STUN3478 on the pinned HK VM.
@@ -373,7 +373,7 @@ the OS cause of a particular bootstrap failure; native lifecycle proof is requir
   required. Missing log evidence alone remains non-gating; contradictory region
   evidence vetoes. Native attempt9 **PASSED**; see the acceptance history below.
   Public exposure uses the exact Headscale401 fingerprint defined in the
-  [M4 runbook](../../../scripts/ci/README-m4-tailnet.md).
+  [M4 runbook](../../operations/ci-m4-tailnet.md).
   C init/start failures also retain the allowlisted `bridge_error_class` from
   the existing C error accessor, with raw text withheld and unknown patterns
   mapped to `unknown`. The native runner exclusively creates the0700 target
@@ -428,7 +428,7 @@ the OS cause of a particular bootstrap failure; native lifecycle proof is requir
 
 ### M4 home UDP enforcement amendment (TASK-15886)
 
-The [runbook](../../../scripts/ci/README-m4-tailnet.md#home-udp-enforcement-proof-task-15886)
+The [runbook](../../operations/ci-m4-tailnet.md#home-udp-enforcement-proof)
 owns the exact gate and controls. The pktap/tcpdump parser, observer self-test,
 socket observations and manual observer-probe workflow are removed. PR1459
 closed log diagnostics remain corroboration; contradictory regions still veto.
@@ -827,7 +827,8 @@ arbitrary destinations still refuse. Version-1 provision and transaction bodies
 contain exactly `version`, matching `layout`, `digests` and `phase`, with fixed
 lowercase SHA-256 digest keys for connector/sidecar/policy JSON, release-daemon
 JSON and daemon.token (plus provision.json for a transaction). Only provision
-phase `provisioned` and transaction phase `prepared` are accepted. Unknown,
+phase `provisioned` and fresh-publication transaction phase `prepared` are accepted;
+the replacement-only stopped phase is described below. Unknown,
 duplicate or secret fields, paths, versions and phases refuse before writing.
 The legacy provision command still emits its original unversioned provenance.
 Any final or
@@ -893,33 +894,52 @@ consumption remain fail-closed, as do existing modern activation entries. The
 required temp-root/fake-manager checks remain in `scripts/test_installer_token_custody.py`.
 TODO (3b-2): owned local Headscale stop/cleanup; no callable seam is added here.
 
-The next 3b-1c admission sub-part adds Python-only `replacement_inventory()`
-and a fail-closed `replace_failed()` entry. Only the replacement classifier can
-read a final `install-transaction.json`: the existing closed v1 schema is
-unchanged (only `prepared`; no new fields or phases). It requires root:root
-0600 metadata and all six fixed-file SHA-256 digests to match, including
-`provision.json`, and compares the exact journal bytes across both reads.
-Only a known failed/partial installation receives a `journal_generation`,
-the SHA-256 of those exact record bytes. This is a read-only candidate
-fingerprint, not proof of an interrupted transaction or permission to resume.
-Missing/different files, unknown/malformed records and final/pending uncertainty
-remain conflicts. Clean, intact manual and modern staged-inert/recorded installs
-are not replacement candidates; successful modern records should resume
-idempotently rather than be replaced. A modern installation classified as
-failed/partial can be a candidate.
+The 3b-1c Python-only replacement consumer now implements a **journal-bearing
+stop/intent sub-part**, not completed failed-install replacement. The v1 record
+still has exactly `version`, `layout`, `digests` and `phase`; only this consumer
+adds the phase `replacement-stopped` alongside `prepared`. Ordinary publication
+still accepts only `prepared`. All six original fixed-file digests, including
+provision.json, must match; root:root 0600 journal metadata and exact journal
+bytes are checked repeatedly. Stopped intents require the exact generated
+canonical bytes; `journal_generation` hashes those exact bytes.
+Unknown/malformed/mismatched records, missing files and pending entries refuse.
+Clean, successful modern staged-inert/recorded and intact manual installs still
+refuse before any mutation. An unjournaled failed/partial candidate also remains
+unavailable without effects in this bounded sub-part.
 
-This is the explicit read-only cut: `replace_failed()` refuses non-candidates
-and reports replacement mutation unavailable for candidates, before stop,
-release-home token reads/copies or any filesystem effect. Journal execution/update,
-quarantine/removal, fresh generation after replacement, and interrupted
-replacement resume to staged-inert remain undelivered and unavailable. The
-future mutating consumer must re-inventory, use the merged same-FD source-UID
-token reader before service effects, call `stop_and_confirm()` before file
-changes, journal/fsync every fixed-path rename/removal and never restore old
-credentials. Ordinary inventory, stop, provision/install/uninstall/drift and
-activation retain their transaction/profile refusals. No CLI/helper/D-Bus/package
-caller is added; Disable/account cleanup, rotation/repair, 3b-1d and 3b-2 remain
-outside this sub-part. All five rendered units in both layouts and
+For a proven journal-bearing failed/partial candidate, `replace_failed()`
+revalidates the recorded release home and reads only its fixed daemon.token
+through the merged same-FD source-UID reader before any mutating manager call.
+It re-inventories, calls the existing `stop_and_confirm()` owner, and requires
+dead inactive/failed states, no jobs, zero service PIDs and no cgroups before
+file changes. Stop/proof failure preserves every file. The merged atomic writer
+then fsyncs a root:root 0600 `replacement-stopped` intent with unchanged six
+digests, rechecks exact old journal bytes, fixed files and pinned parents, and
+atomically replaces only that journal followed by parent fsync. The ordinary
+no-replace writer contract is unchanged for every other publication. These
+sampled checks assume the existing single protected root writer; they are not
+a concurrent-root-writer fence.
+
+An interrupted published stopped intent is recognized only while its exact
+journal bytes and all six original files still validate. A later call rechecks
+the fixed token and quiescence, leaves the intent bytes unchanged, and raises
+`replacement paused after stop intent; quarantine/removal and fresh staging unavailable`.
+It never starts/enables a service or claims replacement success. Interruption
+before intent publication can leave `prepared`; if stopping erased the failed
+indication, a later call refuses rather than inventing failure provenance.
+Pending/uncertain entries are never automatically repaired or replayed.
+
+Quarantine/removal, fresh IDs/config/enrollment after replacement, unjournaled
+replacement and resume to staged-inert are still undelivered and unavailable.
+No old credentials, trust, control settings or argv are copied or restored.
+Ordinary inventory/stop/provision/install/uninstall/drift and modern activation
+retain their transaction/profile refusals, including the existing slice-3b-2
+home-control diagnostic. The fixed legacy system connector supervisor also
+consults the same transaction-refusal owner before install/uninstall/start/stop/
+restart/enable/disable/upgrade/rollback/run; a journal cannot reopen that path.
+No release daemon/package effect or CLI/helper/D-Bus/
+package caller is added. Disable/account cleanup, rotation/repair, 3b-1d and
+3b-2 remain outside this sub-part. All five unit strings in both layouts and
 `home_transport=False` remain unchanged.
 
 Deb install refuses incomplete/unsafe/changed provisioning before unit writes
@@ -932,7 +952,7 @@ source and staged copy with the recorded hash. Rotation/missing sources fail
 closed. Uninstall keeps existing unit checks and can run despite invalid or
 expired provisioning; config/provenance/token files remain retained.
 
-[Desktop package host](../../../deploy/remote-access/RUNBOOK.md#desktop-package-host)
+[Desktop package host](../../operations/remote-access-runbook.md#desktop-package-host)
 has input fields, commands and deployment holds. Managed ingress must differ
 from permanent DEV port 8765 and every `excluded_daemon_ports` entry. Lists
 contain only integers in 1..65535 (Booleans are invalid). Source and deb
@@ -1114,6 +1134,97 @@ protected dial-IP publication. Successful installed-path startup, full packaged
 lifecycle/MDWE, generated Headscale maps, packet-wide public/DNS egress exclusion
 and native Darwin remain NOT RUN. See the [sidecar README](../../../app/linux/tsnet-sidecar/README.md) and
 [Round-7 specification](../../specs/2026-11-16-one-click-remote-access.md#6-invite-selected-bootstrap-and-secret-handling).
+
+### Pure home Headscale renderers and LAN selector (THR-327 slice 3b-2a)
+
+`runtime/remote_access/home_headscale.py` is an **unwired** pure source unit.
+`render_headscale_config(dial_ip=..., policy_path=...)` and
+`render_private_derp_map(dial_ip=...)` return deterministic, sorted-key YAML
+text with a final newline. They perform no filesystem, process, network or
+clock operation. They do not install files, validate certificates, bind ports,
+author policy/users, or establish readiness. TASK-16780 owns those operations,
+kernel inventory collection and caller wiring; it must call these renderers.
+
+`select_lan_dial_ip(interfaces, default_routes)` consumes immutable tuples of
+frozen `LANInterface(index, up, loopback, addresses)` and
+`LANDefaultRoute(interface_index, source_ip)` records. Addresses are literal
+local addresses without CIDRs. The collector supplies **every usable default
+route**, its selected source and complete interface identities, including IPv6
+and equal-cost routes; it must not preselect a winner or omit unresolved sources.
+Down/loopback interfaces cannot supply a candidate. A selected source must be
+assigned to that interface. Exactly one candidate is accepted; multiple routes
+refuse even with the same source. The selector never ranks metrics. Nonselected
+secondary interface addresses are not candidates. Missing/duplicate interface
+identities, wrong field/container types and unassigned sources refuse as
+`inventory`; no candidate gives `no_address`, multiple candidates give
+`multiple_addresses`. An invalid candidate gives `dial_ip` before cardinality.
+
+Selection and both renderers reuse `invite_v2._canonical_dial_ip`: canonical
+RFC1918 IPv4 only. No normalization, public/CGNAT, loopback, link-local or IPv6
+source is accepted. The codec still reports its existing `url` category through
+both encode and decode. Renderer failures are `HomeHeadscaleError` with only
+`dial_ip` or `policy_path`; no input or parser exception is included/chained.
+The policy input must be a direct `.hujson` child of
+`/etc/happyranch/headscale/` with a 1–64-character ASCII alphanumeric/underscore/
+hyphen basename starting alphanumeric. Empty, relative, aliased lexical paths,
+subdirectories and other suffixes refuse. The caller must separately prove
+ownership, no symlinks, file availability and reviewed restrictive ACL content.
+
+The v0.25.1 configuration pins HTTPS/control and embedded DERP to
+`dial_ip:8443`, STUN to `dial_ip:3478`, metrics to `127.0.0.1:19090`, and TLS
+gRPC to `127.0.0.1:50443` with insecure mode false. The URL remains
+`https://control.happyranch.invalid:8443`. No wildcard/IPv6 listener, ACME or
+port-80 listener is configured. The private map has exactly region 999 and node
+999a, `HostName=control.happyranch.invalid`, `IPv4=dial_ip`, `IPv6=none`,
+`DERPPort=8443`, `STUNPort=3478`; no `CertName`, `InsecureForTests` or loopback
+entry. Its lowercase YAML keys match Headscale's `derp.paths` loader (not the
+capitalized wire-JSON names). Empty IPv6 would allow AAAA lookup and is forbidden.
+Automatic embedded-region insertion is false; only the protected private map is
+loaded. This is a rendering contract, not executed Headscale/relay qualification.
+
+Restrictive defaults beyond the specification's literal pins:
+
+| Keys | Value and reason |
+| --- | --- |
+| `tls_cert_path`, `tls_key_path` | `/etc/happyranch/headscale/server.crt`, `server.key`; fixed leaf-only custody, no signing key. |
+| `noise.private_key_path`, `derp.server.private_key_path` | Separate `/var/lib/happyranch-headscale/noise.key`, `derp.key`; no key reuse or writable arbitrary path. |
+| `unix_socket`, `unix_socket_permission` | `/run/happyranch-headscale/headscale.sock`, quoted `0600`; service/root access only. Parent protection is the installer's gate. |
+| `policy.mode`, `policy.path` | `file`, validated required input; never empty/default-allow policy or mutable database policy. No content rendered. |
+| `acme_url`, `acme_email`, `tls_letsencrypt_hostname`, `tls_letsencrypt_listen` | Empty; no enrollment, challenge listener or external issuer. |
+| `tls_letsencrypt_challenge_type` | `TLS-ALPN-01`; v0.25.1 validates this enum even with ACME disabled. Avoid the HTTP-01/80 path. |
+| `tls_letsencrypt_cache_dir` | `/var/lib/happyranch-headscale/acme-unused`; unused, still within protected state if later inspected. |
+| `derp.server.region_id`, `region_code`, `region_name` | `999`, `happyranch-home`, `HappyRanch Home`; one fixed end-user region, no location disclosure. |
+| Map `nodes.name`, `stunonly`, `canport80` | `999a`, false, false; one fixed node, retain the required DERP relay alongside STUN, advertise no HTTP/80 capability. Map region metadata matches the config. |
+| `derp.server.ipv4`, `ipv6` | Validated dial IP, `none`; no hostname/AAAA fallback in either explicit or generated tuple. |
+| `derp.paths` | Only `/etc/happyranch/headscale/derp.yaml`; no extra maps. |
+| `derp.urls`, `auto_update_enabled`, `update_frequency` | Empty list, false, `0s`; no external DERP fetch or refresh worker. |
+| `disable_check_updates` | true; no CLI/startup release lookup. |
+| `database.type`, `database.sqlite.path` | `sqlite`, `/var/lib/happyranch-headscale/db.sqlite`; local protected state, no external database. |
+| `database.debug`, `database.gorm.parameterized_queries`, `skip_err_record_not_found`, `slow_threshold` | false, true, true, 0; suppress debug/not-found/slow-query disclosure and parameter interpolation. |
+| `database.gorm.prepare_stmt`, `database.sqlite.write_ahead_log`, `wal_autocheckpoint` | false, false, 1; no prepared-statement cache or normal WAL state copies; earliest positive checkpoint if WAL exists. |
+| `prefixes.v4`, `v6`, `allocation` | `100.64.0.0/10`, empty, `random`; supported tailnet identity space, no IPv6 allocation, unpredictable addresses. Prefix size grants no peer access; required policy governs access. |
+| `dns.magic_dns`, `base_domain`, `nameservers.global`, `nameservers.split`, `search_domains`, `extra_records` | false, empty, empty list/map/list/list; no DNS takeover, public resolver or injected records. `dns.extra_records_path` is omitted: v0.25.1 rejects both extra-record keys being present, even when empty. No file watcher is configured. |
+| `oidc.issuer`, `client_id`, `client_secret`, `client_secret_path` | Empty; no external authentication provider, secret read or alternate enrollment. Inactive OIDC-only defaults remain unused. |
+| `cli.address`, `api_key`, `insecure`, `timeout` | Empty, empty, false, `5s`; socket-only administration without standing API credentials, bounded CLI calls. |
+| `logtail.enabled`, `log.level`, `log.format` | false, `disabled`, `json`; no telemetry or input-bearing logs, structured format if separately enabled. |
+| `randomize_client_port` | false; no additional server-directed client-port behavior. |
+| `ephemeral_node_inactivity_timeout` | `120s`, validated upstream default above the mandatory 65s floor; unused for the required persistent home identities, no persistent authority expiry decision. |
+
+Unspecified transport batching/tuning retains upstream defaults; it neither
+adds authority nor enables an external service. Environment and service
+hardening remain the owning installer's responsibility. In particular this pure
+unit cannot prevent Headscale environment overrides, prove custody or promise
+packet-wide absence of fallback traffic. Such installed/runtime qualification
+remains NOT RUN here. Upstream semantics checked against the tagged
+[configuration loader](https://github.com/juanfont/headscale/blob/v0.25.1/hscontrol/types/config.go),
+[listener owner](https://github.com/juanfont/headscale/blob/v0.25.1/hscontrol/app.go),
+[private-map loader](https://github.com/juanfont/headscale/blob/v0.25.1/hscontrol/derp/derp.go)
+and [startup update gate](https://github.com/juanfont/headscale/blob/v0.25.1/cmd/headscale/cli/root.go).
+
+Focused commands: `uv run --frozen pytest scripts/test_home_headscale.py -v`
+and `uv run --frozen pytest scripts/test_invite_v2.py -v`. These standalone
+synthetic checks do not run the retired units, skipped integration suite or
+Product E2E and add no CI trigger.
 
 ### Linux managed identity ingress v1 (THR-327 slice 1a)
 

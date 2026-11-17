@@ -114,7 +114,7 @@ function AgentAvatar({ name }: { name: string }): JSX.Element {
   return (
     <span
       aria-hidden="true"
-      className="bg-accent-soft text-accent-text flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs font-semibold"
+      className="bg-accent-soft text-accent-text flex h-12 w-12 shrink-0 items-center justify-center rounded-full text-xs font-semibold"
     >
       {agentInitials(name)}
     </span>
@@ -162,7 +162,7 @@ function JobCard({ job, to }: { job: JobRecord; to: string }): JSX.Element {
   return (
     <Link
       to={to}
-      className={`${CARD_ROW} bg-surface-raised border-border-default hover:shadow-pasture shadow-pasture-sm rounded-lg border px-5 py-4 transition-shadow ${
+      className={`${CARD_ROW} bg-surface-raised border-border-default hover:shadow-pasture shadow-pasture-sm rounded-lg border px-6 py-4 transition-shadow ${
         job.status === 'rejected' ? 'opacity-70 hover:opacity-100' : ''
       }`}
     >
@@ -205,7 +205,7 @@ function JobCard({ job, to }: { job: JobRecord; to: string }): JSX.Element {
 function ColumnHeader(): JSX.Element {
   const { t } = useTranslation();
   return (
-    <div className={`${CARD_ROW} text-text-muted px-5 pb-1 text-xs font-medium tracking-wider uppercase`}>
+    <div className={`${CARD_ROW} text-text-muted px-6 pb-1 text-xs font-medium tracking-wider uppercase`}>
       <span className={CARD_COL.job}>{t('jobs.list.column.job')}</span>
       <span className={CARD_COL.command}>{t('jobs.list.column.command')}</span>
       <span className={CARD_COL.requestedBy}>{t('jobs.list.column.requestedBy')}</span>
@@ -258,7 +258,7 @@ export function JobsPage(): JSX.Element {
   return (
     <div className="bg-surface-canvas h-full">
       <ContentWrap>
-        <header className="mb-5">
+        <header className="mb-6">
           <p className="text-text-muted text-xs font-medium tracking-wide uppercase">
             {t('jobs.list.eyebrow')}
           </p>
@@ -278,11 +278,11 @@ export function JobsPage(): JSX.Element {
           </>
         ) : (
           <>
-            <div className="mb-5">
+            <div className="mb-6">
               <NeedsYouCallout pendingCount={pendingCount} />
             </div>
             <ColumnHeader />
-            <div className="mt-2 flex flex-col gap-6">
+            <div className="mt-2 flex flex-col gap-8">
               {STATUS_GROUP_ORDER.map((status) => {
                 const rows = jobs.filter((j) => j.status === status);
                 if (rows.length === 0) return null;

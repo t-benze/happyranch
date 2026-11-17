@@ -102,7 +102,7 @@ export function SkillAssignmentPanel({
   const [applyError, setApplyError] = useState<SkillErrorView | null>(null);
 
   const section = (body: ReactNode) => (
-    <section className="border-border-default bg-surface-raised mt-4 rounded-md border p-5 md:p-6">
+    <section className="border-border-default bg-surface-raised mt-4 rounded-md border p-6 md:p-8">
       <Eyebrow>{t('skills.assign.eyebrow')}</Eyebrow>
       <h2 className="text-h2 text-fg mb-1">{t('skills.assign.title')}</h2>
       <p className="text-fg-muted text-body-sm">{t('skills.assign.description')}</p>

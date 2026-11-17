@@ -23,6 +23,10 @@
 # Newsreader 18/500 title, 26px padding). The active sidebar nav row is
 # Pasture accent-soft / accent-text / 600 with no left marker (this file
 # has no sidebar-nav row; see DESIGN_SYSTEM.md).
+# THR-376 PR4: layout.spacing 5..8 (the 24/32/48/64px t-shirt remap) is
+# SUPERSEDED. The web uses Tailwind's linear 4px scale (step N = N x 4px);
+# the same pixels are steps 6/8/12/16. {layout.spacing.5..8} references
+# below keep their pixel meaning (24/32/48/64px).
 # THR-376 PR3 adds: semantic text secondary/muted, accent default/hover,
 # tier green, agent founder, status open/archived and feedback
 # success/info rows follow the founder-approved WCAG AA Pasture values in
@@ -261,10 +265,10 @@ layout:
     "2":  "0.5rem"    #  8px — gap between inline elements
     "3":  "0.75rem"   # 12px — gap between message bubbles
     "4":  "1rem"      # 16px — pane/row padding
-    "5":  "1.5rem"    # 24px — between sibling sections
-    "6":  "2rem"      # 32px — between major screen regions
-    "7":  "3rem"      # 48px — empty-state vertical padding
-    "8":  "4rem"      # 64px — reserved; rarely used in a dense product
+    "5":  "1.5rem"    # 24px — between sibling sections   # SUPERSEDED (Pasture): Tailwind linear scale, 24px = step 6
+    "6":  "2rem"      # 32px — between major screen regions   # SUPERSEDED (Pasture): Tailwind linear scale, 32px = step 8
+    "7":  "3rem"      # 48px — empty-state vertical padding   # SUPERSEDED (Pasture): Tailwind linear scale, 48px = step 12
+    "8":  "4rem"      # 64px — reserved; rarely used in a dense product   # SUPERSEDED (Pasture): Tailwind linear scale, 64px = step 16
 
   radius:
     none:   "0"
