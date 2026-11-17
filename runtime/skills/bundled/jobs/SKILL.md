@@ -65,6 +65,13 @@ backfill, compensation or clearance writer is introduced. Behavior UNEXECUTED.
 
 # jobs
 
+The normal daemon holds `<daemon_home>/daemon.lock` before startup sweeps until
+process exit; never unlink that file. Its logged previous-boot proof is not job
+or process-tree quiescence and has no release consumer yet. Shell stop retains
+60s TERM grace and waits up to 2s for actual exit after KILL; an unconfirmed exit
+returns nonzero and retains lifecycle evidence. This adds no restart/cleanup
+authority; current job recovery and unknown-ownership rules below still apply.
+
 ### Current Stop/status boundary — THR321seq6
 
 Stop200 means an actual owned Stop signal request, never exit. CLI says “Stop

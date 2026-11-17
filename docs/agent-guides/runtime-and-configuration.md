@@ -2910,14 +2910,21 @@ UI visibility only: daemon settings, scheduler, API and CLI behavior do not depe
 on them. See
 `web/ARCHITECTURE.md` § Build-time UI flags.
 
-`scripts/daemon.sh start` removes a stale port file, launches the daemon, and
+`scripts/daemon.sh start` preserves the previous PID for transition proof and
+launches the daemon. Lock-owning Python startup removes the stale port; the launcher
 waits up to `HAPPYRANCH_DAEMON_START_TIMEOUT` seconds (default `120`, positive
 integers only) for `GET /api/v1/health` to answer on the configured bind host.
+Readiness must name this launch (the uv wrapper or its Python child), so a
+competing daemon cannot hide this launch's lock refusal.
 Wildcard bind addresses are probed through their loopback equivalent. If the
 background process exits or readiness times out, startup exits 1 and prints
 the last 20 lines of `daemon.log`; if `curl` is unavailable, it announces a
 fallback to the fresh `daemon.port` file. Timeout can leave a possible launch
-running; actual-Python lifetime duplicate-start protection remains separate.
+running; the nonblocking daemon lifetime lock refuses a second startup before
+state/sweeps. Lock refusal is included in the startup log tail. Stop retains
+60 seconds of TERM grace plus up to 2 seconds to observe exit after KILL;
+an unconfirmed exit returns nonzero and retains the markers. Never remove
+`daemon.lock`. See [the lock and transition-proof contract](contracts/runtime-lifecycle.md#daemon-lifetime-lock-thr-357).
 
 Startup timing is additive: `HAPPYRANCH_LAUNCHER_START_EPOCH` is captured at
 the start of the launch command and passed to the child. The daemon logs

@@ -260,11 +260,29 @@ bash "$1" stop
 """, "shutdown-test", str(ROOT / "scripts/daemon.sh")],
                 env={**os.environ, "HAPPYRANCH_DAEMON_HOME": str(home), "SHUTDOWN_TEST_LOG": str(log)},
                 capture_output=True, text=True, timeout=10)
-            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.returncode, 1, result.stderr)
             lines = log.read_text().splitlines()
             self.assertEqual(lines.count("sleep 1"), 60)
             self.assertLess(lines.index("kill -TERM 424242"), lines.index("sleep 1"))
-            self.assertEqual(lines[-1], "kill -KILL 424242")
+            self.assertEqual(lines.count("sleep 0.1"), 20)
+            self.assertLess(lines.index("kill -KILL 424242"), lines.index("sleep 0.1"))
+            self.assertIn("stop incomplete", result.stderr)
+            self.assertTrue((home / "daemon.pid").exists())
+            result = subprocess.run(["bash", "-c", """
+kill() {
+    if [[ "${1:-}" == "-KILL" ]]; then killed=yes; return 0; fi
+    if [[ "${1:-}" == "-0" && "${killed:-}" == yes ]]; then return 1; fi
+    return 0
+}
+sleep() { :; }
+export -f kill sleep
+bash "$1" stop
+""", "shutdown-test", str(ROOT / "scripts/daemon.sh")],
+                env={**os.environ, "HAPPYRANCH_DAEMON_HOME": str(home)},
+                capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("stopped after KILL", result.stdout)
+            self.assertFalse((home / "daemon.pid").exists())
 
     def test_desktop_daemon_stop_and_service_allow_sixty_seconds(self) -> None:
         window = load_script("shutdown_window", "packaging/linux/desktop/happyranch_window.py")
@@ -292,9 +310,20 @@ bash "$1" stop
             home = Path(temp)
             (home / "daemon.pid").write_text("424242")
             with patch.object(migration.os, "kill") as kill, patch.object(migration.time, "sleep") as sleep:
+                with self.assertRaisesRegex(RuntimeError, "stop incomplete"):
+                    migration.stop_daemon_if_running(home, dry=False)
+            self.assertEqual(sleep.call_count, 80)
+            self.assertIn((424242, signal.SIGKILL), tuple(call.args for call in kill.call_args_list))
+            self.assertEqual(kill.call_args.args, (424242, 0))
+            killed = False
+            def observe_exit(pid, sig):
+                nonlocal killed
+                if sig == signal.SIGKILL:
+                    killed = True
+                elif sig == 0 and killed:
+                    raise ProcessLookupError
+            with patch.object(migration.os, "kill", side_effect=observe_exit), patch.object(migration.time, "sleep"):
                 migration.stop_daemon_if_running(home, dry=False)
-            self.assertEqual(sleep.call_count, 60)
-            self.assertEqual(kill.call_args.args, (424242, signal.SIGKILL))
 
 
 if __name__ == "__main__":

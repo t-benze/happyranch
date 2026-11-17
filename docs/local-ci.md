@@ -1,5 +1,21 @@
 # Local CI
 
+## Focused daemon lifetime lock (THR-357)
+
+```sh
+uv run --frozen python -B -m unittest scripts.test_daemon_lock scripts.test_job_shutdown -v
+```
+
+These standalone checks use real flock descriptors and owned subprocesses,
+including SIGKILL release, duplicate main refusal without startup writes, the
+transition PID matrix and the real main/build ordering/error-tail boundary.
+Only PID read/probe errors are injected; flock is never mocked. Hidden cleanup
+dispatch runs under a competing holder. Existing stop-policy checks accelerate
+clock waits while verifying the 60s TERM and bounded post-KILL refusal. Offline
+maintenance refuses a competing holder before registry/DB preflight, without
+leaking the configured path. These checks run without a
+provider, live runtime, retired units, integration or Product E2E.
+
 ## Focused jobs shutdown mitigation (#1276)
 
 ```sh

@@ -50,11 +50,13 @@ def stop_daemon_if_running(home: Path, dry: bool) -> None:
         return
     try:
         pid = int(pid_file.read_text().strip())
-    except ValueError:
-        return
+        if pid <= 0 or pid == os.getpid():
+            raise ValueError("invalid daemon PID")
+    except (OSError, ValueError) as exc:
+        raise RuntimeError("Cannot confirm old daemon exit: unreadable or invalid daemon.pid") from exc
     try:
         os.kill(pid, 0)
-    except OSError:
+    except ProcessLookupError:
         info(f"  stale daemon.pid (pid {pid} not alive) — leaving alone")
         return
     info(f"  stopping daemon (pid {pid})")
@@ -62,18 +64,25 @@ def stop_daemon_if_running(home: Path, dry: bool) -> None:
         return
     try:
         os.kill(pid, signal.SIGTERM)
-    except OSError:
+    except ProcessLookupError:
         return
     for _ in range(60):
         time.sleep(1)
         try:
             os.kill(pid, 0)
-        except OSError:
+        except ProcessLookupError:
             return
     try:
         os.kill(pid, signal.SIGKILL)
-    except OSError:
-        pass
+    except ProcessLookupError:
+        return
+    for _ in range(20):
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return
+        time.sleep(0.1)
+    raise RuntimeError(f"Daemon stop incomplete (pid {pid}); migration must not continue")
 
 
 def rename_if_exists(src: Path, dst: Path, dry: bool) -> bool:
