@@ -1201,16 +1201,18 @@ producer-positive and dependent race/replay/crash/causal/repetition proof remain
 python scripts/check_source_boundaries.py
 python scripts/check_source_boundaries.py --source-root <isolated-root>
 python scripts/check_remote_access_policy.py
+python scripts/check_private_operator_endpoints.py
 python scripts/validate_source_boundaries.py
+python scripts/validate_private_operator_endpoints.py
 scripts/local_ci.sh boundary-lint [--source-root <isolated-root>]
 ```
 
 The local target runs the actual baseline CLI, shipped remote-access policy
-consistency check, and bounded standalone synthetic validation; `all` runs the
-same lane before Web and propagates its nonzero exit. Local lint requires Python
+consistency check, private operator endpoint lint, and bounded standalone synthetic
+validation; `all` runs the same lane before Web and propagates its nonzero exit. Local lint requires Python
 3.12+ on PATH and only stdlib; it needs
 no dependency installation. The unconditional `Source Boundary Lint` hosted job
-in `ci.yml` runs all three scripts via `uv run --no-project --python 3.14 python ...`
+in `ci.yml` runs these scripts via `uv run --no-project --python 3.14 python ...`
 on every PR and push to main, without project dependency sync. `Web Lint (Node 24)` is the other unconditional required check. Retained
 canonical/callback sources are not automated merge requirements.
 
@@ -1220,6 +1222,19 @@ the five THR-327 R1 exclusions across HTTP/SSE/WebSocket, the single tracked
 policy location, and the tenant-isolation manifest digest. It is static lint,
 not connector behavior verification. `--source-root` applies only to the source
 boundary scan; the policy check still reads this checkout's shipped policy.
+
+The endpoint check hashes lowercased hostname-like and dotted/dashed IPv4 tokens
+against a digest-only PRIMARY test-server denylist. It reads tracked working-tree
+text (`git ls-files`), skips NUL-containing binary files, symlinks and submodules,
+and ignores untracked files and Git history. Diagnostics contain only
+`file:line: private operator endpoint`, never matched content. Exit 0 is clean,
+1 is a forbidden token, and 2 is an incomplete scan. Limits are 20,000 files,
+2 MiB of listed paths, 16 MiB per file, 256 MiB total and a cooperative 30-second
+scan deadline, plus a 10-second Git listing timeout; exceeding a limit refuses
+coverage. This is an exact-token regression guard, not a general secret scanner.
+The M4 CI VM endpoint family is excluded by manager ruling and needs separate
+founder/operator follow-up. Synthetic validation uses documentation addresses
+and test-side copied digest configuration; no private values or product imports.
 
 Only recursive `*.py` in `runtime/infrastructure` and `runtime/orchestrator`
 are parsed. Explicit daemon import/from forms are forbidden at module execution

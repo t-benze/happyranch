@@ -108,7 +108,8 @@ path applicability. The manager supplies these two names to `pr_ci_waiter`;
 contract. Freshly observed GitHub protection has empty required contexts/checks
 and `strict=false`; source configuration is not external enforcement.
 
-Default/`all` and `web` run only source boundary lint (all), Node24 colour scan,
+Default/`all` and `web` run only source boundary/policy/private-endpoint lint (all),
+Node24 colour scan,
 ESLint and TypeScript `--noEmit` analysis, with locked `npm ci` setup.
 Behavioral tests and builds are outside all/pre-push/required merge checks.
 Normal hooks stay enabled; never bypass hooks or the guarded worktree.

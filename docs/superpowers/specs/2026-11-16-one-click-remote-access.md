@@ -33,7 +33,7 @@ commands. Advanced **Use my own server** adds operator-issued key input (§6); i
 manual issuance is a test prerequisite, never an extra user pairing/terminal step in the apps.
 
 Assumptions: one release owner per Linux installation; default Headscale/private DERP is Linux-local;
-advanced mode uses the existing neihoumacau-hk deployment; a healthy packaged release daemon is
+advanced mode uses the existing operator test server deployment; a healthy packaged release daemon is
 available. The root helper derives the owner from authenticated bus credentials, never an
 app-supplied username. It uses a validated existing root-owned release record, otherwise passwd-home + `.local/share/happyranch`. An arbitrary
 custom XDG home cannot be accepted from the desktop environment; unsupported locations fail visibly
@@ -535,7 +535,7 @@ keeps inert package payload/notices. Never remove an unrelated Headscale install
 uncertainty stays visible; release daemon/org data remain. Re-enable creates fresh authority.
 
 **Advanced: Use my own server (seq502–504; R3 input contract reserved).** Operator keeps Headscale on
-neihoumacau-hk and supplies its HTTPS URL and one ≤10-minute, single-use, non-ephemeral Linux join key
+the operator test server and supplies its HTTPS URL and one ≤10-minute, single-use, non-ephemeral Linux join key
 at Enable; no local Headscale. Each Add a device requires another such Mac key; helper places it in
 the same invite with a fresh pairing secret. Invite lasts ≤5 minutes and never beyond the supplied
 key's operator-declared deadline. Manual issuance is an explicit operator prerequisite outside the
@@ -556,7 +556,7 @@ Changing server requires authenticated Turn off/Enable; invite intake cannot ret
 Never accept app-owned files, argv/env, general stdin/FDs, caller config, shell or key-bearing bus
 arguments. Reject duplicate/extra fields, controls/whitespace, oversized URL (>2048 bytes), non-HTTPS,
 userinfo/query/fragment/non-root path. Accept a DNS host on HTTPS 443, plus the explicit reviewed
-non-443 case **`https://47-242-34-153.sslip.io:8443`** (Product seq511). No arbitrary-port allowance,
+non-443 case **`https://<TEST_CONTROL_HOST>:8443`** (Product seq511). No arbitrary-port allowance,
 IP-literal URL or `http:` URL follows. Home mode also rejects IP URLs: its fixed DNS URL and
 validated `control_tls.dial_ip` use B's separate home-only transport contract above.
 The reviewed DNS name must resolve only to public unicast addresses; pin validated resolution
@@ -735,7 +735,7 @@ its exact head.
 | 3c invite issuance | Local root-only Headscale mint + connector private invite IPC, v2 DNS URL + CA/fingerprint/dial_ip; after 2/3b, within approved R2. R3 adds operator-supplied per-device key, never API/admin minting or server deployment. | Synthetic local mint/idempotency/uncertainty/cleanup; fresh auth, v2 exact schema/CA size and round-trip, v1/IP-URL/unknown-field refusal, home_endpoint unchanged, effective countdown, no user mint capability, redaction/replay/expiry; R3 consumed key replacement, unverified TTL disclosure and no remote admin authority. |
 | 4 Linux UI/upgrade | `packaging/linux/desktop/happyranch_window.py`, package wiring after merged #1568/#1569; verify their installed behavior. | Existing standalone desktop checks; native GTK states/actions from §7, including prompt cancellation, countdown and partial cleanup. Separate fresh polkit prompts at enable, invite, actual-device comparison/approval, turn off and revoke; route-policy renewal paused + Retry. Home card/address refresh; R3 URL/key intake and per-device replacement; no admin-key prompt. No host service actions for maker. |
 | 5 Mac single invite | `app/mac/Sources/HappyRanchApp/{RemoteConnectionView,AppDelegate}.swift`, supervisor managed model/ClientBridge, `app/mac/tsnet-bridge` as needed; #1563. Dedicated-process strict CONNECT verifier + ephemeral local fallback roots/proxy/resolver, v2 parser/profile and unsigned login-Keychain ACL from §6, within approved R2; renewed security review/native feasibility required. R3 metadata only after approval. | Supported Swift/Go checks and actual unsigned build: join→pending→Connected; §7 cancellation/expiry/offline states; save/quit/reopen without invite, locked/denied Keychain, rebuilt code identity, signed migration and deletion failure. Linux revocation/turn off, lost delivery/new invite and partial-node cleanup/reuse; all §8 transport/admission negatives on native unsigned Mac, Noise-key mismatch, isolated homes, renewal/address recovery and secret-free diagnostics. #1564 stays queued. |
-| 6 hosted acceptance/docs | `scripts/ci/m1_install_ready_uninstall.sh`, `m2_tailnet_daemon.sh`, related fixtures/docs; builds on 1–5. | M1 uses helper-generated configs and no ExpectedPeer; clean plus known FAILED-manual fixture, exact hardening/READY/loaded units, disable residue, interrupted recovery and route-policy renewal failure closed. Separate home and neihoumacau-hk app acceptance below; M2 keeps real random-port daemon/verifier and squatter negative; adds two dynamically named stable-ID devices, one combined invite each, race/replay/expiry/wrong-node/revoke-survivor and join-success/delivery-loss recovery cases. |
+| 6 hosted acceptance/docs | `scripts/ci/m1_install_ready_uninstall.sh`, `m2_tailnet_daemon.sh`, related fixtures/docs; builds on 1–5. | M1 uses helper-generated configs and no ExpectedPeer; clean plus known FAILED-manual fixture, exact hardening/READY/loaded units, disable residue, interrupted recovery and route-policy renewal failure closed. Separate home and the operator test server app acceptance below; M2 keeps real random-port daemon/verifier and squatter negative; adds two dynamically named stable-ID devices, one combined invite each, race/replay/expiry/wrong-node/revoke-survivor and join-success/delivery-loss recovery cases. |
 
 **Round-7 B falsifiable transport/admission matrix.** Required separately on Linux 1b and the
 native unsigned Mac home-bridge 5b; client logs alone are not refusal evidence. Use synthetic
@@ -771,7 +771,7 @@ evidence.
 | App case / venue | Observable result |
 | --- | --- |
 | Home-network fresh setup and today's recognized FAILED manual-install fixture, disposable Linux + Mac same LAN | Enable installs local Headscale/connector/sidecar with full hardening; Ready to invite; one invite, actual Linux approval, authorized release web UI loads. No user terminal/JSON/separate pairing. |
-| Outside-home, Linux home + Mac on a genuinely different network through neihoumacau-hk, after R3 | Operator records ≤10-minute/non-reusable issuance evidence without secret artifacts, supplies Linux/Mac keys; advanced app enable/Add a device → one invite → Linux approval → release web UI; capture direct/private-DERP route evidence separately. Retain this server until the test settles; no removal authorized. |
+| Outside-home, Linux home + Mac on a genuinely different network through the operator test server, after R3 | Operator records ≤10-minute/non-reusable issuance evidence without secret artifacts, supplies Linux/Mac keys; advanced app enable/Add a device → one invite → Linux approval → release web UI; capture direct/private-DERP route evidence separately. Retain this server until the test settles; no removal authorized. |
 | Both flows: restart either app/daemon; add second Mac; revoke first; turn off/re-enable | Saved grant/membership reconnect without new invite after ordinary restart; daemon offline/restarting shown; A revocation cuts requests and live streams while B works; off invalidates both/invites, preserves release/org data; re-enable needs new invites. |
 | Both: cancel/expiry/replay, key consumed before approval/delivery, Keychain locked or update changes code identity, partial cleanup, policy renewal fails | §7's visible actions/countdown; clear retry/new-key/invite recovery, no restored spent authority; unsigned save/reopen and signed migration qualified separately; cleanup failures visible; expired policy pauses closed with Retry. |
 | Local trust/address recovery; cached approved client away | Full Round-7 refusal matrix above passes; fixed-name same-CA renewal/restart reconnects; changed dial IP needs explicit v2 refreshed invite, CA replacement reapproval; unavailable LAN state shown honestly; away cached success never advertised as supported outside-home acceptance. |
@@ -779,7 +779,7 @@ evidence.
 **Timeline / risk, as of 2026-11-16:** target decisions/security + trust/packaging feasibility by
 11-18; slices 1a/1b–3c through 11-23; Linux/Mac slices 4–5 through 11-27; separate home-network acceptance
 by 11-28 and outside-home app/revocation test by **2026-12-01**, leaving 12-02 for authorized fixes.
-The neihoumacau-hk term ends **2026-12-03**; outside-home acceptance must finish before that date,
+The operator test server term ends **2026-12-03**; outside-home acceptance must finish before that date,
 not merely join or start by then. These are targets, not a delivery commitment. R2 is approved;
 packaging #1568 and upgrade #1569 are merged,
 but installation/acceptance is unproven. R3, Round 7 strict trust/invite security/Product decision, slice 1b trust
@@ -808,12 +808,12 @@ Linux settings/window edits with its owner before slices 4/5; do not merge both 
 
 - **R1 RESOLVED — A, home-network access.** Founder seq499, EM seq500 and Product seq501 select local
   Headscale/local root minting now. No admin key stored anywhere. Seq502–504 retain the advanced
-  manual-key neihoumacau-hk test; they do not reopen A or approve an input-contract exception.
+  manual-key test on the operator test server; they do not reopen A or approve an input-contract exception.
 - **Production target, deferred:** HappyRanch Services sign-in → user token → authorized service-side
   join-key issuance; Headscale admin credential remains service-side. Preserve the versioned invite
   and host-approval journey. No Services account/infrastructure dependency for this milestone.
 - **Rejected for this milestone:** B (full Headscale admin key on Linux) and C (new scoped issuer
-  beside neihoumacau-hk). No B bootstrap/expiry/replace flow remains. NOTE N2 is removed with B:
+  beside the operator test server). No B bootstrap/expiry/replace flow remains. NOTE N2 is removed with B:
   a full admin key captured by a same-UID agent would permit direct Headscale administration until
   server expiry/revocation, regardless of fixed-helper restrictions. No such key is proposed here.
 - **R2 APPROVED — founder seq508, as explained in seq506:** fixed bus-helper lifecycle, approval
