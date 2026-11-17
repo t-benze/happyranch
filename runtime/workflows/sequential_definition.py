@@ -19,6 +19,12 @@ from runtime.workflows.sequential_contracts import (
     NextEdge, Node, ResultEnvelope, SETTLEMENT_CHECK, StartCommand, TerminalEdge,
     TransitionRecord, effective_limits,
 )
+from runtime.workflows.sequential_contracts import (
+    CALLBACK_METADATA_LIMIT, DOCUMENT_OUTPUT_LIMIT, JSON_OUTPUT_LIMIT,
+    GENERIC_CAPABILITY_ABI, GENERIC_COMPILER_ABI, GENERIC_INTERPRETER_ABI, GENERIC_VALIDATOR_ABI,
+    GenericCallback, GenericDefinition, GenericDefinitionPin, GenericLimits,
+    GenericNextEdge, GenericOutputType, GenericResultEnvelope, GenericStartCommand,
+)
 
 
 class SequentialContractError(ValueError):
@@ -311,3 +317,219 @@ def parse_result(raw: bytes) -> ResultEnvelope:
 def parse_transition(raw: bytes) -> TransitionRecord:
     """Closed bounded syntax only; no historical acceptance or CAS claim."""
     return _record(TransitionRecord, _json(raw, DEFINITION_LIMIT))
+
+
+# Explicit @2 entry points keep all current registration/admission/history
+# consumers on the original @1 parser until their separately commissioned units.
+
+@dataclass(frozen=True)
+class GenericCompiledDefinition:
+    raw: bytes
+    pin: GenericDefinitionPin
+    definition: GenericDefinition
+
+
+def generic_limits(compiled: GenericCompiledDefinition, *limits: GenericLimits) -> GenericLimits:
+    """Intersect original ceilings; never resolve assignments or add allowance."""
+    nodes = {node.id: node for node in compiled.definition.nodes}
+    all_limits = (compiled.definition.limits, *limits)
+    for bound in all_limits:
+        _require(set(dict(bound.node_revisions)) <= nodes.keys(), 'unknown_limit_node')
+    return GenericLimits(
+        max_visits=min(bound.max_visits for bound in all_limits),
+        max_events=min(bound.max_events for bound in all_limits),
+        max_recoveries=min(bound.max_recoveries for bound in all_limits),
+        node_revisions={key: min(node.limits.revisions,
+            *(dict(bound.node_revisions).get(key, node.limits.revisions) for bound in all_limits))
+            for key, node in nodes.items()},
+    )
+
+
+def _generic_graph(definition: GenericDefinition) -> None:
+    nodes = {node.id: node for node in definition.nodes}
+    roles, terminals = dict(definition.roles), dict(definition.terminal_conditions)
+    inputs = {item.name: item for item in definition.required_inputs}
+    outputs = {node.output_contract.slot for node in nodes.values()}
+    _require(len(nodes) == len(definition.nodes), 'duplicate_node')
+    _require(len(inputs) == len(definition.required_inputs), 'duplicate_run_input')
+    _require(len(outputs) == len(nodes), 'duplicate_output_slot')
+    _require(definition.entry_node in nodes, 'missing_entry')
+    _require('request' in inputs and inputs['request'].required, 'required_request')
+    _require(set(dict(definition.limits.node_revisions)) <= nodes.keys(), 'unknown_limit_node')
+    for key, role in roles.items():
+        _require(key not in role.independent_of and set(role.independent_of) <= roles.keys(), 'invalid_independence')
+    forward = {key: set() for key in nodes}
+    successors = {key: set() for key in nodes}
+    used_terminals = set()
+    for node in nodes.values():
+        _require(node.role in roles, 'missing_role')
+        for item in node.inputs:
+            if item.source.startswith('run.'):
+                name = item.source[4:]
+                _require(name in inputs, 'missing_run_input')
+                _require(not item.required or inputs[name].required, 'optional_run_input_required')
+            elif item.source.startswith('current.'):
+                _require(item.source[8:] in outputs, 'missing_output_input')
+            else:
+                _require(not item.required, 'initial_findings_unavailable')
+        for _, edge in node.outcomes:
+            if isinstance(edge, GenericNextEdge):
+                _require(edge.node in nodes, 'missing_successor')
+                successors[node.id].add(edge.node)
+                if edge.consume_counter is None:
+                    forward[node.id].add(edge.node)
+            elif isinstance(edge, TerminalEdge):
+                _require(edge.condition in terminals, 'invalid_terminal_edge')
+                used_terminals.add(edge.condition)
+    # Every possible cycle must consume a target node's finite revision counter.
+    _acyclic(nodes, forward)
+    reachable, pending = set(), [definition.entry_node]
+    while pending:
+        source = pending.pop()
+        if source not in reachable:
+            reachable.add(source)
+            pending.extend(successors[source] - reachable)
+    _require(reachable == nodes.keys(), 'unreachable_node')
+    _require(used_terminals == terminals.keys(), 'unused_terminal_condition')
+    kills = {edge.node: _return_invalidations(nodes, forward, edge.node)
+             for node in nodes.values() for _, edge in node.outcomes
+             if isinstance(edge, GenericNextEdge) and edge.consume_counter}
+    available = {key: set(outputs) for key in nodes}
+    available[definition.entry_node] = set()
+    for _ in range(len(nodes) * len(outputs) + 2):
+        updated = {key: set(outputs) for key in nodes}
+        updated[definition.entry_node] = set()
+        for source, node in nodes.items():
+            for _, edge in node.outcomes:
+                if isinstance(edge, GenericNextEdge):
+                    incoming = ((available[source] | {node.output_contract.slot}) - kills[edge.node]
+                                if edge.consume_counter else available[source] | {node.output_contract.slot})
+                    updated[edge.node] &= incoming
+        if updated == available:
+            break
+        available = updated
+    else:
+        raise SequentialContractError('input_analysis_bounds')
+    for node in nodes.values():
+        for item in node.inputs:
+            if item.required and item.source.startswith('current.'):
+                _require(item.source[8:] in available[node.id], 'input_without_dominating_producer')
+        for _, edge in node.outcomes:
+            if isinstance(edge, TerminalEdge):
+                _require(terminals[edge.condition].output in available[node.id] | {node.output_contract.slot},
+                         'terminal_output_unavailable')
+    # A shortest terminal path is simple: cycling cannot enable an outcome.
+    # Breadth-first search bounds this proof by nodes/edges, not counter products.
+    queue, seen = [(definition.entry_node, 1)], set()
+    while queue:
+        key, visits = queue.pop(0)
+        if key in seen:
+            continue
+        seen.add(key)
+        for _, edge in nodes[key].outcomes:
+            if isinstance(edge, TerminalEdge):
+                return
+            if isinstance(edge, GenericNextEdge) and visits < definition.limits.max_visits:
+                revisions = min(nodes[edge.node].limits.revisions,
+                    dict(definition.limits.node_revisions).get(edge.node, 63))
+                if not edge.consume_counter or revisions > 0:
+                    queue.append((edge.node, visits + 1))
+    raise SequentialContractError('no_terminal_path_within_limits')
+
+
+def compile_generic_definition(raw: bytes, *, source_digest: str) -> GenericCompiledDefinition:
+    """Compile definition@2 only; no catalog, storage or live admission caller."""
+    definition = _record(GenericDefinition, _json(raw, DEFINITION_LIMIT))
+    _generic_graph(definition)
+    pin = _record(GenericDefinitionPin, dict(identity=definition.identity, version=definition.version,
+        definition_digest=hashlib.sha256(raw).hexdigest(), source_digest=source_digest,
+        compiler=GENERIC_COMPILER_ABI, validator=GENERIC_VALIDATOR_ABI,
+        interpreter=GENERIC_INTERPRETER_ABI, capabilities=GENERIC_CAPABILITY_ABI))
+    return GenericCompiledDefinition(raw, pin, definition)
+
+
+def parse_generic_start(raw: bytes) -> GenericStartCommand:
+    return _record(GenericStartCommand, _json(raw, DEFINITION_LIMIT))
+
+
+def validate_generic_start(command: GenericStartCommand, compiled: GenericCompiledDefinition, *,
+                           original_limits: GenericLimits) -> GenericLimits:
+    """Check keys, pins and input syntax only. S3 owns actual assignment resolution."""
+    _require(command.definition == compiled.pin, 'definition_pin_mismatch')
+    definition = compiled.definition
+    _require({item.role for item in command.role_overrides} <= dict(definition.roles).keys(), 'unknown_role_override')
+    _require({item.node for item in command.step_overrides} <= {node.id for node in definition.nodes}, 'unknown_step_override')
+    supplied = {item.name: item for item in command.inputs}
+    declared = {item.name: item for item in definition.required_inputs if item.name != 'request'}
+    _require(supplied.keys() <= declared.keys(), 'unknown_start_input')
+    for name, requirement in declared.items():
+        _require(not requirement.required or name in supplied, 'missing_start_input')
+        if name in supplied:
+            _require(supplied[name].contract == requirement.contract, 'input_contract_mismatch')
+    return generic_limits(compiled, original_limits, command.lower_limits)
+
+
+def validate_generic_content(contract: GenericOutputType, content: bytes) -> None:
+    """Raw byte bound before decode/parse/hash; no repository or domain semantics."""
+    maximum = DOCUMENT_OUTPUT_LIMIT if contract == 'immutable-document@1' else JSON_OUTPUT_LIMIT
+    _require(type(content) is bytes and 0 < len(content) <= maximum, 'generic_output_bounds')
+    _require(contract in ('immutable-document@1', 'canonical-json-object@1'), 'generic_output_contract')
+    try:
+        text = content.decode('utf8')
+        if contract == 'immutable-document@1':
+            return
+        # Same finite nesting/duplicate-key/integer limits as structural records,
+        # but generic JSON content also permits canonical finite floating values.
+        depth, quoted, escaped = 0, False, False
+        for char in text:
+            if quoted:
+                if escaped:
+                    escaped = False
+                elif char == '\\':
+                    escaped = True
+                elif char == '"':
+                    quoted = False
+            elif char == '"':
+                quoted = True
+            elif char in '[{':
+                depth += 1
+                _require(depth <= 24, 'json_depth')
+            elif char in ']}':
+                depth -= 1
+                _require(depth >= 0, 'invalid_json')
+        value = json.loads(text, object_pairs_hook=_unique_object, parse_int=_integer, parse_constant=_no_constant)
+        _require(type(value) is dict, 'expected_object')
+        _require(content == json.dumps(value, sort_keys=True, separators=(',', ':'),
+            ensure_ascii=False, allow_nan=False).encode('utf8'), 'noncanonical_bytes')
+    except (ValueError, TypeError, UnicodeError, RecursionError) as exc:
+        if isinstance(exc, SequentialContractError):
+            raise
+        raise SequentialContractError('invalid_generic_content') from exc
+
+
+def parse_generic_callback(raw: bytes, *, contract: GenericOutputType) -> GenericCallback:
+    """Untrusted callback syntax only; the real native result must supply identity."""
+    import base64
+    import binascii
+
+    callback = _record(GenericCallback, _json(raw, 1398104 + CALLBACK_METADATA_LIMIT))
+    metadata = dict(format=callback.format, outcome=callback.outcome,
+                    content_base64='', findings=list(callback.findings))
+    _require(len(json.dumps(metadata, sort_keys=True, separators=(',', ':'), ensure_ascii=False).encode('utf8'))
+             <= CALLBACK_METADATA_LIMIT, 'callback_metadata_bounds')
+    maximum = DOCUMENT_OUTPUT_LIMIT if contract == 'immutable-document@1' else JSON_OUTPUT_LIMIT
+    _require(len(callback.content_base64) <= 4 * ((maximum + 2) // 3), 'generic_output_bounds')
+    try:
+        content = base64.b64decode(callback.content_base64, validate=True)
+        _require(base64.b64encode(content).decode('ascii') == callback.content_base64, 'noncanonical_base64')
+    except (ValueError, binascii.Error) as exc:
+        raise SequentialContractError('invalid_base64') from exc
+    if content:
+        validate_generic_content(contract, content)
+    else:
+        _require(bool(callback.findings), 'empty_callback_without_cause')
+    return callback
+
+
+def parse_generic_result(raw: bytes) -> GenericResultEnvelope:
+    return _record(GenericResultEnvelope, _json(raw, RESULT_LIMIT))

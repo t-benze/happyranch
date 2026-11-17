@@ -61,6 +61,13 @@ if len(sys.argv) == 2 and sys.argv[1].startswith('--returned-storage='):
     returned_case = sys.argv[1].split('=', 1)[1]
     sys.argv[1:] = ['--returned-storage']
 
+generic_abi_case = None
+GENERIC_ABI_CASES = ('generic_outcome', 'json_limit', 'document_limit', 'node_limit', 'bounded_cycle', 'legacy_bytes')
+if len(sys.argv) == 2 and sys.argv[1].startswith('--generic-abi='):
+    generic_abi_case = sys.argv[1].split('=', 1)[1]
+    assert generic_abi_case in ('all', *GENERIC_ABI_CASES)
+    sys.argv[1:] = ['--generic-abi']
+
 start_compose_case = None
 START_COMPOSE_CASES = ('compose_no_write', 'compose_stale_settings_conflict', 'compose_refusals',
     'compose_parses_at_dispatch', 'prompt_manager_offers', 'prompt_worker_refuses')
@@ -175,11 +182,260 @@ if len(sys.argv) == 2 and sys.argv[1].startswith('--retained-corruption-phase=')
         uncommitted='between uncommitted')[sys.argv[1].split('=', 1)[1]]
     sys.argv[1:] = ['--retained-corruption']
 
-assert sys.argv[1:] in ([], ['--start-compose'], ['--start-context'], ['--bundled-catalog'], ['--returned-storage'], ['--bootstrap-startup'], ['--bootstrap-worker'], ['--bootstrap-owners'], ['--bootstrap-discovery'], ['--bootstrap-selection'], ['--bootstrap-install'], ['--bootstrap-rehearsal'], ['--bootstrap-backup'], ['--bootstrap-journal'], ['--bootstrap-precommit'], ['--startup-isolation'], ['--fresh-catalog'], ['--org-access-fence'], ['--org-access-openers'], ['--org-access-native'], ['--org-access-guardian'], ['--org-access-profile'], ['--setup-status'], ['--daily-integrity'], ['--install-integrity'], ['--bounded-acquisition'], ['--trace-custody'], ['--sequential-reuse'], ['--sequential-load'], ['--sequential-freshness'], ['--sequential-faults'], ['--sequential-sql-exhaustion'], ['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--coding-authority-corruption'], ['--document-native-corruption'], ['--author-handoff-corruption'], ['--document-revision-corruption'], ['--coding-history-corruption'], ['--physical-corruption'], ['--sequential-uncommitted'], ['--i2-cutover'], ['--i2-native']), 'unknown schema-load selection'
+assert sys.argv[1:] in ([], ['--generic-abi'], ['--start-compose'], ['--start-context'], ['--bundled-catalog'], ['--returned-storage'], ['--bootstrap-startup'], ['--bootstrap-worker'], ['--bootstrap-owners'], ['--bootstrap-discovery'], ['--bootstrap-selection'], ['--bootstrap-install'], ['--bootstrap-rehearsal'], ['--bootstrap-backup'], ['--bootstrap-journal'], ['--bootstrap-precommit'], ['--startup-isolation'], ['--fresh-catalog'], ['--org-access-fence'], ['--org-access-openers'], ['--org-access-native'], ['--org-access-guardian'], ['--org-access-profile'], ['--setup-status'], ['--daily-integrity'], ['--install-integrity'], ['--bounded-acquisition'], ['--trace-custody'], ['--sequential-reuse'], ['--sequential-load'], ['--sequential-freshness'], ['--sequential-faults'], ['--sequential-sql-exhaustion'], ['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--coding-authority-corruption'], ['--document-native-corruption'], ['--author-handoff-corruption'], ['--document-revision-corruption'], ['--coding-history-corruption'], ['--physical-corruption'], ['--sequential-uncommitted'], ['--i2-cutover'], ['--i2-native']), 'unknown schema-load selection'
 
 
 print('SCHEMA_RUNTIME', json.dumps(dict(python=sys.version, executable=sys.executable, sqlite=sqlite3.sqlite_version,
     source=sys.modules[Database.__module__].__file__)), flush=True)
+
+# S1 uses the existing direct shell venue. No storage or native proof is produced.
+if sys.argv[1:] in ([], ['--generic-abi']):
+    import base64
+    from copy import deepcopy
+    from runtime.workflows.sequential_contracts import (
+        GenericLimits, GenericCounters, GenericNodeCounters, GenericOutputRef,
+        Counters, Limits, OutputRef, SETTLEMENT_CHECK,
+    )
+    from runtime.workflows.sequential_definition import (
+        SequentialContractError, compile_generic_definition, parse_generic_start,
+        validate_generic_start, parse_generic_callback, parse_generic_result,
+        validate_generic_content, compile_definition, parse_start, parse_result, parse_transition,
+    )
+    from runtime.workflows.sequential_reducer import (
+        GenericActiveVisit, GenericAuthenticatedResult, GenericRunState, reduce_generic_result,
+        ActiveVisit, AuthenticatedResult, RunState, reduce_result,
+    )
+    from runtime.workflows.sequential_briefs import GenericBriefInputs, render_generic_node_brief
+
+    def gbytes(value):
+        return json.dumps(value, sort_keys=True, separators=(',', ':'), ensure_ascii=False).encode('utf8')
+
+    def grefuses(label, action, code):
+        try:
+            action()
+        except SequentialContractError as exc:
+            assert str(exc) == code, (label, str(exc), code)
+        else:
+            raise AssertionError(label + ': expected ' + code)
+
+    def gdefinition():
+        return dict(format='workflow-sequential-definition@2', identity='release/synthetic/generic',
+            version=1, description='Generic literal ABI case',
+            required_inputs=[dict(name='request', contract='bounded-text@1', required=True)],
+            roles=dict(author=dict(kind='agent', executable=True, eligibility='worker', independent_of=[])),
+            entry_node='write', nodes=[dict(id='write', role='author', responsibilities=['Report bounded data'],
+                inputs=[dict(name='request', source='run.request', required=True)],
+                output_contract=dict(slot='report', type='canonical-json-object@1'),
+                limits=dict(revisions=4, attempts=6, recoveries=2),
+                outcomes={'quality.ready/v2': dict(action='terminal', condition='done'),
+                    'needs.more': dict(action='next', node='write', consume_counter='node_revisions', invalidate_dependents=True),
+                    'pause.now': dict(action='hold', owner='initiator', remedy='no_automatic_retry'),
+                    'cannot.finish': dict(action='fail', code='declined')})],
+            limits=dict(max_visits=64, max_events=4096, max_recoveries=4),
+            terminal_conditions=dict(done=dict(output='report')))
+
+    def gcompile(value):
+        return compile_generic_definition(gbytes(value), source_digest='a' * 64)
+
+    def gstate(compiled):
+        return GenericRunState(run_id='run', definition_digest=compiled.pin.definition_digest,
+            original_limits=compiled.definition.limits, lower_limits=compiled.definition.limits,
+            counters=GenericCounters(visits=1, events=0, recoveries=0,
+                nodes={node.id: GenericNodeCounters(revisions=0, attempts=int(node.id == 'write'), recoveries=0)
+                       for node in compiled.definition.nodes}),
+            active_visit=GenericActiveVisit(node='write', visit_id='visit-1', task_id='task-1',
+                session_id='session-1', ordinal=1, input_selection_digest='b' * 64),
+            selections=(), findings=(), receipts=())
+
+    def gresult(compiled, state, outcome='quality.ready/v2', content=b'{"head":"unverified","value":1.5}', settled=True):
+        visit = state.active_visit
+        node = next(node for node in compiled.definition.nodes if node.id == visit.node)
+        refs = [dict(slot=node.output_contract.slot, contract=node.output_contract.type, version=visit.ordinal,
+            producer_visit=visit.visit_id, task_id=visit.task_id, session_id=visit.session_id,
+            result_id=visit.ordinal, digest=hashlib.sha256(content).hexdigest())] if content else []
+        envelope = parse_generic_result(gbytes(dict(format='workflow-sequential-result@2', run_id='run',
+            visit_id=visit.visit_id, definition_digest=compiled.pin.definition_digest,
+            input_selection_digest='b' * 64, outcome=outcome, outputs=refs,
+            findings=[] if content else [dict(source_visit=visit.visit_id, source_result=visit.ordinal, text='Own bounded cause')])))
+        return GenericAuthenticatedResult(task_id=visit.task_id, session_id=visit.session_id,
+            result_id=visit.ordinal, envelope=envelope, content=content, settled=settled)
+
+    def gcallback(content, outcome='quality.ready/v2'):
+        return gbytes(dict(format='workflow-sequential-callback@2', outcome=outcome,
+            content_base64=base64.b64encode(content).decode('ascii'), findings=[] if content else ['Own bounded cause']))
+
+    for case in GENERIC_ABI_CASES:
+        if generic_abi_case not in (None, 'all', case):
+            continue
+        value = gdefinition()
+        try:
+            compiled = gcompile(value)
+        except SequentialContractError as exc:
+            raise AssertionError(case + ': generic definition must compile without domain requirements') from exc
+        state = gstate(compiled)
+        if case == 'generic_outcome':
+            assert compiled.raw == gbytes(value) and compiled.pin.compiler == 'workflow-sequential-compiler@2'
+            assert compiled.pin.definition_digest == hashlib.sha256(gbytes(value)).hexdigest()
+            result = gresult(compiled, state)
+            decision = reduce_generic_result(compiled, state, result)
+            assert decision.edge.action == 'terminal' and decision.reason == 'declared_edge', 'generic outcome needs no domain check'
+            assert decision.selections[0].slot == 'report' and decision.after.events == 1
+            assert reduce_generic_result(compiled, state.model_copy(update={'active_visit': None, 'receipts': (decision,)}), result) == decision
+            grefuses('changed replay', lambda: reduce_generic_result(compiled,
+                state.model_copy(update={'receipts': (decision,)}), gresult(compiled, state, content=b'{"changed":true}')), 'conflicting_replay')
+            for outcome, action in (('pause.now', 'hold'), ('cannot.finish', 'fail'), ('not.declared', 'hold')):
+                negative = reduce_generic_result(compiled, state, gresult(compiled, state, outcome, b''))
+                assert negative.edge.action == action and negative.activation is None and negative.selections == ()
+            unsettled = reduce_generic_result(compiled, state, gresult(compiled, state, settled=False))
+            assert unsettled.reason == 'settlement_unverified' and not unsettled.selections
+            wrong = result.envelope.outputs[0].model_copy(update={'result_id': 9})
+            rejected = reduce_generic_result(compiled, state, result.model_copy(update={
+                'envelope': result.envelope.model_copy(update={'outputs': (wrong,)})}))
+            assert rejected.reason == 'output_evidence_mismatch' and rejected.activation is None
+            start = dict(format='workflow-sequential-start@2', operation_key='stable-key',
+                definition=compiled.pin.model_dump(mode='json'), settings=dict(generation=1, snapshot_digest='c' * 64),
+                request='Original request', inputs=[], role_overrides=[],
+                step_overrides=[dict(node='write'), dict(node='other', model=None)], lower_limits=value['limits'])
+            # Distinct omitted/null syntax survives parsing; unknown nodes refuse completeness.
+            command = parse_generic_start(gbytes(start))
+            assert command.step_overrides[0].model_fields_set == {'node'}
+            assert command.step_overrides[1].model_fields_set == {'node', 'model'}
+            grefuses('unknown override', lambda: validate_generic_start(command, compiled, original_limits=compiled.definition.limits), 'unknown_step_override')
+            start['step_overrides'].pop()
+            start['lower_limits'] = dict(max_visits=10, max_events=20, max_recoveries=1, node_revisions={'write': 3})
+            limits = validate_generic_start(parse_generic_start(gbytes(start)), compiled, original_limits=compiled.definition.limits)
+            assert limits.max_visits == 10 and dict(limits.node_revisions)['write'] == 3
+            callback = parse_generic_callback(gcallback(result.content), contract='canonical-json-object@1')
+            assert callback.outcome == 'quality.ready/v2'
+            claimed = json.loads(gcallback(result.content)); claimed['capability_claims'] = []
+            grefuses('removed capability field', lambda: parse_generic_callback(gbytes(claimed), contract='canonical-json-object@1'), 'closed_record')
+            brief = render_generic_node_brief(compiled, state, original_request='Original request', inputs=GenericBriefInputs(values=()))
+            data = json.loads(brief.node_data)
+            assert brief.format == 'workflow-sequential-node-brief@2' and data['responsibilities'] == ['Report bounded data']
+            assert data['remaining_limits']['nodes']['write'] == dict(revisions=4, attempts=5, recoveries=2)
+            assert 'completion_checks' not in data and 'quality.ready/v2' in data['outcomes']
+            # Two-node route observes addressed selected bytes and rejects stale content.
+            two = gdefinition(); second = deepcopy(two['nodes'][0]); second.update(id='read', output_contract=dict(slot='assessment', type='canonical-json-object@1'))
+            second['inputs'] = [dict(name='report', source='current.report', required=True)]
+            second['outcomes'] = {'finished.custom': dict(action='terminal', condition='done')}
+            two['nodes'][0]['outcomes'] = {'next.custom': dict(action='next', node='read')}
+            two['nodes'].append(second); two['terminal_conditions']['done']['output'] = 'assessment'
+            two_compiled = gcompile(two); first = gstate(two_compiled)
+            first_result = gresult(two_compiled, first, 'next.custom'); step = reduce_generic_result(two_compiled, first, first_result)
+            assert step.activation.node == 'read' and step.after.visits == 2
+            current = first.model_copy(update={'counters': step.after, 'selections': step.selections,
+                'active_visit': GenericActiveVisit(node='read', visit_id='visit-2', task_id='task-2', session_id='session-2', ordinal=2, input_selection_digest='b' * 64)})
+            disclosure = dict(source='current.report', recipients=['author'], value=first_result.content.decode(), reference=step.selections[0])
+            shown = render_generic_node_brief(two_compiled, current, original_request='Original request', inputs=GenericBriefInputs(values=[disclosure]))
+            assert json.loads(shown.node_data)['inputs'][0]['value'] == '{"head":"unverified","value":1.5}'
+            grefuses('missing addressed input', lambda: render_generic_node_brief(two_compiled, current, original_request='Original request', inputs=GenericBriefInputs(values=())), 'required_brief_input_unavailable')
+            disclosure['value'] = '{}'
+            grefuses('stale disclosed bytes', lambda: render_generic_node_brief(two_compiled, current, original_request='Original request', inputs=GenericBriefInputs(values=[disclosure])), 'stale_brief_selection')
+        elif case in ('json_limit', 'document_limit'):
+            document = case == 'document_limit'
+            contract = 'immutable-document@1' if document else 'canonical-json-object@1'
+            value['nodes'][0]['output_contract']['type'] = contract
+            compiled = gcompile(value); state = gstate(compiled)
+            # Fixed literal UTF8 boundary: 1 MiB document / 48 KiB canonical object.
+            exact = ('é' * 524288).encode() if document else b'{"value":"' + b'x' * 49140 + b'"}'
+            assert len(exact) == (1048576 if document else 49152)
+            validate_generic_content(contract, exact)
+            assert parse_generic_callback(gcallback(exact), contract=contract).outcome == 'quality.ready/v2'
+            assert reduce_generic_result(compiled, state, gresult(compiled, state, content=exact)).edge.action == 'terminal'
+            oversized = exact + b'x' if document else b'{"value":"' + b'x' * 49141 + b'"}'
+            grefuses(case + ' content oversize', lambda: validate_generic_content(contract, oversized), 'generic_output_bounds')
+            grefuses(case + ' callback oversize', lambda: parse_generic_callback(gcallback(oversized), contract=contract), 'generic_output_bounds')
+            grefuses(case + ' reducer oversize', lambda: reduce_generic_result(compiled, state, gresult(compiled, state, content=oversized)), 'generic_output_bounds')
+            if document:
+                grefuses('invalid UTF8', lambda: validate_generic_content(contract, b'\xff'), 'invalid_generic_content')
+            else:
+                for raw, code in ((b'[]', 'expected_object'), (b'{"x":1,"x":2}', 'duplicate_json_key'),
+                                  (b'{"x": 1}', 'noncanonical_bytes'), (b'{"x":NaN}', 'nonfinite_json'),
+                                  (b'{"x":' + b'[' * 24 + b'0' + b']' * 24 + b'}', 'json_depth')):
+                    grefuses('JSON representation', lambda raw=raw: validate_generic_content(contract, raw), code)
+            padded = json.loads(gcallback(b'')); padded['findings'] = ['x' * 16384]
+            grefuses('callback metadata', lambda: parse_generic_callback(gbytes(padded), contract=contract), 'callback_metadata_bounds')
+        elif case == 'node_limit':
+            chain = gdefinition(); template = deepcopy(chain['nodes'][0]); chain['nodes'] = []
+            for index in range(32):
+                node = deepcopy(template); node.update(id='n' + str(index), output_contract=dict(slot='s' + str(index), type='canonical-json-object@1'))
+                node['outcomes'] = {'continue': dict(action='next', node='n' + str(index + 1))} if index < 31 else {'done': dict(action='terminal', condition='done')}
+                chain['nodes'].append(node)
+            chain['entry_node'] = 'n0'; chain['terminal_conditions']['done']['output'] = 's31'
+            assert len(gcompile(chain).definition.nodes) == 32
+            chain['nodes'][31]['outcomes'] = {'continue': dict(action='next', node='n32')}
+            chain['nodes'].append(dict(template, id='n32', output_contract=dict(slot='s32', type='canonical-json-object@1'), outcomes={'done': dict(action='terminal', condition='done')}))
+            chain['terminal_conditions']['done']['output'] = 's32'
+            grefuses('33 nodes', lambda: gcompile(chain), 'closed_record')
+            for key, bad in (('revisions', 64), ('attempts', 65), ('recoveries', 65), ('attempts', True)):
+                invalid = gdefinition(); invalid['nodes'][0]['limits'][key] = bad
+                grefuses('finite node ' + key, lambda: gcompile(invalid), 'closed_record')
+            attempt_bound = gdefinition(); attempt_bound['nodes'][0]['limits']['attempts'] = 1
+            limited = gcompile(attempt_bound); limited_state = gstate(limited)
+            attempt_stop = reduce_generic_result(limited, limited_state, gresult(limited, limited_state, 'needs.more'))
+            assert attempt_stop.reason == 'limit_exhausted' and attempt_stop.after.visits == 1
+            for key in ('revisions', 'attempts', 'recoveries'):
+                invalid = gdefinition(); del invalid['nodes'][0]['limits'][key]
+                grefuses('missing node ' + key, lambda: gcompile(invalid), 'closed_record')
+            lower = state.model_copy(update={'lower_limits': GenericLimits(max_visits=1, max_events=2, max_recoveries=0)})
+            stopped = reduce_generic_result(compiled, lower, gresult(compiled, lower, 'needs.more'))
+            assert stopped.reason == 'limit_exhausted' and stopped.activation is None and stopped.after.visits == 1
+            lower = state.model_copy(update={'lower_limits': GenericLimits(max_visits=64, max_events=4096, max_recoveries=4, node_revisions={'write': 0})})
+            assert reduce_generic_result(compiled, lower, gresult(compiled, lower, 'needs.more')).reason == 'limit_exhausted'
+        elif case == 'bounded_cycle':
+            unbounded = gdefinition(); unbounded['nodes'][0]['outcomes']['needs.more'] = dict(action='next', node='write')
+            grefuses('unbounded cycle', lambda: gcompile(unbounded), 'cycle_without_consumed_counter')
+            for ordinal in range(1, 6):
+                step = reduce_generic_result(compiled, state, gresult(compiled, state, 'needs.more'))
+                if ordinal == 5:
+                    assert step.edge.action == 'hold' and step.reason == 'limit_exhausted' and step.activation is None
+                    assert dict(step.after.nodes)['write'].revisions == 4 and step.after.visits == 5
+                    assert step.selections == () and len(step.invalidated) == 1
+                else:
+                    assert step.edge.action == 'next' and step.after.visits == ordinal + 1
+                    assert dict(step.after.nodes)['write'].revisions == ordinal
+                    assert step.selections == () and len(step.invalidated) == 1
+                    state = state.model_copy(update={'counters': step.after, 'selections': step.selections, 'receipts': state.receipts + (step,),
+                        'active_visit': GenericActiveVisit(node='write', visit_id='visit-' + str(ordinal + 1), task_id='task-' + str(ordinal + 1),
+                            session_id='session-' + str(ordinal + 1), ordinal=ordinal + 1, input_selection_digest='b' * 64)})
+            # No engine-wide two-return/three-epoch ceiling: the fifth visit can finish.
+            terminal = reduce_generic_result(compiled, state, gresult(compiled, state))
+            assert terminal.edge.action == 'terminal' and terminal.selections[0].version == 5
+        elif case == 'legacy_bytes':
+            raw = Path('runtime/workflows/builtin_templates/coding.v2.json').read_bytes()
+            assert hashlib.sha256(raw).hexdigest() == '5039e9eb60a03f8de110b40123a123d25962fbff48c39af5271a0666d679d065'
+            old = compile_definition(raw[:-1], source_digest='5039e9eb60a03f8de110b40123a123d25962fbff48c39af5271a0666d679d065')
+            assert old.raw == raw[:-1] and old.pin.definition_digest == 'a3b012d117c5905a1bac3c67a3158a8b1afa5a571acdba73c876ac7de24f790c'
+            limits = dict(content_returns=2, max_content_epochs=3, max_visits=64, max_events=4096)
+            start = dict(format='workflow-sequential-start@1', operation_key='legacy-key', definition=old.pin.model_dump(mode='json'),
+                settings=dict(generation=1, snapshot_digest='c' * 64), request='Legacy request', inputs=[],
+                bindings=[dict(role=role, principal='legacy-' + role) for role, _ in old.definition.roles], lower_limits=limits)
+            encoded = gbytes(start)
+            assert gbytes(parse_start(encoded).model_dump(mode='json')) == encoded
+            grefuses('live parser remains @1', lambda: parse_start(gbytes(dict(format='workflow-sequential-start@2'))), 'closed_record')
+            # Literal @1 output/check/epoch records still parse and replay unchanged.
+            envelope = dict(format='workflow-sequential-result@1', run_id='legacy-run', visit_id='legacy-visit',
+                definition_digest=old.pin.definition_digest, input_selection_digest='b' * 64, outcome='BLOCK', outputs=[],
+                findings=[dict(source_visit='legacy-visit', source_result=1, text='Own legacy finding')], capability_receipts=[])
+            encoded_result = gbytes(envelope); result = parse_result(encoded_result)
+            assert gbytes(result.model_dump(mode='json')) == encoded_result
+            before = Counters(epoch=3, content_returns=2, visits=5, events=4)
+            visit = ActiveVisit(node=old.definition.entry_node, visit_id='legacy-visit', task_id='legacy-task', session_id='legacy-session', epoch=3, input_selection_digest='b' * 64)
+            old_state = RunState(run_id='legacy-run', definition_digest=old.pin.definition_digest, original_limits=Limits(**limits),
+                lower_limits=Limits(**limits), counters=before, active_visit=visit, selections=(), findings=(), receipts=())
+            native = AuthenticatedResult(task_id='legacy-task', session_id='legacy-session', result_id=1, envelope=result, verified_checks=[SETTLEMENT_CHECK])
+            held = reduce_result(old, old_state, native)
+            assert held.edge.action == 'hold' and held.reason == 'declared_edge' and held.after == Counters(epoch=3, content_returns=2, visits=5, events=5)
+            assert reduce_result(old, old_state.model_copy(update={'active_visit': None, 'receipts': (held,)}), native) == held
+            transition = dict(format='workflow-sequential-transition@1', run_id='legacy-run', definition_digest=old.pin.definition_digest,
+                source_visit='legacy-visit', source_result=1, result_digest=held.result_digest, output_digest=None, node=old.definition.entry_node,
+                outcome='BLOCK', prior_cas=4, prior_event_digest='d' * 64, before=before.model_dump(mode='json'), after=held.after.model_dump(mode='json'),
+                invalidated=[], edge=dict(action='hold', owner='accountable_manager', remedy='no_automatic_retry'), successor=None)
+            encoded_transition = gbytes(transition)
+            assert gbytes(parse_transition(encoded_transition).model_dump(mode='json')) == encoded_transition
+        print('PASS S1', case, flush=True)
+    if sys.argv[1:] == ['--generic-abi']:
+        raise SystemExit(0)
 
 # Private storage fixtures shared by returned-tail and retained-reader cases.
 from runtime.infrastructure.workflow_schema import (

@@ -854,6 +854,27 @@ fixture, so it proves neither serving time nor production-size savings.
 It starts no daemon/worker and adds no CI selection, trigger or dependency;
 retired Python units, general integration and Product E2E are not executed.
 
+S1 generic ABI uses the existing private shell owner's explicit selector:
+
+```bash
+WORKFLOW_SCHEMA_PYTHON=3.12 bash scripts/test-workflow-schema-load.sh --generic-abi=all
+WORKFLOW_SCHEMA_PYTHON=3.14 bash scripts/test-workflow-schema-load.sh --generic-abi=all
+```
+
+Individual groups are `generic_outcome`, `json_limit`, `document_limit`,
+`node_limit`, `bounded_cycle`, `legacy_bytes`. They invoke the real inert @2
+compiler/parser/reducer/brief renderer with literal data, observe exact byte
+limits and generic routing, finite node counters/cycle exhaustion, and retained
+@1 definition pins, command/result/transition bytes and reducer replay. No native
+proof, task allocation, live install, admission or assignment resolution is
+claimed. Record the four authoring answers per group in the PR body, absent
+selector RED, intended domain-check/cycle/oversize mutation failures and exact
+restoration hashes, then restored GREEN. Retain `--start-compose=all`,
+`--start-context=all`, `--bundled-catalog=all`, `--returned-storage=all` on both
+runtimes, plus `bash scripts/local_ci.sh boundary-lint`, guard and base-to-head
+diff check/stat. Full schema-load/local_ci all belong to the manager's final
+approved head; no ad hoc Product E2E or V3. No required lane or trigger is added.
+
 R1b2 extends the same private R1b1 org/session/ASGI route fixture with a
 read-only composer and real task-owner prompt cases:
 

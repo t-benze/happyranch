@@ -10,7 +10,7 @@ import hashlib
 import json
 from typing import Annotated, Literal, Self
 
-from pydantic import BeforeValidator, Field, model_validator
+from pydantic import BeforeValidator, Field, StrictBool, model_validator
 
 from runtime.workflows.sequential_contracts import (
     Check, Closed, Counters, Digest, Edge, Epoch, Finding, HoldEdge, Limits,
@@ -19,6 +19,13 @@ from runtime.workflows.sequential_contracts import (
 )
 from runtime.workflows.sequential_definition import (
     CompiledDefinition, SequentialContractError, _OUTPUTS, _return_invalidations,
+)
+from runtime.workflows.sequential_contracts import (
+    GenericCounters, GenericEdge, GenericHoldEdge, GenericLimits, GenericNextEdge,
+    GenericNodeCounters, GenericOutputRef, GenericResultEnvelope, VisitNumber,
+)
+from runtime.workflows.sequential_definition import (
+    GenericCompiledDefinition, generic_limits, validate_generic_content,
 )
 
 
@@ -265,3 +272,212 @@ def reduce_result(compiled: CompiledDefinition, state: RunState,
                     source=visit, source_result=result.result_id, result_digest=digest, outcome=envelope.outcome,
                     before=before, after=after, edge=edge, reason=reason, activation=activation,
                     selections=selections, invalidated=invalidated, findings=findings)
+
+
+class GenericActiveVisit(Closed):
+    node: Name
+    visit_id: Token
+    task_id: Token
+    session_id: Token
+    ordinal: VisitNumber
+    input_selection_digest: Digest
+
+
+class GenericAuthenticatedResult(Closed):
+    """Future adapter assertion of native binding, current access and settlement.
+
+    S1 produces none of these proofs. Domain checks and unsigned capability
+    claims have no place in this @2 interface.
+    """
+
+    task_id: Token
+    session_id: Token
+    result_id: Positive
+    envelope: GenericResultEnvelope
+    content: bytes
+    settled: StrictBool
+
+
+class GenericActivation(Closed):
+    node: Name
+    ordinal: VisitNumber
+    inputs: Annotated[tuple[GenericOutputRef, ...], BeforeValidator(_array), Field(max_length=32)]
+
+
+class GenericDecision(Closed):
+    run_id: Token
+    definition_digest: Digest
+    source: GenericActiveVisit
+    source_result: Positive
+    result_digest: Digest
+    outcome: Token
+    before: GenericCounters
+    after: GenericCounters
+    edge: GenericEdge
+    reason: Name
+    activation: GenericActivation | None
+    selections: Annotated[tuple[GenericOutputRef, ...], BeforeValidator(_array), Field(max_length=32)]
+    invalidated: Annotated[tuple[GenericOutputRef, ...], BeforeValidator(_array), Field(max_length=32)]
+    findings: Annotated[tuple[Finding, ...], BeforeValidator(_array), Field(max_length=2048)]
+
+    @model_validator(mode='after')
+    def matching_activation(self) -> Self:
+        if isinstance(self.edge, GenericNextEdge):
+            if (self.activation is None or self.activation.node != self.edge.node
+                    or self.activation.ordinal != self.after.visits):
+                raise ValueError('next decision requires matching activation')
+        elif self.activation is not None:
+            raise ValueError('non-next decision cannot activate')
+        return self
+
+
+class GenericRunState(Closed):
+    """Pure trusted snapshot, not a schema2 reader or recovery/control writer."""
+
+    run_id: Token
+    definition_digest: Digest
+    original_limits: GenericLimits
+    lower_limits: GenericLimits
+    counters: GenericCounters
+    active_visit: GenericActiveVisit | None
+    selections: Annotated[tuple[GenericOutputRef, ...], BeforeValidator(_array), Field(max_length=32)]
+    findings: Annotated[tuple[Finding, ...], BeforeValidator(_array), Field(max_length=2048)]
+    receipts: Annotated[tuple[GenericDecision, ...], BeforeValidator(_array), Field(max_length=4096)]
+
+
+def _validate_generic_state(compiled: GenericCompiledDefinition, state: GenericRunState) -> None:
+    _refuse(state.definition_digest == compiled.pin.definition_digest, 'state_definition_mismatch')
+    nodes = {node.id: node for node in compiled.definition.nodes}
+    counts = dict(state.counters.nodes)
+    _refuse(counts.keys() == nodes.keys(), 'incomplete_node_counters')
+    _refuse(sum(count.attempts for count in counts.values()) == state.counters.visits
+            and sum(count.recoveries for count in counts.values()) == state.counters.recoveries
+            and all(count.revisions + count.recoveries <= count.attempts if count.attempts else
+                    count.revisions == count.recoveries == 0 for count in counts.values()), 'inconsistent_node_counters')
+    outputs = {node.output_contract.slot: node.output_contract.type for node in nodes.values()}
+    _refuse(len({ref.slot for ref in state.selections}) == len(state.selections), 'duplicate_selection')
+    for ref in state.selections:
+        _refuse(outputs.get(ref.slot) == ref.contract and ref.version <= state.counters.visits, 'invalid_current_selection')
+    if state.active_visit is not None:
+        visit = state.active_visit
+        _refuse(visit.node in nodes and visit.ordinal == state.counters.visits
+                and counts[visit.node].attempts > 0, 'invalid_active_visit')
+    _refuse(len({item.source.visit_id for item in state.receipts}) == len(state.receipts)
+            and len({item.source_result for item in state.receipts}) == len(state.receipts), 'duplicate_consumption')
+    for item in state.receipts:
+        _refuse(item.run_id == state.run_id and item.definition_digest == state.definition_digest, 'foreign_replay_receipt')
+
+
+def reduce_generic_result(compiled: GenericCompiledDefinition, state: GenericRunState,
+                          result: GenericAuthenticatedResult) -> GenericDecision:
+    """Pure @2 routing over generic bytes and finite node counters; no I/O.
+
+    Invalid content refuses before hashing; a later acceptance writer owns its
+    persisted hold. This function neither fabricates native proof nor recovers a
+    stopped task. A declared hold/unknown outcome creates no output or successor.
+    """
+    _validate_generic_state(compiled, state)
+    envelope = result.envelope
+    _refuse(envelope.run_id == state.run_id and envelope.definition_digest == state.definition_digest, 'result_run_mismatch')
+    replay = next((item for item in state.receipts if item.source.visit_id == envelope.visit_id
+                   or item.source_result == result.result_id), None)
+    visit = replay.source if replay is not None else state.active_visit
+    _refuse(visit is not None, 'no_active_visit')
+    _refuse(envelope.visit_id == visit.visit_id and result.task_id == visit.task_id
+            and result.session_id == visit.session_id
+            and envelope.input_selection_digest == visit.input_selection_digest, 'result_visit_mismatch')
+    node = next(node for node in compiled.definition.nodes if node.id == visit.node)
+    if result.content:
+        validate_generic_content(node.output_contract.type, result.content)
+    digest = hashlib.sha256(json.dumps(dict(task_id=result.task_id, session_id=result.session_id,
+        result_id=result.result_id, envelope=envelope.model_dump(mode='json'), settled=result.settled,
+        content_digest=hashlib.sha256(result.content).hexdigest()), sort_keys=True,
+        separators=(',', ':'), ensure_ascii=False).encode('utf8')).hexdigest()
+    if replay is not None:
+        _refuse(replay.source.visit_id == envelope.visit_id and replay.source_result == result.result_id
+                and replay.result_digest == digest, 'conflicting_replay')
+        return replay
+    for finding in envelope.findings:
+        _refuse(finding.source_visit == visit.visit_id and finding.source_result == result.result_id, 'finding_attribution_mismatch')
+    limits = generic_limits(compiled, state.original_limits, state.lower_limits)
+    before, after = state.counters, state.counters
+    counts = dict(before.nodes)
+    nodes = {item.id: item for item in compiled.definition.nodes}
+    hold = GenericHoldEdge(action='hold', owner='initiator', remedy='no_automatic_retry')
+    edge = dict(node.outcomes).get(envelope.outcome, hold)
+    reason = 'declared_edge' if envelope.outcome in dict(node.outcomes) else 'undeclared_outcome'
+    selections, invalidated, findings, activation = state.selections, (), state.findings, None
+    bounded = (before.visits <= limits.max_visits and before.events < limits.max_events
+        and before.recoveries <= limits.max_recoveries
+        and all(count.revisions <= dict(limits.node_revisions)[key]
+                and count.attempts <= nodes[key].limits.attempts
+                and count.recoveries <= nodes[key].limits.recoveries for key, count in counts.items()))
+    if not bounded:
+        edge, reason = hold, 'limit_exhausted'
+    else:
+        after = GenericCounters(visits=before.visits, events=before.events + 1,
+            recoveries=before.recoveries, nodes=counts)
+        if not result.settled:
+            edge, reason = hold, 'settlement_unverified'
+        elif reason == 'declared_edge':
+            advancing = isinstance(edge, (GenericNextEdge, TerminalEdge))
+            expected = node.output_contract
+            valid = bool(result.content) == bool(envelope.outputs)
+            if advancing:
+                valid = valid and len(envelope.outputs) == 1
+            elif not result.content:
+                valid = valid and bool(envelope.findings)
+            for ref in envelope.outputs:
+                valid = valid and (ref.slot == expected.slot and ref.contract == expected.type
+                    and ref.version == visit.ordinal and ref.producer_visit == visit.visit_id
+                    and ref.task_id == result.task_id and ref.session_id == result.session_id
+                    and ref.result_id == result.result_id and ref.digest == hashlib.sha256(result.content).hexdigest())
+            if not valid:
+                edge, reason = hold, 'output_evidence_mismatch'
+            else:
+                _refuse(len(findings) + len(envelope.findings) <= 2048, 'findings_bounds')
+                findings += envelope.findings
+                if advancing:
+                    selections = tuple(ref for ref in selections if ref.slot != expected.slot) + envelope.outputs
+                if isinstance(edge, GenericNextEdge):
+                    target = counts[edge.node]
+                    revision = edge.consume_counter is not None
+                    if revision:
+                        # A correction retires stale selections even when its
+                        # finite replacement allowance has already been spent.
+                        forward = {key: {link.node for _, link in item.outcomes
+                            if isinstance(link, GenericNextEdge) and link.consume_counter is None}
+                            for key, item in nodes.items()}
+                        slots = _return_invalidations(nodes, forward, edge.node)
+                        invalidated = tuple(ref for ref in selections if ref.slot in slots)
+                        selections = tuple(ref for ref in selections if ref.slot not in slots)
+                    if (before.visits >= limits.max_visits or after.events >= limits.max_events
+                            or target.attempts >= nodes[edge.node].limits.attempts
+                            or (revision and target.revisions >= dict(limits.node_revisions)[edge.node])):
+                        edge, reason = hold, 'limit_exhausted'
+                    else:
+                        available = {ref.slot: ref for ref in selections}
+                        selected = []
+                        missing = False
+                        for item in nodes[edge.node].inputs:
+                            if item.source.startswith('current.'):
+                                ref = available.get(item.source[8:])
+                                missing |= ref is None and item.required
+                                if ref is not None and ref not in selected:
+                                    selected.append(ref)
+                        if missing:
+                            edge, reason = hold, 'required_input_unavailable'
+                        else:
+                            counts[edge.node] = GenericNodeCounters(revisions=target.revisions + int(revision),
+                                attempts=target.attempts + 1, recoveries=target.recoveries)
+                            after = GenericCounters(visits=before.visits + 1, events=after.events,
+                                recoveries=before.recoveries, nodes=counts)
+                            activation = GenericActivation(node=edge.node, ordinal=after.visits, inputs=tuple(selected))
+                elif isinstance(edge, TerminalEdge):
+                    terminal = dict(compiled.definition.terminal_conditions)[edge.condition]
+                    if not any(ref.slot == terminal.output for ref in selections):
+                        edge, reason = hold, 'terminal_evidence_unavailable'
+    return GenericDecision(run_id=state.run_id, definition_digest=state.definition_digest,
+        source=visit, source_result=result.result_id, result_digest=digest, outcome=envelope.outcome,
+        before=before, after=after, edge=edge, reason=reason, activation=activation,
+        selections=selections, invalidated=invalidated, findings=findings)
