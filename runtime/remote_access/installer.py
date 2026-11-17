@@ -422,7 +422,8 @@ class ManagedInstaller:
                 # Interrupted publication may precede the next config or record.
                 # Validate every present artifact, including cross-config checks
                 # when both are present; absence alone is a known partial state.
-                self._validate_configs(files, staged=True, partial=True)
+                # Inventory can classify/stop inert remnants, never admit them.
+                self._validate_configs(files, staged=True, partial=True, require_current=False)
             if "release-daemon.json" in files:
                 from runtime.remote_access.release_verifier import validate_record
                 location = str(self.root / "etc/happyranch/release-daemon.json")
@@ -682,7 +683,7 @@ class ManagedInstaller:
         if any(hashlib.sha256(data).hexdigest() != record["digests"][name] for name, data in files.items()):
             raise InstallerError("replacement staging digest changed")
         self._validate_configs({name: data for name, data in files.items() if name in _QUARANTINE_CONFIGS},
-                               staged=True, partial=True)
+                               staged=True, partial=True, require_current=False)
         if current >= _STAGING_PHASES.index("replacement-stage-provision") and "provision.json" in files:
             self._validate_install_record("provision.json", files["provision.json"])
             if self._json(files["provision.json"])["digests"] != {
@@ -1218,8 +1219,11 @@ class ManagedInstaller:
         except (ValueError, UnicodeError):
             raise InstallerError("invalid provisioning JSON object") from None
 
-    def _validate_configs(self, files: dict[str, bytes], *, staged: bool = False, partial: bool = False) -> None:
+    def _validate_configs(self, files: dict[str, bytes], *, staged: bool = False, partial: bool = False,
+                          require_current: bool = True) -> None:
         # Reuse shipping connector/policy validators; never start a supervisor.
+        # Only inert inventory/replacement recovery omits currentness. Schema,
+        # artifact and cross-config checks still apply; admission defaults closed.
         from runtime.remote_access.managed_provider import ManagedProviderConfig
         from runtime.remote_access.policy import PolicyEnvelope, RoutePolicyConsumer
         from runtime.remote_access.supervisor import ConnectorConfig
@@ -1251,7 +1255,8 @@ class ManagedInstaller:
                     raise ValueError
             if not partial or "policy.json" in files:
                 policy = RoutePolicyConsumer.from_envelope(PolicyEnvelope(**self._json(files["policy.json"])))
-                policy.require_current(datetime.now(timezone.utc))
+                if require_current:
+                    policy.require_current(datetime.now(timezone.utc))
             if partial and "sidecar.json" not in files:
                 return
             sidecar = self._json(files["sidecar.json"])

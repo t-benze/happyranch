@@ -1484,7 +1484,7 @@ def inventory_units(fixture: Fixture, *, modern: bool = False, missing: str | No
             (units / name).chmod(0o644)
 
 
-@pytest.mark.parametrize("case, expected", [
+@pytest.mark.parametrize("case, expected, delay", [(case, expected, 0) for case, expected in [
     ("clean", "clean"), ("staged", "modern"), ("staged-private-runtime", "modern"), ("recorded", "modern"),
     ("failed", "known-failed-or-partial"), ("partial-unit", "known-failed-or-partial"),
     ("partial-config", "known-failed-or-partial"),
@@ -1492,9 +1492,14 @@ def inventory_units(fixture: Fixture, *, modern: bool = False, missing: str | No
     ("manual-active", "healthy-manual"), ("manual-0600", "healthy-manual"), ("manual-0644", "healthy-manual"),
     ("manual-stopped", "healthy-manual"), ("manual-recorded", "healthy-manual"),
     ("unit-only", "known-failed-or-partial"),
-])
+    ("before-release-daemon.json", "known-failed-or-partial"),
+]] + [(case, expected, 3601) for case, expected in [
+    ("before-release-daemon.json", "known-failed-or-partial"),
+    ("manual-stopped", "healthy-manual"), ("staged", "modern"),
+    ("partial-config", "known-failed-or-partial"),
+]])
 def test_fixed_inventory_classifies_without_effects(
-    fixture: Fixture, monkeypatch: pytest.MonkeyPatch, case: str, expected: str,
+    fixture: Fixture, monkeypatch: pytest.MonkeyPatch, case: str, expected: str, delay: int,
 ) -> None:
     manager = lifecycle_fixture(fixture)
     interrupted = case.startswith("before-")
@@ -1512,7 +1517,9 @@ def test_fixed_inventory_classifies_without_effects(
             patch.setattr(fixture.installer, "_write_provision_file", fail_before)
             with pytest.raises(module.InstallerError, match="provisioning failed"):
                 generated_bundle(fixture)
-        prefix = ["connector.json"] + (["sidecar.json"] if case == "before-policy.json" else [])
+        prefix = ["connector.json"] + (["sidecar.json"] if case in {"before-policy.json", "before-release-daemon.json"} else [])
+        if case == "before-release-daemon.json":
+            prefix.append("policy.json")
         assert writes == prefix
         assert {path.name for path in (fixture.root / "etc/happyranch").iterdir()} == set(prefix)
     elif case in {"staged", "staged-private-runtime", "recorded", "partial-config"}:
@@ -1535,6 +1542,9 @@ def test_fixed_inventory_classifies_without_effects(
         manager.states[module.UNITS[0]] = "failed"
     if case == "manual-active":
         manager.states = dict.fromkeys(module.UNITS, "active")
+    if delay:
+        expire_staged_policy(fixture, monkeypatch)
+        fresh_staging_instance(fixture)
     before = staged_inventory(fixture)
     result = fixture.installer.inventory()
     assert result.state == expected
@@ -1544,6 +1554,10 @@ def test_fixed_inventory_classifies_without_effects(
         assert result.detail == "migration-required"
     if case in {"staged", "recorded"}:
         assert result.detail == ("staged-inert" if case == "staged" else "recorded")
+    if delay:
+        assert fixture.installer.replacement_inventory().journal_generation is None
+        with pytest.raises(module.InstallerError, match="unjournaled replacement|replacement refused"):
+            fixture.installer.replace_failed()
     assert staged_inventory(fixture) == before
     assert all(call[0] == "show" and call[1] in module.UNITS for call in manager.calls)
 
@@ -2914,6 +2928,18 @@ def fresh_staging_instance(fixture: Fixture) -> None:
         lookup_user=previous._lookup_user, lookup_group=previous._lookup_group)
 
 
+def expire_staged_policy(fixture: Fixture, monkeypatch: pytest.MonkeyPatch) -> datetime:
+    policy = json.loads((fixture.root / "etc/happyranch/policy.json").read_bytes())
+    assert policy["max_age_seconds"] == 3600
+    delayed = datetime.fromisoformat(policy["issued_at"]) + timedelta(seconds=3601)
+    class DelayedClock(datetime):
+        @classmethod
+        def now(cls, tz: object = None) -> datetime:
+            return delayed if tz is None else delayed.astimezone(tz)
+    monkeypatch.setattr(module, "datetime", DelayedClock)
+    return delayed
+
+
 @pytest.mark.parametrize("case", ["failed", "partial", "modern-failed"])
 def test_replacement_stages_fresh_inert_generation(fixture: Fixture, monkeypatch: pytest.MonkeyPatch, case: str) -> None:
     manager, parent = units_removed_for_staging(fixture, case)
@@ -2962,11 +2988,40 @@ def test_replacement_stages_fresh_inert_generation(fixture: Fixture, monkeypatch
     with pytest.raises(module.InstallerError, match=STAGING_BOUNDARY):
         fixture.installer.replace_failed()
     assert staged_inventory(fixture) == before
+    # Recovery may retain expired bytes, but neither policy readiness nor any
+    # activation route can use them. Inspect the actual current_policy gate so
+    # an unrelated missing trust/credential gate cannot satisfy this assertion.
+    from runtime.remote_access.readiness import ConnectorReadiness
+    config = ConnectorConfig.from_file(parent / "connector.json")
+    config.policy_path = str(parent / "policy.json")
+    supervisor = ConnectorSupervisor(config=config, manager=manager)
+    policy = supervisor.load_policy()
+    readiness = ConnectorReadiness(
+        daemon_port=None, credential_provider=SimpleNamespace(read_bearer=lambda: b"synthetic"),
+        policy=policy, configured_identity=None, state_store=None)
+    assert readiness.evaluate(datetime.now(timezone.utc)).gates["current_policy"].ok
+    delayed = expire_staged_policy(fixture, monkeypatch)
+    report = readiness.evaluate(delayed)
+    assert not report.ready and not report.gates["current_policy"].ok
+    assert report.gates["current_policy"].category == "policy_stale"
+    with pytest.raises(module.InstallerError, match="current policy provisioning"):
+        fixture.installer._check_provisioning()
+    for operation in (fixture.installer.install, fixture.installer._write_units,
+                      supervisor.install, supervisor.start, supervisor.restart, supervisor.enable, supervisor.run):
+        with pytest.raises((module.InstallerError, ConnectorConfigError),
+                           match="^home control binding not provisioned; requires slice 3b-2$"):
+            operation()
+    fresh_staging_instance(fixture)
+    with pytest.raises(module.InstallerError, match=STAGING_BOUNDARY):
+        fixture.installer.replace_failed()
+    assert staged_inventory(fixture) == before
+    assert all(call[0] in {"show", "stop"} for call in manager.calls)
 
 
-@pytest.mark.parametrize("phase,point", [(phase, point) for phase in STAGING_PHASES for point in
-                                        ("intent", "pending-fsync", "rename", "parent-fsync")])
-def test_replacement_staging_publication_resumes(fixture: Fixture, monkeypatch: pytest.MonkeyPatch, phase: str, point: str) -> None:
+@pytest.mark.parametrize("phase,point,delay", [(phase, point, 0) for phase in STAGING_PHASES for point in
+    ("intent", "pending-fsync", "rename", "parent-fsync")] + [
+    (phase, "intent", 3601) for phase in ("replacement-stage-token", "replacement-stage-provision", "replacement-staged")])
+def test_replacement_staging_publication_resumes(fixture: Fixture, monkeypatch: pytest.MonkeyPatch, phase: str, point: str, delay: int) -> None:
     manager, parent = units_removed_for_staging(fixture)
     write, rename, fsync = fixture.installer._write_provision_file, fixture.installer._rename_provision_entry, os.fsync
     interrupted = False
@@ -2998,20 +3053,28 @@ def test_replacement_staging_publication_resumes(fixture: Fixture, monkeypatch: 
         with pytest.raises((module.InstallerError, SystemExit)):
             fixture.installer.replace_failed()
     assert interrupted, "requested staging publication boundary was not reached"
+    if delay:
+        expire_staged_policy(fixture, monkeypatch)
+    before = staged_inventory(fixture)
+    external = {path: path.read_bytes() for base in (fixture.home, fixture.inputs) for path in base.iterdir()}
     fresh_staging_instance(fixture)
     assert fixture.installer.replacement_inventory().journal_generation == hashlib.sha256((parent / "install-transaction.json").read_bytes()).hexdigest()
     with pytest.raises(module.InstallerError, match=STAGING_BOUNDARY):
         fixture.installer.replace_failed()
     assert json.loads((parent / "install-transaction.json").read_bytes())["phase"] == "replacement-staged"
+    assert_staging_preserved(fixture, before)
+    assert {path: path.read_bytes() for path in external} == external
     assert all(call[0] in {"show", "stop"} for call in manager.calls)
 
 
-@pytest.mark.parametrize("phase,name,point", [(phase, name, point) for phase, name in STAGING_FILES
+@pytest.mark.parametrize("phase,name,point,delay,damage", [(phase, name, point, 0, "intact") for phase, name in STAGING_FILES
     for point in ("pending-fsync", "rename", "parent-fsync")] + [
-    ("replacement-discard-" + label, name, point) for label, name in (("token", "daemon.token"), ("provision", "provision.json"))
-    for point in ("remove", "parent-fsync")])
-def test_replacement_staging_file_effect_resumes(fixture: Fixture, monkeypatch: pytest.MonkeyPatch, phase: str, name: str, point: str) -> None:
-    _, parent = units_removed_for_staging(fixture)
+    ("replacement-discard-" + label, name, point, 0, "intact") for label, name in (("token", "daemon.token"), ("provision", "provision.json"))
+    for point in ("remove", "parent-fsync")] + [
+    ("replacement-stage-policy", "policy.json", "parent-fsync", 3601, damage)
+    for damage in ("intact", "schema", "artifact", "digest", "unjournaled")])
+def test_replacement_staging_file_effect_resumes(fixture: Fixture, monkeypatch: pytest.MonkeyPatch, phase: str, name: str, point: str, delay: int, damage: str) -> None:
+    manager, parent = units_removed_for_staging(fixture)
     rename, fsync, unlink = fixture.installer._rename_provision_entry, os.fsync, os.unlink
     interrupted = False
     def die() -> None:
@@ -3042,13 +3105,61 @@ def test_replacement_staging_file_effect_resumes(fixture: Fixture, monkeypatch: 
         with pytest.raises((module.InstallerError, SystemExit)):
             fixture.installer.replace_failed()
     assert interrupted, "requested fresh file boundary was not reached"
+    if delay:
+        expire_staged_policy(fixture, monkeypatch)
+    if damage != "intact":
+        journal_path = parent / "install-transaction.json"
+        journal = json.loads(journal_path.read_bytes())
+        policy_path = parent / "policy.json"
+        policy = json.loads(policy_path.read_bytes())
+        if damage == "unjournaled":
+            journal_path.unlink()
+        elif damage == "digest":
+            policy_path.write_bytes(policy_path.read_bytes() + b"\n")
+        else:
+            if damage == "schema":
+                policy["issued_at"] = "invalid"
+            else:
+                policy["artifact"]["default_behavior"] = "allow_unclassified"
+            policy_path.write_bytes(json.dumps(policy).encode())
+            # Bind the malformed bytes to isolate schema/artifact validation
+            # from the independently tested exact-digest refusal.
+            journal["digests"]["policy.json"] = hashlib.sha256(policy_path.read_bytes()).hexdigest()
+            journal_path.write_bytes(json.dumps(journal, sort_keys=True).encode())
+    before = staged_inventory(fixture)
     existing = (parent / name).read_bytes() if (parent / name).exists() else None
+    external = {path: path.read_bytes() for base in (fixture.home, fixture.inputs) for path in base.iterdir()}
     fresh_staging_instance(fixture)
-    with pytest.raises(module.InstallerError, match=STAGING_BOUNDARY):
+    with pytest.raises(module.InstallerError, match=STAGING_BOUNDARY if damage == "intact" else
+                       "replacement refused|unjournaled replacement"):
         fixture.installer.replace_failed()
+    if damage != "intact":
+        assert fixture.installer.replacement_inventory().journal_generation is None
+        assert staged_inventory(fixture) == before
+        assert all(call[0] in {"show", "stop"} for call in manager.calls)
+        return
     if existing is not None:
         assert (parent / name).read_bytes() == existing
     assert json.loads((parent / "install-transaction.json").read_bytes())["phase"] == "replacement-staged"
+    assert_staging_preserved(fixture, before)
+    assert {path: path.read_bytes() for path in external} == external
+    assert all(call[0] in {"show", "stop"} for call in manager.calls)
+
+
+def assert_staging_preserved(fixture: Fixture, before: dict[str, tuple]) -> None:
+    after = staged_inventory(fixture)
+    # Atomic publication changes parent times and the transaction itself. Every
+    # already published payload, identity and byte outside that record is fixed.
+    mutable = {"etc/happyranch", "etc/happyranch/install-transaction.json"}
+    phase = json.loads(before["etc/happyranch/install-transaction.json"][-1])["phase"]
+    current = -1 if phase == "replacement-units-removed" else STAGING_PHASES.index(phase)
+    for phase, name in (("replacement-discard-token", "daemon.token"), ("replacement-discard-provision", "provision.json")):
+        if current <= STAGING_PHASES.index(phase):
+            mutable.add("etc/happyranch/" + name)
+    for path, value in before.items():
+        if path not in mutable:
+            assert after[path] == value, path
+    assert set(after) - set(before) <= {"etc/happyranch/" + name for _, name in STAGING_FILES}
 
 
 @pytest.mark.parametrize("attack", ["journal", "config", "state", "enrollment", "pending", "parent", "token-mode",

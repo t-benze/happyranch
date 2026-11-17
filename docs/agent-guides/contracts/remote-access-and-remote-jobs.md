@@ -1049,6 +1049,18 @@ exclusive inode receives its existing exception cleanup. Fresh instances resume
 published intents and completed effects; uncatchable machine-crash durability and
 unsafe/partial pending-residue recovery are not claimed.
 
+Inert inventory and journaled replacement recovery validate the full policy
+schema/artifact and every recorded file digest without requiring a current
+policy. Elapsed time after policy publication, the token intent or
+`replacement-staged` cannot strand an otherwise exact generation. Published
+policy bytes and their 3600-second lifetime remain unchanged. Read-only partial
+inventory before provenance publication also remains classifiable after expiry;
+this grants no unjournaled replacement authority. Provisioning admission,
+install/start/enable paths and runtime readiness/request admission still require
+current policy or refuse activation. An expired staged policy must be re-issued
+through a future authorized flow before activation; this slice neither re-issues
+it nor implements activation or transaction closure.
+
 At `replacement-staged`, the consumer raises exactly
 `replacement paused after fresh staging; transaction closure unavailable`.
 Repeating this boundary rechecks token/quiescence without changing files or journal
