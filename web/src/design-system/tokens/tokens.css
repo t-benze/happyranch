@@ -445,7 +445,7 @@
   --color-attention:    oklch(0.78 0.13 70);
   --color-positive:     oklch(0.72 0.12 152);
   --color-danger:       oklch(0.70 0.15 25);
-  --color-info:         oklch(0.72 0.11 245);
+  --color-info:         oklch(0.72 0.10 245);
 }
 
 /* Opt-in Tasks standalone-list type metrics. They stay here because Tailwind */

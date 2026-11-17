@@ -1,4 +1,13 @@
 ---
+# HISTORICAL (THR-376 PR12, 2026-11-18): the palette and colour tables in this
+# file are historical. They are superseded by web/design/pasture-ds.css
+# (Direction A, the founder-attached visual authority) as implemented in
+# src/design-system/tokens/tokens.css and documented in DESIGN_SYSTEM.md.
+# `bash scripts/verify-design-system.sh --scan-pasture` pins tokens.css and
+# the owning components to pasture-ds.css; nothing checks this file. Where a
+# value here disagrees with pasture-ds.css, pasture-ds.css wins. The notes and
+# SUPERSEDED markers below are kept as history.
+#
 # DESIGN.md — HappyRanch Founder Console
 # Format: google-labs/design.md (YAML frontmatter machine-readable tokens
 # + canonical markdown sections below). Token references use {dot.path}.

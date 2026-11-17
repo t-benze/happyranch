@@ -21,7 +21,8 @@ import { features } from '@/config/features';
  * THR-376 PR2: every page gets the Pasture `.topbar` (ds.css): 56px tall,
  * 26px inline padding, 14px gap, `--bg` at 80% (`bg-surface-canvas/80` compiles to the
  * same `color-mix(in oklab, var(--color-surface-canvas) 80%, transparent)`), and the
- * `.page-title` in Newsreader 18/500. There is no per-page presentation.
+ * `.page-title` in Newsreader 18/500 with -0.2px tracking (THR-376 PR12).
+ * There is no per-page presentation.
  * Optional `status` renders after the title and `actions` before the
  * language/theme controls; both are omitted when not supplied.
  */
@@ -71,7 +72,7 @@ export function AppBar({ status, actions }: AppBarProps): JSX.Element {
 
   return (
     <div className="border-border-default bg-surface-canvas/80 flex h-14 shrink-0 items-center gap-3.5 border-b px-6.5">
-      <span className="text-text-primary font-display text-lg font-medium">{title}</span>
+      <span className="text-text-primary font-display text-lg font-medium tracking-[-0.2px]">{title}</span>
       {status != null && <div className="flex min-w-0 items-center gap-2">{status}</div>}
       <div className="ml-auto flex shrink-0 items-center gap-2">
         {actions != null && <div className="flex items-center gap-2">{actions}</div>}

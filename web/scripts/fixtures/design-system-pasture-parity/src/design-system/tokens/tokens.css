@@ -1,0 +1,41 @@
+/* Fixture tokens in parity with ../../../design/pasture-ds.css (Direction A). */
+@import "tailwindcss";
+
+@theme {
+  --color-surface-canvas:  oklch(0.975 0.007 80);
+  --color-surface-raised:  oklch(1 0 0);
+  --color-text-primary:    oklch(0.28 0.014 60);
+  --color-border-default:  oklch(0.915 0.008 75);
+  --color-accent-default:  oklch(0.52 0.11 152);
+  --color-accent-soft:     oklch(0.93 0.045 152);
+  --color-accent-text:     oklch(0.46 0.10 152);
+  --color-info:            oklch(0.53 0.10 248);
+  --color-id-thread:       var(--color-info);
+  --color-id-task:         var(--color-info);
+
+  --font-display: "Newsreader", Georgia, serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+
+  --text-page-title:                 1.625rem;
+  --text-page-title--font-weight:    500;
+  --text-page-title--letter-spacing: -0.3px;
+  --text-nav:                        0.84375rem;
+
+  --radius-*: initial;
+  --radius-md: 12px;
+  --radius-lg: 18px;
+
+  --shadow-*: initial;
+  --shadow-pasture-sm: 0 1px 2px rgba(40, 30, 20, 0.05);
+  --shadow-pasture:    0 1px 3px rgba(40, 30, 20, 0.06);
+}
+
+:root[data-theme="dark"] {
+  --color-surface-canvas:  oklch(0.205 0.011 70);
+  --color-surface-raised:  oklch(0.245 0.012 70);
+  --color-border-default:  oklch(0.32 0.012 72);
+  --color-accent-soft:     oklch(0.32 0.06 152);
+  --color-accent-text:     oklch(0.80 0.12 152);
+  --color-id-thread:       var(--color-info);
+  --color-info:            oklch(0.72 0.10 245);
+}

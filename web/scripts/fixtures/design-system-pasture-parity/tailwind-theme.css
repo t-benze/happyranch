@@ -1,0 +1,12 @@
+/* Tailwind default-theme subset for the parity fixture. */
+@theme default {
+  --spacing: 0.25rem;
+  --text-xs: 0.75rem;
+  --text-lg: 1.125rem;
+  --font-weight-normal: 400;
+  --font-weight-medium: 500;
+  --font-weight-semibold: 600;
+  --tracking-tight: -0.025em;
+  --radius-xl: 0.75rem;
+  --shadow-sm: 0 1px 3px 0 rgb(0 0 0 / 0.1);
+}

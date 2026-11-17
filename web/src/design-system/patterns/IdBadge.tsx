@@ -1,7 +1,8 @@
 /**
  * IdBadge — monospace entity ID (THR-NNN / TASK-NNN / JOB-NNN /
  * SCHEDULE-NNN / workflow run ID), color-tinted text, no fill. Pasture `.id`
- * colours every entity ID with --info (THR-376); thread/task keep their
+ * colours every entity ID with --info at weight 500 (THR-376, PR12 weight);
+ * thread/task keep their
  * `--color-id-*` aliases, which now resolve to --color-info.
  *
  * When `to` is provided, the badge wraps itself in a react-router `<Link>`
@@ -29,7 +30,7 @@ const TEXT_COLOR: Record<IdBadgeProps['kind'], string> = {
 
 export function IdBadge({ id, kind, to }: IdBadgeProps): JSX.Element {
   const inner = (
-    <span className={`font-mono text-xs ${TEXT_COLOR[kind]}`}>{id}</span>
+    <span className={`font-mono text-xs font-medium ${TEXT_COLOR[kind]}`}>{id}</span>
   );
   return to ? (
     <Link to={to} className="hover:underline">
