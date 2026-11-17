@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -25,6 +26,11 @@ type whoIsClient interface {
 type TSNetEngine struct {
 	server         *tsnet.Server
 	identityClient whoIsClient
+	home           *homeForwarder
+	admissionMu    sync.Mutex
+	closed         bool
+	closeOnce      sync.Once
+	closeErr       error
 }
 
 func NewTSNetEngine() *TSNetEngine { return &TSNetEngine{} }
@@ -35,15 +41,28 @@ func (e *TSNetEngine) Start(ctx context.Context, c EngineConfig, credential []by
 	// never mutate process-wide inputs or include their values in errors.
 	for _, name := range []string{"TS_AUTHKEY", "TS_AUTH_KEY", "TSNET_FORCE_LOGIN", "TS_DEBUGSYSPOLICY_AUTH_KEY"} {
 		if _, set := os.LookupEnv(name); set {
+			if c.ControlTLS != nil || c.ControlURL == homeURL {
+				return RedemptionReceipt{}, errHomeTransport
+			}
 			return RedemptionReceipt{}, fmt.Errorf("sidecar: unset %s; ambient tsnet authentication is forbidden", name)
 		}
 	}
+	var err error
+	e.home, err = prepareHomeTransport(c)
+	if err != nil {
+		return RedemptionReceipt{}, err
+	}
 	e.server = newTSNetServer(c, credential)
 	if err := clearTSNetLogSpool(c.StateDir); err != nil {
+		_ = e.Close()
 		return RedemptionReceipt{}, err
 	}
 	if err := e.server.Start(); err != nil {
+		_ = e.Close()
 		return RedemptionReceipt{}, ErrEngine
+	}
+	if e.home != nil {
+		go e.watchHomeTransport(ctx)
 	}
 	e.server.AuthKey = ""
 	// Start only launches the backend. Joining can legitimately pass through
@@ -52,16 +71,26 @@ func (e *TSNetEngine) Start(ctx context.Context, c EngineConfig, credential []by
 	defer cancel()
 	status, err := e.server.Up(upCtx)
 	if err != nil {
+		_ = e.Close()
 		return RedemptionReceipt{}, ErrEngine
 	}
 	if c.Profile == LinuxIdentityProfile {
 		client, err := e.server.LocalClient()
 		if err != nil {
+			_ = e.Close()
 			return RedemptionReceipt{}, ErrEngine
 		}
 		e.identityClient = client
 	}
 	return RedemptionReceipt{Redeemed: true, Durable: true, ExpectedPeerVisible: expectedPeerVisible(c, status)}, nil
+}
+
+func (e *TSNetEngine) watchHomeTransport(ctx context.Context) {
+	select {
+	case <-ctx.Done():
+	case <-e.home.done:
+	}
+	_ = e.Close()
 }
 
 func expectedPeerVisible(c EngineConfig, status *ipnstate.Status) bool {
@@ -126,16 +155,38 @@ func clearTSNetLogSpool(stateDir string) error {
 }
 
 func (e *TSNetEngine) Listen(addr string) (net.Listener, error) {
+	e.admissionMu.Lock()
+	defer e.admissionMu.Unlock()
+	// Pinned Server.Listen can create a listener even after Server.Close.
+	// Serialize home admission with teardown rather than reopening a dead engine.
+	if e.home != nil {
+		select {
+		case <-e.home.done:
+			return nil, ErrEngine
+		default:
+		}
+		if e.closed {
+			return nil, ErrEngine
+		}
+	}
 	if e.server == nil {
 		return nil, ErrEngine
 	}
 	return e.server.Listen("tcp", addr)
 }
 func (e *TSNetEngine) Close() error {
-	if e.server == nil {
-		return nil
-	}
-	return e.server.Close()
+	e.closeOnce.Do(func() {
+		e.admissionMu.Lock()
+		defer e.admissionMu.Unlock()
+		e.closed = true
+		if e.home != nil {
+			_ = e.home.Close()
+		}
+		if e.server != nil {
+			e.closeErr = e.server.Close()
+		}
+	})
+	return e.closeErr
 }
 
 func (e *TSNetEngine) healthClient() (healthClient, error) {
