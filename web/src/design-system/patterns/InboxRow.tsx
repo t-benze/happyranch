@@ -29,7 +29,7 @@
  *
  * Default rows retain their rounded bordered shell; thread rows are flush inside
  * the enclosing bordered, divider-separated list. Active thread rows use the
- * accent-muted marker; nested status/dream pills retain their own radii.
+ * accent-soft marker; nested status/dream pills retain their own radii.
  */
 import type { ReactNode } from 'react';
 import { AgentChip } from './AgentChip';

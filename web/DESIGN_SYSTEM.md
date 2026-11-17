@@ -99,7 +99,7 @@ Feature compositions keep using the stable `@/design-system/...` import paths.
   `border-subtle` is `var(--color-border-default)` (ds.css `--border`; it
   was 0.28). Dark `tier-green-tint` is `accent-soft` at 60% (it was
   `oklch(0.30 0.05 152)`). `tier-green` maps to `positive` (Pasture
-  `--positive`), not `accent`: the two greens differ in dark by design.
+  `--positive`), not `accent-default`: the two greens differ in dark by design.
   `surface-hover` and `brand-foreground` stay semantic because each has its
   own value in at least one theme.
 - The v3 colour vocabulary is retired (THR-376 PR11). Every utility use of
@@ -281,9 +281,9 @@ Feature compositions keep using the stable `@/design-system/...` import paths.
 
   | Pasture token | tokens.css properties | Light | Dark |
   | --- | --- | --- | --- |
-  | `--ink-2` | `text-secondary`, `fg-muted` (+ light `status-archived`) | `oklch(0.45 0.013 60)` | `oklch(0.76 0.01 75)` |
-  | `--ink-3` | `text-muted`, `fg-subtle` (+ dark `status-archived`) | `oklch(0.55 0.012 65)` | `oklch(0.64 0.011 72)` |
-  | `--accent` | `accent-default` (`primary`), `accent`, `agent-founder` | `oklch(0.52 0.11 152)` | `oklch(0.70 0.13 152)` |
+  | `--ink-2` | `text-secondary` (+ light `status-archived`) | `oklch(0.45 0.013 60)` | `oklch(0.76 0.01 75)` |
+  | `--ink-3` | `text-muted` (+ dark `status-archived`) | `oklch(0.55 0.012 65)` | `oklch(0.64 0.011 72)` |
+  | `--accent` | `accent-default` (`primary`), `agent-founder` | `oklch(0.52 0.11 152)` | `oklch(0.70 0.13 152)` |
   | `--accent-press` | `accent-hover` | `oklch(0.46 0.11 152)` | `oklch(0.76 0.13 152)` |
   | `--positive` | `positive`, `tier-green`, `status-open`, `feedback-success` | `oklch(0.52 0.11 152)` | `oklch(0.72 0.12 152)` |
   | `--info` | `info` (`id-task`, `id-thread`), `feedback-info` | `oklch(0.53 0.10 248)` | `oklch(0.72 0.11 245)` |
@@ -401,7 +401,7 @@ visibility through titles, docs, controls, and representative renders.
 
 | Reusable export | Story or exclusion | Representative states / variants | Tokens |
 |---|---|---|---|
-| `Avatar` | [source:primitives/Avatar.tsx#Avatar] [story:primitives/Avatar.coverage.stories.tsx#Coverage] Primitives / Avatar Variants | founder/manager/worker/soft/neutral tones; sm 22 / md 30 / lg 34px | `--accent`→`--info` gradient, `--color-agent-*` (aliases of `--color-info`/`--color-accent`), `--accent-soft`/`--accent-text`, surface-2, `--color-text-inverse` |
+| `Avatar` | [source:primitives/Avatar.tsx#Avatar] [story:primitives/Avatar.coverage.stories.tsx#Coverage] Primitives / Avatar Variants | founder/manager/worker/soft/neutral tones; sm 22 / md 30 / lg 34px | `--accent`→`--info` gradient, `--color-agent-*` (aliases of `--color-info`/`--color-accent-default`), `--accent-soft`/`--accent-text`, surface-2, `--color-text-inverse` |
 | `Button` | [source:primitives/Button.tsx#Button] [story:primitives/Button.coverage.stories.tsx#Coverage] Primitives / Button States | default/secondary/outline/ghost/destructive/destructive-outline/link; default/sm/lg/icon; loading, disabled, icon, focus, `asChild` | `components.button` |
 | `Card` | [source:primitives/Card.tsx#Card] [story:primitives/Card.coverage.stories.tsx#Coverage] Primitives / Card Variants | container (18px), entry (12px); padding default (20) / none; with CardHeader | `--radius-lg`, `--radius-md`, `shadow-pasture-sm`, surface/border |
 | `CardHeader` | [source:primitives/Card.tsx#CardHeader] [story:primitives/CardHeader.coverage.stories.tsx#Coverage] Primitives / Card Header | title, meta, actions | `.card-head`, `.card-title` |

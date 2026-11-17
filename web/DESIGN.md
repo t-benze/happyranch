@@ -664,9 +664,10 @@ See the frontmatter for the full palette. The opinion behind it:
   Never used to tint a whole row or background; that reads as alarmist.
   Use the tint variants (`*_tint`, 14% alpha) for badge fills.
 - **Two agent identity colors.** SUPERSEDED (Pasture, THR-376 PR9): manager
-  = `--color-info`, worker = `--color-accent`, founder = accent; agent
-  avatars are the design-system `Avatar` (22/30/34px circles, founder
-  accent → info gradient). Original: Manager = warm violet
+  = `--color-info`, worker = `--color-accent-default` (PR9 wrote
+  `--color-accent`, retired in PR11), founder = accent; agent avatars
+  are the design-system `Avatar` (22/30/34px circles, founder accent →
+  info gradient). Original: Manager = warm violet
   (`violet_500`), worker = cool teal (`teal_500`). They prefix every agent
   name with a 6px dot. Founder uses the accent blue (`signal_400`), so the
   founder reads as a participant *in the system* rather than an external

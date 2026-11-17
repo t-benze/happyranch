@@ -1,7 +1,7 @@
 /**
  * MessageBubble — single message in a thread transcript. Per DESIGN.md
  * `components.message_bubble`. Five variants:
- *   - `founder`  — accent-muted background, accent border
+ *   - `founder`  — accent-soft background, accent-ring border
  *   - `worker`   — neutral raised background
  *   - `manager`  — neutral raised background (same as worker; the speaker
  *                  identity is rendered via AgentChip)
