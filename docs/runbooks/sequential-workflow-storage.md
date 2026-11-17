@@ -164,33 +164,39 @@ Keep stdout, stderr, exit status, source/backup inventory and original operation
 custody; reconcile with the original owner before any explicitly admitted retry.
 No automatic retry or success claim follows an ambiguous return.
 
-The A4 draft adds an optional pre-COMMIT coordinator callback to the owning
+The following A4 checkpoint descriptions are historical. Their unmounted status,
+absent automatic caller and incomplete integration is superseded by the
+current A4 contract at the top of this runbook; whole-startup/listener timing
+acceptance remains separate.
+
+The A4 draft added an optional pre-COMMIT coordinator callback to the owning
 primitive and a private durable phase publisher. The offline interface above
 does not select either automatically. See the [A4 checkpoint](../superpowers/specs/2026-11-14-automatic-workflow-setup.md#a4-phase-publication-and-commit-boundary-checkpoint)
-for their current boundary and unimplemented startup integration. These source
+for their historical boundary before startup integration. These source
 owners grant no live install, restart, restore or retry authority.
 
-The draft also contains the unmounted `BootstrapSource` pre-checkpoint owner:
+The draft source/backup checkpoint introduced the then-unmounted
+`BootstrapSource` pre-checkpoint owner:
 native coherent RO WAL snapshot, exact preservation inventory, exclusive native
 online backup, file/directory fsync and independent RO full-integrity/inventory/
 hash verification before backup_verified. Its failed/partial backup is retained;
 original close uncertainty never becomes retry authority. The [source/backup
 checkpoint](../superpowers/specs/2026-11-14-automatic-workflow-setup.md#a4-coherent-source-and-verified-backup-checkpoint)
-states the remaining volume, rehearsal and startup integration gates. The offline
-commands below still require their own explicit checkpointed image and guards.
+records the then-remaining volume, rehearsal and startup integration gates.
+The offline commands below still require their own explicit checkpointed image and guards.
 
-`BootstrapRehearsal` now provides the separate unmounted capacity stage: exact
-verified-backup hash, no-follow canonical metadata copy, real private install,
+The rehearsal checkpoint introduced the then-unmounted `BootstrapRehearsal`
+capacity stage: exact verified-backup hash, no-follow canonical metadata copy, real private install,
 then writable default FIRST/NEXT on that same image. Metadata/backup drift,
 original read exhaustion, insufficient rehearsal-volume headroom or pre-COMMIT
 time refuse before any source writer. Scratch is outside backup/output storage
 and is disposable only after positive original closure and directory identity
-checks. No source restore, live native-owner inference or automatic caller is
-added. See the [current rehearsal boundary](../superpowers/specs/2026-11-14-automatic-workflow-setup.md#a4-private-writable-rehearsal-checkpoint);
+checks. That checkpoint added no source restore, live native-owner inference or
+automatic caller. See the [rehearsal checkpoint](../superpowers/specs/2026-11-14-automatic-workflow-setup.md#a4-private-writable-rehearsal-checkpoint);
 the offline commands and their explicit guards remain unchanged.
 
-The draft's unmounted `BootstrapInstall` composes original source checkpoint,
-native writer, default target and post-COMMIT independent reopen/preservation.
+The writer checkpoint's then-unmounted `BootstrapInstall` composed original
+source checkpoint, native writer, default target and post-COMMIT independent reopen/preservation.
 It accepts one parent permission only after durable pre_commit and rechecks the
 original twenty-second reserve. All original handles close before verified;
 uncertain COMMIT/rollback/close never becomes unchanged or replay authority.
@@ -199,21 +205,22 @@ backup/DB/temp/rehearsal headroom is checked by device before backup creation
 and again before writer admission. DB/temp consume one allowance on a shared
 device, while backup and rehearsal allowances add; the minimum observed free
 space must cover the total. An unavailable observation refuses before backup
-creation. The future supervised helper must select its private writable
+creation. The supervised helper must select its private writable
 SQLITE_TMPDIR before SQLite work. These observations do not reserve disk blocks.
 This is a source stage, not an added command or live migration authorization.
 Original-owner qualification, parent supervision, registration/audit/status and
-automatic startup integration remain required. See the [writer boundary](../superpowers/specs/2026-11-14-automatic-workflow-setup.md#a4-original-writer-and-independent-reopen-checkpoint).
+automatic startup integration were still required at that checkpoint. See the [writer boundary](../superpowers/specs/2026-11-14-automatic-workflow-setup.md#a4-original-writer-and-independent-reopen-checkpoint).
 
-The unmounted `BootstrapSelection` adds no command or setup action. Its bounded
-read-only routing honors prior attempt latches before SQL and closes its original
+The selection checkpoint's then-unmounted `BootstrapSelection` added no command
+or setup action. Its bounded read-only routing honors prior attempt latches before SQL and closes its original
 handles before returning. Sequential objects route directly to ordinary complete
 validation without installer/backup/inventory/full-integrity work. Presence is
 not a validity claim; an absent result still requires new EX discovery and full
 original-owner qualification. A failed/uncertain attempt is never automatically
 retried, including after not_installed. Registered evidence must name the same
 present DB path/device/inode. Nothing here restores a backup or authorizes live
-maintenance; the automatic startup caller and acceptance remain incomplete.
+maintenance. The automatic startup caller was incomplete at that checkpoint;
+current mounting follows the A4 contract above, with timing acceptance separate.
 
 Every invocation starts with `resolve_org_database` and an immutable read-only
 SQLite connection (`mode=ro&immutable=1`, query-only, foreign keys enabled), one

@@ -86,12 +86,16 @@ profile errors and failure to acquire the profile inventory itself. A4-C4's
 entry tail. They observe native SQLite denial, original handle/error retention, later real tails,
 zero startup busy waiting, serving-time restoration and process cancellation.
 Unknown classification never retries that failed reader. Cold/listener timing and
-backup/install acceptance remain unverified by these cases. The unmounted
-`BootstrapSource` now retains coherent RO source and independent verified-backup
-connections before PRAGMA and attempts each original close once. Its focused
+backup/install acceptance remain unverified by these cases. The following A4
+checkpoint descriptions are historical: their unmounted status, absent automatic
+caller and incomplete integration is superseded by the current A4 startup attachment
+contract above. Whole-startup/listener timing acceptance remains separate.
+At the source/backup checkpoint, `BootstrapSource` retained coherent RO source
+and independent verified-backup connections before PRAGMA and attempted each
+original close once. Its focused
 `--bootstrap-backup` cases cover WAL/preservation/fsync/failure custody before any
 source checkpoint; they supply no native-owner qualification or installed result.
-Automatic startup integration and installation remain incomplete; see the
+Automatic startup integration and installation were incomplete then; see the
 [source/backup checkpoint](../../superpowers/specs/2026-11-14-automatic-workflow-setup.md#a4-coherent-source-and-verified-backup-checkpoint).
 
 `BootstrapSource.backup` itself now enforces the complete shared-device volume
@@ -102,20 +106,22 @@ I/O failure creates no backup connection and leaves source values untouched;
 descriptor-close uncertainty retains original custody. The later writer recheck
 remains required and uses current observations under the same deadline.
 
-The unmounted `BootstrapRehearsal` retains each private raw connection and
-OrgState construction owner before fallible setup, then performs actual writable
+At the rehearsal checkpoint, the then-unmounted `BootstrapRehearsal` retained
+each private raw connection and OrgState construction owner before fallible setup,
+then performed actual writable
 default FIRST/NEXT on one installed private image. Each original close is
 attempted once. Unknown private closure retains the attachment, fence and scratch;
 only positively closed, identity-matching scratch can be removed. No producer or
 listener is started and no copied uncertainty is cleared. All rehearsal/copy/
 close work charges the original pre-COMMIT window. Private success never proves
-original live host/native closure; automatic coordinator and whole-startup
-acceptance remain incomplete. The existing shell's `--bootstrap-rehearsal[=CASE]`
+original live host/native closure. Coordinator mounting was incomplete at that
+checkpoint; whole-startup acceptance remains a separate observation. The existing
+shell's `--bootstrap-rehearsal[=CASE]`
 observes the actual loads, native progress exhaustion, metadata/image drift,
 original authority refusal and closure custody.
 
-The unmounted `BootstrapInstall` requires the same original source/attempt and
-positively closed FIRST/NEXT rehearsal. It retains the native writer before
+At the writer checkpoint, the then-unmounted `BootstrapInstall` required the same
+original source/attempt and positively closed FIRST/NEXT rehearsal. It retains the native writer before
 PRAGMA, uses zero busy wait, checkpoints only excluded committed WAL, and calls
 the preservation primitive with the original install/integrity ledgers. Actual
 default target validation and durable pre_commit precede one parent permission;
@@ -126,10 +132,11 @@ failures need independent original equality plus positive closure before the
 terminal not_installed event. Unknown COMMIT/rollback/close remains latched;
 repeat run/close does not erase its original cause or reattempt native effects.
 The existing shell's `--bootstrap-install[=CASE]` observes these boundaries in a
-private fixture. This stage does not mount startup, qualify live owners, register
-definitions, publish readiness or prove launcher/listener timing.
+private fixture. That checkpoint alone did not mount startup, qualify live owners
+or register definitions; these cases do not prove launcher/listener timing.
 
-The unmounted `BootstrapSelection` is a separate preconstructor routing owner.
+The selection checkpoint introduced `BootstrapSelection` as a then-unmounted
+preconstructor routing owner.
 It retains each read-only connection before its first PRAGMA, debits one original
 deadline (at most five seconds), reads prior evidence within one second and uses
 zero SQLite busy wait. Existing sequential prefixes, including partial storage,
@@ -146,7 +153,8 @@ Ordinary complete validation, original-owner qualification, actual writable
 rehearsal, supervised installation and startup/listener acceptance remain required.
 
 `BootstrapStartup`/`BootstrapDiscovery` now compose the original SH/EX routing
-and cumulative admission ledger, still without an automatic runtime caller.
+and cumulative admission ledger. At that discovery checkpoint there was no
+automatic runtime caller; the current A4 contract above supersedes that status.
 Discovery owns every selector and returned fence before fallible observations.
 SH closes positively before EX; EX always selects again, and an arriving install
 returns through a new SH selection. The common at-most-0.5-second wait debits
@@ -160,8 +168,9 @@ foreign or EX attachment fences refuse. Unknown selector/fence closure keeps
 its original handles and error, without native retry or transfer. The existing
 shell's `--bootstrap-discovery[=CASE]` observes real fence contention, fresh SQL,
 window exhaustion, original cause/closure and real native load/failure paths.
-Original-owner qualification, helper supervision and all-org/listener timing
-remain incomplete; this stage does not authorize setup effects.
+Original-owner qualification and helper supervision were incomplete at that
+checkpoint. All-org/listener timing acceptance remains separate; the checkpoint
+alone authorized no setup effects.
 
 The original `BootstrapSource.open` now checks retained native histories on its
 same coherent query-only snapshot before any attempt/backup. The strict native

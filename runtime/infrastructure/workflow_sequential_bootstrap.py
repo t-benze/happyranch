@@ -19,7 +19,7 @@ import stat
 import tempfile
 import time
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -59,13 +59,15 @@ def _close_descriptor(record: dict) -> None:
     record['closed'] = True
 
 
-def _directory(path: Path, custody: list[dict]) -> dict:
+def _directory(path: Path, custody: list[dict], *, deadline: float | None = None) -> dict:
     """Literal absolute traversal, including all existing ancestors."""
     if not path.is_absolute() or str(path) != os.path.normpath(path) or '..' in path.parts:
         raise BootstrapEvidenceError('workflow_setup_path_invalid')
     record = dict(fd=os.open('/', os.O_RDONLY | os.O_DIRECTORY), attempted=False, closed=False)
     custody.append(record)
     for name in path.parts[1:]:
+        if deadline is not None and time.monotonic() >= deadline:
+            raise BootstrapEvidenceError('workflow_setup_deadline')
         child = dict(fd=os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
                                dir_fd=record['fd']), attempted=False, closed=False)
         # Own the new descriptor BEFORE the preceding fallible close. On any
@@ -354,6 +356,26 @@ class BootstrapSelection:
         if time.monotonic() >= self.deadline:
             raise BootstrapEvidenceError('workflow_setup_selection_deadline')
 
+    @contextmanager
+    def _evidence_directory(self, path: Path, deadline: float) -> Iterator[int]:
+        """Keep prior-evidence originals in this selection's shutdown custody."""
+        record = None
+        try:
+            record = _directory(path, self.descriptors, deadline=deadline)
+            yield record['fd']
+        finally:
+            # Latch a traversal close failure before any further cleanup can
+            # fail. _directory already retained its child before that syscall.
+            for original in self.descriptors:
+                if original.get('error') is not None:
+                    self.close_error = self.close_error or original['error']
+            if record is not None:
+                try:
+                    _close_descriptor(record)
+                except BaseException as exc:
+                    self.close_error = self.close_error or exc
+                    raise
+
     def _prior(self) -> dict | None:
         from runtime.daemon.workflow_setup_status import _attempt_record
         self._check()
@@ -373,7 +395,7 @@ class BootstrapSelection:
             if not names:
                 return None
             value = _attempt_record(self.home, runtime_root, key, self.fence.root.name,
-                                    evidence_deadline)
+                                    evidence_deadline, directory_reader=self._evidence_directory)
             if (value['state'], value['reason'], value['phase']) != (
                     'installed_verified', 'registered', 'registered'):
                 raise BootstrapEvidenceError('workflow_setup_attempt_latched')

@@ -66,7 +66,7 @@ bootstrap_startup_case = None
 if len(sys.argv) == 2 and sys.argv[1].startswith('--bootstrap-startup='):
     bootstrap_startup_case = sys.argv[1].split('=', 1)[1]
     assert bootstrap_startup_case in ('success', 'integrity', 'backup', 'ex', 'history', 'history_precommit', 'commit_uncertain', 'kill', 'close', 'late_spawn',
-                                     'discovery_cap', 'discovery_close', 'discovery_fence_close', 'discovery_descriptor_close')
+                                     'discovery_cap', 'discovery_close', 'discovery_fence_close', 'discovery_descriptor_close', 'discovery_evidence_close')
     sys.argv[1:] = ['--bootstrap-startup']
 
 worker_case = None
@@ -170,7 +170,7 @@ if sys.argv[1:] in ([], ['--bootstrap-startup']):
     # Mounted keepers for pre-worker count exhaustion and original close faults.
     # The 1,024 missing-DB roots reproduce normal local refusals independently
     # of the overflow org, whose real DB must never even be selected or opened.
-    for fault in ('discovery_cap', 'discovery_close', 'discovery_fence_close', 'discovery_descriptor_close'):
+    for fault in ('discovery_cap', 'discovery_close', 'discovery_fence_close', 'discovery_descriptor_close', 'discovery_evidence_close'):
         if bootstrap_startup_case is not None and bootstrap_startup_case != fault:
             continue
         with tempfile.TemporaryDirectory(prefix='a4-mounted-discovery-') as scratch, ExitStack() as stack:
@@ -196,10 +196,17 @@ if sys.argv[1:] in ([], ['--bootstrap-startup']):
                 db.close()
             else:
                 schema.initialize_fresh_org_database(path, expected_org_slug=root.name).close()
+            if fault == 'discovery_evidence_close':
+                # Use the real durable publisher, not a hand-built reader fixture.
+                seed = bootstrap.BootstrapStartup(home=home, runtime_root=runtime.root)
+                seed._hold(root.name, 'install_incomplete', 'unknown')
+                for record in reversed(seed.hold_descriptors):
+                    if not record['attempted']:
+                        bootstrap._close_descriptor(record)
             original_bytes = path.read_bytes()
             native_connect, native_fence_close, native_descriptor_close = sqlite3.connect, OrgAccessFence.close, os.close
             first = OSError('synthetic FIRST original discovery close failure')
-            calls, connections, failed_descriptors, opened = [], [], [], []
+            calls, connections, failed_descriptors, opened, evidence_children = [], [], [], [], []
             class CloseFault(sqlite3.Connection):
                 def close(self):
                     calls.append(self)
@@ -230,10 +237,34 @@ if sys.argv[1:] in ([], ['--bootstrap-startup']):
                     with patch.object(bootstrap.os, 'close', side_effect=deny):
                         return original_close_descriptor(record)
                 return original_close_descriptor(record)
+            def evidence_close(fd):
+                # Fault the actual prior-evidence traversal, including the old
+                # shared opener on RED; earlier discovery traversal stays native.
+                from runtime.daemon import workflow_setup_status as status, _disk_sweep_fs as fs
+                frame = sys._getframe(1)
+                traversal = None
+                in_evidence = False
+                while frame is not None:
+                    if frame.f_code in (bootstrap._directory.__code__, fs.directory.__wrapped__.__code__):
+                        traversal = frame
+                    if frame.f_code is status._attempt_record.__code__:
+                        in_evidence = True
+                    frame = frame.f_back
+                if in_evidence and traversal is not None and not failed_descriptors:
+                    local = traversal.f_locals
+                    child = local['child']
+                    evidence_children.append(child['fd'] if isinstance(child, dict) else child)
+                    failed_descriptors.append(dict(fd=fd))
+                if failed_descriptors and fd == failed_descriptors[0]['fd']:
+                    calls.append(fd)
+                    raise first
+                return native_descriptor_close(fd)
             original_close_descriptor = bootstrap._close_descriptor
             stack.enter_context(patch.object(bootstrap.sqlite3, 'connect', side_effect=connect))
             stack.enter_context(patch.object(OrgAccessFence, 'close', fence_close))
             stack.enter_context(patch.object(bootstrap, '_close_descriptor', descriptor_close))
+            if fault == 'discovery_evidence_close':
+                stack.enter_context(patch.object(os, 'close', evidence_close))
             state = None
             try:
                 try:
@@ -255,8 +286,15 @@ if sys.argv[1:] in ([], ['--bootstrap-startup']):
                 else:
                     route = owner.discoveries[root]
                     selected = route.selections[0]
-                    assert route.close_error is not None and not route.closed and not route.fence._closed
                     assert calls and len(calls) == 1, 'A4-M original close failure not reached exactly once'
+                    assert route.close_error is not None and not route.closed and not route.fence._closed
+                    if fault == 'discovery_evidence_close':
+                        assert owner.holds[root.name] == state.broken_orgs[root.name] == 'install_incomplete', 'A4-M prior evidence lacks visible HOLD'
+                        failed = [r for r in selected.descriptors if r['fd'] == failed_descriptors[0]['fd'] and r.get('error') is first]
+                        assert len(failed) == 1 and failed[0]['attempted'] and not failed[0]['closed'], 'A4-M prior evidence lost original descriptor custody'
+                        assert any(r['fd'] == evidence_children[0] for r in selected.descriptors[selected.descriptors.index(failed[0])+1:]), 'A4-M prior evidence lost newly opened child custody'
+                        assert selected.close_error is first, 'A4-M prior evidence lost FIRST native close cause'
+                        os.fstat(failed[0]['fd'])
                     primary, close_error, selected_error = route.primary, route.close_error, selected.close_error
                     for _ in range(2):
                         try:
@@ -290,6 +328,9 @@ if sys.argv[1:] in ([], ['--bootstrap-startup']):
                     sqlite3.Connection.close(conn)
                 for record in failed_descriptors:
                     native_descriptor_close(record['fd'])
+                for fd in evidence_children:
+                    if state is None or not any(r['fd'] == fd for route in state._workflow_bootstrap.discoveries.values() for selected in route.selections for r in selected.descriptors):
+                        native_descriptor_close(fd)
                 if state is not None:
                     for route in state._workflow_bootstrap.discoveries.values():
                         for record in route.fences:

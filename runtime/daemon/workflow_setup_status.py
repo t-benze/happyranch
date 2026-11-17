@@ -7,6 +7,7 @@ import os
 import re
 import stat
 import time
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
@@ -101,16 +102,20 @@ def _names(parent: int, limit: int, deadline: float) -> list[str]:
     return sorted(result)
 
 
-def _attempt_record(home: Path, runtime_root: Path, key: str, slug: str, deadline: float) -> dict:
+def _attempt_record(home: Path, runtime_root: Path, key: str, slug: str, deadline: float,
+                    *, directory_reader: Callable | None = None) -> dict:
     """Bounded complete namespace/chain read; missing evidence proves no state.
 
     A4 owns publication. Unrecognized or unfinished evidence stays unknown.
     No backup or org database is opened, and no selected prefix is accepted.
+    Startup supplies its original-custody directory reader; advisory status
+    retains its independent traversal.
     """
+    open_directory = directory if directory_reader is None else directory_reader
     root = home / 'backups' / 'workflow-sequential' / key / slug
     total = 0
     outcomes = []
-    with directory(root, deadline) as namespace:
+    with open_directory(root, deadline) as namespace:
         names = _names(namespace, 64, deadline)
         if names == ['hold.json']:
             value, _, _ = _record(namespace, 'hold.json', deadline)
@@ -131,7 +136,7 @@ def _attempt_record(home: Path, runtime_root: Path, key: str, slug: str, deadlin
             check(deadline)
             if not re.fullmatch(r'[a-zA-Z0-9-]{1,128}', name):
                 raise ValueError('attempt_identity_invalid')
-            with directory(root / name, deadline) as parent:
+            with open_directory(root / name, deadline) as parent:
                 entries = _names(parent, 17, deadline)
                 records = sorted(item for item in entries if re.fullmatch(r'[0-9]{2}\.json', item))
                 if set(entries) - set(records) - {'before.db'} or not 0 < len(records) <= 16:
