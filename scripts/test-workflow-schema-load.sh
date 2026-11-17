@@ -579,11 +579,22 @@ OrgState.close = uncertain_close
                             assert worker.reaped and worker.process.returncode == -signal.SIGKILL, 'A4-M lost actual late child kill/reap'
                             assert worker.expired and not worker.closed and not worker.permit_sent, 'A4-M accepted late result or invented closure'
                             assert path.read_bytes() == original_bytes, 'A4-M late child changed source'
+                            assert not worker.discovery.fence._closed, 'A4-M late reap released unknown original EX'
                             worker.discovery.fence.close()  # exact synthetic original, after assertions
                             owner.loop.call_soon_threadsafe(owner.loop.stop)
                             owner.thread.join(timeout=2)
                             assert not owner.thread.is_alive(), 'A4-M fixture failed to join original loop'
                             owner.loop.close()
+                            unlaunched = [route for route in owner.discoveries.values() if route is not worker.discovery]
+                            assert len(owner.workers) == 1 and len(unlaunched) == 1, 'A4-M launched another worker while original pending'
+                            other = unlaunched[0]
+                            print('A4-M unlaunched discovery closure', json.dumps(dict(org=other.root.name,
+                                closed=other.closed, fences=[dict(attempted=r['attempted'], closed=r['closed'],
+                                    native_closed=r['fence']._closed) for r in other.fences])), flush=True)
+                            assert other.closed and all(r['closed'] and r['fence']._closed for r in other.fences), 'A4-M refused unlaunched worker leaked discovery custody'
+                            assert all(r['closed'] for selected in other.selections for r in (*selected.connections, *selected.descriptors)), 'A4-M unlaunched discovery lost selector custody'
+                            assert set(owner.holds) == set(slugs), 'A4-M unlaunched cleanup erased visible HOLD'
+                            assert all((root/'happyranch.db').read_bytes() == before[slug] for slug, root in runtime.iter_org_roots()), 'A4-M unlaunched cleanup changed source DB'
                             print('PASS A4-M actual mounted startup: late_spawn original retained/late child killed/reaped', flush=True)
                             break
                         if fault != 'success':

@@ -90,6 +90,11 @@ original event loop alive for pending spawn/reap callbacks, including a late
 child kill; it never cancels those originals merely to close a temporary loop.
 Unknown closure retains EX and prevents a successful daemon close claim. A late
 result never becomes readiness. Native filesystem calls remain cooperative.
+A later worker refused before entry in the original startup worker ledger has
+acquired no worker socket or subprocess; its discovery closes through the
+existing one-shot path. This includes refusal while another org's original spawn
+is pending. That earlier worker's unknown EX remains retained even after reap;
+both orgs remain visibly held and no replay/restore is authorized.
 The focused `--bootstrap-startup[=CASE]` shell tests drive the real build and
 supervisor, including failed checks, late history over a real WAL, native COMMIT
 denial, killed child, uncertain registrar close and no replay. They are private

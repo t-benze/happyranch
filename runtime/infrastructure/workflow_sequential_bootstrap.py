@@ -654,7 +654,11 @@ class BootstrapStartup:
                     # cannot be published. Never infer a persisted latch here.
                     pass
                 try:
-                    if discovery is not None and (worker is None or worker.reaped and worker.closed):
+                    # run retains its worker before any socket/spawn acquisition.
+                    # A pre-admission refusal owns only this discovery, even
+                    # when a different org's original worker remains pending.
+                    if discovery is not None and (worker is None or worker not in self.workers
+                            or worker.reaped and worker.closed):
                         discovery.close()
                 except Exception:
                     pass  # Original unknown custody remains in this startup owner.

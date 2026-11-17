@@ -32,6 +32,12 @@ successful shutdown claim. A dedicated retained original loop preserves pending
 spawn/reap and late-child kill callbacks instead of cancelling them on return.
 Late success never becomes readiness; native filesystem calls remain cooperative.
 
+A worker refused before admission to the startup's owned-worker ledger has
+opened no worker sockets or subprocess. Its discovery closes through the normal
+one-shot cleanup path, including when another org's original spawn is pending.
+That other worker's unresolved custody and EX remain retained; reap alone grants
+no release, replay or automatic restore. Both orgs keep their visible HOLD.
+
 Every startup attempt-evidence read uses one selection-owned custodied path,
 including the final registered read after the helper returns. Each newly opened
 child is retained before the fallible parent close. A close fault retains the

@@ -24,6 +24,10 @@ fence or publication resources are acquired; remaining orgs and serving proceed.
 Shutdown also requires positive closure of pre-worker selection connections,
 untransferred fences and descriptors. The first close failure stays retained;
 shutdown cannot claim success or retry that failed native close.
+A later org refused before owned-worker admission has no worker sockets or child;
+its original discovery closes through the same one-shot path. An earlier pending
+or expired original keeps its EX until positive closure, including after reap.
+The org HOLDs persist; this supplies no replay, restore or new attempt.
 All startup attempt-evidence reads share one custodied path, including the final
 registered read after the helper returns. A new child enters custody before its
 parent close. A close fault visibly holds the org and retains FIRST error and
