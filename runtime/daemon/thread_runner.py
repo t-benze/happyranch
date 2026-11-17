@@ -977,6 +977,12 @@ def _persist_thread_token_usage(
     executor_name: str,
     invocation_token: str,
 ) -> None:
+    from runtime.skills.usage import observe_skill_use
+
+    observe_skill_use(
+        org_state.db, result, org_slug=org_state.slug, agent_name=inv.agent_name,
+        task_id=None, session_context="thread", executor=executor_name,
+    )
     token_usage = getattr(result, "token_usage", None)
     if token_usage is None:
         return

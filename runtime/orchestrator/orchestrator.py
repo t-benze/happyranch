@@ -1528,6 +1528,12 @@ class Orchestrator:
         if pause_invocation is not None:
             pause_invocation.phase("unknown" if pause_invocation.unsettled else "result_processing",
                                    started_at=None, captured_generation=None)
+        from runtime.skills.usage import observe_skill_use
+
+        observe_skill_use(
+            self._db, result, org_slug=self._paths.root.name, agent_name=agent_name,
+            task_id=task_id, session_context="task", executor=provider,
+        )
         # Observation follows scratch-context teardown and is intentionally
         # outside completion/session/containment ownership.
         try:

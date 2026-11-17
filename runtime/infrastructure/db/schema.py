@@ -2160,6 +2160,24 @@ class SchemaMixin:
             );
             CREATE INDEX IF NOT EXISTS idx_csee_skill_id ON custom_skill_eligibility_events(skill_id);
 
+            CREATE TABLE IF NOT EXISTS skill_use_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                org_slug TEXT NOT NULL,
+                skill_slug TEXT NOT NULL,
+                skill_source TEXT NOT NULL CHECK (skill_source IN ('custom', 'bundled', 'unknown')),
+                custom_skill_id TEXT,
+                agent_name TEXT NOT NULL,
+                task_id TEXT,
+                session_context TEXT NOT NULL CHECK (session_context IN ('task', 'thread', 'wake', 'dream')),
+                session_id TEXT NOT NULL,
+                executor TEXT NOT NULL,
+                signal_kind TEXT NOT NULL CHECK (signal_kind IN ('invoked', 'opened_skill_file')),
+                provider_session_id TEXT,
+                observed_at TEXT NOT NULL,
+                source_ref TEXT NOT NULL,
+                CHECK (session_context != 'task' OR task_id IS NOT NULL)
+            );
+
             CREATE TABLE IF NOT EXISTS custom_skill_materializations (
                 id              INTEGER PRIMARY KEY AUTOINCREMENT,
                 skill_id        TEXT NOT NULL REFERENCES custom_skills(id),
@@ -2203,6 +2221,12 @@ class SchemaMixin:
                 ON custom_skill_purge_events(org_slug, slug);
 
             """)
+        # Also upgrades legacy databases without the observation table. Keep
+        # indexes on new columns outside the fresh executescript (MEM-498).
+        self._conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_skill_use_event_identity "
+            "ON skill_use_events(org_slug, session_id, executor, source_ref, skill_slug)"
+        )
         # Knowledge tables are additive and installed after the fresh block;
         # keep their SQL and behavior with the feature, not the Database facade.
         from runtime.knowledge.archives import install_archive_schema
