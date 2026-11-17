@@ -1,0 +1,329 @@
+"""Standalone inert preparation; temp root and fake commands, never host effects.
+
+Run: uv run --frozen --python /usr/bin/python3 pytest scripts/test_headscale_custody.py -v --tb=short
+"""
+from __future__ import annotations
+
+import errno
+import json
+import os
+import socket
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from runtime.remote_access import headscale_service as home
+from runtime.remote_access import installer as module
+from runtime.remote_access import systemd_unit
+
+EXPECTED_POLICY = b'''{
+  "acls": [
+    {
+      "action": "accept",
+      "dst": [
+        "happyranch-node:443"
+      ],
+      "proto": "tcp",
+      "src": [
+        "happyranch-invite"
+      ]
+    }
+  ]
+}
+'''
+EXPECTED_UNIT = '''[Unit]
+Description=HappyRanch home Headscale
+After=network.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+User=happyranch-headscale
+Group=happyranch-headscale
+ExecStart=/opt/happyranch-desktop/libexec/headscale/headscale --config /etc/happyranch/headscale/config.yaml serve
+ExecStartPost=/opt/happyranch-desktop/python/bin/python3 -I -m runtime.remote_access.headscale_service wait-ready
+Type=exec
+Restart=on-failure
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+UMask=0077
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+PrivateDevices=yes
+ProtectKernelModules=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestartSec=1
+TimeoutStartSec=40
+TimeoutStopSec=30
+KillMode=control-group
+RuntimeDirectory=happyranch-headscale
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=yes
+StateDirectory=happyranch-headscale
+StateDirectoryMode=0700
+ReadWritePaths=/var/lib/happyranch-headscale /run/happyranch-headscale
+StandardOutput=null
+StandardError=null
+'''
+
+
+class Fixture:
+    def __init__(self, root: Path) -> None:
+        self.root = root
+        self.present = False
+        self.group_present = False
+        self.calls: list[list[str]] = []
+        self.uid, self.gid = os.getuid(), os.getgid()
+        self.user = SimpleNamespace(pw_name=home.ACCOUNT, pw_uid=self.uid, pw_gid=self.gid,
+                                    pw_dir="/nonexistent", pw_shell="/usr/sbin/nologin")
+        self.group = SimpleNamespace(gr_name=home.ACCOUNT, gr_gid=self.gid, gr_mem=[])
+        self.locked = True
+        self.shared = False
+        self.exit_useradd = 0
+        self.installer = module.ManagedInstaller(root=root, root_owner=(self.uid, self.gid), layout="deb",
+                                                run=self.run, lookup_user=self.lookup_user,
+                                                lookup_group=self.lookup_group)
+        (root / "etc").mkdir(mode=0o755)
+        # Synthetic ranges permit the actual test owner; no host NSS is queried.
+        (root / "etc/login.defs").write_text(
+            f"UID_MIN {self.uid + 1}\nGID_MIN {self.gid + 1}\nSYS_UID_MIN {self.uid}\nSYS_GID_MIN {self.gid}\n")
+        (root / "etc/login.defs").chmod(0o644)
+
+    def lookup_user(self, name: str) -> SimpleNamespace:
+        if name == home.ACCOUNT and self.present:
+            return self.user
+        raise KeyError(name)
+
+    def lookup_group(self, name: str) -> SimpleNamespace:
+        if name == home.ACCOUNT and self.group_present:
+            return self.group
+        raise KeyError(name)
+
+    def run(self, args: list[str], **kwargs: object) -> tuple[int, str]:
+        self.calls.append(args)
+        if args[0] == "useradd":
+            if not self.exit_useradd:
+                self.present = self.group_present = True
+            return self.exit_useradd, "synthetic private diagnostic"
+        if args == ["getent", "passwd"]:
+            value = f"{home.ACCOUNT}:x:{self.uid}:{self.gid}::/nonexistent:/usr/sbin/nologin\n"
+            if self.shared:
+                value += f"other:x:{self.uid+1}:{self.gid}::/nonexistent:/usr/sbin/nologin\n"
+            return 0, value
+        if args == ["getent", "group"]:
+            return 0, f"{home.ACCOUNT}:x:{self.gid}:\n"
+        if args == ["passwd", "--status", home.ACCOUNT]:
+            return 0, f"{home.ACCOUNT} {'L' if self.locked else 'P'} 2026-01-01 0 99999 7 -1\n"
+        raise AssertionError(f"unexpected external command: {args[0]}")
+
+    def prepare(self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture) -> tuple[int, str]:
+        with monkeypatch.context() as patch:
+            patch.setattr(module, "ManagedInstaller", lambda **kw: self.installer)
+            try:
+                code = module.main(["prepare-headscale", "--layout", "deb"])
+            except SystemExit as error:
+                code = error.code
+        output = capsys.readouterr()
+        return code, output.out + output.err
+
+    def receipt(self) -> Path:
+        return self.root / "var/lib/happyranch-remote-access/headscale-account.json"
+
+
+@pytest.fixture
+def fixture(tmp_path: Path) -> Fixture:
+    return Fixture(tmp_path)
+
+
+def test_created_receipt_custody_and_inert_unit(fixture, monkeypatch, capsys) -> None:
+    code, output = fixture.prepare(monkeypatch, capsys)
+    assert code == 0, output
+    assert json.loads(output) == {"state": "inert", "account": "created", "preservation": "receipt-recorded"}
+    assert json.loads(fixture.receipt().read_bytes()) == {
+        "version": 1, "account": "happyranch-headscale", "uid": fixture.uid, "gid": fixture.gid,
+        "group_created_with_user": True}
+    assert fixture.receipt().stat().st_mode & 0o777 == 0o600
+    assert fixture.receipt().parent.stat().st_mode & 0o777 == 0o700
+    for name in ("etc/happyranch/headscale", "var/lib/happyranch-headscale", "run/happyranch-headscale"):
+        info = (fixture.root / name).stat()
+        assert (info.st_uid, info.st_gid, info.st_mode & 0o777) == (fixture.uid, fixture.gid, 0o700)
+    policy = fixture.root / "etc/happyranch/headscale/policy.hujson"
+    assert policy.read_bytes() == EXPECTED_POLICY
+    assert policy.stat().st_mode & 0o777 == 0o600
+    unit = fixture.root / "etc/systemd/system/happyranch-headscale.service"
+    assert unit.read_bytes() == EXPECTED_UNIT.encode()
+    assert unit.stat().st_mode & 0o777 == 0o644
+    assert [args[0] for args in fixture.calls].count("useradd") == 1
+    assert set(args[0] for args in fixture.calls) == {"useradd", "getent", "passwd"}
+    assert sorted(p.name for p in policy.parent.iterdir()) == ["policy.hujson"]
+    assert not list((fixture.root / "var/lib/happyranch-headscale").iterdir())
+    assert fixture.prepare(monkeypatch, capsys)[0] == 0
+    assert [args[0] for args in fixture.calls].count("useradd") == 1
+
+
+def test_expected_account_without_receipt_is_unowned(fixture, monkeypatch, capsys) -> None:
+    fixture.present = fixture.group_present = True
+    code, output = fixture.prepare(monkeypatch, capsys)
+    assert code == 0, output
+    assert json.loads(output)["account"] == "unowned"
+    assert json.loads(output)["preservation"] == "preserved: not created by HappyRanch"
+    assert not fixture.receipt().exists()
+    assert all(args[0] in {"getent", "passwd"} for args in fixture.calls)
+
+
+@pytest.mark.parametrize("shape", ["uid", "gid", "shell", "home", "members", "primary", "password", "group-only"])
+def test_account_shape_refuses_before_effects(fixture, monkeypatch, capsys, shape) -> None:
+    fixture.present = fixture.group_present = True
+    if shape == "uid": fixture.user.pw_uid = fixture.uid + 10
+    if shape == "gid": fixture.group.gr_gid = fixture.gid + 10
+    if shape == "shell": fixture.user.pw_shell = "/bin/bash"
+    if shape == "home": fixture.user.pw_dir = "/missing-home"
+    if shape == "members": fixture.group.gr_mem = ["other"]
+    if shape == "primary": fixture.shared = True
+    if shape == "password": fixture.locked = False
+    if shape == "group-only": fixture.present = False
+    code, output = fixture.prepare(monkeypatch, capsys)
+    assert code == 1 and "account-shape" in output
+    assert not fixture.receipt().exists()
+    assert not (fixture.root / "etc/happyranch").exists()
+    assert all(args[0] in {"getent", "passwd"} for args in fixture.calls)
+
+
+@pytest.mark.parametrize("tamper", ["uid", "gid", "account", "bool-id", "extra", "malformed", "mode", "symlink", "pending"])
+def test_receipt_tamper_preserves_account_and_receipt(fixture, monkeypatch, capsys, tamper) -> None:
+    assert fixture.prepare(monkeypatch, capsys)[0] == 0
+    receipt = fixture.receipt()
+    value = json.loads(receipt.read_bytes())
+    if tamper in {"uid", "gid"}: value[tamper] += 1
+    if tamper == "account": value["account"] = "foreign"
+    if tamper == "bool-id": value["uid"] = True
+    if tamper == "extra": value["extra"] = "synthetic private diagnostic"
+    receipt.write_text("{" if tamper == "malformed" else json.dumps(value))
+    if tamper == "mode": receipt.chmod(0o644)
+    if tamper == "symlink":
+        receipt.rename(receipt.with_suffix(".foreign"))
+        receipt.symlink_to(receipt.with_suffix(".foreign").name)
+    if tamper == "pending": receipt.with_name(".headscale-account.json.pending").write_text("residue")
+    before = receipt.read_bytes()
+    fixture.calls.clear()
+    code, output = fixture.prepare(monkeypatch, capsys)
+    assert code == 1 and ("account-receipt-uncertain" in output or "custody-uncertain" in output)
+    assert "synthetic private diagnostic" not in output
+    assert fixture.present and fixture.group_present
+    assert receipt.read_bytes() == before
+    assert all(args[0] in {"getent", "passwd"} for args in fixture.calls)
+
+
+def test_crash_after_useradd_becomes_unowned(fixture, monkeypatch, capsys) -> None:
+    with monkeypatch.context() as patch:
+        def crash(*args, **kwargs):
+            raise OSError("synthetic private diagnostic")
+        patch.setattr(fixture.installer, "_write_provision_file", crash)
+        code, output = fixture.prepare(monkeypatch, capsys)
+    assert code == 1 and "custody-uncertain" in output
+    assert fixture.present and not fixture.receipt().exists()
+    fixture.calls.clear()
+    code, output = fixture.prepare(monkeypatch, capsys)
+    assert code == 0 and json.loads(output)["account"] == "unowned"
+    assert not fixture.receipt().exists()
+    assert all(args[0] in {"getent", "passwd"} for args in fixture.calls)
+
+
+@pytest.mark.parametrize("entry", ["unknown", "policy", "link", "mode", "state", "unit", "dropin"])
+def test_foreign_custody_preserved(fixture, monkeypatch, capsys, entry) -> None:
+    assert fixture.prepare(monkeypatch, capsys)[0] == 0
+    folder = fixture.root / "etc/happyranch/headscale"
+    if entry == "unknown": (folder / "unknown").write_bytes(b"foreign")
+    if entry == "policy": (folder / "policy.hujson").write_bytes(b"foreign")
+    if entry == "link":
+        (folder / "policy.hujson").unlink()
+        target = fixture.root / "foreign-policy"
+        target.write_bytes(EXPECTED_POLICY)
+        target.chmod(0o600)
+        (folder / "policy.hujson").symlink_to(target)
+    if entry == "mode": folder.chmod(0o755)
+    if entry == "state": (fixture.root / "var/lib/happyranch-headscale/db.sqlite").write_bytes(b"foreign")
+    if entry == "unit": (fixture.root / "etc/systemd/system/happyranch-headscale.service").write_bytes(b"foreign")
+    if entry == "dropin": (fixture.root / "etc/systemd/system/happyranch-headscale.service.d").mkdir()
+    before = sorted(str(p.relative_to(fixture.root)) for p in fixture.root.rglob("*"))
+    fixture.calls.clear()
+    code, output = fixture.prepare(monkeypatch, capsys)
+    assert code == 1 and ("foreign-" in output or "custody-uncertain" in output)
+    assert sorted(str(p.relative_to(fixture.root)) for p in fixture.root.rglob("*")) == before
+    assert all(args[0] in {"getent", "passwd"} for args in fixture.calls)
+
+
+def test_policy_and_unit_exact_bytes() -> None:
+    assert home.render_policy() == EXPECTED_POLICY
+    assert systemd_unit.render_headscale_unit() == EXPECTED_UNIT
+
+
+@pytest.mark.parametrize("occupied", [None, 0, 1, 2, 3, "uncertain"])
+def test_fixed_port_bindings_and_typed_refusal(monkeypatch, occupied) -> None:
+    calls, closed = [], []
+    class Probe:
+        def __init__(self, family, kind):
+            assert family == socket.AF_INET
+            self.kind = kind
+        def __enter__(self): return self
+        def __exit__(self, *args): closed.append(self.kind)
+        def bind(self, address):
+            index = len(calls)
+            calls.append((address, self.kind))
+            if index == occupied or occupied == "uncertain":
+                raise OSError(errno.EADDRINUSE if occupied != "uncertain" else errno.EACCES,
+                              "synthetic private diagnostic")
+    monkeypatch.setattr(home.socket, "socket", Probe)
+    if occupied is None:
+        home.preflight_ports("192.168.1.40")
+    else:
+        with pytest.raises(home.HeadscaleServiceError) as caught:
+            home.preflight_ports("192.168.1.40")
+        assert str(caught.value) == ("port-check-uncertain" if occupied == "uncertain" else "occupied-port")
+        assert caught.value.__context__ is None and caught.value.__cause__ is None
+    assert calls == [(("192.168.1.40", 8443), socket.SOCK_STREAM),
+                     (("192.168.1.40", 3478), socket.SOCK_DGRAM),
+                     (("127.0.0.1", 19090), socket.SOCK_STREAM),
+                     (("127.0.0.1", 50443), socket.SOCK_STREAM)][:len(calls)]
+    assert len(calls) == (4 if occupied is None else 1 if occupied == "uncertain" else occupied + 1)
+    assert len(closed) == len(calls)
+
+
+@pytest.mark.parametrize("address", ["0.0.0.0", "127.0.0.1", "::1", "8.8.8.8", "192.168.1.040", "bad"])
+def test_invalid_dial_ip_never_binds(monkeypatch, address) -> None:
+    def forbidden(*args): raise AssertionError("must not inspect host sockets")
+    monkeypatch.setattr(home.socket, "socket", forbidden)
+    with pytest.raises(home.HeadscaleServiceError, match="^dial-ip$"):
+        home.preflight_ports(address)
+
+
+@pytest.mark.parametrize("ready", [True, False])
+def test_readiness_is_fixed_local_and_bounded(monkeypatch, ready) -> None:
+    clock, closed = [0.0], []
+    monkeypatch.setattr(home.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(home.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds))
+    class Connection:
+        def __init__(self, host, port, timeout):
+            assert (host, port) == ("127.0.0.1", 19090)
+            assert 0 < timeout <= 1.0
+        def request(self, method, path): assert (method, path) == ("GET", "/metrics")
+        def getresponse(self): return SimpleNamespace(status=200 if ready else 503)
+        def close(self): closed.append(True)
+    monkeypatch.setattr(home.http.client, "HTTPConnection", Connection)
+    if ready:
+        home.wait_ready()
+        assert clock[0] == 0.0 and len(closed) == 1
+    else:
+        with pytest.raises(home.HeadscaleServiceError, match="^readiness-timeout$"):
+            home.wait_ready()
+        assert 30.0 <= clock[0] < 30.1 and closed

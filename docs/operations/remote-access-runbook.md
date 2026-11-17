@@ -171,7 +171,12 @@ explicit operator recovery; it does not overwrite existing files automatically.
 Use `uninstall --layout deb` (and optionally the existing `--purge`) to remove
 units/state. Configs, provisioning record, staged token, package, logs and account are retained.
 The release install record and verifier socket/service are removed.
-A missing package is not required for uninstall; unit safety checks still apply.
+A missing package is not required for uninstall; unit safety checks still apply. The separately callable 3b-2f-1
+`prepare-headscale --layout deb` prefix has no cleanup implementation yet:
+its Headscale unit/custody/account/receipt remain on disable/uninstall. Full
+turn-off is an explicit remainder, governed by the account-ownership A–D rules
+in the [maintained contract](../agent-guides/contracts/remote-access-and-remote-jobs.md#inert-linux-headscale-custody-prefix-thr-327-slice-3b-2f-1);
+unowned accounts must be visibly preserved, and uncertainty must never be success.
 
 Managed Linux no longer takes a fixed `daemon_port`. The connector and sidecar
 exclusion lists remain sorted, equal and always include DEV 8765 plus operator

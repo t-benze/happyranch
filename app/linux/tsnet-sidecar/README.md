@@ -479,3 +479,38 @@ It stages/enables two agents without starting; installer start/stop/restart/stat
 operate both. See the maintained remote-access contract for paths, enrollment
 states and removal. App bundling/frozen entry and native acceptance remain pending. Swift's existing
 HomeConnector is untouched.
+
+### Inert Headscale custody prefix (3b-2f-1)
+
+The explicit root operator command `python -m runtime.remote_access.installer
+prepare-headscale --layout deb` prepares only the locked dedicated
+`happyranch-headscale` OS identity, fixed 0700 config/state/runtime directories,
+0600 TCP443 invite-to-node ACL and separate root-owned hardened system unit.
+It never enables, starts or reloads the unit, runs Headscale or writes server
+config/DERP/leaf material. The staged home connector activation guards and
+`home_transport=False` stay unchanged. Database names are `happyranch-node`
+and dedicated Mac-invite user `happyranch-invite`; actual user creation/minter
+injection remains future activation work.
+
+Account ownership is distinct from its shape. An exact-shape pre-existing
+account without the protected creation receipt is reusable but **unowned**;
+preparation visibly reports `preserved: not created by HappyRanch` and never
+modifies/adopts it. Only actual successful useradd plus looked-up UID/GID may
+publish root:root 0600 `headscale-account.json` under root:root 0700
+`/var/lib/happyranch-remote-access`. A crash before publication leaves the
+account unowned; there is no pre-creation intent. Shape mismatch, malformed or
+foreign/mismatched receipt, unsafe/foreign custody or differing unit refuses
+without repair or deletion.
+
+**Cleanup is an explicit remainder:** current disable/uninstall does not remove
+this prefix's objects. Future cleanup must preserve unowned accounts with that
+visible outcome. Owned deletion needs valid receipt plus fresh matching
+identity/shape, unshared group, stopped unit and no process as that UID; only
+then userdel and, if receipted and still unshared, groupdel. Remove the receipt
+only after successful deletion. Any mismatch or command failure must preserve
+account/receipt and report typed secret-free cleanup uncertainty, never success.
+Only installer-owned fixed custody may be deleted; foreign/unsafe entries stay.
+The inert payload and notices remain. No full turn-off acceptance is claimed.
+See the maintained remote-access contract's 3b-2f-1 subsection for A–D, exact
+paths/bytes, ports, bounded startup and tests. Real root/systemd/NSS/bind
+acceptance remains separate from temp-root verification.

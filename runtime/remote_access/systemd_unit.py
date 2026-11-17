@@ -269,3 +269,25 @@ def render_verifier_unit(python: tuple[str, ...]) -> str:
         'AmbientCapabilities=', 'TasksMax=16', 'MemoryMax=96M',
         'LimitNOFILE=128', 'TimeoutStopSec=5', '',
     ])
+
+
+def render_headscale_unit() -> str:
+    """Separate system-only inert unit; never changes connector/sidecar bytes.
+
+    v0.25.1 serve has no sd_notify. ExecStartPost supplies a bounded local
+    startup probe; no watchdog or notify claim is made for this binary.
+    """
+    lines = [
+        "[Unit]", "Description=HappyRanch home Headscale", "After=network.target",
+        *_START_LIMIT, "", "[Service]", "User=happyranch-headscale", "Group=happyranch-headscale",
+        "ExecStart=/opt/happyranch-desktop/libexec/headscale/headscale --config /etc/happyranch/headscale/config.yaml serve",
+        "ExecStartPost=/opt/happyranch-desktop/python/bin/python3 -I -m runtime.remote_access.headscale_service wait-ready",
+        *["Type=exec" if line == "Type=notify" else line for line in _hardening(system=True)],
+        "RestartSec=1", "TimeoutStartSec=40", "TimeoutStopSec=30", "KillMode=control-group",
+        "RuntimeDirectory=happyranch-headscale", "RuntimeDirectoryMode=0700",
+        "RuntimeDirectoryPreserve=yes", "StateDirectory=happyranch-headscale", "StateDirectoryMode=0700",
+        "ReadWritePaths=/var/lib/happyranch-headscale /run/happyranch-headscale",
+        "StandardOutput=null", "StandardError=null", "",
+    ]
+    # No Install section: neither preparation nor package install enables it.
+    return "\n".join(lines)

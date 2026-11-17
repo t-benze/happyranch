@@ -29,12 +29,14 @@ from pathlib import Path
 from typing import Callable, Iterator
 from urllib.parse import urlsplit
 
+from runtime.remote_access import headscale_service as headscale
 from runtime.remote_access.service_manager import ServiceManagerError, SystemdServiceManager
 from runtime.remote_access.systemd_unit import (
     VERIFIER_FILESYSTEM_HARDENING,
     ConnectorUnitSpec,
     SidecarUnitSpec,
     render_connector_unit,
+    render_headscale_unit,
     render_managed_target,
     render_sidecar_unit,
     render_verifier_socket,
@@ -180,6 +182,8 @@ class ManagedInstaller:
         self.units = managed_units(layout)
         self.layout = layout
         self._service_owner: tuple[int, int] | None = None
+        self._headscale_owner: tuple[int, int] | None = None
+        self._headscale_preparing = False
 
     def _inventory_files(
         self, relative: str, allowed: dict[str, tuple[tuple[int, int] | None, int | tuple[int, ...], bool | None]],
@@ -1128,6 +1132,186 @@ class ManagedInstaller:
             raise InstallerError("unsafe happyranch account: require non-root dedicated group, /nonexistent home and nologin shell")
         return user.pw_uid, user.pw_gid
 
+    def _headscale_shape(self) -> tuple[int, int] | None:
+        """Fresh identity/lock/group proof; matching metadata is not ownership."""
+        try:
+            user = self._lookup_user(headscale.ACCOUNT)
+        except KeyError:
+            return None
+        try:
+            group = self._lookup_group(headscale.ACCOUNT)
+        except KeyError:
+            raise headscale.HeadscaleServiceError("account-shape") from None
+        with self._directory("etc") as parent:
+            definitions = self._read_file(parent, "login.defs", owner=self.root_owner, mode=0o644).decode("ascii")
+        limits: dict[str, int] = {}
+        for line in definitions.splitlines():
+            fields = line.split("#", 1)[0].split()
+            if fields and fields[0] in {"UID_MIN", "GID_MIN", "SYS_UID_MIN", "SYS_UID_MAX", "SYS_GID_MIN", "SYS_GID_MAX"}:
+                if len(fields) != 2 or not fields[1].isascii() or not fields[1].isdigit() or fields[0] in limits:
+                    raise headscale.HeadscaleServiceError("account-shape")
+                limits[fields[0]] = int(fields[1])
+        uid_min, gid_min = limits.get("UID_MIN", 1000), limits.get("GID_MIN", 1000)
+        if (user.pw_name != headscale.ACCOUNT or group.gr_name != headscale.ACCOUNT
+                or not 0 < limits.get("SYS_UID_MIN", 101) <= user.pw_uid <= limits.get("SYS_UID_MAX", uid_min - 1) < uid_min
+                or not 0 < limits.get("SYS_GID_MIN", 101) <= user.pw_gid <= limits.get("SYS_GID_MAX", gid_min - 1) < gid_min
+                or group.gr_gid != user.pw_gid or set(group.gr_mem) - {headscale.ACCOUNT}
+                or user.pw_shell not in {"/usr/sbin/nologin", "/sbin/nologin", "/bin/false"}):
+            raise headscale.HeadscaleServiceError("account-shape")
+        # NSS inventories also detect shared primary groups and UID/GID aliases.
+        for database, field, identity in (("passwd", 2, user.pw_uid), ("passwd", 3, user.pw_gid),
+                                          ("group", 2, user.pw_gid)):
+            code, output = self._run(["getent", database], timeout=10.0)
+            if code or len(output) > 65536:
+                raise headscale.HeadscaleServiceError("account-shape")
+            matches = []
+            for line in output.splitlines():
+                fields = line.split(":")
+                if len(fields) != (7 if database == "passwd" else 4) or not fields[field].isdigit():
+                    raise headscale.HeadscaleServiceError("account-shape")
+                if int(fields[field]) == identity:
+                    matches.append(fields[0])
+            if matches != [headscale.ACCOUNT]:
+                raise headscale.HeadscaleServiceError("account-shape")
+        code, status = self._run(["passwd", "--status", headscale.ACCOUNT], timeout=10.0)
+        fields = status.split()
+        if code or len(fields) != 7 or fields[:2] != [headscale.ACCOUNT, "L"]:
+            raise headscale.HeadscaleServiceError("account-shape")
+        if not user.pw_dir.startswith("/") or ".." in Path(user.pw_dir).parts or user.pw_dir == "/":
+            raise headscale.HeadscaleServiceError("account-shape")
+        try:
+            # Every existing home component must be root-owned, no service write.
+            with self._directory(user.pw_dir[1:]):
+                pass
+        except FileNotFoundError:
+            if user.pw_dir != "/nonexistent":
+                raise headscale.HeadscaleServiceError("account-shape") from None
+        return user.pw_uid, user.pw_gid
+
+    def _headscale_receipt(self) -> dict | None:
+        try:
+            with self._directory(headscale.INSTALLER_STATE) as parent:
+                # Pending residue is never evidence of creation.
+                try:
+                    os.stat(f".{headscale.RECEIPT}.pending", dir_fd=parent, follow_symlinks=False)
+                except FileNotFoundError:
+                    pass
+                else:
+                    raise headscale.HeadscaleServiceError("account-receipt-uncertain")
+                data = self._read_file(parent, headscale.RECEIPT, owner=self.root_owner, mode=0o600)
+        except FileNotFoundError:
+            return None
+        value = self._json(data)
+        if (set(value) != {"version", "account", "uid", "gid", "group_created_with_user"}
+                or type(value["version"]) is not int or value["version"] != 1
+                or value["account"] != headscale.ACCOUNT
+                or type(value["uid"]) is not int or value["uid"] <= 0
+                or type(value["gid"]) is not int or value["gid"] <= 0
+                or value["group_created_with_user"] is not True):
+            raise headscale.HeadscaleServiceError("account-receipt-uncertain")
+        return value
+
+    def _headscale_inventory(self) -> None:
+        """Preparation admits empty custody or this exact inert policy only.
+
+        Config, database, key, socket, pending or unknown inventory refuses; this
+        prefix cannot establish ownership of an existing Headscale installation.
+        """
+        for path in (*headscale.CUSTODY, _UNIT_DIR):
+            try:
+                with self._directory(path) as parent:
+                    if path == _UNIT_DIR:
+                        try:
+                            data = self._read_unit(parent, headscale.UNIT)
+                        except FileNotFoundError:
+                            data = None
+                        if data is not None and data != render_headscale_unit().encode():
+                            raise headscale.HeadscaleServiceError("foreign-unit")
+                        for extra in (headscale.UNIT + ".d", "." + headscale.UNIT + ".pending"):
+                            try:
+                                os.stat(extra, dir_fd=parent, follow_symlinks=False)
+                            except FileNotFoundError:
+                                continue
+                            raise headscale.HeadscaleServiceError("foreign-unit")
+                    else:
+                        entries = os.listdir(parent)
+                        if entries and (path != headscale.CUSTODY[0] or entries != ["policy.hujson"]):
+                            raise headscale.HeadscaleServiceError("foreign-custody")
+                        if entries and self._read_file(parent, "policy.hujson", owner=self._headscale_owner,
+                                                       mode=0o600) != headscale.render_policy():
+                            raise headscale.HeadscaleServiceError("foreign-custody")
+            except FileNotFoundError:
+                pass
+
+    def prepare_headscale(self) -> dict[str, str]:
+        """Explicit inert root-step, separate from all connector activation.
+
+        Never runs Headscale or a service command. Cleanup is not implemented in
+        this prefix. Existing accounts are never modified or adopted.
+        """
+        if self.layout != "deb":
+            raise headscale.HeadscaleServiceError("deb-layout-required")
+        self._headscale_preparing = True
+        category = None
+        try:
+            self._headscale_owner = self._headscale_shape()
+            receipt = self._headscale_receipt()
+            if receipt and self._headscale_owner != (receipt["uid"], receipt["gid"]):
+                raise headscale.HeadscaleServiceError("account-receipt-uncertain")
+            self._headscale_inventory()
+            outcome = "owned" if receipt else "unowned"
+            if self._headscale_owner is None:
+                try:
+                    self._lookup_group(headscale.ACCOUNT)
+                except KeyError:
+                    pass
+                else:
+                    raise headscale.HeadscaleServiceError("account-shape")
+                with self._directory(headscale.INSTALLER_STATE, create=True):
+                    pass
+                # No pre-useradd intent. A crash before receipt publication leaves
+                # an unowned account, never later adoption/deletion authority.
+                code, _ = self._run([
+                    "useradd", "--system", "--user-group", "--no-create-home",
+                    "--home-dir", "/nonexistent", "--shell", "/usr/sbin/nologin", headscale.ACCOUNT,
+                ], timeout=30.0)
+                if code:
+                    raise headscale.HeadscaleServiceError("account-create-uncertain")
+                self._headscale_owner = self._headscale_shape()
+                if self._headscale_owner is None:
+                    raise headscale.HeadscaleServiceError("account-create-uncertain")
+                uid, gid = self._headscale_owner
+                record = dict(version=1, account=headscale.ACCOUNT, uid=uid, gid=gid, group_created_with_user=True)
+                self._write_provision_file(headscale.RECEIPT, json.dumps(record, sort_keys=True).encode(),
+                                           self.root_owner, 0o600, relative=headscale.INSTALLER_STATE)
+                outcome = "created"
+            for path in headscale.CUSTODY:
+                with self._directory(path, create=True):
+                    pass
+            for relative, name, data, owner, mode in (
+                (headscale.CUSTODY[0], "policy.hujson", headscale.render_policy(), self._headscale_owner, 0o600),
+                (_UNIT_DIR, headscale.UNIT, render_headscale_unit().encode(), self.root_owner, 0o644),
+            ):
+                with self._directory(relative, create=True) as parent:
+                    try:
+                        existing = self._read_file(parent, name, owner=owner, mode=mode)
+                    except FileNotFoundError:
+                        existing = None
+                    if existing is not None and existing != data:
+                        raise headscale.HeadscaleServiceError("foreign-custody")
+                if existing is None:
+                    self._write_provision_file(name, data, owner, mode, relative=relative)
+            return {"state": "inert", "account": outcome,
+                    "preservation": "preserved: not created by HappyRanch" if outcome == "unowned" else "receipt-recorded"}
+        except headscale.HeadscaleServiceError as error:
+            category = error.category
+        except (OSError, InstallerError, UnicodeError, ValueError, ServiceManagerError):
+            category = "custody-uncertain"
+        finally:
+            self._headscale_preparing = False
+        # Leave native handlers before raising; no raw output/error context.
+        raise headscale.HeadscaleServiceError(category)
+
     def _layout(self) -> dict[str, tuple[int, tuple[int, int] | None]]:
         paths = ("opt/happyranch", "opt/happyranch/bin") if self.layout == "source" else ()
         layout: dict[str, tuple[int, tuple[int, int] | None]] = {
@@ -1139,6 +1323,10 @@ class ManagedInstaller:
                 # cannot overlook existing service-owned paths.
                 mode = 0o700 if base == "var/lib" and name == "happyranch-tsnet-sidecar" else 0o755
                 layout[f"{base}/{name}"] = (mode, self._service_owner)
+        if self._headscale_preparing:
+            layout[headscale.INSTALLER_STATE] = (0o700, self.root_owner)
+            for path in headscale.CUSTODY:
+                layout[path] = (0o700, self._headscale_owner)
         return layout
 
     @contextmanager
@@ -1512,7 +1700,7 @@ class ManagedInstaller:
             raise InstallerError("provisioning destination or pending entry exists; inspect partial files before retrying")
 
     def _write_provision_file(self, name: str, data: bytes, owner: tuple[int, int], mode: int,
-                              *, expected_transaction: bytes | None = None) -> None:
+                              *, expected_transaction: bytes | None = None, relative: str = "etc/happyranch") -> None:
         # Fresh files never overwrite. Only the closed linear replacement
         # transitions can update a final entry, through the same atomic writer.
         metadata = {
@@ -1524,6 +1712,12 @@ class ManagedInstaller:
             "provision.json": (self.root_owner, 0o600),
             "install-transaction.json": (self.root_owner, 0o600),
         }
+        if relative != "etc/happyranch":
+            metadata = {
+                headscale.INSTALLER_STATE: {headscale.RECEIPT: (self.root_owner, 0o600)},
+                headscale.CUSTODY[0]: {"policy.hujson": (self._headscale_owner, 0o600)},
+                _UNIT_DIR: {headscale.UNIT: (self.root_owner, 0o644)},
+            }.get(relative, {}) if self._headscale_preparing and expected_transaction is None else {}
         if (name not in metadata or metadata[name] != (owner, mode)
                 or owner is None or not 0 < len(data) <= 65536):
             raise InstallerError("invalid provisioning publication")
@@ -1557,7 +1751,7 @@ class ManagedInstaller:
                 self._validate_install_record(name, data)
         elif name in ("provision.json", "install-transaction.json"):
             self._validate_install_record(name, data)
-        with self._publication_parent() as (parent, revalidate):
+        with self._publication_parent(relative) as (parent, revalidate):
             if replacement:
                 if self._inventory(prepared_transaction=expected_transaction).state == "manual-install-conflict":
                     raise InstallerError("replacement inventory changed before intent publication")
@@ -2196,7 +2390,7 @@ def main(argv: list[str] | None = None) -> int:
 
         return darwin_main(argv)
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("provision", "install", "uninstall", "check-drift"))
+    parser.add_argument("command", choices=("provision", "install", "uninstall", "check-drift", "prepare-headscale"))
     parser.add_argument("--layout", choices=("source", "deb"), default="source")
     for option in ("connector-config", "sidecar-config", "policy-file", "daemon-token-source"):
         parser.add_argument(f"--{option}", type=Path, help="absolute input path (provision only)")
@@ -2217,7 +2411,11 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("provisioning inputs are only valid with provision")
     try:
         installer = ManagedInstaller(layout=args.layout)
-        if args.command == "provision":
+        if args.command == "prepare-headscale":
+            if args.layout != "deb":
+                raise headscale.HeadscaleServiceError("deb-layout-required")
+            print(json.dumps(installer.prepare_headscale(), sort_keys=True))
+        elif args.command == "provision":
             installer.provision(**inputs)
         elif args.command == "install":
             installer.install(enrollment_key_file=args.enrollment_key_file)
@@ -2225,7 +2423,7 @@ def main(argv: list[str] | None = None) -> int:
             installer.uninstall(purge=args.purge)
         else:
             installer.check_drift()
-    except InstallerError as exc:
+    except (InstallerError, headscale.HeadscaleServiceError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     return 0

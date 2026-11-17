@@ -1356,6 +1356,57 @@ CA PEM through the existing Linux `homeTrustPolicy.admit` temporary-root pattern
 installed root custody, real Headscale TLS and native Mac acceptance remain
 separate, unexecuted obligations of the wiring/native tracks.
 
+### Inert Linux Headscale custody prefix (THR-327 slice 3b-2f-1)
+
+The root operator entry `python -m runtime.remote_access.installer
+prepare-headscale --layout deb` calls `ManagedInstaller.prepare_headscale`.
+It only prepares fixed local custody and an inert unit. It never runs Headscale,
+creates database users, enables/starts/reloads a unit, or changes the staged
+connector bundle. Both exact `home control binding not provisioned; requires
+slice 3b-2` activation refusals and `SidecarUnitSpec.home_transport=False` remain.
+This is the brief-authorized **prefix delivery**: cleanup/account deletion is
+NOT implemented here, and existing disable/uninstall does not remove these
+new objects. Full 3b-2f-1 acceptance and turn-off remain open until that remainder.
+
+| Surface | Fixed contract |
+| --- | --- |
+| OS identity | `happyranch-headscale:happyranch-headscale`, separate from hr/happyranch. Validate system UID/GID against protected `/etc/login.defs` (`SYS_UID_MIN/MAX`, `SYS_GID_MIN/MAX`; shadow defaults 101 through regular minimum minus one). Require dedicated primary group, no other supplementary members or primary users, no UID/GID aliases, locked `passwd --status` (`L`), nologin/false shell, `/nonexistent` or literal root-owned home that the service cannot write. Malformed/unavailable observations refuse. No existing account/group/home is repaired. |
+| Creation | Existing root-step command runner invokes `useradd --system --user-group --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin happyranch-headscale` only after fixed custody/receipt/unit preflight and proving the group is absent. A successful command must be followed by actual looked-up validated identity; only then publish the creation receipt. |
+| Creation receipt | `/var/lib/happyranch-remote-access/headscale-account.json`, root:root 0600 in root:root 0700 parent; exact object `{version:1, account:"happyranch-headscale", uid:integer, gid:integer, group_created_with_user:true}` (JSON keys quoted on disk). Uses the existing pinned no-follow publication parent, exclusive 0600 pending inode, file/directory fsync and atomic no-replace rename. No pre-useradd intent/adoption. A crash after useradd and before successful receipt publication leaves an **unowned** account. Pending/malformed/foreign/mismatched receipts refuse and are preserved. |
+| Existing account (ruling A) | Exact expected shape without a valid creation receipt may be reused, but is UNOWNED and never modified or deleted. Preparation visibly returns `account=unowned` and `preservation="preserved: not created by HappyRanch"`; this is a typed visible preservation outcome, not cleanup success or failure. Shape mismatch refuses. |
+| Custody | `/etc/happyranch/headscale`, `/var/lib/happyranch-headscale`, `/run/happyranch-headscale`: service UID:GID 0700; policy service UID:GID 0600. Existing directories are validated, never chmod/chown repaired. Empty custody or the exact canonical inert policy is reusable; config/DB/key/socket/pending/unknown entries refuse and are preserved, so preparation cannot adopt a running/unrelated Headscale installation. No payload/notices are changed. |
+| Policy/user layout | Fixed `/etc/happyranch/headscale/policy.hujson`, canonical JSON (valid HuJSON) with exactly one `acls` entry: `action=accept`, `proto=tcp`, `src=["happyranch-invite"]`, `dst=["happyranch-node:443"]`. All else denied by absence of a rule. No wildcard/autogroup/tag/SSH grant or invite-to-invite rule. Future node enrollment creates only the Linux-node user `happyranch-node`; future Mac minter receives dedicated user NAME `happyranch-invite`. These database users are not OS users, and are not created by this inert prefix. Port 443 is the spec's connector tailnet port, distinct from LAN control 8443. |
+| Unit | Separate exact-byte `render_headscale_unit`, `/etc/systemd/system/happyranch-headscale.service` root:root 0644. Fixed libexec binary and `/etc/happyranch/headscale/config.yaml`, service User/Group, empty capabilities and applicable existing system hardening. Only fixed state/runtime write paths, 0700 systemd directories, UMask 0077, restart limits, control-group kill and bounded start/stop. No Install section. No enable/start/reload during preparation. Exact old connector/sidecar unit bytes are unchanged. |
+| Bounded startup | Tagged v0.25.1 `serve` does not emit sd_notify. The rendered unit uses Type=exec and isolated bundled Python `headscale_service wait-ready` as ExecStartPost: fixed loopback `127.0.0.1:19090` `/metrics`, one-second socket timeouts, 30-second retry deadline inside TimeoutStartSec=40. Tagged Serve opens metrics after HTTPS. This is startup evidence only, not tailnet/connector readiness; the probe is not invoked here. Output is suppressed in the service unit. |
+| Port preflight | `headscale_service.preflight_ports(dial_ip)` validates the same canonical RFC1918 IPv4 contract as the renderer, then samples exclusive AF_INET binds at dial_ip TCP8443/UDP3478 and 127.0.0.1 TCP19090/TCP50443. No reuse option, all probes closed. `occupied-port` on EADDRINUSE; other failures `port-check-uncertain`; invalid input `dial-ip`, no raw exceptions. No selection/wiring or real bind is performed by preparation. A check is an observation, not a reservation against a later binder. |
+| Preparation output/refusals | Secret-free JSON with `state=inert`, `account=created/owned/unowned`, and `preservation=receipt-recorded` or the visible unowned statement. Closed refusal categories: `deb-layout-required`, `account-shape`, `account-create-uncertain`, `account-receipt-uncertain`, `foreign-unit`, `foreign-custody`, `custody-uncertain`. Native command text/output and underlying exception contexts are discarded. Partial objects are preserved for operator inspection; no automatic repair/deletion. |
+
+**Manager account/custody ruling A–D (cleanup remainder, not yet implemented):**
+A is the unowned preservation rule above. B is post-useradd-only receipt publication
+with actual name/UID/GID/group-created binding; interrupted publication fails toward
+non-deletion. C requires a valid receipt **and fresh cleanup-time** matching
+name/UID/GID, full shape, unshared group, stopped Headscale unit and no process
+running under that UID before userdel. Groupdel is allowed only for a group the
+receipt says was created with the user, still present and unshared. Remove the
+receipt only after successful deletion. Any mismatch, malformed/foreign receipt
+or command failure preserves account and receipt and returns typed secret-free
+cleanup uncertainty, never success. D permits deletion only of installer-owned
+contents at the fixed Headscale paths; foreign/unsafe entries refuse and remain.
+The remainder must stop/disable and remove only the owned unit/config/DB/Noise/DERP/
+runtime state, preserve the inert package/notices, extend disable/uninstall, and
+add created→receipt→delete plus fresh process/unit/group and uncertainty tests.
+No cleanup PASS is claimed by preparation's visible preservation result.
+
+Tagged grammar: [v0.25.1 ACL fields](https://github.com/juanfont/headscale/blob/v0.25.1/hscontrol/policy/acls_types.go),
+[named-user expansion and protocol/port rules](https://github.com/juanfont/headscale/blob/v0.25.1/hscontrol/policy/acls.go).
+Startup basis: [tagged serve command](https://github.com/juanfont/headscale/blob/v0.25.1/cmd/headscale/cli/serve.go)
+and [listener order](https://github.com/juanfont/headscale/blob/v0.25.1/hscontrol/app.go).
+System ranges: [Ubuntu useradd](https://manpages.ubuntu.com/manpages/resolute/en/man8/useradd.8.html).
+Standalone temp-root/fake-command checks: `uv run --frozen --python /usr/bin/python3
+pytest scripts/test_headscale_custody.py -v --tb=short`. They exercise preparation,
+not root acceptance, real NSS/user creation, real systemd or live binds. No
+configuration/DERP/leaf/CA handoff/admin minter or activation is wired here.
+
 ### Inert Linux home CA materializer (THR-327 slice 3b-2e)
 
 The root-run Go command reuses `homeca`; it adds no new cryptographic profile,
@@ -1379,7 +1430,7 @@ custody environment override. The installed binary is outside PATH and
 | Admission and bounds | Literal descriptor-relative `O_NOFOLLOW` directory/leaf opens; leaves also use nonblocking opens before type checks. Inventory reads at most five names to refuse more than the four fixed leaves. Files use same-FD bounded reads and metadata rechecks. Unknown entries refuse and are preserved. A nonblocking directory flock serializes cooperating commands without adding a lock file; this is not a fence against a separate root writer. |
 | Publication / recovery | Generate and validate before publication. Each member uses its exclusive same-directory `.<name>.pending`, exact 0600 owner/mode, file fsync, descriptor-relative rename, directory fsync. Publish the key durably **before** the certificate, for both CA creation and leaf rotation. A crash can leave a key-only pair (`incomplete-state`), pending residue (`unexpected-entry`), or old certificate/new key (`invalid-key` for write verbs); each refuses without further writes or automatic recovery/deletion. A complete CA without a leaf pair may safely issue its first leaf. No newly published CA certificate becomes usable without its already-durable matching key. |
 | Test isolation | Only same-package `_test.go` calls supply a temporary root, current test UID/GID and clock/euid observations to the unexported command logic. The shipped entry supplies literal `/`, root:root, actual euid and current time; there is no production flag/environment redirection. Temp-root checks prove owner/mode as observable by the unprivileged test process, not installed root acceptance. |
-| 3b-2f handoff | The next slice owns validated copying of **only** the staged leaf cert/key into `/etc/happyranch/headscale` for locked `happyranch-headscale` service custody, plus protected CA-only `/etc/happyranch/control-ca.pem` publication. It must coordinate safe leaf handoff/reload and interrupted staging with authenticated lifecycle operations. CA signing key stays root-only in `home-ca/`; this command performs no Headscale copy, configuration, user/unit creation, start, reload or cleanup. 3b-2g owns later helper invocation. |
+| 3b-2f handoff | 3b-2f-1 now supplies explicit inert account/receipt/custody preparation, restrictive ACL and separate unit rendering (see above); it does not implement cleanup. 3b-2f-2 still owns validated copying of **only** the staged leaf cert/key into `/etc/happyranch/headscale` for locked `happyranch-headscale` service custody, plus protected CA-only `/etc/happyranch/control-ca.pem` publication. It must coordinate safe leaf handoff/reload and interrupted staging with authenticated lifecycle operations. CA signing key stays root-only in `home-ca/`; this command performs no Headscale copy, configuration, user/unit creation, start, reload or cleanup. 3b-2g owns later helper invocation. |
 
 ### Pure home Headscale renderers and LAN selector (THR-327 slice 3b-2a)
 
