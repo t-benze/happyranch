@@ -3,8 +3,8 @@ import { IdentityName } from '@/shared/identities/IdentityName';
  * EscalationInboxRow — inline continue-and-resolve expander for the
  * "Waiting on you" panel.
  *
- * Click to expand → rationale textarea autofocuses → ⌘↵ submits or Esc
- * collapses. Sends { decision: 'continue', rationale } to the existing
+ * Click to expand → rationale textarea autofocuses → the submit button
+ * sends it or Esc collapses. Sends { decision: 'continue', rationale } to the existing
  * /tasks/{id}/resolve-escalation route. Cancel-with-rationale lives on
  * the Tasks page's ResolveEscalationDialog; the dashboard is continue-only
  * because that's the common founder action.
@@ -90,10 +90,6 @@ export function EscalationInboxRow({
   function onKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
     if (e.key === 'Escape') {
       onCollapse();
-      e.preventDefault();
-    }
-    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
-      void submit();
       e.preventDefault();
     }
   }

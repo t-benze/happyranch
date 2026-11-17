@@ -127,12 +127,7 @@ export function SystemPromptEditor({ slug, agentName, agent, loading, failed, em
     : !visible ? (empty ? 'agents.prompt.empty' : 'agents.prompt.disappeared')
     : !validRevision(visible.revision) ? 'agents.prompt.unavailable' : null;
 
-  return <section className="bg-surface border-border-default shadow-pasture-sm min-w-0 rounded-lg border"
-    onKeyDown={(event) => {
-      if (base && (event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 's') {
-        event.preventDefault(); event.stopPropagation(); void submit();
-      }
-    }}>
+  return <section className="bg-surface border-border-default shadow-pasture-sm min-w-0 rounded-lg border">
     <div className="flex items-center justify-between gap-2 px-4 py-3">
       <button type="button" aria-expanded={expanded} disabled={editing} onClick={() => setExpanded(!expanded)}
         className="text-text-secondary flex items-center gap-2 text-xs font-medium">

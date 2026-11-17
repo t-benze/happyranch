@@ -21,7 +21,6 @@ import { SequentialWorkflowsPage } from '@/features/workflows/SequentialWorkflow
 import { JobsPage } from '@/features/jobs/JobsPage';
 import { JobDetailPage } from '@/features/jobs/JobDetailPage';
 import { CommandPaletteHost } from '@/host/CommandPaletteHost';
-import { HelpDrawerHost } from '@/host/HelpDrawerHost';
 import { AuditPage } from '@/features/audit/AuditPage';
 import { SkillsPage } from '@/features/skills/SkillsPage';
 import { SkillValidationPage } from '@/features/skills/SkillValidationPage';
@@ -106,7 +105,6 @@ function AppShell(): JSX.Element {
         </main>
       </div>
       <CommandPaletteHost />
-      <HelpDrawerHost />
     </div>
   );
 }

@@ -51,8 +51,6 @@ export interface MentionTextareaProps {
   ariaLabel?: string;
   /** Localized label for the @-mention suggestion list (English default). */
   mentionListLabel?: string;
-  /** Lets a parent focus the textarea (e.g. the R keyboard shortcut). */
-  registerFocus?: (focus: () => void) => void;
   className?: string;
 }
 
@@ -68,7 +66,6 @@ export function MentionTextarea({
   id,
   ariaLabel,
   mentionListLabel,
-  registerFocus,
   className,
 }: MentionTextareaProps): JSX.Element {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -86,10 +83,6 @@ export function MentionTextarea({
   }, [mention, agents]);
 
   const popupOpen = mentionMatches.length > 0;
-
-  useEffect(() => {
-    registerFocus?.(() => textareaRef.current?.focus());
-  }, [registerFocus]);
 
   const refreshMention = useCallback(() => {
     const el = textareaRef.current;

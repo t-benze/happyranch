@@ -1751,10 +1751,10 @@ committed Sidebar/AppBar DOM plus `<html lang>` and the real navigator
 read-back, retains a causal negative control (`I18N_W2A_EVIDENCE=negative`:
 wrong first shell, later corrected, must be rejected by the same predicate), and
 covers both locales across the observed 1440x900/390x844 light/dark
-combinations for root loading/no-org/NotFound/help (S11/S16)/AddOrg
+combinations for root loading/no-org/NotFound/AddOrg
 (S12/S17)/error/dormant-palette. In both switch directions it records the actual
 `document.activeElement`, retained DOM node identity, open state and
-selection/value for the help non-default tab (S16), the AddOrg typed slug +
+selection/value for the AddOrg typed slug +
 mapped error (S12 wide-light; S17 zh-narrow-light/en-narrow-dark/zh-wide-dark)
 and the palette query + non-default selected row (S13 wide-light; S18
 zh-narrow-light/en-narrow-dark/zh-wide-dark), and asserts each switch window
@@ -1764,7 +1764,8 @@ palette's localized X close control (S19) with native Enter/Space/Escape in both
 locales with populated and empty results (closes once, zero selection, unchanged
 pathname) while the search-input and non-default-row Enter still select once, and
 adds CJK-font and viewport-containment checks. Positive receipt: 375/375
-assertions, 30 PNGs. W2b onboarding evidence runs via
+assertions, 30 PNGs (recorded before THR-372 removed the help-drawer
+S6/S11/S16 cases and the S13/S18 dormant-⌘K assertions). W2b onboarding evidence runs via
 `web/scripts/w2b-onboarding-browser-evidence.mjs` against the ORDINARY
 `web/dist` bundle and a synthetic `/api/v1` stub, driving the real `/onboarding`
 route with NO evidence-only bundle instrumentation: locale switches go through
@@ -2873,7 +2874,7 @@ happyranch set-model --org <org> dev_agent --clear-reasoning-effort
 
 The CLI with no model/effort options still clears model. The UI presents a plain text input; blank on explicit Save uses Default; a custom adapter without an input-v2 effort declaration is disabled with an English/zh-CN explanation. Unsupported levels and conflicts show localized errors and retain the draft; Save uses actual persistence and refetch. OpenCode requires a pinned `provider/model`, while existing `#variant` or Pi thinking suffixes are preserved when effort is unset and must agree when explicit. [Static mappings and custom opt-in](../superpowers/specs/2026-10-11-agent-reasoning-effort.md) describe transport only; account/model support and native OpenCode transport remain separate limits.
 
-Model/effort drafts require the actual selected agent and successfully loaded executor metadata; loading, failed reads and empty lists remain distinct from a ready custom adapter without effort support. Saved values and failed drafts stay visible. Both the Save button and keyboard shortcut enforce readiness and prevent duplicate in-flight saves. A display placeholder never binds a request. Ready legacy/model-only adapters still allow model edits; repository-only edits do not depend on effort support. Refetch does not rebind an authored pair to a new executor: its original expected_executor still reaches the server stale409 check. Explicit executor selection resets the dependent draft, then executor and pair saves remain two separate writes.
+Model/effort drafts require the actual selected agent and successfully loaded executor metadata; loading, failed reads and empty lists remain distinct from a ready custom adapter without effort support. Saved values and failed drafts stay visible. The Save button enforces readiness and prevents duplicate in-flight saves. A display placeholder never binds a request. Ready legacy/model-only adapters still allow model edits; repository-only edits do not depend on effort support. Refetch does not rebind an authored pair to a new executor: its original expected_executor still reaches the server stale409 check. Explicit executor selection resets the dependent draft, then executor and pair saves remain two separate writes.
 
 The backend route is `PUT /api/v1/orgs/{slug}/agents/{agent_name}/model` with payload
 `{"model": "<id>" | null, "reasoning_effort": "<level>" | null, "expected_executor": "<profile>"}`. Each selection member is optional: omission preserves it and null clears it. Invalid types/values or unsupported/conflicting effort return422 before canonical replacement. The UI binds each draft to its selected CLI; a saved CLI mismatch returns409 `reasoning_executor_changed`. It atomically updates the selection in org/agents/<name>.md frontmatter (THR-095).

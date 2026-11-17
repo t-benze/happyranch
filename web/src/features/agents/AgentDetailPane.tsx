@@ -366,19 +366,6 @@ export function AgentDetailPane({ agentName, onClose, onStartThread, onRetired }
     setSaveError(null);
   }, []);
 
-  // ⌘S keyboard shortcut
-  useEffect(() => {
-    if (!isDirty) return;
-    const handler = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key === 's') {
-        e.preventDefault();
-        void onSave();
-      }
-    };
-    window.addEventListener('keydown', handler);
-    return () => window.removeEventListener('keydown', handler);
-  }, [isDirty, onSave]);
-
 
   return (
     <section className="flex h-full flex-col">
@@ -813,9 +800,7 @@ export function AgentDetailPane({ agentName, onClose, onStartThread, onRetired }
             )}
             {!saveError && (
               <p className="text-text-muted text-xs">
-                {render('agents.detail.unsaved', {
-                  shortcut: <kbd className="bg-surface border-border-default rounded border px-1.5 py-px font-mono text-xs">⌘S</kbd>,
-                })}
+                {t('agents.detail.unsaved')}
               </p>
             )}
           </div>

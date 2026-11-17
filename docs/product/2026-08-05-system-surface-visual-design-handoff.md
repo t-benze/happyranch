@@ -147,6 +147,8 @@ projections, Dreams counts, and Work Hours effective configuration.
 
 ## Design-token and component mapping
 
+> Superseded: keyboard shortcuts removed (THR-372).
+
 The delivery must compose the existing design system rather than recreate it. This
 table is an explicit review contract; a proposed new primitive/pattern belongs in a
 separate design-system review with reuse evidence.
