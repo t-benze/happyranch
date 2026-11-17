@@ -312,7 +312,7 @@ round-trip fixtures are the shared contract.
 | --- | --- |
 | 1 | Exactly one `hrinvite2:` prefix plus canonical **unpadded** RFC4648 base64url (`A-Z a-z 0-9 - _`). Refuse `=`, whitespace, `+`, `/` and noncanonical trailing bits. The same encoding applies to inner `ca_der`, `invite_id` and `pair_secret`. |
 | 2 | UTF-8 strict JSON object with exactly the 13 top-level keys listed above; field order is irrelevant. Refuse duplicate, extra or missing keys and trailing data. `v` is integer `2`; identity, endpoint and secret values are strings; times are integers. No floats, booleans or null. |
-| 3 | `mode="home"`; `control_tls` has exactly `{"kind":"local_ca","ca_der":…,"sha256":…,"dial_ip":…}`. `{"kind":"system"}` is reserved and always refused by the shipped home-only parsers; a future fixed-server mode needs separate security review. No extra members. |
+| 3 | `mode="home"`; `control_tls` has exactly `{"kind":"local_ca","ca_der":…,"sha256":…,"dial_ip":…}`. `{"kind":"system"}` is reserved and always refused in home mode / while R3 is disabled. No extra members. |
 | 4 | `dial_ip` is canonical dotted-decimal RFC1918 IPv4: no leading zeros, port, IPv6, mapped addresses, CGNAT or loopback. |
 | 5 | `sha256` is 64 lowercase hex characters: SHA-256 of the exact decoded CA DER, without prefix or separators. Exactly one CA DER with CA:TRUE. |
 | 6 | `home_id`, `control_plane_id` and `connector_id` are 1..128 ASCII `[A-Za-z0-9_-]`. |
@@ -323,6 +323,11 @@ round-trip fixtures are the shared contract.
 | 11 | `home_endpoint` is canonical ASCII tailnet `host:443`, without scheme, userinfo, path, query, fragment or percent-escape. |
 | 12 | Total size is ≤4096 decoded JSON / ≤5500 encoded bytes including the prefix. There is no separate DER allowance. Never truncate. |
 | 13 | `control_url` is exactly `https://control.happyranch.invalid:8443`, with an optional single trailing `/`. |
+
+Row 3's R3 reference is historical: R3/own-server is superseded and removed.
+`{"kind":"system"}` stays refused by the shipped home-only parsers. Any future
+fixed-server trust mode needs separate security review; this gate remains **OPEN,
+not decided**, consistent with G1–G3 below.
 
 Known limitation: metadata-only recovery cannot observe invalidation of an
 unredeemed old invite. This is recorded, not solved by the pinned representations.
