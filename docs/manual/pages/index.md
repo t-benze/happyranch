@@ -59,3 +59,8 @@ instructions while that flow is still changing, and wired screenshots
 
 ### 3. First Task Workflow
 - [Your first task, end to end](03-first-task-workflow/01-your-first-task-end-to-end.md)
+
+### 4. Reference
+- [Reference index](04-reference/00-reference-index.md)
+- [Commands](04-reference/01-commands.md)
+- [Configuration](04-reference/02-configuration.md)
