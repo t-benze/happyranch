@@ -322,10 +322,11 @@ coverage. `python scripts/validate_source_boundaries.py` is bounded standalone
 synthetic CLI validation outside `tests/`, with fail-on-execution source sentinels;
 it is neither product testing nor E2E coverage.
 
-`scripts/local_ci.sh boundary-lint` runs the baseline, shipped remote-access policy
-consistency lint, and synthetic validation;
+`scripts/local_ci.sh boundary-lint` runs `scripts/check_source_boundaries.py`,
+`scripts/check_remote_access_policy.py`, `scripts/check_private_operator_endpoints.py`,
+`scripts/validate_source_boundaries.py`, and `scripts/validate_private_operator_endpoints.py`;
 `all` includes that lane before Web. Unconditional `Source Boundary Lint` in
-`.github/workflows/ci.yml` runs all three commands on every PR and push to main using
+`.github/workflows/ci.yml` runs all five commands on every PR and push to main using
 Python 3.14, without installing project dependencies. See [Local CI](../local-ci.md).
 
 ## Test placement

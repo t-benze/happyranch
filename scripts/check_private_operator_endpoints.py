@@ -18,7 +18,9 @@ FORBIDDEN_SHA256 = frozenset({
     "91dce6f465ec383f565387ff81104495a38139ed24825d248b38df7184c370a7",
     "c07d3a8d201f7c609bacc3438f2b6e387f4b4eefa3eec0ba57e97bdbad6aed6c",
 })
-TOKEN = re.compile(rb"[a-z0-9]+(?:[.-][a-z0-9]+)+", re.IGNORECASE)
+# Consume separator-free runs too, so a missing separator never makes the
+# unanchored search rescan the same alphanumeric suffix from every position.
+TOKEN = re.compile(rb"[a-z0-9]+(?:[.-][a-z0-9]+)*", re.IGNORECASE)
 IPV4 = re.compile(
     rb"(?<![0-9])(?:[0-9]{1,3}\.){3}[0-9]{1,3}(?![0-9])"
     rb"|(?<![0-9])(?:[0-9]{1,3}-){3}[0-9]{1,3}(?![0-9])"

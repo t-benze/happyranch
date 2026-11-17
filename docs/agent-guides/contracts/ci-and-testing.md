@@ -184,9 +184,12 @@ function/async-function/lambda nodes are skipped. No allowlist/opt-out, relative
 dynamic import resolution, alias dataflow, callable metadata inspection or
 runtime isolation proof. Invalid/missing/empty roots and filesystem/decode/parse
 failures return 2; violations return 1 with file:line/target and guidance; clean
-scans return 0. No product imports occur. `boundary-lint` and `all` run baseline,
-shipped remote-access policy consistency lint (`scripts/check_remote_access_policy.py`),
-and bounded synthetic CLI validation; unconditional PR/push-main hosted
+scans return 0. No product imports occur. `boundary-lint` and `all` run
+`scripts/check_source_boundaries.py`, shipped remote-access policy consistency lint
+(`scripts/check_remote_access_policy.py`), private operator endpoint lint
+(`scripts/check_private_operator_endpoints.py`), and bounded synthetic CLI validation
+(`scripts/validate_source_boundaries.py` and `scripts/validate_private_operator_endpoints.py`);
+unconditional PR/push-main hosted
 `Source Boundary Lint` uses Python 3.14 without project dependency installation.
 See the project-layout boundary section and [Local CI](../../local-ci.md).
 

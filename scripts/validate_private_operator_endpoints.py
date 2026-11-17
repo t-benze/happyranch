@@ -23,8 +23,15 @@ def run(command: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
     return subprocess.run(command, cwd=cwd, text=True, capture_output=True, timeout=30)
 
 
-def expect(label: str, command: list[str], root: Path, code: int, diagnostics: str = "") -> None:
-    result = run(command, root)
+def expect(label: str, command: list[str], root: Path, code: int, diagnostics: str = "",
+           *, timeout: int = 30) -> None:
+    try:
+        result = subprocess.run(command, cwd=root, text=True, capture_output=True,
+                                timeout=timeout)
+    except subprocess.TimeoutExpired:
+        # subprocess.run kills and reaps the child; never expose its output.
+        FAILURES.append(f"{label}: checker exceeded {timeout}s child timeout")
+        return
     if result.returncode != code or result.stderr != diagnostics:
         # Deliberately omit child output: a broken checker could echo a token.
         FAILURES.append(f"{label}: expected exit {code} and redacted diagnostics; "
@@ -103,6 +110,19 @@ def main() -> int:
         probe.write_text("clean\n" + SYNTHETIC[3] + "\n", encoding="utf-8")
         expect("tracked working-tree edits are checked", command, root, 1,
                "probe.md:2: private operator endpoint\n")
+
+        # Legal-size minified/encoded text must not trap candidate scanning.
+        # These child limits are well below the checker's 30-second deadline.
+        probe.write_bytes(b"x" * 100_000 + b"\n")
+        expect("long separator-free tracked line completes", command, root, 0, timeout=5)
+        probe.write_bytes(b"x" * 100_000 + b" " + SYNTHETIC[3].upper().encode() + b"\n")
+        expect("synthetic leak after long run is detected", command, root, 1,
+               "probe.md:1: private operator endpoint\n", timeout=5)
+        probe.write_bytes(b"x" * 100_000 + b" " + b"x" * 50_000
+                          + SYNTHETIC[1].encode() + b"x" * 50_000 + b"\n")
+        expect("synthetic IPv4 inside long run is detected", command, root, 1,
+               "probe.md:1: private operator endpoint\n", timeout=5)
+
         probe.unlink()
         expect("missing tracked content refuses incomplete scan", command, root, 2,
                "Private operator endpoint lint: scan incomplete\n")
