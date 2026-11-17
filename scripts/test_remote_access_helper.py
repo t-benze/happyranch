@@ -683,6 +683,66 @@ def mutate_real(client: Any, method: str, *, before: Any = lambda: None) -> Any:
     return target
 
 
+@pytest.mark.parametrize('method', ['ApprovePending', 'RejectPending', 'RevokeSelected'])
+@pytest.mark.parametrize('legacy', [False, True])
+def test_bound_os_labels_at_capacity(monkeypatch: Any, method: str, legacy: bool) -> None:
+    import hashlib
+    from datetime import datetime, timedelta, timezone
+    from scripts.test_identity_ingress import exchange, frame_v2
+    from scripts.test_managed_admission import request, result
+    with bound_control(monkeypatch) as (client, supervisor, path):
+        manager = supervisor._pinned_pairing_manager
+        name = '\U0001f60a' * 96  # Each accepted character costs 12 JSON-escaped bytes.
+        legacy_node = 'legacy-' + name if legacy else ''
+        for count in range(1, 33):
+            node, secret = f'node-{count}', f'synthetic-capacity-{count}'
+            if legacy and count == 1:
+                node = legacy_node
+            recorded_name = '' if node == legacy_node else name
+            now = datetime.now(timezone.utc)
+            manager.issue_invite_record(hashlib.sha256(secret.encode()).hexdigest(),
+                                        now + timedelta(minutes=4))
+            status, reply = result(exchange(str(path), frame_v2(node.encode(), recorded_name.encode()) + request(
+                '/pair/invite', body=secret.encode())))
+            assert status == 200
+            if count < 32:
+                # Populate through the real core so a projection failure cannot
+                # prevent reaching the capacity boundary under test.
+                pending = supervisor.state_store.load().pending_approval
+                assert manager.approve_pending(pending.generation, ('protected-control', node))
+                assert manager.complete(reply['completion_handle'], node, 'protected-control', now)
+        before = supervisor.state_store.load()
+        assert len(before.devices) == 31 and before.pending_approval.device_label == name
+        assert all(device.device_label == ('' if device.stable_node_id == legacy_node else name)
+                   for device in before.devices.values())
+        snapshot = client.status()
+        assert snapshot.ready and len(snapshot.devices) == 31 and snapshot.pending is not None
+        for record in (*snapshot.devices, snapshot.pending):
+            if record.stable_id == legacy_node:
+                assert record.label == legacy_node[:96], 'legacy fallback must keep its exact byte cost'
+            else:
+                assert record.label and name.startswith(record.label)
+            assert record.public()['fingerprint'] == hashlib.sha256(record.stable_id.encode()).hexdigest()[:24]
+        assert snapshot == client.status(), 'projection must be stable across snapshot comparisons'
+        target = mutate_real(client, method)
+        after = supervisor.state_store.load()
+        if method == 'ApprovePending':
+            assert after.pending_approval is None and len(after.devices) == 32
+            assert manager.complete(reply['completion_handle'], node, 'protected-control', now)
+            assert len(client.status().devices) == 32
+        elif method == 'RejectPending':
+            assert after.pending_approval is None and after.delivery is None
+            assert after.devices == before.devices and len(client.status().devices) == 31
+        else:
+            assert after.pending_approval == before.pending_approval
+            assert after.devices[target.record_id].revoked
+            assert all(device == before.devices[key] for key, device in after.devices.items()
+                       if key != target.record_id)
+            assert len(client.status().devices) == 30
+        assert all(device.device_label == ('' if device.stable_node_id == legacy_node else name)
+                   for device in after.devices.values())
+
+
 @pytest.mark.parametrize('operation', ['ApprovePending', 'RejectPending'])
 def test_bound_pending_translation_and_delivery(monkeypatch: Any, operation: str) -> None:
     from datetime import datetime, timezone

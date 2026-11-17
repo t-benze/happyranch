@@ -221,6 +221,12 @@ pinning, matching, revocation or stream registration; fingerprint and phrase
 remain the comparison authority. Real Headscale hostname behavior remains an
 acceptance check, not a claim from synthetic tests.
 
+The helper projection further bounds recorded names by their JSON-escaped byte
+cost so the complete snapshot plus duplicate mutation target fits the unchanged
+32768-byte helper frame at capacity. This projection may shorten a recorded
+96-character name; persistence and the exact legacy fallback stay unchanged.
+The per-snapshot budget arithmetic is maintained in the remote-access contract.
+
 `ExpectedPeer` visibility is removed from **Linux new-profile** enrollment and restart readiness,
 including health diagnostics' single-expected-peer assumption. Keep durable state/consumed marker,
 private DERP/control, connector liveness, listener and watchdog gates. An empty paired set is

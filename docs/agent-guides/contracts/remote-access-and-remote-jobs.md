@@ -1089,7 +1089,18 @@ load as empty. One Python normalizer strips Unicode Cc/Cf controls and format
 characters (including bidi overrides/isolates), drops invalid surrogate code
 points, trims and caps plain text at 96 characters before storage/projection.
 Helper Status uses this recorded name, with `stable_node_id[:96]` only for empty
-names. The existing helper public projection escapes markup; fingerprint and
+names. Recorded names also have a per-snapshot JSON-escaped byte budget: serialize
+the complete mutation envelope with recorded names empty, exact legacy fallbacks
+intact, the largest duplicate target, the longest mutation method, a 24-byte
+finite-float deadline and the newline. If this fixed cost is `F` and there are
+`N` recorded names, each projected name gets at most
+`floor((32768 - F) / (N + 1))` bytes under the helper's existing ASCII escaping.
+Keep the longest whole-character prefix within that budget (at most the original
+96 characters); the extra name slot covers the duplicated target. Stored names
+are unchanged. This keeps Status and all three mutations within the existing
+32768-byte frame at the 32-device capacity. Legacy fallbacks are never shortened;
+unrepresentable non-label metadata still refuses the projection without vetoing
+store load. The existing helper public projection escapes markup; fingerprint and
 comparison phrase remain the comparison authority. Names never affect matching,
 pinning, authorization, revocation or stream registration. Historical device
 counts and expired grants remain loadable. Headscale membership grants no product authority.
@@ -1128,8 +1139,9 @@ one-use `credential` only for the same tuple after durable approval. Failures
 return HTTP 403 `pairing_denied`. These exact paths accept no query string.
 The legacy `POST /pair` ceremony grants no authority on this listener.
 
-Framing and pin validation have different bounds: HRID accepts at most 1017
-UTF-8 bytes, rejects blank identity and CR/LF/NUL; pins accept at most 256
+Framing and pin validation have different bounds: HRID v1 accepts at most 1017
+UTF-8 identity bytes; v2 accepts at most 1015 minus the label's UTF-8 byte count.
+Both reject blank identity and CR/LF/NUL; pins accept at most 256
 characters and reject every C0 character, DEL and surrogate. A frame-valid
 identity that pins refuse (for example 257 ASCII characters or a nonblank
 identity containing TAB) receives a clean 403, without identity/secret echo or
