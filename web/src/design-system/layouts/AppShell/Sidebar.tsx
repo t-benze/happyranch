@@ -112,7 +112,7 @@ export function Sidebar(): JSX.Element {
     <aside
       role="navigation"
       aria-label={t('shell.nav.primary')}
-      className="border-border bg-bg-subtle w-rail-narrow md:w-rail flex h-full shrink-0 flex-col border-r"
+      className="border-border-default bg-surface-sunken w-rail-narrow md:w-rail flex h-full shrink-0 flex-col border-r"
     >
       {/* Context header — wordmark + org context line + caret, doubling as the
           org switcher (BUG-01/08). Keeps the existing org-switch route logic. */}
@@ -125,7 +125,7 @@ export function Sidebar(): JSX.Element {
           <SelectPrimitive.Trigger asChild aria-label={t('shell.activeOrg')}>
             <button
               type="button"
-              className="border-border border-l-accent hover:bg-bg-raised focus-visible:ring-accent flex w-full items-center gap-2 border-b border-l-2 px-2 py-3 text-left transition-colors focus-visible:ring-2 focus-visible:outline-none disabled:cursor-not-allowed md:px-4"
+              className="border-border-default border-l-accent-default hover:bg-surface-raised focus-visible:ring-accent-default flex w-full items-center gap-2 border-b border-l-2 px-2 py-3 text-left transition-colors focus-visible:ring-2 focus-visible:outline-none disabled:cursor-not-allowed md:px-4"
             >
               <Brandmark />
               {/* TASK-5987: below md the rail collapses to icons only — the
@@ -134,17 +134,17 @@ export function Sidebar(): JSX.Element {
               <span className="min-w-0 flex-1 flex-col max-md:hidden md:flex">
                 <span className="font-['Baloo_2',sans-serif] text-[1rem] leading-tight font-extrabold tracking-[-0.03em]">
                   <span className="text-brand-foreground">Happy</span>
-                  <span className="text-fg">Ranch</span>
+                  <span className="text-text-primary">Ranch</span>
                 </span>
                 {/* Context line — "Day N · <team>" (BUG-08). Day-N is the real
                     org_age_days from the dashboard summary; the team is the active
                     org slug. On a brand-new org (org_age_days 0/undefined) the day
                     token degrades away, leaving the bare slug — never "Day 0". */}
-                <span className="text-fg-subtle truncate text-[0.7rem] leading-tight">
+                <span className="text-text-muted truncate text-[0.7rem] leading-tight">
                   {activeSlug ? (
                     orgAgeDays && orgAgeDays > 0 ? (
                       <>
-                        <span className="text-fg-muted">
+                        <span className="text-text-secondary">
                           {t('shell.dayCount', { count: orgAgeDays })}
                         </span>{' '}
                         · <span>{activeSlug}</span>
@@ -157,7 +157,7 @@ export function Sidebar(): JSX.Element {
                   )}
                 </span>
               </span>
-              <ChevronDown size={14} aria-hidden="true" className="text-fg-muted hidden shrink-0 md:block" />
+              <ChevronDown size={14} aria-hidden="true" className="text-text-secondary hidden shrink-0 md:block" />
             </button>
           </SelectPrimitive.Trigger>
           <SelectContent>
@@ -234,7 +234,7 @@ export function Sidebar(): JSX.Element {
       </nav>
 
       {/* Footer — Settings + account row (BUG-07). */}
-      <div className="border-border mt-auto flex shrink-0 flex-col gap-1 border-t px-3 py-3">
+      <div className="border-border-default mt-auto flex shrink-0 flex-col gap-1 border-t px-3 py-3">
         <SidebarNavItem {...sidebarLink('settings', true)} icon={Settings}>
           {t('shell.nav.settings')}
         </SidebarNavItem>
@@ -262,12 +262,12 @@ function AccountRowView({ name }: { name: string }): JSX.Element {
     <div
       tabIndex={0}
       aria-label={t('shell.account.label', { name, role: t('shell.account.founder') })}
-      className="focus-visible:ring-accent flex items-center gap-2.5 rounded-sm px-2 py-1.5 focus-visible:ring-2 focus-visible:outline-none"
+      className="focus-visible:ring-accent-default flex items-center gap-2.5 rounded-sm px-2 py-1.5 focus-visible:ring-2 focus-visible:outline-none"
     >
       <Avatar initials={identityInitials(name)} tone="founder" size="md" />
       <span className="min-w-0 flex-col leading-tight max-md:hidden md:flex">
-        <span className="text-fg truncate text-sm">{name}</span>
-        <span className="text-fg-subtle truncate text-xs">{t('shell.account.founder')}</span>
+        <span className="text-text-primary truncate text-sm">{name}</span>
+        <span className="text-text-muted truncate text-xs">{t('shell.account.founder')}</span>
       </span>
     </div>
   );
@@ -321,7 +321,7 @@ export function SidebarNavItem({
   if (!enabled) {
     const span = (
       <span
-        className="text-fg-subtle text-nav flex cursor-not-allowed items-center justify-center gap-2.5 rounded-sm px-2 py-1.5 font-medium md:justify-start"
+        className="text-text-muted text-nav flex cursor-not-allowed items-center justify-center gap-2.5 rounded-sm px-2 py-1.5 font-medium md:justify-start"
         aria-disabled="true"
       >
         <Icon size={16} aria-hidden="true" className="shrink-0" />
@@ -342,10 +342,10 @@ export function SidebarNavItem({
       className={({ isActive }) =>
         // THR-376 PR2: Pasture `[data-dir="a"] .nav-item.active` — accent-soft
         // fill, accent-text ink, weight 600, no left bar; rows 13.5px/500.
-        `flex items-center gap-2.5 rounded-sm px-2 py-1.5 text-nav transition-colors focus-visible:ring-2 focus-visible:outline-none focus-visible:ring-accent justify-center md:justify-start ${
+        `flex items-center gap-2.5 rounded-sm px-2 py-1.5 text-nav transition-colors focus-visible:ring-2 focus-visible:outline-none focus-visible:ring-accent-default justify-center md:justify-start ${
           isActive
             ? 'bg-accent-soft text-accent-text font-semibold'
-            : 'text-fg-muted font-medium hover:bg-bg-raised hover:text-fg'
+            : 'text-text-secondary font-medium hover:bg-surface-raised hover:text-text-primary'
         }`
       }
     >

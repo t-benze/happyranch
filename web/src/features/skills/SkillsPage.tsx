@@ -58,7 +58,7 @@ export function SkillsPage(): JSX.Element {
     <div className="mx-auto flex h-full min-h-0 w-full max-w-6xl flex-col overflow-hidden md:flex-row">
       {/* Source rail — desktop only */}
       <aside className="border-border-default hidden shrink-0 overflow-y-auto border-r p-4 md:block md:w-56">
-        <div className="text-fg-subtle text-overline mb-3 px-2.5 tracking-wider uppercase">
+        <div className="text-text-muted text-overline mb-3 px-2.5 tracking-wider uppercase">
           {t('skills.catalog.source')}
         </div>
         <nav className="flex flex-col gap-0.5" aria-label={t('skills.catalog.sourceFilter')}>
@@ -74,7 +74,7 @@ export function SkillsPage(): JSX.Element {
                 className={`text-body-sm flex items-center gap-2.5 rounded-md px-2.5 py-1.5 text-left font-medium transition-colors ${
                   on
                     ? 'bg-accent-soft text-accent-text'
-                    : 'text-fg-muted hover:bg-bg-subtle hover:text-fg'
+                    : 'text-text-secondary hover:bg-surface-sunken hover:text-text-primary'
                 }`}
               >
                 <Icon size={15} aria-hidden="true" className="shrink-0 opacity-85" />
@@ -100,7 +100,7 @@ export function SkillsPage(): JSX.Element {
                 className={`text-body-sm rounded-full border px-3 py-1.5 font-semibold transition-colors ${
                   on
                     ? 'bg-accent-soft text-accent-text border-transparent'
-                    : 'border-border-default text-fg-muted bg-surface-raised'
+                    : 'border-border-default text-text-secondary bg-surface-raised'
                 }`}
               >
                 {t(f.labelKey)}
@@ -129,7 +129,7 @@ export function SkillsPage(): JSX.Element {
                 Slice-6 surface. */}
             <Link
               to={`/orgs/${slug ?? ''}/skills/validation`}
-              className="border-border-default text-fg-muted hover:bg-bg-subtle hover:text-fg text-body-sm inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 font-semibold"
+              className="border-border-default text-text-secondary hover:bg-surface-sunken hover:text-text-primary text-body-sm inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 font-semibold"
             >
               <Activity size={15} aria-hidden="true" />
               {t('skills.catalog.runtimeValidation')}
@@ -148,10 +148,10 @@ export function SkillsPage(): JSX.Element {
         />
 
         {/* Guidance-only global warning */}
-        <div className="border-border-default bg-bg-subtle text-fg-muted text-body-sm mb-6 flex items-center gap-2.5 rounded-md border px-3 py-2.5">
-          <Info size={15} aria-hidden="true" className="text-fg-subtle shrink-0" />
+        <div className="border-border-default bg-surface-sunken text-text-secondary text-body-sm mb-6 flex items-center gap-2.5 rounded-md border px-3 py-2.5">
+          <Info size={15} aria-hidden="true" className="text-text-muted shrink-0" />
           <span>
-            <b className="text-fg font-semibold">{t('skills.guidanceOnly')}</b>{' '}
+            <b className="text-text-primary font-semibold">{t('skills.guidanceOnly')}</b>{' '}
             {t('skills.catalog.guidanceBody')}
           </span>
         </div>
@@ -215,7 +215,7 @@ export function SkillsPage(): JSX.Element {
               <li key={item.skill_id}>
                 <Link
                   to={`/orgs/${slug ?? ''}/skills/${item.skill_id}`}
-                  className="focus-visible:ring-accent block rounded-md focus:outline-none focus-visible:ring-2"
+                  className="focus-visible:ring-accent-default block rounded-md focus:outline-none focus-visible:ring-2"
                   aria-label={t('skills.catalog.viewSkill', { name: item.name })}
                 >
                   <SkillCard item={item} />

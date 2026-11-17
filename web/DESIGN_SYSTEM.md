@@ -8,7 +8,7 @@ Feature compositions keep using the stable `@/design-system/...` import paths.
 - `src/design-system/tokens/tokens.css` is the source of new raw colors.
 - `brand-foreground` is the single semantic foreground for the HappyRanch
   lockup. Its explicit light/dark values are held to at least 4.5:1 against
-  the live Sidebar (`bg-bg-subtle`) and Onboarding (`bg-surface-canvas`)
+  the live Sidebar (`bg-surface-sunken`) and Onboarding (`bg-surface-canvas`)
   backgrounds; it is intentionally distinct from the generic UI accent.
   Components and stories consume semantic utilities. The deterministic
   full-production-tree check in `scripts/verify-design-system.sh` rejects raw
@@ -50,12 +50,12 @@ Feature compositions keep using the stable `@/design-system/...` import paths.
   `accent-hover`, `accent-soft`, `accent-ring`, `accent-text`,
   `brand-foreground`, `attention`, `attention-soft`, `attention-text`, `info`,
   `info-soft`, `positive`, `danger`, `danger-soft`. Every other `--color-*`
-  name (v3, tier, status, feedback, agent, id, shadcn and duplicate
-  spellings) is an alias: `var(--color-<semantic>)`, or for an alpha tint
-  `color-mix(in oklab, var(--color-<semantic>) 60%, transparent)`, in both
-  themes. Aliases are slated for removal scheme by scheme: codemod the
-  utility classes to the semantic name, then delete the alias (v3 first).
-  New code uses the semantic names. `--scan-tokens` fails (exit 6) when a
+  name (tier, status, feedback, agent, id, shadcn, and the one remaining v3
+  name `bg-muted`) is an alias: `var(--color-<semantic>)`, or for an alpha
+  tint `color-mix(in oklab, var(--color-<semantic>) 60%, transparent)`, in
+  both themes. Aliases are removed scheme by scheme: codemod the utility
+  classes to the semantic name, then delete the alias. New code uses the
+  semantic names. `--scan-tokens` fails (exit 6) when a
   non-semantic `--color-*` declaration holds a literal or aliases another
   alias. There are no exemptions: the unmapped, unused `tier-slate-tint` was
   deleted rather than kept literal. Alias map (light / dark target; one name
@@ -63,18 +63,7 @@ Feature compositions keep using the stable `@/design-system/...` import paths.
 
   | Scheme | Alias | Semantic target |
   | --- | --- | --- |
-  | duplicate | `surface` | `surface-raised` |
-  | duplicate | `accent-muted` | `accent-soft` |
-  | v3 | `bg` | `surface-canvas` |
-  | v3 | `bg-subtle` | `surface-sunken` |
-  | v3 | `bg-raised` | `surface-raised` |
-  | v3 | `bg-muted` | `surface-sunken` / `surface-raised` |
-  | v3 | `border` | `border-default` |
-  | v3 | `fg` | `text-primary` |
-  | v3 | `fg-muted` | `text-secondary` |
-  | v3 | `fg-subtle` | `text-muted` |
-  | v3 | `accent` | `accent-default` |
-  | v3 | `accent-fg` | `text-inverse` |
+  | v3 (deferred) | `bg-muted` | `surface-sunken` / `surface-raised` |
   | tier | `tier-green` | `positive` |
   | tier | `tier-yellow` | `attention` |
   | tier | `tier-red` | `danger` |
@@ -110,9 +99,23 @@ Feature compositions keep using the stable `@/design-system/...` import paths.
   `border-subtle` is `var(--color-border-default)` (ds.css `--border`; it
   was 0.28). Dark `tier-green-tint` is `accent-soft` at 60% (it was
   `oklch(0.30 0.05 152)`). `tier-green` maps to `positive` (Pasture
-  `--positive`), not `accent`: the two greens differ in dark by design.
+  `--positive`), not `accent-default`: the two greens differ in dark by design.
   `surface-hover` and `brand-foreground` stay semantic because each has its
   own value in at least one theme.
+- The v3 colour vocabulary is retired (THR-376 PR11). Every utility use of
+  `bg`, `bg-subtle`, `bg-raised`, `border`, `fg`, `fg-muted`, `fg-subtle`,
+  `accent`, `accent-fg` and the duplicate spellings `surface` and
+  `accent-muted` was renamed to the semantic utility its alias resolved to
+  (for example background `bg` -> `surface-canvas`, text `fg-muted` ->
+  `text-secondary`, border `border` -> `border-default`, `accent` ->
+  `accent-default`, `accent-fg` -> `text-inverse`, `surface` ->
+  `surface-raised`, `accent-muted` -> `accent-soft`), keeping variants,
+  opacity modifiers and important/negative prefixes, and those aliases were
+  deleted from both themes. A deleted name is now an unknown token for
+  `--scan-tokens` (exit 4). Deferred exception: `bg-muted` stays an alias
+  because its light target (`surface-sunken`) and dark target
+  (`surface-raised`) differ, so no single rename is pixel-neutral; its two
+  uses (ErrorBoundary, SequentialSetup) are unchanged.
 - Spacing is Tailwind's linear 4px scale: every numeric step `N` in
   `p-N`/`m-N`/`gap-N`/`space-*-N`/`h-N`/`w-N`/`size-N`/inset/translate and
   the other spacing utilities is `N x 0.25rem` (step 5 = 20px, step 6 = 24px,
@@ -259,7 +262,7 @@ Feature compositions keep using the stable `@/design-system/...` import paths.
   and the roster/detail role dots are 6px role dots, not avatars; they keep
   the `--color-agent-*` tokens.
 - `AppBar` renders the Pasture `.topbar` on every page: 56px tall, 26px
-  inline padding, a 1px `--border` bottom rule and a translucent `bg-bg/80`
+  inline padding, a 1px `--border` bottom rule and a translucent `bg-surface-canvas/80`
   background (ds.css `color-mix(in oklab, var(--bg) 80%, transparent)`), with
   the page title in Newsreader 18/500. It has no `presentation` prop and no
   page-local `.tasks-appbar` class. Optional `status` (rendered after the
@@ -278,9 +281,9 @@ Feature compositions keep using the stable `@/design-system/...` import paths.
 
   | Pasture token | tokens.css properties | Light | Dark |
   | --- | --- | --- | --- |
-  | `--ink-2` | `text-secondary`, `fg-muted` (+ light `status-archived`) | `oklch(0.45 0.013 60)` | `oklch(0.76 0.01 75)` |
-  | `--ink-3` | `text-muted`, `fg-subtle` (+ dark `status-archived`) | `oklch(0.55 0.012 65)` | `oklch(0.64 0.011 72)` |
-  | `--accent` | `accent-default` (`primary`), `accent`, `agent-founder` | `oklch(0.52 0.11 152)` | `oklch(0.70 0.13 152)` |
+  | `--ink-2` | `text-secondary` (+ light `status-archived`) | `oklch(0.45 0.013 60)` | `oklch(0.76 0.01 75)` |
+  | `--ink-3` | `text-muted` (+ dark `status-archived`) | `oklch(0.55 0.012 65)` | `oklch(0.64 0.011 72)` |
+  | `--accent` | `accent-default` (`primary`), `agent-founder` | `oklch(0.52 0.11 152)` | `oklch(0.70 0.13 152)` |
   | `--accent-press` | `accent-hover` | `oklch(0.46 0.11 152)` | `oklch(0.76 0.13 152)` |
   | `--positive` | `positive`, `tier-green`, `status-open`, `feedback-success` | `oklch(0.52 0.11 152)` | `oklch(0.72 0.12 152)` |
   | `--info` | `info` (`id-task`, `id-thread`), `feedback-info` | `oklch(0.53 0.10 248)` | `oklch(0.72 0.11 245)` |
@@ -288,7 +291,7 @@ Feature compositions keep using the stable `@/design-system/...` import paths.
   Measured WCAG 2.x ratios: light ink-3 4.52:1 on `--bg` and 4.86:1 on the
   raised surface, ink-2 6.94:1, white on accent/positive 5.23:1, info 4.88:1;
   dark ink-3 5.32:1 on `--bg` and 4.82:1 raised, ink-2 8.34:1, dark
-  `accent-fg` on accent 7.40:1 and on positive 7.93:1, info 7.30:1. The
+  `text-inverse` on accent 7.40:1 and on positive 7.93:1, info 7.30:1. The
   primary Button's hover and press states use the opaque `accent-hover`
   token (Pasture `.btn-primary:hover` → `--accent-press`), not a translucent
   `primary/90`: label on hover/press is 6.57:1 light and 9.19:1 dark. Keep
@@ -398,7 +401,7 @@ visibility through titles, docs, controls, and representative renders.
 
 | Reusable export | Story or exclusion | Representative states / variants | Tokens |
 |---|---|---|---|
-| `Avatar` | [source:primitives/Avatar.tsx#Avatar] [story:primitives/Avatar.coverage.stories.tsx#Coverage] Primitives / Avatar Variants | founder/manager/worker/soft/neutral tones; sm 22 / md 30 / lg 34px | `--accent`→`--info` gradient, `--color-agent-*` (aliases of `--color-info`/`--color-accent`), `--accent-soft`/`--accent-text`, surface-2, `--color-text-inverse` |
+| `Avatar` | [source:primitives/Avatar.tsx#Avatar] [story:primitives/Avatar.coverage.stories.tsx#Coverage] Primitives / Avatar Variants | founder/manager/worker/soft/neutral tones; sm 22 / md 30 / lg 34px | `--accent`→`--info` gradient, `--color-agent-*` (aliases of `--color-info`/`--color-accent-default`), `--accent-soft`/`--accent-text`, surface-2, `--color-text-inverse` |
 | `Button` | [source:primitives/Button.tsx#Button] [story:primitives/Button.coverage.stories.tsx#Coverage] Primitives / Button States | default/secondary/outline/ghost/destructive/destructive-outline/link; default/sm/lg/icon; loading, disabled, icon, focus, `asChild` | `components.button` |
 | `Card` | [source:primitives/Card.tsx#Card] [story:primitives/Card.coverage.stories.tsx#Coverage] Primitives / Card Variants | container (18px), entry (12px); padding default (20) / none; with CardHeader | `--radius-lg`, `--radius-md`, `shadow-pasture-sm`, surface/border |
 | `CardHeader` | [source:primitives/Card.tsx#CardHeader] [story:primitives/CardHeader.coverage.stories.tsx#Coverage] Primitives / Card Header | title, meta, actions | `.card-head`, `.card-title` |

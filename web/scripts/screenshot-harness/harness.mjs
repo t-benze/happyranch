@@ -199,7 +199,7 @@ document.documentElement.dataset.theme = params.get('theme') ?? 'light';
 
 const el = document.getElementById('root')!;
 createRoot(el).render(
-  <div className="bg-surface-canvas text-fg border-border-subtle flex min-h-screen items-center justify-center gap-4 border p-16">
+  <div className="bg-surface-canvas text-text-primary border-border-subtle flex min-h-screen items-center justify-center gap-4 border p-16">
     ${render}
   </div>,
 );
@@ -208,7 +208,7 @@ createRoot(el).render(
   await writeFile(
     htmlFile,
     `<!doctype html><html><head><meta charset="utf-8"></head>
-<body class="bg-bg text-fg"><div id="root"></div>
+<body class="bg-surface-canvas text-text-primary"><div id="root"></div>
 <script type="module" src="./entry.tsx"></script></body></html>`,
   );
 
@@ -368,7 +368,7 @@ export async function modeBDistCss({ markup, outDir, name, viewport = [640, 360]
   const cssHref = findDistCss();
   const page = (theme) => `<!doctype html>
 <html data-theme="${theme}"><head><meta charset="utf-8"><link rel="stylesheet" href="${cssHref}"></head>
-<body class="bg-bg text-fg"><div class="bg-surface-canvas text-fg flex min-h-screen items-center justify-center gap-4 p-16">
+<body class="bg-surface-canvas text-text-primary"><div class="bg-surface-canvas text-text-primary flex min-h-screen items-center justify-center gap-4 p-16">
 ${markup}
 </div></body></html>`;
   const tmpDir = join(dist, '.mode-b-tmp');

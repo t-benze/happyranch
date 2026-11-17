@@ -90,10 +90,10 @@ interface PanelProps {
   children: ReactNode;
 }
 
-/** Direction-A Pasture card — matches ds.css .card (bg-surface, rounded-lg 18px, soft shadow). */
+/** Direction-A Pasture card — matches ds.css .card (bg-surface-raised, rounded-lg 18px, soft shadow). */
 function Panel({ title, meta, variant = 'eyebrow', children }: PanelProps): JSX.Element {
   return (
-    <section className="border-border-default bg-surface shadow-pasture-sm rounded-lg border p-6">
+    <section className="border-border-default bg-surface-raised shadow-pasture-sm rounded-lg border p-6">
       <header className="mb-4 flex items-baseline justify-between">
         {variant === 'title' ? (
           <h2 className="font-display text-h3 text-text-primary font-medium">

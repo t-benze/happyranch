@@ -118,7 +118,7 @@ export function MentionAutocomplete({
           onMouseDown={(e) => { e.preventDefault(); onSelect(a); }}
           onMouseEnter={() => setActive(i)}
           className={`block w-full px-3 py-1.5 text-left ${
-            i === active ? 'bg-accent-muted' : 'hover:bg-surface-raised'
+            i === active ? 'bg-accent-soft' : 'hover:bg-surface-raised'
           }`}
         >
           <span className="font-medium">{a.label ?? a.name}</span>

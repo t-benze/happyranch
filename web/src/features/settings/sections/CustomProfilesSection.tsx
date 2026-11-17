@@ -146,7 +146,7 @@ function ProfileRow({
 
   return (
     <div
-      className="border-border-default bg-surface rounded-lg border p-4"
+      className="border-border-default bg-surface-raised rounded-lg border p-4"
       data-testid={`profile-row-${profile.name}`}
       data-present={profile.present}
     >

@@ -127,7 +127,7 @@ export function SystemPromptEditor({ slug, agentName, agent, loading, failed, em
     : !visible ? (empty ? 'agents.prompt.empty' : 'agents.prompt.disappeared')
     : !validRevision(visible.revision) ? 'agents.prompt.unavailable' : null;
 
-  return <section className="bg-surface border-border-default shadow-pasture-sm min-w-0 rounded-lg border">
+  return <section className="bg-surface-raised border-border-default shadow-pasture-sm min-w-0 rounded-lg border">
     <div className="flex items-center justify-between gap-2 px-4 py-3">
       <button type="button" aria-expanded={expanded} disabled={editing} onClick={() => setExpanded(!expanded)}
         className="text-text-secondary flex items-center gap-2 text-xs font-medium">
@@ -147,7 +147,7 @@ export function SystemPromptEditor({ slug, agentName, agent, loading, failed, em
           onChange={(event) => setDraft(event.target.value)} rows={12}
           className="bg-surface-sunken border-border-subtle w-full min-w-0 resize-y rounded-md border p-3 font-mono text-xs" />
         {snapshot && error === 'agents.prompt.rebased' && <pre className="mt-2 max-h-40 overflow-auto text-xs whitespace-pre-wrap">{snapshot.system_prompt}</pre>}
-        <div className="bg-surface sticky bottom-0 flex flex-wrap justify-end gap-2 py-2">
+        <div className="bg-surface-raised sticky bottom-0 flex flex-wrap justify-end gap-2 py-2">
           <Button variant="ghost" size="sm" disabled={pending} onClick={cancel}>{t('common.cancel')}</Button>
           <Button size="sm" disabled={!canSave} onClick={() => void submit()}>{pending ? t('agents.prompt.saving') : t('agents.prompt.save')}</Button>
         </div>

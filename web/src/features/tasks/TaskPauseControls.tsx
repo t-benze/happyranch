@@ -31,7 +31,7 @@ function HoldIndicator({ state }: { state: 'pausing' | 'paused' }): JSX.Element 
       <span aria-hidden="true" className="bg-attention size-2 shrink-0 rounded-pill motion-safe:animate-pulse" />
       {t('tasks.pause.pausing')}
     </span>
-    : <span className={cn(PILL, 'border-input bg-bg-subtle text-text-primary')}>
+    : <span className={cn(PILL, 'border-input bg-surface-sunken text-text-primary')}>
       <Pause aria-hidden="true" fill="currentColor" className="size-4 shrink-0" />
       {t('tasks.pause.paused')}
     </span>;
@@ -54,7 +54,7 @@ function DrainDisclosure({ pause, org, routes, waiting }: {
   const taskLink = (id: string) => <Link to={routes.detail(id)} className="text-info break-all font-mono hover:underline">{id}</Link>;
   return <details className="order-2 min-w-0 basis-full text-xs md:order-3">
     <summary className="text-text-primary focus-visible:ring-ring w-fit cursor-pointer rounded-sm py-1 font-semibold focus-visible:ring-2 focus-visible:outline-none">{summary}</summary>
-    {pause.blockers.length > 0 && <ul className="border-border-default bg-bg-raised divide-border-default mt-1 min-w-0 divide-y rounded-md border md:max-w-content-form">
+    {pause.blockers.length > 0 && <ul className="border-border-default bg-surface-raised divide-border-default mt-1 min-w-0 divide-y rounded-md border md:max-w-content-form">
       {pause.blockers.map((blocker, index) => <li key={index} className="flex min-w-0 flex-wrap items-baseline gap-x-3 gap-y-1 px-3 py-2">
         {blocker.job_id && org
           ? <Link to={`/orgs/${org}/jobs/${blocker.job_id}`} className="text-info break-all font-mono hover:underline">{blocker.job_id}</Link>

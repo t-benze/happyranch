@@ -188,7 +188,7 @@ export function AddAgentDialog({ open, onOpenChange }: Props): JSX.Element {
               aria-invalid={name.length > 0 && !nameOk}
               aria-describedby="agent-name-hint agent-name-error"
             />
-            <p id="agent-name-hint" className="text-fg-muted text-xs">{t('agents.add.nameHint')}</p>
+            <p id="agent-name-hint" className="text-text-secondary text-xs">{t('agents.add.nameHint')}</p>
             <p id="agent-name-error" className="text-tier-red text-xs" aria-live="polite">
               {name.length > 0 && !nameOk ? t('agents.error.invalidName') : null}
             </p>
@@ -220,18 +220,18 @@ export function AddAgentDialog({ open, onOpenChange }: Props): JSX.Element {
 
           {role === 'worker' ? (
             teamsQuery.isLoading ? (
-              <p className="text-fg-muted text-sm" role="status">
+              <p className="text-text-secondary text-sm" role="status">
                 {t('agents.add.teamsLoading')}
               </p>
             ) : teamsQuery.isError ? (
               <div className="space-y-2" role="alert">
-                <p className="text-fg-muted text-sm">{t('agents.add.teamsError')}</p>
+                <p className="text-text-secondary text-sm">{t('agents.add.teamsError')}</p>
                 <Button variant="outline" size="sm" onClick={() => teamsQuery.refetch()}>
                   {t('common.retry')}
                 </Button>
               </div>
             ) : teams.length === 0 ? (
-              <p className="text-fg-muted text-sm">
+              <p className="text-text-secondary text-sm">
                 {t('agents.add.noTeams')}
               </p>
             ) : (
@@ -241,7 +241,7 @@ export function AddAgentDialog({ open, onOpenChange }: Props): JSX.Element {
                   id="agent-team"
                   value={team}
                   onChange={(e) => setTeam(e.target.value)}
-                  className="border-border-subtle bg-bg-subtle w-full rounded-sm border p-2 text-sm"
+                  className="border-border-subtle bg-surface-sunken w-full rounded-sm border p-2 text-sm"
                 >
                   <option value="">{t('agents.add.selectTeam')}</option>
                   {teams.map((entry) => (
@@ -267,14 +267,14 @@ export function AddAgentDialog({ open, onOpenChange }: Props): JSX.Element {
           <div>
             <Label htmlFor="agent-executor">{t('agents.executor.label')}</Label>
             {executorOptions.state === 'loading' ? (
-              <p className="text-fg-muted text-sm">{t('agents.executor.loading')}</p>
+              <p className="text-text-secondary text-sm">{t('agents.executor.loading')}</p>
             ) : executorOptions.state === 'error' ? (
               <p className="text-tier-red text-sm">
                 {t('agents.add.executorError')}
               </p>
             ) : executorOptions.state === 'empty' ? (
               <div>
-                <p className="text-fg-muted text-sm">
+                <p className="text-text-secondary text-sm">
                   {t('agents.add.noExecutors')}
                   {executorOptions.unavailable.length > 0 && (
                     <>
@@ -286,7 +286,7 @@ export function AddAgentDialog({ open, onOpenChange }: Props): JSX.Element {
                   )}
                 </p>
                 {slug && (
-                  <p className="text-fg-muted mt-1 text-xs">
+                  <p className="text-text-secondary mt-1 text-xs">
                     {render('agents.add.registerVia', {
                       link: (
                         <Link to={`/orgs/${slug}/settings/executors`} className="text-accent-text underline">
@@ -302,7 +302,7 @@ export function AddAgentDialog({ open, onOpenChange }: Props): JSX.Element {
                 id="agent-executor"
                 value={executor}
                 onChange={(e) => setExecutor(e.target.value)}
-                className="border-border-subtle bg-bg-subtle w-full rounded-sm border p-2 text-sm"
+                className="border-border-subtle bg-surface-sunken w-full rounded-sm border p-2 text-sm"
               >
                 {executorOptions.selectable.map((opt) => (
                   <option key={opt.name} value={opt.name}>
@@ -325,7 +325,7 @@ export function AddAgentDialog({ open, onOpenChange }: Props): JSX.Element {
             )}
             {/* Settings → Executors navigation link for unavailable executors */}
             {slug && executorOptions.state === 'ready' && executorOptions.unavailable.length > 0 && (
-              <p className="text-fg-muted mt-1 text-xs">
+              <p className="text-text-secondary mt-1 text-xs">
                 {t('agents.executor.needRegister')}{' '}
                 <Link to={`/orgs/${slug}/settings/executors`} className="text-accent-text underline">
                   {t('agents.executor.settingsLink')}

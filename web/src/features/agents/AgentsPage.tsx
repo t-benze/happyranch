@@ -209,13 +209,13 @@ export function AgentsPage(): JSX.Element {
                           <RowAction
                             onClick={() => navigate(routes.detail(a.name))}
                             className={`relative overflow-hidden px-3 ${rowPad} ${
-                              active ? 'bg-accent-muted' : ''
+                              active ? 'bg-accent-soft' : ''
                             }`}
                           >
                             {active && (
                               <span
                                 aria-hidden="true"
-                                className="bg-accent absolute top-1 bottom-1 left-0 w-0.5 rounded-full"
+                                className="bg-accent-default absolute top-1 bottom-1 left-0 w-0.5 rounded-full"
                               />
                             )}
                             <div className="flex items-start gap-2.5">

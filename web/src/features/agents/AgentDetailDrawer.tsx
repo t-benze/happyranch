@@ -70,10 +70,10 @@ export function AgentDetailDrawer({ agentName }: AgentDetailDrawerProps): JSX.El
       <DrawerContent className="max-w-[100vw]">
         <div className="p-4"><AddressableNameEditor canonicalId={agentName} /></div>
         <header className="border-border-subtle border-b p-4">
-          <DrawerTitle className="text-fg flex items-center gap-3 text-lg">
+          <DrawerTitle className="text-text-primary flex items-center gap-3 text-lg">
             <AgentChip name={agentName} role={agent?.role ?? 'worker'} />
           </DrawerTitle>
-          <DrawerDescription className="text-fg-muted mt-2 text-xs">
+          <DrawerDescription className="text-text-secondary mt-2 text-xs">
             {agent ? (
               <>
                 <span>{t('agents.meta.team', { team: agent.team ?? '—' })}</span>
@@ -84,16 +84,16 @@ export function AgentDetailDrawer({ agentName }: AgentDetailDrawerProps): JSX.El
             )}
           </DrawerDescription>
           {agent?.description && (
-            <p className="text-fg mt-2 text-sm">{agent.description}</p>
+            <p className="text-text-primary mt-2 text-sm">{agent.description}</p>
           )}
           {agent && agent.repos && Object.keys(agent.repos).length > 0 && (
             <div className="mt-2">
-              <p className="text-fg-muted mb-1 text-xs font-medium">{t('agents.detail.repos')}</p>
+              <p className="text-text-secondary mb-1 text-xs font-medium">{t('agents.detail.repos')}</p>
               <div className="flex flex-wrap gap-1">
                 {Object.entries(agent.repos).map(([key, _url]) => (
                   <span
                     key={key}
-                    className="bg-bg-raised border-border text-fg-muted inline-flex items-center rounded-sm border px-2 py-0.5 text-xs"
+                    className="bg-surface-raised border-border-default text-text-secondary inline-flex items-center rounded-sm border px-2 py-0.5 text-xs"
                   >
                     {key}
                   </span>
@@ -109,11 +109,11 @@ export function AgentDetailDrawer({ agentName }: AgentDetailDrawerProps): JSX.El
           empty={agentsQuery.data?.agents.length === 0} />
 
         <section className="flex-1 overflow-y-auto p-4">
-          <h3 className="text-fg-muted mb-2 text-xs font-medium tracking-wider uppercase">
+          <h3 className="text-text-secondary mb-2 text-xs font-medium tracking-wider uppercase">
             {t('agents.detail.recentTasks')}
           </h3>
           {tasksQuery.isLoading ? (
-            <p className="text-fg-muted text-xs">{t('agents.detail.loadingTasks')}</p>
+            <p className="text-text-secondary text-xs">{t('agents.detail.loadingTasks')}</p>
           ) : tasksQuery.data && tasksQuery.data.tasks.length > 0 ? (
             <ul className="space-y-2">
               {tasksQuery.data.tasks.map((task) => (
@@ -139,18 +139,18 @@ export function AgentDetailDrawer({ agentName }: AgentDetailDrawerProps): JSX.El
               ))}
             </ul>
           ) : (
-            <p className="text-fg-muted text-xs">
+            <p className="text-text-secondary text-xs">
               {t('agents.detail.noTasks')}
             </p>
           )}
 
-          <h3 className="text-fg-muted mt-8 mb-2 text-xs font-medium tracking-wider uppercase">
+          <h3 className="text-text-secondary mt-8 mb-2 text-xs font-medium tracking-wider uppercase">
             {t('agents.detail.learnings')}
           </h3>
           {learningsQuery.isLoading ? (
-            <p className="text-fg-muted text-xs">{t('agents.detail.learningsLoading')}</p>
+            <p className="text-text-secondary text-xs">{t('agents.detail.learningsLoading')}</p>
           ) : learningsError?.status === 412 ? (
-            <p className="text-fg-muted text-xs">
+            <p className="text-text-secondary text-xs">
               {render('agents.detail.learningsNotMigrated', { command: <code>happyranch memory reindex</code> })}
             </p>
           ) : learningsError ? (
@@ -165,11 +165,11 @@ export function AgentDetailDrawer({ agentName }: AgentDetailDrawerProps): JSX.El
                   className="border-border-subtle bg-surface-raised rounded-md border p-2"
                 >
                   <div className="flex items-center gap-2 text-xs">
-                    <span className="text-fg-muted font-mono">{e.id}</span>
-                    <span className="text-fg-muted">·</span>
-                    <span className="text-fg-muted">{e.topic}</span>
+                    <span className="text-text-secondary font-mono">{e.id}</span>
+                    <span className="text-text-secondary">·</span>
+                    <span className="text-text-secondary">{e.topic}</span>
                   </div>
-                  <p className="text-fg mt-1 text-sm">{e.title}</p>
+                  <p className="text-text-primary mt-1 text-sm">{e.title}</p>
                 </li>
               ))}
             </ul>
@@ -182,7 +182,7 @@ export function AgentDetailDrawer({ agentName }: AgentDetailDrawerProps): JSX.El
 
           {jobsQuery.data && jobsQuery.data.jobs.length > 0 && (
             <>
-              <h3 className="text-fg-muted mt-8 mb-2 text-xs font-medium tracking-wider uppercase">
+              <h3 className="text-text-secondary mt-8 mb-2 text-xs font-medium tracking-wider uppercase">
                 {t('agents.detail.recentJobs')}
               </h3>
               <ul className="space-y-1 text-sm">
@@ -191,7 +191,7 @@ export function AgentDetailDrawer({ agentName }: AgentDetailDrawerProps): JSX.El
                     {slug ? (
                       <Link
                         to={`/orgs/${slug}/jobs/${j.id}`}
-                        className="text-accent font-mono hover:underline"
+                        className="text-accent-default font-mono hover:underline"
                       >
                         {j.id}
                       </Link>
@@ -200,7 +200,7 @@ export function AgentDetailDrawer({ agentName }: AgentDetailDrawerProps): JSX.El
                     )}
                     {' — '}
                     {j.title}{' '}
-                    <span className="text-fg-muted">({j.status})</span>
+                    <span className="text-text-secondary">({j.status})</span>
                   </li>
                 ))}
               </ul>

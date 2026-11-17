@@ -135,7 +135,7 @@ function KindRow({ kind, entry }: KindRowProps): JSX.Element {
 
   return (
     <div
-      className="border-border-default bg-surface rounded-lg border p-4"
+      className="border-border-default bg-surface-raised rounded-lg border p-4"
       data-testid={`binary-row-${kind}`}
       data-kind={kind}
     >

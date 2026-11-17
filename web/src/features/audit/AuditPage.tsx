@@ -163,7 +163,7 @@ export function AuditPage(): JSX.Element {
           forbids in the feature layer. AuditTimeline itself is untouched. */}
       <ContentWrap className="flex h-full min-h-0 flex-col gap-4">
       {/* --- Top bar --- */}
-      <header className="bg-surface border-border-default shrink-0 rounded-lg border p-4">
+      <header className="bg-surface-raised border-border-default shrink-0 rounded-lg border p-4">
         {/* AUDIT-03: uppercase eyebrow + page title (PageTitle). */}
         <PageTitle
           eyebrow={t('audit.page.eyebrow')}
@@ -198,7 +198,7 @@ export function AuditPage(): JSX.Element {
             TimelineBody grows to full content height, the card clips it with no
             scrollbar, the bottom sentinel sits below the clip and never
             re-intersects, and infinite scroll dies ("can't load more"). */}
-        <div className="border-border-default bg-surface flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-lg border">
+        <div className="border-border-default bg-surface-raised flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-lg border">
           <AuditTimeline legendMap={legendColorMap} sinceISO={sinceISO} />
         </div>
         {/* Right rail: event-type legend-filter, with the green "Clean record"
@@ -274,7 +274,7 @@ function EventTypesRail({
   const { t } = useTranslation();
   return (
     <aside
-      className="bg-surface border-border-default h-fit w-full rounded-lg border p-4"
+      className="bg-surface-raised border-border-default h-fit w-full rounded-lg border p-4"
       aria-label={t('audit.rail.label')}
     >
       <h2 className="text-text-secondary font-display mb-2 text-sm font-medium">{t('audit.rail.title')}</h2>
@@ -324,7 +324,7 @@ function CleanRecordPanel({ total }: { total: number }): JSX.Element {
   const { t } = useTranslation();
   return (
     <aside
-      className="bg-accent-soft border-accent-muted rounded-lg border p-4"
+      className="bg-accent-soft border-accent-soft rounded-lg border p-4"
       aria-label={t('audit.clean.label')}
     >
       <div className="flex items-center gap-2">

@@ -106,7 +106,7 @@ export function RevisitTaskDialog({ taskId, onClose }: Props): JSX.Element {
         <DialogHeader>
           <DialogTitle>{t('tasks.dialog.revisit.title')}</DialogTitle>
         </DialogHeader>
-        <p className="text-fg-muted text-sm">
+        <p className="text-text-secondary text-sm">
           {t('tasks.dialog.revisit.body')}
         </p>
         <Textarea

@@ -223,6 +223,39 @@ grep -F -- '--color-anything-else: oklch(0.5 0.1 150)' "$scratch/alias-no-exempt
 grep -c 'literal alias colour' "$scratch/alias-no-exempt.out" | grep -qx 2
 cp "$tokens_fixture" "$scratch/src/design-system/tokens/tokens.css"
 
+# The v3 colour vocabulary is retired (THR-376 PR11). Against the REAL tokens.css
+# and Tailwind theme, every deleted v3 utility is an unknown token, while the
+# deferred bg-muted alias and the semantic replacements still resolve.
+mkdir -p "$scratch/v3"
+cat > "$scratch/v3/App.tsx" <<'TSX'
+export const V3 = () => <div className="bg-bg text-fg border-border bg-bg-subtle bg-bg-raised text-fg-muted text-fg-subtle bg-accent/10 text-accent-fg hover:bg-surface bg-accent-muted bg-bg-muted bg-surface-canvas text-text-primary border-border-default bg-accent-default/10 text-text-inverse bg-surface-raised bg-accent-soft" />;
+TSX
+v3_scan() {
+  DESIGN_SYSTEM_SOURCE_ROOT="$scratch/v3" DESIGN_SYSTEM_TOKENS=src/design-system/tokens/tokens.css \
+    bash "$scanner" --scan-tokens
+}
+expect_exit 4 'retired v3 utilities' "$scratch/v3.out" v3_scan
+grep -F 'hits=11' "$scratch/v3.out"
+# The scanner reports the utility without its variant or opacity modifier.
+for hit in \
+  'App.tsx:1:41	bg-bg' \
+  'App.tsx:1:47	text-fg' \
+  'App.tsx:1:55	border-border' \
+  'App.tsx:1:69	bg-bg-subtle' \
+  'App.tsx:1:82	bg-bg-raised' \
+  'App.tsx:1:95	text-fg-muted' \
+  'App.tsx:1:109	text-fg-subtle' \
+  'App.tsx:1:124	bg-accent' \
+  'App.tsx:1:137	text-accent-fg' \
+  'App.tsx:1:152	bg-surface' \
+  'App.tsx:1:169	bg-accent-muted'; do
+  grep -F "unknown token utility: $hit" "$scratch/v3.out"
+done
+if grep -E '	(bg-bg-muted|bg-surface-canvas|text-text-primary|border-border-default|bg-accent-default|text-text-inverse|bg-surface-raised|bg-accent-soft)$' "$scratch/v3.out"; then
+  echo 'the deferred bg-muted alias or a semantic replacement failed' >&2
+  exit 1
+fi
+
 # A missing scan input is a hard failure, never a silent pass.
 expect_exit 1 'missing default theme' "$scratch/missing.out" run_scan "$scratch/src" "$scratch/absent-theme.css"
 grep -F 'unknown-token scan input missing' "$scratch/missing.out"

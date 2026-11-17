@@ -31,7 +31,7 @@ export const Variants: Story = {
         </List>
       </section>
       <List variant="entry" aria-label="Roster">
-        <Row padding="none"><RowAction className="bg-accent-muted">Selected row</RowAction></Row>
+        <Row padding="none"><RowAction className="bg-accent-soft">Selected row</RowAction></Row>
         <Row padding="none"><RowAction>Unselected row</RowAction></Row>
       </List>
     </div>

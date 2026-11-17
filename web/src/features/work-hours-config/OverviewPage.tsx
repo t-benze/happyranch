@@ -79,7 +79,7 @@ export function OverviewPage(): JSX.Element {
 
   // Loading.
   if (settingsQuery.isLoading) {
-    return <div className="text-fg-muted p-8">{t('workHours.loading')}</div>;
+    return <div className="text-text-secondary p-8">{t('workHours.loading')}</div>;
   }
 
   // Config-broken-on-disk recovery: the settings query errored (e.g. the live
@@ -113,13 +113,13 @@ export function OverviewPage(): JSX.Element {
         {saved && <SavedBanner message={t('workHours.saved')} />}
 
         {/* Read-only status bar + tier editing */}
-        <div className="border-border bg-bg-subtle mb-4 flex flex-wrap items-center gap-3 rounded-md border p-3">
+        <div className="border-border-default bg-surface-sunken mb-4 flex flex-wrap items-center gap-3 rounded-md border p-3">
           <span className="text-text-primary text-sm font-medium">
             {t('workHours.statusBar.label')}
           </span>
           <span
             className={`inline-flex h-6 w-9 items-center rounded-full ${
-              wh.enabled ? 'bg-accent' : 'bg-bg-raised border-border border'
+              wh.enabled ? 'bg-accent-default' : 'bg-surface-raised border-border-default border'
             }`}
             aria-hidden="true"
           >
@@ -199,10 +199,10 @@ export function OverviewPage(): JSX.Element {
             role="region"
             aria-label={t('workHours.roster.scrollLabel')}
             tabIndex={0}
-            className="border-border focus-visible:ring-accent-ring overflow-x-auto rounded-md border focus-visible:ring-2 focus-visible:outline-none"
+            className="border-border-default focus-visible:ring-accent-ring overflow-x-auto rounded-md border focus-visible:ring-2 focus-visible:outline-none"
           >
             <table className="w-full min-w-max text-sm">
-              <thead className="bg-bg-subtle text-text-muted text-xs uppercase">
+              <thead className="bg-surface-sunken text-text-muted text-xs uppercase">
                 <tr>
                   <Th>{t('workHours.roster.agent')}</Th>
                   <Th>{t('workHours.roster.team')}</Th>
@@ -212,7 +212,7 @@ export function OverviewPage(): JSX.Element {
                   <Th>{t('workHours.roster.eligibility')}</Th>
                 </tr>
               </thead>
-              <tbody className="divide-border divide-y">
+              <tbody className="divide-border-default divide-y">
                 {agents.map((a) => {
                   const team = agentTeam[a.name] ?? null;
                   const rec = reconcile(wh, a.name, team);

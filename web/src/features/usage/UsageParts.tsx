@@ -180,7 +180,7 @@ export function TableSkeleton({ columns, rows = 4 }: { columns: string[]; rows?:
     <div
       data-testid="usage-skeleton"
       aria-busy="true"
-      className="bg-surface border-border-default shadow-pasture-sm overflow-hidden rounded-lg border"
+      className="bg-surface-raised border-border-default shadow-pasture-sm overflow-hidden rounded-lg border"
     >
       <div className="border-border-default flex gap-4 border-b px-4 py-3">
         {columns.map((c) => (
@@ -205,7 +205,7 @@ export function TableSkeleton({ columns, rows = 4 }: { columns: string[]; rows?:
 export function ScrollTable({ label, children }: { label: string; children: ReactNode }): JSX.Element {
   const { t } = useUsagePresentation();
   return (
-    <div className="bg-surface border-border-default shadow-pasture-sm rounded-lg border">
+    <div className="bg-surface-raised border-border-default shadow-pasture-sm rounded-lg border">
       <p className="text-caption text-text-muted border-border-default border-b px-4 py-2 md:hidden">
         {t('usage.scrollHint')}
       </p>
@@ -227,7 +227,7 @@ export const TH_CLASS =
   'text-2xs text-text-muted border-border-default border-b px-4 py-3 font-semibold tracking-wider uppercase align-bottom';
 
 export const IDENTITY_CLASS =
-  'sticky left-0 z-10 bg-surface px-4 py-3 text-left align-top font-normal';
+  'sticky left-0 z-10 bg-surface-raised px-4 py-3 text-left align-top font-normal';
 
 export const CELL_CLASS = 'px-4 py-3 text-right align-top font-mono tabular-nums';
 

@@ -88,7 +88,7 @@ export type DotColor = 'neutral' | 'positive' | 'info' | 'attention' | 'danger';
 /** Dot color map keyed by DotColor → Tailwind bg-<token> utility. Shared
  *  between the right-rail legend dots and the AuditTimeline per-row dots. */
 export const DOT_COLOR_CLASS: Record<DotColor, string> = {
-  neutral: 'bg-fg-muted',
+  neutral: 'bg-text-secondary',
   positive: 'bg-positive',
   info: 'bg-feedback-info',
   attention: 'bg-attention',

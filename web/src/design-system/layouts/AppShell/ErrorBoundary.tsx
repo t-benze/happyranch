@@ -51,10 +51,10 @@ export class ErrorBoundary extends Component<Props, State> {
     if (!error) return this.props.children;
     const copy = this.props.copy ?? DEFAULT_COPY;
     return (
-      <div className="text-fg-muted flex h-full flex-col gap-3 p-8">
-        <div className="text-fg text-base font-semibold">{copy.title}</div>
+      <div className="text-text-secondary flex h-full flex-col gap-3 p-8">
+        <div className="text-text-primary text-base font-semibold">{copy.title}</div>
         <div className="text-xs">{copy.body}</div>
-        <pre className="border-border-subtle text-fg-muted mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-sm border p-3 text-xs">
+        <pre className="border-border-subtle text-text-secondary mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-sm border p-3 text-xs">
           {error.message}
           {error.stack ? `\n\n${error.stack}` : null}
         </pre>
@@ -62,7 +62,7 @@ export class ErrorBoundary extends Component<Props, State> {
           <button
             type="button"
             onClick={() => this.setState({ error: null })}
-            className="border-border-subtle text-fg hover:bg-bg-muted rounded-sm border px-3 py-1 text-xs"
+            className="border-border-subtle text-text-primary hover:bg-bg-muted rounded-sm border px-3 py-1 text-xs"
           >
             {copy.retry}
           </button>

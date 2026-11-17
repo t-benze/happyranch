@@ -213,8 +213,8 @@ function AgentPicker({
               onClick={() => onToggle(name)}
               className={`rounded-full px-2 py-0.5 text-xs font-medium ${
                 on
-                  ? 'bg-accent text-accent-fg'
-                  : 'bg-bg-raised text-fg-muted border-border border'
+                  ? 'bg-accent-default text-text-inverse'
+                  : 'bg-surface-raised text-text-secondary border-border-default border'
               }`}
             >
               <IdentityName canonicalId={name} />

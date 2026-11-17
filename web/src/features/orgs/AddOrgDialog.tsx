@@ -69,7 +69,7 @@ export function AddOrgDialog({ open, onOpenChange }: Props): JSX.Element {
             placeholder={t('org.add.slugPlaceholder')}
             autoFocus
           />
-          <p className="text-fg-muted text-xs">{t('org.add.slugHint')}</p>
+          <p className="text-text-secondary text-xs">{t('org.add.slugHint')}</p>
           {errorText && (
             <p className="text-tier-red text-sm">{errorText}</p>
           )}

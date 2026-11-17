@@ -349,8 +349,8 @@ export function TierEditorDialog({
                           onClick={() => toggleDay(d)}
                           className={`rounded-sm px-2 py-0.5 text-xs font-medium ${
                             selected
-                              ? 'bg-accent text-accent-fg'
-                              : 'bg-bg-raised text-fg-muted border-border border'
+                              ? 'bg-accent-default text-text-inverse'
+                              : 'bg-surface-raised text-text-secondary border-border-default border'
                           }`}
                         >
                           {d}
@@ -418,7 +418,7 @@ export function TierEditorDialog({
                 aria-checked={catchUp ?? false}
                 onClick={() => setCatchUp((p) => (p === null ? true : !p))}
                 className={`inline-flex h-6 w-9 items-center rounded-full transition-colors ${
-                  catchUp ? 'bg-accent' : 'bg-bg-raised border-border border'
+                  catchUp ? 'bg-accent-default' : 'bg-surface-raised border-border-default border'
                 }`}
               >
                 <span

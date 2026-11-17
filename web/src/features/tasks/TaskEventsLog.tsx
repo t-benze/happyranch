@@ -63,7 +63,7 @@ function rowTone(label: string): string {
     return 'bg-tier-yellow-tint text-status-blocked';
   }
   if (label === 'task_complete') return 'bg-tier-green-tint text-status-open';
-  return 'text-fg';
+  return 'text-text-primary';
 }
 
 export function TaskEventsLog({ taskId }: { taskId: string }): JSX.Element {
@@ -104,9 +104,9 @@ export function TaskEventsLog({ taskId }: { taskId: string }): JSX.Element {
       );
     }
     if (connectionState === 'connecting') {
-      return <p className="text-fg-muted text-xs">{t('tasks.events.loading', { taskId })}</p>;
+      return <p className="text-text-secondary text-xs">{t('tasks.events.loading', { taskId })}</p>;
     }
-    return <p className="text-fg-muted text-xs">{t('tasks.events.empty', { taskId })}</p>;
+    return <p className="text-text-secondary text-xs">{t('tasks.events.empty', { taskId })}</p>;
   }
   return (
     <ol className="space-y-1 text-xs">
@@ -121,23 +121,23 @@ export function TaskEventsLog({ taskId }: { taskId: string }): JSX.Element {
               type="button"
               onClick={() => hasPayload && toggle(sig)}
               className={`flex w-full items-baseline gap-2 rounded-sm px-1 py-0.5 text-left ${
-                hasPayload ? 'hover:bg-bg-subtle cursor-pointer' : 'cursor-default'
+                hasPayload ? 'hover:bg-surface-sunken cursor-pointer' : 'cursor-default'
               }`}
               aria-expanded={hasPayload ? isOpen : undefined}
             >
-              <span className="text-fg-muted font-mono">{formatEventTimestamp(ev.timestamp, locale)}</span>
+              <span className="text-text-secondary font-mono">{formatEventTimestamp(ev.timestamp, locale)}</span>
               <span
                 className={`inline-block rounded-sm px-1.5 py-px font-mono font-semibold ${rowTone(label)}`}
               >
                 {prettyLabel(label, locale)}
               </span>
-              {ev.agent && <span className="text-fg-muted">· <IdentityName canonicalId={ev.agent} /></span>}
+              {ev.agent && <span className="text-text-secondary">· <IdentityName canonicalId={ev.agent} /></span>}
               {hasPayload && (
-                <span className="text-fg-muted ml-auto">{isOpen ? '▾' : '▸'}</span>
+                <span className="text-text-secondary ml-auto">{isOpen ? '▾' : '▸'}</span>
               )}
             </button>
             {hasPayload && isOpen && (
-              <pre className="bg-bg-subtle text-fg-muted mt-1 ml-4 overflow-x-auto rounded-sm p-2 font-mono text-xs whitespace-pre-wrap">
+              <pre className="bg-surface-sunken text-text-secondary mt-1 ml-4 overflow-x-auto rounded-sm p-2 font-mono text-xs whitespace-pre-wrap">
                 {JSON.stringify(ev.payload, null, 2)}
               </pre>
             )}

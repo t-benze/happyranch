@@ -5,7 +5,7 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 
 const swatches = [
-  ['Surface', 'bg-surface'], ['Raised', 'bg-surface-raised'], ['Sunken', 'bg-surface-sunken'],
+  ['Surface', 'bg-surface-raised'], ['Raised', 'bg-surface-raised'], ['Sunken', 'bg-surface-sunken'],
   ['Accent', 'bg-accent-default'], ['Success', 'bg-feedback-success'], ['Warning', 'bg-feedback-warning'], ['Danger', 'bg-feedback-danger'],
 ];
 

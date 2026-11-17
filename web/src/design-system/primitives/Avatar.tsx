@@ -19,7 +19,7 @@
  *   radius — 50% (`rounded-full`), ds.css Direction A for both rules.
  *   tones  — founder: the ds.css `.avatar` gradient, accent → info.
  *            manager: `--color-agent-manager` (alias of `--color-info`).
- *            worker:  `--color-agent-worker` (alias of `--color-accent`).
+ *            worker:  `--color-agent-worker` (alias of `--color-accent-default`).
  *            soft:    `--accent-soft` fill + `--accent-text` (role unknown).
  *            neutral: `--surface-2` fill + `--ink-2` (retired agents).
  *   label  — `--color-text-inverse` on the solid/gradient tones (ds.css uses
@@ -52,7 +52,7 @@ const SIZE_CLASS: Record<AvatarSize, string> = {
 
 const TONE_CLASS: Record<AvatarTone, string> = {
   // ds.css .avatar gradient verbatim (sRGB interpolation, as in ds.css).
-  founder: 'bg-[linear-gradient(135deg,var(--color-accent),var(--color-info))] text-text-inverse',
+  founder: 'bg-[linear-gradient(135deg,var(--color-accent-default),var(--color-info))] text-text-inverse',
   manager: 'bg-agent-manager text-text-inverse',
   worker: 'bg-agent-worker text-text-inverse',
   soft: 'bg-accent-soft text-accent-text',

@@ -39,8 +39,8 @@ export function SubTabBar({ tabs, active, className }: SubTabBarProps): JSX.Elem
             value={t.value}
             className={cn(
               '-mb-px border-b-2 border-transparent px-3 py-2 text-sm',
-              'data-[state=active]:border-accent data-[state=active]:text-fg',
-              'data-[state=inactive]:text-fg-muted hover:text-fg',
+              'data-[state=active]:border-accent-default data-[state=active]:text-text-primary',
+              'data-[state=inactive]:text-text-secondary hover:text-text-primary',
             )}
           >
             {t.label}

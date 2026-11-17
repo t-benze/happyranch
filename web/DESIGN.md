@@ -56,6 +56,12 @@
 # tier.green_tint are SUPERSEDED (Pasture) and changed value: Pasture has no
 # subtle border, so dark --color-border-subtle = --color-border-default
 # (ds.css --border), and the green tint is ds.css --accent-soft at 60%.
+# THR-376 PR11 adds: the v3 colour vocabulary is retired. Every v3 utility
+# (bg-bg, text-fg, border-border, bg-accent, text-accent-fg, bg-surface,
+# bg-accent-muted, ...) was renamed to its semantic utility and the aliases
+# deleted; accent.muted below is SUPERSEDED (use --color-accent-soft). The
+# one exception is --color-bg-muted, kept as an alias because its light and
+# dark targets differ (surface-sunken / surface-raised).
 # The rest of this file is unchanged historical reference (Phase 4 rewrites it).
 
 name: HappyRanch Founder Console
@@ -152,7 +158,7 @@ colors:
       accent:
         default:       "{colors.palette.signal_500}"   # SUPERSEDED (Pasture): --color-accent-default
         hover:         "{colors.palette.signal_400}"   # SUPERSEDED (Pasture): --color-accent-hover (accent-press)
-        muted:         "rgba(24, 148, 211, 0.12)"   # signal_500 @ 12% — tinted bg
+        muted:         "rgba(24, 148, 211, 0.12)"   # signal_500 @ 12% — tinted bg   # SUPERSEDED (Pasture, THR-376 PR11): --color-accent-muted retired; use --color-accent-soft
         ring:          "rgba(24, 148, 211, 0.45)"   # focus ring
       tier:
         green:         "{colors.palette.green_500}"   # SUPERSEDED (Pasture): --color-tier-green (positive)
@@ -200,7 +206,7 @@ colors:
       accent:
         default:       "{colors.palette.signal_600}"   # SUPERSEDED (Pasture): --color-accent-default
         hover:         "{colors.palette.signal_700}"   # SUPERSEDED (Pasture): --color-accent-hover (accent-press)
-        muted:         "rgba(16, 120, 176, 0.10)"
+        muted:         "rgba(16, 120, 176, 0.10)"   # SUPERSEDED (Pasture, THR-376 PR11): --color-accent-muted retired; use --color-accent-soft
         ring:          "rgba(16, 120, 176, 0.35)"
       tier:
         green:         "{colors.palette.green_700}"   # SUPERSEDED (Pasture): --color-tier-green (positive)
@@ -658,9 +664,10 @@ See the frontmatter for the full palette. The opinion behind it:
   Never used to tint a whole row or background; that reads as alarmist.
   Use the tint variants (`*_tint`, 14% alpha) for badge fills.
 - **Two agent identity colors.** SUPERSEDED (Pasture, THR-376 PR9): manager
-  = `--color-info`, worker = `--color-accent`, founder = accent; agent
-  avatars are the design-system `Avatar` (22/30/34px circles, founder
-  accent → info gradient). Original: Manager = warm violet
+  = `--color-info`, worker = `--color-accent-default` (PR9 wrote
+  `--color-accent`, retired in PR11), founder = accent; agent avatars
+  are the design-system `Avatar` (22/30/34px circles, founder accent →
+  info gradient). Original: Manager = warm violet
   (`violet_500`), worker = cool teal (`teal_500`). They prefix every agent
   name with a 6px dot. Founder uses the accent blue (`signal_400`), so the
   founder reads as a participant *in the system* rather than an external

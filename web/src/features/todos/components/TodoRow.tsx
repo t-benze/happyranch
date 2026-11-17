@@ -96,7 +96,7 @@ export function TodoRow({ schedule }: TodoRowProps): JSX.Element {
     <Link
       to={`/orgs/${slug}/todos/${schedule.schedule_id}`}
       className={cn(
-        'flex w-full flex-col gap-2.5 px-6 py-4 text-left transition-colors hover:bg-bg-subtle',
+        'flex w-full flex-col gap-2.5 px-6 py-4 text-left transition-colors hover:bg-surface-sunken',
         'border-b border-border-subtle last:border-b-0',
       )}
     >
@@ -105,8 +105,8 @@ export function TodoRow({ schedule }: TodoRowProps): JSX.Element {
           <StatusBadge {...scheduleStatusBadge(schedule.status, t)} />
           <span
             className={cn(
-              'truncate text-sm font-semibold text-fg',
-              isTerminal && 'text-fg-muted',
+              'truncate text-sm font-semibold text-text-primary',
+              isTerminal && 'text-text-secondary',
             )}
           >
             {schedule.normalized_brief}
@@ -114,10 +114,10 @@ export function TodoRow({ schedule }: TodoRowProps): JSX.Element {
         </div>
         {showNextFire && (
           <div className="flex shrink-0 flex-col items-end">
-            <span className="text-fg-subtle text-2xs leading-tight font-normal tracking-wider uppercase">
+            <span className="text-text-muted text-2xs leading-tight font-normal tracking-wider uppercase">
               {t('todos.row.nextFire')}
             </span>
-            <span className="text-fg text-sm leading-tight font-semibold tabular-nums">
+            <span className="text-text-primary text-sm leading-tight font-semibold tabular-nums">
               {schedule.status === 'firing' ? t('todos.row.firingNow') : fireAtDisplay}
             </span>
           </div>
@@ -125,17 +125,17 @@ export function TodoRow({ schedule }: TodoRowProps): JSX.Element {
       </div>
 
       <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1">
-        <div className="text-fg-muted flex min-w-0 items-center gap-1.5 text-xs">
+        <div className="text-text-secondary flex min-w-0 items-center gap-1.5 text-xs">
           <span className="inline-flex items-center gap-1">
             <Avatar initials={agentInitials(schedule.agent_name)} tone="soft" size="sm" />
             <span className="truncate"><IdentityName canonicalId={schedule.agent_name} /></span>
           </span>
-          <span aria-hidden="true" className="text-fg-subtle">
+          <span aria-hidden="true" className="text-text-muted">
             ·
           </span>
           <span className="truncate">{scheduleLine(schedule, t, locale)}</span>
         </div>
-        <div className="text-fg-subtle ml-auto flex min-w-0 flex-wrap items-center justify-end gap-x-3 gap-y-1 text-xs">
+        <div className="text-text-muted ml-auto flex min-w-0 flex-wrap items-center justify-end gap-x-3 gap-y-1 text-xs">
           {expiry && <span>{expiry}</span>}
           {schedule.fire_count > 0 && (
             <span>
@@ -145,7 +145,7 @@ export function TodoRow({ schedule }: TodoRowProps): JSX.Element {
               })}
             </span>
           )}
-          <span className="text-fg-subtle font-mono text-xs break-all">
+          <span className="text-text-muted font-mono text-xs break-all">
             {schedule.schedule_id}
           </span>
         </div>

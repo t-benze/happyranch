@@ -45,7 +45,7 @@ export function WorkflowSetupStatusCard(): JSX.Element {
   const outcomes: Record<string, MessageKey> = {
     ok: 'seqwf.setupStatus.ok', failed: 'seqwf.setupStatus.failed', unavailable: 'seqwf.setupStatus.unavailable',
   };
-  return <section aria-label={t('seqwf.setupStatus.title')} className="border-border-default bg-bg-raised my-3 rounded-md border p-3 text-sm wrap-anywhere">
+  return <section aria-label={t('seqwf.setupStatus.title')} className="border-border-default bg-surface-raised my-3 rounded-md border p-3 text-sm wrap-anywhere">
     <div className="flex flex-wrap items-center justify-between gap-2"><h2 className="font-medium">{t('seqwf.setupStatus.title')}</h2>
       <Button size="sm" variant="outline" onClick={() => void q.refetch()}>{t('workflows.refresh')}</Button></div>
     {q.isError ? <p role="alert">{t('seqwf.setupStatus.error')}</p> : !data ? <p role="status">{t('seqwf.loading')}</p> : <>
@@ -69,7 +69,7 @@ export function WorkflowSetupStatusCard(): JSX.Element {
 
 function BannerShell({ children }: { children: ReactNode }): JSX.Element {
   const { t } = useTranslation();
-  return <section aria-label={t('seqwf.banner.label')} className="border-border-default bg-bg-raised mt-3 rounded-md border px-3 py-2 text-sm wrap-anywhere">{children}</section>;
+  return <section aria-label={t('seqwf.banner.label')} className="border-border-default bg-surface-raised mt-3 rounded-md border px-3 py-2 text-sm wrap-anywhere">{children}</section>;
 }
 function Denied(): JSX.Element {
   const { t } = useTranslation();

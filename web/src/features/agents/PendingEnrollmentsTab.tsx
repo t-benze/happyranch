@@ -124,7 +124,7 @@ export function PendingEnrollmentsTab(): JSX.Element {
         {rows.map((e) => (
           <li
             key={e.name}
-            className="border-border-default bg-surface shadow-pasture-sm rounded-lg border p-3"
+            className="border-border-default bg-surface-raised shadow-pasture-sm rounded-lg border p-3"
           >
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
@@ -188,7 +188,7 @@ export function PendingEnrollmentsTab(): JSX.Element {
             <DialogHeader>
               <DialogTitle>{t('agents.pending.rejectTitle', { name: rejecting })}</DialogTitle>
             </DialogHeader>
-            <p className="text-fg-muted text-sm">
+            <p className="text-text-secondary text-sm">
               {t('agents.pending.rejectBody')}
             </p>
             <Textarea

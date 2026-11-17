@@ -58,7 +58,7 @@ const RUNTIME_VALIDATION_LABEL = 'Runtime Validation';
 const TONE_STYLE: Record<ValidationTone, string> = {
   positive: 'text-status-open bg-tier-green-tint',
   attention: 'text-attention-text bg-attention-soft',
-  neutral: 'text-fg-muted border border-border-default bg-transparent',
+  neutral: 'text-text-secondary border border-border-default bg-transparent',
 };
 
 function SeverityBadge({ row }: { row: ValidationRow }): JSX.Element {
@@ -94,14 +94,14 @@ function FilterSelect({
   const id = `${idPrefix}-${name}`;
   return (
     <label htmlFor={id} className="flex min-w-0 flex-col gap-1">
-      <span className="text-fg-subtle text-overline tracking-wider uppercase">
+      <span className="text-text-muted text-overline tracking-wider uppercase">
         {label}
       </span>
       <select
         id={id}
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        className="border-border-default bg-surface-raised text-fg text-body-sm focus-visible:ring-accent w-full min-w-0 rounded-md border px-2.5 py-1.5 focus:outline-none focus-visible:ring-2"
+        className="border-border-default bg-surface-raised text-text-primary text-body-sm focus-visible:ring-accent-default w-full min-w-0 rounded-md border px-2.5 py-1.5 focus:outline-none focus-visible:ring-2"
       >
         {options.map((o) => (
           <option key={o.value} value={o.value}>
@@ -203,32 +203,32 @@ function EventRow({ row, slug }: { row: ValidationRow; slug: string }): JSX.Elem
           <span className="text-2xs bg-info-soft text-info inline-flex items-center rounded-full px-2 py-0.5 font-bold tracking-wide uppercase">
             {row.sourceLabel}
           </span>
-          <span className="text-mono-sm text-fg-subtle">v{row.version}</span>
+          <span className="text-mono-sm text-text-muted">v{row.version}</span>
           <time
-            className="text-fg-subtle text-xs"
+            className="text-text-muted text-xs"
             title={row.time.absolute}
           >
             {row.time.relative}
           </time>
         </div>
 
-        <h3 className="text-fg font-mono text-sm leading-snug font-semibold break-words">
+        <h3 className="text-text-primary font-mono text-sm leading-snug font-semibold break-words">
           <Link
             to={`/orgs/${slug}/skills/${row.skillId}`}
-            className="hover:text-accent-text focus-visible:ring-accent rounded-sm focus:outline-none focus-visible:ring-2"
+            className="hover:text-accent-text focus-visible:ring-accent-default rounded-sm focus:outline-none focus-visible:ring-2"
           >
             {row.skillName}
           </Link>
         </h3>
-        <p className="text-fg-muted text-body-sm mt-1 break-words">
+        <p className="text-text-secondary text-body-sm mt-1 break-words">
           {row.agentLabel}
         </p>
 
         {(row.reasonLines.length > 0 || row.findings.length > 0) && (
-          <ul className="text-fg-muted text-body-sm mt-2.5 flex flex-col gap-1">
+          <ul className="text-text-secondary text-body-sm mt-2.5 flex flex-col gap-1">
             {row.reasonLines.map((line, i) => (
               <li key={`r${i}`} className="flex gap-2 break-words">
-                <span aria-hidden="true" className="text-fg-subtle shrink-0">
+                <span aria-hidden="true" className="text-text-muted shrink-0">
                   ·
                 </span>
                 <span className="min-w-0">{line}</span>
@@ -236,7 +236,7 @@ function EventRow({ row, slug }: { row: ValidationRow; slug: string }): JSX.Elem
             ))}
             {row.findings.map((line, i) => (
               <li key={`f${i}`} className="flex gap-2 break-words">
-                <span aria-hidden="true" className="text-fg-subtle shrink-0">
+                <span aria-hidden="true" className="text-text-muted shrink-0">
                   ·
                 </span>
                 <span className="min-w-0">{line}</span>
@@ -285,21 +285,21 @@ export function SkillValidationPage(): JSX.Element {
   return (
     <div className="mx-auto flex h-full w-full max-w-5xl flex-col overflow-y-auto px-4 py-6 md:px-12 md:py-8">
       <header className="mb-4">
-        <div className="text-fg-subtle text-overline mb-1 flex items-center gap-1.5 tracking-wider uppercase">
+        <div className="text-text-muted text-overline mb-1 flex items-center gap-1.5 tracking-wider uppercase">
           <Activity size={13} aria-hidden="true" />
           {t('skills.validation.eyebrow')}
         </div>
-        <h1 className="text-h2 text-fg">{title}</h1>
-        <p className="text-fg-muted text-body-sm mt-1 max-w-2xl">
+        <h1 className="text-h2 text-text-primary">{title}</h1>
+        <p className="text-text-secondary text-body-sm mt-1 max-w-2xl">
           {t('skills.validation.description')}
         </p>
       </header>
 
       {/* Guidance-only strip — mirrors the catalog note-strip. */}
-      <div className="border-border-default bg-bg-subtle text-fg-muted text-body-sm mb-6 flex items-center gap-2.5 rounded-md border px-3 py-2.5">
-        <Info size={15} aria-hidden="true" className="text-fg-subtle shrink-0" />
+      <div className="border-border-default bg-surface-sunken text-text-secondary text-body-sm mb-6 flex items-center gap-2.5 rounded-md border px-3 py-2.5">
+        <Info size={15} aria-hidden="true" className="text-text-muted shrink-0" />
         <span>
-          <b className="text-fg font-semibold">{t('skills.guidanceOnly')}</b>{' '}
+          <b className="text-text-primary font-semibold">{t('skills.guidanceOnly')}</b>{' '}
           {t('skills.validation.guidanceBody')}
         </span>
       </div>
@@ -320,7 +320,7 @@ export function SkillValidationPage(): JSX.Element {
           <button
             type="button"
             onClick={() => setFilters(EMPTY_FILTERS)}
-            className="text-fg-muted hover:text-fg text-body-sm py-1.5 font-medium underline underline-offset-2"
+            className="text-text-secondary hover:text-text-primary text-body-sm py-1.5 font-medium underline underline-offset-2"
           >
             {t('skills.validation.clearFilters')}
           </button>
@@ -329,7 +329,7 @@ export function SkillValidationPage(): JSX.Element {
 
       {/* Mobile filter drawer — keeps the list on-canvas below md. */}
       <details className="border-border-default bg-surface-raised mb-6 rounded-md border md:hidden">
-        <summary className="text-fg text-body-sm flex cursor-pointer list-none items-center gap-2 px-3 py-2.5 font-semibold">
+        <summary className="text-text-primary text-body-sm flex cursor-pointer list-none items-center gap-2 px-3 py-2.5 font-semibold">
           <SlidersHorizontal size={15} aria-hidden="true" className="shrink-0" />
           {t('skills.validation.filters')}
           {isFiltered && (
@@ -353,7 +353,7 @@ export function SkillValidationPage(): JSX.Element {
             <button
               type="button"
               onClick={() => setFilters(EMPTY_FILTERS)}
-              className="text-fg-muted hover:text-fg text-body-sm self-start font-medium underline underline-offset-2"
+              className="text-text-secondary hover:text-text-primary text-body-sm self-start font-medium underline underline-offset-2"
             >
               {t('skills.validation.clearFilters')}
             </button>

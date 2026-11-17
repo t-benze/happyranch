@@ -220,7 +220,7 @@ function coverageLine(coverage: SourceCoverage[], t: Translate): string {
 function CoverageDisclosure({ coverage }: { coverage: SourceCoverage[] }): JSX.Element {
   const { t } = useTranslation();
   return (
-    <details className="bg-surface border-border-default group rounded-lg border">
+    <details className="bg-surface-raised border-border-default group rounded-lg border">
       <summary className="focus-visible:ring-ring flex cursor-pointer list-none items-start gap-2 rounded-lg px-4 py-3 text-xs focus-visible:ring-2 focus-visible:outline-none">
         <ChevronDown size={14} aria-hidden="true" className="text-text-muted mt-0.5 shrink-0 -rotate-90 group-open:rotate-0" />
         <span className="text-text-primary shrink-0 font-semibold tracking-widest uppercase">{t('knowledge.instill.coverage.heading')}</span>
@@ -279,7 +279,7 @@ function PickView({ recipient, archives, history, historyError, chosen, onChoose
         </>
       )}
     >
-      <div className="bg-surface border-border-default flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border px-4 py-3 text-sm">
+      <div className="bg-surface-raised border-border-default flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border px-4 py-3 text-sm">
         <span className="text-text-muted text-xs font-semibold tracking-widest uppercase">{t('knowledge.instill.recipient')}</span>
         <span className="text-text-primary">{recipientLine(recipient)}</span>
         {probe ? <RecipientStatus eligibility={eligibility.data} loading={eligibility.isLoading} /> : null}
@@ -296,7 +296,7 @@ function PickView({ recipient, archives, history, historyError, chosen, onChoose
         {archives.isLoading ? <LoadingBlock /> : archives.isError ? (
           <ErrorBlock error={archives.error} onRetry={archives.refetch} />
         ) : list.length === 0 ? (
-          <div className="bg-surface border-border-default flex flex-col items-center gap-2 rounded-lg border px-8 py-16 text-center">
+          <div className="bg-surface-raised border-border-default flex flex-col items-center gap-2 rounded-lg border px-8 py-16 text-center">
             <ArchiveX size={20} aria-hidden="true" className="text-text-muted" />
             <p className="font-display text-text-primary text-lg">{t('knowledge.instill.pick.emptyTitle')}</p>
             <p className="text-text-secondary max-w-sm text-sm">{t('knowledge.instill.pick.emptyBody', { name: recipient.name })}</p>
@@ -310,7 +310,7 @@ function PickView({ recipient, archives, history, historyError, chosen, onChoose
               const selected = chosen === a.archive_id;
               return (
                 <li key={a.archive_id}>
-                  <label className={`bg-surface shadow-pasture-sm flex gap-3 rounded-lg border p-4 ${own ? 'border-border-default opacity-70' : selected ? 'border-accent ring-accent ring-1' : 'border-border-default hover:border-text-muted cursor-pointer'}`}>
+                  <label className={`bg-surface-raised shadow-pasture-sm flex gap-3 rounded-lg border p-4 ${own ? 'border-border-default opacity-70' : selected ? 'border-accent-default ring-accent-default ring-1' : 'border-border-default hover:border-text-muted cursor-pointer'}`}>
                     <input type="radio" name="instill-archive" className="mt-1 shrink-0 self-start" value={a.archive_id}
                       checked={selected} disabled={own} onChange={() => onChoose(a.archive_id)} />
                     <span className="min-w-0 flex-1">
@@ -444,7 +444,7 @@ function PreviewView({ recipient, archiveId, explicit, onSelect, onPush, onPop, 
             : archive && elig && source ? (
               <div className="space-y-4">
                 <EligibilityNotice recipient={recipient} eligibility={elig} checking={eligibility.isFetching} onCheck={() => void eligibility.refetch()} />
-                <div className="bg-surface border-border-default flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-lg border px-4 py-3 text-sm">
+                <div className="bg-surface-raised border-border-default flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-lg border px-4 py-3 text-sm">
                   <span className="text-text-muted text-xs font-semibold tracking-widest uppercase">{t('knowledge.instill.recipient')}</span>
                   <span className="text-text-primary">{recipientLine(recipient)}</span>
                   <RecipientStatus eligibility={elig} loading={false} />
@@ -479,7 +479,7 @@ function PreviewView({ recipient, archiveId, explicit, onSelect, onPush, onPop, 
                       const on = chosen.has(item.item_id);
                       const id = `instill-item-${item.item_id}`;
                       return (
-                        <li key={item.item_id} className={`bg-surface shadow-pasture-sm rounded-lg border p-4 ${on ? 'border-accent ring-accent ring-1' : 'border-border-default'}`}>
+                        <li key={item.item_id} className={`bg-surface-raised shadow-pasture-sm rounded-lg border p-4 ${on ? 'border-accent-default ring-accent-default ring-1' : 'border-border-default'}`}>
                           <div className="flex items-start gap-3">
                             <input id={id} type="checkbox" className="mt-0.5 shrink-0 self-start" checked={on} disabled={state !== 'selectable'}
                               aria-label={t('knowledge.instill.preview.selectItem', { item: item.item_id, title: item.title })}
@@ -678,7 +678,7 @@ export function ImportStateBadge({ state }: { state: ImportOperation['state'] })
 
 function Tile({ value, label, icon }: { value: number; label: string; icon: ReactNode }): JSX.Element {
   return (
-    <div className="bg-surface border-border-default rounded-lg border px-3 py-2.5">
+    <div className="bg-surface-raised border-border-default rounded-lg border px-3 py-2.5">
       <div className="font-display text-text-primary text-2xl tabular-nums">{value}</div>
       <div className="text-text-secondary mt-0.5 flex items-center gap-1 text-xs">{icon}{label}</div>
     </div>
@@ -778,7 +778,7 @@ function ReceiptView({ recipient, operationId, history, historyError, gate, retr
               selected: op.selected, imported: op.imported, skipped: op.skipped, failed: op.failed - held, held, pending: op.pending,
             })}
           </p>
-          <ul className="bg-surface border-border-default overflow-hidden rounded-lg border" aria-label={t('knowledge.instill.receipt.items')}>
+          <ul className="bg-surface-raised border-border-default overflow-hidden rounded-lg border" aria-label={t('knowledge.instill.receipt.items')}>
             {op.results.map((r) => {
               const item = items.get(r.item_id);
               const original = mappings.get(r.item_id)?.mapping;
@@ -948,7 +948,7 @@ function MemoryView({ recipient, memoryId, history, stack, depth, onPush, onPop,
     >
       {query.isLoading ? <LoadingBlock /> : query.isError ? <ErrorBlock error={query.error} onRetry={() => void query.refetch()} /> : entry ? (
         <div className="space-y-4">
-          <blockquote className="border-accent bg-surface text-text-primary rounded-r-lg border-l-4 px-4 py-3 text-sm leading-relaxed whitespace-pre-wrap">
+          <blockquote className="border-accent-default bg-surface-raised text-text-primary rounded-r-lg border-l-4 px-4 py-3 text-sm leading-relaxed whitespace-pre-wrap">
             {item?.content ?? entry.body}
           </blockquote>
           {inherited ? (
@@ -991,7 +991,7 @@ function MemoryView({ recipient, memoryId, history, stack, depth, onPush, onPop,
             <Notice tone="neutral" icon={<Lock size={16} aria-hidden="true" />}>{t('knowledge.instill.memory.noAuthority', { name: recipient.name })}</Notice>
           ) : null}
           {inherited ? (
-            <details className="bg-surface border-border-default rounded-lg border">
+            <details className="bg-surface-raised border-border-default rounded-lg border">
               <summary className="text-accent-text cursor-pointer px-4 py-2.5 text-xs font-semibold">{t('knowledge.instill.memory.stored')}</summary>
               <p className="text-text-secondary border-border-subtle border-t px-4 py-3 text-xs leading-relaxed whitespace-pre-wrap">{entry.body}</p>
             </details>

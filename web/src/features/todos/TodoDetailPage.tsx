@@ -129,9 +129,9 @@ export function TodoDetailPage({
     return (
       <ContentWrap>
         <div className="animate-pulse space-y-4">
-          <div className="bg-bg-subtle h-8 w-32 rounded-sm" />
-          <div className="bg-bg-subtle h-16 w-96 rounded-sm" />
-          <div className="bg-bg-subtle h-24 rounded-lg" />
+          <div className="bg-surface-sunken h-8 w-32 rounded-sm" />
+          <div className="bg-surface-sunken h-16 w-96 rounded-sm" />
+          <div className="bg-surface-sunken h-24 rounded-lg" />
         </div>
       </ContentWrap>
     )
@@ -141,7 +141,7 @@ export function TodoDetailPage({
     return (
       <ContentWrap>
         <div className="flex flex-col items-center py-16 text-center">
-          <p className="text-fg-muted mb-4">{t('todos.detail.loadError')}</p>
+          <p className="text-text-secondary mb-4">{t('todos.detail.loadError')}</p>
           <Button onClick={() => refetch()}>{t('todos.retry')}</Button>
         </div>
       </ContentWrap>
@@ -191,7 +191,7 @@ export function TodoDetailPage({
     <ContentWrap>
       <Link
         to={`/orgs/${org}/todos`}
-        className="text-fg-muted hover:text-fg mb-8 inline-flex items-center gap-1.5 text-sm transition-colors"
+        className="text-text-secondary hover:text-text-primary mb-8 inline-flex items-center gap-1.5 text-sm transition-colors"
       >
         <ArrowLeft size={16} />
         {t('todos.list.title')}
@@ -199,14 +199,14 @@ export function TodoDetailPage({
 
       <div className="mb-8 flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
         <div>
-          <h1 className="text-display font-display text-fg leading-tight">
+          <h1 className="text-display font-display text-text-primary leading-tight">
             {schedule.normalized_brief}
           </h1>
-          <div className="text-fg-muted mt-3 flex flex-wrap items-center gap-3 text-sm">
+          <div className="text-text-secondary mt-3 flex flex-wrap items-center gap-3 text-sm">
             <StatusBadge {...scheduleStatusBadge(schedule.status, t)} />
             <Avatar initials={agentInitials(schedule.agent_name)} tone="soft" size="sm" />
-            <span className="text-fg"><IdentityName canonicalId={schedule.agent_name} /></span>
-            <span className="text-fg-subtle font-mono text-xs">
+            <span className="text-text-primary"><IdentityName canonicalId={schedule.agent_name} /></span>
+            <span className="text-text-muted font-mono text-xs">
               {schedule.schedule_id}
             </span>
           </div>
@@ -254,42 +254,42 @@ export function TodoDetailPage({
 
       <div className="flex flex-col gap-8 lg:flex-row">
         <div className="min-w-0 flex-1 space-y-6">
-          <div className="border-border bg-bg-raised space-y-4 rounded-lg border p-6">
-            <h2 className="text-fg-subtle text-overline font-semibold tracking-wider uppercase">
+          <div className="border-border-default bg-surface-raised space-y-4 rounded-lg border p-6">
+            <h2 className="text-text-muted text-overline font-semibold tracking-wider uppercase">
               {t('todos.detail.schedule')}
             </h2>
-            <p className="text-fg text-h1 font-display">
+            <p className="text-text-primary text-h1 font-display">
               {describeSchedule(schedule, t, locale)}
             </p>
             <div className="border-border-subtle grid grid-cols-3 gap-4 border-t pt-4">
               <div>
-                <span className="text-fg-subtle text-overline block font-semibold tracking-wider uppercase">
+                <span className="text-text-muted text-overline block font-semibold tracking-wider uppercase">
                   {t('todos.detail.recurrence')}
                 </span>
-                <span className="text-fg text-sm font-medium">{t(kindKey(schedule.kind))}</span>
+                <span className="text-text-primary text-sm font-medium">{t(kindKey(schedule.kind))}</span>
               </div>
               <div>
-                <span className="text-fg-subtle text-overline block font-semibold tracking-wider uppercase">
+                <span className="text-text-muted text-overline block font-semibold tracking-wider uppercase">
                   {t('todos.detail.timezone')}
                 </span>
-                <span className="text-fg text-sm font-medium">{tz}</span>
+                <span className="text-text-primary text-sm font-medium">{tz}</span>
               </div>
               {schedule.kind === 'weekly' && !schedule.indefinite && schedule.expires_at && (
                 <div>
-                  <span className="text-fg-subtle text-overline block font-semibold tracking-wider uppercase">
+                  <span className="text-text-muted text-overline block font-semibold tracking-wider uppercase">
                     {t('todos.detail.review')}
                   </span>
-                  <span className="text-fg text-sm font-medium">
+                  <span className="text-text-primary text-sm font-medium">
                     {formatReviewDate(new Date(schedule.expires_at), locale)}
                   </span>
                 </div>
               )}
               {Boolean(schedule.indefinite) && (
                 <div>
-                  <span className="text-fg-subtle text-overline block font-semibold tracking-wider uppercase">
+                  <span className="text-text-muted text-overline block font-semibold tracking-wider uppercase">
                     {t('todos.detail.review')}
                   </span>
-                  <span className="text-fg text-sm font-medium">{t('todos.indefinite')}</span>
+                  <span className="text-text-primary text-sm font-medium">{t('todos.indefinite')}</span>
                 </div>
               )}
             </div>
@@ -313,46 +313,46 @@ export function TodoDetailPage({
               </div>
             )}
 
-          <div className="border-border bg-bg-raised space-y-2 rounded-lg border p-6">
-            <h2 className="text-fg-subtle text-overline font-semibold tracking-wider uppercase">
+          <div className="border-border-default bg-surface-raised space-y-2 rounded-lg border p-6">
+            <h2 className="text-text-muted text-overline font-semibold tracking-wider uppercase">
               {t('todos.detail.normalized')}
             </h2>
-            <p className="text-fg text-sm">{schedule.normalized_brief}</p>
+            <p className="text-text-primary text-sm">{schedule.normalized_brief}</p>
           </div>
 
-          <div className="border-border bg-bg-raised space-y-2 rounded-lg border p-6">
-            <h2 className="text-fg-subtle text-overline font-semibold tracking-wider uppercase">
+          <div className="border-border-default bg-surface-raised space-y-2 rounded-lg border p-6">
+            <h2 className="text-text-muted text-overline font-semibold tracking-wider uppercase">
               {t('todos.detail.original')}
             </h2>
-            <blockquote className="border-border-subtle bg-bg-subtle text-fg-muted rounded-lg border-l-4 px-4 py-3 text-sm italic">
+            <blockquote className="border-border-subtle bg-surface-sunken text-text-secondary rounded-lg border-l-4 px-4 py-3 text-sm italic">
               {schedule.source_instruction}
             </blockquote>
           </div>
 
           {termExplanation && (
-            <div className="border-border bg-bg-raised rounded-lg border p-6">
-              <p className="text-fg-muted text-sm">{t(termExplanation)}</p>
+            <div className="border-border-default bg-surface-raised rounded-lg border p-6">
+              <p className="text-text-secondary text-sm">{t(termExplanation)}</p>
             </div>
           )}
         </div>
 
         <div className="space-y-6">
-          <div className="border-border bg-bg-raised space-y-3 rounded-lg border p-6">
-            <h2 className="text-fg-subtle text-overline font-semibold tracking-wider uppercase">
+          <div className="border-border-default bg-surface-raised space-y-3 rounded-lg border p-6">
+            <h2 className="text-text-muted text-overline font-semibold tracking-wider uppercase">
               {t('todos.detail.activity')}
             </h2>
             {schedule.fire_count > 0 && (
               <div className="flex justify-between gap-2 text-sm">
-                <span className="text-fg-subtle">{t('todos.detail.runs')}</span>
-                <span className="text-fg font-semibold tabular-nums">
+                <span className="text-text-muted">{t('todos.detail.runs')}</span>
+                <span className="text-text-primary font-semibold tabular-nums">
                   {formatCountFor(locale, schedule.fire_count)}
                 </span>
               </div>
             )}
             {schedule.last_fired_at && (
               <div className="flex justify-between gap-2 text-sm">
-                <span className="text-fg-subtle">{t('todos.detail.lastFired')}</span>
-                <span className="text-fg font-semibold tabular-nums">
+                <span className="text-text-muted">{t('todos.detail.lastFired')}</span>
+                <span className="text-text-primary font-semibold tabular-nums">
                   {fmtDate(schedule.last_fired_at, locale)}
                 </span>
               </div>
@@ -363,7 +363,7 @@ export function TodoDetailPage({
                   <Link
                     key={taskId}
                     to={`/orgs/${org}/tasks/${taskId}`}
-                    className="bg-bg-subtle text-fg-muted hover:text-fg inline-flex items-center rounded-sm px-2 py-1 font-mono text-xs"
+                    className="bg-surface-sunken text-text-secondary hover:text-text-primary inline-flex items-center rounded-sm px-2 py-1 font-mono text-xs"
                   >
                     {taskId}
                   </Link>
@@ -372,36 +372,36 @@ export function TodoDetailPage({
             )}
             <Link
               to={`/orgs/${org}/audit?task_id=${schedule.schedule_id}`}
-              className="text-accent inline-flex items-center gap-1 text-sm hover:underline"
+              className="text-accent-default inline-flex items-center gap-1 text-sm hover:underline"
             >
               {t('todos.detail.viewActivity')}
               <ExternalLink size={12} aria-hidden="true" />
             </Link>
-            <span className="text-fg-subtle block font-mono text-xs">
+            <span className="text-text-muted block font-mono text-xs">
               task_id={schedule.schedule_id}
             </span>
           </div>
 
-          <div className="border-border bg-bg-raised space-y-2 rounded-lg border p-6">
-            <h2 className="text-fg-subtle text-overline mb-2 font-semibold tracking-wider uppercase">
+          <div className="border-border-default bg-surface-raised space-y-2 rounded-lg border p-6">
+            <h2 className="text-text-muted text-overline mb-2 font-semibold tracking-wider uppercase">
               {t('todos.detail.recordDetails')}
             </h2>
             <dl className="space-y-2 text-xs">
               <div className="flex justify-between gap-2">
-                <dt className="text-fg-subtle">{t('todos.detail.created')}</dt>
-                <dd className="text-fg-muted">{fmtDate(schedule.created_at, locale)}</dd>
+                <dt className="text-text-muted">{t('todos.detail.created')}</dt>
+                <dd className="text-text-secondary">{fmtDate(schedule.created_at, locale)}</dd>
               </div>
               <div className="flex justify-between gap-2">
-                <dt className="text-fg-subtle">{t('todos.detail.updated')}</dt>
-                <dd className="text-fg-muted">{fmtDate(schedule.updated_at, locale)}</dd>
+                <dt className="text-text-muted">{t('todos.detail.updated')}</dt>
+                <dd className="text-text-secondary">{fmtDate(schedule.updated_at, locale)}</dd>
               </div>
               <div className="flex justify-between gap-2">
-                <dt className="text-fg-subtle">{t('todos.detail.team')}</dt>
-                <dd className="text-fg-muted">{schedule.team}</dd>
+                <dt className="text-text-muted">{t('todos.detail.team')}</dt>
+                <dd className="text-text-secondary">{schedule.team}</dd>
               </div>
               <div className="flex justify-between gap-2">
-                <dt className="text-fg-subtle">{t('todos.detail.scheduleId')}</dt>
-                <dd className="text-fg-muted font-mono">{schedule.schedule_id}</dd>
+                <dt className="text-text-muted">{t('todos.detail.scheduleId')}</dt>
+                <dd className="text-text-secondary font-mono">{schedule.schedule_id}</dd>
               </div>
             </dl>
           </div>

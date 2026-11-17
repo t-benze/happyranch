@@ -132,14 +132,14 @@ export function ExecutorsSection(): JSX.Element {
       )}
 
       {/* Read-only notice — always visible at the bottom, verbatim (Step-0 §6-5). */}
-      <div className="bg-surface border-border-default shadow-pasture-sm rounded-lg border p-4">
+      <div className="bg-surface-raised border-border-default shadow-pasture-sm rounded-lg border p-4">
         <h3 className="text-text-primary text-sm font-medium">
           {t('settings.executors.assignment.title')}
         </h3>
         <p className="text-text-secondary mt-1 text-sm">
           {render('settings.executors.assignment.body', {
             link: (
-              <a href="../agents" className="text-accent hover:underline">
+              <a href="../agents" className="text-accent-default hover:underline">
                 {t('settings.executors.assignment.agentsPage')}
               </a>
             ),

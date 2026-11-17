@@ -106,7 +106,7 @@ export function CoverageList({ coverage, mode, label }: { coverage: SourceCovera
   const rest = mode === 'full' ? [] : coverage.filter((c) => !primary.includes(c));
   const shown = expanded ? [...primary, ...rest] : primary;
   return (
-    <div className="bg-surface border-border-default shadow-pasture-sm overflow-hidden rounded-lg border">
+    <div className="bg-surface-raised border-border-default shadow-pasture-sm overflow-hidden rounded-lg border">
       <ul aria-label={label}>
         {shown.map((entry) => <CoverageRow key={entry.category} entry={entry} />)}
       </ul>
@@ -146,7 +146,7 @@ export function SectionLabel({ children }: { children: ReactNode }): JSX.Element
 export function Notice({ tone, icon, role, children }: { tone: 'info' | 'danger' | 'positive' | 'neutral'; icon?: ReactNode; role?: 'status' | 'alert'; children: ReactNode }): JSX.Element {
   const cls = tone === 'danger' ? 'border-status-escalated/40 bg-tier-red-tint'
     : tone === 'positive' ? 'border-border-default bg-tier-green-tint'
-      : tone === 'info' ? 'border-border-default bg-info-soft' : 'border-border-default bg-surface';
+      : tone === 'info' ? 'border-border-default bg-info-soft' : 'border-border-default bg-surface-raised';
   return (
     <div role={role} className={`text-text-primary flex gap-2.5 rounded-lg border px-4 py-3 text-sm leading-relaxed ${cls}`}>
       {icon ? <span className="text-text-muted mt-0.5 shrink-0">{icon}</span> : null}

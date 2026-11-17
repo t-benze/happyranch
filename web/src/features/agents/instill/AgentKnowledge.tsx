@@ -21,7 +21,7 @@ import { classifyAgentError, renderAgentError } from '../strings';
 import { Notice, useUtc } from '../retired/KnowledgeParts';
 import { ImportStateBadge, InheritedMarker, InstillDrawer, type InstillView } from './InstillDrawer';
 
-const card = 'bg-surface border-border-default shadow-pasture-sm overflow-hidden rounded-lg border';
+const card = 'bg-surface-raised border-border-default shadow-pasture-sm overflow-hidden rounded-lg border';
 
 export function AgentKnowledge({ agentName, displayName }: { agentName: string; displayName: string }): JSX.Element {
   const { t, render } = useTranslation();
@@ -138,7 +138,7 @@ export function AgentKnowledge({ agentName, displayName }: { agentName: string; 
             {learningsQuery.data.entries.map((e) => (
               <li
                 key={e.id}
-                className="border-border-default bg-surface shadow-pasture-sm rounded-lg border p-3"
+                className="border-border-default bg-surface-raised shadow-pasture-sm rounded-lg border p-3"
               >
                 <div className="flex flex-wrap items-center gap-2 text-xs">
                   <span className="text-text-muted font-mono tabular-nums">{e.id}</span>

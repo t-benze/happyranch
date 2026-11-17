@@ -350,7 +350,7 @@ export function OrganizationSection({ org }: Props): JSX.Element {
 
       {/* session timeout */}
       <h4 className="mb-2 text-sm font-medium">{t('settings.organization.session.heading')}</h4>
-      <div className="border-border divide-border mb-4 divide-y rounded-md border">
+      <div className="border-border-default divide-border-default mb-4 divide-y rounded-md border">
         <EditableRow label={t('settings.organization.session.timeout')} badge={t('settings.organization.badge.live')}>
           <input
             type="number"
@@ -358,14 +358,14 @@ export function OrganizationSection({ org }: Props): JSX.Element {
             value={fields.timeout}
             onChange={(e) => update('timeout', e.target.value)}
             placeholder={t('settings.organization.session.timeoutPlaceholder')}
-            className="bg-bg-raised border-border text-fg w-32 rounded-sm border px-2 py-0.5 text-sm"
+            className="bg-surface-raised border-border-default text-text-primary w-32 rounded-sm border px-2 py-0.5 text-sm"
           />
         </EditableRow>
       </div>
 
       {/* dreaming */}
       <h4 className="mb-2 text-sm font-medium">{t('settings.organization.dreaming.heading')}</h4>
-      <div className="border-border divide-border mb-4 divide-y rounded-md border">
+      <div className="border-border-default divide-border-default mb-4 divide-y rounded-md border">
         <EditableRow label={t('settings.organization.enabled')} badge={t('settings.organization.badge.live')}>
           <BooleanToggle value={fields.dreamEnabled} onChange={(v) => update('dreamEnabled', v)} />
         </EditableRow>
@@ -375,7 +375,7 @@ export function OrganizationSection({ org }: Props): JSX.Element {
             value={fields.dreamTime}
             onChange={(e) => update('dreamTime', e.target.value)}
             placeholder="HH:MM"
-            className="bg-bg-raised border-border text-fg w-24 rounded-sm border px-2 py-0.5 text-sm"
+            className="bg-surface-raised border-border-default text-text-primary w-24 rounded-sm border px-2 py-0.5 text-sm"
           />
         </EditableRow>
         <EditableRow label={t('settings.organization.dreaming.scheduleTimezone')} badge={t('settings.organization.badge.live')}>
@@ -384,7 +384,7 @@ export function OrganizationSection({ org }: Props): JSX.Element {
             value={fields.dreamTz}
             onChange={(e) => update('dreamTz', e.target.value)}
             placeholder="UTC"
-            className="bg-bg-raised border-border text-fg w-48 rounded-sm border px-2 py-0.5 text-sm"
+            className="bg-surface-raised border-border-default text-text-primary w-48 rounded-sm border px-2 py-0.5 text-sm"
           />
         </EditableRow>
         <EditableRow label={t('settings.organization.dreaming.catchUp')} badge={t('settings.organization.badge.live')}>
@@ -411,7 +411,7 @@ export function OrganizationSection({ org }: Props): JSX.Element {
             agents={identityOptions}
             restrictToOptions
             placeholder={t('settings.organization.dreaming.addAgentsPlaceholder')}
-            className="bg-bg-raised border-border text-fg w-56 rounded-sm border px-2 py-0.5 text-sm"
+            className="bg-surface-raised border-border-default text-text-primary w-56 rounded-sm border px-2 py-0.5 text-sm"
           />
         </EditableRow>
         <EditableRow label={t('settings.organization.dreaming.excluded')} badge={t('settings.organization.badge.live')}>
@@ -421,14 +421,14 @@ export function OrganizationSection({ org }: Props): JSX.Element {
             agents={identityOptions}
             restrictToOptions
             placeholder={t('settings.organization.dreaming.addAgentsPlaceholder')}
-            className="bg-bg-raised border-border text-fg w-56 rounded-sm border px-2 py-0.5 text-sm"
+            className="bg-surface-raised border-border-default text-text-primary w-56 rounded-sm border px-2 py-0.5 text-sm"
           />
         </EditableRow>
       </div>
 
       {/* threads */}
       <h4 className="mb-2 text-sm font-medium">{t('settings.organization.threads.heading')}</h4>
-      <div className="border-border divide-border mb-4 divide-y rounded-md border">
+      <div className="border-border-default divide-border-default mb-4 divide-y rounded-md border">
         <EditableRow label={t('settings.organization.enabled')} badge={t('settings.organization.badge.live')}>
           <BooleanToggle
             value={fields.threadsEnabled}
@@ -454,9 +454,9 @@ export function OrganizationSection({ org }: Props): JSX.Element {
         aria-labelledby="reviewer-agents-label"
         aria-describedby="reviewer-agents-help"
         data-testid="reviewer-agents-field"
-        className="border-border mb-4 rounded-md border px-3 py-2 text-sm"
+        className="border-border-default mb-4 rounded-md border px-3 py-2 text-sm"
       >
-        <span id="reviewer-agents-label" className="text-fg-muted">{t('settings.organization.reviewer.label')}</span>
+        <span id="reviewer-agents-label" className="text-text-secondary">{t('settings.organization.reviewer.label')}</span>
         <p id="reviewer-agents-help" className="text-text-secondary mt-1 text-xs">
           {t('settings.organization.reviewer.help')}
         </p>
@@ -498,7 +498,7 @@ export function OrganizationSection({ org }: Props): JSX.Element {
                   className={`flex max-w-full min-w-0 items-center gap-1 rounded-sm border px-1.5 py-0.5 text-xs ${
                     unavailable
                       ? 'border-feedback-warning/40 bg-feedback-warning/5 text-feedback-warning'
-                      : 'border-border bg-bg-raised text-fg'
+                      : 'border-border-default bg-surface-raised text-text-primary'
                   }`}
                 >
                   <span className="min-w-0 break-all">{label}</span>
@@ -510,7 +510,7 @@ export function OrganizationSection({ org }: Props): JSX.Element {
                     onClick={() => removeReviewer(id)}
                     disabled={!reviewerEditable}
                     aria-label={t('settings.organization.reviewer.remove', { agent: label })}
-                    className="text-fg-muted hover:text-fg shrink-0 rounded-sm px-1 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+                    className="text-text-secondary hover:text-text-primary shrink-0 rounded-sm px-1 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
                   >
                     ×
                   </button>
@@ -582,7 +582,7 @@ export function OrganizationSection({ org }: Props): JSX.Element {
             </div>
           )}
 
-          <div className="border-border divide-border mb-4 divide-y rounded-md border" data-testid="operating-controls">
+          <div className="border-border-default divide-border-default mb-4 divide-y rounded-md border" data-testid="operating-controls">
             <EditableRow label={t('settings.organization.operating.workHours')} labelId="work-hours-switch-label" badge={t('settings.organization.badge.live')}>
               <div className="flex items-center gap-2">
                 <BooleanToggle
@@ -627,12 +627,12 @@ export function OrganizationSection({ org }: Props): JSX.Element {
 
       {/* Sticky save bar */}
       {dirty && (
-        <div className="border-border bg-bg-subtle sticky bottom-0 -mx-8 mt-8 -mb-8 flex items-center gap-3 border-t px-8 py-3">
+        <div className="border-border-default bg-surface-sunken sticky bottom-0 -mx-8 mt-8 -mb-8 flex items-center gap-3 border-t px-8 py-3">
           <button
             type="button"
             onClick={handleSave}
             disabled={saveState.phase === 'saving'}
-            className="bg-accent text-accent-fg hover:bg-accent-hover rounded-sm px-4 py-1.5 text-sm font-medium transition-colors disabled:opacity-50"
+            className="bg-accent-default text-text-inverse hover:bg-accent-hover rounded-sm px-4 py-1.5 text-sm font-medium transition-colors disabled:opacity-50"
           >
             {saveState.phase === 'saving' ? t('settings.organization.saveBar.saving') : t('settings.organization.saveBar.save')}
           </button>
@@ -640,7 +640,7 @@ export function OrganizationSection({ org }: Props): JSX.Element {
             type="button"
             onClick={handleDiscard}
             disabled={saveState.phase === 'saving'}
-            className="text-fg-muted hover:text-fg rounded-sm px-4 py-1.5 text-sm transition-colors disabled:opacity-50"
+            className="text-text-secondary hover:text-text-primary rounded-sm px-4 py-1.5 text-sm transition-colors disabled:opacity-50"
           >
             {t('settings.organization.saveBar.discard')}
           </button>
@@ -721,11 +721,11 @@ function EditableRow({
 }): JSX.Element {
   return (
     <div className="flex items-center justify-between px-3 py-2 text-sm">
-      <span id={labelId} className="text-fg-muted">{label}</span>
+      <span id={labelId} className="text-text-secondary">{label}</span>
       <span className="flex items-center gap-2">
         {children}
         {badge && (
-          <span className="bg-bg-raised text-tier-green rounded-sm px-1.5 py-0.5 text-xs font-medium">
+          <span className="bg-surface-raised text-tier-green rounded-sm px-1.5 py-0.5 text-xs font-medium">
             {badge}
           </span>
         )}
@@ -768,7 +768,7 @@ const BooleanToggle = forwardRef<HTMLButtonElement, {
         }
       }}
       className={`inline-flex h-6 w-9 items-center rounded-full transition-colors ${
-        value ? 'bg-accent' : 'bg-bg-raised border-border border'
+        value ? 'bg-accent-default' : 'bg-surface-raised border-border-default border'
       }`}
     >
       <span

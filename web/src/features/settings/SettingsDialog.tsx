@@ -37,7 +37,7 @@ export function SettingsDialog({ open, onOpenChange }: Props): JSX.Element {
         </DialogHeader>
 
         {q.isLoading && (
-          <p className="text-fg-muted py-4 text-sm">Loading settings…</p>
+          <p className="text-text-secondary py-4 text-sm">Loading settings…</p>
         )}
         {q.isError && (
           <p className="text-tier-red py-4 text-sm">
@@ -75,7 +75,7 @@ function SystemSection({ sys }: { sys: SystemSettings }): JSX.Element {
   return (
     <section>
       <h3 className="mb-2 text-lg font-semibold">System</h3>
-      <div className="border-border divide-border divide-y rounded-md border">
+      <div className="border-border-default divide-border-default divide-y rounded-md border">
         {rows.map(({ label, entry }) => (
           <SettingsRow
             key={label}
@@ -193,7 +193,7 @@ function EditableOrgSection({
       <h3 className="mb-2 text-lg font-semibold">Org</h3>
       <form onSubmit={handleSubmit} className="space-y-4">
         {/* session timeout */}
-        <div className="border-border divide-border divide-y rounded-md border">
+        <div className="border-border-default divide-border-default divide-y rounded-md border">
           <EditableRow label="Session timeout (s)">
             <input
               type="number"
@@ -201,14 +201,14 @@ function EditableOrgSection({
               value={timeout}
               onChange={(e) => setTimeout_(e.target.value)}
               placeholder="use system default"
-              className="bg-bg-raised border-border text-fg w-32 rounded-sm border px-2 py-0.5 text-sm"
+              className="bg-surface-raised border-border-default text-text-primary w-32 rounded-sm border px-2 py-0.5 text-sm"
             />
           </EditableRow>
         </div>
 
         {/* dreaming */}
         <h4 className="text-base font-medium">Dreaming</h4>
-        <div className="border-border divide-border divide-y rounded-md border">
+        <div className="border-border-default divide-border-default divide-y rounded-md border">
           <EditableRow label="Enabled">
             <BooleanToggle value={dreamEnabled} onChange={setDreamEnabled} />
           </EditableRow>
@@ -218,7 +218,7 @@ function EditableOrgSection({
               value={dreamTime}
               onChange={(e) => setDreamTime(e.target.value)}
               placeholder="HH:MM"
-              className="bg-bg-raised border-border text-fg w-24 rounded-sm border px-2 py-0.5 text-sm"
+              className="bg-surface-raised border-border-default text-text-primary w-24 rounded-sm border px-2 py-0.5 text-sm"
             />
           </EditableRow>
           <EditableRow label="Schedule timezone">
@@ -227,7 +227,7 @@ function EditableOrgSection({
               value={dreamTz}
               onChange={(e) => setDreamTz(e.target.value)}
               placeholder="UTC"
-              className="bg-bg-raised border-border text-fg w-48 rounded-sm border px-2 py-0.5 text-sm"
+              className="bg-surface-raised border-border-default text-text-primary w-48 rounded-sm border px-2 py-0.5 text-sm"
             />
           </EditableRow>
           <EditableRow label="Catch up on startup">
@@ -250,7 +250,7 @@ function EditableOrgSection({
               value={dreamInclude}
               onChange={(e) => setDreamInclude(e.target.value)}
               placeholder="comma-separated"
-              className="bg-bg-raised border-border text-fg w-48 rounded-sm border px-2 py-0.5 text-sm"
+              className="bg-surface-raised border-border-default text-text-primary w-48 rounded-sm border px-2 py-0.5 text-sm"
             />
           </EditableRow>
           <EditableRow label="Excluded agents">
@@ -259,14 +259,14 @@ function EditableOrgSection({
               value={dreamExclude}
               onChange={(e) => setDreamExclude(e.target.value)}
               placeholder="comma-separated"
-              className="bg-bg-raised border-border text-fg w-48 rounded-sm border px-2 py-0.5 text-sm"
+              className="bg-surface-raised border-border-default text-text-primary w-48 rounded-sm border px-2 py-0.5 text-sm"
             />
           </EditableRow>
         </div>
 
         {/* threads */}
         <h4 className="text-base font-medium">Threads</h4>
-        <div className="border-border divide-border divide-y rounded-md border">
+        <div className="border-border-default divide-border-default divide-y rounded-md border">
           <EditableRow label="Enabled">
             <BooleanToggle value={threadsEnabled} onChange={setThreadsEnabled} />
           </EditableRow>
@@ -286,7 +286,7 @@ function EditableOrgSection({
           <button
             type="submit"
             disabled={mutation.isPending}
-            className="bg-accent text-accent-fg hover:bg-accent-hover rounded-sm px-4 py-1.5 text-sm font-medium transition-colors disabled:opacity-50"
+            className="bg-accent-default text-text-inverse hover:bg-accent-hover rounded-sm px-4 py-1.5 text-sm font-medium transition-colors disabled:opacity-50"
           >
             {mutation.isPending ? 'Saving…' : 'Save'}
           </button>
@@ -301,7 +301,7 @@ function EditableOrgSection({
           )}
         </div>
 
-        <p className="text-fg-subtle text-xs">
+        <p className="text-text-muted text-xs">
           Changes apply on next read. Dreaming scheduler picks up changes
           within ~1 min. Comments in config.yaml are not preserved.
         </p>
@@ -327,13 +327,13 @@ function SettingsRow({
 }): JSX.Element {
   return (
     <div className="flex items-center justify-between px-3 py-2 text-sm">
-      <span className="text-fg-muted">{label}</span>
+      <span className="text-text-secondary">{label}</span>
       <span className="flex items-center gap-2">
-        <span className={muted ? 'text-fg-subtle' : 'text-fg'}>
+        <span className={muted ? 'text-text-muted' : 'text-text-primary'}>
           {value}
         </span>
         {badge && (
-          <span className="bg-bg-raised text-accent rounded-sm px-1.5 py-0.5 text-xs font-medium">
+          <span className="bg-surface-raised text-accent-default rounded-sm px-1.5 py-0.5 text-xs font-medium">
             {badge}
           </span>
         )}
@@ -351,7 +351,7 @@ function EditableRow({
 }): JSX.Element {
   return (
     <div className="flex items-center justify-between px-3 py-2 text-sm">
-      <span className="text-fg-muted">{label}</span>
+      <span className="text-text-secondary">{label}</span>
       {children}
     </div>
   );
@@ -371,7 +371,7 @@ function BooleanToggle({
       aria-checked={value}
       onClick={() => onChange(!value)}
       className={`inline-flex h-6 w-9 items-center rounded-full transition-colors ${
-        value ? 'bg-accent' : 'bg-bg-raised border-border border'
+        value ? 'bg-accent-default' : 'bg-surface-raised border-border-default border'
       }`}
     >
       <span
@@ -399,7 +399,7 @@ export function SettingsTriggerButton({
       aria-label={label}
       title={label}
       onClick={onClick}
-      className="text-fg-muted hover:bg-bg-raised hover:text-fg focus-visible:ring-accent inline-flex h-12 w-12 items-center justify-center rounded-sm transition-colors focus-visible:ring-2 focus-visible:outline-none"
+      className="text-text-secondary hover:bg-surface-raised hover:text-text-primary focus-visible:ring-accent-default inline-flex h-12 w-12 items-center justify-center rounded-sm transition-colors focus-visible:ring-2 focus-visible:outline-none"
     >
       <Settings size={16} aria-hidden="true" />
     </button>

@@ -246,10 +246,10 @@ export function TeamEscalationPolicyCard({
       </dl>
 
       <label className="text-text-secondary mt-4 block text-xs font-medium">{t('agents.policy.whatTo')}
-        <textarea className="border-border-subtle bg-surface mt-1 min-h-32 w-full rounded-md border px-3 py-2 font-mono text-xs" value={editor.draft.whatToEscalate} onChange={(event) => updateText('whatToEscalate', event.target.value)} />
+        <textarea className="border-border-subtle bg-surface-raised mt-1 min-h-32 w-full rounded-md border px-3 py-2 font-mono text-xs" value={editor.draft.whatToEscalate} onChange={(event) => updateText('whatToEscalate', event.target.value)} />
       </label>
       <label className="text-text-secondary mt-3 block text-xs font-medium">{t('agents.policy.whatNot')}
-        <textarea className="border-border-subtle bg-surface mt-1 min-h-32 w-full rounded-md border px-3 py-2 font-mono text-xs" value={editor.draft.whatNotToEscalate} onChange={(event) => updateText('whatNotToEscalate', event.target.value)} />
+        <textarea className="border-border-subtle bg-surface-raised mt-1 min-h-32 w-full rounded-md border px-3 py-2 font-mono text-xs" value={editor.draft.whatNotToEscalate} onChange={(event) => updateText('whatNotToEscalate', event.target.value)} />
       </label>
 
       {(validationError || message) && <p role="status" className={`mt-3 break-all text-xs ${validationError ? 'text-tier-red' : 'text-text-secondary'}`}>{validationError ? renderValidation(validationError, t) : message ? t(message.key, message.params) : null}</p>}
@@ -401,5 +401,5 @@ function readbackMatches(
 }
 
 function PolicyShell({ children }: { children: ReactNode }): JSX.Element {
-  return <section data-testid="team-escalation-policy" className="bg-surface border-border-default shadow-pasture-sm rounded-lg border p-4">{children}</section>;
+  return <section data-testid="team-escalation-policy" className="bg-surface-raised border-border-default shadow-pasture-sm rounded-lg border p-4">{children}</section>;
 }

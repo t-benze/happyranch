@@ -79,11 +79,11 @@ export function TodosPage(): JSX.Element {
           title={t('todos.list.title')}
           lede={t('todos.list.subtitle')}
         />
-        <p className="text-fg-subtle mt-1.5 text-sm">{t('todos.list.trustLine')}</p>
+        <p className="text-text-muted mt-1.5 text-sm">{t('todos.list.trustLine')}</p>
       </div>
 
       <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
-        <div className="bg-bg-subtle inline-flex rounded-lg p-1">
+        <div className="bg-surface-sunken inline-flex rounded-lg p-1">
           {FILTER_GROUPS.map((fg) => (
             <button
               key={fg.key}
@@ -92,8 +92,8 @@ export function TodosPage(): JSX.Element {
               className={cn(
                 'rounded-md px-3 py-1.5 text-sm font-medium transition-colors',
                 activeFilter === fg.key
-                  ? 'bg-bg-raised text-fg shadow-pasture-sm'
-                  : 'text-fg-muted hover:text-fg',
+                  ? 'bg-surface-raised text-text-primary shadow-pasture-sm'
+                  : 'text-text-secondary hover:text-text-primary',
               )}
             >
               {t(fg.labelKey)}
@@ -106,7 +106,7 @@ export function TodosPage(): JSX.Element {
             <select
               value={agentFilter ?? ''}
               onChange={(e) => setAgentFilter(e.target.value || undefined)}
-              className="border-border bg-bg-raised text-fg-muted focus:ring-accent rounded-md border px-2.5 py-1.5 text-sm focus:ring-2 focus:outline-none"
+              className="border-border-default bg-surface-raised text-text-secondary focus:ring-accent-default rounded-md border px-2.5 py-1.5 text-sm focus:ring-2 focus:outline-none"
               aria-label={t('todos.filter.agentLabel')}
             >
               <option value="">{t('todos.filter.allAgents')}</option>
@@ -118,7 +118,7 @@ export function TodosPage(): JSX.Element {
             </select>
           )}
 
-          <span className="text-fg-subtle text-xs">
+          <span className="text-text-muted text-xs">
             {activeCount > 0 &&
               t('todos.list.summaryActive', {
                 count: activeCount,
@@ -139,18 +139,18 @@ export function TodosPage(): JSX.Element {
           {[1, 2, 3].map((i) => (
             <div
               key={i}
-              className="border-border bg-bg-raised animate-pulse rounded-lg border px-6 py-4"
+              className="border-border-default bg-surface-raised animate-pulse rounded-lg border px-6 py-4"
             >
               <div className="flex items-start justify-between gap-4">
                 <div className="flex items-center gap-2.5">
-                  <div className="bg-bg-subtle h-6 w-16 rounded-full" />
-                  <div className="bg-bg-subtle h-6 w-72 rounded-sm" />
+                  <div className="bg-surface-sunken h-6 w-16 rounded-full" />
+                  <div className="bg-surface-sunken h-6 w-72 rounded-sm" />
                 </div>
-                <div className="bg-bg-subtle h-12 w-24 rounded-sm" />
+                <div className="bg-surface-sunken h-12 w-24 rounded-sm" />
               </div>
               <div className="mt-2 flex items-center gap-2">
-                <div className="bg-bg-subtle size-4 rounded-full" />
-                <div className="bg-bg-subtle h-4 w-44 rounded-sm" />
+                <div className="bg-surface-sunken size-4 rounded-full" />
+                <div className="bg-surface-sunken h-4 w-44 rounded-sm" />
               </div>
             </div>
           ))}
@@ -160,8 +160,8 @@ export function TodosPage(): JSX.Element {
       {isError && !isLoading && (
         <div className="flex flex-col items-center justify-center py-16 text-center">
           <AlertCircle size={32} className="text-feedback-danger mb-3" aria-hidden="true" />
-          <h3 className="text-h3 text-fg">{t('todos.list.errorTitle')}</h3>
-          <p className="text-body text-fg-muted mt-2 mb-6">{t('todos.list.errorBody')}</p>
+          <h3 className="text-h3 text-text-primary">{t('todos.list.errorTitle')}</h3>
+          <p className="text-body text-text-secondary mt-2 mb-6">{t('todos.list.errorBody')}</p>
           <Button onClick={() => refetch()}>
             <RefreshCw size={14} className="mr-1.5" />
             {t('todos.retry')}
@@ -191,7 +191,7 @@ export function TodosPage(): JSX.Element {
         <div className="space-y-4">
           {sections.map((sec) => (
             <div key={sec.key}>
-              <div className="text-fg-subtle text-overline px-6 py-1 font-semibold tracking-wider uppercase">
+              <div className="text-text-muted text-overline px-6 py-1 font-semibold tracking-wider uppercase">
                 {t(sec.labelKey)} · {formatCountFor(locale, sec.items.length)}
               </div>
               <div
@@ -199,7 +199,7 @@ export function TodosPage(): JSX.Element {
                   'overflow-hidden rounded-lg border',
                   sec.key === 'needs_attention'
                     ? 'border-attention-soft bg-attention-soft/30'
-                    : 'border-border bg-bg-raised',
+                    : 'border-border-default bg-surface-raised',
                 )}
               >
                 {sec.items.map((schedule) => (

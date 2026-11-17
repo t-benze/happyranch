@@ -21,7 +21,7 @@ export const Coverage: Story = {};
 function EnabledNavFixture(): JSX.Element {
   const location = useLocation();
   return (
-    <div className="bg-bg-subtle flex min-h-40 w-rail flex-col gap-3 p-3">
+    <div className="bg-surface-sunken flex min-h-40 w-rail flex-col gap-3 p-3">
       <SidebarNavItem to="/sidebar-story-target" enabled icon={Home}>
         Story target
       </SidebarNavItem>

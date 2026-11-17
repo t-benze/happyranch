@@ -210,8 +210,8 @@ export function CommandPalette({
         <DialogDescription id="command-palette-help" className="sr-only">
           {description}
         </DialogDescription>
-        <div className="border-border flex items-center gap-2 border-b px-3 py-2">
-          <Search size={16} aria-hidden="true" className="text-fg-muted" />
+        <div className="border-border-default flex items-center gap-2 border-b px-3 py-2">
+          <Search size={16} aria-hidden="true" className="text-text-secondary" />
           <input
             ref={inputRef}
             type="text"
@@ -223,7 +223,7 @@ export function CommandPalette({
             role="combobox"
             aria-expanded={true}
             aria-activedescendant={activeKey ? `cmdk-row-${activeKey}` : undefined}
-            className="text-fg placeholder:text-fg-subtle w-full bg-transparent text-sm focus:outline-none"
+            className="text-text-primary placeholder:text-text-muted w-full bg-transparent text-sm focus:outline-none"
           />
         </div>
         <div
@@ -233,7 +233,7 @@ export function CommandPalette({
           className="max-h-[50vh] overflow-y-auto py-2"
         >
           {itemRows.length === 0 && (
-            <div className="text-fg-muted px-4 py-8 text-center text-sm">
+            <div className="text-text-secondary px-4 py-8 text-center text-sm">
               {query ? noMatches : nothingLoaded}
             </div>
           )}
@@ -242,7 +242,7 @@ export function CommandPalette({
               return (
                 <div
                   key={`hdr-${row.sectionLabel}`}
-                  className="text-fg-subtle px-3 pt-3 pb-1 text-[0.6875rem] font-semibold tracking-wider uppercase"
+                  className="text-text-muted px-3 pt-3 pb-1 text-[0.6875rem] font-semibold tracking-wider uppercase"
                 >
                   {row.sectionLabel}
                 </div>
@@ -263,12 +263,12 @@ export function CommandPalette({
                 onClick={() => onSelect(item.href, item)}
                 className={cn(
                   'flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm transition-colors',
-                  isActive ? 'bg-accent/15 text-fg' : 'text-fg-muted hover:bg-bg-raised hover:text-fg',
+                  isActive ? 'bg-accent-default/15 text-text-primary' : 'text-text-secondary hover:bg-surface-raised hover:text-text-primary',
                 )}
               >
                 <span className="truncate">{item.primary}</span>
                 {item.secondary && (
-                  <span className="text-fg-subtle truncate text-xs">
+                  <span className="text-text-muted truncate text-xs">
                     {item.secondary}
                   </span>
                 )}
@@ -276,7 +276,7 @@ export function CommandPalette({
             );
           })}
         </div>
-        <div className="border-border text-fg-subtle border-t px-3 py-1.5 text-[11px]">
+        <div className="border-border-default text-text-muted border-t px-3 py-1.5 text-[11px]">
           <span className="font-mono">↑↓</span> {navigateLabel} ·{' '}
           <span className="font-mono">⏎</span> {openLabel} ·{' '}
           <span className="font-mono">esc</span> {footerClose}
