@@ -927,7 +927,8 @@ Root:root 0600 journal metadata and exact bytes are checked repeatedly. All
 replacement phases require exact generated canonical bytes; `journal_generation`
 hashes those bytes. Except for exact current/completed removal and staging intents,
 missing files refuse. Unknown/malformed/mismatched records, wrong placements
-and pending entries refuse before mutation. Clean, modern recorded and intact
+and unrecognized pending entries refuse before mutation (the exact own-intent
+exception is described below). Clean, modern recorded and intact
 manual installs still refuse. Journal-free modern staged-inert inventory also
 refuses exactly `replacement refused: modern:` without effects; an unjournaled
 failed/partial candidate remains unavailable without effects.
@@ -999,7 +1000,8 @@ digests remain unchanged in the journal. Once the connector copy is absent,
 validated provision provenance selects only the existing exact legacy/identity
 unit-byte profile; no old configuration, ID, key, trust or control binding is
 reconstructed or executed. Fresh-instance resume handles every intent/unlink/
-parent-fsync boundary; pending or mismatched records still refuse safely.
+parent-fsync boundary; unrecognized pending or mismatched records still refuse
+safely. Exact own journal-pending intents use the recovery rule below.
 
 At `replacement-configs-removed`, the consumer raises exactly
 `replacement paused after config removal; unit removal and fresh staging unavailable`.
@@ -1044,11 +1046,22 @@ slots remain unchanged. The final modern `provision.json` binds the five actual
 staged files and the retained journal binds all six. Custody through the same-FD
 source-UID reader, full bounded inventory, retired-state/unit/enrollment absence,
 quiescence and pinned no-follow parents are rechecked before intent publication
-and file effects, including after the pending-file fsync. Unknown/pending residue
-refuses; substituted pending entries are never cleaned up. Only the writer's own
-exclusive inode receives its existing exception cleanup. Fresh instances resume
-published intents and completed effects; uncatchable machine-crash durability and
-unsafe/partial pending-residue recovery are not claimed.
+and file effects, including after the pending-file fsync. Replacement recovery
+also recognizes the fixed `.install-transaction.json.pending` leaf as interrupted
+writer intent only under a pinned no-follow parent: regular single-link file,
+exact writer owner/0600 mode, at most 64 KiB, strict canonical v1 bytes. A next-phase
+intent must equal exactly the committed generation with only its immediate phase
+advance. A same-phase staging rebind may differ only in that phase's current
+destination digest, with both destination and its payload-pending leaf absent.
+After fresh custody, quiescence, full inventory, digest, parent and leaf rechecks,
+recovery discards only this validated journal pending inode and fsyncs its parent;
+the normal writer republishes intent and regenerates unpublished content. It never
+rolls forward a digest rebind or reconstructs lost UUID/policy bytes. Other pending
+content, metadata, generations, phases, digest differences and unknown entries
+refuse and remain byte-exact. Payload-pending leaves retain their separate refusal
+surface. Fork/real-fsync/os._exit cases cover every replacement journal transition
+and all five rebinds; existing SystemExit coverage remains. Machine-power-loss
+durability and racing root writers are not claimed.
 
 Inert inventory and journaled replacement recovery validate the full policy
 schema/artifact and every recorded file digest without requiring a current
@@ -1078,7 +1091,7 @@ retirement intent additionally requires the ordinary no-unit manager shape;
 cached own fragments no longer qualify. Immediately before descriptor-relative
 journal unlink, closure repeats exact journal/leaf metadata, source-UID/same-FD
 token custody, full bounded inventory, quiescence and pinned-parent checks. It
-fsyncs the journal's parent last. Unknown, unsafe, pending, quarantined or changed
+fsyncs the journal's parent last. Unknown, unsafe, unrecognized pending, quarantined or changed
 residue refuses with non-secret fixed paths and remains untouched. There is no
 unjournaled recovery or restoration of revoked credentials/trust.
 
@@ -1090,7 +1103,8 @@ ReplaceFailed retry then refuses exactly `replacement refused: modern:` with zer
 filesystem, journal or service effects, just like clean-host staging. No completion
 marker or new durable provenance distinguishes these states. V1's existing phases
 and record shape remain readable; policy currentness is not required for closure.
-Pending-residue recovery, racing root writers and actual machine-power-loss
+Own journal-pending-intent recovery is covered as above; unsafe or partial pending
+residue remains refusal-only. Racing root writers and actual machine-power-loss
 durability remain unverified. Until journal retirement,
 ordinary inventory/stop/provision/install/uninstall/drift and all ten fixed legacy
 system supervisor lifecycle entries retain their final/pending transaction

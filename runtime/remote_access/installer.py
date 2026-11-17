@@ -492,23 +492,77 @@ class ManagedInstaller:
     def replacement_inventory(self) -> ReplacementInventory:
         """Inspect a journal only for replacement candidate selection.
 
-        V1 stopped/quarantine phases belong only to this consumer. A pending entry,
-        missing/different fixed file, wrong placement or unsafe metadata refuses.
+        V1 stopped/quarantine phases belong only to this consumer. Only exact
+        interrupted writer intents qualify; observation never discards them.
+        Missing/different fixed files, wrong placement or unsafe metadata refuse.
         Normal inventory and every lifecycle operation still reject journals.
         This observation neither reads a release-home token nor stops services.
         """
         location = str(self.root / "etc/happyranch/install-transaction.json")
         try:
-            with self._directory("etc/happyranch") as parent:
+            with self._publication_parent() as (parent, revalidate):
                 transaction = self._read_file(parent, "install-transaction.json", owner=self.root_owner, mode=0o600)
+                pending = self._replacement_pending(parent, transaction)
+                installation = self._inventory(prepared_transaction=transaction,
+                    pending=("install-transaction.json", pending) if pending is not None else None)
+                revalidate()
         except FileNotFoundError:
             return ReplacementInventory(self.inventory())
         except (OSError, InstallerError):
             return ReplacementInventory(InstallInventory("manual-install-conflict", "unsafe-or-unrecognized", (location,)))
-        installation = self._inventory(prepared_transaction=transaction)
         generation = (hashlib.sha256(transaction).hexdigest()
                       if installation.state == "known-failed-or-partial" else None)
         return ReplacementInventory(installation, generation)
+
+    def _replacement_pending(self, parent: int, transaction: bytes) -> bytes | None:
+        """Recognize only the normal writer's exact interrupted journal intent."""
+        name = ".install-transaction.json.pending"
+        try:
+            data = self._read_file(parent, name, owner=self.root_owner, mode=0o600)
+        except FileNotFoundError:
+            return None
+        self._validate_install_record("install-transaction.json", transaction, replacement=True)
+        self._validate_install_record("install-transaction.json", data, replacement=True)
+        expected, intent = self._json(transaction), self._json(data)
+        phases = ("prepared", *_REPLACEMENT_PHASES)
+        previous = phases.index(expected["phase"])
+        staged_name = dict(_STAGING_FILES).get(expected["phase"])
+        if staged_name is not None and intent["phase"] == expected["phase"]:
+            if expected["digests"][staged_name] == intent["digests"][staged_name]:
+                raise InstallerError("replacement pending is not a digest rebind")
+            self._refuse_provision_entry(parent, staged_name)
+            expected["digests"][staged_name] = intent["digests"][staged_name]
+        elif previous + 1 < len(phases):
+            expected["phase"] = phases[previous + 1]
+        else:
+            raise InstallerError("replacement pending has no successor")
+        if data != json.dumps(expected, sort_keys=True).encode():
+            raise InstallerError("replacement pending is not the exact writer intent")
+        return data
+
+    def _discard_replacement_pending(self, transaction: bytes) -> None:
+        """Discard validated intent only; the normal writer regenerates/rebinds."""
+        with self._publication_parent() as (parent, revalidate):
+            pending = self._replacement_pending(parent, transaction)
+            if pending is None:
+                return
+            name = ".install-transaction.json.pending"
+            before = os.stat(name, dir_fd=parent, follow_symlinks=False)
+            self._check_replacement_transaction(parent, transaction)
+            self._staging_custody()
+            if self._inventory(prepared_transaction=transaction,
+                               pending=("install-transaction.json", pending)).state != "known-failed-or-partial":
+                raise InstallerError("replacement pending inventory changed before discard")
+            self._check_replacement_transaction(parent, transaction)
+            if self._replacement_pending(parent, transaction) != pending:
+                raise InstallerError("replacement pending changed before discard")
+            revalidate()
+            after = os.stat(name, dir_fd=parent, follow_symlinks=False)
+            fields = ("st_dev", "st_ino", "st_uid", "st_gid", "st_mode", "st_nlink", "st_size", "st_mtime_ns", "st_ctime_ns")
+            if any(getattr(before, field) != getattr(after, field) for field in fields):
+                raise InstallerError("replacement pending metadata changed before discard")
+            os.unlink(name, dir_fd=parent)
+            os.fsync(parent)
 
     def replace_failed(self) -> None:
         """Resume exact config quarantine, then fixed state/enrollment removal.
@@ -541,6 +595,7 @@ class ManagedInstaller:
             self._input(Path(release["data_home"]) / "daemon.token", token=True, source_uid=release["uid"])
             if self.replacement_inventory() != candidate:
                 raise InstallerError("replacement inventory changed before stop")
+            self._discard_replacement_pending(transaction)
             self.stop_and_confirm(_replacement_transaction=transaction)
             record = self._json(transaction)
             if record["phase"] == "prepared":

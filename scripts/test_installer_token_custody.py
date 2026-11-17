@@ -3030,8 +3030,19 @@ def test_replacement_stages_fresh_inert_generation(fixture: Fixture, monkeypatch
 @pytest.mark.parametrize("phase,point,delay", [(phase, point, 0) for phase in STAGING_PHASES for point in
     ("intent", "pending-fsync", "rename", "parent-fsync")] + [
     (phase, "intent", 3601) for phase in ("replacement-stage-token", "replacement-stage-provision", "replacement-staged")] + [
-    (phase, point, 3601) for phase in CLOSURE_PHASES for point in ("intent", "pending-fsync", "rename", "parent-fsync")])
+    (phase, point, 3601) for phase in CLOSURE_PHASES for point in ("intent", "pending-fsync", "rename", "parent-fsync")] + [
+    (phase, "abrupt-next", 0) for phase in ["replacement-stopped", *QUARANTINE_PHASES, *REMOVAL_PHASES,
+        *CONFIG_REMOVAL_PHASES, *UNIT_REMOVAL_PHASES, *STAGING_PHASES, *CLOSURE_PHASES]] + [
+    (phase, "abrupt-rebind", 0) for phase, _ in STAGING_FILES] + [
+    ("replacement-reload", "abrupt-next:" + bad, 0) for bad in (
+        "malformed", "foreign-owner", "mode", "directory", "hardlink", "symlink", "oversized", "unknown-entry",
+        "wrong-phase", "skipped-phase", "earlier-phase", "wrong-generation", "extra-field", "noncanonical")] + [
+    ("replacement-stage-connector", "abrupt-rebind:" + bad, 0) for bad in (
+        "second-digest", "destination", "payload-pending", "token-mode", "pid", "changed-config", "parent-swap")])
 def test_replacement_staging_publication_resumes(fixture: Fixture, monkeypatch: pytest.MonkeyPatch, phase: str, point: str, delay: int) -> None:
+    if point.startswith("abrupt-"):
+        assert_abrupt_publication_recovery(fixture, monkeypatch, phase, point)
+        return
     manager, parent = units_removed_for_staging(fixture)
     if phase in CLOSURE_PHASES:
         with pytest.raises(module.InstallerError, match=STAGING_BOUNDARY):
@@ -3089,6 +3100,138 @@ def test_replacement_staging_publication_resumes(fixture: Fixture, monkeypatch: 
         assert_staging_preserved(fixture, before)
     assert {path: path.read_bytes() for path in external} == external
     assert all(call[0] in {"show", "stop", "reload"} for call in manager.calls)
+
+
+def assert_abrupt_publication_recovery(fixture: Fixture, monkeypatch: pytest.MonkeyPatch, phase: str, point: str) -> None:
+    # The same publication owner also covers death without finally/unwinding.
+    # Fake manager memory is not shared by fork; use the quiescent partial
+    # candidate so its external state is identical in both processes.
+    manager, parent, _ = prepared_replacement(fixture, "partial")
+    fixture.write(fixture.token, b"synthetic-rotated-source-token\n")
+    journal, pending = parent / "install-transaction.json", parent / ".install-transaction.json.pending"
+    kind, _, bad = point.partition(":")
+    pid = os.fork()
+    if pid == 0:
+        fsync = os.fsync
+        def sync(fd: int) -> None:
+            fsync(fd)  # Real durability boundary, followed by no Python cleanup.
+            if not pending.exists() or os.fstat(fd).st_ino != pending.stat().st_ino:
+                return
+            current, intent = json.loads(journal.read_bytes()), json.loads(pending.read_bytes())
+            if (intent["phase"] == phase and
+                    (current["phase"] == phase) == (kind == "abrupt-rebind")):
+                os._exit(77)
+        os.fsync = sync
+        for _ in range(8):
+            try:
+                fixture.installer.replace_failed()
+            except module.InstallerError as exc:
+                if not str(exc).startswith("replacement paused after"):
+                    os._exit(79)
+        os._exit(78)
+    _, status = os.waitpid(pid, 0)
+    assert os.waitstatus_to_exitcode(status) == 77, "requested real-fsync abrupt-death boundary was not reached"
+    current, intent = json.loads(journal.read_bytes()), json.loads(pending.read_bytes())
+    assert intent["phase"] == phase
+    if kind == "abrupt-rebind":
+        name = dict(STAGING_FILES)[phase]
+        assert current["phase"] == phase
+        assert [key for key in current["digests"] if current["digests"][key] != intent["digests"][key]] == [name]
+        assert not (parent / name).exists() and not (parent / ("." + name + ".pending")).exists()
+    if bad in {"wrong-phase", "skipped-phase", "earlier-phase", "wrong-generation", "extra-field", "second-digest"}:
+        if bad == "wrong-phase":
+            intent["phase"] = "replacement-stage-connector"
+        elif bad == "skipped-phase":
+            intent["phase"] = "replacement-retire-journal"
+        elif bad == "earlier-phase":
+            intent["phase"] = "replacement-stage-provision"
+        elif bad == "extra-field":
+            intent["foreign"] = True
+        else:
+            intent["digests"]["release-daemon.json"] = "f" * 64
+        fixture.write(pending, json.dumps(intent, sort_keys=True).encode())
+    elif bad == "malformed":
+        fixture.write(pending, b"{synthetic-invalid")
+    elif bad == "noncanonical":
+        fixture.write(pending, pending.read_bytes() + b"\n")
+    elif bad == "oversized":
+        fixture.write(pending, pending.read_bytes() + b" " * 65536)
+    elif bad == "mode":
+        pending.chmod(0o644)
+    elif bad == "directory":
+        pending.unlink()
+        pending.mkdir()
+    elif bad == "hardlink":
+        os.link(pending, fixture.inputs / "extra-link")
+    elif bad == "symlink":
+        pending.unlink()
+        pending.symlink_to(journal)
+    elif bad == "unknown-entry":
+        fixture.write(parent / "foreign", b"synthetic-foreign")
+    elif bad in {"destination", "payload-pending"}:
+        fixture.write(parent / (name if bad == "destination" else "." + name + ".pending"), b"synthetic-foreign")
+    elif bad == "token-mode":
+        fixture.token.chmod(0o640)
+    elif bad == "pid":
+        manager.override["MainPID"] = "42"
+    elif bad == "changed-config":
+        (parent / "release-daemon.json").write_bytes((parent / "release-daemon.json").read_bytes() + b"\n")
+    elif bad == "foreign-owner":
+        target, fstat = pending.stat(), os.fstat
+        def foreign(fd: int) -> object:
+            info = fstat(fd)
+            if (info.st_dev, info.st_ino) != (target.st_dev, target.st_ino):
+                return info
+            values = {key: getattr(info, key) for key in dir(info) if key.startswith("st_")}
+            return SimpleNamespace(**{**values, "st_uid": info.st_uid + 1})
+        monkeypatch.setattr(os, "fstat", foreign)
+    before = staged_inventory(fixture)
+    external = {path: path.read_bytes() for base in (fixture.home, fixture.inputs) for path in base.iterdir()}
+    pending_bytes = pending.read_bytes() if pending.is_file() else None
+    manager.calls.clear()
+    fresh_staging_instance(fixture)
+    if bad:
+        if bad == "parent-swap":
+            custody = fixture.installer._staging_custody
+            def swap() -> bytes:
+                token = custody()
+                parent.rename(parent.with_name("previous-parent"))
+                parent.mkdir(mode=0o755)
+                before.clear()
+                before.update(staged_inventory(fixture))
+                return token
+            monkeypatch.setattr(fixture.installer, "_staging_custody", swap)
+        with pytest.raises(module.InstallerError):
+            fixture.installer.replace_failed()
+        assert staged_inventory(fixture) == before
+        actual_pending = parent.with_name("previous-parent") / pending.name if bad == "parent-swap" else pending
+        if pending_bytes is not None:
+            assert actual_pending.read_bytes() == pending_bytes
+        assert all(call[0] == "show" for call in manager.calls)
+        return
+    assert fixture.installer.replacement_inventory().journal_generation == hashlib.sha256(journal.read_bytes()).hexdigest()
+    assert staged_inventory(fixture) == before  # Observation never discards intent.
+    for _ in range(8):
+        fresh_staging_instance(fixture)
+        try:
+            fixture.installer.replace_failed()
+        except module.InstallerError as exc:
+            assert str(exc).startswith("replacement paused after"), str(exc)
+        if not journal.exists():
+            break
+    assert not journal.exists() and not pending.exists()
+    assert fixture.installer.inventory().state == "modern"
+    if phase in CLOSURE_PHASES:
+        assert_closed_replacement(fixture, {key: value for key, value in before.items()
+                                          if key != "etc/happyranch/.install-transaction.json.pending"})
+    assert {path: path.read_bytes() for path in external} == external
+    completed = staged_inventory(fixture)
+    manager.calls.clear()
+    fresh_staging_instance(fixture)
+    with pytest.raises(module.InstallerError, match="^replacement refused: modern:$"):
+        fixture.installer.replace_failed()
+    assert staged_inventory(fixture) == completed
+    assert all(call[0] == "show" for call in manager.calls)
 
 
 @pytest.mark.parametrize("phase,name,point,delay,damage", [(phase, name, point, 0, "intact") for phase, name in STAGING_FILES
