@@ -902,6 +902,16 @@ selects `FileDaemonCredentialProvider`, as on main.
 The root verifier reads no token and has no `LoadCredential`. The root installer
 copies the validated provisioning input (default `<data_home>/daemon.token`) to
 `/etc/happyranch/daemon.token`, owned by `happyranch:happyranch`, mode 0600.
+Provisioning, install admission and drift checks require the opened source inode
+to belong to the validated release UID: exact 0600, regular, single-link,
+nonempty UTF-8, at most 64 KiB. The reader pins every literal no-follow parent
+and checks named/opened device and inode before and after reading. It rechecks
+file owner, group, mode, link count, size, mtime and ctime, returns only bytes
+from that FD, and refuses before publication or service calls when validation
+fails. A changed source digest still refuses; this sub-part does not add token
+rotation, generated configuration, transactional replacement/disable or helper
+installation methods. The future fixed helper must derive the token path from
+the authenticated/recorded release home, never a requester-supplied path (H2).
 The connector reads this validated copy through the unchanged file provider;
 it never reads the provisioning input directly. Daemon-token custody is unchanged
 from main. File/PID hints alone are
