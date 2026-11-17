@@ -391,6 +391,8 @@ def returned_tail_cases(selected):
     from runtime.workflows.sequential_start import _ordinary_source, precheck_completion
     from runtime.workflows.sequential_history import _ReadBudget, _sql_budget
     from runtime.workflows import sequential_start
+    from runtime.orchestrator.teams import TeamsRegistry
+    from runtime.daemon.sessions import SessionTracker
 
     cases = ('thread_source', 'thread_ancestor', 'thread_root_return', 'thread_ancestor_nonroot_return',
         'parked_no_tail', 'duplicate_return', 'concurrent_return', 'restart_before_tail', 'restart_marker_only',
@@ -420,8 +422,9 @@ def returned_tail_cases(selected):
                             dispatched_from_thread_id='THR-original'))
                         db._conn.execute("UPDATE tasks SET parent_task_id='ordinary-parent' WHERE id='ordinary'")
                         db._conn.commit()
-                    org = SimpleNamespace(slug='scratch', db=db, teams=SimpleNamespace(
-                        executable_manager_for_team=lambda team: 'synthetic-manager'))
+                    (root / 'org/teams.yaml').write_text(
+                        'teams:\n  engineering:\n    manager: synthetic-manager\n    workers: []\n')
+                    org = SimpleNamespace(slug='scratch', db=db, teams=TeamsRegistry.load(root))
                     changes = db._conn.total_changes
                     budget = _ReadBudget()
                     with db.coherent_read_view() as conn, _sql_budget(conn, budget):
@@ -429,7 +432,8 @@ def returned_tail_cases(selected):
                     assert source['id'] == 'ordinary' and len(seen) == (2 if case == 'thread_ancestor' else 1)
                     assert ancestor['dispatched_from_thread_id'] == 'THR-original'
                     # Direct thread invocation is not ordinary task-session authority.
-                    org.sessions = SimpleNamespace(get_context_by_session=lambda sid: ('scratch', 'THR-original', 'synthetic-manager'))
+                    org.sessions = SessionTracker()
+                    org.sessions.set_active('THR-original', 'synthetic-manager', 'thread-session', org_slug='scratch')
                     try:
                         precheck_completion(org, {}, task_id='ordinary', principal='synthetic-manager',
                             session_id='thread-session', status='completed', waiting_on_job_ids=None)
