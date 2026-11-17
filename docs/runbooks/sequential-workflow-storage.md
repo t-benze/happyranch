@@ -24,6 +24,12 @@ fence or publication resources are acquired; remaining orgs and serving proceed.
 Shutdown also requires positive closure of pre-worker selection connections,
 untransferred fences and descriptors. The first close failure stays retained;
 shutdown cannot claim success or retry that failed native close.
+All startup attempt-evidence reads share one custodied path, including the final
+registered read after the helper returns. A new child enters custody before its
+parent close. A close fault visibly holds the org and retains FIRST error and
+original EX through repeated refused shutdowns. A committed install/registration
+stays intact, without restore, undo or another attempt. Advisory status retains
+its independent traversal.
 
 Automatic backups stay at
 `<daemon_home>/backups/workflow-sequential/<runtime-key>/<org>/<attempt-id>/before.db`.

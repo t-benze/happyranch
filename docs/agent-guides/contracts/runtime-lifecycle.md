@@ -32,6 +32,14 @@ successful shutdown claim. A dedicated retained original loop preserves pending
 spawn/reap and late-child kill callbacks instead of cancelling them on return.
 Late success never becomes readiness; native filesystem calls remain cooperative.
 
+Every startup attempt-evidence read uses one selection-owned custodied path,
+including the final registered read after the helper returns. Each newly opened
+child is retained before the fallible parent close. A close fault retains the
+FIRST error and original EX, visibly holds the org and refuses repeated shutdown
+without retrying the failed close. A committed installation and its registration
+remain intact; this fault grants no restore, undo or new attempt. The advisory
+status route keeps its independent traversal.
+
 The one-time pre-serving upgrade window remains 120s/org, 180s total, 20s reserve,
 >=60s before another attempt, 0.5s cumulative admission and 100s pre-COMMIT.
 Ordinary all-org load/listener remains <=10s, with 32M SQL, separate A/B/C and

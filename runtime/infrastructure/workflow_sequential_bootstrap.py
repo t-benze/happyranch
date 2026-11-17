@@ -358,7 +358,7 @@ class BootstrapSelection:
 
     @contextmanager
     def _evidence_directory(self, path: Path, deadline: float) -> Iterator[int]:
-        """Keep prior-evidence originals in this selection's shutdown custody."""
+        """Keep evidence originals in this selection's shutdown custody."""
         record = None
         try:
             record = _directory(path, self.descriptors, deadline=deadline)
@@ -376,8 +376,16 @@ class BootstrapSelection:
                     self.close_error = self.close_error or exc
                     raise
 
-    def _prior(self) -> dict | None:
+    def _read_evidence(self, deadline: float) -> dict:
+        """The single startup evidence path, always using this retained owner."""
         from runtime.daemon.workflow_setup_status import _attempt_record
+        self._check()
+        runtime_root = self.fence.root.parent.parent
+        key = hashlib.sha256(str(runtime_root).encode('utf8')).hexdigest()
+        return _attempt_record(self.home, runtime_root, key, self.fence.root.name,
+            min(self.deadline, deadline), directory_reader=self._evidence_directory)
+
+    def _prior(self) -> dict | None:
         self._check()
         evidence_deadline = min(self.deadline, time.monotonic()+1)
         home = _directory(self.home, self.descriptors)
@@ -394,8 +402,7 @@ class BootstrapSelection:
             names = _names(parent['fd'], 64, evidence_deadline)
             if not names:
                 return None
-            value = _attempt_record(self.home, runtime_root, key, self.fence.root.name,
-                                    evidence_deadline, directory_reader=self._evidence_directory)
+            value = self._read_evidence(evidence_deadline)
             if (value['state'], value['reason'], value['phase']) != (
                     'installed_verified', 'registered', 'registered'):
                 raise BootstrapEvidenceError('workflow_setup_attempt_latched')
@@ -613,10 +620,12 @@ class BootstrapStartup:
                     self.upgrade_seconds += max(0.0, time.monotonic()-started)
                 # The original child returned, positively closed and reaped;
                 # final registered evidence must agree before releasing EX.
-                from runtime.daemon.workflow_setup_status import _attempt_record
-                key = hashlib.sha256(str(self.runtime_root).encode('utf8')).hexdigest()
-                record = _attempt_record(self.home, self.runtime_root, key, slug,
-                                         min(discovery.deadline, time.monotonic()+1))
+                # A fresh retained selection owns this read too. Reusing a
+                # closed pre-worker selection would misstate new native custody.
+                selected = BootstrapSelection(home=self.home, fence=discovery.fence,
+                    deadline=min(discovery.deadline, time.monotonic()+1))
+                discovery.selections.append(selected)
+                record = selected._read_evidence(selected.deadline)
                 if (record['phase'] != 'registered' or record['attempt_id'] != worker.attempt_id
                         or record['db_identity'] != dict(path=str(root/'happyranch.db'),
                             device=discovery.fence.database_identity[0], inode=discovery.fence.database_identity[1])):

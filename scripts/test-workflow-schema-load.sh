@@ -66,7 +66,8 @@ bootstrap_startup_case = None
 if len(sys.argv) == 2 and sys.argv[1].startswith('--bootstrap-startup='):
     bootstrap_startup_case = sys.argv[1].split('=', 1)[1]
     assert bootstrap_startup_case in ('success', 'integrity', 'backup', 'ex', 'history', 'history_precommit', 'commit_uncertain', 'kill', 'close', 'late_spawn',
-                                     'discovery_cap', 'discovery_close', 'discovery_fence_close', 'discovery_descriptor_close', 'discovery_evidence_close')
+                                     'discovery_cap', 'discovery_close', 'discovery_fence_close', 'discovery_descriptor_close', 'discovery_evidence_close',
+                                     'discovery_registered_close', 'evidence_custody')
     sys.argv[1:] = ['--bootstrap-startup']
 
 worker_case = None
@@ -167,10 +168,26 @@ if sys.argv[1:] in ([], ['--bootstrap-startup']):
     from runtime.infrastructure.org_access_fence import OrgAccessFence
     from runtime.models import TaskStatus
 
-    # Mounted keepers for pre-worker count exhaustion and original close faults.
+    if bootstrap_startup_case in (None, 'evidence_custody'):
+        import ast
+        source = ast.parse(Path(bootstrap.__file__).read_text())
+        attempt_names = {'_attempt_record'} | {
+            alias.asname for node in ast.walk(source) if isinstance(node, ast.ImportFrom)
+            for alias in node.names if alias.name == '_attempt_record' and alias.asname}
+        evidence_calls = [node for node in ast.walk(source) if isinstance(node, ast.Call)
+                          and (isinstance(node.func, ast.Name) and node.func.id in attempt_names
+                               or isinstance(node.func, ast.Attribute) and node.func.attr == '_attempt_record')]
+        assert evidence_calls, 'A4-M missing startup evidence reader'
+        assert all(any(keyword.arg == 'directory_reader' and isinstance(keyword.value, (ast.Name, ast.Attribute))
+                       for keyword in node.keywords)
+                   for node in evidence_calls), 'A4-M startup evidence call omits custodied reader'
+        assert len(evidence_calls) == 1, 'A4-M startup evidence reads bypass the single custody path'
+        print('PASS A4-M mechanical startup evidence custody', flush=True)
+
+    # Mounted keepers for discovery count and pre/post-worker close faults.
     # The 1,024 missing-DB roots reproduce normal local refusals independently
     # of the overflow org, whose real DB must never even be selected or opened.
-    for fault in ('discovery_cap', 'discovery_close', 'discovery_fence_close', 'discovery_descriptor_close', 'discovery_evidence_close'):
+    for fault in ('discovery_cap', 'discovery_close', 'discovery_fence_close', 'discovery_descriptor_close', 'discovery_evidence_close', 'discovery_registered_close'):
         if bootstrap_startup_case is not None and bootstrap_startup_case != fault:
             continue
         with tempfile.TemporaryDirectory(prefix='a4-mounted-discovery-') as scratch, ExitStack() as stack:
@@ -190,10 +207,17 @@ if sys.argv[1:] in ([], ['--bootstrap-startup']):
                 root = runtime.orgs_dir/'scratch'
                 _seed_skeleton(root, from_example=None)
             path = root/'happyranch.db'
-            if fault == 'discovery_fence_close':
+            if fault in ('discovery_fence_close', 'discovery_registered_close'):
                 db = Database(path)
                 schema.initialize_complete_org_schema(db, expected_org_slug=root.name, layout='J')
+                if fault == 'discovery_registered_close':
+                    install_pause_schema(db, org_slug=root.name)
+                    install_task_ownership(db, org_slug=root.name)
+                    initialize_fresh_reviewer_agents(OrgPaths(root), db)
                 db.close()
+                if fault == 'discovery_registered_close':
+                    org = OrgState.load(slug=root.name, root=root, settings=Settings())
+                    org.close()
             else:
                 schema.initialize_fresh_org_database(path, expected_org_slug=root.name).close()
             if fault == 'discovery_evidence_close':
@@ -204,9 +228,12 @@ if sys.argv[1:] in ([], ['--bootstrap-startup']):
                     if not record['attempted']:
                         bootstrap._close_descriptor(record)
             original_bytes = path.read_bytes()
+            namespace = home/'backups/workflow-sequential'/hashlib.sha256(str(runtime.root).encode()).hexdigest()/root.name
             native_connect, native_fence_close, native_descriptor_close = sqlite3.connect, OrgAccessFence.close, os.close
             first = OSError('synthetic FIRST original discovery close failure')
             calls, connections, failed_descriptors, opened, evidence_children = [], [], [], [], []
+            evidence_child_records = []
+            committed = {}
             class CloseFault(sqlite3.Connection):
                 def close(self):
                     calls.append(self)
@@ -238,7 +265,7 @@ if sys.argv[1:] in ([], ['--bootstrap-startup']):
                         return original_close_descriptor(record)
                 return original_close_descriptor(record)
             def evidence_close(fd):
-                # Fault the actual prior-evidence traversal, including the old
+                # Fault the actual startup evidence traversal, including the old
                 # shared opener on RED; earlier discovery traversal stays native.
                 from runtime.daemon import workflow_setup_status as status, _disk_sweep_fs as fs
                 frame = sys._getframe(1)
@@ -254,7 +281,13 @@ if sys.argv[1:] in ([], ['--bootstrap-startup']):
                     local = traversal.f_locals
                     child = local['child']
                     evidence_children.append(child['fd'] if isinstance(child, dict) else child)
+                    evidence_child_records.append(child if isinstance(child, dict) else None)
                     failed_descriptors.append(dict(fd=fd))
+                    if fault == 'discovery_registered_close':
+                        # Snapshot at the actual post-worker native fault. No
+                        # fixture substitutes for the helper's committed result.
+                        committed.update(database=path.read_bytes(), evidence={
+                            p: p.read_bytes() for p in namespace.rglob('*') if p.is_file()})
                 if failed_descriptors and fd == failed_descriptors[0]['fd']:
                     calls.append(fd)
                     raise first
@@ -263,7 +296,7 @@ if sys.argv[1:] in ([], ['--bootstrap-startup']):
             stack.enter_context(patch.object(bootstrap.sqlite3, 'connect', side_effect=connect))
             stack.enter_context(patch.object(OrgAccessFence, 'close', fence_close))
             stack.enter_context(patch.object(bootstrap, '_close_descriptor', descriptor_close))
-            if fault == 'discovery_evidence_close':
+            if fault in ('discovery_evidence_close', 'discovery_registered_close'):
                 stack.enter_context(patch.object(os, 'close', evidence_close))
             state = None
             try:
@@ -273,8 +306,19 @@ if sys.argv[1:] in ([], ['--bootstrap-startup']):
                     state = exc._attachment_owner['candidate']
                     raise AssertionError('A4-M discovery cap escaped the per-org HOLD and aborted build') from exc
                 owner = state._workflow_bootstrap
-                assert not owner.workers, 'A4-M pre-worker failure spawned an installer'
-                assert path.read_bytes() == original_bytes, 'A4-M discovery refusal changed original DB'
+                if fault == 'discovery_registered_close':
+                    assert len(owner.workers) == 1, 'A4-M registered read did not follow exactly one real installer'
+                    worker = owner.workers[0]
+                    assert worker.result['state'] == 'verified' and worker.closed and worker.reaped and worker.permit_sent, 'A4-M helper did not commit/register/close/reap'
+                    assert committed and committed['database'] != original_bytes, 'A4-M registered read fault missed committed install'
+                    assert path.read_bytes() == committed['database'], 'A4-M registered read fault changed committed DB'
+                    assert {p: p.read_bytes() for p in namespace.rglob('*') if p.is_file()} == committed['evidence'], 'A4-M registered read fault changed committed evidence/backup'
+                    events = [json.loads(raw) for p, raw in committed['evidence'].items() if p.suffix == '.json']
+                    assert sorted(event['phase'] for event in events) == sorted(('intent', 'backup_verified', 'pre_commit', 'committed', 'verified', 'registered')), 'A4-M missing committed registration phases'
+                    assert read_setup_status(home, runtime.root, root.name).state == 'installed_verified', 'A4-M committed registration was undone'
+                else:
+                    assert not owner.workers, 'A4-M pre-worker failure spawned an installer'
+                    assert path.read_bytes() == original_bytes, 'A4-M discovery refusal changed original DB'
                 if fault == 'discovery_cap':
                     assert len(tuple(runtime.iter_org_roots())) == 1025
                     assert len(owner.discoveries) == 1024 and root not in owner.discoveries, 'A4-M discovery cap removed or overflow acquired'
@@ -285,16 +329,26 @@ if sys.argv[1:] in ([], ['--bootstrap-startup']):
                     assert all(r['closed'] for r in owner.hold_descriptors), 'A4-M count refusal leaked descriptors'
                 else:
                     route = owner.discoveries[root]
-                    selected = route.selections[0]
+                    selected = route.selections[-1] if fault == 'discovery_registered_close' else route.selections[0]
+                    if fault == 'discovery_registered_close':
+                        print('A4-M post-registration close observation', json.dumps(dict(
+                            native_close_attempts=len(calls), child_retained=any(
+                                r is evidence_child_records[0] for r in selected.descriptors) if evidence_children else False,
+                            discovery_closed=route.closed, fence_closed=route.fence._closed,
+                            first_error=route.close_error is first, held=state.broken_orgs,
+                            worker_result=worker.result)), flush=True)
                     assert calls and len(calls) == 1, 'A4-M original close failure not reached exactly once'
                     assert route.close_error is not None and not route.closed and not route.fence._closed
-                    if fault == 'discovery_evidence_close':
+                    if fault in ('discovery_evidence_close', 'discovery_registered_close'):
                         assert owner.holds[root.name] == state.broken_orgs[root.name] == 'install_incomplete', 'A4-M prior evidence lacks visible HOLD'
                         failed = [r for r in selected.descriptors if r['fd'] == failed_descriptors[0]['fd'] and r.get('error') is first]
                         assert len(failed) == 1 and failed[0]['attempted'] and not failed[0]['closed'], 'A4-M prior evidence lost original descriptor custody'
                         assert any(r['fd'] == evidence_children[0] for r in selected.descriptors[selected.descriptors.index(failed[0])+1:]), 'A4-M prior evidence lost newly opened child custody'
                         assert selected.close_error is first, 'A4-M prior evidence lost FIRST native close cause'
                         os.fstat(failed[0]['fd'])
+                        if fault == 'discovery_registered_close':
+                            assert route.fence.exclusive, 'A4-M registered read lost original EX'
+                            assert any(r is evidence_child_records[0] for r in selected.descriptors), 'A4-M registered read lost exact child record'
                     primary, close_error, selected_error = route.primary, route.close_error, selected.close_error
                     for _ in range(2):
                         try:
@@ -306,6 +360,10 @@ if sys.argv[1:] in ([], ['--bootstrap-startup']):
                         assert not state._shutdown_complete, 'A4-M unresolved discovery claimed successful shutdown'
                         assert route.primary is primary and route.close_error is close_error and selected.close_error is selected_error, 'A4-M FIRST close cause replaced'
                         assert len(calls) == 1, 'A4-M retried failed native close'
+                        if fault == 'discovery_registered_close':
+                            assert path.read_bytes() == committed['database'] and len(owner.workers) == 1, 'A4-M shutdown reran/undid installation'
+                            assert {p: p.read_bytes() for p in namespace.rglob('*') if p.is_file()} == committed['evidence'], 'A4-M shutdown rewrote committed evidence/backup'
+                            assert not route.fence._closed, 'A4-M refused shutdown released original EX'
                     assert close_error is first, 'A4-M FIRST native discovery close cause replaced'
                     if fault == 'discovery_close':
                         assert selected.close_error is first, 'A4-M FIRST native selection close cause replaced'

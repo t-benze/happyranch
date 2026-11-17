@@ -66,6 +66,12 @@ persisted latch. Shutdown checks original pre-worker selection connections,
 untransferred fences and descriptor custody as well as workers. Unresolved
 originals prevent successful shutdown; the first close failure remains retained
 and its failed native close is never retried.
+Every startup attempt-evidence read uses one custodied selection path, including
+the final registered read after the original helper returns. Each new child is
+retained before the parent close. A close fault holds the org visibly, keeps the
+FIRST error and original EX through repeated refused shutdowns, and leaves any
+committed install/registration intact. It authorizes no restore, undo or new
+attempt. The advisory status route retains its independent traversal.
 
 The one-time **pre-serving upgrade window** is at most **120s/org, 180s total**,
 with a **20s final reserve**, **at least 60s remaining before another attempt**,
