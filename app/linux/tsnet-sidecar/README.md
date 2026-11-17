@@ -31,9 +31,13 @@ matching `managed.profile` is `linux-managed-identity-v1`; it runs as the fixed
 The renderer's matching `ConnectorUnitSpec.ingress_profile` adds only
 `RuntimeDirectoryMode=0700`; AF_UNIX is already allowed. The existing installer
 still admits legacy configs; generation/migration and connector profile/unit
-wiring belong to slice 3b-1 and remain pending after its token-reader and
-per-file atomic provisioning-writer sub-parts. The writer adds no new selectable
-profile or install-transaction record.
+wiring belong to slice 3b-1 and remain pending after its token-reader,
+per-file atomic provisioning-writer and records-first sub-parts. The writer can
+publish closed version-1 provision/install-transaction records (layout, fixed
+digests and one literal phase only), but the generator does not emit them yet.
+Final or pending transaction inventory refuses all legacy installer operations;
+it supplies no recovery or helper action and selects no profile. Legacy units
+remain unchanged, including `SidecarUnitSpec.home_transport=False`.
 Home `control_tls` generation and `home_transport=True` selection belong to
 slice 3b-2. No automatic migration or deployment occurs in either sub-part.
 

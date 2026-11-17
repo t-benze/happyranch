@@ -496,10 +496,13 @@ class ManagedInstaller:
             "release-daemon.json": (self.root_owner, 0o644),
             "daemon.token": (self._service_owner, 0o600),
             "provision.json": (self.root_owner, 0o600),
+            "install-transaction.json": (self.root_owner, 0o600),
         }
         if (name not in metadata or metadata[name] != (owner, mode)
                 or owner is None or not 0 < len(data) <= 65536):
             raise InstallerError("invalid provisioning publication")
+        if name in ("provision.json", "install-transaction.json"):
+            self._validate_install_record(name, data)
         with self._publication_parent() as (parent, revalidate):
             self._refuse_provision_entry(parent, name)
             pending = f".{name}.pending"
@@ -555,6 +558,42 @@ class ManagedInstaller:
                     if (named.st_dev, named.st_ino) == (created.st_dev, created.st_ino):
                         os.unlink(pending, dir_fd=parent)
                         os.fsync(parent)
+
+    def _validate_install_record(self, name: str, data: bytes) -> None:
+        """Destination-bound v1 records, with the existing provenance kept verbatim.
+
+        Publication alone supplies no service, transaction-update or recovery
+        authority. The future generator computes these fixed digests; no path
+        manifest, secret field or later transaction phase is accepted here.
+        """
+        record = self._json(data)
+        if name == "provision.json" and "version" not in record:
+            # Preserve the legacy provision() output and its reader contract.
+            if record.keys() != {"layout", "token_source", "token_sha256", "configs"} or record["layout"] != self.layout:
+                raise InstallerError("invalid legacy provisioning record")
+            return
+        keys = {"connector.json", "sidecar.json", "policy.json", "release-daemon.json", "daemon.token"}
+        phase = "provisioned"
+        if name == "install-transaction.json":
+            keys.add("provision.json")
+            phase = "prepared"
+        digests = record.get("digests")
+        if (record.keys() != {"version", "layout", "digests", "phase"}
+                or type(record["version"]) is not int or record["version"] != 1
+                or record["layout"] not in ("source", "deb") or record["layout"] != self.layout
+                or record["phase"] != phase
+                or not isinstance(digests, dict) or digests.keys() != keys
+                or any(not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None
+                       for value in digests.values())):
+            raise InstallerError("invalid versioned installation record")
+
+    def _refuse_install_transaction(self) -> None:
+        """Any transaction inventory is inert until its recovery owner ships."""
+        try:
+            with self._directory("etc/happyranch") as parent:
+                self._refuse_provision_entry(parent, "install-transaction.json")
+        except FileNotFoundError:
+            pass
 
     def _release_record(self, user_name: str, data_home: Path | None) -> dict:
         from runtime.remote_access.release_verifier import FRAGMENT, UNIT, validate_record
@@ -677,6 +716,7 @@ class ManagedInstaller:
     def _preflight(self) -> None:
         # Check every existing destination before account creation or systemctl.
         # This is not transactional recovery or a concurrent-root-writer fence.
+        self._refuse_install_transaction()
         for path in (*self._layout(), _UNIT_DIR):
             try:
                 with self._directory(path):
@@ -865,6 +905,7 @@ class ManagedInstaller:
         """
         digests: dict[str, str] = {}
         try:
+            self._refuse_install_transaction()
             if self._has_provisioning():
                 with self._directory("etc/happyranch") as parent:
                     record = self._json(self._read_file(parent, "provision.json", owner=self.root_owner, mode=0o600))

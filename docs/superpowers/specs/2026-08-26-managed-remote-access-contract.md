@@ -480,10 +480,25 @@ before staging. A failed write removes only its own pending inode,
 never a substituted entry. Interrupted process death can leave pending residue
 that requires inspection. This is per-file atomic publication, not a multi-file
 transaction: later I/O failures can leave earlier complete files. Config
-generation, versioned provision/install-transaction records and profile/unit
-selection remain unfinished. `install-transaction.json` is not a selectable
-writer destination; no repair/replacement/helper method is enabled here. The
+generation and profile/unit selection remain unfinished. No
+repair/replacement/helper method is enabled here. The
 legacy provenance schema, config validators and unit bytes remain unchanged.
+
+The 3b-1b-2 records-first sub-part extends only that writer's fixed map with
+`install-transaction.json`, root:root 0600. New version-1 records have exactly
+`version`, `layout`, `digests` and `phase`. Layout must match `source` or `deb`;
+digests are lowercase SHA-256 for exactly connector/sidecar/policy JSON,
+release-daemon JSON and daemon.token. Transaction records additionally bind
+provision.json. The sole provision phase is `provisioned`, and the sole
+transaction phase is `prepared`. Extra/duplicate fields, other versions/phases,
+arbitrary digest paths, secret fields and non-digest values refuse before publication. The existing
+unversioned `provision` output and its reader remain unchanged. Generation does
+not yet emit the new schemas, and the legacy reader rejects versioned provenance.
+Any final or pending transaction entry blocks provision/install/uninstall and
+drift before file publication or service calls, without parsing or recovering
+it. These inert records provide no transaction update, resume, replacement,
+disable recovery or helper operation; those remain 3b-1c/3b-1d. Per-file atomicity
+still supplies no multi-file rollback. Home transport remains 3b-2.
 
 The root operator supplies `install --enrollment-key-file /absolute/input.key`; the input must be a root:root, single-link regular `0600` file, nonempty and at most 64 KiB. Literal no-follow parent traversal and nonblocking/no-follow file opens refuse symlinks and special files. Every install, including reinstall, requires explicit input; this command does not infer a keyless reinstall from persisted state. Use ordinary service restart for an enrolled host; installing a new key over a consumed marker still refuses at the existing marker-plus-input gate. The customer cell issues the single-use, short-expiry key; the installer does not provision it. The original operator input remains the operator's responsibility to remove promptly.
 

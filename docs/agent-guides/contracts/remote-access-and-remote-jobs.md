@@ -822,9 +822,20 @@ never repairs foreign metadata. Ordinary write failure
 removes only the inode it exclusively created, preserving a substituted entry.
 A crash can retain pending residue; a later file failure can retain earlier
 complete files. There is no multi-file recovery transaction. Generated identity
-configs, new versioned provision/install-transaction records and unit-profile
-selection remain pending; the writer rejects `install-transaction.json` and
-arbitrary names. Legacy provenance/config/unit contracts remain unchanged.
+configs and unit-profile selection remain pending. The records-first follow-up
+adds only `install-transaction.json` to the fixed writer map, root:root 0600;
+arbitrary destinations still refuse. Version-1 provision and transaction bodies
+contain exactly `version`, matching `layout`, `digests` and `phase`, with fixed
+lowercase SHA-256 digest keys for connector/sidecar/policy JSON, release-daemon
+JSON and daemon.token (plus provision.json for a transaction). Only provision
+phase `provisioned` and transaction phase `prepared` are accepted. Unknown,
+duplicate or secret fields, paths, versions and phases refuse before writing.
+The legacy provision command still emits its original unversioned provenance;
+generation of the new records/configs and their install selection remain pending.
+The legacy provenance reader does not admit versioned records. Any final or
+pending transaction entry refuses provision/install/uninstall/drift before
+publication or service calls, without reading it as recovery authority.
+Legacy provenance/config/unit contracts remain unchanged.
 Replacement/disable recovery (3b-1c), zero-input helper/package wiring with H2
 (3b-1d) and home transport (3b-2) remain unavailable in this sub-part.
 
