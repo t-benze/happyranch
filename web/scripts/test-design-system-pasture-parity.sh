@@ -184,18 +184,18 @@ mutate "$idbadge" 's/font-mono text-xs/font-mono text-lg/'
 expect 7 'IdBadge size class' 'id font size: ds.css 12px != implementation 18px'
 
 reset
-mutate "$sidebar" 's/gap-2.75 rounded-sm px-2 py-2 md:px-2.5 text-nav/gap-2.5 rounded-sm px-2 py-1.5 text-nav/'
+mutate "$sidebar" 's/gap-2.5 rounded-sm px-2 py-1.5 md:gap-2.75 md:px-2.5 md:py-2 text-nav/gap-2.5 rounded-sm px-2 py-1.5 text-nav/'
 expect 7 'nav row padding/gap (the pre-PR12 main class list)' \
   'nav row padding: ds.css 8px 10px 8px 10px != implementation 6px 8px 6px 8px' \
   'nav row gap: ds.css 11px != implementation 10px'
 
 reset
-mutate "$sidebar" 's/gap-2.75 rounded-sm px-2 py-2 font-medium md:px-2.5/gap-2.75 rounded-sm px-2 py-2 font-medium/'
+mutate "$sidebar" 's/md:gap-2.75 md:px-2.5 md:py-2"/md:gap-2.75 md:py-2"/'
 expect 7 'disabled nav row loses the md: inline padding' \
   'nav row (disabled) padding: ds.css 8px 10px 8px 10px != implementation 8px 8px 8px 8px'
 
 reset
-mutate "$sidebar" 's/ md:px-2.5 text-nav/ md:px-3 text-nav/'
+mutate "$sidebar" 's/ md:px-2.5 md:py-2 text-nav/ md:px-3 md:py-2 text-nav/'
 expect 7 'md: utility overrides the unprefixed one' \
   'nav row padding: ds.css 8px 10px 8px 10px != implementation 8px 12px 8px 12px'
 

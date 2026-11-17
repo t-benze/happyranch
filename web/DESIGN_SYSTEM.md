@@ -273,9 +273,10 @@ Feature compositions keep using the stable `@/design-system/...` import paths.
 - The `Sidebar` active nav row follows Pasture `[data-dir="a"]
   .nav-item.active`: `bg-accent-soft text-accent-text font-semibold`, with no
   left bar or border. Nav rows use `text-nav` (13.5px) at weight 500, and the
-  brand mark is 30px. Rows follow ds.css `.nav-item` padding 8px 10px and
-  gap 11px (`py-2 md:px-2.5 gap-2.75`, THR-376 PR12); below `md` the 56px
-  icon rail keeps `px-2` so the 16px icon fits its 32px-wide row.
+  brand mark is 30px. From `md` up, rows follow ds.css `.nav-item` padding
+  8px 10px and gap 11px (`md:py-2 md:px-2.5 md:gap-2.75`, THR-376 PR12);
+  below `md` the 56px icon rail keeps its base `py-1.5 px-2 gap-2.5` rows
+  unchanged.
 - Colour contrast (THR-376 seq9, WCAG AA). `web/design/pasture-ds.css` is
   the visual authority for Direction A light/dark colour values; it is a
   reference copy only and is not imported by the app build. `tokens.css`

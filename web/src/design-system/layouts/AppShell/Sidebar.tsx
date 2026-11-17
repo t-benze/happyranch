@@ -321,7 +321,7 @@ export function SidebarNavItem({
   if (!enabled) {
     const span = (
       <span
-        className="text-text-muted text-nav flex cursor-not-allowed items-center justify-center gap-2.75 rounded-sm px-2 py-2 font-medium md:justify-start md:px-2.5"
+        className="text-text-muted text-nav flex cursor-not-allowed items-center justify-center gap-2.5 rounded-sm px-2 py-1.5 font-medium md:justify-start md:gap-2.75 md:px-2.5 md:py-2"
         aria-disabled="true"
       >
         <Icon size={16} aria-hidden="true" className="shrink-0" />
@@ -342,9 +342,9 @@ export function SidebarNavItem({
       className={({ isActive }) =>
         // THR-376 PR2: Pasture `[data-dir="a"] .nav-item.active` — accent-soft
         // fill, accent-text ink, weight 600, no left bar; rows 13.5px/500.
-        // THR-376 PR12: `.nav-item` padding 8px 10px and gap 11px. Below md the
-        // 56px icon rail keeps px-2 so the 16px icon fits its 32px row.
-        `flex items-center gap-2.75 rounded-sm px-2 py-2 md:px-2.5 text-nav transition-colors focus-visible:ring-2 focus-visible:outline-none focus-visible:ring-accent-default justify-center md:justify-start ${
+        // THR-376 PR12: `.nav-item` padding 8px 10px and gap 11px from md up.
+        // Below md the 56px icon rail keeps the base py-1.5 px-2 gap-2.5 rows.
+        `flex items-center gap-2.5 rounded-sm px-2 py-1.5 md:gap-2.75 md:px-2.5 md:py-2 text-nav transition-colors focus-visible:ring-2 focus-visible:outline-none focus-visible:ring-accent-default justify-center md:justify-start ${
           isActive
             ? 'bg-accent-soft text-accent-text font-semibold'
             : 'text-text-secondary font-medium hover:bg-surface-raised hover:text-text-primary'
