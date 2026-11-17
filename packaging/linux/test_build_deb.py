@@ -104,10 +104,18 @@ class HeadscalePayloadTests(unittest.TestCase):
             for host in ('github.com', 'release-assets.githubusercontent.com'):
                 self.assertEqual(redirect.redirect_request(None, None, 302, '', {},
                                                           f'https://{host}/asset'), 'accepted')
-        with patch('time.monotonic', side_effect=[0, 181]), self.assertRaisesRegex(
-                RuntimeError, '^LINUX_HEADSCALE_DOWNLOAD_FAILED$'):
-            self.install(self.data)
-        self.assertFalse((self.payload / 'libexec/headscale/headscale').exists())
+        for case, clock in (('nonempty_after_deadline', [0, 181]),
+                            ('terminal_eof_after_deadline', [0, 179, 181])):
+            with self.subTest(case=case):
+                work = self.work / case
+                work.mkdir()
+                self.opener.open.return_value = io.BytesIO(self.data)
+                # BytesIO returns the complete data, then EOF. The second case
+                # expires only after that terminal read, with a valid checksum.
+                with patch('time.monotonic', side_effect=clock), self.assertRaisesRegex(
+                        RuntimeError, '^LINUX_HEADSCALE_DOWNLOAD_FAILED$'):
+                    self.collector['install_headscale']('amd64', work, self.payload)
+                self.assertFalse((self.payload / 'libexec/headscale/headscale').exists())
 
     def test_headscale_linked_notices_and_exact_toolchain(self) -> None:
         with patch('subprocess.check_output', side_effect=self.notice_fixture()) as go:

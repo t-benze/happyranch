@@ -50,8 +50,8 @@ SHA-256 values and embedded Go version. The already-verified managed Python
 downloads over HTTPS into private build scratch, allowing only github.com and
 its explicit release CDN `release-assets.githubusercontent.com` on redirects.
 Each request has a 20-second socket timeout; streaming is capped at 128 MiB
-and a 180-second deadline (checked between bounded socket reads). No new build
-tool is needed. `LINUX_HEADSCALE_DOWNLOAD_FAILED` or
+and a 180-second deadline (checked after bounded socket reads, including EOF).
+No new build tool is needed. `LINUX_HEADSCALE_DOWNLOAD_FAILED` or
 `LINUX_HEADSCALE_SHA256_MISMATCH` aborts before the binary is installed or
 inspected. The pin was checked against upstream release `checksums.txt` and
 fresh downloads of both assets.

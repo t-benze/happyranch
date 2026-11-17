@@ -57,6 +57,8 @@ def install_headscale(arch: str, work: Path, payload: Path) -> None:
                     raise RuntimeError("download limit exceeded")
                 digest.update(chunk)
                 out.write(chunk)
+            if time.monotonic() > deadline:
+                raise RuntimeError("download limit exceeded")
     except Exception:
         # urllib errors can contain signed redirect URLs. Keep diagnostics fixed.
         raise RuntimeError("LINUX_HEADSCALE_DOWNLOAD_FAILED") from None
