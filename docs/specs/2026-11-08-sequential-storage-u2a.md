@@ -9,7 +9,7 @@ TASK14397 reviewed-baseline/technical-spec.md §8. This append-only pointer does
 not supersede that specification.
 
 Current source contract: [reusable workflow storage](../agent-guides/contracts/reusable-workflows.md#u2a-storage-and-standalone-reader-boundary).
-Installation/backout: [UNVERIFIED draft](../runbooks/sequential-workflow-storage.md).
+Installation/backout: [UNVERIFIED draft](../operations/sequential-workflow-storage.md).
 No production importer or writer is attached. Complete combined old-history
 integration remains a follow-up U2a boundary; U2b installation and V3 have not
 run. U3 source adoption and all U4–U9 holds remain separate.

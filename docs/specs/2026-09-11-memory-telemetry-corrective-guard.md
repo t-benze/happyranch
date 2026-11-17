@@ -15,7 +15,7 @@
 
 > Test-policy amendment (THR-291 seq40): Python unit source and gates cited below
 > are retired. Product invariants and acceptance obligations remain unchanged;
-> replacement E2E coverage is PENDING. See [the coverage gap record](../python-test-reset.md).
+> replacement E2E coverage is PENDING. See [the coverage gap record](../operations/python-test-reset.md).
 
 > Status: current
 > Current Source: `docs/agent-guides/features-and-invariants.md` and `docs/agent-guides/web-and-cli.md`

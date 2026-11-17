@@ -123,3 +123,7 @@ this check exits 0. Teardown retains reusable
 build/download/source caches and plain evidence. The VM stays running. A failed
 cleanup is reported, not treated as a clean VM. No workflow or required-check
 change accompanies this test.
+
+## History
+
+No inline thread, sequence, or task citations were present.

@@ -2,7 +2,7 @@
 
 Current shipping contract: [Mac build](../app/mac/README.md),
 [manifest notices](manifest-notices.md), and
-[workflow limits/diagnostics](../docs/runbooks/mac-workflow-operations.md).
+[workflow limits/diagnostics](../docs/operations/mac-workflow-operations.md).
 Founder THR104 seq369 retires asset/freezer/web evidence and the packaging
 supervisor from every shipping producer and consumer. No closure-complete flag,
 mandatory evidence token, per-byte emitted proof or IPC replaces them.

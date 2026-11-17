@@ -1,14 +1,14 @@
 # HappyRanch Remote Access — Self-Hosted headscale + DERP Runbook
 
-**Phase-2 Part A** — deploy artifact runbook (THR-097)
+**Phase-2 Part A** — deploy artifact runbook
 **Author:** dev_agent (config + docs only — founder executes)
 **Status:** Historical Phase-2 provisioning artifact (THR-097 / PR #425).
 
 The steps below preserve that earlier self-hosted control-plane/Mac environment
 setup, including its reusable-key example. Current THR-327 seq187/227 managed
 Linux installation, single-use credential-file handoff and lifecycle are maintained
-in [the remote-access guide](../../docs/agent-guides/contracts/remote-access-and-remote-jobs.md)
-and [the normative contract](../../docs/specs/2026-08-26-managed-remote-access-contract.md#managed-linux-m1-acceptance-thr-327-seq187).
+in [the remote-access guide](../agent-guides/contracts/remote-access-and-remote-jobs.md)
+and [the normative contract](../specs/2026-08-26-managed-remote-access-contract.md#managed-linux-m1-acceptance-thr-327-seq187).
 Bounded M1 **PASSED** on main `455c9c5b689fa25f625e2df8cae1b551c2a1de86`
 ([run 42978877282](https://github.com/t-benze/happyranch/actions/runs/42978877282)).
 M2 tailnet transport, full-daemon acceptance, restart/reboot recovery and deployment
@@ -591,7 +591,7 @@ deploy/remote-access/
 │   └── config.yaml          # headscale server config (self-hosted, no Tailscale SaaS)
 ├── derp/
 │   └── derp.yaml            # DERP region map (self-hosted relay ONLY)
-└── RUNBOOK.md               # This file
+docs/operations/remote-access-runbook.md # This file
 ```
 
 ---
@@ -669,3 +669,9 @@ docker run --rm -v happyranch_headscale-data:/data -v $(pwd):/backup alpine \
 
 # Back up the .env file as well (contains secrets).
 ```
+
+## History
+
+Citations removed from the body, with the section they supported:
+
+- `THR-097` — HappyRanch Remote Access — Self-Hosted headscale + DERP Runbook (original line 3).

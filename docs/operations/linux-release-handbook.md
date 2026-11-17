@@ -2,7 +2,7 @@
 
 ## Build the intermediate payload
 
-Founder THR-346 seq43/44 authorizes one manual build workflow under THR-291.
+Founder authorizes one manual build workflow under THR-291.
 After this workflow lands on main, open **Actions → Build Linux App Payload →
 Run workflow**, select the reviewed main revision, and dispatch it. It builds
 natively on `ubuntu-22.04` (x86_64) and `ubuntu-22.04-arm` (aarch64). It has no
@@ -73,7 +73,7 @@ places first on agents' PATH, removing duplicate copies. This is source mode
 The remote-access installer defaults to the separate source layout at
 `/opt/happyranch/venv/bin/python`. Its `--layout deb` option uses the packaged
 `/opt/happyranch-desktop/python/bin/python3 -I` and packaged sidecar. See
-[Desktop package host](../../deploy/remote-access/RUNBOOK.md#desktop-package-host)
+[Desktop package host](remote-access-runbook.md#desktop-package-host)
 for provisioning before installation. The installer validates the dpkg-owned
 prefix and executables without creating or changing their permissions. The
 `happyranch` service account must have execute permission on both executables
@@ -132,7 +132,7 @@ exclusion lists retain 8765 and operator exclusions. For a custom XDG home,
 provision the connector with `--data-home` pointing to that same absolute
 `$XDG_DATA_HOME/happyranch`: its default is the passwd account's
 `.local/share/happyranch`, and it does not discover the user manager's XDG value.
-See the [managed remote-access runbook](../../../deploy/remote-access/RUNBOOK.md).
+See the [managed remote-access runbook](remote-access-runbook.md).
 
 Inside a runtime session (nonempty `HAPPYRANCH_RUNTIME_SESSION_ID`), the packaged
 `bin/happyranch` CLI refuses an unset or empty `HAPPYRANCH_DAEMON_HOME`, exits
@@ -840,3 +840,9 @@ than rewriting third-party files to silence these tags. CLI manual pages are
 not shipped in v1 (`happyranch --help` supplies usage). Any newly introduced
 metadata, mode or missing-dependency error needs correction or a specific
 disposition in release evidence.
+
+## History
+
+Citations removed from the body, with the section they supported:
+
+- `THR-346 seq43/44` — Build the intermediate payload (original line 5).

@@ -792,7 +792,7 @@ No whole CI, build, daemon, external HOME/cache write or frozen bundle is used.
 On Linux the dispatcher emits its expected skipped JSON and exits0.
 
 The same nine portable fixtures can also run on their own with
-`python3 -B scripts/mac_native/suite_inode_telemetry.py` (see `docs/local-ci.md`).
+`python3 -B scripts/mac_native/suite_inode_telemetry.py` (see `docs/operations/local-ci.md`).
 They prove parsing/advisory behavior only; native Mac, frozen-app acceptance
 and Product E2E require their separately owned evidence.
 

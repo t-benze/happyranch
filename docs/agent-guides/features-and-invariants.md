@@ -216,7 +216,7 @@ no global infeasibility, candidate-guard/full F5/F8/program/runtime PASS follows
 Historical native0/verifier2/42-INCOMPLETE and earlier ROOT10693 source waivers
 remain history. They do not waive current allocated M1–M6/S1–S8 sensitivity,
 forward restoration, GREEN/five fresh-process repetitions or independent
-same-head executable QA. See docs/local-ci.md for exact command and exits.
+same-head executable QA. See docs/operations/local-ci.md for exact command and exits.
 
 The start_in_writer/support._storage pre-write composition now consumes the
 internally reconstructed complete-schema mapping/import/queued inventory under
@@ -1600,7 +1600,7 @@ smoke465 remain dependencies; smoke465 is required before Founder invitation.
 > Test-policy update (THR-291 seq40): former Python unit tests and unit-only
 > fixtures referenced in historical implementation evidence below are retired.
 > Product contracts are unchanged; replacement E2E is PENDING. See
-> [coverage gaps](../python-test-reset.md) and [current lanes](../local-ci.md).
+> [coverage gaps](../operations/python-test-reset.md) and [current lanes](../operations/local-ci.md).
 
 ## Current CLI/prompt naming invariants
 

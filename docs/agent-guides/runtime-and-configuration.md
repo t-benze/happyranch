@@ -42,7 +42,7 @@ without DB changes, partial certificates or observer leaks, with the same-image
 original-base comparison. Record **EXPECTED REFUSAL - part 1 retained until I2**.
 Installed happyranch successful FIRST/NEXT/Pause/all-org-tail capacity acceptance
 is I2's fresh-base/fresh-capture gate. All other A0b-2 cases remain required; see
-the [capacity contract](../runbooks/sequential-workflow-storage.md).
+the [capacity contract](../operations/sequential-workflow-storage.md).
 
 A0b finite SQL prerequisite for automatic workflow setup: shared bounded readers
 evaluate each singleton's whole-row shape/size once; sequential ownership uses
@@ -3076,8 +3076,8 @@ workflows, outside PR/main. Manual/tag macOS packaging is a separate release
 activity and invokes no fresh E2E.
 The Nightly integration workflow (schedule and manual lanes) was retired under THR-291; daily Product E2E (`e2e.yml`, 19:00 UTC) is the behavioral lane.
 
-See [the reset coverage gap record](../python-test-reset.md) and
-[Local CI](../local-ci.md) for retained selectors and evidence limits.
+See [the reset coverage gap record](../operations/python-test-reset.md) and
+[Local CI](../operations/local-ci.md) for retained selectors and evidence limits.
 
 Direct pytest uses `tmp_path_retention_policy = "failed"`: passing `tmp_path`
 and `tmpdir` fixture directories are removed best effort; ordinary failed-call
@@ -3085,7 +3085,7 @@ diagnostics are retained. This does not cover arbitrary tempfile writes or
 guarantee retention after setup/teardown errors or interrupts. Use the frozen
 uv environment (currently pytest 9.0.3); the option requires pytest 7.3+, while
 the declared `pytest>=7.0` range also admits unsupported 7.0–7.2. See
-[pytest scratch scope and limits](../local-ci.md#per-run-pytest-scratch-lifecycle)
+[pytest scratch scope and limits](../operations/local-ci.md#per-run-pytest-scratch-lifecycle)
 for factory directories, explicit basetemp, version compatibility and cleanup
 limits. Unit selections are retired; retained integration belongs only
 in the documented disposable CI venue.
@@ -3095,7 +3095,7 @@ CLI stubs in disposable GitHub runners or a separately authorized Mac Linux gues
 The test parent is sanitized before pytest/runtime imports, with temporary homes,
 configuration, registries and runtime data plus exact source/callback/stub identity.
 Direct integration collection without that parent refuses. Never run integration
-on the live Linux daemon host, including through jobs. See `docs/local-ci.md`.
+on the live Linux daemon host, including through jobs. See `docs/operations/local-ci.md`.
 The disposable default roster exists before startup/registration so the real
 lifecycle initializes eligible manager selectors. Example-based two-org creation
 likewise supplies its declared roster, including `code_reviewer`, before POST.
@@ -4198,7 +4198,7 @@ new defaults/Disable. The offline
 Allow/Disable, with complete offline/backup exclusions; it does not install or
 attach public starts. Historical Explicit settings never transfer; Settings →
 Coding only recovers earlier saves by original key. See the
-[cutover/backout runbook](../runbooks/sequential-coding-cutover.md). Real workflow/Founder
+[cutover/backout runbook](../operations/sequential-coding-cutover.md). Real workflow/Founder
 persistence/scratch/rejection/revision/control/cross-team/two-org/backup/restore/
 reopen/rollback acceptance remains open before ordinary coding use. Source delivery
 alone is not installed, loaded, operational or enabled acceptance.

@@ -227,7 +227,7 @@ Tracked source is split by product surface:
 |   |-- operations/              # operator runbooks and release checklists
 |   |-- product/                 # product notes and PRDs
 |   |-- specs/                    # retained current and referenced designs
-|   `-- local-ci.md, jenkins-jobs.md # supported development/CI operations
+|   `-- operations/local-ci.md, operations/jenkins-jobs.md # supported development/CI operations
 |-- examples/orgs/hk-macau-tourism/  # canonical sample org tree
 `-- tests/                       # Python tests; see the forward-only placement rules below
 ```
@@ -325,7 +325,7 @@ it is neither product testing nor E2E coverage.
 `scripts/validate_source_boundaries.py`, and `scripts/validate_private_operator_endpoints.py`;
 `all` includes that lane before Web. Unconditional `Source Boundary Lint` in
 `.github/workflows/ci.yml` runs all five commands on every PR and push to main using
-Python 3.14, without installing project dependencies. See [Local CI](../local-ci.md).
+Python 3.14, without installing project dependencies. See [Local CI](../operations/local-ci.md).
 
 ## Test placement
 
@@ -335,8 +335,8 @@ those outside `tests/integration/`. Seven explicit canonical platform files rema
 in `tests/`; they are an existing platform lane, not a retained contract-unit tier.
 `tests/contract/` holds only fixtures with actual Web/native/lab consumers.
 Fresh E2E harness/scenario placement is pending the parent implementation; do not
-copy or relabel retired unit cases. See [coverage gaps](../python-test-reset.md)
-and [Local CI](../local-ci.md). Product packages and assets remain unchanged.
+copy or relabel retired unit cases. See [coverage gaps](../operations/python-test-reset.md)
+and [Local CI](../operations/local-ci.md). Product packages and assets remain unchanged.
 
 The tracked skill-eligibility fixture lives at
 `tests/fixtures/skill_eligibility/config.yaml` and is read by

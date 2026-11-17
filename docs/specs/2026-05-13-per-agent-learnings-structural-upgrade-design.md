@@ -596,5 +596,5 @@ happyranch memory lifecycle --org ORG --agent AGENT MEM-001 --set valid --reason
 
 Existing `memory_lifecycle_changed` and digest-impression audit payloads, scope
 identities and historical rows remain unchanged. Required checks remain lint/
-static only. Focused standalone verification is documented in `docs/local-ci.md`;
+static only. Focused standalone verification is documented in `docs/operations/local-ci.md`;
 retired Python units, general integration and Product E2E are not invoked.

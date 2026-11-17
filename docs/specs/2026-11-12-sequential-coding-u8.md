@@ -181,7 +181,7 @@ settings GETs and the U7b settings PUT, original-operation GET and provider cust
   host preparation from sequential install/registration/admission. The historical
   guided setup does not install sequential storage or make its catalog available.
   U9b still owns the atomic public cutover; see the
-  [operator runbook](../runbooks/sequential-coding-cutover.md).
+  [operator runbook](../operations/sequential-coding-cutover.md).
 
 ## Copy
 

@@ -1,7 +1,7 @@
 # Internal Mac workflow time limits and diagnostics
 
 For CI dispatch, artifact retrieval/verification and local signing, use the
-[Mac release handbook](mac-release-handbook.md). This page covers workflow
+[Mac release handbook](../runbooks/mac-release-handbook.md). This page covers workflow
 budgets and diagnostics only.
 
 `.github/workflows/build-mac-app.yml` is an internal unsigned candidate venue.
@@ -69,3 +69,10 @@ GitHub documents [workflow cancellation](https://docs.github.com/en/actions/refe
 [step outcomes](https://docs.github.com/en/actions/reference/workflows-and-actions/contexts#steps-context),
 [status expressions](https://docs.github.com/en/actions/reference/workflows-and-actions/expressions#status-check-functions)
 and [workflow timeout syntax](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax).
+
+## History
+
+These references remain inline to preserve sentence meaning and owner, artifact,
+or case identity.
+
+- `THR104 seq369` — Internal Mac workflow time limits and diagnostics (original line 48).

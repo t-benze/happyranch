@@ -1,4 +1,4 @@
-"""Focused no-launch Pause/Resume checks; see docs/local-ci.md."""
+"""Focused no-launch Pause/Resume checks; see docs/operations/local-ci.md."""
 from __future__ import annotations
 
 import sqlite3

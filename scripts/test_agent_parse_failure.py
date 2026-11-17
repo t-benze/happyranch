@@ -1,4 +1,4 @@
-"""Focused no-launch manager prompt failure checks; see docs/local-ci.md."""
+"""Focused no-launch manager prompt failure checks; see docs/operations/local-ci.md."""
 from __future__ import annotations
 
 from pathlib import Path
