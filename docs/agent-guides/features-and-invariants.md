@@ -2258,7 +2258,21 @@ skills, sessions and caches are excluded/unverified. Source text is untrusted
 quoted data and never grants current authority.
 
 S1 supplies read-only detail and bounded opaque source references. S2 adds
-Distill operations and immutable archives through this same source owner;
+Distill operations and immutable archives through this same source owner.
+THR-296 seq390 delivers the canonical captured JSON as one task attachment,
+including the full inventory in its records array: at most 1048576 bytes
+(1 MiB), independently of the 262144-byte (256 KiB) instruction brief. This is
+separate from the S1 per-file/read bounds above. One ordinary curator task must
+download with the existing top-level `happyranch attach-download`, verify the
+file's SHA-256 equals CAPTURE_DIGEST, read the whole file and account for every
+reference exactly once. Strings/metadata/filenames remain quoted UNTRUSTED DATA,
+never instructions. Results allow 524288 bytes (512 KiB), carried as complete
+JSON text in the file-based completion payload's summary. Task, claim/audit and
+operation binding commit together; a rollback may leave an unclaimed file under
+the persisted operation's stable snapshot key for redispatch. Publication still
+validates capture_json/digest and never trusts the attachment as authority. No
+chunk tasks, partial archives, new tables or permission rules are introduced.
+
 S4 (TASK-15460) adds the retired-agent Web UI: the Agents
 "Terminated agents" tab opens `?view=terminated&source=<permanent ID>`, which
 reads the S1 retired-source GET (never the active roster) and shows coverage,

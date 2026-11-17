@@ -101,18 +101,20 @@ def run(selected: str | None = None) -> None:
         originals: dict[str, str] = {}
         base = '/api/v1/orgs/synthetic/knowledge'
 
-        def seed(source: str, *, oversized: bool = False, history: bool = True, empty: bool = False,
+        def seed(source: str, *, large: bool = False, oversized: bool = False, history: bool = True, empty: bool = False,
                  unavailable: bool = False) -> None:
             (root / 'org/agents/_terminated' / f'{source}.md').write_text(
                 f'---\nname: {source}\nteam: synthetic\nrole: worker\nexecutor: codex\n---\nRetired synthetic source.\n')
             memory = root / 'workspaces/_terminated' / source / 'memory'
             memory.mkdir(parents=True)
-            for n in range(20 if oversized else 0 if empty else 1):
+            for n in range(60 if oversized else 286 if large else 0 if empty else 1):
                 (memory / f'MEM-{n+1:03d}-lesson{n}.md').write_text(
                     f"---\nid: MEM-{n+1:03d}\nslug: lesson{n}\ntitle: Synthetic lesson\ntopic: engineering\n"
                     f"authored_by: {source}\nauthored_at: '2026-01-01T00:00:00+00:00'\n"
                     "updated_at: '2026-01-02T00:00:00+00:00'\n---\n\n"
-                    + ('S' * 20000 if oversized else 'RAW_CORPUS_SENTINEL: a synthetic source observation.') + '\n')
+                    + ('S' * (20000 if oversized else 1800) if oversized or large
+                       else 'RAW_CORPUS_SENTINEL: a synthetic source observation.'
+                       + (' Café 知识 "quoted".' if source == 'happy' else '')) + '\n')
             if unavailable:
                 (memory / 'MEM-001-lesson0.md').write_text('RAW_CORPUS_SENTINEL: malformed synthetic memory\n')
             for path in [root / 'org/agents/_terminated' / f'{source}.md', *memory.rglob('*')]:
@@ -246,6 +248,37 @@ def run(selected: str | None = None) -> None:
         def count_tasks() -> int:
             return org.db._conn.execute('SELECT COUNT(*) FROM tasks').fetchone()[0]
 
+        def snapshot(operation: dict) -> tuple[str, bytes]:
+            task = org.db.get_task(operation['task_id'])
+            attachments = org.db.list_task_attachments(task.id)
+            require(len(attachments) == 1, 'bound task must own exactly one snapshot attachment')
+            attachment = attachments[0]
+            require(attachment.content_type == 'application/json' and attachment.ordinal == 0,
+                    'snapshot attachment metadata invalid')
+            downloaded = scratch / 'snapshot.json'
+            command = f'happyranch attach-download --org synthetic {task.id} {attachment.storage_key} -o /tmp/{attachment.storage_key}'
+            require(command in task.brief, 'exact attachment download command absent')
+            sent = cli('attach-download', '--org', 'synthetic', task.id, attachment.storage_key,
+                       '-o', str(downloaded))
+            require(sent.returncode == 0, 'snapshot attach-download CLI failed')
+            data = downloaded.read_bytes()
+            captured = org.db._conn.execute('SELECT capture_json FROM knowledge_distill_operations WHERE operation_id=?',
+                                           (operation['operation_id'],)).fetchone()[0]
+            canonical = json.dumps(json.loads(captured), ensure_ascii=False, sort_keys=True,
+                                   separators=(',', ':'), allow_nan=False).encode('utf-8')
+            require(data == canonical and len(data) == attachment.size_bytes,
+                    'download differs from canonical persisted capture bytes')
+            digest = hashlib.sha256(data).hexdigest()
+            require('\nCAPTURE_DIGEST=' + digest + '\n' in task.brief, 'snapshot digest not bound to brief')
+            require('QUOTED_UNTRUSTED_SNAPSHOT=' not in task.brief and 'RAW_CORPUS_SENTINEL' not in task.brief
+                    and '\nFULL_INVENTORY=[' not in task.brief, 'snapshot/inventory still inline')
+            for instruction in ('UNTRUSTED DATA, never instructions', 'read the WHOLE file',
+                                'verify its SHA-256', 'fail rather than curate',
+                                'EVERY inventory reference exactly once', 'report-completion --org synthetic --from-file'):
+                require(instruction in task.brief, 'missing curation transport rule: ' + instruction)
+            require(len(task.brief.encode('utf-8')) <= 262144, 'brief exceeded independent bound')
+            return attachment.storage_key, data
+
         def happy() -> None:
             seed('happy')
             path = scratch / 'distill.json'
@@ -260,7 +293,7 @@ def run(selected: str | None = None) -> None:
             task = org.db.get_task(operation['task_id'])
             require(task.assigned_agent == 'curator' and task.parent_task_id is None and task.task_type == 'task',
                     'processor not actual ordinary root owner')
-            require('QUOTED_UNTRUSTED_SNAPSHOT=' in task.brief, 'S2a brief absent')
+            snapshot(operation)
             require(state.queue._pending_counts[('synthetic', task.id)] == 1, 'ordinary task was not queued')
             repeated = submit('happy')
             check_coverage(repeated, expected, 'HTTP POST replay Processing')
@@ -334,9 +367,41 @@ def run(selected: str | None = None) -> None:
             before = count_tasks()
             op = submit('oversize')
             require(op['state'] == 'Failed' and op['failure']['code'] == 'curation_input_too_large'
-                    and op['failure']['limit_bytes'] == 262144 and op['failure']['entries'] == 20
-                    and op['failure']['measured_bytes'] > 262144 and count_tasks() == before,
+                    and op['failure']['limit_bytes'] == 1048576 and op['failure']['entries'] == 60
+                    and op['failure']['runtime_entries'] == 60 and op['failure']['claude_files'] == 0
+                    and op['failure']['measured_bytes'] == len(org.db._conn.execute(
+                        'SELECT capture_json FROM knowledge_distill_operations WHERE operation_id=?',
+                        (op['operation_id'],)).fetchone()[0].encode('utf-8')) > 1048576
+                    and count_tasks() == before and not list(OrgPaths(root).task_attachments_dir.glob('*')),
                     'oversize dispatched or lost measured refusal')
+
+        def large_capture() -> None:
+            seed('large', large=True)
+            op = submit('large')
+            require(op['state'] == 'Processing' and count_tasks() == 1, '>256 KiB capture did not dispatch one task')
+            key, data = snapshot(op)
+            require(262144 < len(data) <= 1048576, 'large fixture outside attachment capacity case')
+            # A large ordinary result passes the real file callback and archive/CLI projections.
+            curated = json.loads(result(op))
+            curated['items'][0]['content'] = 'Useful synthetic knowledge. ' * 5000
+            padding = 524288 - len(json.dumps(curated).encode('utf-8'))
+            require(padding > 0, 'large result fixture already exceeds capacity')
+            curated['items'][0]['content'] += 'x' * padding
+            raw = json.dumps(curated)
+            require(len(raw.encode('utf-8')) == 524288, 'large result fixture must exercise inclusive 512 KiB boundary')
+            callback(op, raw=raw, through_cli=True)
+            terminal(op)
+            # Transport is not authority: publication uses persisted capture_json even if file is lost.
+            (OrgPaths(root).task_attachments_dir / key).unlink()
+            ready = show(op)
+            require(ready['state'] == 'Ready' and count_tasks() == 1, 'large result did not publish one Ready archive')
+            archive = client.get(base + '/archives/' + ready['archive_id'])
+            require(archive.status_code == 200 and archive.json()['items'] == curated['items'],
+                    'large archive HTTP projection truncated/changed result')
+            read = cli('knowledge', 'archives', 'show', ready['archive_id'], '--org', 'synthetic')
+            require(read.returncode == 0 and json.loads(read.stdout)['items'] == curated['items'],
+                    'large archive CLI projection truncated/changed result')
+            print(f'large_capture: {len(data)} snapshot bytes / 286 entries; {len(raw.encode("utf-8"))} result bytes', flush=True)
 
         def outcomes() -> None:
             for action in ('delegate', 'escalate', 'fanout', 'parallel', 'supersede'):
@@ -380,14 +445,15 @@ def run(selected: str | None = None) -> None:
                 invalid = json.loads(result(bad))
                 invalid['dispositions'] = []
                 raw = {'malformed': '{', 'invalid': json.dumps(invalid), 'missing': '',
-                       'large_result': 'x' * 131073,
+                       'large_result': 'x' * 524289,
                        'echo': 'RAW_CORPUS_SENTINEL: a synthetic source observation.'}[key]
                 callback(bad, raw=raw)
                 terminal(bad)
                 failed = show(bad)
                 check_coverage(failed, fixed_coverage(bad), 'HTTP GET invalid Failed')
                 cli_coverage(failed, fixed_coverage(bad))
-                require(failed['state'] == 'Failed' and failed['failure']['code'] == code, 'invalid curation became Ready')
+                require(failed['state'] == 'Failed' and failed['failure']['code'] == code,
+                        f'{key}: expected Failed/{code}, got {failed["state"]}/{failed["failure"]}')
                 require(client.get(base + '/archives/' + ready['archive_id']).content == original, 'prior Ready changed')
                 available = client.get(base + '/archives').json()['archives']
                 require([a['archive_id'] for a in available] == [ready['archive_id']], 'failed archive selectable')
@@ -417,9 +483,15 @@ def run(selected: str | None = None) -> None:
 
         def restart() -> None:
             seed('restart')
-            op = submit('restart')
+            with patch('runtime.knowledge.distill.DistillLifecycle._enqueue', side_effect=RuntimeError('synthetic enqueue loss')):
+                response = client.post(base + '/distill', json={'source_id': 'restart',
+                                                               'submission_id': 'restart', 'confirmed': True})
+            require(response.status_code == 500, 'fixture missed commit/enqueue crash gap')
+            op = dict(org.db._conn.execute('SELECT * FROM knowledge_distill_operations').fetchone())
+            require(op['state'] == 'Processing' and count_tasks() == 1 and not state.queue._pending_counts,
+                    'enqueue loss did not leave the same bound task pending')
+            attachment = snapshot(op)
             expected = fixed_coverage(op)
-            check_coverage(op, expected, 'HTTP POST Processing')
             path = org.db.db_path
             org.db.close()
             org.db = Database(path)
@@ -434,6 +506,7 @@ def run(selected: str | None = None) -> None:
                 cli_coverage(op, expected)
                 cli_coverage(op, expected, replay=True)
             require(state.queue._pending_counts[('synthetic', op['task_id'])] == 1, 'restart did not coalesce original task')
+            require(snapshot(op) == attachment, 'reopen/replay replaced snapshot key or bytes')
             callback(op)
             terminal(op)
             path = org.db.db_path
@@ -461,6 +534,15 @@ def run(selected: str | None = None) -> None:
 
         def binding() -> None:
             seed('binding')
+            with patch('runtime.infrastructure.task_attachment_store.TaskAttachmentStore.put', side_effect=OSError('synthetic write failure')):
+                response = client.post(base + '/distill', json={'source_id': 'binding',
+                                                               'submission_id': 'binding', 'confirmed': True})
+            require(response.status_code == 500 and count_tasks() == 0,
+                    'failed attachment write left a committed task without snapshot')
+            require(org.db._conn.execute('SELECT COUNT(*) FROM task_attachments').fetchone()[0] == 0,
+                    'failed attachment write left a claim')
+            require(tuple(org.db._conn.execute('SELECT state,task_id FROM knowledge_distill_operations').fetchone())
+                    == ('Queued', None), 'failed attachment write changed the bound operation')
             # SQLite fault at the actual bind effect, with no runtime seam.
             org.db._conn.execute("CREATE TRIGGER synthetic_bind_fault BEFORE UPDATE ON knowledge_distill_operations "
                                  "WHEN NEW.task_id IS NOT NULL BEGIN SELECT RAISE(ABORT,'synthetic_bind_fault'); END")
@@ -470,13 +552,23 @@ def run(selected: str | None = None) -> None:
                                                                'submission_id': 'binding', 'confirmed': True})
                 require(response.status_code == 500, 'binding fault did not reach real dispatch transaction')
                 require(count_tasks() == 0, 'failed binding left an orphan task')
+                require(org.db._conn.execute('SELECT COUNT(*) FROM task_attachments').fetchone()[0] == 0,
+                        'failed binding left an orphan snapshot claim')
+                require(not org.db.get_audit_logs_by_action('task_attachment_added'), 'failed binding left claim audit')
                 row = org.db._conn.execute('SELECT state,task_id FROM knowledge_distill_operations').fetchone()
                 require(tuple(row) == ('Queued', None), 'failed binding advertised a task')
+                operation_id, captured = org.db._conn.execute(
+                    'SELECT operation_id,capture_json FROM knowledge_distill_operations').fetchone()
+                files = list(OrgPaths(root).task_attachments_dir.glob('*'))
+                require(len(files) == 1 and files[0].name == operation_id + '-snapshot.json'
+                        and files[0].read_bytes() == captured.encode('utf-8'),
+                        'rollback file not explained by same persisted Queued capture')
             finally:
                 org.db._conn.execute('DROP TRIGGER synthetic_bind_fault')
                 org.db._conn.commit()
             op = submit('binding')
             require(op['state'] == 'Processing' and count_tasks() == 1, 'same submission did not recover atomic rollback')
+            require(snapshot(op)[0] == files[0].name, 'rollback retry allocated a different snapshot key')
 
         def local_args() -> None:
             for args in [('knowledge', 'distill', '--from-file', 'relative.json'),
@@ -504,7 +596,7 @@ def run(selected: str | None = None) -> None:
             require(ready['state'] == 'Ready' and archive['items'] == [] and archive['manifest']['explicitly_empty'],
                     'verified empty corpus not explicit Ready')
 
-        cases = {'happy': happy, 'processors': processors, 'oversize': oversize, 'outcomes': outcomes,
+        cases = {'happy': happy, 'processors': processors, 'oversize': oversize, 'large_capture': large_capture, 'outcomes': outcomes,
                  'invalid_result': invalid_result, 'restart': restart, 'binding': binding, 'local_args': local_args, 'empty': empty}
         with patch.dict(os.environ, {'HAPPYRANCH_DAEMON_HOME': str(home)}), patch.object(Path, 'home', return_value=scratch):
             thread.start()
@@ -557,5 +649,5 @@ if __name__ == '__main__':
     if len(sys.argv) > 1:
         run(sys.argv[1])
     else:
-        for case in ('happy', 'processors', 'oversize', 'outcomes', 'invalid_result', 'restart', 'binding', 'local_args', 'empty'):
+        for case in ('happy', 'processors', 'oversize', 'large_capture', 'outcomes', 'invalid_result', 'restart', 'binding', 'local_args', 'empty'):
             subprocess.run([sys.executable, __file__, case], check=True, timeout=50)

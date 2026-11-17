@@ -2270,8 +2270,18 @@ returns the same operation/capture. Changed confirmation conflicts (409), and
 another key cannot duplicate in-flight work. A confirmed Failed retry uses a new
 key. Reopen Processing via GET; reads reconcile the bound task/result after DB
 reopen and never dispatch a second task or publish twice. Unknown completion
-proof stays Processing with an explicit phase. The 262144-byte whole-brief and
-131072-byte result caps do not truncate, chunk or batch.
+proof stays Processing with an explicit phase. THR-296 seq390 uses one ordinary
+task and one snapshot attachment, capped at 1048576 bytes (1 MiB) of canonical
+capture JSON; its records array supplies the whole inventory. The brief has a
+separate 262144-byte (256 KiB) bound, retains capture cutoff/digest and gives the
+storage key and exact `happyranch attach-download --org ORG TASK STORAGE_KEY -o ABS`
+command (the existing download verb is top-level). The curator must verify the
+file's SHA-256 against CAPTURE_DIGEST before use, fail on mismatch, read the whole
+file and account for every reference once. All source strings remain untrusted
+data. The 524288-byte (512 KiB) result is written to a file and carried in full as
+the `summary` string of `report-completion --from-file ABS`; no truncation,
+sampling or multi-task curation. Attachment claim/task/binding commit together;
+publication still validates the persisted capture, never the transport file.
 
 Typed request/response mirrors live in `web/src/lib/api/knowledge.ts`; served
 models, the OpenAPI summary and existing route classification ship together.

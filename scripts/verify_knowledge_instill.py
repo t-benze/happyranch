@@ -147,7 +147,7 @@ def curation_dates() -> None:
         source, result = capture()
         result['items'][0]['attribution'][0]['observed_at'] = '2026-10-28'
         curation_rejected(f, source, result, 'historical_observation', 'curation_observation_cutoff_mismatch')
-        brief = build_curation_input(source)
+        brief = build_curation_input(source, org_slug='synthetic', task_id='TASK-curation', storage_key='snapshot.json')
         require('\nCAPTURE_CUTOFF=' + source.cutoff + '\n' in brief, 'literal capture cutoff missing from built brief')
         for rule in ('every attribution.observed_at MUST be exactly the CAPTURE_CUTOFF string',
                      'every attribution.authored_at MUST exactly equal its captured metadata.authored_at',
@@ -183,7 +183,7 @@ def curation_qualified_eligibility(category: str) -> None:
         print(category + ': eligible=true Ready/selectable with exact qualifications', flush=True)
         item['instill_eligible'] = False
         curation_rejected(f, source, result, category + '_false', 'curation_eligibility_mismatch')
-        brief = build_curation_input(source)
+        brief = build_curation_input(source, org_slug='synthetic', task_id='TASK-curation', storage_key='snapshot.json')
         for rule in ('Every non-reference_only item with non-empty content MUST have instill_eligible=true',
                      'Uncertain, conflicting or unverified knowledge remains eligible with its required flags/warnings',
                      'founder_decision_preference items (cited or attribution_unverified with the exact warning)',
