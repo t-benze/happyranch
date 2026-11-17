@@ -971,16 +971,20 @@ precedes clients. Ambient proxy/bypass/keylog/GODEBUG and all `TS_` overrides
 refuse without value echo. There is no direct/public retry or host trust/DNS
 change. Upstream verification/dial or listener failure closes owned streams;
 shutdown/cancellation closes transport and tsnet. Malformed local TLS after
-CONNECT also seals admission; a cancelled losing controlhttp attempt closes its
-own stream. Closed home engines cannot create new listeners. Home/address changes require
-a new dedicated process, retaining canonical durable identities.
+CONNECT also seals admission; EOF or a local TCP reset from a cancelled
+controlhttp/DERP attempt closes only its own stream. Closed home engines cannot
+create new listeners. Home/address changes require a new dedicated process,
+retaining canonical durable identities.
 
 The supported Go tests exercise synthetic CA/environment admission, real pinned
 control `/key` + Noise registration/canary and independent DERP region clients
 in fresh subprocesses, plus CONNECT rejection/closure, same-CA renewal, redirects
 and an independent loopback direct-TCP fallback decoy. Synthetic full tsnet
 compositions reach Running/map/private DERP and close admission on failure or
-cancellation. Two processes isolate ports/issuers; a renewed-endpoint restart
+cancellation. Each lifecycle case first cancels a local handshake with a real
+TCP reset, then waits for the fixture's DERP receipt within the Up context before
+triggering teardown; Running alone does not establish DERP readiness.
+Two processes isolate ports/issuers; a renewed-endpoint restart
 retains node identity and consumed authority while replacing local issuer/DNS
 state. Slice 3b owns protected config/CA/leaf/map generation and transactional
 protected dial-IP publication. Successful installed-path startup, full packaged

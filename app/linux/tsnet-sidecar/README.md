@@ -71,9 +71,9 @@ host DNS or trust-store change occurs. Upstream and local root pools stay
 separate; pinned baked roots never authenticate a remote leaf. Listener,
 verifier or upstream dial failure closes the listener and owned streams;
 engine cancellation/shutdown closes both transport and tsnet. Malformed local
-TLS after an accepted CONNECT also seals admission; EOF from a cancelled losing
-controlhttp connection attempt closes only that attempt. Closed home engines
-reject new listeners, including after pinned tsnet's own Close. The dedicated
+TLS after an accepted CONNECT also seals admission; EOF or a local TCP reset
+from a cancelled controlhttp/DERP connection attempt closes only that attempt.
+Closed home engines reject new listeners, including after pinned tsnet's own Close. The dedicated
 process cannot initialize another home in place: address/home change requires
 a supervisor-owned process restart. Canonical URL/node/consumed identity never
 includes the random port or local issuer. Darwin home transport remains slice 5b.
@@ -86,9 +86,12 @@ fallback to the resolved control/DERP address, including with the proxy down.
 `hometransport_lifecycle_linux_test.go` composes synthetic temporary trust with
 the real tsnet server and shipping engine lifecycle: /key, Noise registration,
 map, Running and private DERP, then cancellation/shutdown/listener/verifier/local
-TLS failure and refusal to reopen admission. Separate simultaneous processes
-use distinct local ports/issuers; a restart on a renewed endpoint retains node
-identity and exact consumed-marker bytes, drops the enrollment key and observes
+TLS failure and refusal to reopen admission. The lifecycle cases first reset a
+real local TCP handshake, then wait for the fixture's real DERP receipt within
+the existing Up context before triggering
+teardown; Running alone does not establish DERP readiness. Separate simultaneous
+processes use distinct local ports/issuers; a restart on a renewed endpoint retains
+node identity and exact consumed-marker bytes, drops the enrollment key and observes
 the new resolver mapping without requests to the old endpoint.
 
 Run from this module:

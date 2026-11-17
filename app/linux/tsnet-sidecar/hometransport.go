@@ -16,6 +16,7 @@ import (
 	"net/netip"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -220,10 +221,10 @@ func (f *homeForwarder) forward(local net.Conn) {
 	}
 	down := tls.Server(local, &tls.Config{Certificates: []tls.Certificate{f.leaf}, MinVersion: tls.VersionTLS12})
 	if err := down.HandshakeContext(ctx); err != nil {
-		// Pinned controlhttp races connection attempts and closes losing
-		// sockets before TLS. That caller cancellation ends only its stream;
-		// malformed TLS or an actual handshake failure seals the transport.
-		if !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, net.ErrClosed) {
+		// Pinned controlhttp races attempts; magicsock also cancels DERP
+		// attempts on rebind. EOF or a TCP reset ends only that local stream;
+		// malformed TLS or another handshake failure seals the transport.
+		if !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, net.ErrClosed) && !errors.Is(err, syscall.ECONNRESET) {
 			go f.Close()
 		}
 		return

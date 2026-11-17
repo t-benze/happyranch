@@ -122,6 +122,8 @@ func TestHomeTSNetLifecycle(t *testing.T) {
 			cmd.Env = append(cmd.Env, "HR_HOME_LIFECYCLE="+scenario)
 			if out, err := cmd.CombinedOutput(); err != nil {
 				t.Fatalf("real tsnet lifecycle failed: %v\n%s", err, out)
+			} else {
+				t.Logf("%s", out)
 			}
 		})
 	}
@@ -135,6 +137,25 @@ func runHomeTSNetLifecycle(t *testing.T, scenario string) {
 	}
 	defer f.Close()
 	if err := installHomeProcess(f, netip.MustParseAddr("127.0.0.2")); err != nil {
+		t.Fatal(err)
+	}
+	// A cancelled tsnet connection attempt can reset TCP before local TLS.
+	// Exercise that kernel error before startup instead of relying on a rebind
+	// winning the race under package load. It must close only this attempt.
+	reset, err := net.DialTCP("tcp4", nil, f.listener.Addr().(*net.TCPAddr))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reset.Close()
+	reset.SetDeadline(time.Now().Add(time.Second))
+	fmt.Fprintf(reset, "CONNECT %s:8443 HTTP/1.1\r\nHost: %s:8443\r\n\r\n", homeName, homeName)
+	if response, err := http.ReadResponse(bufio.NewReader(reset), nil); err != nil || response.StatusCode != 200 {
+		t.Fatal("valid CONNECT failed before cancelled local handshake", err)
+	}
+	if err := reset.SetLinger(0); err != nil {
+		t.Fatal(err)
+	}
+	if err := reset.Close(); err != nil {
 		t.Fatal(err)
 	}
 	// Protected admission is tested separately. Compose the unchanged real
@@ -155,19 +176,27 @@ func runHomeTSNetLifecycle(t *testing.T, scenario string) {
 	if err != nil || status == nil || status.BackendState != "Running" {
 		t.Fatalf("real tsnet did not reach Running: %v", err)
 	}
+	running := time.Now()
 	l, err := e.Listen(":443")
 	if err != nil {
 		t.Fatal(err)
 	}
 	accepted := make(chan error, 1)
 	go func() { _, err := l.Accept(); accepted <- err }()
-	deadline := time.Now().Add(3 * time.Second)
-	for fixture.relays.Load() == 0 && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
+	// Up reports Running without waiting for magicsock's home DERP connection.
+	// Wait for the real HTTP receipt within the same startup budget,
+	// rather than racing that asynchronous work with a second, shorter timer.
+	select {
+	case <-fixture.relayReady:
+	case <-upCtx.Done():
+		t.Fatalf("waiting for real DERP receipt: %v (map=%d derp=%d)", upCtx.Err(), fixture.maps.Load(), fixture.relays.Load())
+	case <-f.done:
+		t.Fatal("home transport closed before real DERP receipt")
 	}
 	if fixture.keys.Load() == 0 || fixture.registrations.Load() == 0 || fixture.canaries.Load() != 1 || fixture.maps.Load() == 0 || fixture.relays.Load() == 0 {
 		t.Fatalf("missing real engine receipts: key=%d register=%d canary=%d map=%d derp=%d", fixture.keys.Load(), fixture.registrations.Load(), fixture.canaries.Load(), fixture.maps.Load(), fixture.relays.Load())
 	}
+	t.Logf("real engine receipts before %s: key=%d register=%d canary=%d map=%d derp=%d; DERP wait after Running=%s", scenario, fixture.keys.Load(), fixture.registrations.Load(), fixture.canaries.Load(), fixture.maps.Load(), fixture.relays.Load(), time.Since(running))
 	switch scenario {
 	case "cancel":
 		cancel()
@@ -218,6 +247,7 @@ func runHomeTSNetLifecycle(t *testing.T, scenario string) {
 	if f.leaf.PrivateKey != nil || len(f.streams) != 0 {
 		t.Fatal("home teardown retained key or stream ownership")
 	}
+	t.Logf("%s closed tailnet admission, refused reopening and released key/streams", scenario)
 }
 
 type homeTSNetFixture struct {
@@ -227,13 +257,14 @@ type homeTSNetFixture struct {
 	keys, registrations, canaries, maps, relays, hits atomic.Int32
 	mu                                                sync.Mutex
 	nodeKeys                                          map[string][]key.NodePublic
+	relayReady                                        chan struct{}
 }
 
 func newHomeTSNetFixture(t *testing.T) *homeTSNetFixture {
 	ca := makeHomeCA(t, false)
 	leaf := ca.leaf(t, "valid")
 	forged := makeHomeCA(t, false).leaf(t, "valid")
-	fixture := &homeTSNetFixture{ca: ca, nodeKeys: make(map[string][]key.NodePublic)}
+	fixture := &homeTSNetFixture{ca: ca, nodeKeys: make(map[string][]key.NodePublic), relayReady: make(chan struct{})}
 	noise := key.NewMachine()
 	ds := derp.NewServer(key.NewNode(), func(string, ...any) {})
 	t.Cleanup(func() { ds.Close() })
@@ -295,7 +326,9 @@ func newHomeTSNetFixture(t *testing.T) *homeTSNetFixture {
 			defer conn.Close()
 			h2.ServeConn(conn, &http2.ServeConnOpts{BaseConfig: &http.Server{Handler: control}})
 		case "/derp":
-			fixture.relays.Add(1)
+			if fixture.relays.Add(1) == 1 {
+				close(fixture.relayReady)
+			}
 			dh.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
