@@ -4562,3 +4562,27 @@ runtime switch cannot consume another runtime's same-day attempt.
 ## Cooperative org access (A1)
 
 Supported org loads, fresh/reclaim routes and raw maintenance/offline openers acquire an org access fence before opening SQLite or constructing Database. Normal org connections retain SH through local close; explicit offline schema operations take EX without replacing their existing confirmation/lifecycle gates. Profile writers acquire affected org SH descriptors in stable key order before profile/publication/DB locks. Startup cache reads gate the metadata-only runtime org inventory before loading orgs; writers refuse unloaded dependencies. Original dynamic attachment includes exactly its own loaded, unpublished candidate in the sorted fence/membership capture; unrelated unloaded dependencies still refuse. Input/skeleton and existing-directory refusals close their route fence when no DB/native operation began or the original probe positively closed; probe errors without closure proof and unknown ownership stay held. Generic Database and machine-global stores remain workflow-free. See the [A1 contract](../superpowers/specs/2026-11-14-automatic-workflow-setup.md#a1-cooperative-org-access-fence).
+
+
+### A4 private worker and original parent permission
+
+The private bootstrap helper now executes the existing source/verified-backup/
+writable-rehearsal/writer pipeline under its inherited original EX description.
+It selects a private literal SQLite temp volume before SQL. The original parent
+retains pending spawn, process, socket and fence custody; no replacement worker
+is admitted while an earlier original remains unreaped. A positive coordinator
+qualification is required before intent and again before the single bound
+COMMIT permission. EOF, cancellation and unsolicited/duplicate permission revoke
+subsequent cooperative source/phase effects. The original 120s/org, 180s-total,
+20s reserve and default reader/integrity limits remain unchanged. Bounded cleanup
+withdraws permission before terminate/kill/reap and preserves unknown originals;
+late completion never publishes readiness. Process cancellation propagates.
+
+A positive helper result means storage verified and original handles closed,
+without source registration, final audit/status or attachment. Automatic startup
+mounting and genuine host/registry/cooperating-host qualification remain separate
+and unfinished, as do final registration/status and whole-listener acceptance.
+The existing focused shell --bootstrap-worker table observes real child/parent
+transport, native EX retention, exact pre-COMMIT source preservation and durable
+no-replay phases. It is not whole-daemon timing acceptance. See the maintained
+[lifecycle contract](contracts/runtime-lifecycle.md#a4-startup-attachment-custody).

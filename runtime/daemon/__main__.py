@@ -32,6 +32,10 @@ from typing import Iterator
 
 # Frozen repository children must reach their resource limits/Git exec before
 # importing the daemon. This is the existing fixed helper dispatch, not serve.
+if __name__ == '__main__' and sys.argv[1:2] == ['--workflow-sequential-bootstrap-helper']:
+    from runtime.infrastructure.workflow_sequential_bootstrap import bootstrap_helper_main
+    raise SystemExit(bootstrap_helper_main(sys.argv[2:]))
+
 if __name__ == '__main__' and sys.argv[1:2] == ['--workflow-integrity-helper']:
     from runtime.daemon.org_integrity_monitor import helper_main as integrity_helper_main
     raise SystemExit(integrity_helper_main(sys.argv[2:]))

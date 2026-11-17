@@ -13,12 +13,13 @@ import math
 import os
 import re
 import shutil
+import socket
 import sqlite3
 import stat
 import tempfile
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -105,7 +106,8 @@ class BootstrapAttempt:
 
     def __init__(self, *, home: Path, runtime_root: Path, slug: str,
                  fence: OrgAccessFence, source_identity: tuple,
-                 source_inventory_digest: str, deadline: float) -> None:
+                 source_inventory_digest: str, deadline: float,
+                 control: BootstrapControl | None = None) -> None:
         if (type(deadline) not in (int, float) or not math.isfinite(deadline)
                 or not 0 < deadline - time.monotonic() <= 120
                 or re.fullmatch('[a-z0-9-]{1,40}', slug) is None
@@ -119,6 +121,7 @@ class BootstrapAttempt:
         fence.assert_held()
         self.home, self.runtime_root, self.slug = Path(home), Path(runtime_root), slug
         self.fence, self.deadline = fence, deadline
+        self.control = control
         self.runtime_key = hashlib.sha256(str(runtime_root).encode('utf8')).hexdigest()
         self.source_identity, self.source_inventory_digest = source_identity, source_inventory_digest
         self.attempt_id = uuid.uuid4().hex
@@ -139,6 +142,8 @@ class BootstrapAttempt:
     def _check(self, *, reserve: bool = False) -> None:
         if self.failed or self.closed:
             raise BootstrapEvidenceError('workflow_setup_attempt_latched')
+        if self.control is not None:
+            self.control.check()
         self.fence.assert_held()
         if time.monotonic() >= self.deadline - (20 if reserve else 0):
             raise BootstrapEvidenceError('workflow_setup_commit_reserve' if reserve else 'workflow_setup_deadline')
@@ -473,6 +478,7 @@ class BootstrapStartup:
         self.deadline = self.started + 180
         self.admission_seconds = 0.0
         self.discoveries: dict[Path, BootstrapDiscovery] = {}
+        self.workers: list[BootstrapSupervisor] = []
 
     def discover(self, root: Path) -> BootstrapDiscovery:
         root = Path(root)
@@ -613,6 +619,13 @@ class BootstrapDiscovery:
         return self.fence
 
     def close(self) -> None:
+        if any(worker.discovery is self and worker.started and not worker.reaped
+               for worker in self.startup.workers):
+            self.failed = True
+            self.close_error = BootstrapEvidenceError('workflow_setup_original_worker_in_flight')
+            if self.fence is not None:
+                self.fence.retain_unknown()
+            raise self.close_error
         errors = []
         for selected in reversed(self.selections):
             try:
@@ -645,11 +658,13 @@ class BootstrapSource:
     No method checkpoints, repairs, installs, restores, replays or releases EX.
     """
 
-    def __init__(self, *, fence: OrgAccessFence, deadline: float) -> None:
+    def __init__(self, *, fence: OrgAccessFence, deadline: float,
+                 control: BootstrapControl | None = None) -> None:
         if (not fence.exclusive or type(deadline) not in (int, float)
                 or not math.isfinite(deadline) or not 20 < deadline-time.monotonic() <= 120):
             raise BootstrapEvidenceError('workflow_setup_owner_invalid')
         self.fence, self.deadline = fence, deadline
+        self.control = control
         self.path = fence.root / 'happyranch.db'
         # Both stages and later writer/target full checks share THIS ledger.
         self.integrity = IntegrityLedger(deadline=deadline-20)
@@ -673,6 +688,8 @@ class BootstrapSource:
     def _check(self) -> None:
         if self.failed or self.closed:
             raise BootstrapEvidenceError('workflow_setup_source_latched')
+        if self.control is not None:
+            self.control.check()
         self.fence.assert_held()
         self.allowance.check()
 
@@ -1677,3 +1694,466 @@ class BootstrapInstall:
         except BaseException as exc:
             self.close_error = exc
             raise
+
+
+_PIPE_LIMIT = 16384
+_WORKER_REASONS = frozenset({'storage_verified', 'org_database_busy', 'org_database_corrupt',
+    'org_database_full', 'org_database_interrupted', 'org_database_io', 'org_database_unavailable',
+    'org_filesystem_unavailable', 'org_load_refused', 'org_startup_unavailable',
+    'default_load_budget_exceeded'})
+
+
+def _worker_failure_reason(primary: BaseException, rehearsal: BootstrapRehearsal | None,
+                           writer: BootstrapInstall | None) -> str:
+    from runtime.daemon.state import _startup_failure_reason
+    from runtime.workflows._read_exhaustion import exhausted
+    if ((rehearsal is not None and not rehearsal.completed
+            or writer is not None and not writer.commit_uncertain) and exhausted(primary)):
+        return 'default_load_budget_exceeded'
+    return _startup_failure_reason(primary) if isinstance(primary, Exception) else 'org_startup_unavailable'
+
+
+def _wire(value: dict) -> bytes:
+    raw = json.dumps(value, sort_keys=True, separators=(',', ':'), allow_nan=False).encode('utf8') + b'\n'
+    if len(raw) > _PIPE_LIMIT:
+        raise BootstrapEvidenceError('workflow_setup_transport_exhausted')
+    return raw
+
+
+def _unwire(raw: bytes) -> dict:
+    def unique(items: list[tuple[str, object]]) -> dict:
+        value = {}
+        for key, item in items:
+            if key in value:
+                raise BootstrapEvidenceError('workflow_setup_transport_invalid')
+            value[key] = item
+        return value
+    if len(raw) > _PIPE_LIMIT or not raw.endswith(b'\n') or b'\n' in raw[:-1]:
+        raise BootstrapEvidenceError('workflow_setup_transport_invalid')
+    value = json.loads(raw, object_pairs_hook=unique)
+    if type(value) is not dict:
+        raise BootstrapEvidenceError('workflow_setup_transport_invalid')
+    return value
+
+
+class BootstrapControl:
+    """Child-owned original parent channel; EOF permanently revokes effects.
+
+    The inherited private socket is never reconnected. Every source/phase check
+    and the actual writer's final check observes it. Native calls remain
+    cooperative; the parent separately bounds and retains the original process.
+    """
+
+    def __init__(self, channel: socket.socket, deadline: float) -> None:
+        self.channel, self.deadline = channel, deadline
+        self.failed = self.permit_requested = False
+        self.source_key: dict | None = None
+
+    def check(self) -> None:
+        if self.failed or time.monotonic() >= self.deadline:
+            raise BootstrapEvidenceError('workflow_setup_parent_unavailable')
+        try:
+            self.channel.setblocking(False)
+            pending = self.channel.recv(1, socket.MSG_PEEK | socket.MSG_DONTWAIT)
+        except BlockingIOError:
+            return
+        except OSError:
+            pending = b''
+        self.failed = True
+        # Either EOF or unsolicited/duplicate permission is a permanent stop.
+        raise BootstrapEvidenceError('workflow_setup_parent_unavailable')
+
+    def send(self, value: dict) -> None:
+        try:
+            self.channel.settimeout(max(.001, self.deadline-time.monotonic()))
+            self.channel.sendall(_wire(value))
+        except BaseException:
+            self.failed = True
+            raise
+
+    def receive(self) -> dict:
+        raw = bytearray()
+        try:
+            while len(raw) <= _PIPE_LIMIT:
+                remaining = self.deadline-time.monotonic()
+                if remaining <= 0:
+                    break
+                self.channel.settimeout(remaining)
+                piece = self.channel.recv(1)
+                if not piece:
+                    break
+                raw.extend(piece)
+                if piece == b'\n':
+                    return _unwire(bytes(raw))
+        except BaseException:
+            self.failed = True
+            raise
+        self.failed = True
+        raise BootstrapEvidenceError('workflow_setup_parent_unavailable')
+
+    def begin(self, source: BootstrapSource) -> None:
+        self.check()
+        self.source_key = dict(source_identity=list(source.source_identity),
+                               source_inventory_digest=source.inventory_digest)
+        self.send(dict(event='source', **self.source_key))
+        if self.receive() != dict(command='begin', **self.source_key):
+            self.failed = True
+            raise BootstrapEvidenceError('workflow_setup_parent_unavailable')
+        self.check()
+
+    def permit(self, attempt: BootstrapAttempt) -> bool:
+        self.check()
+        if (self.permit_requested or self.source_key is None or attempt._phase != 'pre_commit'
+                or self.deadline != attempt.deadline):
+            self.failed = True
+            raise BootstrapEvidenceError('workflow_setup_commit_permit_repeated')
+        self.permit_requested = True
+        key = dict(attempt_id=attempt.attempt_id, backup_sha256=attempt._backup_sha256,
+                   **self.source_key)
+        self.send(dict(event='pre_commit', **key))
+        if self.receive() != dict(command='commit', **key):
+            self.failed = True
+            raise BootstrapEvidenceError('workflow_setup_commit_permit_refused')
+        self.check()
+        return True
+
+
+def bootstrap_helper_main(argv: list[str]) -> int:
+    """Private pre-daemon child. No live OrgState, producers or listener.
+
+    It cannot allocate intent until its ORIGINAL parent qualifies the observed
+    source, or COMMIT without the same parent's single bound permit. A private
+    rehearsal uses the existing actual writable OrgState first/next owner.
+    Storage verification is the final child stage; registration stays parent-owned.
+    """
+    if len(argv) != 3 or any(not value.isascii() or not value.isdecimal() for value in argv):
+        return 2
+    channel_fd, fence_fd, directory_fd = map(int, argv)
+    if min(channel_fd, fence_fd, directory_fd) < 3 or len({channel_fd, fence_fd, directory_fd}) != 3:
+        return 2
+    channel = socket.socket(fileno=channel_fd)
+    # Even malformed request acquisition cannot hang an unowned bootstrap child.
+    control = BootstrapControl(channel, time.monotonic()+5)
+    source = attempt = rehearsal = writer = fence = None
+    sqlite_temporary = sqlite_identity = None
+    state, closed, primary = 'unknown', False, None
+    try:
+        request = control.receive()
+        if set(request) != {'home', 'root', 'deadline', 'database_identity', 'settings'}:
+            raise BootstrapEvidenceError('workflow_setup_transport_invalid')
+        deadline = request['deadline']
+        if (type(deadline) not in (int, float) or not math.isfinite(deadline)
+                or not 20 < deadline-time.monotonic() <= 120):
+            raise BootstrapEvidenceError('workflow_setup_deadline')
+        control.deadline = deadline
+        home, root = Path(request['home']), Path(request['root'])
+        from runtime.runtime import daemon_home
+        if (home != daemon_home()
+                or root.parent.name != 'orgs' or not root.is_absolute()
+                or re.fullmatch('[a-z0-9-]{1,40}', root.name) is None):
+            raise BootstrapEvidenceError('workflow_setup_owner_invalid')
+        from runtime.infrastructure.org_access_fence import org_access_key
+        fence = OrgAccessFence(fence_fd, directory_fd, org_access_key(root)+'.lock',
+                               root, True, home/'org-access-fences')
+        fence.assert_held()
+        if list(fence.database_identity or ()) != request['database_identity']:
+            raise BootstrapEvidenceError('workflow_setup_source_changed')
+        if type(request['settings']) is not dict or set(request['settings']) != set(Settings.model_fields):
+            raise BootstrapEvidenceError('workflow_setup_transport_invalid')
+        settings = Settings(**request['settings'])
+        # Select the actual SQLite temp volume before this helper's FIRST SQL.
+        # Keep it out of runtime/backup/output; unknown closure preserves it.
+        temporary = Path(tempfile.gettempdir()).resolve(strict=True)
+        if (temporary.is_relative_to(root.parent.parent) or temporary.is_relative_to(home/'backups')
+                or set(temporary.parts) & {'output', 'artifacts', 'task-attachments'}):
+            raise BootstrapEvidenceError('workflow_setup_rehearsal_location_unsafe')
+        sqlite_temporary = Path(tempfile.mkdtemp(prefix='happyranch-workflow-sqlite-', dir=temporary))
+        info = sqlite_temporary.lstat()
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o700:
+            raise BootstrapEvidenceError('workflow_setup_temp_volume_unavailable')
+        sqlite_identity = info.st_dev, info.st_ino
+        os.environ['SQLITE_TMPDIR'] = str(sqlite_temporary)
+        source = BootstrapSource(fence=fence, deadline=deadline, control=control)
+        source.open()
+        control.begin(source)
+        attempt = BootstrapAttempt(home=home, runtime_root=root.parent.parent, slug=root.name,
+            fence=fence, source_identity=source.source_identity,
+            source_inventory_digest=source.inventory_digest, deadline=deadline, control=control)
+        attempt.begin()
+        source.backup(attempt)
+        rehearsal = BootstrapRehearsal(source, attempt)
+        rehearsal.run(settings)
+        rehearsal.close()
+        writer = BootstrapInstall(source, attempt, rehearsal)
+        writer.run(control.permit)
+        state = 'verified'
+    except BaseException as exc:
+        primary = exc
+    finally:
+        errors = []
+        for owner in (writer, rehearsal, source, attempt):
+            if owner is not None:
+                try:
+                    owner.close()
+                except BaseException as exc:
+                    errors.append(exc)
+        try:
+            if fence is not None:
+                fence.close()
+            else:
+                # Own inherited originals even if request validation or fence
+                # construction failed before an object could be assigned.
+                for fd in (fence_fd, directory_fd):
+                    try:
+                        os.close(fd)
+                    except BaseException as exc:
+                        errors.append(exc)
+        except BaseException as exc:
+            errors.append(exc)
+        if not errors and sqlite_temporary is not None:
+            try:
+                info = sqlite_temporary.lstat()
+                if (not stat.S_ISDIR(info.st_mode) or (info.st_dev, info.st_ino) != sqlite_identity
+                        or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o700):
+                    raise BootstrapEvidenceError('workflow_setup_temp_volume_unavailable')
+                shutil.rmtree(sqlite_temporary)
+            except BaseException as exc:
+                errors.append(exc)
+        closed = not errors
+        if primary is not None:
+            state = ('not_started' if attempt is None and closed else
+                     'not_installed' if writer is not None and writer.unchanged and closed else 'unknown')
+        if not closed:
+            state = 'unknown'
+        result = dict(event='result', state=state, closed=closed,
+                      reason='storage_verified' if primary is None and state == 'verified' else
+                             _worker_failure_reason(primary if primary is not None else errors[0], rehearsal, writer),
+                      attempt_id=None if attempt is None else attempt.attempt_id)
+        try:
+            # A closed failure report is permitted after parent EOF. No new
+            # success event is emitted after revocation/deadline or failed close.
+            if state == 'verified':
+                control.check()
+            control.send(result)
+        except BaseException:
+            state = 'unknown'
+        channel.close()
+    return 0 if state == 'verified' else 1
+
+
+class BootstrapSupervisor:
+    """One original subprocess/EX interval, including delayed spawn and reap.
+
+    run()'s qualifier is the coordinator's original host/registry/process proof,
+    rechecked before intent and COMMIT. This class cannot supply that proof.
+    Its verified return means storage only, never final registered/ready status.
+    """
+
+    def __init__(self, discovery: BootstrapDiscovery, settings: Settings) -> None:
+        self.discovery, self.settings = discovery, settings
+        self.spawn = self.process = self.exchange = None
+        self.reap_task = None
+        self.channel = self.child_channel = None
+        self.source_key: dict | None = None
+        self.attempt_id: str | None = None
+        self.result: dict | None = None
+        self.started = self.expired = self.permit_sent = self.reaped = self.closed = False
+        self.primary: BaseException | None = None
+        self.cleanup_errors: list[BaseException] = []
+
+    def _check(self, *, reserve: bool = True) -> None:
+        route = self.discovery
+        if (self.expired or route.failed or route.closed or route.result != 'absent'
+                or route.fence is None or not route.fence.exclusive
+                or reserve and self.process is not None and self.process.returncode is not None
+                or time.monotonic() >= route.deadline-(20 if reserve else 0)):
+            raise BootstrapEvidenceError('workflow_setup_worker_unavailable')
+        route.fence.assert_held()
+
+    def _withdraw(self) -> None:
+        self.expired = True
+        if self.channel is not None:
+            try:
+                self.channel.shutdown(socket.SHUT_WR)
+            except OSError:
+                pass
+
+    def _signal(self, sig: int) -> None:
+        import asyncio
+        if self.process is None and self.spawn is not None and self.spawn.done() and not self.spawn.cancelled():
+            try:
+                self.process = self.spawn.result()
+            except BaseException:
+                return
+        if self.process is not None:
+            if self.reap_task is None:
+                self.reap_task = asyncio.create_task(self.process.wait())
+                self.reap_task.add_done_callback(lambda _: setattr(self, 'reaped', self.process.returncode is not None))
+            if self.process.returncode is not None:
+                self.reaped = True
+                return
+            try:
+                os.killpg(self.process.pid, sig)
+            except ProcessLookupError:
+                pass
+            except OSError as exc:
+                self.cleanup_errors.append(exc)
+
+    async def run(self, qualify: Callable[[tuple, str], Awaitable[bool]]) -> dict:
+        """Bounded original execution; cancellation withdraws, drains, then kills.
+
+        Only literal True from the qualifier permits effects. Neither a transport record nor
+        EX possession synthesizes original qualification. No failed run repeats.
+        """
+        import asyncio
+        import signal
+        import sys
+        if self.started:
+            raise BootstrapEvidenceError('workflow_setup_worker_latched')
+        self.started = True
+        self._check()
+        route, loop = self.discovery, asyncio.get_running_loop()
+        if any(worker.started and not worker.reaped for worker in route.startup.workers):
+            raise BootstrapEvidenceError('workflow_setup_original_worker_in_flight')
+        route.startup.workers.append(self)
+        try:
+            self.channel, self.child_channel = socket.socketpair()
+            self.channel.setblocking(False)
+            entry = [] if getattr(sys, 'frozen', False) else ['-m', 'runtime.daemon']
+            args = [sys.executable, *entry, '--workflow-sequential-bootstrap-helper',
+                    str(self.child_channel.fileno()), str(route.fence.fd), str(route.fence._parent)]
+            self.spawn = asyncio.create_task(asyncio.create_subprocess_exec(*args,
+                pass_fds=(self.child_channel.fileno(), route.fence.fd, route.fence._parent),
+                stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL, start_new_session=True))
+        except BaseException as exc:
+            self.primary, self.expired = exc, True
+            self.reaped = self.spawn is None  # positively no native launch
+            for channel in (self.channel, self.child_channel):
+                if channel is not None:
+                    try:
+                        channel.close()
+                    except BaseException as error:
+                        self.cleanup_errors.append(error)
+            self.closed = not self.cleanup_errors and self.reaped
+            raise
+
+        async def send(value: dict) -> None:
+            await loop.sock_sendall(self.channel, _wire(value))
+
+        async def receive() -> dict:
+            raw = bytearray()
+            while len(raw) <= _PIPE_LIMIT:
+                piece = await loop.sock_recv(self.channel, 1)
+                if not piece:
+                    raise BootstrapEvidenceError('workflow_setup_worker_transport_lost')
+                raw.extend(piece)
+                if piece == b'\n':
+                    return _unwire(bytes(raw))
+            raise BootstrapEvidenceError('workflow_setup_transport_exhausted')
+
+        async def exchange() -> dict:
+            self.process = await asyncio.shield(self.spawn)
+            if self.reap_task is None:
+                self.reap_task = asyncio.create_task(self.process.wait())
+            self.child_channel.close()
+            self._check()
+            await send(dict(home=str(route.startup.home), root=str(route.root), deadline=route.deadline,
+                database_identity=list(route.fence.database_identity or ()),
+                settings=self.settings.model_dump(mode='json')))
+            stage = 'source'
+            while True:
+                value = await receive()
+                if value.get('event') == 'result':
+                    if (set(value) != {'event', 'state', 'closed', 'attempt_id', 'reason'}
+                            or type(value['closed']) is not bool
+                            or value['state'] not in ('not_started', 'not_installed', 'unknown', 'verified')
+                            or type(value['reason']) is not str or value['reason'] not in _WORKER_REASONS
+                            or (value['reason'] == 'storage_verified') != (value['state'] == 'verified')
+                            or value['attempt_id'] is not None and (type(value['attempt_id']) is not str
+                                or re.fullmatch('[a-f0-9]{32}', value['attempt_id']) is None)
+                            or value['state'] == 'verified' and (stage != 'result' or not value['closed']
+                                or value['attempt_id'] != self.attempt_id)):
+                        raise BootstrapEvidenceError('workflow_setup_transport_invalid')
+                    self.result = value
+                    await asyncio.shield(self.reap_task)
+                    self.reaped = True
+                    self.closed = value['closed']
+                    if (value['state'] != 'verified' or self.process.returncode != 0 or self.expired):
+                        raise BootstrapEvidenceError('workflow_setup_worker_unverified')
+                    self._check(reserve=False)
+                    return dict(value)
+                self._check()
+                if stage == 'source' and set(value) == {'event', 'source_identity', 'source_inventory_digest'} and value['event'] == stage:
+                    identity, digest = value['source_identity'], value['source_inventory_digest']
+                    if (type(identity) is not list or len(identity) != 4
+                            or identity[0] != str(route.root/'happyranch.db')
+                            or any(type(item) is not int or item < 0 for item in identity[1:])
+                            or tuple(identity[1:3]) != route.fence.database_identity
+                            or type(digest) is not str or re.fullmatch('[a-f0-9]{64}', digest) is None):
+                        raise BootstrapEvidenceError('workflow_setup_transport_invalid')
+                    self.source_key = dict(source_identity=identity, source_inventory_digest=digest)
+                    if await qualify(tuple(identity), digest) is not True:
+                        raise BootstrapEvidenceError('writer_exclusion_unproven')
+                    self._check()
+                    await send(dict(command='begin', **self.source_key))
+                    stage = 'pre_commit'
+                elif (stage == 'pre_commit' and set(value) == {'event', 'attempt_id', 'backup_sha256', *self.source_key}
+                        and value['event'] == stage and all(value[key] == item for key, item in self.source_key.items())
+                        and type(value['attempt_id']) is str and re.fullmatch('[a-f0-9]{32}', value['attempt_id'])
+                        and type(value['backup_sha256']) is str and re.fullmatch('[a-f0-9]{64}', value['backup_sha256'])):
+                    if self.permit_sent:
+                        raise BootstrapEvidenceError('workflow_setup_commit_permit_repeated')
+                    if await qualify(tuple(self.source_key['source_identity']), self.source_key['source_inventory_digest']) is not True:
+                        raise BootstrapEvidenceError('writer_exclusion_unproven')
+                    self._check()
+                    self.attempt_id = value['attempt_id']
+                    self.permit_sent = True
+                    await send(dict(command='commit', **{key: item for key, item in value.items() if key != 'event'}))
+                    stage = 'result'
+                else:
+                    raise BootstrapEvidenceError('workflow_setup_transport_invalid')
+
+        self.exchange = asyncio.create_task(exchange())
+        self.exchange.add_done_callback(lambda task: None if task.cancelled() else task.exception())
+        try:
+            # Pre-COMMIT work ends at the original reserve. A granted permit
+            # permits only its existing closure tail, never another operation.
+            while not self.exchange.done():
+                end = route.deadline-(2 if self.permit_sent else 20)
+                if time.monotonic() >= end:
+                    raise BootstrapEvidenceError('workflow_setup_worker_deadline')
+                await asyncio.wait({self.exchange}, timeout=min(.05, end-time.monotonic()))
+            return self.exchange.result()
+        except BaseException as exc:
+            self.primary = exc
+            self._withdraw()
+            # Original cleanup reserve, clipped on early cancellation. Spawn
+            # completion itself may be stuck; retain it and kill its late child.
+            cleanup = min(route.deadline, time.monotonic()+20)
+            if not self.spawn.done():
+                self.spawn.add_done_callback(lambda _: self._signal(signal.SIGKILL) if self.expired else None)
+            # Await original process closure even if the exchange itself failed
+            # (for example a refused qualification). EOF permits owned cleanup.
+            drain = self.reap_task if self.reap_task is not None else self.spawn
+            await asyncio.wait({drain}, timeout=max(0, cleanup-2-time.monotonic()))
+            self._signal(signal.SIGTERM)
+            if self.process is not None and self.process.returncode is None:
+                await asyncio.wait({self.reap_task}, timeout=max(0, min(.1, cleanup-time.monotonic())))
+            self._signal(signal.SIGKILL)
+            if self.process is not None:
+                await asyncio.wait({self.reap_task}, timeout=max(0, cleanup-time.monotonic()))
+                self.reaped = self.process.returncode is not None
+            route.fence.retain_unknown()
+            raise
+        finally:
+            # Never close the child-side descriptor before an unresolved spawn
+            # consumes it. Parent EX remains owned by the discovery/coordinator.
+            if self.spawn.done():
+                self.child_channel.close()
+            else:
+                self.spawn.add_done_callback(lambda _: self.child_channel.close())
+            if self.exchange.done():
+                self.channel.close()
+            else:
+                self.exchange.add_done_callback(lambda _: self.channel.close())

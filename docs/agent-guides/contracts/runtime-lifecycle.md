@@ -2,6 +2,32 @@
 
 ### A4 startup attachment custody
 
+The private `--workflow-sequential-bootstrap-helper` dispatch now reaches the
+original source/backup/rehearsal/writer stages before daemon imports. Its parent
+`BootstrapSupervisor` retains the original subprocess, socket and inherited EX
+description, including delayed spawn. One startup admits no replacement while
+an original worker remains unreaped. The coordinator must provide positive
+original host/registry/cooperating-host qualification before intent and again
+before the single same-attempt COMMIT permit; neither EX nor transport supplies
+that proof. The helper selects a private literal SQLite temp volume before SQL.
+
+Parent EOF, unsolicited/duplicate permission and cancellation permanently revoke
+source/phase effects at the next cooperative check. Parent and child retain the
+original 120s/org, 180s-total and 20s COMMIT/closure reserve. Cancellation first
+withdraws permission, permits bounded original cleanup, then terminates/kills
+and observes the original reap within that reserve. Unavailable spawn/reap or
+closure retains the original owner/fence; a late result cannot become success.
+Process cancellation propagates after this custody handling. Native filesystem
+calls remain cooperative and are not claimed hard-wall bounded.
+
+The child's positive result is storage `verified` only, with every original
+connection and private rehearsal positively closed. It performs no source
+registration, final audit/status publication or live attachment. The existing
+`--bootstrap-worker[=CASE]` shell table observes real subprocess/EX/socket and
+persisted source/phase boundaries. Automatic runtime mounting, positive original
+host qualification, final registration/status and whole-listener acceptance
+remain incomplete; this checkpoint does not change what a restart installs.
+
 Before any automatic intent, `BootstrapSource.open` also invokes the existing
 SELECT-only current-domain idle reader on its original query-only snapshot.
 Queued tasks, callback/recovery claims, publication/profile leases and remote

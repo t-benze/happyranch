@@ -703,3 +703,46 @@ health. They do not claim whole-listener startup timing or setup qualification.
 Automatic bootstrap qualification/supervision/registration/status/mount and
 whole-startup acceptance remain incomplete. No budget or native/authentication
 semantic predicate is relaxed.
+
+
+### A4 private worker protocol checkpoint
+
+`BootstrapSupervisor` now starts the fixed pre-daemon
+`--workflow-sequential-bootstrap-helper` source/frozen dispatch with the original
+EX lock and parent-directory descriptors plus a private inherited socket. The
+helper selects its actual private SQLite temp volume before SQL. Its original
+source snapshot/inventory is disclosed to the parent before intent; the real
+coordinator must positively qualify the original host/registry/process/cooperating
+host owners. After actual source/backup/full-integrity/FIRST+NEXT rehearsal/target
+gates and fsynced pre_commit, the parent requalifies and sends one exact bound
+COMMIT permit. The child rechecks revocation and the original reserve before the
+existing writer COMMIT. No permission grants a new deadline or logical/SQL budget.
+
+EOF, cancellation, wrong/unsolicited/duplicate permission latch the original
+channel. Source and phase publishers observe it before subsequent cooperative
+effects. Parent cleanup withdraws permission first, retains the same original
+spawn/process, then boundedly terminates/kills/reaps inside the original20s tail;
+early cancellation clips cleanup to20s and the original deadline. Unresolved
+spawn keeps its inherited descriptions until actual completion; its late child
+is killed and cannot produce a success return. No replacement worker is admitted
+behind an unreaped original. Cancellation remains process termination after
+owned handling; timeout never proves unchanged or releases unknown ownership.
+
+The helper can return storage verified only after the original writer/reopen/
+preservation checks and positive original source/attempt/rehearsal/fence closure.
+Final source registration, runtime-audit mirror, registered event/status and
+attachment remain parent/coordinator work. The actual automatic startup caller
+and original host qualification are still unmounted, so a restart at this
+checkpoint performs no automatic existing-org install. Native syscall stalls
+remain cooperative; neither timing nor original live operating qualification
+is inferred from the private shell proof.
+
+The existing `--bootstrap-worker[=CASE]` table covers actual helper success,
+before-intent/final qualification refusal, cancellation, pre_commit kill, original
+COMMIT reserve, delayed spawn/no replacement, source refusal, source/attempt EOF,
+unsolicited permission and foreign/duplicate COMMIT records. It observes source
+typed cells/rowids/SQL/bytes, independent persisted pre-COMMIT inventory, exact
+phase files, retained backup and original parent EX after child close, with no
+helper listener, source registration or automatic replay. Faults/clocks remain
+test-side; no successful native validator is stubbed. Both-runtime focused proof
+is separate from pending production-shaped whole-startup/listener acceptance.

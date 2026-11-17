@@ -62,6 +62,14 @@ if len(sys.argv) == 2 and sys.argv[1].startswith('--fresh-catalog='):
     assert a2_case in ('route', 'historical', 'registration')
     sys.argv[1:] = ['--fresh-catalog']
 
+worker_case = None
+if len(sys.argv) == 2 and sys.argv[1].startswith('--bootstrap-worker='):
+    worker_case = sys.argv[1].split('=', 1)[1]
+    assert worker_case in ('success', 'refuse_source', 'refuse_commit', 'cancel', 'kill',
+                           'reserve', 'late_spawn', 'source_error', 'source_eof', 'attempt_eof', 'unsolicited',
+                           'foreign_permit', 'duplicate_permit', 'qualification_false', 'late_spawn_after_timeout')
+    sys.argv[1:] = ['--bootstrap-worker']
+
 owners_case = None
 if len(sys.argv) == 2 and sys.argv[1].startswith('--bootstrap-owners='):
     owners_case = sys.argv[1].split('=', 1)[1]
@@ -131,11 +139,276 @@ if len(sys.argv) == 2 and sys.argv[1].startswith('--retained-corruption-phase=')
         uncommitted='between uncommitted')[sys.argv[1].split('=', 1)[1]]
     sys.argv[1:] = ['--retained-corruption']
 
-assert sys.argv[1:] in ([], ['--bootstrap-owners'], ['--bootstrap-discovery'], ['--bootstrap-selection'], ['--bootstrap-install'], ['--bootstrap-rehearsal'], ['--bootstrap-backup'], ['--bootstrap-journal'], ['--bootstrap-precommit'], ['--startup-isolation'], ['--fresh-catalog'], ['--org-access-fence'], ['--org-access-openers'], ['--org-access-native'], ['--org-access-guardian'], ['--org-access-profile'], ['--setup-status'], ['--daily-integrity'], ['--install-integrity'], ['--bounded-acquisition'], ['--trace-custody'], ['--sequential-reuse'], ['--sequential-load'], ['--sequential-freshness'], ['--sequential-faults'], ['--sequential-sql-exhaustion'], ['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--coding-authority-corruption'], ['--document-native-corruption'], ['--author-handoff-corruption'], ['--document-revision-corruption'], ['--coding-history-corruption'], ['--physical-corruption'], ['--sequential-uncommitted'], ['--i2-cutover'], ['--i2-native']), 'unknown schema-load selection'
+assert sys.argv[1:] in ([], ['--bootstrap-worker'], ['--bootstrap-owners'], ['--bootstrap-discovery'], ['--bootstrap-selection'], ['--bootstrap-install'], ['--bootstrap-rehearsal'], ['--bootstrap-backup'], ['--bootstrap-journal'], ['--bootstrap-precommit'], ['--startup-isolation'], ['--fresh-catalog'], ['--org-access-fence'], ['--org-access-openers'], ['--org-access-native'], ['--org-access-guardian'], ['--org-access-profile'], ['--setup-status'], ['--daily-integrity'], ['--install-integrity'], ['--bounded-acquisition'], ['--trace-custody'], ['--sequential-reuse'], ['--sequential-load'], ['--sequential-freshness'], ['--sequential-faults'], ['--sequential-sql-exhaustion'], ['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--coding-authority-corruption'], ['--document-native-corruption'], ['--author-handoff-corruption'], ['--document-revision-corruption'], ['--coding-history-corruption'], ['--physical-corruption'], ['--sequential-uncommitted'], ['--i2-cutover'], ['--i2-native']), 'unknown schema-load selection'
 
 
 print('SCHEMA_RUNTIME', json.dumps(dict(python=sys.version, executable=sys.executable, sqlite=sqlite3.sqlite_version,
     source=sys.modules[Database.__module__].__file__)), flush=True)
+
+# A4-H exercises the actual private helper and original parent socket/EX custody.
+# Its source owners are known because this test creates and positively closes
+# every synthetic native handle. No production validator returns fake success.
+if sys.argv[1:] in ([], ['--bootstrap-worker']):
+    import asyncio
+    import signal
+    import socket
+    from runtime.infrastructure import workflow_sequential_bootstrap as bootstrap
+    from runtime.infrastructure import workflow_schema as schema
+    from runtime.infrastructure.org_access_fence import OrgAccessFence, OrgAccessHeld
+    from runtime.daemon.routes.orgs import _seed_skeleton
+    from runtime.orchestrator.org_config import initialize_fresh_reviewer_agents
+
+    worker_cases = ('success', 'refuse_source', 'refuse_commit', 'cancel', 'kill',
+                    'reserve', 'late_spawn', 'source_error', 'source_eof', 'attempt_eof', 'unsolicited',
+                    'foreign_permit', 'duplicate_permit', 'qualification_false', 'late_spawn_after_timeout')
+    for fault in worker_cases:
+        if worker_case is not None and worker_case != fault:
+            continue
+        with tempfile.TemporaryDirectory(prefix='a4-worker-') as scratch:
+            private = Path(scratch).resolve()
+            home, runtime = private/'home', private/'runtime'
+            home.mkdir(mode=0o700)
+            root = runtime/'orgs/scratch'
+            _seed_skeleton(root, from_example=None)
+            path = root/'happyranch.db'
+            db = Database(path)
+            try:
+                schema.initialize_complete_org_schema(db, expected_org_slug='scratch', layout='J')
+                install_pause_schema(db, org_slug='scratch')
+                initialize_fresh_reviewer_agents(OrgPaths(root), db)
+                install_task_ownership(db, org_slug='scratch')
+                db._conn.execute('CREATE TABLE a4_helper_sentinel(id INTEGER PRIMARY KEY,v BLOB)')
+                db._conn.execute('INSERT INTO a4_helper_sentinel VALUES (37,?)', (b'original\0typed',))
+                db._conn.commit()
+                if fault == 'source_error':
+                    db.insert_task(TaskRecord(id='TASK-active', brief='synthetic pending owner'))
+            finally:
+                db.close()
+
+            def inventory():
+                with closing(sqlite3.connect(path.as_uri()+'?mode=ro', uri=True, timeout=0)) as conn:
+                    conn.execute('PRAGMA query_only=ON')
+                    conn.execute('BEGIN')
+                    return schema.sequential_storage_inventory(conn)
+            original, before = inventory(), path.read_bytes()
+            with patch.dict(os.environ, {'HAPPYRANCH_DAEMON_HOME': str(home)}):
+                startup = bootstrap.BootstrapStartup(home=home, runtime_root=runtime)
+                route = startup.discover(root)
+                assert route.read() == 'absent', 'A4-H fixture did not select original EX'
+                namespace = home/'backups/workflow-sequential'/hashlib.sha256(str(runtime).encode()).hexdigest()/'scratch'
+                if fault in ('source_eof', 'attempt_eof', 'unsolicited'):
+                    left, right = socket.socketpair()
+                    control = bootstrap.BootstrapControl(right, route.deadline)
+                    source = bootstrap.BootstrapSource(fence=route.fence, deadline=route.deadline,
+                        control=control if fault == 'source_eof' else None)
+                    attempt = None
+                    try:
+                        if fault != 'source_eof':
+                            source.open()
+                            attempt = bootstrap.BootstrapAttempt(home=home, runtime_root=runtime, slug='scratch',
+                                fence=route.fence, source_identity=source.source_identity,
+                                source_inventory_digest=source.inventory_digest, deadline=route.deadline, control=control)
+                        if fault == 'unsolicited':
+                            left.sendall(b'{"command":"commit"}\n')
+                        else:
+                            left.shutdown(socket.SHUT_WR)
+                        started = time.monotonic()
+                        try:
+                            source.open() if attempt is None else attempt.begin()
+                        except bootstrap.BootstrapEvidenceError:
+                            pass
+                        else:
+                            raise AssertionError('A4-H source/phase effects after parent EOF or unsolicited permission')
+                        assert time.monotonic()-started < .2 and control.failed, 'A4-H parent check blocked or lost permanent revocation'
+                        assert not namespace.exists(), 'A4-H revoked parent allocated intent'
+                        if attempt is None:
+                            assert not source.connections, 'A4-H revoked source opened SQLite'
+                    finally:
+                        source.close()
+                        if attempt is not None:
+                            attempt.close()
+                        left.close()
+                        right.close()
+                        route.close()
+                    assert inventory() == original and path.read_bytes() == before, 'A4-H revoked owner changed original'
+                    print('PASS A4-H original worker/permit/cancellation:', fault, flush=True)
+                    continue
+
+                async def run_worker():
+                    worker = bootstrap.BootstrapSupervisor(route, Settings())
+                    loop = asyncio.get_running_loop()
+                    calls, source_proofs, spawned = [], [], []
+                    offset = [0.0]
+                    clock = SimpleNamespace(monotonic=lambda: time.monotonic()+offset[0])
+                    actual_spawn = asyncio.create_subprocess_exec
+                    actual_send = loop.sock_sendall
+                    release = asyncio.Event()
+                    outer = asyncio.current_task()
+
+                    async def transport_fault(channel, raw):
+                        message = json.loads(raw)
+                        if message.get('command') == 'commit':
+                            if fault == 'foreign_permit':
+                                message['attempt_id'] = '0'*32
+                                raw = json.dumps(message, separators=(',', ':')).encode()+b'\n'
+                            elif fault == 'duplicate_permit':
+                                raw += raw
+                        return await actual_send(channel, raw)
+
+                    async def delayed_spawn(*args, **kwargs):
+                        process = await actual_spawn(*args, **kwargs)
+                        spawned.append(process)
+                        offset[0] = route.deadline-time.monotonic()+(1 if fault == 'late_spawn_after_timeout' else -19)
+                        await release.wait()
+                        return process
+
+                    async def qualify(identity, digest):
+                        calls.append((identity, digest))
+                        # Independent original persisted source, still legacy at
+                        # BOTH permission boundaries, with exact original cells.
+                        assert identity[:3] == (str(path), *route.fence.database_identity), 'A4-H wrong source binding'
+                        assert digest == hashlib.sha256(json.dumps(original, sort_keys=True,
+                            separators=(',', ':'), ensure_ascii=False).encode()).hexdigest(), 'A4-H wrong source inventory binding'
+                        source_proofs.append(inventory() == original)
+                        assert source_proofs[-1], 'A4-H rehearsal/permit after source COMMIT'
+                        if len(calls) == 1:
+                            assert not namespace.exists(), 'A4-H intent before parent qualification'
+                            if fault == 'refuse_source':
+                                raise ValueError('synthetic original qualification refusal')
+                            if fault == 'qualification_false':
+                                return False
+                        else:
+                            attempts = list(namespace.iterdir())
+                            assert len(attempts) == 1, 'A4-H allocated multiple attempts'
+                            record = json.loads((attempts[0]/'02.json').read_bytes())
+                            assert record['phase'] == 'pre_commit' and not (attempts[0]/'03.json').exists(), 'A4-H permit before durable pre_commit or after COMMIT'
+                            if fault == 'refuse_commit':
+                                raise ValueError('synthetic final original qualification refusal')
+                            if fault == 'cancel':
+                                outer.cancel()
+                                until = time.monotonic()+2
+                                while not worker.expired and time.monotonic() < until:
+                                    await asyncio.sleep(.001)
+                            if fault == 'kill':
+                                os.killpg(worker.process.pid, signal.SIGKILL)
+                                await asyncio.shield(worker.reap_task)
+                            if fault == 'reserve':
+                                offset[0] = route.deadline-time.monotonic()-19
+                        return True
+
+                    async def late_release():
+                        while not worker.expired:
+                            await asyncio.sleep(.001)
+                        # The actual returned child is still owned by the pending
+                        # spawn; positive closure must not be invented meanwhile.
+                        assert worker.spawn is not None and not worker.spawn.done(), 'A4-H lost pending original spawn'
+                        assert not worker.reaped and not worker.closed, 'A4-H invented delayed-spawn closure'
+                        prior_offset, offset[0] = offset[0], 0
+                        second = bootstrap.BootstrapSupervisor(route, Settings())
+                        second_task = asyncio.create_task(second.run(qualify))
+                        await asyncio.sleep(.01)
+                        if not second_task.done():
+                            release.set()
+                            second_task.cancel()
+                            await asyncio.gather(second_task, return_exceptions=True)
+                            raise AssertionError('A4-H admitted replacement behind unresolved original spawn')
+                        try:
+                            await second_task
+                        except bootstrap.BootstrapEvidenceError as exc:
+                            assert str(exc) == 'workflow_setup_original_worker_in_flight', 'A4-H wrong original-worker refusal'
+                        else:
+                            raise AssertionError('A4-H admitted replacement behind unresolved original spawn')
+                        assert second.spawn is None, 'A4-H replacement spawned before original closure'
+                        offset[0] = prior_offset
+                        release.set()
+
+                    error, value, releaser = None, None, None
+                    with ExitStack() as stack:
+                        stack.enter_context(patch.object(bootstrap, 'time', clock))
+                        if fault in ('foreign_permit', 'duplicate_permit'):
+                            stack.enter_context(patch.object(loop, 'sock_sendall', side_effect=transport_fault))
+                        if fault in ('late_spawn', 'late_spawn_after_timeout'):
+                            stack.enter_context(patch.object(asyncio, 'create_subprocess_exec', side_effect=delayed_spawn))
+                            if fault == 'late_spawn':
+                                releaser = asyncio.create_task(late_release())
+                        try:
+                            value = await worker.run(qualify)
+                        except BaseException as exc:
+                            error = exc
+                        if releaser is not None:
+                            await releaser
+                        if fault == 'late_spawn_after_timeout':
+                            assert not worker.spawn.done() and worker.process is None and not worker.reaped and not worker.closed, 'A4-H dropped unresolved original after deadline'
+                            try:
+                                route.close()
+                            except bootstrap.BootstrapEvidenceError as exc:
+                                assert str(exc) == 'workflow_setup_original_worker_in_flight', 'A4-H wrong original discovery close refusal'
+                            else:
+                                release.set()
+                                process = await worker.spawn
+                                if process.returncode is None:
+                                    os.killpg(process.pid, signal.SIGKILL)
+                                await process.wait()
+                                raise AssertionError('A4-H released original discovery behind unresolved spawn')
+                            release.set()
+                        if worker.spawn is not None:
+                            process = await worker.spawn
+                            await process.wait()
+                            if fault == 'late_spawn_after_timeout':
+                                assert process.returncode == -signal.SIGKILL, 'A4-H lost late original child kill'
+                    if fault == 'success':
+                        assert error is None and value['state'] == 'verified' and value['reason'] == 'storage_verified', ('A4-H actual helper failed', error, worker.result)
+                        assert worker.reaped and worker.closed and worker.permit_sent and len(calls) == 2, 'A4-H lost exact parent/child closure or repeated permit'
+                    else:
+                        assert error is not None, ('A4-H refused worker succeeded', fault)
+                        assert not worker.result or worker.result['state'] != 'verified', 'A4-H late success after refusal/cancellation'
+                        assert worker.expired and (not worker.permit_sent or fault in ('foreign_permit', 'duplicate_permit')), 'A4-H granted COMMIT after stop/reserve/refusal'
+                        if fault == 'kill':
+                            assert worker.process.returncode == -signal.SIGKILL, 'A4-H lost original pre-COMMIT kill observation'
+                        assert isinstance(error, asyncio.CancelledError) == (fault == 'cancel'), 'A4-H swallowed process cancellation'
+                        assert len(calls) == (0 if fault in ('source_error', 'late_spawn', 'late_spawn_after_timeout') else 1 if fault in ('refuse_source', 'qualification_false') else 2), 'A4-H intended permission boundary not reached'
+                    assert worker.process is not None and worker.process.returncode is not None, 'A4-H original process not reaped'
+                    # Even a positively closed child must not drop the parent's
+                    # ORIGINAL EX before final registration/status/attachment.
+                    route.fence.assert_held()
+                    try:
+                        other = OrgAccessFence.acquire(root, exclusive=True)
+                    except OrgAccessHeld:
+                        pass
+                    else:
+                        other.close()
+                        raise AssertionError('A4-H released original parent EX')
+                    original_spawn, original_process = worker.spawn, worker.process
+                    try:
+                        await worker.run(qualify)
+                    except bootstrap.BootstrapEvidenceError:
+                        pass
+                    else:
+                        raise AssertionError('A4-H replayed original worker')
+                    assert worker.spawn is original_spawn and worker.process is original_process, 'A4-H replayed original worker'
+                    return worker
+
+                worker = asyncio.run(run_worker())
+                route.close()
+                if fault == 'success':
+                    attempts = list(namespace.iterdir())
+                    assert len(attempts) == 1 and sorted(p.name for p in attempts[0].iterdir()) == [
+                        '00.json', '01.json', '02.json', '03.json', '04.json', 'before.db'], 'A4-H missing storage phase or premature registered event'
+                    with closing(sqlite3.connect(path)) as conn:
+                        assert conn.execute('SELECT * FROM a4_helper_sentinel').fetchall() == [(37, b'original\0typed')], 'A4-H changed retained typed/rowid cells'
+                        assert conn.execute('SELECT count(*) FROM workflow_seq_definitions').fetchone()[0] == 0, 'A4-H helper performed unqualified source registration'
+                else:
+                    assert inventory() == original and path.read_bytes() == before, 'A4-H failed worker changed original source'
+                    if fault in ('refuse_commit', 'cancel', 'kill', 'reserve', 'foreign_permit', 'duplicate_permit'):
+                        attempts = list(namespace.iterdir())
+                        assert len(attempts) == 1 and (attempts[0]/'02.json').exists() and not (attempts[0]/'03.json').exists(), 'A4-H lost no-replay pre_commit uncertainty'
+                        assert (attempts[0]/'before.db').exists(), 'A4-H discarded verified backup'
+                    else:
+                        assert not namespace.exists(), 'A4-H refused source allocated attempt'
+                assert not (home/'daemon.pid').exists() and not (home/'daemon.port').exists(), 'A4-H helper started daemon/listener'
+                print('PASS A4-H original worker/permit/cancellation:', fault, flush=True)
+    if sys.argv[1:]:
+        raise SystemExit(0)
 
 # A4 connection custody and per-org isolation use this existing shell venue.
 # Faults/observers are local to each temporary fixture; no production test hook.
