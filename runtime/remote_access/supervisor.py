@@ -1148,6 +1148,17 @@ class ConnectorSupervisor:
         if (sys.platform == "linux" and self.config.managed is not None
                 and self.config.managed.profile == LINUX_IDENTITY_PROFILE):
             raise ConnectorConfigError("home control binding not provisioned; requires slice 3b-2")
+        if sys.platform == "linux" and self.config.system and self.config.managed is not None:
+            # A stopped failed-install replacement must not restart through the
+            # alternate legacy lifecycle. Reuse the fixed installer's refusal
+            # owner; never interpret a journal as start or rollback authority.
+            from runtime.remote_access.installer import UNITS, InstallerError, ManagedInstaller
+
+            if self.config.unit_name == UNITS[0]:
+                try:
+                    ManagedInstaller()._refuse_install_transaction()
+                except (InstallerError, OSError):
+                    raise ConnectorConfigError("installation transaction blocks remote lifecycle") from None
 
     def disable(self) -> None:
         self._refuse_staged_identity()
