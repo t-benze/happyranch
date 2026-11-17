@@ -220,7 +220,11 @@ the **target node's** revision and attempt, reserves one visit and retires that
 producer's control/data dependents. Other next edges spend only an attempt/visit.
 Removing counter-consuming edges must leave an acyclic graph. All nodes must be
 reachable; required current inputs must have a producer on every path, including
-correction invalidations; at least one terminal path must fit original limits.
+correction invalidations; at least one terminal path must fit original limits,
+including both visits and events. Each fresh node result consumes one event,
+including the terminal result; successor allocation adds no event and must leave
+room for its result. A graph with no fitting path refuses as
+`no_terminal_path_within_limits`.
 Terminal conditions contain only `{output}`; they require available generic
 output and positive native settlement, with no typed domain witness. A hold edge
 has `owner=initiator` and `remedy=no_automatic_retry`. Limits exhausted in pure

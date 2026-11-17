@@ -382,6 +382,38 @@ if sys.argv[1:] in ([], ['--generic-abi']):
             assert stopped.reason == 'limit_exhausted' and stopped.activation is None and stopped.after.visits == 1
             lower = state.model_copy(update={'lower_limits': GenericLimits(max_visits=64, max_events=4096, max_recoveries=4, node_revisions={'write': 0})})
             assert reduce_generic_result(compiled, lower, gresult(compiled, lower, 'needs.more')).reason == 'limit_exhausted'
+            # Original events must fit a terminal path, including its final result.
+            two = gdefinition(); second = deepcopy(two['nodes'][0])
+            second.update(id='read', output_contract=dict(slot='assessment', type='canonical-json-object@1'))
+            second['inputs'] = [dict(name='report', source='current.report', required=True)]
+            second['outcomes'] = {'finished.custom': dict(action='terminal', condition='done')}
+            two['nodes'][0]['outcomes'] = {'next.custom': dict(action='next', node='read')}
+            two['nodes'].append(second); two['terminal_conditions']['done']['output'] = 'assessment'
+            two['limits']['max_events'] = 1
+            grefuses('event_limit original 1', lambda: gcompile(two), 'no_terminal_path_within_limits')
+            print('PASS S1 node_limit event_refusal', flush=True)
+            two['limits']['max_events'] = 2
+            exact = gcompile(two); first = gstate(exact)
+            step = reduce_generic_result(exact, first, gresult(exact, first, 'next.custom'))
+            assert step.edge.action == 'next' and step.activation.node == 'read'
+            assert step.after.visits == 2 and step.after.events == 1, 'event_limit allocation adds no event'
+            current = first.model_copy(update={'counters': step.after, 'selections': step.selections,
+                'receipts': (step,), 'active_visit': GenericActiveVisit(node='read', visit_id='visit-2',
+                    task_id='task-2', session_id='session-2', ordinal=2, input_selection_digest='b' * 64)})
+            terminal = reduce_generic_result(exact, current, gresult(exact, current, 'finished.custom'))
+            assert terminal.edge.action == 'terminal' and terminal.activation is None
+            assert terminal.after.visits == 2 and terminal.after.events == 2, 'event_limit exact terminal boundary'
+            print('PASS S1 node_limit event_boundary', flush=True)
+            # The longer branch is declared first; only the shorter one fits.
+            two['limits']['max_events'] = 1
+            two['nodes'][0]['outcomes']['short.custom'] = dict(action='terminal', condition='short')
+            two['terminal_conditions']['short'] = dict(output='report')
+            shorter = gcompile(two); first = gstate(shorter)
+            terminal = reduce_generic_result(shorter, first, gresult(shorter, first, 'short.custom'))
+            assert terminal.edge.action == 'terminal' and terminal.after.events == 1 and terminal.after.visits == 1
+            stopped = reduce_generic_result(shorter, first, gresult(shorter, first, 'next.custom'))
+            assert stopped.reason == 'limit_exhausted' and stopped.activation is None and stopped.after.events == 1
+            print('PASS S1 node_limit event_shorter', flush=True)
         elif case == 'bounded_cycle':
             unbounded = gdefinition(); unbounded['nodes'][0]['outcomes']['needs.more'] = dict(action='next', node='write')
             grefuses('unbounded cycle', lambda: gcompile(unbounded), 'cycle_without_consumed_counter')

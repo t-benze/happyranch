@@ -420,6 +420,9 @@ def _generic_graph(definition: GenericDefinition) -> None:
                          'terminal_output_unavailable')
     # A shortest terminal path is simple: cycling cannot enable an outcome.
     # Breadth-first search bounds this proof by nodes/edges, not counter products.
+    # Each fresh result consumes one event, including terminal; allocating a
+    # successor adds no event and must leave room for its result.
+    path_limit = min(definition.limits.max_visits, definition.limits.max_events)
     queue, seen = [(definition.entry_node, 1)], set()
     while queue:
         key, visits = queue.pop(0)
@@ -429,7 +432,7 @@ def _generic_graph(definition: GenericDefinition) -> None:
         for _, edge in nodes[key].outcomes:
             if isinstance(edge, TerminalEdge):
                 return
-            if isinstance(edge, GenericNextEdge) and visits < definition.limits.max_visits:
+            if isinstance(edge, GenericNextEdge) and visits < path_limit:
                 revisions = min(nodes[edge.node].limits.revisions,
                     dict(definition.limits.node_revisions).get(edge.node, 63))
                 if not edge.consume_counter or revisions > 0:

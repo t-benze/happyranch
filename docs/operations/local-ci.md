@@ -865,9 +865,11 @@ Individual groups are `generic_outcome`, `json_limit`, `document_limit`,
 `node_limit`, `bounded_cycle`, `legacy_bytes`. They invoke the real inert @2
 compiler/parser/reducer/brief renderer with literal data, observe exact byte
 limits and generic routing, finite node counters/cycle exhaustion, and retained
-@1 definition pins, command/result/transition bytes and reducer replay. No native
-proof, task allocation, live install, admission or assignment resolution is
-claimed. Record the four authoring answers per group in the PR body, absent
+@1 definition pins, command/result/transition bytes and reducer replay.
+`node_limit` also covers original event-limit compile refusal, exact terminal event
+accounting and a shorter fitting branch. No native proof, task allocation, live
+install, admission or assignment resolution is claimed. Record the four authoring
+answers per group in the PR body, absent
 selector RED, intended domain-check/cycle/oversize mutation failures and exact
 restoration hashes, then restored GREEN. Retain `--start-compose=all`,
 `--start-context=all`, `--bundled-catalog=all`, `--returned-storage=all` on both
