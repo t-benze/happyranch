@@ -349,7 +349,7 @@ the canonical bootstrap example remains `examples/orgs/hk-macau-tourism/`.
 
 ## Runtime Container
 
-Daemon home: `~/.happyranch/` contains `auth_token`, `runtimes.yaml`, `daemon.pid`, `daemon.port`, and `config.yaml`.
+Daemon home: `~/.happyranch/` contains `auth_token`, `runtimes.yaml`, `daemon.lock`, `daemon.pid`, `daemon.port`, and `config.yaml`. The lifetime lock is persistent; never unlink/replace it. See [daemon lifecycle](contracts/runtime-lifecycle.md#daemon-lifetime-lock-thr-357).
 
 Runtime container shape:
 

@@ -2310,6 +2310,16 @@ scripts/daemon.sh stop --force     # graceful shutdown (default daemon needs --f
 happyranch web [--no-open]
 ```
 
+Daemon startup acquires `daemon.lock` before state/sweeps and reports duplicate
+lock refusal in `daemon.log`. Never unlink the lock. Stop reports success only
+after observed process exit (60s TERM grace, then up to 2s after KILL) and an
+additional bounded 2s no-follow flock release check, including missing/stale PID
+paths. The checkout's uv/Python performs the probe. Held or ambiguous locks
+retain lifecycle markers and return nonzero with lock path/readable PID;
+genuinely absent or acquirable regular locks permit stopped homes. Applying
+legacy migration requires the same release observation. See the
+[transition-proof contract](contracts/runtime-lifecycle.md#daemon-lifetime-lock-thr-357).
+
 ### Team-manager agent updates
 
 `happyranch manage-agent update` is a task-session callback, not a browser

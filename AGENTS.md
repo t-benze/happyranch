@@ -32,6 +32,7 @@ current in `docs/superpowers/specs/README.md`.
 
 - Packaged Python source is `runtime` and `cli`; `pyproject.toml` builds those packages. Do not treat top-level `src/` as canonical source unless tracked `.py` files and packaging/imports are updated.
 - The daemon is FastAPI in `runtime/daemon/`; the CLI is a thin HTTP client in `cli/`; the SPA is in `web/` and builds to `web/dist/`.
+- Daemon startup holds `<daemon_home>/daemon.lock` before state construction/sweeps through process exit; never unlink it. Shell stop and applying legacy migration confirm lock release with a bounded 2s no-follow flock probe even if the PID is missing/stale. Held or ambiguous locks refuse success and preserve evidence; absent/free locks allow stopped homes. Transition-boot proof is fail closed and currently has no release consumer. See [daemon lifecycle](docs/agent-guides/contracts/runtime-lifecycle.md#daemon-lifetime-lock-thr-357).
 - Runtime containers are schema v2 multi-org trees: `<runtime>/orgs/<slug>/...`. Per-org routes are under `/api/v1/orgs/<slug>/...`; container-level routes are under `/api/v1/runtime` and `/api/v1/orgs`.
 - Settings come from `HAPPYRANCH_` env vars, then `~/.happyranch/config.yaml`, then code defaults. There is no `.env` support.
 - Agent names are plain strings discovered from `<runtime>/orgs/<slug>/org/agents/*.md`; do not introduce static agent enums.

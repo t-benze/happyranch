@@ -117,10 +117,11 @@ cmd_start() {
     if [[ -f "$PID_FILE" ]]; then
         pid=$(cat "$PID_FILE")
         if kill -0 "$pid" 2>/dev/null; then
-            echo "daemon already running (pid $pid)"
+            echo "daemon already running (pid $pid; lock $HAPPYRANCH_HOME/daemon.lock)" >&2
             exit 1
         fi
-        rm -f "$PID_FILE"
+        # Preserve the previous PID for the transition-boot proof. Only the
+        # lock-holding Python daemon may replace it after its startup sweep.
     fi
 
     if ! bind_host="$(uv run python -c 'from runtime.config import Settings; print(Settings().daemon_bind_host)')"; then
@@ -135,8 +136,8 @@ cmd_start() {
         *) probe_host="$bind_host" ;;
     esac
 
-    # No live PID remains, so an old port file cannot describe this launch.
-    rm -f "$PORT_FILE"
+    # The Python lock owner discards the stale port; a competing launcher must
+    # not remove a port published by the daemon that won the lifetime lock.
     HAPPYRANCH_LAUNCHER_START_EPOCH="$launcher_start_epoch" \
         nohup uv run python -m runtime.daemon --reader-guarded-start=online-team-move@3 >> "$LOG_FILE" 2>&1 &
     bg_pid=$!
@@ -151,7 +152,16 @@ cmd_start() {
             wait "$bg_pid" 2>/dev/null || true
             exit 1
         fi
-        if [[ -f "$PORT_FILE" ]]; then
+        if [[ -f "$PORT_FILE" && -f "$PID_FILE" ]]; then
+            daemon_pid=$(cat "$PID_FILE")
+            parent_pid=$(ps -p "$daemon_pid" -o ppid= 2>/dev/null || true)
+            parent_pid=${parent_pid//[[:space:]]/}
+            # A competing winner can publish readiness while our uv child is
+            # still exiting with lock refusal. Attach only to this launch.
+            if [[ "$daemon_pid" != "$bg_pid" && "$parent_pid" != "$bg_pid" ]]; then
+                sleep 0.25
+                continue
+            fi
             port=$(cat "$PORT_FILE")
             if command -v curl >/dev/null 2>&1; then
                 if curl --max-time 0.2 -fsS \
@@ -172,8 +182,61 @@ cmd_start() {
     exit 1
 }
 
+_wait_for_daemon_lock_release() {
+    # Use the checkout's Python for portable flock (including macOS). Never
+    # create/unlink the file or hold a probe lock while waiting or continuing.
+    (cd "$SCRIPT_DIR" && uv run --frozen python - "$HAPPYRANCH_HOME/daemon.lock" "${pid:-unavailable}" <<'PY'
+import fcntl
+import os
+import stat
+import sys
+import time
+
+path, pid = sys.argv[1:]
+deadline = time.monotonic() + 2
+identity = None
+try:
+    while True:
+        try:
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        except FileNotFoundError:
+            if identity is None:
+                break  # Genuinely absent, including stopped pre-lock homes.
+            raise OSError("lock disappeared while waiting")
+        try:
+            opened = os.fstat(fd)
+            current = (opened.st_dev, opened.st_ino)
+            named = os.stat(path, follow_symlinks=False)
+            if (not stat.S_ISREG(opened.st_mode) or opened.st_nlink != 1
+                    or not stat.S_ISREG(named.st_mode)
+                    or (named.st_dev, named.st_ino) != current
+                    or (identity is not None and identity != current)):
+                raise OSError("unsafe or changed lock file")
+            identity = current
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise OSError("lock held after 2s")
+            else:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+                break
+        finally:
+            os.close(fd)
+        time.sleep(min(0.1, remaining))
+except OSError as exc:
+    print(f"ERROR: daemon stop incomplete: lock {path} (pid {pid}): {exc}; do not restart.", file=sys.stderr)
+    sys.exit(1)
+PY
+    ) || {
+        echo "ERROR: cannot confirm daemon lock release at $HAPPYRANCH_HOME/daemon.lock (pid ${pid:-unavailable}); preserving lifecycle evidence." >&2
+        return 1
+    }
+}
+
 cmd_stop() {
-    local force_flag="${1:-}"
+    local force_flag="${1:-}" pid=""
     # Guard: when stopping the DEFAULT home (HAPPYRANCH_DAEMON_HOME unset),
     # require --force to prevent agents from killing the founder's real daemon.
     # Isolated instances (HAPPYRANCH_DAEMON_HOME set) skip this guard entirely.
@@ -187,11 +250,13 @@ cmd_stop() {
         fi
     fi
     if [[ ! -f "$PID_FILE" ]]; then
+        _wait_for_daemon_lock_release || return 1
         echo "daemon not running"
         exit 0
     fi
     pid=$(cat "$PID_FILE")
     if ! kill -0 "$pid" 2>/dev/null; then
+        _wait_for_daemon_lock_release || return 1
         echo "stale pid file (process $pid not alive)"
         rm -f "$PID_FILE" "$PORT_FILE"
         exit 0
@@ -199,6 +264,7 @@ cmd_stop() {
     kill -TERM "$pid"
     for ((waited=0; waited<60; waited++)); do
         if ! kill -0 "$pid" 2>/dev/null; then
+            _wait_for_daemon_lock_release || return 1
             rm -f "$PID_FILE" "$PORT_FILE"
             echo "daemon stopped"
             exit 0
@@ -206,8 +272,19 @@ cmd_stop() {
         sleep 1
     done
     kill -KILL "$pid" || true
-    rm -f "$PID_FILE" "$PORT_FILE"
-    echo "daemon force-killed"
+    # A signal request does not prove exit. Keep lifecycle evidence and refuse
+    # a following start if the kernel still reports this process after KILL.
+    for ((waited=0; waited<20; waited++)); do
+        if ! kill -0 "$pid" 2>/dev/null; then
+            _wait_for_daemon_lock_release || return 1
+            rm -f "$PID_FILE" "$PORT_FILE"
+            echo "daemon stopped after KILL"
+            return 0
+        fi
+        sleep 0.1
+    done
+    echo "ERROR: daemon stop incomplete (pid $pid still present after KILL); do not restart." >&2
+    return 1
 }
 
 cmd_status() {

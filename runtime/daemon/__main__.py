@@ -878,6 +878,12 @@ def run_maintenance() -> int:
         # traceback out of ``main()``.
         paths.ensure_daemon_home()
 
+        # Serialize offline DB work with normal startup, including the interval
+        # before a serving daemon has published daemon.pid. Keep lock failures
+        # inside this existing redacted boundary. The fd lives until exit.
+        from runtime.daemon.lifetime_lock import acquire_daemon_lock
+        lifetime_lock = acquire_daemon_lock(paths.daemon_home())
+
         # Offline guard (belt-and-suspenders): SQLite fail-closes on a
         # concurrent holder anyway (checkpoint busy / VACUUM locked), but a
         # live-daemon pid probe fails fast with an actionable message.
@@ -1069,6 +1075,22 @@ def main(argv: list[str] | None = None) -> int:
         pass  # Missing diagnostics never gate the actual normal startup.
     try:
         paths.ensure_daemon_home()
+
+        from runtime.daemon.lifetime_lock import acquire_daemon_lock
+        try:
+            lifetime_lock = acquire_daemon_lock(paths.daemon_home())
+        except OSError as exc:
+            logger.error("daemon startup refused: %s", exc)
+            return 1
+        # Do not close this fd on main's return/error tail: kernel process exit
+        # releases it after all shutdown work. Helpers dispatched above skip it.
+        proof = lifetime_lock.proof
+        logger.info("daemon_lock path=%s proof=%s transition_boot=%s reason=%s previous_pid=%s",
+                    paths.daemon_home() / "daemon.lock",
+                    "PROVEN" if proof.proven else "NOT_PROVEN",
+                    proof.transition_boot, proof.reason, proof.previous_pid)
+        # Only the lock owner may discard a previous listener marker.
+        paths.port_file().unlink(missing_ok=True)
 
         paths.ensure_token()
 

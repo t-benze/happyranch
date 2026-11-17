@@ -5,6 +5,65 @@
 > extends an earlier one, the later section controls; sections marked
 > "Historical" are retained evidence, not current instructions.
 
+### Daemon lifetime lock (THR-357)
+
+Normal source and frozen daemon startup acquire nonblocking exclusive `flock`
+on `<daemon_home>/daemon.lock` before token creation, settings, `_build_state`,
+startup sweeps, listener binding or PID publication. The owned regular file is
+opened no-follow with owner-only permissions; symlinks and hardlinks refuse.
+The descriptor remains open through main's error/shutdown tails until process
+exit, including kernel release after SIGKILL. A competing daemon exits nonzero
+with the lock path and a strictly readable PID, if available. Never unlink or
+replace the lock file: that would create a different lock inode. Hidden cleanup,
+workflow-integrity and connector helper dispatches remain separate processes
+before daemon startup. Offline `--maintenance` also acquires the lock before
+registry/SQLite access, within its existing redacted failure boundary, and
+retains its additional PID guard; it never writes serving PID/port markers.
+
+`lifetime_lock.LockProof` records `proven`, `transition_boot`, `reason` and
+`previous_pid`; startup logs the result without consuming it. A held lock
+excludes all earlier lock-holding daemons, so records already present at
+acquisition belong to a previous boot. It says nothing about later records or
+surviving children/external processes, and is not sufficient release authority.
+Fix 1/Fix 2 are separate future consumers; no release, status/schema change or
+audit write is introduced here.
+
+A valid `happyranch-daemon-lock@1` marker in that same locked inode identifies
+lock-era operation. **Assumption:** pre-lock binaries are not subsequently run
+against this home; a downgrade/replacement or manual marker edit invalidates
+that inference and needs operator reconciliation. Without the exact marker,
+this is a transition boot: proof additionally requires a strictly positive,
+distinct old `daemon.pid` and `os.kill(pid, 0)` raising `ProcessLookupError`.
+Missing, malformed, unreadable, aliased, own, alive or ambiguous/permission-error
+PID evidence means NOT PROVEN. Normal serving may continue, but later cleanup
+must release nothing using that proof. An unproven transition never publishes
+the marker, so its uncertainty cannot disappear next boot. Consequently a fresh
+empty home, or repeated clean boots without a retained dead PID, can remain
+unproven. Only a proven transition publishes the marker under the held lock.
+
+The shell preserves stale `daemon.pid` until lock-owning Python startup observes
+it; only that owner discards the stale port. Shell and legacy migration stop
+retain the 60-second TERM grace, then wait up to 2 seconds for observed exit
+after KILL. Before every stop-success/applying-migration continuation, including
+missing/stale PID and observed live-PID exit, they additionally wait up to 2s
+for lifetime-lock release (the same bound as post-KILL observation). A no-follow,
+nonblocking real flock probe acquires and immediately releases; it never creates,
+holds while waiting, or unlinks the lock. Only a genuinely absent lock or an
+acquirable regular single-link file allows success. Held-after-bound, open/flock
+errors, symlinks, unexpected file types or changed inode evidence refuse with
+the lock path and readable PID, preserving lifecycle markers. Shell stop uses
+the checkout's uv/Python environment for this portable probe. Migration dry-run
+remains a signal-free/mutation-free preview and makes no stopped claim.
+The migration entrypoint gates the selected existing home before discovery or
+mutation: `~/.opc` when present, otherwise `~/.happyranch`, including reruns
+after the home rename and partially migrated runtimes.
+Failure refuses success/restart or applying migration. Existing `--force` only
+guards the default-home stop; no semantics
+are added. In-repo Mac managed restart waits for its actual exit callback;
+Linux desktop waits/reaps its child (60+2 seconds), and service restart delegates
+to synchronous systemd stop/start with `TimeoutStopSec=60`. Connector/sidecar
+units and disposable test cleanup are separate lifetimes.
+
 ### Ordinary Pause-unknown crash recovery (THR-350)
 
 Only a current, uncancelled ordinary in_progress session with no block_kind,
