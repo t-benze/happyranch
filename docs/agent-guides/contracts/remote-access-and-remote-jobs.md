@@ -1369,3 +1369,61 @@ encoder bytes using fixed test-side entropy, and hand the digest/deadline to the
 real pairing manager against temporary synthetic state. Swift's CA-expiration
 refusal is a downstream verifier check under the division above. This slice
 adds no issuance handler, helper operation, UI, service action or live 3c-2 flow.
+
+### Pure home issuer core (THR-327 slice 3c-2a)
+
+`runtime.remote_access.invite_issuer.HomeInviteIssuer` composes the encoder and
+`PinnedPairingManager.issue_invite_record` with an injected `JoinKeyMinter` and
+protected state directory. It has no network, subprocess, Headscale adapter,
+helper/polkit method, installation or own-server intake. The future helper
+supplies protected `HomeInviteConfig`, a pairing owner bound to the same home,
+and exactly one issuer directory per home. It must authenticate each new issue
+and explicit recovery separately under the existing helper contract. This core
+does not confer authentication or mint authority on any caller.
+
+The minter associates a non-reusable key with the helper-generated operation
+ID, bounds its own execution and returns `MintedKey(key, expires_at)` with an
+aware deadline. `MintRefused` guarantees no key was created; every other raised
+or malformed mint outcome is uncertain. `recover(operation_id)` is explicit
+reconciliation, never another mint: only exact Boolean true, confirming no
+usable key remains, releases the uncertain operation for a later fresh issue.
+False, errors, restart and expiry preserve the refusal. No automatic new-ID
+retry or key recovery/delivery is provided.
+
+`issue()` allocates an operation ID and atomically journals `minting` with file
+and directory fsync **before** calling the minter. A random, unredeemable pairing
+digest first replaces the old ceremony through the existing pairing API, so a
+refused/crashed replacement cannot preserve the prior invite, pending approval
+or undelivered credential. On success the actual encoded pairing digest replaces
+that reservation. The journal commits `issued` before the private invite text
+is returned once. `issue(operation_id)` only observes the matching current
+operation's closed refusal (`already_issued` after success); it never mints or
+redelivers. An old operation ID returns `superseded` after replacement.
+
+The effective integer deadline is `floor(min(floor(issue_time) + 300,
+minted_key_expiry))`; both wire timestamps are whole Unix seconds. Minting
+cannot extend it. An expired or slow result is not delivered. A durable
+`not_before` deadline enforces one attempted issue per 60 seconds, including
+refusal and issuer restart; a backward clock does not release it. A nonblocking
+exclusive file lock refuses concurrent/reentrant issuance with `busy`.
+
+The supplied directory must already exist, be owned by the effective helper
+UID and have mode 0700. Every literal parent is traversed without following
+symlinks. Journal and lock files must be regular, single-link, owned 0600 files;
+unsafe metadata is never repaired. The bounded, strictly parsed journal holds
+only an operation ID, a protected-configuration binding digest, deadlines and
+an outcome code. Exclusive pending writes use descriptor-relative rename and
+fsync. Existing crash residue refuses further writes rather than being erased.
+Filesystem faults may leave the old `minting` record or pending residue; they
+never authorize another mint. Explicit operator repair of unsafe/crash-residue
+metadata remains outside this core.
+
+Raw invite, join key and pair secret stay in the private return path and never
+enter journal bytes or logs. Transport objects have redacted representations.
+Public `IssuerError` arguments are fixed codes; library/adapter exceptions are
+discarded before raising, with no cause or context retained. Callers must keep
+the explicit invite field out of diagnostics. Focused standalone verification:
+`uv run --frozen pytest scripts/test_invite_issuer.py -v`. Synthetic minters,
+temporary real pairing state and an abrupt child-process exit cover this core;
+real local minting, protected IPC/authentication and installed/native acceptance
+remain in the later serial 3c-2b slice.
