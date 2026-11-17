@@ -346,8 +346,16 @@ an empty WAL and a regular 32KiB SHM during that native admission. No existing
 companion may disappear or change identity. All signatures are fixed afterwards.
 Hot journals, unexplained sidecars or drift refuse without checkpoint/repair.
 
-After durable intent, the owner checks B<=32GiB and backup-volume free>=B+1GiB,
-creates an exclusive independent 0600 file and uses native online backup. Only
+After durable intent, the owner checks B<=32GiB and the complete combined volume
+policy before creating the backup inode: backup free>=B+1GiB; each distinct
+DB/SQLite-temp device free>=2B+64MiB+1GiB+observed sidecars; rehearsal free>=B+64MiB.
+Requirements add on shared devices, with DB/temp counted once when colocated;
+the least observed free space for a device must cover its sum. SQLITE_TMPDIR
+must already name a literal private writable directory before SQLite work.
+Unavailable space/custody refuses without a backup file or connection. Writer
+admission repeats the policy against current observations. The unchanged
+backup-only check also remains; no observation reserves blocks against ENOSPC.
+The owner then creates an exclusive independent 0600 file and uses native online backup. Only
 the backup is normalized to DELETE journal mode, positively closed, fsynced,
 hashed and closed again before independent RO reopening. Full backup integrity
 shares the original cumulative physical ledger; complete readers and exact
@@ -361,11 +369,14 @@ committed WAL, exact typed native canaries, independent inventory mismatch,
 source/destination initialization failures, source/backup physical refusals,
 file/directory fsync failures, space/deadline refusal, original close uncertainty
 and a backup symlink. These cases observe no source COMMIT/checkpoint/mutation
-and no installed claim. This owner remains unmounted with the rest of the A4
-coordinator. Combined DB/temp/rehearsal volume reservations and writer rechecks,
-positive original-owner qualification, writable FIRST/NEXT rehearsal, parent
-supervision, final registration/status integration and whole-startup acceptance
-remain required. The offline interface and its explicit guards are unchanged.
+and no installed claim. The same table also covers insufficient shared-device
+sum, a lower intermediate free-space observation, separately deficient DB/temp/
+backup/rehearsal devices, exact shared/separate positive boundaries and volume
+I/O refusal before any backup inode/connection. Device/space faults and passive
+original-call observations stay test-side. This owner remains unmounted with the
+rest of A4. Positive original-owner qualification, parent supervision, final
+registration/status integration and whole-startup acceptance remain required.
+The offline interface and its explicit guards are unchanged.
 
 ### A4 private writable rehearsal checkpoint
 

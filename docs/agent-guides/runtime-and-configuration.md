@@ -38,6 +38,14 @@ backup_verified event. Failure latches the original connections/attempt, with
 no source checkpoint, restore or retry. See the [current source/backup boundary](../superpowers/specs/2026-11-14-automatic-workflow-setup.md#a4-coherent-source-and-verified-backup-checkpoint);
 this checkpoint still does not invoke automatic setup at daemon startup.
 
+Before creating `before.db`, that owner now enforces the complete combined
+backup/DB/SQLite-temp/rehearsal headroom policy by actual device. DB and SQLite
+temp share one requirement only when they share a device; backup and rehearsal
+requirements add even on that device. Every observed free-space reading must
+suffice. Missing/unsafe temp custody or unavailable space refuses before a backup
+file/connection exists. Writer admission repeats the same policy; neither check
+reserves disk blocks or changes the original operation deadline.
+
 The next unmounted stage, `BootstrapRehearsal`, copies the independently verified
 image and bounded canonical org metadata into private scratch. It runs the real
 candidate installer and actual writable default FIRST/NEXT loads on the same

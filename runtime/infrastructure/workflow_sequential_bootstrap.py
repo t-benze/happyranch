@@ -822,9 +822,9 @@ class BootstrapSource:
     def backup(self, attempt: BootstrapAttempt) -> str:
         """Create/fsync/close/reopen/verify before durable backup_verified.
 
-        The complete DB/temp/rehearsal volume policy is additionally required at
-        coordinator admission and writer reentry. This owner enforces backup
-        volume headroom; it grants no writer or checkpoint permission itself.
+        Sum DB/temp/backup/rehearsal headroom BEFORE creating the backup inode.
+        Writer reentry repeats that policy against current free space; neither
+        observation reserves blocks or grants checkpoint/writer permission.
         """
         try:
             self._unchanged()
@@ -837,6 +837,7 @@ class BootstrapSource:
             self._backup_started = True
             attempt._check(reserve=True)
             assert attempt._parent is not None and self.source is not None
+            require_bootstrap_space(self, attempt)
             space = os.fstatvfs(attempt._parent)
             if space.f_bavail * space.f_frsize < self.image_bytes + 1024**3:
                 raise BootstrapEvidenceError('workflow_setup_backup_space_unavailable')

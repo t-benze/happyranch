@@ -76,6 +76,14 @@ source checkpoint; they supply no native-owner qualification or installed result
 Automatic startup integration and installation remain incomplete; see the
 [source/backup checkpoint](../../superpowers/specs/2026-11-14-automatic-workflow-setup.md#a4-coherent-source-and-verified-backup-checkpoint).
 
+`BootstrapSource.backup` itself now enforces the complete shared-device volume
+policy before exclusive backup inode creation, rather than trusting its caller
+to perform that admission. The original DB/temp, backup and rehearsal allowances
+remain unchanged, with the least observed free space on each device. Refusal or
+I/O failure creates no backup connection and leaves source values untouched;
+descriptor-close uncertainty retains original custody. The later writer recheck
+remains required and uses current observations under the same deadline.
+
 The unmounted `BootstrapRehearsal` retains each private raw connection and
 OrgState construction owner before fallible setup, then performs actual writable
 default FIRST/NEXT on one installed private image. Each original close is

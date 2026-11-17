@@ -24,6 +24,11 @@ import io
 # All new fence filesystem effects, including legacy fixture loads, stay private.
 _schema_home = tempfile.TemporaryDirectory(prefix="workflow-schema-home-")
 os.environ["HAPPYRANCH_DAEMON_HOME"] = str(Path(_schema_home.name).resolve())
+# The real bootstrap helper must select SQLite's temp directory before its
+# first SQLite work. Every shell fixture uses this isolated literal directory.
+_schema_sqlite_temp = Path(_schema_home.name).resolve() / 'sqlite-temp'
+_schema_sqlite_temp.mkdir(mode=0o700)
+os.environ['SQLITE_TMPDIR'] = str(_schema_sqlite_temp)
 
 from runtime.infrastructure.database import Database
 from runtime.infrastructure.workflow_schema import install_or_recover, validate_workflow_schema, migrate_draft_schema
@@ -75,7 +80,9 @@ if len(sys.argv) == 2 and sys.argv[1].startswith('--bootstrap-backup='):
     backup_case = sys.argv[1].split('=', 1)[1]
     assert backup_case in ('none', 'wal', 'checkpointed_wal', 'source_init', 'destination_init', 'source_integrity',
                            'backup_integrity', 'inventory', 'file_sync', 'directory_sync',
-                           'space', 'deadline', 'close', 'alias')
+                           'space', 'deadline', 'close', 'alias', 'shared_space', 'shared_exact',
+                           'shared_minimum', 'database_space', 'temp_space', 'backup_space',
+                           'rehearsal_space', 'separate_exact', 'volume_io')
     sys.argv[1:] = ['--bootstrap-backup']
 
 rehearsal_case = None
@@ -3654,7 +3661,9 @@ if sys.argv[1:] in ([], ['--install-integrity'], ['--bootstrap-backup'], ['--boo
 
         backup_cases = ('none', 'wal', 'checkpointed_wal', 'source_init', 'destination_init', 'source_integrity',
                         'backup_integrity', 'inventory', 'file_sync', 'directory_sync',
-                        'space', 'deadline', 'close', 'alias')
+                        'space', 'deadline', 'close', 'alias', 'shared_space', 'shared_exact',
+                        'shared_minimum', 'database_space', 'temp_space', 'backup_space',
+                        'rehearsal_space', 'separate_exact', 'volume_io')
         for fault in backup_cases:
             if backup_case is not None and fault != backup_case:
                 continue
@@ -3700,6 +3709,9 @@ if sys.argv[1:] in ([], ['--install-integrity'], ['--bootstrap-backup'], ['--boo
                     close_connection = bootstrap.BootstrapSource._close_connection
                     sync = os.fsync
                     close_fd = os.close
+                    space_gate = bootstrap.require_bootstrap_space
+                    native_directory, native_stat = bootstrap._directory, os.fstat
+                    native_space = os.fstatvfs
                     primary = OSError('synthetic private backup close failure')
                     def connect(filename, *args, **kwargs):
                         text = str(filename)
@@ -3772,6 +3784,62 @@ if sys.argv[1:] in ([], ['--install-integrity'], ['--bootstrap-backup'], ['--boo
                         if attempt is not None and attempt.backup_path.exists() and info.st_ino == attempt.backup_path.stat().st_ino:
                             events.append('backup-descriptor-close')
                         return close_fd(fd)
+                    def volume_gate(source, current):
+                        # Observe the ORIGINAL policy at its native filesystem
+                        # boundary. Only volume readings are synthetic; all
+                        # original path/owner/deadline/collection logic executes.
+                        events.append('combined-volume-admission')
+                        assert current is attempt and source is owner
+                        assert (not attempt.backup_path.exists()
+                                or fault == 'alias' and attempt.backup_path.is_symlink()), 'A4-B volume qualification after backup creation'
+                        database = 2*owner.image_bytes+64*1048576+1024**3+sum(
+                            value[5] for value in owner.observation[1:] if value is not None)
+                        required = dict(database=database, temp=database,
+                            backup=owner.image_bytes+1024**3, rehearsal=owner.image_bytes+64*1048576)
+                        shared = database+required['backup']+required['rehearsal']
+                        paths = {path.parent: 'database', Path(os.environ['SQLITE_TMPDIR']): 'temp',
+                                 attempt.root: 'backup', Path(tempfile.gettempdir()).resolve(): 'rehearsal'}
+                        identities = {(target.stat().st_dev, target.stat().st_ino): category
+                                      for target, category in paths.items()}
+                        directories = {}
+                        def directory(target, custody):
+                            record = native_directory(target, custody)
+                            directories[record['fd']] = paths[target]
+                            return record
+                        def observed_stat(fd):
+                            info = native_stat(fd)
+                            category = identities.get((info.st_dev, info.st_ino))
+                            if category is not None and fault in (
+                                    'database_space', 'temp_space', 'backup_space',
+                                    'rehearsal_space', 'separate_exact'):
+                                values = list(info)
+                                values[2] = 100+tuple(required).index(category)
+                                return os.stat_result(values)
+                            return info
+                        def free_space(fd):
+                            category = directories[fd]
+                            if fault == 'volume_io':
+                                injections.append(fault)
+                                raise OSError('synthetic unavailable volume observation')
+                            if fault == 'shared_space':
+                                free = max(required.values())+4096
+                            elif fault == 'shared_exact':
+                                free = shared
+                            elif fault == 'shared_minimum':
+                                free = database-1 if category == 'temp' else shared+4096
+                            elif fault in ('database_space', 'temp_space', 'backup_space', 'rehearsal_space'):
+                                free = required[category]-(category == fault.removesuffix('_space'))
+                            elif fault == 'separate_exact':
+                                free = required[category]
+                            else:
+                                return native_space(fd)
+                            injections.append(fault)
+                            return SimpleNamespace(f_bavail=free, f_frsize=1)
+                        with ExitStack() as volume:
+                            volume.enter_context(patch.object(bootstrap, '_directory', directory))
+                            volume.enter_context(patch.object(bootstrap.os, 'fstat', observed_stat))
+                            volume.enter_context(patch.object(bootstrap.os, 'fstatvfs', free_space))
+                            return space_gate(source, current)
                     error = None
                     with ExitStack() as stack:
                         stack.enter_context(patch.object(bootstrap.sqlite3, 'connect', connect))
@@ -3779,6 +3847,7 @@ if sys.argv[1:] in ([], ['--install-integrity'], ['--bootstrap-backup'], ['--boo
                         stack.enter_context(patch.object(bootstrap.BootstrapSource, '_close_connection', owned_close))
                         stack.enter_context(patch.object(bootstrap.os, 'fsync', fsync))
                         stack.enter_context(patch.object(bootstrap.os, 'close', descriptor_close))
+                        stack.enter_context(patch.object(bootstrap, 'require_bootstrap_space', volume_gate))
                         try:
                             owner.open()
                             attempt = bootstrap.BootstrapAttempt(home=daemon_home(), runtime_root=path.parents[2],
@@ -3799,8 +3868,9 @@ if sys.argv[1:] in ([], ['--install-integrity'], ['--bootstrap-backup'], ['--boo
                         except (ValueError, sqlite3.Error, OSError) as exc:
                             error = exc
                         # Drop clock/space faults before independent cleanup.
-                    if fault in ('none', 'wal', 'checkpointed_wal'):
+                    if fault in ('none', 'wal', 'checkpointed_wal', 'shared_exact', 'separate_exact'):
                         assert error is None, ('A4-B unexpected backup failure', fault, error)
+                        assert events.count('combined-volume-admission') == 1, 'A4-B omitted before-backup volume qualification'
                         # Observe committed WAL content independently before
                         # URI-sensitive durability instrumentation can fail.
                         if fault in ('wal', 'checkpointed_wal'):
@@ -3829,8 +3899,20 @@ if sys.argv[1:] in ([], ['--install-integrity'], ['--bootstrap-backup'], ['--boo
                         status = read_setup_status(daemon_home(), path.parents[2], 'scratch')
                         assert status.state == 'unknown' and status.reason == 'install_incomplete', 'A4-B backup claimed installation'
                     else:
+                        if fault in ('shared_space', 'shared_minimum', 'database_space', 'temp_space',
+                                     'backup_space', 'rehearsal_space', 'volume_io'):
+                            assert error is not None, 'A4-B accepted insufficient or unavailable combined volume'
                         assert error is not None and injections, ('A4-B intended fault missed', fault, error)
                         assert owner.failed, 'A4-B failed source owner not latched'
+                        if fault in ('shared_space', 'shared_minimum', 'database_space', 'temp_space',
+                                     'backup_space', 'rehearsal_space', 'volume_io'):
+                            if fault == 'volume_io':
+                                assert isinstance(error, OSError), 'A4-B replaced volume IO cause'
+                            else:
+                                assert str(error) == 'workflow_setup_volume_space_unavailable', 'A4-B accepted insufficient combined volume'
+                            assert events.count('combined-volume-admission') == 1, 'A4-B omitted before-backup volume qualification'
+                            assert not attempt.backup_path.exists(), 'A4-B backup created before complete volume qualification'
+                            assert len(owner.connections) == 1, 'A4-B opened backup before complete volume qualification'
                         if fault.endswith('_init'):
                             assert all(any(r['connection'] is conn for r in owner.connections) for conn in created), 'A4-B lost partially initialized native connection'
                         if fault in ('source_integrity', 'backup_integrity'):
