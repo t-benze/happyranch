@@ -894,8 +894,8 @@ consumption remain fail-closed, as do existing modern activation entries. The
 required temp-root/fake-manager checks remain in `scripts/test_installer_token_custody.py`.
 TODO (3b-2): owned local Headscale stop/cleanup; no callable seam is added here.
 
-The 3b-1c Python-only replacement consumer implements a **stop/intent and
-config-quarantine sub-part**, not completed failed-install replacement. The v1
+The 3b-1c Python-only replacement consumer implements **stop/intent, config
+quarantine and fixed state/enrollment removal**, not completed failed-install replacement. The v1
 record still has exactly `version`, `layout`, `digests` and `phase`, with the six
 original fixed-file digests (including provision.json) unchanged throughout.
 Ordinary transaction publication still accepts only `prepared`. Only this
@@ -903,7 +903,12 @@ consumer advances the closed linear sequence:
 
 `prepared` → `replacement-stopped` → `replacement-quarantine-connector` →
 `replacement-quarantine-sidecar` → `replacement-quarantine-policy` →
-`replacement-quarantined`.
+`replacement-quarantined` → `replacement-remove-trust-state` →
+`replacement-remove-trust-anchor` → `replacement-remove-trust-lock` →
+`replacement-remove-tsnet-state` → `replacement-remove-consumed` →
+`replacement-remove-tsnet-log-config` → `replacement-remove-tsnet-log1` →
+`replacement-remove-tsnet-log2` → `replacement-remove-enrollment` →
+`replacement-remove-enrollment-link` → `replacement-state-removed`.
 
 Root:root 0600 journal metadata and exact bytes are checked repeatedly. All
 replacement phases require exact generated canonical bytes; `journal_generation`
@@ -939,16 +944,38 @@ package are untouched. No recursive removal occurs.
 
 After all three renames it publishes `replacement-quarantined` and raises
 `replacement paused after config quarantine; removal and fresh staging unavailable`.
-Interruption at each new phase or metadata/rename boundary leaves services off;
-a new consumer instance resumes only the exact digest-bound before/after
-placement. Repeating terminal quarantine rechecks token/quiescence but changes
-no files or journal bytes. These sampled checks assume the existing single
-protected root writer; they are not a concurrent-root-writer fence. Pending or
-uncertain entries are never automatically repaired or replayed.
+A subsequent call consumes that published quarantine boundary to remove only:
+`/var/lib/happyranch-connector/{trust-state.json,trust-state.json.anchor,trust-state.json.lock}`,
+`/var/lib/happyranch-tsnet-sidecar/{tailscaled.state,credential.consumed,tailscaled.log.conf,tailscaled.log1.txt,tailscaled.log2.txt}`,
+`/etc/happyranch/enrollment.key`, then the exact-target reserved
+`/etc/credstore/happyranch-tsnet-enrollment` symlink, in the phase order above.
+Each fixed-path unlink has its own preceding atomically published/fsynced intent
+with the exact six original digests. The existing bounded full inventory, exact
+journal/digests and literal parent identities are rechecked before unlink.
+Only service-owned single-link regular 0600 state files, the root-owned 0600
+enrollment source and the root-owned exact-target enrollment link are removed.
+Opaque state is never read, interpreted, copied or restored. No directory,
+unit, package, release-daemon file or quarantined config is removed.
 
-The quarantined diagnostic copies remain root-only. Their removal, removal of
-old units/state/enrollment, fresh IDs/config/enrollment generation, transaction
-finalization and resume to staged-inert remain undelivered and fail-closed.
+Interruption after any new intent, unlink or parent fsync leaves services off;
+a new instance checks the exact on-disk generation and resumes the current
+path if still present, fsyncs its parent if absent, then advances. Earlier
+completed removals must remain absent; a reappearing entry refuses. State and
+enrollment were optional in the admitted failed installation; their absence
+alone does not authenticate a historical journal phase. The protected journal
+writer remains the authority, not a filesystem absence inference. Unknown,
+malformed, mismatched or placement-inconsistent downgraded records refuse.
+These sampled checks assume the existing single protected root writer; they
+are not a concurrent-root-writer fence. Pending or uncertain entries are never
+automatically repaired or replayed.
+
+At `replacement-state-removed`, the consumer raises exactly
+`replacement paused after state removal; config/unit removal and fresh staging unavailable`.
+Repeating this terminal boundary rechecks token/quiescence without changing files
+or journal bytes. The quarantined diagnostic copies remain root-only; all five
+remote unit files and directories remain. Their removal, fresh IDs/config/policy
+generation, transaction finalization and staged-inert completion remain
+undelivered and fail-closed. This state is not modern staged-inert.
 No revoked credentials/trust are restored into service. Ordinary inventory/stop/
 provision/install/uninstall/drift and all ten fixed legacy system supervisor
 lifecycle entries retain their final/pending transaction refusals. Modern

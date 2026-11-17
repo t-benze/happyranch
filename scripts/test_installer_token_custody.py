@@ -30,6 +30,20 @@ from runtime.remote_access.supervisor import ConnectorConfig, ConnectorConfigErr
 QUARANTINE_PHASES = ["replacement-quarantine-connector", "replacement-quarantine-sidecar",
                      "replacement-quarantine-policy", "replacement-quarantined"]
 QUARANTINE_CONFIGS = ["connector.json", "sidecar.json", "policy.json"]
+REMOVALS = [
+    ("replacement-remove-trust-state", "var/lib/happyranch-connector/trust-state.json"),
+    ("replacement-remove-trust-anchor", "var/lib/happyranch-connector/trust-state.json.anchor"),
+    ("replacement-remove-trust-lock", "var/lib/happyranch-connector/trust-state.json.lock"),
+    ("replacement-remove-tsnet-state", "var/lib/happyranch-tsnet-sidecar/tailscaled.state"),
+    ("replacement-remove-consumed", "var/lib/happyranch-tsnet-sidecar/credential.consumed"),
+    ("replacement-remove-tsnet-log-config", "var/lib/happyranch-tsnet-sidecar/tailscaled.log.conf"),
+    ("replacement-remove-tsnet-log1", "var/lib/happyranch-tsnet-sidecar/tailscaled.log1.txt"),
+    ("replacement-remove-tsnet-log2", "var/lib/happyranch-tsnet-sidecar/tailscaled.log2.txt"),
+    ("replacement-remove-enrollment", "etc/happyranch/enrollment.key"),
+    ("replacement-remove-enrollment-link", "etc/credstore/happyranch-tsnet-enrollment"),
+]
+REMOVAL_PHASES = [phase for phase, _ in REMOVALS] + ["replacement-state-removed"]
+REMOVAL_BOUNDARY = "^replacement paused after state removal; config/unit removal and fresh staging unavailable$"
 
 
 class FakeManager:
@@ -703,7 +717,7 @@ def test_invalid_record_schema_refuses_before_publication(fixture: Fixture, name
 
 @pytest.mark.parametrize("name", ["install-transaction.json", ".install-transaction.json.pending"])
 @pytest.mark.parametrize("operation", ["provision", "install", "uninstall", "drift"])
-@pytest.mark.parametrize("phase", ["prepared", "replacement-stopped", *QUARANTINE_PHASES])
+@pytest.mark.parametrize("phase", ["prepared", "replacement-stopped", *QUARANTINE_PHASES, *REMOVAL_PHASES])
 def test_transaction_inventory_never_authorizes_service_or_recovery(
     fixture: Fixture, name: str, operation: str, phase: str,
 ) -> None:
@@ -976,10 +990,9 @@ def test_replacement_stop_intent_preserves_six_files_and_resumes(
     for name in expected["digests"]:
         path = parent / ((".replacement-" if name in QUARANTINE_CONFIGS else "") + name)
         assert hashlib.sha256(path.read_bytes()).hexdigest() == expected["digests"][name]
-    completed = staged_inventory(fixture)
-    with pytest.raises(module.InstallerError, match="^replacement paused after config quarantine;"):
+    with pytest.raises(module.InstallerError, match=REMOVAL_BOUNDARY):
         fixture.installer.replace_failed()
-    assert staged_inventory(fixture) == completed  # Terminal quarantine never rewrites the intent.
+    assert json.loads(journal.read_bytes()) == {**expected, "phase": "replacement-state-removed"}
     assert [call[1] for call in manager.calls if call[0] == "stop"] == 2 * [
         module.UNITS[i] for i in (2, 0, 1, 3, 4) if case != "partial" or i != 1]
     assert all(call[0] in {"show", "stop"} and call[1] in module.UNITS for call in manager.calls)
@@ -1007,14 +1020,23 @@ def test_replacement_stop_failure_preserves_all_files(fixture: Fixture, failure:
 
 
 @pytest.mark.parametrize("attack", ["foreign-owner", "parent-swap", "leaf-swap", "mode", "links", "size", "mtime"])
-@pytest.mark.parametrize("candidate", ["prepared", "stopped", "quarantined"])
+@pytest.mark.parametrize("candidate", ["prepared", "stopped", "quarantined", "removal"])
 def test_replacement_token_refuses_before_stop_or_publication(
     fixture: Fixture, monkeypatch: pytest.MonkeyPatch, attack: str, candidate: str,
 ) -> None:
     manager, _, _ = (prepared_replacement(fixture) if candidate == "prepared" else stopped_replacement(fixture))
-    if candidate == "quarantined":
+    if candidate in {"quarantined", "removal"}:
         with pytest.raises(module.InstallerError, match="^replacement paused after config quarantine;"):
             fixture.installer.replace_failed()
+    if candidate == "removal":
+        write = fixture.installer._write_provision_file
+        def interrupt(name: str, data: bytes, *args: object, **kwargs: object) -> None:
+            write(name, data, *args, **kwargs)
+            raise SystemExit("synthetic-interruption")
+        with monkeypatch.context() as patch:
+            patch.setattr(fixture.installer, "_write_provision_file", interrupt)
+            with pytest.raises(SystemExit):
+                fixture.installer.replace_failed()
     manager.calls.clear()
     before = staged_inventory(fixture)
     target, fstat = fixture.token.stat(), os.fstat
@@ -1237,9 +1259,11 @@ def test_replacement_quarantines_only_exact_configs(fixture: Fixture, case: str)
     assert all(call[0] in {"show", "stop"} and call[1] in module.UNITS for call in manager.calls)
     assert all(state == "inactive" for state in manager.states.values())
     manager.calls.clear()
-    with pytest.raises(module.InstallerError, match="^replacement paused after config quarantine;"):
+    with pytest.raises(module.InstallerError, match=REMOVAL_BOUNDARY):
         fixture.installer.replace_failed()
-    assert staged_inventory(fixture) == after
+    assert json.loads((parent / "install-transaction.json").read_bytes()) == {
+        **json.loads(prepared), "phase": "replacement-state-removed"}
+    assert all((parent / (".replacement-" + name)).read_bytes() == original[name] for name in QUARANTINE_CONFIGS)
     assert all(call[0] in {"show", "stop"} for call in manager.calls)
 
 
@@ -1305,13 +1329,16 @@ def test_replacement_quarantine_interruption_resumes_exact_generation(
     observed = fixture.installer.replacement_inventory()
     assert observed.installation.detail == phase
     assert observed.journal_generation == hashlib.sha256((parent / "install-transaction.json").read_bytes()).hexdigest()
-    with pytest.raises(module.InstallerError, match="^replacement paused after config quarantine;"):
+    consumes_quarantine = phase == "replacement-quarantined"
+    boundary = REMOVAL_BOUNDARY if consumes_quarantine else "^replacement paused after config quarantine;"
+    with pytest.raises(module.InstallerError, match=boundary):
         fixture.installer.replace_failed()
     assert json.loads((parent / "install-transaction.json").read_bytes()) == {
-        **json.loads(prepared), "phase": "replacement-quarantined"}
+        **json.loads(prepared), "phase": "replacement-state-removed" if consumes_quarantine else "replacement-quarantined"}
     assert all(not (parent / name).exists() and (parent / (".replacement-" + name)).is_file()
                for name in QUARANTINE_CONFIGS)
     assert all(call[0] in {"show", "stop"} and call[1] in module.UNITS for call in manager.calls)
+    assert all(state == "inactive" for state in manager.states.values())
 
 
 @pytest.mark.parametrize("bad", ["unknown", "malformed", "digest", "downgraded", "prepared-downgrade", "missing", "duplicate",
@@ -1904,7 +1931,7 @@ def test_staged_identity_cannot_bypass_via_supervisor(
 
 @pytest.mark.parametrize("operation", ["install", "uninstall", "start", "stop", "restart", "enable", "disable", "upgrade", "rollback", "run"])
 @pytest.mark.parametrize("entry", ["install-transaction.json", ".install-transaction.json.pending"])
-@pytest.mark.parametrize("phase", ["prepared", "replacement-stopped", *QUARANTINE_PHASES])
+@pytest.mark.parametrize("phase", ["prepared", "replacement-stopped", *QUARANTINE_PHASES, *REMOVAL_PHASES])
 def test_replacement_transaction_blocks_legacy_supervisor_lifecycle(
     fixture: Fixture, monkeypatch: pytest.MonkeyPatch, operation: str, entry: str, phase: str,
 ) -> None:
@@ -2030,3 +2057,204 @@ def test_legacy_unrecorded_source_install_keeps_config_bytes_and_modes(fixture: 
     assert {name: ((parent / name).read_bytes(), (parent / name).stat().st_mode) for name in configs} == configs
     assert [hashlib.sha256((fixture.root / "etc/systemd/system" / name).read_bytes()).hexdigest()
             for name in module.UNITS] == _MAIN_UNIT_DIGESTS["source"]
+
+
+def quarantined_with_state(fixture: Fixture, case: str = "failed") -> tuple[LifecycleManager, Path, bytes]:
+    manager, parent, prepared = stopped_replacement(fixture, case)
+    with pytest.raises(module.InstallerError, match="^replacement paused after config quarantine;"):
+        fixture.installer.replace_failed()
+    for _, relative in REMOVALS[:-1]:
+        fixture.write(fixture.root / relative, b"synthetic-retired-state")
+    (fixture.root / REMOVALS[-1][1]).symlink_to(fixture.root / REMOVALS[-2][1])
+    manager.calls.clear()
+    return manager, parent, prepared
+
+
+@pytest.mark.parametrize("case", ["failed", "partial", "modern-failed"])
+def test_replacement_removes_only_fixed_state_and_enrollment(fixture: Fixture, case: str) -> None:
+    manager, parent, prepared = quarantined_with_state(fixture, case)
+    for relative in ("opt/happyranch/operator-data", "etc/systemd/system/custom.service",
+                     "etc/systemd/system/happyranch.service"):
+        fixture.write(fixture.root / relative, b"synthetic-unrelated-data")
+    before = staged_inventory(fixture)
+    with pytest.raises(module.InstallerError):
+        fixture.installer.replace_failed()
+    assert json.loads((parent / "install-transaction.json").read_bytes()) == {
+        **json.loads(prepared), "phase": "replacement-state-removed"}
+    assert all(not (fixture.root / relative).exists() and not (fixture.root / relative).is_symlink()
+               for _, relative in REMOVALS)
+    after = staged_inventory(fixture)
+    affected = {"etc/happyranch/install-transaction.json", "etc/happyranch", "etc/credstore",
+                "var/lib/happyranch-connector", "var/lib/happyranch-tsnet-sidecar", *[r for _, r in REMOVALS]}
+    assert {key for key in before.keys() | after.keys() if before.get(key) != after.get(key)} == affected
+    assert all(state == "inactive" for state in manager.states.values())
+    assert all(call[0] in {"show", "stop"} and call[1] in module.UNITS for call in manager.calls)
+    manager.calls.clear()
+    with pytest.raises(module.InstallerError, match=REMOVAL_BOUNDARY):
+        fixture.installer.replace_failed()
+    assert staged_inventory(fixture) == after
+    assert fixture.installer.inventory().state == "manual-install-conflict"
+
+
+@pytest.mark.parametrize("phase,relative,point", [
+    (phase, relative, point) for phase, relative in REMOVALS for point in ("intent", "unlink", "fsync")
+] + [("replacement-state-removed", "", "intent")])
+def test_replacement_state_removal_interruption_resumes(
+    fixture: Fixture, monkeypatch: pytest.MonkeyPatch, phase: str, relative: str, point: str,
+) -> None:
+    manager, parent, prepared = quarantined_with_state(fixture)
+    write, unlink, fsync = fixture.installer._write_provision_file, os.unlink, os.fsync
+    interrupted = False
+
+    def die() -> None:
+        nonlocal interrupted
+        interrupted = True
+        raise SystemExit("synthetic-process-death")
+
+    def publish(name: str, data: bytes, *args: object, **kwargs: object) -> None:
+        write(name, data, *args, **kwargs)
+        if json.loads(data)["phase"] == phase and point == "intent":
+            die()
+
+    def remove(name: str, *, dir_fd: int) -> None:
+        if str(name) == Path(relative).name and point == "unlink":
+            assert json.loads((parent / "install-transaction.json").read_bytes())["phase"] == phase
+            unlink(name, dir_fd=dir_fd)
+            die()
+        unlink(name, dir_fd=dir_fd)
+
+    def sync(fd: int) -> None:
+        fsync(fd)
+        if point == "fsync" and json.loads((parent / "install-transaction.json").read_bytes())["phase"] == phase:
+            info = os.fstat(fd)
+            target = fixture.root / relative
+            if not target.exists() and not target.is_symlink() and info.st_ino == target.parent.stat().st_ino:
+                die()
+
+    with monkeypatch.context() as patch:
+        patch.setattr(fixture.installer, "_write_provision_file", publish)
+        patch.setattr(os, "unlink", remove)
+        patch.setattr(os, "fsync", sync)
+        with pytest.raises((module.InstallerError, SystemExit)):
+            fixture.installer.replace_failed()
+    assert interrupted, "requested removal boundary was not reached"
+    journal = (parent / "install-transaction.json").read_bytes()
+    assert json.loads(journal) == {**json.loads(prepared), "phase": phase}
+    assert all(state == "inactive" for state in manager.states.values())
+    previous = fixture.installer
+    fixture.installer = module.ManagedInstaller(
+        root=fixture.root, root_owner=previous.root_owner, manager=manager,
+        lookup_user=previous._lookup_user, lookup_group=previous._lookup_group)
+    observed = fixture.installer.replacement_inventory()
+    assert observed.installation.detail == phase
+    assert observed.journal_generation == hashlib.sha256(journal).hexdigest()
+    with pytest.raises(module.InstallerError, match=REMOVAL_BOUNDARY):
+        fixture.installer.replace_failed()
+    assert all(not (fixture.root / r).exists() and not (fixture.root / r).is_symlink() for _, r in REMOVALS)
+    assert json.loads((parent / "install-transaction.json").read_bytes())["phase"] == "replacement-state-removed"
+    assert all(call[0] in {"show", "stop"} and call[1] in module.UNITS for call in manager.calls)
+
+
+@pytest.mark.parametrize("bad", ["unknown", "malformed", "digest", "downgraded", "pending", "foreign-file",
+                                 "custom-dropin", "foreign-owner", "symlink", "hardlink", "reappeared"])
+def test_replacement_state_removal_refuses_unproven_inventory(
+    fixture: Fixture, monkeypatch: pytest.MonkeyPatch, bad: str,
+) -> None:
+    manager, parent, _ = quarantined_with_state(fixture)
+    journal = parent / "install-transaction.json"
+    record = json.loads(journal.read_bytes())
+    if bad in {"unknown", "digest", "downgraded"}:
+        if bad == "digest":
+            record["digests"]["sidecar.json"] = "f" * 64
+        else:
+            record["phase"] = "replacement-unknown" if bad == "unknown" else "replacement-stopped"
+        fixture.write(journal, json.dumps(record, sort_keys=True).encode())
+    elif bad == "malformed":
+        fixture.write(journal, b"{invalid")
+    elif bad == "pending":
+        fixture.write(parent / ".install-transaction.json.pending", journal.read_bytes())
+    elif bad == "foreign-file":
+        fixture.write(fixture.root / "var/lib/happyranch-tsnet-sidecar/foreign", b"foreign")
+    elif bad == "custom-dropin":
+        dropin = fixture.root / "etc/systemd/system" / (module.UNITS[0] + ".d/custom.conf")
+        dropin.parent.mkdir()
+        fixture.write(dropin, b"foreign")
+    elif bad in {"symlink", "hardlink"}:
+        target = fixture.root / REMOVALS[0][1]
+        if bad == "symlink":
+            target.unlink()
+            target.symlink_to(fixture.token)
+        else:
+            os.link(target, fixture.inputs / "state-alias")
+    elif bad == "foreign-owner":
+        target, fstat = (fixture.root / REMOVALS[0][1]).stat(), os.stat
+        def foreign(*args: object, **kwargs: object) -> object:
+            info = fstat(*args, **kwargs)
+            if (info.st_dev, info.st_ino) == (target.st_dev, target.st_ino):
+                values = {n: getattr(info, n) for n in dir(info) if n.startswith("st_")}
+                return SimpleNamespace(**{**values, "st_uid": info.st_uid + 1})
+            return info
+        monkeypatch.setattr(os, "stat", foreign)
+    else:
+        with pytest.raises(module.InstallerError, match=REMOVAL_BOUNDARY):
+            fixture.installer.replace_failed()
+        fixture.write(fixture.root / REMOVALS[0][1], b"reappeared")
+    before = staged_inventory(fixture)
+    manager.calls.clear()
+    with pytest.raises(module.InstallerError):
+        fixture.installer.replace_failed()
+    assert staged_inventory(fixture) == before
+    assert all(call[0] == "show" for call in manager.calls)
+
+
+@pytest.mark.parametrize("attack", ["journal", "fixed-file", "parent-swap", "leaf-swap", "foreign-entry"])
+def test_replacement_state_removal_rechecks_before_unlink(
+    fixture: Fixture, monkeypatch: pytest.MonkeyPatch, attack: str,
+) -> None:
+    manager, parent, _ = quarantined_with_state(fixture)
+    check = fixture.installer._check_replacement_transaction
+    inside = False
+    checks = 0
+    mutated = False
+    snapshot: dict = {}
+    calls: list = []
+    remove = fixture.installer._remove_replacement_entry
+
+    def enter(transaction: bytes) -> None:
+        nonlocal inside
+        inside = True
+        remove(transaction)
+
+    def checked(fd: int, transaction: bytes) -> None:
+        nonlocal mutated, checks
+        check(fd, transaction)
+        if not inside or mutated:
+            return
+        checks += 1
+        if checks != 2:
+            return
+        mutated = True
+        target = fixture.root / REMOVALS[0][1]
+        if attack == "journal":
+            journal = parent / "install-transaction.json"
+            fixture.write(journal, journal.read_bytes() + b"\n")
+        elif attack == "fixed-file":
+            fixture.write(parent / ".replacement-policy.json", b"synthetic-substitution")
+        elif attack == "parent-swap":
+            target.parent.rename(target.parent.with_name("previous-state"))
+            target.parent.mkdir(mode=0o755)
+        elif attack == "leaf-swap":
+            target.rename(target.with_name("previous-state"))
+            target.symlink_to(fixture.token)
+        else:
+            fixture.write(target.parent / "foreign", b"synthetic-foreign")
+        snapshot.update(staged_inventory(fixture))
+        calls.extend(manager.calls)
+
+    monkeypatch.setattr(fixture.installer, "_remove_replacement_entry", enter)
+    monkeypatch.setattr(fixture.installer, "_check_replacement_transaction", checked)
+    with pytest.raises(module.InstallerError):
+        fixture.installer.replace_failed()
+    assert mutated, "late removal boundary was not reached"
+    assert staged_inventory(fixture) == snapshot
+    assert all(call[0] == "show" for call in manager.calls[len(calls):])
