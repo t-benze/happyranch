@@ -1126,20 +1126,20 @@ if sys.argv[1:] in ([], ['--startup-isolation']):
                                     faults.append(primary)
                                     raise primary
                             return actual_selector(authority, **kwargs)
-                        def sweep(db, queue, slug, orchestrator, *, startup_releases=None):
+                        def sweep(db, queue, slug, orchestrator, *, startup_releases=None, startup_preparations=None):
                             tail.append((slug, 'sweep'))
                             if slug == 'alpha' and failure == 'main_sweep':
                                 # The native owner fails on its real first SQL,
                                 # rather than on a substituted successful scan.
                                 db._conn.set_authorizer(lambda *_: sqlite3.SQLITE_DENY)
                                 try:
-                                    return original_sweep(db, queue, slug, orchestrator, startup_releases=startup_releases)
+                                    return original_sweep(db, queue, slug, orchestrator, startup_releases=startup_releases, startup_preparations=startup_preparations)
                                 except Exception as exc:
                                     faults.append(exc)
                                     raise
                                 finally:
                                     db._conn.set_authorizer(None)
-                            return original_sweep(db, queue, slug, orchestrator, startup_releases=startup_releases)
+                            return original_sweep(db, queue, slug, orchestrator, startup_releases=startup_releases, startup_preparations=startup_preparations)
                         def publish(org, queue):
                             startup_waits.append((org.slug, 'publish', org.db._conn.execute('PRAGMA busy_timeout').fetchone()[0]))
                             tail.append((org.slug, 'publish'))
