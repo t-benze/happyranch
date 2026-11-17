@@ -135,6 +135,7 @@ public final class ClientBridge: @unchecked Sendable {
     nonisolated(unsafe) private static var managedOwner: UUID?
     private var managedAttempt: UUID?
     private var nativeConfigured = false
+    private var homeProcess: HomeBridgeProcess?
     private var managedReady = false
     private var managedPaired = false
     private var managedFailure: ManagedNetworkError?
@@ -146,7 +147,9 @@ public final class ClientBridge: @unchecked Sendable {
     /// Takes custody immediately, even on validation/busy/cancellation failure.
     /// PR2 must delete the Keychain item BEFORE invoking this API. No String key.
     public func joinManagedNetwork(
-        key: ManagedEnrollmentKey, controlURL: String, hostname: String, stateDirectory: String
+        key: ManagedEnrollmentKey, controlURL: String, hostname: String, stateDirectory: String,
+        homeTrust: SavedHomeTrust? = nil, helper: HomeBridgeProcess? = nil,
+        addressRecovery: SavedDeviceCredential? = nil
     ) async throws {
         defer { key.discard() }
         guard lane == .managed else { throw ManagedNetworkError.invalidConfiguration }
@@ -166,26 +169,43 @@ public final class ClientBridge: @unchecked Sendable {
                 Self.engineQueue.async {
                     var result: Int32 = -12
                     do {
-                        // Init configures only. Holding this lock closes cancel-before-init.
-                        result = try Self.tsnetLock.withLock {
-                            guard self.managedAttempt == attempt else { return -12 }
-                            guard Self.validManagedConfiguration(controlURL, hostname, stateDirectory) else { return -10 }
-                            let configured = try key.consume { auth in
-                                controlURL.withCString { control in
-                                    hostname.withCString { name in
-                                        stateDirectory.withCString { directory in
-                                            tsnet_init_managed(auth, control, name, directory)
+                        if let homeTrust {
+                            guard let helper, homeTrust.controlURL == controlURL,
+                                  homeTrust.homeEndpoint == "\(self.homeConnectorHost):\(self.homeConnectorPort)" else {
+                                throw ManagedNetworkError.invalidConfiguration
+                            }
+                            try Self.tsnetLock.withLock {
+                                guard self.managedAttempt == attempt else { throw ManagedNetworkError.canceled }
+                                self.homeProcess = helper
+                            }
+                            var material = try key.consume { auth in Data(bytes: auth, count: strlen(auth)) }
+                            defer { material.resetBytes(in: 0..<material.count) }
+                            try helper.start(trust: homeTrust, hostname: hostname, stateDirectory: stateDirectory,
+                                joinKey: material, addressRecovery: addressRecovery)
+                            result = 0
+                        } else {
+                            guard helper == nil, addressRecovery == nil else { throw ManagedNetworkError.invalidConfiguration }
+                            // Init configures only. Holding this lock closes cancel-before-init.
+                            result = try Self.tsnetLock.withLock {
+                                guard self.managedAttempt == attempt else { return -12 }
+                                guard Self.validManagedConfiguration(controlURL, hostname, stateDirectory) else { return -10 }
+                                let configured = try key.consume { auth in
+                                    controlURL.withCString { control in
+                                        hostname.withCString { name in
+                                            stateDirectory.withCString { directory in
+                                                tsnet_init_managed(auth, control, name, directory)
+                                            }
                                         }
                                     }
                                 }
+                                self.nativeConfigured = configured == 0
+                                return configured
                             }
-                            self.nativeConfigured = configured == 0
-                            return configured
                         }
-                    } catch { result = -10 }
+                    } catch { result = (error as? ManagedNetworkError)?.rawValue ?? -10 }
                     // Wipe also when validation failed before consume, before any Up.
                     key.discard()
-                    if result == 0 { result = tsnet_up_managed(120_000) }
+                    if result == 0 && homeTrust == nil { result = tsnet_up_managed(120_000) }
                     let accepted = Self.tsnetLock.withLock {
                         if result == 0 && self.managedAttempt == attempt {
                             self.managedReady = true
@@ -197,6 +217,12 @@ public final class ClientBridge: @unchecked Sendable {
                         continuation.resume()
                     } else {
                         if Self.tsnetLock.withLock({ self.nativeConfigured }) { tsnet_close() }
+                        if let helper = Self.tsnetLock.withLock({ self.homeProcess }) {
+                            do { try helper.stop() } catch {
+                                continuation.resume(throwing: ManagedNetworkError.stateFailure); return
+                            }
+                            Self.tsnetLock.withLock { self.homeProcess = nil }
+                        }
                         self.queue.sync {} // settle queued local teardown before reuse
                         Self.tsnetLock.withLock {
                             self.nativeConfigured = false
@@ -213,10 +239,12 @@ public final class ClientBridge: @unchecked Sendable {
     }
 
     /// Explicit saved-membership check. Never supplies/replays an enrollment key.
-    public func resumeManagedNetwork(controlURL: String, hostname: String, stateDirectory: String) async throws {
+    public func resumeManagedNetwork(controlURL: String, hostname: String, stateDirectory: String,
+        homeTrust: SavedHomeTrust? = nil, helper: HomeBridgeProcess? = nil,
+        addressRecovery: SavedDeviceCredential? = nil) async throws {
         guard let allocation = calloc(1, 1) else { throw ManagedNetworkError.unavailable }
         let empty = ManagedEnrollmentKey(taking: allocation, byteCount: 1)
-        try await joinManagedNetwork(key: empty, controlURL: controlURL, hostname: hostname, stateDirectory: stateDirectory)
+        try await joinManagedNetwork(key: empty, controlURL: controlURL, hostname: hostname, stateDirectory: stateDirectory, homeTrust: homeTrust, helper: helper, addressRecovery: addressRecovery)
     }
 
     /// Closes traffic/pin and discards pairing authority, retaining saved membership.
@@ -238,7 +266,10 @@ public final class ClientBridge: @unchecked Sendable {
             deviceCredential = nil
             managedHandles.removeAll()
             // Owner stays reserved until the serial worker has settled Close.
-            if previous != nil && Self.managedOwner == previous && nativeConfigured { tsnet_cancel() }
+            if previous != nil && Self.managedOwner == previous {
+                homeProcess?.cancel()
+                if nativeConfigured { tsnet_cancel() }
+            }
             return (true, previous)
         }
         guard cancellation.0 else { return }
@@ -258,6 +289,10 @@ public final class ClientBridge: @unchecked Sendable {
         Self.engineQueue.async {
             guard Self.tsnetLock.withLock({ Self.managedOwner == previous }) else { return }
             if Self.tsnetLock.withLock({ self.nativeConfigured }) { tsnet_close() }
+            if let helper = Self.tsnetLock.withLock({ self.homeProcess }) {
+                do { try helper.stop() } catch { return } // preserve owner on uncertain exit
+                Self.tsnetLock.withLock { self.homeProcess = nil }
+            }
             self.managedDials.wait()
             self.queue.sync {} // local listener/client teardown also belongs to this attempt
             Self.tsnetLock.withLock {
@@ -283,14 +318,15 @@ public final class ClientBridge: @unchecked Sendable {
         }
         guard let attempt else { return -15 }
         defer { managedDials.leave() }
-        let handle = homeConnectorHost.withCString { tsnet_conn_dial_managed($0, Int32(homeConnectorPort), timeoutMs) }
+        let helper = Self.tsnetLock.withLock { homeProcess }
+        let handle = helper?.dial(timeoutMs: timeoutMs) ?? homeConnectorHost.withCString { tsnet_conn_dial_managed($0, Int32(homeConnectorPort), timeoutMs) }
         if handle >= 0 {
             let accepted = Self.tsnetLock.withLock {
                 guard managedReady && managedAttempt == attempt && Self.managedOwner == attempt else { return false }
                 managedHandles.insert(handle)
                 return true
             }
-            if !accepted { tsnet_conn_close(handle); return -12 }
+            if !accepted { closeManagedHandle(handle); return -12 }
         }
         return handle
     }
@@ -328,15 +364,24 @@ public final class ClientBridge: @unchecked Sendable {
 
     private func closeManagedHandle(_ handle: Int32) {
         Self.tsnetLock.withLock { _ = managedHandles.remove(handle) }
-        tsnet_conn_close(handle)
+        if let helper = Self.tsnetLock.withLock({ homeProcess }) { helper.close(handle) }
+        else { tsnet_conn_close(handle) }
     }
 
-    private static func writeAll(_ data: Data, handle: Int32) -> Int32 {
+    private func readManaged(_ handle: Int32, _ buffer: UnsafeMutablePointer<CChar>, _ count: Int32) -> Int32 {
+        if let helper = Self.tsnetLock.withLock({ homeProcess }) { return helper.read(handle, buffer, count) }
+        return tsnet_conn_read(handle, buffer, count)
+    }
+
+    private func writeAll(_ data: Data, handle: Int32) -> Int32 {
         data.withUnsafeBytes { bytes in
             guard let base = bytes.baseAddress else { return 0 }
             var offset = 0
             while offset < bytes.count {
-                let n = tsnet_conn_write(handle, base.advanced(by: offset).assumingMemoryBound(to: CChar.self), Int32(min(bytes.count - offset, 65536)))
+                let pointer = base.advanced(by: offset).assumingMemoryBound(to: CChar.self)
+                let size = Int32(min(bytes.count - offset, 65536))
+                let helper = Self.tsnetLock.withLock { homeProcess }
+                let n = helper?.write(handle, pointer, size) ?? tsnet_conn_write(handle, pointer, size)
                 guard n > 0 else { return n == 0 ? -14 : n }
                 offset += Int(n)
             }
@@ -449,6 +494,89 @@ public final class ClientBridge: @unchecked Sendable {
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             Self.engineQueue.async { continuation.resume() }
         }
+    }
+
+    /// Read only after stopManagedNetwork's serialized teardown barrier.
+    public var managedStopConfirmed: Bool {
+        Self.tsnetLock.withLock { homeProcess == nil && !nativeConfigured && Self.managedOwner == nil }
+    }
+
+    /// Install delivered/saved home authority; the connector still checks the
+    /// actual WhoIs node, current grant and release verifier on every request.
+    var homeStableNodeID: String? { Self.tsnetLock.withLock { homeProcess?.stableNodeID } }
+
+    public func useHomeCredential(_ credential: SavedDeviceCredential) throws {
+        try Self.tsnetLock.withLock {
+            guard managedReady, managedAttempt != nil,
+                  homeProcess?.stableNodeID == credential.binding.stableNodeID else { throw HomeConnectionFailure.identityUnavailable }
+            deviceCredential = credential.withBearer { String(decoding: $0, as: UTF8.self) }
+            managedPaired = true
+        }
+    }
+
+    /// Fixed home ceremony requests, never DIY or the OS network. Body/header
+    /// bytes and native exception text are never logged. One ten-second bound
+    /// covers dial, partial writes and fragmented reads; cancel closes the FD.
+    func homeRequest(_ path: HomeRequestPath, body: Data = Data()) async throws -> HomeHTTPResponse {
+        let attempt = try Self.tsnetLock.withLock { () throws -> UUID in
+            guard managedReady, homeProcess != nil, let attempt = managedAttempt else { throw HomeConnectionFailure.identityUnavailable }
+            return attempt
+        }
+        guard body.count <= 8192 else { throw HomeConnectionFailure.authorizationIncomplete }
+        let completer = RedeemCompleter()
+        let response: String = try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                completer.configure(continuation: continuation)
+                DispatchQueue.global().asyncAfter(deadline: .now() + 10) {
+                    completer.finish(with: .failure(HomeConnectionFailure.homeUnavailable))
+                }
+                DispatchQueue.global().async {
+                    guard !completer.isCompleted else { return }
+                    let handle = self.managedDial(timeoutMs: 10_000, expectedAttempt: attempt)
+                    guard handle >= 0 else {
+                        completer.finish(with: .failure(HomeConnectionFailure.homeUnavailable)); return
+                    }
+                    defer { self.closeManagedHandle(handle) }
+                    guard completer.installManagedHandle(handle, close: { self.closeManagedHandle($0) }) else { return }
+                    let method = path == .invite || path == .complete ? "POST" : "GET"
+                    var header = "\(method) \(path.rawValue) HTTP/1.1\r\nHost: \(self.homeConnectorHost):443\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: \(body.count)\r\nConnection: close\r\n"
+                    if path == .health || path == .runtime {
+                        guard let credential = self.deviceCredential else {
+                            completer.finish(with: .failure(HomeConnectionFailure.authorizationIncomplete)); return
+                        }
+                        header += "X-HappyRanch-Device-Credential: \(credential)\r\n"
+                    }
+                    var request = Data((header + "\r\n").utf8)
+                    request.append(body)
+                    defer { request.resetBytes(in: 0..<request.count) }
+                    guard self.writeAll(request, handle: handle) == 0 else {
+                        completer.finish(with: .failure(HomeConnectionFailure.homeUnavailable)); return
+                    }
+                    var bytes = Data(), buffer = [CChar](repeating: 0, count: 8192)
+                    defer { bytes.resetBytes(in: 0..<bytes.count); buffer.withUnsafeMutableBytes { $0.initializeMemory(as: UInt8.self, repeating: 0) } }
+                    while !completer.isCompleted {
+                        let count = self.readManaged(handle, &buffer, 8192)
+                        guard count >= 0 else {
+                            completer.finish(with: .failure(HomeConnectionFailure.homeUnavailable)); return
+                        }
+                        if count > 0 { bytes.append(buffer.withUnsafeBytes { Data($0.prefix(Int(count))) }) }
+                        guard bytes.count <= 65536 else {
+                            completer.finish(with: .failure(HomeConnectionFailure.authorizationIncomplete)); return
+                        }
+                        do {
+                            if let text = try Self.completePairingResponse(bytes, eof: count == 0) {
+                                completer.finish(with: .success(text)); return
+                            }
+                        } catch {
+                            completer.finish(with: .failure(HomeConnectionFailure.authorizationIncomplete)); return
+                        }
+                    }
+                }
+            }
+        } onCancel: { completer.finish(with: .failure(CancellationError())) }
+        try Task.checkCancellation()
+        guard Self.tsnetLock.withLock({ managedReady && managedAttempt == attempt }) else { throw CancellationError() }
+        return try HomeHTTPResponse.parse(response)
     }
 
     /// Authenticated runtime health via this bridge's local loopback listener.
@@ -688,9 +816,9 @@ public final class ClientBridge: @unchecked Sendable {
                         return
                     }
                     defer { self.closeManagedHandle(handle) }
-                    guard completer.installManagedHandle(handle) else { return }
+                    guard completer.installManagedHandle(handle, close: { self.closeManagedHandle($0) }) else { return }
                     let request = "POST /pair HTTP/1.1\r\nHost: \(homeHost):\(homePort)\r\nContent-Type: text/plain\r\nContent-Length: \(code.utf8.count)\r\nConnection: close\r\n\r\n\(code)"
-                    let written = Self.writeAll(Data(request.utf8), handle: handle)
+                    let written = self.writeAll(Data(request.utf8), handle: handle)
                     guard written == 0 else {
                         completer.finish(with: .failure(RedeemPairingError.managedDialFailure(written)))
                         if written == -18 { self.cancelManagedNetwork(preserving: nil, failure: .peerChanged, expectedAttempt: attempt) }
@@ -699,7 +827,7 @@ public final class ClientBridge: @unchecked Sendable {
                     var response = Data()
                     var buffer = [CChar](repeating: 0, count: 8192)
                     while !completer.isCompleted {
-                        let n = tsnet_conn_read(handle, &buffer, 8192)
+                        let n = self.readManaged(handle, &buffer, 8192)
                         guard n >= 0 else {
                             completer.finish(with: .failure(RedeemPairingError.connectionFailed("Unreachable")))
                             return
@@ -1094,7 +1222,7 @@ public final class ClientBridge: @unchecked Sendable {
                 self.sendErrorResponse(to: clientConnection, status: 502, message: RedeemPairingError.managedDialFailure(handle).localizedDescription)
                 return
             }
-            let written = Self.writeAll(Data(requestToSend.utf8), handle: handle)
+            let written = self.writeAll(Data(requestToSend.utf8), handle: handle)
             guard written == 0 else {
                 self.closeManagedHandle(handle)
                 if written == -18 { self.cancelManagedNetwork(preserving: clientConnection, failure: .peerChanged, expectedAttempt: attempt) }
@@ -1113,7 +1241,7 @@ public final class ClientBridge: @unchecked Sendable {
             DispatchQueue.global().async {
                 guard error == nil else { self.closeManagedHandle(handle); return }
                 if let data, !data.isEmpty {
-                    let result = Self.writeAll(data, handle: handle)
+                    let result = self.writeAll(data, handle: handle)
                     guard result == 0 else {
                         self.closeManagedHandle(handle)
                         if result == -18 { self.cancelManagedNetwork(preserving: nil, failure: .peerChanged, expectedAttempt: attempt) }
@@ -1137,7 +1265,7 @@ public final class ClientBridge: @unchecked Sendable {
         let buf = UnsafeMutablePointer<CChar>.allocate(capacity: bufSize)
         defer { buf.deallocate() }
 
-        let n = tsnet_conn_read(connID, buf, Int32(bufSize))
+        let n = readManaged(connID, buf, Int32(bufSize))
 
         if n > 0 {
             let data = Data(bytes: buf, count: Int(n))
@@ -1271,13 +1399,15 @@ private final class RedeemCompleter: @unchecked Sendable {
     private var connection: NWConnection?
     private var completed = false
     private var managedHandle: Int32?
+    private var closeHandle: (@Sendable (Int32) -> Void)?
 
     var isCompleted: Bool { lock.withLock { completed } }
 
-    func installManagedHandle(_ handle: Int32) -> Bool {
+    func installManagedHandle(_ handle: Int32, close: @escaping @Sendable (Int32) -> Void) -> Bool {
         lock.withLock {
-            guard !completed else { tsnet_conn_close(handle); return false }
+            guard !completed else { close(handle); return false }
             managedHandle = handle
+            closeHandle = close
             return true
         }
     }
@@ -1305,13 +1435,15 @@ private final class RedeemCompleter: @unchecked Sendable {
         let cont = continuation
         let conn = connection
         let handle = managedHandle
+        let close = closeHandle
+        closeHandle = nil
         managedHandle = nil
         continuation = nil
         connection = nil
         lock.unlock()
 
         conn?.cancel()
-        if let handle { tsnet_conn_close(handle) }
+        if let handle { close?(handle) }
 
         guard let cont = cont else { return }
         switch result {

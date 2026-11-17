@@ -470,5 +470,5 @@ func isConnRefused(err error) bool {
 var _ = unsafe.Sizeof(0)
 
 func main() {
-	panic("this is a C-ABI archive — do not run as an executable")
+	helperMain()
 }

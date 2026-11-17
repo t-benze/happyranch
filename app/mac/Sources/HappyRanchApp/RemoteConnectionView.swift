@@ -151,178 +151,153 @@ struct RemoteConnectionView: View {
     }
 
     private var clientView: some View {
-        RemoteClientForm(model: appDelegate.managedJoin)
+        VStack(alignment: .leading, spacing: 16) {
+            Picker("Connection", selection: $appDelegate.clientLane) {
+                Text("Home invite").tag(ClientBridge.Lane.managed)
+                Text("Existing DIY Tailscale").tag(ClientBridge.Lane.diy)
+            }
+            .pickerStyle(.segmented)
+            .disabled(appDelegate.homeInvite.busy || appDelegate.homeInvite.phase == .connected || appDelegate.clientBridge != nil)
+            if appDelegate.clientLane == .managed {
+                HomeInviteForm(model: appDelegate.homeInvite)
+            } else {
+                DIYClientForm()
+            }
+        }
     }
 }
 
-/// The same remote form for both lanes. Only this private, non-restored draft
-/// holds the SecureField text; no enrollment text enters AppDelegate state.
-private struct RemoteClientForm: View {
-    @EnvironmentObject var appDelegate: AppDelegate
-    @ObservedObject var model: ManagedJoinModel
-    @State private var enrollmentKey = ""
-    @State private var confirmingRevocation = false
-
-    private var managed: Bool { appDelegate.clientLane == .managed }
-    private var busy: Bool { appDelegate.isConnecting || model.busy }
+private struct HomeInviteForm: View {
+    @ObservedObject var model: HomeInviteModel
+    @State private var draft = ""
+    @State private var replacementConsent = false
+    @State private var connectConsent = false
+    @State private var pendingInvite = ""
+    @State private var removalConsent = false
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                Text("Connect to Remote Runtime").font(.title2).fontWeight(.semibold)
-                Picker("Network", selection: $appDelegate.clientLane) {
-                    Text("DIY Tailscale").tag(ClientBridge.Lane.diy)
-                    Text("Managed network").tag(ClientBridge.Lane.managed)
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Connect to another computer").font(.title2).fontWeight(.semibold)
+                Text(model.phase.message).accessibilityIdentifier("home-invite-status")
+                if let target = model.target {
+                    Text("Control host: \(URL(string: target.controlURL)?.host ?? "")")
+                    Text("Home address: \(target.dialIP)")
+                    Text("Home identity: \(target.homeID) / \(target.controlPlaneID)")
+                    Text("Release runtime: \(target.homeEndpoint)")
                 }
-                .pickerStyle(.segmented)
-                .disabled(busy || appDelegate.clientBridge != nil || model.bridge != nil)
-
-                if managed { managedSection }
-                else if appDelegate.isConnecting { ProgressView("Connecting…") }
-
-                if !managed, appDelegate.connectionState != .tailnetNotDetected || appDelegate.clientBridge != nil {
-                    HStack(spacing: 6) {
-                        Circle().fill(appDelegate.connectionState == .online ? Color.green : Color.gray).frame(width: 8, height: 8)
-                        Text(diyStateLabel).font(.caption).foregroundColor(.secondary)
+                if let expiry = model.expiresAt {
+                    TimelineView(.periodic(from: .now, by: 1)) { timeline in
+                        let remaining = max(0, Int(ceil(expiry.timeIntervalSince(timeline.date))))
+                        Text(String(format: "Invite expires in %d:%02d", remaining / 60, remaining % 60))
                     }
                 }
-                if let error = appDelegate.clientConnectError {
-                    Label(error, systemImage: "exclamationmark.triangle.fill")
-                        .foregroundColor(.red).font(.callout)
-                }
-
-                if appDelegate.clientBridge == nil {
-                    targetFields
-                    Text("Pairing Code").font(.caption).foregroundColor(.secondary)
-                    if managed {
-                        SecureField("8-character code from home", text: $appDelegate.clientPairingCode)
-                            .textFieldStyle(.roundedBorder).frame(maxWidth: 300)
-                            .disabled(busy || !model.canPair)
-                    } else {
-                        TextField("8-character code from home", text: $appDelegate.clientPairingCode)
-                            .textFieldStyle(.roundedBorder).frame(maxWidth: 300)
+                if model.phase == .awaitingApproval {
+                    Text("Waiting for approval on \(model.target?.homeEndpoint ?? "your home computer")")
+                    if let phrase = model.comparisonPhrase {
+                        Text(phrase).monospaced().textSelection(.enabled)
                     }
-                    Button(managed ? "Pair & Connect" : "Connect") { appDelegate.connectToRemote() }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(busy || (managed && !model.canPair))
-                } else {
-                    Label(managed ? model.phase.message : "Connected to home runtime",
-                          systemImage: appDelegate.connectionState == .online ? "checkmark.circle.fill" : "network")
-                    Button("Disconnect") { appDelegate.disconnectRemote() }
-                        .buttonStyle(.bordered).tint(.red)
+                    Text("Compare this phrase on Linux, then approve this device there.").font(.caption)
                 }
-                if managed, busy, model.phase != .checkingKeychain {
-                    Button("Cancel") {
-                        enrollmentKey = ""
-                        appDelegate.cancelManagedConnection()
-                    }.disabled(model.phase == .canceling)
-                }
-                if managed, model.canConfirmRevoked {
-                    Button("Device was revoked / Rejoin") {
-                        model.requestRevocation()
-                        confirmingRevocation = model.revocationConfirmation != nil
+                if model.busy { ProgressView() }
+                if !model.busy, model.phase != .connected {
+                    SecureField("Paste one invite from Linux", text: $draft)
+                        .textFieldStyle(.roundedBorder)
+                        .privacySensitive()
+                    Text("Trust an invite only from your home computer. Its sender selects the control host and home CA.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Button("Connect") {
+                        let input = draft
+                        draft = ""
+                        if model.needsReplacementConsent { pendingInvite = input; connectConsent = true }
+                        else { model.accept(input) }
                     }
-                        .foregroundColor(.red)
-                        .confirmationDialog("Only confirm if your operator revoked this device. Denial or timeout alone does not prove revocation.",
-                                            isPresented: $confirmingRevocation, presenting: model.revocationConfirmation) { profile in
-                            Button("Confirm \(profile.hostname) (\(profile.uuid)) was revoked", role: .destructive) {
-                                enrollmentKey = ""
-                                appDelegate.confirmManagedRevocation()
-                            }
-                            Button("Cancel", role: .cancel) { model.cancelRevocation() }
-                        } message: { profile in
-                            Text("Membership: \(profile.hostname) · \(profile.uuid)\nControl server: \(profile.controlURL)")
+                    .buttonStyle(.borderedProminent)
+                    .disabled(draft.isEmpty)
+                    .confirmationDialog("Saved access could not be opened. Create new local access after fresh Linux approval? The obsolete host grant remains revocable on Linux; the old item is never silently replaced.", isPresented: $connectConsent) {
+                        Button("Continue with fresh approval") {
+                            let input = pendingInvite; pendingInvite = ""
+                            model.accept(input, replacementConsent: true)
                         }
+                        Button("Cancel", role: .cancel) { pendingInvite = "" }
+                    }
+                    Text(model.retryGuidance).font(.caption)
+                    Button("Retry") { draft = ""; model.retry() }
+                }
+                if model.busy {
+                    Button("Cancel") { draft = ""; model.cancel() }
+                        .disabled(model.phase == .stopping)
+                } else if model.phase == .connected {
+                    Button("Disconnect") { draft = ""; model.cancel() }
+                    if model.saveFailure == nil, !model.savedHomes.isEmpty {
+                        Text("Disconnect keeps saved access.").font(.caption)
+                    }
+                }
+                if let failure = model.saveFailure {
+                    Text(failure.localizedDescription).foregroundStyle(.red)
+                    if failure == .identityChanged {
+                        Button("Replace saved access…") { replacementConsent = true }
+                            .confirmationDialog("Replace the old local item with this freshly approved device? The old host grant remains revocable on Linux.", isPresented: $replacementConsent) {
+                                Button("Replace saved access", role: .destructive) { model.retrySave(replacing: true) }
+                            }
+                    } else {
+                        Button("Retry saving") { model.retrySave() }
+                    }
+                }
+                if !model.discoveryFailures.isEmpty {
+                    Text("Some saved access is unavailable. Other approved computers can still reconnect.").font(.caption)
+                    ForEach(model.discoveryFailures, id: \.self) { Text($0.localizedDescription).font(.caption) }
+                }
+                if !model.savedHomes.isEmpty {
+                    Divider()
+                    Picker("Saved computer", selection: $model.selectedHomeID) {
+                        ForEach(model.savedHomes) { home in
+                            Text(home.trust.homeEndpoint).tag(Optional(home.id))
+                        }
+                    }.disabled(model.busy || model.phase == .connected)
+                    Button("Reconnect") { draft = ""; model.reconnect() }
+                        .disabled(model.busy || model.phase == .connected)
+                    Button("Remove saved computer…", role: .destructive) { removalConsent = true }
+                        .disabled(model.busy)
+                        .confirmationDialog("Erase local access? This does not revoke the device on Linux.", isPresented: $removalConsent) {
+                            Button("Remove saved computer", role: .destructive) { draft = ""; model.removeSavedComputer() }
+                        }
+                }
+                if !model.removalFailures.isEmpty {
+                    Text("Removal incomplete").foregroundStyle(.red)
+                    ForEach(model.removalFailures, id: \.self) { Text($0).font(.caption) }
+                    Button("Retry removal") { model.removeSavedComputer() }.disabled(model.busy)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .task { if managed { model.prepare() } }
-        .onChange(of: appDelegate.clientLane) { _, lane in
-            enrollmentKey = ""
-            appDelegate.clientConnectError = nil
-            if lane == .managed { model.prepare() }
-        }
-        .onDisappear { enrollmentKey = "" }
-    }
-
-    private var diyStateLabel: String {
-        if appDelegate.isConnecting { return "Connecting…" }
-        switch appDelegate.connectionState {
-        case .online: return "Connected"
-        case .reconnecting: return "Reconnecting…"
-        case .offline: return "Disconnected"
-        case .pairedUnreachable: return "Unreachable"
-        case .tailnetNotDetected: return "Tailscale not detected"
+        .task { model.prepare() }
+        .onDisappear { draft = ""; pendingInvite = "" }
+        .onChange(of: model.phase) { _, phase in
+            if phase == .connected || phase == .failed(.expiredInvite) || phase == .stopping { draft = ""; pendingInvite = "" }
         }
     }
+}
 
-    private var targetFields: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Home Tailnet Address").font(.caption).foregroundColor(.secondary)
-            TextField("e.g. 100.64.0.1 or full tailnet DNS name", text: $appDelegate.clientHomeHost)
-                .textFieldStyle(.roundedBorder).frame(maxWidth: 350)
-            Text("Home Connector Port").font(.caption).foregroundColor(.secondary)
-            TextField("e.g. 8443", text: $appDelegate.clientHomePort)
-                .textFieldStyle(.roundedBorder).frame(maxWidth: 200)
-        }
-        .disabled(managed && (busy || model.bridge != nil))
-    }
-
-    @ViewBuilder
-    private var managedSection: some View {
-        if let host = model.confirmedControlHost {
-            Text("Control server: \(host)").font(.caption).foregroundColor(.secondary)
-        }
-        Text(model.phase.message)
-            .font(.callout)
-            .accessibilityIdentifier("managed-join-status")
-        if let bridge = model.bridge {
-            ManagedConnectionHealthView(bridge: bridge).id(ObjectIdentifier(bridge))
-        }
-        if model.busy { ProgressView().controlSize(.small) }
-        if model.bridge == nil, !model.busy {
-            Text("1 · Join managed network").font(.headline)
-            TextField("Trusted control server URL (https://…)", text: $model.controlURL)
-                .textFieldStyle(.roundedBorder)
-            if let url = try? ManagedJoinModel.validatedControlURL(model.controlURL),
-               let host = URL(string: url)?.host {
-                Text("Control server: \(host)").font(.caption).foregroundColor(.secondary)
+/// Explicit legacy DIY selection is retained; managed failure never selects it.
+private struct DIYClientForm: View {
+    @EnvironmentObject var appDelegate: AppDelegate
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Existing DIY Tailscale").font(.headline)
+            if appDelegate.isConnecting { ProgressView("Connecting…") }
+            if let error = appDelegate.clientConnectError {
+                Text(error).foregroundStyle(.red)
             }
-            SecureField("Single-use enrollment key", text: $enrollmentKey)
-                .textFieldStyle(.roundedBorder)
-                .disabled(!model.custodyReady)
-            Text("Enter the home address and port below before joining. They stay fixed for pairing. The key field is cleared on submission; this does not guarantee forensic memory erasure.")
-                .font(.caption).foregroundColor(.secondary)
-            Button("Join Network") {
-                let bytes = Data(enrollmentKey.utf8)
-                enrollmentKey = ""
-                appDelegate.clientConnectError = nil
-                model.join(key: bytes, homeHost: appDelegate.clientHomeHost, port: appDelegate.clientHomePort)
+            if appDelegate.clientBridge == nil {
+                TextField("Home Tailnet Address", text: $appDelegate.clientHomeHost).textFieldStyle(.roundedBorder)
+                TextField("Home Connector Port", text: $appDelegate.clientHomePort).textFieldStyle(.roundedBorder)
+                TextField("Pairing Code", text: $appDelegate.clientPairingCode).textFieldStyle(.roundedBorder)
+                Button("Connect") { appDelegate.connectToRemote() }.disabled(appDelegate.isConnecting)
+            } else {
+                Text(appDelegate.connectionState == .online ? "Connected" : "Disconnected")
+                Button("Disconnect") { appDelegate.disconnectRemote() }
             }
-            .buttonStyle(.borderedProminent)
-            .disabled(!model.custodyReady || enrollmentKey.isEmpty)
-
-            if !model.profiles.isEmpty {
-                Picker("Saved membership", selection: $model.selectedProfileID) {
-                    Text("Choose explicitly…").tag("")
-                    ForEach(model.profiles) { profile in
-                        Text("\(profile.hostname) · \(profile.phase)").tag(profile.uuid)
-                    }
-                }
-                Button("Check saved membership") {
-                    enrollmentKey = ""
-                    appDelegate.clientConnectError = nil
-                    model.resume(homeHost: appDelegate.clientHomeHost, port: appDelegate.clientHomePort)
-                }
-                .disabled(!model.custodyReady || model.selectedProfileID.isEmpty)
-                Text("No key is replayed. Missing or conflicting saved state is refused. Cancellation cannot undo remote registration; ask your operator to remove an unused device.")
-                    .font(.caption).foregroundColor(.secondary)
-            }
-            Button("Check Keychain and saved profiles") { enrollmentKey = ""; model.refreshCustody() }
-        } else if !model.busy {
-            Text("2 · Pair with home runtime").font(.headline)
-            Button("Change target / Disconnect membership") { appDelegate.disconnectRemote() }
         }
     }
 }

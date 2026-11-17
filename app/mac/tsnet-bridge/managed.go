@@ -44,6 +44,7 @@ var pendingCloses int
 var ambientKeys = []string{"TS_AUTHKEY", "TS_AUTH_KEY", "TSNET_FORCE_LOGIN", "TS_DEBUGSYSPOLICY_AUTH_KEY"}
 
 type managedEngine struct {
+	selfNodeID                             string
 	server                                 *tsnet.Server
 	profile                                *managedProfile
 	ctx                                    context.Context
@@ -92,6 +93,10 @@ func validHostname(s string) bool {
 }
 
 func managedInit(authKey, controlURL, hostname, stateDir string) int {
+	return initManagedProfile(authKey, controlURL, hostname, stateDir, nil)
+}
+
+func initManagedProfile(authKey, controlURL, hostname, stateDir string, home *homeLaunch) int {
 	if !opMu.TryLock() {
 		return managedResult(managedBusy)
 	}
@@ -113,8 +118,11 @@ func managedInit(authKey, controlURL, hostname, stateDir string) int {
 	}
 	u.Host = strings.ToLower(u.Host)
 	u.Path = ""
-	profile, err := openManagedProfile(stateDir, hostname, u.String(), authKey != "")
+	profile, err := openBoundManagedProfile(stateDir, hostname, u.String(), authKey != "", home)
 	if err != nil {
+		if errors.Is(err, errHomeReapproval) {
+			return homeReapprovalRequired
+		}
 		return managedResult(managedStateError)
 	}
 	logtail.Disable()
@@ -206,6 +214,18 @@ func managedUp(timeoutMs int) int {
 		st, err := m.server.Up(ctx)
 		if err != nil || st == nil || st.BackendState != "Running" || len(st.TailscaleIPs) == 0 {
 			return contextResult(ctx, managedBackend)
+		}
+		if st.Self != nil {
+			m.selfNodeID = string(st.Self.ID)
+		}
+		if m.profile.record.Version == 2 && m.profile.record.StableNodeID == "" {
+			if m.selfNodeID == "" {
+				return managedPeerChanged
+			}
+			m.profile.record.StableNodeID = m.selfNodeID
+		}
+		if m.profile.record.Version >= 1 && m.profile.record.StableNodeID != m.selfNodeID {
+			return managedPeerChanged
 		}
 		return contextResult(ctx, 0)
 	}
