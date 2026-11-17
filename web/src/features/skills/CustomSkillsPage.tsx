@@ -14,8 +14,8 @@ export function CustomSkillsPage(): JSX.Element {
   const [removed, setRemoved] = useState(false);
   const query = useCustomSkillsCatalog(true, removed ? 'removed' : 'current');
   const skills = query.data?.skills ?? [];
-  return <div className="h-full overflow-y-auto"><div className="mx-auto w-full max-w-5xl px-4 py-5 md:px-7 md:py-6">
-    <header className="mb-5 flex flex-wrap items-start justify-between gap-3"><div><div className="text-fg-subtle text-overline mb-1 tracking-wider uppercase">{t('skills.customList.overline', { label: t(removed ? 'skills.view.removed' : 'skills.customList.founderWorkspace'), count: skills.length })}</div><h1 className="text-h2 text-fg">{t('skills.customList.title')}</h1><p className="text-fg-muted text-body-sm mt-1">{t('skills.customList.description')}</p></div>{!removed && <Button asChild><Link to={`/orgs/${slug ?? ''}/skills/custom/new`}><Plus />{t('skills.addCustom')}</Link></Button>}</header>
+  return <div className="h-full overflow-y-auto"><div className="mx-auto w-full max-w-5xl px-4 py-6 md:px-12 md:py-8">
+    <header className="mb-6 flex flex-wrap items-start justify-between gap-3"><div><div className="text-fg-subtle text-overline mb-1 tracking-wider uppercase">{t('skills.customList.overline', { label: t(removed ? 'skills.view.removed' : 'skills.customList.founderWorkspace'), count: skills.length })}</div><h1 className="text-h2 text-fg">{t('skills.customList.title')}</h1><p className="text-fg-muted text-body-sm mt-1">{t('skills.customList.description')}</p></div>{!removed && <Button asChild><Link to={`/orgs/${slug ?? ''}/skills/custom/new`}><Plus />{t('skills.addCustom')}</Link></Button>}</header>
     <div className="mb-4 flex gap-2" role="group" aria-label={t('skills.view.label')}><Button variant={!removed ? 'secondary' : 'ghost'} aria-pressed={!removed} onClick={() => setRemoved(false)}>{t('skills.view.current')}</Button><Button variant={removed ? 'secondary' : 'ghost'} aria-pressed={removed} onClick={() => setRemoved(true)}>{t('skills.view.removed')}</Button></div>
     {query.isLoading ? <div className="border-border-subtle bg-surface-subtle h-28 animate-pulse rounded-md border" aria-label={t(removed ? 'skills.customList.loadingRemoved' : 'skills.customList.loadingCurrent')} />
       : isCustomSkillForbidden(query.error) ? <EmptyState icon={<Shield size={28} />} title={t('skills.founderRequired.title')} body={t('skills.founderRequired.body')} />
@@ -25,4 +25,4 @@ export function CustomSkillsPage(): JSX.Element {
   </div></div>;
 }
 
-export function CustomSkillsState({ icon, title, body }: { icon: JSX.Element; title: string; body: string }): JSX.Element { return <div className="h-full overflow-y-auto"><div className="mx-auto w-full max-w-5xl px-4 py-5 md:px-7 md:py-6"><EmptyState icon={icon} title={title} body={body} /></div></div>; }
+export function CustomSkillsState({ icon, title, body }: { icon: JSX.Element; title: string; body: string }): JSX.Element { return <div className="h-full overflow-y-auto"><div className="mx-auto w-full max-w-5xl px-4 py-6 md:px-12 md:py-8"><EmptyState icon={icon} title={title} body={body} /></div></div>; }

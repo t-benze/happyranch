@@ -586,7 +586,7 @@ export function ArtifactsPage(): JSX.Element {
 
             {/* Error */}
             {listQuery.isError && (
-              <div className="flex flex-col items-center justify-center gap-3 p-8 text-center">
+              <div className="flex flex-col items-center justify-center gap-3 p-16 text-center">
                 <p className="text-feedback-danger text-sm">
                   {t('artifacts.loadError')}
                   {listError && (listError.kind === 'raw' || listError.key !== 'artifacts.loadError') && <> {renderArtifactError(listError, t)}</>}
@@ -606,7 +606,7 @@ export function ArtifactsPage(): JSX.Element {
           <>
             {/* Honesty note: folders are derived from the name path, not stored. */}
             {showFolders && (
-              <div className="border-border-strong bg-surface-sunken text-text-muted mb-5 flex items-start gap-2 rounded-lg border border-dashed p-3 text-xs leading-relaxed">
+              <div className="border-border-strong bg-surface-sunken text-text-muted mb-6 flex items-start gap-2 rounded-lg border border-dashed p-3 text-xs leading-relaxed">
                 <Info
                   size={14}
                   aria-hidden="true"
@@ -624,7 +624,7 @@ export function ArtifactsPage(): JSX.Element {
             )}
 
             {/* Filter (segmented) + sort row (ART-02) */}
-            <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
+            <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
               <div
                 role="tablist"
                 aria-label={t('artifacts.filterLabel')}
@@ -674,7 +674,7 @@ export function ArtifactsPage(): JSX.Element {
             {view.folders.length > 0 && (
               <div
                 aria-label={t('artifacts.folders')}
-                className="mb-5 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3"
+                className="mb-6 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3"
               >
                 {view.folders.map((f) => (
                   <FolderRow key={f.path} folder={f} onOpen={setCwd} />

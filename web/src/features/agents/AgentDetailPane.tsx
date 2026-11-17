@@ -370,7 +370,7 @@ export function AgentDetailPane({ agentName, onClose, onStartThread, onRetired }
   return (
     <section className="flex h-full flex-col">
       {/* --- Header --- */}
-      <header className="border-border-default flex items-start gap-3.5 border-b px-5 py-4">
+      <header className="border-border-default flex items-start gap-3.5 border-b px-6 py-4">
         {/* AGENTS-04: detail-hero avatar anchor (Direction-A `a-agents`),
             reusing the roster's role-colored initial chip. */}
         <AgentAvatar displayName={identityPresentation.name(agentName)} name={agentName} role={agent?.role ?? null} size="lg" />
@@ -431,7 +431,7 @@ export function AgentDetailPane({ agentName, onClose, onStartThread, onRetired }
       </header>
 
       {/* --- Editable fields — Pasture card sections --- */}
-      <div className="flex-1 space-y-5 overflow-y-auto px-5 py-4">
+      <div className="flex-1 space-y-6 overflow-y-auto px-6 py-4">
         <AddressableNameEditor canonicalId={agentName} />
         {isEligiblePolicyManager(
           policyAgent,

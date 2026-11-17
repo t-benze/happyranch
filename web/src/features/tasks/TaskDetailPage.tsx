@@ -234,7 +234,7 @@ function WorkflowChainTimeline({
   const currentIdx = chain.step_index;
 
   return (
-    <section className="mt-5">
+    <section className="mt-6">
       <h3 className="text-text-secondary mb-3 text-xs font-semibold tracking-wider uppercase">
         {t('tasks.detail.chain.heading', { step: currentIdx + 1, total: totalLegs })}
       </h3>
@@ -299,7 +299,7 @@ interface SubtaskRowProps {
 }
 
 const DEPTH_PL = [
-  'ml-0', 'ml-4', 'ml-8', 'ml-12', 'ml-16',
+  'ml-0', 'ml-4', 'ml-16', 'ml-12', 'ml-16',
   'ml-20', 'ml-24', 'ml-28', 'ml-32',
 ] as const;
 
@@ -355,7 +355,7 @@ function ExecutionSubtasks({ recall }: { recall: TaskRecallNode }): JSX.Element 
   const { t } = useTranslation();
   const hasSubtasks = recall.children && recall.children.length > 0;
   return (
-    <section className="mt-5">
+    <section className="mt-6">
       <h3 className="text-text-secondary mb-2 text-xs font-semibold tracking-wider uppercase">
         {t('tasks.detail.subtasks.heading')}
       </h3>
@@ -388,7 +388,7 @@ function BriefSection({ brief }: { brief: string }): JSX.Element {
       : brief;
 
   return (
-    <section className="mt-5">
+    <section className="mt-6">
       <h3 className="text-text-secondary mb-2 text-xs font-semibold tracking-wider uppercase">
         {t('tasks.detail.brief.heading')}
       </h3>
@@ -540,7 +540,7 @@ function RevisitDependencyChain({
 
   const title = snippet(task.brief, 72);
   return (
-    <section className="mt-5">
+    <section className="mt-6">
       <h3 className="text-text-secondary mb-3 text-xs font-semibold tracking-wider uppercase">
         {t('tasks.detail.lineage.heading')}
       </h3>
@@ -1109,7 +1109,7 @@ export function TaskDetailPage(): JSX.Element {
           </nav>
 
           {/* Two-column body: primary content + right-rail property grid (TASKDET-03) */}
-          <div className="flex flex-col gap-6 lg:flex-row lg:items-start">
+          <div className="flex flex-col gap-8 lg:flex-row lg:items-start">
             <div className="min-w-0 flex-1">
           {/* Header — identity card */}
           <header className="border-border-default border-b pb-4">
@@ -1246,9 +1246,9 @@ export function TaskDetailPage(): JSX.Element {
             )}
 
             {validRecall ? <ExecutionSubtasks recall={validRecall} />
-              : <p className="text-text-muted mt-5 text-xs">{t('tasks.detail.recall.unavailable')}</p>}
+              : <p className="text-text-muted mt-6 text-xs">{t('tasks.detail.recall.unavailable')}</p>}
 
-            <section className="mt-5">
+            <section className="mt-6">
               <h3 className="text-text-secondary mb-2 text-xs font-semibold tracking-wider uppercase">
                 {t('tasks.detail.recall.heading')}
               </h3>
@@ -1259,7 +1259,7 @@ export function TaskDetailPage(): JSX.Element {
               )}
             </section>
 
-            <section className="mt-5">
+            <section className="mt-6">
               <h3 className="text-text-secondary mb-2 text-xs font-semibold tracking-wider uppercase">
                 {t('tasks.detail.activity.heading')}
               </h3>
@@ -1267,7 +1267,7 @@ export function TaskDetailPage(): JSX.Element {
             </section>
 
             {jobsQuery.data && jobsQuery.data.jobs.length > 0 && (
-              <section className="mt-5">
+              <section className="mt-6">
                 <h3 className="text-text-secondary mb-2 text-xs font-semibold tracking-wider uppercase">
                   {t('tasks.detail.jobs.heading')}
                 </h3>

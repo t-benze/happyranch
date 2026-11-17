@@ -144,7 +144,7 @@ export function AgentDetailDrawer({ agentName }: AgentDetailDrawerProps): JSX.El
             </p>
           )}
 
-          <h3 className="text-fg-muted mt-6 mb-2 text-xs font-medium tracking-wider uppercase">
+          <h3 className="text-fg-muted mt-8 mb-2 text-xs font-medium tracking-wider uppercase">
             {t('agents.detail.learnings')}
           </h3>
           {learningsQuery.isLoading ? (
@@ -182,7 +182,7 @@ export function AgentDetailDrawer({ agentName }: AgentDetailDrawerProps): JSX.El
 
           {jobsQuery.data && jobsQuery.data.jobs.length > 0 && (
             <>
-              <h3 className="text-fg-muted mt-6 mb-2 text-xs font-medium tracking-wider uppercase">
+              <h3 className="text-fg-muted mt-8 mb-2 text-xs font-medium tracking-wider uppercase">
                 {t('agents.detail.recentJobs')}
               </h3>
               <ul className="space-y-1 text-sm">

@@ -286,18 +286,17 @@
   --color-ring:                   var(--color-accent-ring);
 
   /* ====================================================================== */
-  /* SPACING — 8pt grid + 4pt hairline (unchanged)                           */
+  /* SPACING — Tailwind's linear 4px scale (THR-376 PR4)                     */
   /* ====================================================================== */
+  /* Every numeric step N resolves to N x 0.25rem (Tailwind's base           */
+  /* --spacing). Do NOT add --spacing-N numeric overrides: the old t-shirt   */
+  /* remap (5=24px, 6=32px, 7=48px, 8=64px) was removed in THR-376 PR4.      */
 
   --spacing-0: 0;
   --spacing-1: 0.25rem;
   --spacing-2: 0.5rem;
   --spacing-3: 0.75rem;
   --spacing-4: 1rem;
-  --spacing-5: 1.5rem;
-  --spacing-6: 2rem;
-  --spacing-7: 3rem;
-  --spacing-8: 4rem;
 
   /* Pasture §4.14 Button values that intentionally sit off the 4/8pt grid. */
   --spacing-button-gap:       7px;

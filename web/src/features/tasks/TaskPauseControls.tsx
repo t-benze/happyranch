@@ -155,7 +155,7 @@ export function TaskPauseControls({ task, routes, actions }: {
       ? <PauseRegion key={`${pause.org_slug}/${task.task_id}`} task={task} pause={pause} routes={routes} org={org} available={available} mayAct={mayAct} />
       : <p className="text-text-muted order-1 basis-full text-xs">{t('tasks.pause.unavailable')}</p>}
     <div className={cn('order-3 flex min-w-0 flex-wrap items-center gap-2 md:order-2', separated ? 'basis-full md:basis-auto md:flex-1' : 'flex-1')}>
-      {separated && <span aria-hidden="true" className="border-border-default hidden h-5 border-l md:block" />}
+      {separated && <span aria-hidden="true" className="border-border-default hidden h-6 border-l md:block" />}
       {actions}
     </div>
   </div>;

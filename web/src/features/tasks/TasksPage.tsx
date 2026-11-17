@@ -505,10 +505,10 @@ function TasksList({ groupBy, setGroupBy, filters, setFilters }: {
         {/* The attention traversal owns its own loading/error states. Its rows
             render inside the shared list shell below, as the first group. */}
         {attentionLoading && (
-          <p className="text-text-muted px-6 text-sm">{t('tasks.attention.loading')}</p>
+          <p className="text-text-muted px-8 text-sm">{t('tasks.attention.loading')}</p>
         )}
         {attentionInitialError && (
-          <div role="alert" className="border-feedback-danger bg-danger-soft mx-6 flex flex-wrap items-center justify-between gap-3 rounded-lg border p-4">
+          <div role="alert" className="border-feedback-danger bg-danger-soft mx-8 flex flex-wrap items-center justify-between gap-3 rounded-lg border p-4">
             <p className="text-text-primary text-sm font-medium">{t('tasks.attention.error')}</p>
             <Button size="sm" variant="outline" className="h-auto w-full max-w-full whitespace-normal break-words sm:w-auto" onClick={() => void attention.retry()}>
               <RefreshCw size={14} aria-hidden /> {t('common.retry')}
@@ -530,7 +530,7 @@ function TasksList({ groupBy, setGroupBy, filters, setFilters }: {
           [data-tasks-responsive-list] section li > div > a > div:nth-child(6) { grid-column: 2; grid-row: 4; justify-self: end; }
         }`}</style>
         {(topAlerts.length > 0 || partialLoading) && (
-          <div className="mb-6 space-y-3">
+          <div className="mb-8 space-y-3">
             {topAlerts}
             {partialLoading && (
               <p className="text-text-muted text-sm" role="status">
@@ -540,7 +540,7 @@ function TasksList({ groupBy, setGroupBy, filters, setFilters }: {
           </div>
         )}
         {showListShell ? (
-          <div className="space-y-6">
+          <div className="space-y-8">
             <div data-testid="tasks-responsive-list" data-tasks-responsive-list>
               <TaskListColumnHeader />
               {showEscalatedGroup && (
@@ -615,7 +615,7 @@ function TasksList({ groupBy, setGroupBy, filters, setFilters }: {
                 is still loading, errored, or empty. Keep those ordinary states
                 truthful and visible WITHOUT hiding the shared list shell. */}
             {showEscalatedGroup && ordinaryLoading && (
-              <p className="text-text-muted py-6 text-center text-sm">{t('tasks.list.loading')}</p>
+              <p className="text-text-muted py-8 text-center text-sm">{t('tasks.list.loading')}</p>
             )}
             {showEscalatedGroup && ordinaryInitialError && (
               <EmptyState
@@ -639,7 +639,7 @@ function TasksList({ groupBy, setGroupBy, filters, setFilters }: {
             )}
           </div>
         ) : ordinaryLoading ? (
-          <p className="text-text-muted py-6 text-center text-sm">{t('tasks.list.loading')}</p>
+          <p className="text-text-muted py-8 text-center text-sm">{t('tasks.list.loading')}</p>
         ) : ordinaryInitialError ? (
           <EmptyState
             icon={<AlertCircle size={32} className="text-feedback-danger" />}
@@ -650,7 +650,7 @@ function TasksList({ groupBy, setGroupBy, filters, setFilters }: {
         ) : globalEmpty ? (
           <EmptyState title={t('tasks.list.emptyTitle')} body={t('tasks.list.emptyBody')} />
         ) : moreAlerts.length > 0 ? (
-          <div className="space-y-6">{moreAlerts}</div>
+          <div className="space-y-8">{moreAlerts}</div>
         ) : null}
         </ContentWrap>
         {newTaskOpen && <NewTaskDialog onClose={() => setNewTaskOpen(false)} />}

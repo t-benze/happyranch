@@ -56,7 +56,7 @@ export function AgentDetailPage(): JSX.Element {
   const allAgentNames = useMemo(() => agents.map((a) => a.name), [agents]);
 
   if (settingsQuery.isLoading) {
-    return <div className="text-fg-muted p-6">{t('workHours.loading')}</div>;
+    return <div className="text-fg-muted p-8">{t('workHours.loading')}</div>;
   }
 
   if (settingsQuery.isError || !wh) {
@@ -123,7 +123,7 @@ export function AgentDetailPage(): JSX.Element {
         {saved && <SavedBanner message={t('workHours.saved')} />}
 
         {/* Reconciliation table */}
-        <section className="mb-6">
+        <section className="mb-8">
           <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
             <h2 className="text-text-primary max-w-full shrink-0 text-sm font-semibold">
               {t('workHours.detail.provenanceHeading')}
@@ -210,7 +210,7 @@ export function AgentDetailPage(): JSX.Element {
         </section>
 
         {/* Next wakes */}
-        <section className="mb-6">
+        <section className="mb-8">
           <h2 className="text-text-primary mb-2 text-sm font-semibold">
             {t('workHours.detail.nextWakes')}
           </h2>
@@ -252,7 +252,7 @@ export function AgentDetailPage(): JSX.Element {
                 })}
               </p>
             ) : (
-              <ul className="text-text-secondary list-disc pl-5">
+              <ul className="text-text-secondary list-disc pl-6">
                 {routineTasks.map((task, i) => (
                   <li key={i}>{task}</li>
                 ))}

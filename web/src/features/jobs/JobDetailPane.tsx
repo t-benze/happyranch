@@ -116,7 +116,7 @@ export function JobDetailPane({ jobId }: JobDetailPaneProps): JSX.Element {
           </header>
 
           {/* ── Body ── */}
-          <section className="min-h-0 flex-1 space-y-5 overflow-y-auto p-4">
+          <section className="min-h-0 flex-1 space-y-6 overflow-y-auto p-4">
             {query.isLoading && (
               <p className="text-text-muted text-sm">{t('jobs.detail.loading', { jobId })}</p>
             )}

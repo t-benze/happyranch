@@ -127,8 +127,8 @@ export function TodoDetailPage({
     return (
       <ContentWrap>
         <div className="animate-pulse space-y-4">
-          <div className="bg-bg-subtle h-6 w-32 rounded" />
-          <div className="bg-bg-subtle h-8 w-96 rounded" />
+          <div className="bg-bg-subtle h-8 w-32 rounded" />
+          <div className="bg-bg-subtle h-16 w-96 rounded" />
           <div className="bg-bg-subtle h-24 rounded-lg" />
         </div>
       </ContentWrap>
@@ -189,13 +189,13 @@ export function TodoDetailPage({
     <ContentWrap>
       <Link
         to={`/orgs/${org}/todos`}
-        className="text-fg-muted hover:text-fg mb-6 inline-flex items-center gap-1.5 text-sm transition-colors"
+        className="text-fg-muted hover:text-fg mb-8 inline-flex items-center gap-1.5 text-sm transition-colors"
       >
         <ArrowLeft size={16} />
         {t('todos.list.title')}
       </Link>
 
-      <div className="mb-6 flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+      <div className="mb-8 flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
         <div>
           <h1 className="text-display font-display text-fg leading-tight">
             {schedule.normalized_brief}
@@ -204,7 +204,7 @@ export function TodoDetailPage({
             <StatusPill status={schedule.status} />
             <span
               aria-hidden="true"
-              className="bg-tier-green-tint text-status-open inline-flex size-5 shrink-0 items-center justify-center rounded text-xs font-semibold"
+              className="bg-tier-green-tint text-status-open inline-flex size-6 shrink-0 items-center justify-center rounded text-xs font-semibold"
             >
               {agentInitials(schedule.agent_name)}
             </span>
@@ -236,7 +236,7 @@ export function TodoDetailPage({
       </div>
 
       {schedule.fire_at && (
-        <div className="border-tier-green bg-tier-green-tint text-status-open mb-6 flex items-center justify-between rounded-lg border px-5 py-3">
+        <div className="border-tier-green bg-tier-green-tint text-status-open mb-8 flex items-center justify-between rounded-lg border px-6 py-3">
           <div>
             <span className="text-overline block font-semibold tracking-wider uppercase">
               {t('todos.row.nextFire')}
@@ -255,9 +255,9 @@ export function TodoDetailPage({
         </div>
       )}
 
-      <div className="flex flex-col gap-6 lg:flex-row">
-        <div className="min-w-0 flex-1 space-y-5">
-          <div className="border-border bg-bg-raised space-y-4 rounded-lg border p-5">
+      <div className="flex flex-col gap-8 lg:flex-row">
+        <div className="min-w-0 flex-1 space-y-6">
+          <div className="border-border bg-bg-raised space-y-4 rounded-lg border p-6">
             <h2 className="text-fg-subtle text-overline font-semibold tracking-wider uppercase">
               {t('todos.detail.schedule')}
             </h2>
@@ -302,7 +302,7 @@ export function TodoDetailPage({
             !schedule.indefinite &&
             schedule.expires_at &&
             schedule.status !== 'expired' && (
-              <div className="border-attention-soft bg-attention-soft/30 text-attention-text mb-5 flex items-start gap-2 rounded border px-3 py-2 text-sm">
+              <div className="border-attention-soft bg-attention-soft/30 text-attention-text mb-6 flex items-start gap-2 rounded border px-3 py-2 text-sm">
                 <Clock
                   size={14}
                   className="mt-0.5 shrink-0"
@@ -316,14 +316,14 @@ export function TodoDetailPage({
               </div>
             )}
 
-          <div className="border-border bg-bg-raised space-y-2 rounded-lg border p-5">
+          <div className="border-border bg-bg-raised space-y-2 rounded-lg border p-6">
             <h2 className="text-fg-subtle text-overline font-semibold tracking-wider uppercase">
               {t('todos.detail.normalized')}
             </h2>
             <p className="text-fg text-sm">{schedule.normalized_brief}</p>
           </div>
 
-          <div className="border-border bg-bg-raised space-y-2 rounded-lg border p-5">
+          <div className="border-border bg-bg-raised space-y-2 rounded-lg border p-6">
             <h2 className="text-fg-subtle text-overline font-semibold tracking-wider uppercase">
               {t('todos.detail.original')}
             </h2>
@@ -333,14 +333,14 @@ export function TodoDetailPage({
           </div>
 
           {termExplanation && (
-            <div className="border-border bg-bg-raised rounded-lg border p-5">
+            <div className="border-border bg-bg-raised rounded-lg border p-6">
               <p className="text-fg-muted text-sm">{t(termExplanation)}</p>
             </div>
           )}
         </div>
 
-        <div className="space-y-5">
-          <div className="border-border bg-bg-raised space-y-3 rounded-lg border p-5">
+        <div className="space-y-6">
+          <div className="border-border bg-bg-raised space-y-3 rounded-lg border p-6">
             <h2 className="text-fg-subtle text-overline font-semibold tracking-wider uppercase">
               {t('todos.detail.activity')}
             </h2>
@@ -385,7 +385,7 @@ export function TodoDetailPage({
             </span>
           </div>
 
-          <div className="border-border bg-bg-raised space-y-2 rounded-lg border p-5">
+          <div className="border-border bg-bg-raised space-y-2 rounded-lg border p-6">
             <h2 className="text-fg-subtle text-overline mb-2 font-semibold tracking-wider uppercase">
               {t('todos.detail.recordDetails')}
             </h2>

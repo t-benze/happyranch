@@ -71,7 +71,7 @@ export function ExecutorsSection(): JSX.Element {
   };
 
   return (
-    <section className="space-y-6" data-testid="executors-section">
+    <section className="space-y-8" data-testid="executors-section">
       {connecting !== null ? (
         <div data-testid="executors-connect">
         <ConnectFlow
@@ -108,7 +108,7 @@ export function ExecutorsSection(): JSX.Element {
         />
         </div>
       ) : (
-        <div className="space-y-6" data-testid="executors-list">
+        <div className="space-y-8" data-testid="executors-list">
           {/* Registered list — the primary management view (Step-0 §6-1). */}
           <ExecutorBinariesSection />
 

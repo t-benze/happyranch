@@ -265,7 +265,7 @@ function AccountRowView({ name }: { name: string }): JSX.Element {
     >
       <span
         aria-hidden="true"
-        className="bg-accent text-accent-fg inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[0.65rem] font-semibold"
+        className="bg-accent text-accent-fg inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-[0.65rem] font-semibold"
       >
         {identityInitials(name)}
       </span>

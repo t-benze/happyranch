@@ -282,7 +282,7 @@ function V2HistorySection({ history, items }: {
 }): JSX.Element {
   const { t, locale } = useTranslation();
   return (
-    <section aria-labelledby="v2-policy-history-heading" className="border-border-subtle mt-5 border-t pt-4">
+    <section aria-labelledby="v2-policy-history-heading" className="border-border-subtle mt-6 border-t pt-4">
       <h4 id="v2-policy-history-heading" className="text-text-primary text-sm font-medium">{t('agents.policy.history.title')}</h4>
       {history.isLoading ? <p className="text-text-muted mt-2 text-xs">{t('agents.policy.history.loading')}</p> : history.isError && !items.length ? <div className="mt-2 flex items-center gap-2"><p role="alert" className="text-tier-red text-xs">{renderAgentError(classifyAgentError(history.error, 'agents.policy.history.error'), t)}</p><Button size="sm" variant="ghost" onClick={() => void history.refetch()}>{t('agents.policy.history.retry')}</Button></div> : !items.length ? <p className="text-text-muted mt-2 text-xs">{t('agents.policy.history.empty')}</p> : <ul className="mt-2 space-y-3">{items.map((item) => <li key={`${item.release_id}-${item.activation?.id ?? 'inactive'}`} className="bg-surface-sunken rounded p-3 text-xs">
         <div className="font-medium">v{item.version} · {item.title}</div>

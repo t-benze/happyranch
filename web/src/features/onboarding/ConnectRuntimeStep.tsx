@@ -47,7 +47,7 @@ export function ConnectRuntimeStep({
     t(connectedSubtitleKey(via));
   return (
     <ConnectFlow
-      className="pt-6 sm:pt-10"
+      className="pt-8 sm:pt-10"
       eyebrow={<StepEyebrow />}
       formHeading={
         <h1 className="font-display text-display text-text-primary mt-3 font-medium">

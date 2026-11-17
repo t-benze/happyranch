@@ -99,7 +99,7 @@ export function RetireAgentDialog({
           <DialogTitle>{t('agents.retire.title', { name: displayName })}</DialogTitle>
           <DialogDescription>{t('agents.retire.intro')}</DialogDescription>
         </DialogHeader>
-        <ul className="text-text-primary list-disc space-y-1.5 pl-5 text-sm">
+        <ul className="text-text-primary list-disc space-y-1.5 pl-6 text-sm">
           <li>{t('agents.retire.consequence.stops')}</li>
           <li>{t(isManager ? 'agents.retire.consequence.preservedManager' : 'agents.retire.consequence.preserved')}</li>
           <li>{t('agents.retire.consequence.terminated')}</li>
