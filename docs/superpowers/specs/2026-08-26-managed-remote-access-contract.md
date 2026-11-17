@@ -489,7 +489,8 @@ The 3b-1b-2 records-first sub-part extends only that writer's fixed map with
 digests are lowercase SHA-256 for exactly connector/sidecar/policy JSON,
 release-daemon JSON and daemon.token. Transaction records additionally bind
 provision.json. The sole provision phase is `provisioned`, and the sole
-transaction phase is `prepared`. Extra/duplicate fields, other versions/phases,
+fresh-publication transaction phase is `prepared`; the replacement-only stopped
+phase is described below. Extra/duplicate fields, other versions/phases,
 arbitrary digest paths, secret fields and non-digest values refuse before publication. The existing
 unversioned operator `provision` output and its reader remain unchanged.
 Any final or pending transaction entry blocks provision/install/uninstall and
@@ -563,33 +564,49 @@ and authenticated token rotation/repair remain undelivered and fail-closed;
 helper/package selection remains 3b-1d. TODO (3b-2): implement owned local
 Headscale stop/cleanup; this sub-part provides no callable seam for it.
 
-The next 3b-1c admission sub-part adds Python-only `replacement_inventory()`
-and a fail-closed `replace_failed()` entry. Only the replacement classifier can
-read a final `install-transaction.json`: the existing closed v1 schema is
-unchanged (only `prepared`; no new fields or phases). It requires root:root
-0600 metadata and all six fixed-file SHA-256 digests to match, including
-`provision.json`, and compares the exact journal bytes across both reads.
-Only a known failed/partial installation receives a `journal_generation`,
-the SHA-256 of those exact record bytes. This is a read-only candidate
-fingerprint, not proof of an interrupted transaction or permission to resume.
-Missing/different files, unknown/malformed records and final/pending uncertainty
-remain conflicts. Clean, intact manual and modern staged-inert/recorded installs
-are not replacement candidates; successful modern records should resume
-idempotently rather than be replaced. A modern installation classified as
-failed/partial can be a candidate.
+The 3b-1c Python-only replacement consumer now implements a **journal-bearing
+stop/intent sub-part**, not completed failed-install replacement. The v1 record
+still has exactly `version`, `layout`, `digests` and `phase`; only this consumer
+adds the phase `replacement-stopped` alongside `prepared`. Ordinary publication
+still accepts only `prepared`. All six original fixed-file digests, including
+provision.json, must match; root:root 0600 journal metadata and exact journal
+bytes are checked repeatedly. Stopped intents require the exact generated
+canonical bytes; `journal_generation` hashes those exact bytes.
+Unknown/malformed/mismatched records, missing files and pending entries refuse.
+Clean, successful modern staged-inert/recorded and intact manual installs still
+refuse before any mutation. An unjournaled failed/partial candidate also remains
+unavailable without effects in this bounded sub-part.
 
-This is the explicit read-only cut: `replace_failed()` refuses non-candidates
-and reports replacement mutation unavailable for candidates, before stop,
-release-home token reads/copies or any filesystem effect. Journal execution/update,
-quarantine/removal, fresh generation after replacement, and interrupted
-replacement resume to staged-inert remain undelivered and unavailable. The
-future mutating consumer must re-inventory, use the merged same-FD source-UID
-token reader before service effects, call `stop_and_confirm()` before file
-changes, journal/fsync every fixed-path rename/removal and never restore old
-credentials. Ordinary inventory, stop, provision/install/uninstall/drift and
-activation retain their transaction/profile refusals. No CLI/helper/D-Bus/package
-caller is added; Disable/account cleanup, rotation/repair, 3b-1d and 3b-2 remain
-outside this sub-part. All five rendered units in both layouts and
+For a proven journal-bearing failed/partial candidate, `replace_failed()`
+revalidates the recorded release home and reads only its fixed daemon.token
+through the merged same-FD source-UID reader before any mutating manager call.
+It re-inventories, calls the existing `stop_and_confirm()` owner, and requires
+dead inactive/failed states, no jobs, zero service PIDs and no cgroups before
+file changes. Stop/proof failure preserves every file. The merged atomic writer
+then fsyncs a root:root 0600 `replacement-stopped` intent with unchanged six
+digests, rechecks exact old journal bytes, fixed files and pinned parents, and
+atomically replaces only that journal followed by parent fsync. The ordinary
+no-replace writer contract is unchanged for every other publication. These
+sampled checks assume the existing single protected root writer; they are not
+a concurrent-root-writer fence.
+
+An interrupted published stopped intent is recognized only while its exact
+journal bytes and all six original files still validate. A later call rechecks
+the fixed token and quiescence, leaves the intent bytes unchanged, and raises
+`replacement paused after stop intent; quarantine/removal and fresh staging unavailable`.
+It never starts/enables a service or claims replacement success. Interruption
+before intent publication can leave `prepared`; if stopping erased the failed
+indication, a later call refuses rather than inventing failure provenance.
+Pending/uncertain entries are never automatically repaired or replayed.
+
+Quarantine/removal, fresh IDs/config/enrollment after replacement, unjournaled
+replacement and resume to staged-inert are still undelivered and unavailable.
+No old credentials, trust, control settings or argv are copied or restored.
+Ordinary inventory/stop/provision/install/uninstall/drift and modern activation
+retain their transaction/profile refusals, including the existing slice-3b-2
+home-control diagnostic. No release daemon/package effect or CLI/helper/D-Bus/
+package caller is added. Disable/account cleanup, rotation/repair, 3b-1d and
+3b-2 remain outside this sub-part. All five unit strings in both layouts and
 `home_transport=False` remain unchanged.
 
 The root operator supplies `install --enrollment-key-file /absolute/input.key`; the input must be a root:root, single-link regular `0600` file, nonempty and at most 64 KiB. Literal no-follow parent traversal and nonblocking/no-follow file opens refuse symlinks and special files. Every install, including reinstall, requires explicit input; this command does not infer a keyless reinstall from persisted state. Use ordinary service restart for an enrolled host; installing a new key over a consumed marker still refuses at the existing marker-plus-input gate. The customer cell issues the single-use, short-expiry key; the installer does not provision it. The original operator input remains the operator's responsibility to remove promptly.

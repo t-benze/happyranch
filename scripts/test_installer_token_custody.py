@@ -699,12 +699,15 @@ def test_invalid_record_schema_refuses_before_publication(fixture: Fixture, name
 
 @pytest.mark.parametrize("name", ["install-transaction.json", ".install-transaction.json.pending"])
 @pytest.mark.parametrize("operation", ["provision", "install", "uninstall", "drift"])
+@pytest.mark.parametrize("phase", ["prepared", "replacement-stopped"])
 def test_transaction_inventory_never_authorizes_service_or_recovery(
-    fixture: Fixture, name: str, operation: str,
+    fixture: Fixture, name: str, operation: str, phase: str,
 ) -> None:
     fixture.prepare(operation)
     parent = publication_parent(fixture)
-    fixture.write(parent / name, record_data("install-transaction.json"))
+    record = json.loads(record_data("install-transaction.json"))
+    record["phase"] = phase
+    fixture.write(parent / name, json.dumps(record).encode())
     before = fixture.inventory()
     with pytest.raises(module.InstallerError):
         if operation == "uninstall":
@@ -905,15 +908,260 @@ def test_replacement_inventory_refuses_unproven_journal(
 
 
 @pytest.mark.parametrize("journal", [False, True])
-def test_replace_failed_holds_recognized_candidates_before_mutation(fixture: Fixture, journal: bool) -> None:
+def test_replace_failed_stops_only_journaled_candidates(fixture: Fixture, journal: bool) -> None:
     manager, parent, _ = prepared_replacement(fixture)
     if not journal:
         (parent / "install-transaction.json").unlink()
     before = staged_inventory(fixture)
-    with pytest.raises(module.InstallerError, match="^replacement mutation unavailable;"):
+    with pytest.raises(module.InstallerError, match=("^replacement paused after stop intent;" if journal
+                                                   else "^replacement mutation unavailable;")):
+        fixture.installer.replace_failed()
+    if journal:
+        record = json.loads((parent / "install-transaction.json").read_bytes())
+        assert record["phase"] == "replacement-stopped"
+        assert [call[1] for call in manager.calls if call[0] == "stop"] == [module.UNITS[i] for i in (2, 0, 1, 3, 4)]
+    else:
+        assert staged_inventory(fixture) == before
+        assert all(call[0] == "show" and call[1] in module.UNITS for call in manager.calls)
+
+
+@pytest.mark.parametrize("case", ["failed", "partial", "modern-failed"])
+def test_replacement_stop_intent_preserves_six_files_and_resumes(
+    fixture: Fixture, monkeypatch: pytest.MonkeyPatch, case: str,
+) -> None:
+    manager, parent, prepared = prepared_replacement(fixture, case)
+    before = staged_inventory(fixture)
+    fsync = os.fsync
+    synced: list[tuple[int, int]] = []
+
+    def sync(fd: int) -> None:
+        info = os.fstat(fd)
+        synced.append((info.st_dev, info.st_ino))
+        fsync(fd)
+
+    monkeypatch.setattr(os, "fsync", sync)
+    with pytest.raises(module.InstallerError, match="^replacement paused after stop intent;"):
+        fixture.installer.replace_failed()
+    journal = parent / "install-transaction.json"
+    stopped = journal.read_bytes()
+    expected = json.loads(prepared)
+    expected["phase"] = "replacement-stopped"
+    assert json.loads(stopped) == expected  # Same six digests; no path or secret fields.
+    assert journal.stat().st_mode & 0o777 == 0o600
+    assert (journal.stat().st_uid, journal.stat().st_gid) == fixture.installer.root_owner
+    for path in (journal, parent):
+        info = path.stat()
+        assert (info.st_dev, info.st_ino) in synced
+    after = staged_inventory(fixture)
+    changed = {key for key in before.keys() | after.keys() if before.get(key) != after.get(key)}
+    assert changed == {"etc/happyranch", "etc/happyranch/install-transaction.json"}
+    assert all(call[0] in {"show", "stop"} and call[1] in module.UNITS for call in manager.calls)
+    assert all(state == "inactive" for state in manager.states.values())
+    # A new installer instance represents loss of all in-memory observations.
+    fixture.installer = module.ManagedInstaller(
+        root=fixture.root, root_owner=fixture.installer.root_owner, manager=manager,
+        lookup_user=fixture.installer._lookup_user, lookup_group=fixture.installer._lookup_group,
+    )
+    result = fixture.installer.replacement_inventory()
+    assert result.installation.detail == "replacement-stopped"
+    assert result.journal_generation == hashlib.sha256(stopped).hexdigest()
+    manager.calls.clear()
+    with pytest.raises(module.InstallerError, match="^replacement paused after stop intent;"):
+        fixture.installer.replace_failed()
+    assert staged_inventory(fixture) == after  # Resume does not rewrite the intent.
+    assert [call[1] for call in manager.calls if call[0] == "stop"] == [
+        module.UNITS[i] for i in (2, 0, 1, 3, 4) if case != "partial" or i != 1]
+    assert all(call[0] in {"show", "stop"} and call[1] in module.UNITS for call in manager.calls)
+
+
+@pytest.mark.parametrize("failure", ["stop-error", "still-active", "pid", "control-pid", "cgroup", "job"])
+def test_replacement_stop_failure_preserves_all_files(fixture: Fixture, failure: str) -> None:
+    manager, _, _ = prepared_replacement(fixture)
+    if failure == "stop-error":
+        manager.stop_error = module.UNITS[1]
+    elif failure == "still-active":
+        manager.sticky = True
+        manager.states[module.UNITS[0]] = "active"
+        manager.states[module.UNITS[1]] = "failed"
+    else:
+        manager.override.update({"pid": {"MainPID": "42"}, "control-pid": {"ControlPID": "42"},
+                                 "cgroup": {"ControlGroup": "/synthetic/cgroup"}, "job": {"Job": "42 start"}}[failure])
+    before = staged_inventory(fixture)
+    with pytest.raises(module.InstallerError) as error:
+        fixture.installer.replace_failed()
+    assert staged_inventory(fixture) == before
+    assert any(call[0] == "stop" for call in manager.calls)
+    assert str(error.value).startswith("quiescence unconfirmed:")
+    assert all(call[0] in {"show", "stop"} and call[1] in module.UNITS for call in manager.calls)
+
+
+@pytest.mark.parametrize("attack", ["foreign-owner", "parent-swap", "leaf-swap", "mode", "links", "size", "mtime"])
+def test_replacement_token_refuses_before_stop_or_publication(
+    fixture: Fixture, monkeypatch: pytest.MonkeyPatch, attack: str,
+) -> None:
+    manager, _, _ = prepared_replacement(fixture)
+    before = staged_inventory(fixture)
+    target, fstat = fixture.token.stat(), os.fstat
+
+    def change() -> None:
+        if attack == "parent-swap":
+            fixture.home.rename(fixture.home.with_name("previous-release"))
+            fixture.home.mkdir(mode=0o700)
+        elif attack == "leaf-swap":
+            fixture.token.rename(fixture.home / "previous-token")
+            fixture.write(fixture.token, b"synthetic-substitution")
+        elif attack == "mode":
+            fixture.token.chmod(0o640)
+        elif attack == "links":
+            os.link(fixture.token, fixture.home / "extra-link")
+        elif attack == "size":
+            fixture.token.write_bytes(b"synthetic-grown-token")
+        elif attack == "mtime":
+            os.utime(fixture.token, ns=(target.st_atime_ns, target.st_mtime_ns + 1_000_000_000))
+
+    reads = watch_read(fixture, monkeypatch, change)
+    if attack == "foreign-owner":
+        def foreign(fd: int) -> object:
+            info = fstat(fd)
+            if (info.st_dev, info.st_ino) != (target.st_dev, target.st_ino):
+                return info
+            values = {name: getattr(info, name) for name in dir(info) if name.startswith("st_")}
+            return SimpleNamespace(**{**values, "st_uid": info.st_uid + 1})
+        monkeypatch.setattr(os, "fstat", foreign)
+    with pytest.raises(module.InstallerError):
         fixture.installer.replace_failed()
     assert staged_inventory(fixture) == before
     assert all(call[0] == "show" and call[1] in module.UNITS for call in manager.calls)
+    assert len(reads) == (0 if attack == "foreign-owner" else 1)
+
+
+@pytest.mark.parametrize("bad", ["malformed", "unknown-phase", "pending", "changed-bytes", "prepared-downgrade", *[
+    f"{kind}:{name}" for kind in ("digest", "missing") for name in (
+        "connector.json", "sidecar.json", "policy.json", "release-daemon.json", "daemon.token", "provision.json")]])
+def test_replacement_stopped_intent_refuses_unproven_generation(fixture: Fixture, bad: str) -> None:
+    manager, parent, _ = prepared_replacement(fixture)
+    with pytest.raises(module.InstallerError, match="^replacement paused after stop intent;"):
+        fixture.installer.replace_failed()
+    journal = parent / "install-transaction.json"
+    record = json.loads(journal.read_bytes())
+    if ":" in bad:
+        kind, name = bad.split(":")
+        if kind == "digest":
+            record["digests"][name] = "f" * 64
+        else:
+            (parent / name).unlink()
+        fixture.write(journal, json.dumps(record, sort_keys=True).encode())
+    elif bad == "malformed":
+        fixture.write(journal, b"{invalid")
+    elif bad == "unknown-phase":
+        record["phase"] = "synthetic-secret"
+        fixture.write(journal, json.dumps(record).encode())
+    elif bad == "pending":
+        fixture.write(parent / ".install-transaction.json.pending", journal.read_bytes())
+    elif bad == "changed-bytes":
+        fixture.write(journal, journal.read_bytes() + b"\n")
+    else:
+        # A valid prepared record cannot infer failure from the now-stopped host.
+        record["phase"] = "prepared"
+        fixture.write(journal, json.dumps(record).encode())
+    manager.calls.clear()
+    before = staged_inventory(fixture)
+    observed = fixture.installer.replacement_inventory()
+    assert observed.installation.state in {"manual-install-conflict", "healthy-manual"}
+    assert observed.journal_generation is None
+    with pytest.raises(module.InstallerError, match="^replacement refused:"):
+        fixture.installer.replace_failed()
+    assert staged_inventory(fixture) == before
+    assert all(call[0] == "show" and call[1] in module.UNITS for call in manager.calls)
+
+
+@pytest.mark.parametrize("point", ["pending-fsync", "parent-fsync", "after-intent"])
+def test_replacement_intent_interruption_never_reopens_services(
+    fixture: Fixture, monkeypatch: pytest.MonkeyPatch, point: str,
+) -> None:
+    manager, parent, prepared = prepared_replacement(fixture)
+    original_files = {name: (parent / name).read_bytes() for name in json.loads(prepared)["digests"]}
+    fsync, write = os.fsync, fixture.installer._write_provision_file
+    parent_info = parent.stat()
+    interrupted = False
+
+    def sync(fd: int) -> None:
+        nonlocal interrupted
+        info = os.fstat(fd)
+        is_parent = (info.st_dev, info.st_ino) == (parent_info.st_dev, parent_info.st_ino)
+        if not interrupted and ((point == "pending-fsync" and not is_parent) or (point == "parent-fsync" and is_parent)):
+            interrupted = True
+            raise OSError("synthetic-interruption")
+        fsync(fd)
+
+    def publish(*args: object, **kwargs: object) -> None:
+        nonlocal interrupted
+        write(*args, **kwargs)
+        interrupted = True
+        raise SystemExit("synthetic-process-death")
+
+    with monkeypatch.context() as patch:
+        if point == "after-intent":
+            patch.setattr(fixture.installer, "_write_provision_file", publish)
+        else:
+            patch.setattr(os, "fsync", sync)
+        with pytest.raises((module.InstallerError, SystemExit)):
+            fixture.installer.replace_failed()
+    assert interrupted
+    assert all(state == "inactive" for state in manager.states.values())
+    assert original_files == {name: (parent / name).read_bytes() for name in original_files}
+    journal = parent / "install-transaction.json"
+    assert json.loads(journal.read_bytes())["phase"] == ("prepared" if point == "pending-fsync" else "replacement-stopped")
+    before = staged_inventory(fixture)
+    manager.calls.clear()
+    with pytest.raises(module.InstallerError, match=("^replacement refused: healthy-manual:" if point == "pending-fsync"
+                                                   else "^replacement paused after stop intent;")):
+        fixture.installer.replace_failed()
+    assert staged_inventory(fixture) == before
+    assert all(call[0] in ({"show"} if point == "pending-fsync" else {"show", "stop"})
+               and call[1] in module.UNITS for call in manager.calls)
+
+
+@pytest.mark.parametrize("attack", ["journal", "fixed-file", "parent-swap", "pending-substitution"])
+def test_replacement_late_publication_change_refuses(
+    fixture: Fixture, monkeypatch: pytest.MonkeyPatch, attack: str,
+) -> None:
+    _, parent, prepared = prepared_replacement(fixture)
+    fsync = os.fsync
+    attacked = False
+    moved = parent.with_name("previous-config")
+
+    def sync(fd: int) -> None:
+        nonlocal attacked
+        fsync(fd)
+        pending = parent / ".install-transaction.json.pending"
+        if attacked or not pending.exists() or os.fstat(fd).st_ino != pending.stat().st_ino:
+            return
+        attacked = True
+        if attack == "journal":
+            fixture.write(parent / "install-transaction.json", prepared + b"\n")
+        elif attack == "fixed-file":
+            target = parent / "connector.json"
+            target.write_bytes(target.read_bytes() + b"\n")
+        elif attack == "parent-swap":
+            parent.rename(moved)
+            parent.mkdir(mode=0o755)
+        else:
+            pending.rename(parent / "unknown-pending")
+            fixture.write(pending, b"synthetic-substitution")
+
+    monkeypatch.setattr(os, "fsync", sync)
+    with pytest.raises(module.InstallerError):
+        fixture.installer.replace_failed()
+    assert attacked
+    actual_parent = moved if attack == "parent-swap" else parent
+    assert (actual_parent / "install-transaction.json").read_bytes() == prepared + (b"\n" if attack == "journal" else b"")
+    if attack == "parent-swap":
+        assert list(parent.iterdir()) == []
+    if attack == "pending-substitution":
+        assert (parent / ".install-transaction.json.pending").read_bytes() == b"synthetic-substitution"
+    else:
+        assert not (actual_parent / ".install-transaction.json.pending").exists()
 
 
 @pytest.mark.parametrize("operation", ["inventory", "stop"])
