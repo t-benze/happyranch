@@ -3,8 +3,8 @@ one daemon, and neither org's audit log mentions the other's task.
 
 Style note: this file mirrors ``test_end_to_end.py`` — same ``live_daemon``
 fixture, same ``_auth_headers`` helper, same ``httpx`` direct calls. The
-plan (docs/superpowers/plans/2026-04-28-parallel-multi-org-runtime.md
-§Task 24) sketched the flow using a ``daemon_under_test`` fixture with
+historical parallel-org plan (removed; see Git history, Task 24) sketched the
+flow using a ``daemon_under_test`` fixture with
 ``bootstrap_minimal_agent`` / ``task_status`` / ``audit_log`` helpers
 that don't exist; we adapt to the project's established HTTP integration
 pattern while preserving the plan's spirit — exercise daemon routes

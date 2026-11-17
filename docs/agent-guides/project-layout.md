@@ -223,11 +223,10 @@ Tracked source is split by product surface:
 |-- docs/
 |   |-- agent-guides/            # on-demand agent/developer reference
 |   |-- adr/                     # architecture decision records
-|   |-- design-overhaul/         # dated product/design project artifacts
 |   |-- manual/                  # documentation-site source
 |   |-- operations/              # operator runbooks and release checklists
 |   |-- product/                 # product notes and PRDs
-|   |-- superpowers/{plans,specs}/ # historical plans and indexed design history
+|   |-- superpowers/specs/        # retained current and referenced designs
 |   `-- local-ci.md, jenkins-jobs.md # supported development/CI operations
 |-- examples/orgs/hk-macau-tourism/  # canonical sample org tree
 `-- tests/                       # Python tests; see the forward-only placement rules below
@@ -297,8 +296,7 @@ The six remaining task keepers are `try_escalate`, `try_escalate_runtime`,
 `try_escalate_over_budget`, `insert_task_result`, `_insert_task_result`,
 and `admit_task_completion_callback`.
 The exact S8a/S8b/S8c/S8d/S8e/S8f/S8g method inventories and remaining collision holds are
-recorded in
-`docs/superpowers/plans/2026-10-01-backend-decomposition.md`.
+recorded in the historical decomposition plan (removed; see Git history).
 
 ## Source dependency boundary
 
