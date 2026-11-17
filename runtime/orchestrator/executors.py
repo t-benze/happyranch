@@ -10,7 +10,7 @@ import sys
 import time
 import uuid
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Final, Literal
@@ -25,6 +25,7 @@ from runtime.platform.isolation import (
 )
 
 if TYPE_CHECKING:
+    from runtime.skills.usage import SkillUseCapture
     from runtime.orchestrator.throttle import OnThrottleEvent
     from runtime.platform.session_backend import LaunchSpec, RunningHandle
 
@@ -90,6 +91,8 @@ class ExecutorResult:
         "post_launch_contract",
     ] | None = None
     provider_launched: bool = False
+    # Bounded observation input only; never used for outcome or token accounting.
+    skill_use_capture: SkillUseCapture | None = field(default=None, repr=False, compare=False)
 
 
 _TAIL_BYTES = 2000
@@ -1388,6 +1391,8 @@ def _run_command(
                 logger.warning("exit-zero notice parser raised: %s", exc)
                 exit_zero_notice = None
 
+        from runtime.skills.usage import capture_skill_use
+
         return ExecutorResult(
             success=True,
             duration_seconds=int(time.monotonic() - start_time),
@@ -1397,6 +1402,7 @@ def _run_command(
             stderr_tail=stderr_tail,
             token_usage=token_usage,
             agent_session_id=agent_session_id,
+            skill_use_capture=capture_skill_use(provider, workspace, input_text, full_stdout),
             rate_limited=rate_limited,
             terminal_error_notice=exit_zero_notice,
             provider_launched=True,

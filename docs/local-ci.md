@@ -3534,3 +3534,16 @@ fresh helper authorization, continued selection of expired grants, durable deny
 before A's closures and continued B delivery. No production clock seam is added.
 Installed package activation and native password dialogs remain NOT RUN.
 Required hosted checks remain Source Boundary Lint and Web Lint (Node 24).
+
+## Focused skill-use observation checks (THR-203 step 1A)
+
+```sh
+uv run --frozen python -B -m unittest scripts.test_skill_usage -v
+```
+
+These standalone checks use synthetic Claude JSONL and Codex JSON events,
+private temporary files and real SQLite. They exercise invocation attribution,
+honest file-open signals, unsafe/malformed/missing/oversized input refusal,
+reparse idempotency, fail-safe observation and additive legacy upgrades without
+providers, daemon lifespan or live data. This venue is outside retired Python
+units, general integration and Product E2E and adds no required CI check.
