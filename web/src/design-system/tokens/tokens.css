@@ -128,8 +128,8 @@
 
   /* ---- AGENT IDENTITY ---- */
 
-  --color-agent-manager:   #8265c8;
-  --color-agent-worker:    #2a9a93;
+  --color-agent-manager:   var(--color-info);     /* THR-376 PR9: Pasture info (was off-palette violet) */
+  --color-agent-worker:    var(--color-accent);   /* THR-376 PR9: Pasture accent (was off-palette teal) */
   --color-agent-founder:   oklch(0.52 0.11 152);
 
   /* ---- STATUS ---- */
@@ -438,9 +438,9 @@
   --color-tier-red:         oklch(0.70 0.15 25);
   --color-tier-red-tint:    oklch(0.34 0.06 28 / 0.60);
 
-  /* ---- Agent identity (dark) — same hex, still ok ---- */
-  --color-agent-manager:   #8265c8;
-  --color-agent-worker:    #2a9a93;
+  /* ---- Agent identity (dark) — aliases of the dark palette tokens (THR-376 PR9) ---- */
+  --color-agent-manager:   var(--color-info);     /* THR-376 PR9: Pasture info (was off-palette violet) */
+  --color-agent-worker:    var(--color-accent);   /* THR-376 PR9: Pasture accent (was off-palette teal) */
   --color-agent-founder:   oklch(0.70 0.13 152);
 
   /* ---- Status (dark) ---- */

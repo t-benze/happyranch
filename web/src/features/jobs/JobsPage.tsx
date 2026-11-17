@@ -26,6 +26,7 @@ import { List, Row, RowAction } from '@/design-system/patterns/List';
 import { PageTitle } from '@/design-system/patterns/PageTitle';
 import { TONE_CLASS, toneClass } from '@/design-system/patterns/semanticTone';
 import { useJobsList } from '@/hooks/jobs';
+import { Avatar } from '@/design-system/primitives/Avatar';
 import { useTranslation } from '@/hooks/i18n';
 import type { MessageKey, MessageParams } from '@/lib/i18n';
 import type { JobRecord, JobStatus } from '@/lib/api/types';
@@ -111,17 +112,6 @@ function NeedsReviewPill(): JSX.Element {
   );
 }
 
-/** Requested-by avatar — green initial chip (no backend role field). */
-function AgentAvatar({ name }: { name: string }): JSX.Element {
-  return (
-    <span
-      aria-hidden="true"
-      className="bg-accent-soft text-accent-text flex h-12 w-12 shrink-0 items-center justify-center rounded-full text-xs font-semibold"
-    >
-      {agentInitials(name)}
-    </span>
-  );
-}
 
 /**
  * OPENED column — a lifecycle-tinted outcome pill for terminal/running jobs,
@@ -190,7 +180,8 @@ function JobCard({ job, to }: { job: JobRecord; to: string }): JSX.Element {
 
         {/* REQUESTED BY */}
         <div className={`${CARD_COL.requestedBy} flex min-w-0 items-center gap-2`}>
-          <AgentAvatar name={job.agent_name} />
+          {/* Requested-by avatar — soft tone: JobRecord carries no role field. */}
+          <Avatar initials={agentInitials(job.agent_name)} tone="soft" size="lg" />
           <span className="text-text-secondary truncate text-sm"><IdentityName canonicalId={job.agent_name} /></span>
         </div>
 

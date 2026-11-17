@@ -10,7 +10,8 @@
 import { Lock, Package, Sparkles } from 'lucide-react';
 import { useTranslation } from '@/hooks/i18n';
 import type { CatalogSkillItem } from '@/hooks/skills';
-import { SkillStatusBadge } from './SkillStatusBadge';
+import { StatusBadge } from '@/design-system/patterns/StatusBadge';
+import { skillStatusBadge } from './skillStatus';
 import { isBundled, isReadOnly, SOURCE_LABEL_KEYS, sourceLabel } from './skills-catalog';
 
 function SourceBadge({ item }: { item: CatalogSkillItem }): JSX.Element {
@@ -70,7 +71,7 @@ export function SkillCard({ item }: { item: CatalogSkillItem }): JSX.Element {
           {/* Skill-level validation badge renders on EVERY catalog row,
               including read-only/system_contract — read-only only suppresses
               INTERACTIVE controls (toggle/unassign), not this status label. */}
-          <SkillStatusBadge state={item.validation_state} />
+          <StatusBadge {...skillStatusBadge(item.validation_state, t)} />
           <span className="text-mono-sm text-fg-subtle">v{item.version}</span>
         </div>
 

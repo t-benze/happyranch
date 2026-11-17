@@ -37,7 +37,8 @@ import { EmptyState } from '@/design-system/patterns/EmptyState';
 import { useTranslation } from '@/hooks/i18n';
 import { useSkillDetail } from '@/hooks/skills';
 import { SkillAssignmentPanel } from './SkillAssignmentPanel';
-import { SkillStatusBadge } from './SkillStatusBadge';
+import { StatusBadge } from '@/design-system/patterns/StatusBadge';
+import { skillStatusBadge } from './skillStatus';
 import { SOURCE_LABEL_KEYS, type ValidationTone } from './skills-catalog';
 import { classifySkillError, renderSkillError } from './strings';
 import {
@@ -162,14 +163,7 @@ export function SkillDetailPage(): JSX.Element {
                   {t('skills.badge.systemContract')}
                 </span>
               )}
-              <SkillStatusBadge
-                state={
-                  skill.validation_state as
-                    | 'in_catalog'
-                    | 'validated'
-                    | 'failed_validation'
-                }
-              />
+              <StatusBadge {...skillStatusBadge(skill.validation_state, t)} />
               <span className="text-mono-sm text-fg-subtle">
                 v{skill.version}
               </span>

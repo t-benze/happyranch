@@ -1,7 +1,8 @@
 import { Link } from 'react-router-dom';
 import { getCustomSkillId, type CustomSkill } from '@/hooks/custom-skills';
 import { useTranslation } from '@/hooks/i18n';
-import { SkillStatusBadge } from './SkillStatusBadge';
+import { StatusBadge } from '@/design-system/patterns/StatusBadge';
+import { skillStatusBadge } from './skillStatus';
 
 export function CustomSkillCard({ skill, slug }: { skill: CustomSkill; slug: string }): JSX.Element {
   const { t } = useTranslation();
@@ -22,7 +23,7 @@ export function CustomSkillCard({ skill, slug }: { skill: CustomSkill; slug: str
               <span className="bg-accent-soft text-accent-text text-2xs rounded-full px-2 py-0.5 font-bold tracking-wide uppercase">
                 {t('skills.source.custom')}
               </span>
-              <SkillStatusBadge state={removed ? 'permanently_removed' : hidden ? 'no_eligibility_policy' : skill.validation_state} />
+              <StatusBadge {...skillStatusBadge(removed ? 'permanently_removed' : hidden ? 'no_eligibility_policy' : skill.validation_state, t)} />
               {!removed && skill.retired_at && <span className="text-mono-sm text-fg-muted">{t('skills.retired')}</span>}
             </div>
             <h3 className="text-fg font-mono text-sm font-semibold">{skill.name}</h3>

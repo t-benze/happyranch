@@ -160,6 +160,32 @@ Feature compositions keep using the stable `@/design-system/...` import paths.
   `--accent-soft`. Entity IDs follow Pasture `.id`: `--color-id-task` and
   `--color-id-thread` alias `--color-info`, and `IdBadge` also renders `job`,
   `schedule` and `run` IDs in `--color-info`.
+  Feature vocabularies use the same badge (THR-376 PR9): pass `tone` (a
+  `semanticTone` tone), `label` (the feature's own localized word) and
+  optionally `dot` (the `.tag` led) and a decorative `icon`. The Todos
+  schedule states (`scheduleStatusBadge` in `features/todos/strings.ts`:
+  `toneFor` + `statusLabel`, led on armed/firing) and the Skills validation
+  states (`skillStatusBadge` in `features/skills/skillStatus.tsx`: Validated
+  positive, In catalog neutral, Needs attention / hidden attention,
+  permanently removed neutral) render this way; the former `StatusPill` and
+  `SkillStatusBadge` are deleted. Words and i18n keys are unchanged; the
+  Skills pill moved from mono to the body font.
+- `Avatar` (`primitives/Avatar.tsx`, THR-376 PR9) is the one initials
+  avatar: Agents roster and detail, Jobs requested-by, Todos owner (list and
+  detail), Threads transcript turns, retired agents and the Sidebar founder.
+  Props `initials` (rendered verbatim; each caller keeps its existing
+  initials rule), `tone` and `size`; always `aria-hidden`. Sizes are the
+  review's three steps: `sm` 22px (9.5px label, ds.css `.avatar-sm`), `md`
+  30px (11px), `lg` 34px (12px); 700 weight; 50% radius (ds.css Direction A).
+  Tones: `founder` is the ds.css `.avatar` gradient (`--accent` → `--info`);
+  `manager` / `worker` fill with `--color-agent-manager` / `-worker`, which
+  are now aliases of `--color-info` / `--color-accent` (the off-palette violet
+  and teal literals are gone); `soft` (`--accent-soft` + `--accent-text`) is
+  for identities with no role field (Jobs, Todos); `neutral` (`--surface-2` +
+  `--ink-2`) is for retired agents. Labels on solid/gradient tones use
+  `--color-text-inverse`. ds.css has no other avatar palette. `AgentChip`
+  and the roster/detail role dots are 6px role dots, not avatars; they keep
+  the `--color-agent-*` tokens.
 - `AppBar` renders the Pasture `.topbar` on every page: 56px tall, 26px
   inline padding, a 1px `--border` bottom rule and a translucent `bg-bg/80`
   background (ds.css `color-mix(in oklab, var(--bg) 80%, transparent)`), with
@@ -293,12 +319,13 @@ and retry is local state, so Storybook remains daemon-isolated.
 
 ## Coverage ledger
 
-**46 reusable components: 44 story-covered, 2 justified exclusions.** Stories
+**47 reusable components: 45 story-covered, 2 justified exclusions.** Stories
 preserve the former catalogue's descriptions, examples, variants, and token
 visibility through titles, docs, controls, and representative renders.
 
 | Reusable export | Story or exclusion | Representative states / variants | Tokens |
 |---|---|---|---|
+| `Avatar` | [source:primitives/Avatar.tsx#Avatar] [story:primitives/Avatar.coverage.stories.tsx#Coverage] Primitives / Avatar Variants | founder/manager/worker/soft/neutral tones; sm 22 / md 30 / lg 34px | `--accent`→`--info` gradient, `--color-agent-*` (aliases of `--color-info`/`--color-accent`), `--accent-soft`/`--accent-text`, surface-2, `--color-text-inverse` |
 | `Button` | [source:primitives/Button.tsx#Button] [story:primitives/Button.coverage.stories.tsx#Coverage] Primitives / Button States | default/secondary/outline/ghost/destructive/destructive-outline/link; default/sm/lg/icon; loading, disabled, icon, focus, `asChild` | `components.button` |
 | `Card` | [source:primitives/Card.tsx#Card] [story:primitives/Card.coverage.stories.tsx#Coverage] Primitives / Card Variants | container (18px), entry (12px); padding default (20) / none; with CardHeader | `--radius-lg`, `--radius-md`, `shadow-pasture-sm`, surface/border |
 | `CardHeader` | [source:primitives/Card.tsx#CardHeader] [story:primitives/CardHeader.coverage.stories.tsx#Coverage] Primitives / Card Header | title, meta, actions | `.card-head`, `.card-title` |
@@ -334,7 +361,7 @@ visibility through titles, docs, controls, and representative renders.
 | `RecipientsInput` | [source:patterns/RecipientsInput.tsx#RecipientsInput] [story:patterns/RecipientsInput.coverage.stories.tsx#Coverage] Patterns / Recipients Input Interaction | editable prefix | mention/surface |
 | `Sparkline` | [source:patterns/Sparkline.tsx#Sparkline] [story:patterns/Sparkline.coverage.stories.tsx#Coverage] Patterns / Sparkline Variants | default/green/yellow/red | semantic tiers |
 | `StatValue` | [source:patterns/StatValue.tsx#StatValue] [story:patterns/StatValue.coverage.stories.tsx#Coverage] Patterns / Stat Value Formats | token/count, right/inline | `components.stat_value` |
-| `StatusBadge` | [source:patterns/StatusBadge.tsx#StatusBadge] [story:patterns/StatusBadge.coverage.stories.tsx#Coverage] Patterns / Status Badge States | all lifecycle states | `components.badge` |
+| `StatusBadge` | [source:patterns/StatusBadge.tsx#StatusBadge] [story:patterns/StatusBadge.coverage.stories.tsx#Coverage] Patterns / Status Badge States | all lifecycle states; feature-vocabulary tone + label (+ led dot, icon) | `components.badge` |
 | `TaskCard` | [source:patterns/TaskCard.tsx#TaskCard] [story:patterns/TaskCard.coverage.stories.tsx#Coverage] Patterns / Task Card Density | populated/active; comfortable, compact; injected routes | badge/card |
 | `ThreadHeader` | [source:patterns/ThreadHeader.tsx#ThreadHeader] [story:patterns/ThreadHeader.coverage.stories.tsx#Coverage] Patterns / Thread Header States | open/dream/action, archived | thread layout |
 | `TraceTree` | [source:patterns/TraceTree.tsx#TraceTree] [story:patterns/TraceTree.coverage.stories.tsx#Coverage] Patterns / Trace Tree Density | recursive cost fixture; comfortable, compact | `components.trace_tree` |

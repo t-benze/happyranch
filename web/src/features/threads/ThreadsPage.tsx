@@ -17,6 +17,7 @@ import { IdentityName } from '@/shared/identities/IdentityName';
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
+import { Avatar } from '@/design-system/primitives/Avatar';
 import { Button } from '@/design-system/primitives/Button';
 import { PageTitle } from '@/design-system/patterns/PageTitle';
 import { Input } from '@/design-system/primitives/Input';
@@ -172,7 +173,7 @@ function participantChipRole(name: string): 'worker' | 'founder' {
  * LATEST responder state (honest — the same responder_status the strip shows):
  * replied→accent green, working→info blue, declined→attention amber,
  * failed→danger red. Agents with no recorded state fall back to the neutral
- * worker color (also what the rail-chip test pins for a status-less agent).
+ * muted-text colour, never bg-agent-worker (= accent, the 'replied' colour).
  */
 function participantLed(name: string, status: string | null): string {
   if (name === 'founder') return 'bg-agent-founder';
@@ -186,7 +187,7 @@ function participantLed(name: string, status: string | null): string {
     case 'failed':
       return 'bg-danger';
     default:
-      return 'bg-agent-worker';
+      return 'bg-text-muted';
   }
 }
 
@@ -262,15 +263,8 @@ function latestResponderStatusByAgent(messages: ThreadMessage[]): Map<string, st
  */
 function TurnAvatar({ name }: { name: string }): JSX.Element {
   const founderName = useFounderName();
-  const bg = participantChipRole(name) === 'founder' ? 'bg-agent-founder' : 'bg-agent-worker';
-  return (
-    <span
-      aria-hidden="true"
-      className={`text-overline flex h-8 w-8 shrink-0 items-center justify-center rounded-full font-bold text-white ${bg}`}
-    >
-      {speakerInitials(name, founderName)}
-    </span>
-  );
+  const tone = participantChipRole(name) === 'founder' ? 'founder' : 'worker';
+  return <Avatar initials={speakerInitials(name, founderName)} tone={tone} size="md" />;
 }
 
 /**
