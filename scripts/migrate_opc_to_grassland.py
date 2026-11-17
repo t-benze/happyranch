@@ -3,7 +3,7 @@
 
 What it does:
 
-1. Stops a running daemon (graceful TERM, then KILL after 5s).
+1. Stops a running daemon (graceful TERM, then KILL after 60s).
 2. Renames ``~/.opc/`` -> ``~/.happyranch/`` (refuses if target exists).
 3. For every registered runtime, renames the ``opc.yaml`` marker
    -> ``happyranch.yaml`` and each org's ``opc.db*`` -> ``happyranch.db*``.
@@ -64,7 +64,7 @@ def stop_daemon_if_running(home: Path, dry: bool) -> None:
         os.kill(pid, signal.SIGTERM)
     except OSError:
         return
-    for _ in range(5):
+    for _ in range(60):
         time.sleep(1)
         try:
             os.kill(pid, 0)

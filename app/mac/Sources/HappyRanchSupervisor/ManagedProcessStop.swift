@@ -7,13 +7,13 @@ public enum ManagedProcessStop {
         case stillRunning(killError: Int32?)
     }
 
-    /// Keep the existing five-second TERM grace, then allow two seconds for KILL.
+    /// Allow the daemon sixty seconds of TERM grace, then allow two seconds for KILL.
     /// The main run loop stays available for the process termination callback.
     @MainActor
     public static func stop(_ handle: any ProcessHandle) -> Outcome {
         if handle.isRunning {
             handle.terminate()
-            waitForExit(handle, seconds: 5)
+            waitForExit(handle, seconds: 60)
         }
         var killError: Int32?
         if handle.isRunning {

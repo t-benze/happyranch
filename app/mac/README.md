@@ -38,7 +38,7 @@ ephemeral daemon port after sanitization. See the
 
 ## Managed daemon Stop and health
 
-Stop sends TERM to the app's current managed child, waits up to five seconds,
+Stop sends TERM to the app's current managed child, waits up to sixty seconds,
 then sends KILL if it is still running and waits up to two more seconds. The
 waits use elapsed monotonic time. Diagnostics record the observed exit status
 and actual uncaught signal, including an exit during the TERM grace. A signal

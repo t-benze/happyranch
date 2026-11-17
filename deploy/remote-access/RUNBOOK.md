@@ -17,6 +17,19 @@ those outcomes or authorization to provision/deploy.
 
 ---
 
+## Daemon stop budget
+
+The packaged user `happyranch-daemon.service` explicitly sets
+`TimeoutStopSec=60`; its desktop service wrapper gives the daemon child
+60 seconds after TERM before KILL (then a bounded reap). Source deployments
+using `scripts/daemon.sh stop` also allow 60 seconds. This leaves room for the
+jobs shutdown mitigation's 30-second TERM grace and finalization. Long native
+drains can still exhaust the outer budget; this is not crash recovery.
+The generated `systemd_unit.py` limits belong to separate processes:
+connector 10 seconds, tsnet sidecar 35 seconds, verifier 5 seconds. They do
+not stop the daemon and are unchanged. Existing installed units require the
+normal separately authorized release/install; this PR does not restart them.
+
 ## Desktop package host
 
 The Linux root installer supports `--layout source` (default, unchanged source
