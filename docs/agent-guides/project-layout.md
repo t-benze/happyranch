@@ -223,11 +223,10 @@ Tracked source is split by product surface:
 |-- docs/
 |   |-- agent-guides/            # on-demand agent/developer reference
 |   |-- adr/                     # architecture decision records
-|   |-- design-overhaul/         # dated product/design project artifacts
 |   |-- manual/                  # documentation-site source
 |   |-- operations/              # operator runbooks and release checklists
 |   |-- product/                 # product notes and PRDs
-|   |-- superpowers/{plans,specs}/ # historical plans and indexed design history
+|   |-- superpowers/specs/        # retained current and referenced designs
 |   `-- local-ci.md, jenkins-jobs.md # supported development/CI operations
 |-- examples/orgs/hk-macau-tourism/  # canonical sample org tree
 `-- tests/                       # Python tests; see the forward-only placement rules below
@@ -297,8 +296,7 @@ The six remaining task keepers are `try_escalate`, `try_escalate_runtime`,
 `try_escalate_over_budget`, `insert_task_result`, `_insert_task_result`,
 and `admit_task_completion_callback`.
 The exact S8a/S8b/S8c/S8d/S8e/S8f/S8g method inventories and remaining collision holds are
-recorded in
-`docs/superpowers/plans/2026-10-01-backend-decomposition.md`.
+recorded in the historical decomposition plan (removed; see Git history).
 
 ## Source dependency boundary
 
@@ -322,10 +320,11 @@ coverage. `python scripts/validate_source_boundaries.py` is bounded standalone
 synthetic CLI validation outside `tests/`, with fail-on-execution source sentinels;
 it is neither product testing nor E2E coverage.
 
-`scripts/local_ci.sh boundary-lint` runs the baseline, shipped remote-access policy
-consistency lint, and synthetic validation;
+`scripts/local_ci.sh boundary-lint` runs `scripts/check_source_boundaries.py`,
+`scripts/check_remote_access_policy.py`, `scripts/check_private_operator_endpoints.py`,
+`scripts/validate_source_boundaries.py`, and `scripts/validate_private_operator_endpoints.py`;
 `all` includes that lane before Web. Unconditional `Source Boundary Lint` in
-`.github/workflows/ci.yml` runs all three commands on every PR and push to main using
+`.github/workflows/ci.yml` runs all five commands on every PR and push to main using
 Python 3.14, without installing project dependencies. See [Local CI](../local-ci.md).
 
 ## Test placement
@@ -349,7 +348,7 @@ the canonical bootstrap example remains `examples/orgs/hk-macau-tourism/`.
 
 ## Runtime Container
 
-Daemon home: `~/.happyranch/` contains `auth_token`, `runtimes.yaml`, `daemon.pid`, `daemon.port`, and `config.yaml`.
+Daemon home: `~/.happyranch/` contains `auth_token`, `runtimes.yaml`, `daemon.lock`, `daemon.pid`, `daemon.port`, and `config.yaml`. The lifetime lock is persistent; never unlink/replace it. See [daemon lifecycle](contracts/runtime-lifecycle.md#daemon-lifetime-lock-thr-357).
 
 Runtime container shape:
 

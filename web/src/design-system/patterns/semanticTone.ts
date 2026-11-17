@@ -9,7 +9,8 @@
  *   1. tone  →  Tailwind token classes (text + tinted bg). EXISTING named
  *      tokens only — no new tokens, no arbitrary values (eslint hard error in
  *      features). blue = --color-info(+ -soft); amber = --color-attention-*;
- *      green = --color-status-open/--color-tier-green-tint; red =
+ *      green = --color-accent-text/--color-accent-soft (Pasture --accent-text
+ *      on --accent-soft, THR-376); red =
  *      --color-status-escalated/--color-tier-red-tint; grey = --color-status-
  *      archived + border.
  *   2. semantic value → tone. Covers the vocabulary the design mockups name:
@@ -26,7 +27,7 @@ export type Tone = 'positive' | 'info' | 'attention' | 'danger' | 'neutral';
 
 /** Tone → Tailwind token classes (text colour + tinted fill). */
 export const TONE_CLASS: Record<Tone, string> = {
-  positive: 'text-status-open bg-tier-green-tint',
+  positive: 'text-accent-text bg-accent-soft',
   info: 'text-info bg-info-soft',
   attention: 'text-attention-text bg-attention-soft',
   danger: 'text-status-escalated bg-tier-red-tint',

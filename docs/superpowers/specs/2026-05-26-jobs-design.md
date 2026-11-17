@@ -240,7 +240,7 @@ does not provide an effective override. The stored/internal field is not a
 supported public submission option.
 
 A configurable per-job output cap remains **unimplemented design intent**.
-The original plan (`docs/superpowers/plans/2026-05-26-jobs.md`) retains that
+The original plan (removed; see Git history) described that
 planned support as historical design, not current API behavior. This
 clarification neither implements nor withdraws it. The current examples and
 cap-specific guidance below reflect the implemented limitation; unrelated

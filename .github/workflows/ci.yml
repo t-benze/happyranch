@@ -21,11 +21,15 @@ jobs:
         with:
           python-version: "3.14"
       - name: Check actual source boundaries
-        run: uv run --no-project --python 3.14 python scripts/check_source_boundaries.py
+        run: |
+          uv run --no-project --python 3.14 python scripts/check_source_boundaries.py
+          uv run --no-project --python 3.14 python scripts/check_private_operator_endpoints.py
       - name: Check shipped remote-access policy consistency
         run: uv run --no-project --python 3.14 python scripts/check_remote_access_policy.py
       - name: Validate lint CLI with isolated synthetic sources
-        run: uv run --no-project --python 3.14 python scripts/validate_source_boundaries.py
+        run: |
+          uv run --no-project --python 3.14 python scripts/validate_source_boundaries.py
+          uv run --no-project --python 3.14 python scripts/validate_private_operator_endpoints.py
 
   web:
     name: Web Lint (Node 24)

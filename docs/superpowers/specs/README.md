@@ -1,152 +1,96 @@
-# Superpowers Specs Index
+# Specs index
 
-- **current**: [Darwin cleanup process-use observations](2026-11-11-darwin-cleanup-process-use.md) — THR-346 S4 PR1/PR2; all-PID scratch routing, conservative negative coverage and separate native/frozen evidence.
-
-Current THR307 contract: [`2026-10-15-nightly-disk-sweeper.md`](2026-10-15-nightly-disk-sweeper.md).
-
-Current combined naming contract: [`2026-10-09-identity-names-core.md`](2026-10-09-identity-names-core.md). Core/API/routing, CLI/prompt and UI/types are published in open PR1021. THR293seq34/35 requires twelve readable E2E scenarios. The current spec attributes completed maker receipts and correction evidence to their actual sources. Independent review/behavioral QA and guarded merge remain separate; mock-backed checks do not establish daemon/DB/browser acceptance.
-
-This directory is append-only design history. Specs capture intent, alternatives, and decisions at the time they were written; they are not automatically updated when the implementation evolves.
-
-Historical startup audit-scan supplement (superseded by THR-308 seq403 removal): [`2026-11-08-coding-audit-prefilter.md`](2026-11-08-coding-audit-prefilter.md)
-(THR308seq353/354); current behavior is in the coding workflow contract.
-
-- **current**: [Human-managed Default roster](2026-10-09-human-default-team-roster.md) — THR296 accepted contract; execution/readiness gates remain.
-
-## Source Of Truth
-
-For current behavior, use these sources before old specs:
-
-- `README.md` for end-user setup and product surface.
-- `CLAUDE.md` and `docs/agent-guides/` for current agent/developer guidance.
-- `runtime/skills/bundled/` for agent instructions explaining implemented workflows.
-  When a design marked `current` still names a retired `protocol/` skill or
-  protocol document as its current source, use the matching bundled skill and
-  agent guide instead; the old in-spec pathname is historical design text.
-- Historical `protocol/` references identify documents retired after `01d5ede5`;
-  use Git history for their original contents.
-- `tests/contract/openapi.json`, retained lanes, and implementation for executable truth.
-- [Python test reset](../../python-test-reset.md) for current test retirement and uncovered obligations.
-  THR-291 seq40 supersedes Python unit execution/keeper requirements in all current
-  specs. Historical test paths describe past evidence, not executable gates.
-  Product contracts and acceptance obligations remain unchanged. Standalone E2E
-  source/case/matrix policy is in `e2e/README.md` and `docs/local-ci.md`; historical
-  scheduled runs38482572306/38644465643 failed; corrected behavior remains pending
-  on the existing daily3.12/3.14 lane with four execution artifacts. THR-291 seq69 supersedes contrary
-  automatic test/build merge-gate text: only Source Boundary Lint and Web Lint
-  (Node24) are required. Daily19:00UTC E2E is outside merge; manual Docs/lab and
-  retained source do not imply automatic execution. Observed protection has empty
-  required contexts/checks, strict=false. Static checks are not behavioral proof. This lane
-  uses public processes outside pytest; retained integration/platform/callback
-  selectors keep their mandatory isolated parent. Historical test recipes do
-  not authorize old-unit execution or weakening those fences.
-
-When a spec conflicts with those sources, treat the spec as historical unless this index marks it `current`.
-
-## Status Labels
-
-- `current`: Current design reference for behavior not fully captured elsewhere.
-- `implemented`: Implemented, but current behavior should be checked in agent guides, tests, and code.
-- `superseded`: Replaced by a later design or implementation shape.
-- `historical`: Useful background, but not a current contract.
-- `abandoned`: Not implemented or intentionally dropped.
-
-New specs should include a short status block near the top:
-
-```md
-> Status: implemented
-> Current Source: docs/agent-guides/features-and-invariants.md
-> Superseded By: docs/superpowers/specs/YYYY-MM-DD-newer-design.md
-> Notes: Uses old CLI naming; current command is `happyranch`.
-```
-
-## Index
-
-| Spec | Status | Current source / notes |
-| --- | --- | --- |
-| [2026-11-11-sequential-coding-u6.md](2026-11-11-sequential-coding-u6.md) | current design; U6b2b mounted | Mixed Founder stop, original family writers and aggregate native-tail composition; native/V3 acceptance remains separate. |
-| [2026-11-11-knowledge-distill-instill-v1.md](2026-11-11-knowledge-distill-instill-v1.md) | current design; implementation pending | THR-296 Option A / TASK-15170: pre-Ready curation with an existing task identity, retired-source capture, immutable archives and additive idle-only Instill; acceptance NOT RUN. |
-| [2026-10-11-agent-reasoning-effort.md](2026-10-11-agent-reasoning-effort.md) | current | THR298 optional static selection, adapter input-v2 opt-in/legacy wire, invocation plumbing and conditional authority projection |
-| [2026-10-10-root-task-pause-resume.md](2026-10-10-root-task-pause-resume.md) | current | Separate org root control, final commitment, truthful drain, API/CLI/overview and compatible rollback |
-| `2026-10-01-escalation-reason-display.md` | implemented | THR-279 read-side current-episode reason projection; current contract in `docs/agent-guides/web-and-cli.md`. |
-| `2026-09-20-web-i18n-design.md` | current | THR-118 W1 web i18n foundation (typed en/zh-CN catalog, resolver, adapter seam, coverage manifest). Current contract: `web/src/lib/i18n/`, `web/src/hooks/i18n.tsx`, `web/ARCHITECTURE.md`. Route translation is W2-W4; native persistence is N1. |
-| `2026-09-10-delegated-failure-manager-routing.md` | implemented | Current routing contract: `docs/agent-guides/orchestrator-contracts.md` and `runtime/orchestrator/run_step.py`. |
-| `2026-09-11-memory-telemetry-corrective-guard.md` | current | Historical guard checkpoints plus current observation-only shared report/acquisition contract; full eligibility remains gated. |
-| `2026-09-01-thread-reply-breaker-persistence.md` | current | THR-200 PR A additive SQLite contract plus PR B runtime lifecycle and cooldown/restart invariants. |
-| `2026-04-12-product-engineering-crew-design.md` | historical | Sample-org background; org content now lives under `examples/orgs/` and runtime org trees. |
-| `2026-04-14-orchestrator-daemon-design.md` | implemented | Current contracts: `docs/agent-guides/orchestrator-contracts.md`, `runtime/daemon/`, `runtime/orchestrator/`. |
-| `2026-04-17-manage-agent-design.md` | implemented | Current contracts: `runtime/skills/bundled/manage-agent/SKILL.md`, agent guide, routes in `runtime/daemon/routes/agents.py`. |
-| `2026-04-17-manage-repo-design.md` | implemented | Uses old `opc` wording; current CLI is `happyranch manage-repo`. |
-| `2026-04-18-agent-memory-design.md` | superseded | Per-agent learnings and task recall have evolved; see `docs/agent-guides/features-and-invariants.md`. |
-| `2026-04-19-shared-kb-design.md` | superseded | Pre-multi-org path/CLI history; current KB contract is `docs/agent-guides/features-and-invariants.md`. |
-| `2026-04-19-task-status-redesign.md` | implemented | Current status vocabulary: `docs/agent-guides/orchestrator-contracts.md`. |
-| `2026-04-20-multi-executor-design.md` | implemented | Current executor guide: `docs/agent-guides/agent-executors-and-permissions.md`. |
-| `2026-04-21-opc-revisit-design.md` | implemented | Old name; current command is `happyranch revisit`. |
-| `2026-04-21-talk-flow-design.md` | removed | Talk surface removed per THR-023 (2026-06-15); replaced by `runtime/skills/bundled/reflection/SKILL.md` (named `review` until the THR-106 rename). |
-| `2026-04-23-revisit-root-link-design.md` | implemented | Current revisit notes: `docs/agent-guides/features-and-invariants.md`. |
-| `2026-04-24-content-team-design.md` | historical | Org-specific planning background. |
-| `2026-04-26-multi-org-runtime-design.md` | superseded | Replaced by parallel multi-org runtime and HappyRanch rename work. |
-| `2026-04-26-talk-dispatch-design.md` | removed | Talk dispatch removed with the talk surface; thread self-dispatch remains. |
-| `2026-04-28-parallel-multi-org-runtime-design.md` | implemented | Uses old `opc` naming; current runtime guide is `docs/agent-guides/project-layout.md`. |
-| `2026-05-05-token-usage-tracking-design.md` | implemented | Current CLI/API: README and `runtime/daemon/routes/tokens.py`. |
-| `2026-05-08-feishu-notification-design.md` | removed | REMOVED in TASK-302 (THR-022). correlation tables dropped (THR-365 PR #1525); web UI + threads are sole control surface. |
-| `2026-05-12-feishu-interactive-actions-design.md` | removed | REMOVED in TASK-302 (THR-022). correlation tables dropped (THR-365 PR #1525); web UI + threads are sole control surface. |
-| `2026-05-13-per-agent-learnings-structural-upgrade-design.md` | implemented | Current learnings behavior: README and feature guide. |
-| `2026-05-13-threads-design.md` | superseded | Close-out/abandon flow replaced by `2026-06-01-thread-close-out-removal-and-resume-design.md`. |
-| `2026-05-14-web-ui-design.md` | implemented | Current web contract: `docs/agent-guides/web-and-cli.md`, `web/ARCHITECTURE.md`. |
-| `2026-05-18-rename-opc-to-grassland-design.md` | historical | Rename history only. |
-| `2026-05-18-threads-markdown-composer-upgrade-design.md` | implemented | Current web threads UI in `web/src/features/threads/`. |
-| `2026-05-18-web-app-complete-feature-set-design.md` | historical | Web roadmap/background; current routes live in `web/src/routes.tsx`. |
-| `2026-05-19-web-audit-design.md` | implemented | Current audit UI/API in `web/src/features/audit/` and `runtime/daemon/routes/audit.py`. |
-| `2026-05-19-web-dashboard-design.md` | implemented | Current dashboard UI/API in `web/src/features/dashboard/` and dashboard routes. |
-| `2026-05-19-web-kb-surface-design.md` | implemented | Current KB UI/API in `web/src/features/kb/` and KB routes. THR-305 amendment: Compose is gated by the build-time flag `kb_compose_ui` (`web/ARCHITECTURE.md` § Build-time UI flags). |
-| `2026-05-19-web-polish-design.md` | historical | Visual/product polish history. |
-| `2026-05-19-web-talks-design.md` | removed | Talks UI/API removed with the talk surface (THR-023). |
-| `2026-05-20-agent-initiated-threads-design.md` | implemented | Current thread compose-as-agent route and thread skill. |
-| `2026-05-23-agent-script-requests-design.md` | superseded | Renamed and extended by jobs. Current contract: `2026-05-26-jobs-design.md` and jobs skill. |
-| `2026-05-25-feishu-script-request-notifications-design.md` | removed | REMOVED in TASK-302 (THR-022). correlation tables dropped (THR-365 PR #1525); web UI + threads are sole control surface. |
-| `2026-05-25-session-timeout-auto-route-design.md` | retired | TASK-3604 removed automatic daemon successor creation. See `docs/agent-guides/features-and-invariants.md` §Session-Timeout Auto-Route. Legacy `auto_revisit_of` audit rows remain readable. |
-| `2026-05-26-cancel-race-design.md` | implemented | Current cancel behavior in task routes and run-step helpers. |
-| `2026-05-26-jobs-design.md` | current | Current jobs design companion; executable truth in `runtime/skills/bundled/jobs/SKILL.md` and `runtime/daemon/routes/jobs.py`. |
-| `2026-05-28-task-blocked-by-job-design.md` | implemented | Current behavior: feature guide and jobs skill. |
-| `2026-05-28-thread-talk-self-dispatch-only-design.md` | current | Current thread self-dispatch rule; talk dispatch removed. See bundled skills and routes. |
-| `2026-05-28-thread-task-followup-design.md` | implemented | Current follow-up behavior: feature guide and `runtime/orchestrator/run_step.py`. |
-| `2026-05-30-add-org-and-agent-from-web-ui-design.md` | implemented | Current web agents/orgs UI and routes. |
-| `2026-05-30-dashboard-overhaul-design.md` | implemented | Current dashboard UI/API. |
-| `2026-05-30-inline-delegation-chain-design.md` | current | Current chain contract: `docs/agent-guides/orchestrator-contracts.md`. |
-| `2026-05-30-thread-broadcast-only-design.md` | current | Current thread routing rule: feature guide and thread route implementation. |
-| `2026-05-31-happyranch-rename-design.md` | implemented | Rename history; current name is HappyRanch. |
-| `2026-06-01-thread-close-out-removal-and-resume-design.md` | current | Current archive/resume behavior. |
-| `2026-06-02-thread-working-indicator-design.md` | implemented | Current web thread UI behavior. |
-| `2026-06-06-cancel-actor-attribution-design.md` | implemented | Current cancel audit behavior in task routes. |
-| `2026-06-06-thread-escalation-surfacing-design.md` | implemented | Current thread escalation/follow-up behavior in run-step/thread code. |
-| `2026-06-08-system-assistant-design.md` | retired | THR-294 removed feature routes, CLI, dock, settings and bootstrap. Original design retained as history; legacy files remain inert. |
-| `2026-06-08-thread-talk-token-usage-scope-design.md` | current | Current token reporting contract (thread scope; talk scope removed). See README, `runtime/daemon/routes/tokens.py`, and OpenAPI snapshot. |
-| `2026-06-09-nightly-dreaming-design.md` | implemented | Current private scheduled per-agent reflection mechanism; implemented in `runtime/daemon/dream_runner.py`, `dream_scheduler.py`, `dream_queue.py`, `runtime/infrastructure/dream_store.py`, and `runtime/daemon/routes/dreams.py`. |
-| `2026-06-09-thread-file-attachments-design.md` | proposed | Artifact-backed thread attachment design; pending implementation. |
-| `2026-06-10-assistant-self-registration-design.md` | retired | THR-294 removed feature routes, CLI, dock, settings and bootstrap. Original design retained as history; legacy files remain inert. |
-| `2026-06-10-kb-view-tracking-design.md` | implemented | Agent-CLI KB view tracking; implemented in `runtime/daemon/routes/kb.py`, `runtime/infrastructure/database.py`, `cli/commands/kb.py`. Caller-signal mechanism in KB `kb-view-tracking-caller-signal`. |
-| `2026-06-10-working-hours-design.md` | implemented | Per-agent working-hours wake mechanism; implemented in `runtime/daemon/wake_runner.py`, `work_hours_scheduler.py`, `wake_queue.py`, `runtime/infrastructure/work_hours_store.py`, and `runtime/daemon/routes/work_hours.py`. THR-305 amendment: the web UI is behind the build-time flag `work_hours_ui` (off in production builds; daemon behavior unchanged). |
-| `2026-06-30-pr-ci-waiter-guarded-merge-design.md` | implemented | PR CI waiter and guarded merge engine design; contract in `docs/agent-guides/orchestrator-contracts.md` and `docs/agent-guides/`. Implementation: `runtime/daemon/pr_ci_waiter.py`, `runtime/daemon/pr_ci_merge.py`, `tests/daemon/test_pr_ci_waiter_gh.py`, `tests/daemon/test_pr_ci_merge_gh.py`. |
-| `2026-08-22-linux-canonical-store-design.md` | current | Linux same-owner canonical skill-store and launch support; current contracts in `docs/agent-guides/agent-executors-and-permissions.md`, `runtime/skills/bundled/`, and the executor guide. Its in-spec `protocol/05b-agent-runtime.md` Current Source is retired historical text. |
-| `2026-08-24-host-resource-concurrency.md` | current | Capability-based host-session supervisor (admission + lifecycle core, Slice A); governing spec for THR-207 / TASK-5584. Current contracts: `runtime/orchestrator/host_supervisor.py`, `runtime/platform/session_backend.py`. |
-| `2026-09-11-task-completion-recovery-arbitration-phase-a.md` | implemented (pending merge) | THR-247 bounded clean-Codex-omission recovery; current contracts: `runtime/orchestrator/run_step.py`, `runtime/infrastructure/database.py`, and `docs/agent-guides/orchestrator-contracts.md`. |
-| `2026-08-25-thread-rename-and-pinning-design.md` | implemented (rev 2 — msg-9 correction) | Founder-only thread rename + pin (THR-209 Phase 1). Current contracts: `docs/agent-guides/features-and-invariants.md` (Threads), routes in `runtime/daemon/routes/threads.py`, pin storage `threads.pinned_at`, open-list pinned ordering by numeric thread ID desc (archived/status-less views have no pin presentation), web UI in `web/src/features/threads/ThreadsPage.tsx`. |
-| `2026-08-26-managed-remote-access-contract.md` | current | Normative managed remote-access contract (THR-097 merge unit A, TASK-5771): one Headscale cell per customer, ciphertext-only DERP, supervised portable Python connector, loopback daemon + final-hop bearer injection, explicit allow-list, credential/failure taxonomy, hostile threat fixtures. Shipped policy: `runtime/remote_access/route_policy.json` (118 allow entries; THR-327 R1 v1 exclusions; required static consistency lint); hostile fixtures: `tests/contract/managed_remote_access/`; connector core + Linux packaging and THR-327 seq187/227 simplified managed Linux supervision, installer/enrollment, drift and uninstall shipped. M1 **PASSED** on main `455c9c5b689fa25f625e2df8cae1b551c2a1de86` ([run 42978877282](https://github.com/t-benze/happyranch/actions/runs/42978877282)); M2 tailnet transport, full-daemon acceptance, restart/reboot recovery and deployment **UNEXECUTED**, outside M1. Current guide: `docs/agent-guides/contracts/remote-access-and-remote-jobs.md`. |
-| [`2026-11-08-reusable-workflows-u1a.md`](2026-11-08-reusable-workflows-u1a.md) | U1a source; execution pending | THR-336 message 85 / TASK-14461 revision 3: closed sequential records and pure bounded definition validator. Current ABI/source boundary: `docs/agent-guides/contracts/reusable-workflows.md`; U1b reducer/briefs and M1/V3 acceptance remain open. |
-| [`2026-11-08-reusable-workflows-u1b.md`](2026-11-08-reusable-workflows-u1b.md) | U1b pure source; service acceptance pending | THR-336 message 85 / TASK-14461 revision 3: common deterministic reducer, returns/counters/invalidation and recipient-filtered data briefs. Current ABI: `docs/agent-guides/contracts/reusable-workflows.md`; actual U2/U3/M1/V3 remain open. |
-| [`2026-11-11-sequential-coding-u5.md`](2026-11-11-sequential-coding-u5.md) | current U5 design; U5a policy and U5b1 assessment producers | ACCESS-1 msg131 / PRD v1.0.4: authenticated current evidence, mandatory independent review/QA, addressed assessment composition/disclosure. U5b2 Final selection and local merge remain pending. |
-| [`2026-11-11-sequential-coding-u7.md`](2026-11-11-sequential-coding-u7.md) | current U7 design; U7a–U7d source delivered | Common reads/settings, selected transport/Final acceptance/redaction and ordinary completion intake. Atomic U9b now mounts public Coding selection and old-fresh refusal. |
-| [`2026-11-12-sequential-coding-u8.md`](2026-11-12-sequential-coding-u8.md) | current U8 design; U8a read journey + U8b Setup source | Recorded U7 facts, three locked corrections, en/zh-CN; Setup/Save custody and Settings → Coding original-save recovery. U9 repairs host pointers and mounts atomic Coding cutover source. |
-| [`2026-11-12-sequential-coding-u9.md`](2026-11-12-sequential-coding-u9.md) | current U9 contract; U9a + complete atomic U9b source | Offline v2 registration/separate admission; paired public Coding selection + old-fresh fence, original-pin continuation and retained V3 fixture fence. |
-| [`2026-11-14-automatic-workflow-setup.md`](2026-11-14-automatic-workflow-setup.md) | I1a/I1b/I2/A1/A2 source | Install/daily physical checks, complete logical loads, A1 org-access fencing, positively fresh combined storage and qualified definition-only Coding v2 catalog. Existing-org bootstrap is A4. |
-
-- **current**: [Sequential Coding U4c](2026-11-12-sequential-coding-u4c.md) — own-current Developer resolve/bind transport; original service replay/Held semantics.
-
-
-I1b adds the independent daily read-only advisory owner to
-[`2026-11-14-automatic-workflow-setup.md`](2026-11-14-automatic-workflow-setup.md#i1b-daily-read-only-advisory-report).
-It reuses the future 03:00 wake; I2 changes only the physical-check venue,
-retaining complete logical load validation and original limits.
-
-I2 (2026-11-16) supersedes historical every-load physical integrity wording across workflow/native/cutover designs; [current physical-check venue policy](2026-11-14-automatic-workflow-setup.md#i2-load-and-revalidation-policy) retains whole FKs, parts 2–7 and all original limits.
+| Spec | Status | Owner thread | Purpose |
+| --- | --- | --- | --- |
+| [2026-04-14-orchestrator-daemon-design.md](2026-04-14-orchestrator-daemon-design.md) | implemented | not recorded | Orchestrator Daemon + HTTP API — Implementation Spec |
+| [2026-04-17-manage-agent-design.md](2026-04-17-manage-agent-design.md) | implemented | not recorded | manage-agent: EH-driven agent lifecycle management |
+| [2026-04-17-manage-repo-design.md](2026-04-17-manage-repo-design.md) | implemented | not recorded | manage-repo: Agent-driven repository management |
+| [2026-04-18-agent-memory-design.md](2026-04-18-agent-memory-design.md) | superseded | not recorded | Agent Memory — Design |
+| [2026-04-19-task-status-redesign.md](2026-04-19-task-status-redesign.md) | implemented | THR-037 | Task Status Redesign: Unified Async Execution + Structured Blocking |
+| [2026-04-20-multi-executor-design.md](2026-04-20-multi-executor-design.md) | implemented | not recorded | Multi-Executor Agent Runtime Design |
+| [2026-04-21-opc-revisit-design.md](2026-04-21-opc-revisit-design.md) | implemented | not recorded | `opc revisit` — Founder-Initiated Task Revival |
+| [2026-04-21-talk-flow-design.md](2026-04-21-talk-flow-design.md) | removed; kept as unclear | not recorded | Talk Flow — Design Spec |
+| [2026-04-23-revisit-root-link-design.md](2026-04-23-revisit-root-link-design.md) | implemented | not recorded | `revisit_of_task_id` — First-Class Revisit Link on the Tasks Table |
+| [2026-04-26-multi-org-runtime-design.md](2026-04-26-multi-org-runtime-design.md) | superseded | not recorded | Multi-Org Runtime Design |
+| [2026-04-26-talk-dispatch-design.md](2026-04-26-talk-dispatch-design.md) | removed; kept as unclear | not recorded | talk-dispatch: dispatch a task from inside an open talk |
+| [2026-04-28-parallel-multi-org-runtime-design.md](2026-04-28-parallel-multi-org-runtime-design.md) | implemented | not recorded | Parallel Multi-Org Runtime Design |
+| [2026-05-05-token-usage-tracking-design.md](2026-05-05-token-usage-tracking-design.md) | implemented | not recorded | Token Usage Tracking — Per-Session Capture and Aggregation |
+| [2026-05-08-feishu-notification-design.md](2026-05-08-feishu-notification-design.md) | removed; kept as unclear | not recorded | Feishu-Driven Escalation Notifications |
+| [2026-05-12-feishu-interactive-actions-design.md](2026-05-12-feishu-interactive-actions-design.md) | removed; kept as unclear | not recorded | Feishu Interactive Actions — Failure Notifications + Top-Level Dispatch |
+| [2026-05-13-per-agent-learnings-structural-upgrade-design.md](2026-05-13-per-agent-learnings-structural-upgrade-design.md) | implemented | not recorded | Per-Agent Learnings Structural Upgrade — Design Spec |
+| [2026-05-13-threads-design.md](2026-05-13-threads-design.md) | superseded | not recorded | Threads — Design Spec |
+| [2026-05-14-web-ui-design.md](2026-05-14-web-ui-design.md) | implemented | not recorded | Web UI — Design Spec |
+| [2026-05-18-web-app-complete-feature-set-design.md](2026-05-18-web-app-complete-feature-set-design.md) | historical | not recorded | Web App — Complete Feature Set (Umbrella Spec) |
+| [2026-05-19-web-dashboard-design.md](2026-05-19-web-dashboard-design.md) | implemented | not recorded | Web — Dashboard / Live Status |
+| [2026-05-19-web-polish-design.md](2026-05-19-web-polish-design.md) | historical | not recorded | Web — Polish (density / theme / Cmd-K / jump-keys / a11y) |
+| [2026-05-23-agent-script-requests-design.md](2026-05-23-agent-script-requests-design.md) | superseded | not recorded | Agent Script Requests — Design Spec |
+| [2026-05-25-feishu-script-request-notifications-design.md](2026-05-25-feishu-script-request-notifications-design.md) | removed | not recorded | Feishu Notifications for Script Requests — Design Spec |
+| [2026-05-25-session-timeout-auto-route-design.md](2026-05-25-session-timeout-auto-route-design.md) | retired | not recorded | Session-Timeout Auto-Route — Design Spec |
+| [2026-05-26-cancel-race-design.md](2026-05-26-cancel-race-design.md) | implemented | not recorded | Cancel-Race — Design Spec |
+| [2026-05-26-jobs-design.md](2026-05-26-jobs-design.md) | current | not recorded | Jobs — Design Spec |
+| [2026-05-28-task-blocked-by-job-design.md](2026-05-28-task-blocked-by-job-design.md) | implemented | not recorded | Task blocked-by-job — Design Spec |
+| [2026-05-28-thread-talk-self-dispatch-only-design.md](2026-05-28-thread-talk-self-dispatch-only-design.md) | current | not recorded | Thread / Talk Self-Dispatch-Only Rule — Design Spec |
+| [2026-05-28-thread-task-followup-design.md](2026-05-28-thread-task-followup-design.md) | implemented | THR-002 | Thread Task-Followup Re-Invocation — Design Spec |
+| [2026-05-30-dashboard-overhaul-design.md](2026-05-30-dashboard-overhaul-design.md) | implemented | not recorded | Dashboard overhaul — design spec |
+| [2026-05-30-inline-delegation-chain-design.md](2026-05-30-inline-delegation-chain-design.md) | current | not recorded | Inline Delegation Chain — Design |
+| [2026-05-30-thread-broadcast-only-design.md](2026-05-30-thread-broadcast-only-design.md) | current | not recorded | Threads: Broadcast-Only, Remove `addressed_to` — Design Spec |
+| [2026-06-01-thread-close-out-removal-and-resume-design.md](2026-06-01-thread-close-out-removal-and-resume-design.md) | current | not recorded | Thread close-out removal + resume — Design |
+| [2026-06-03-subtask-composite-task-design.md](2026-06-03-subtask-composite-task-design.md) | unlisted; retained reference | not recorded | Sub-tasks / Type-Driven Orchestration — Design |
+| [2026-06-06-cancel-actor-attribution-design.md](2026-06-06-cancel-actor-attribution-design.md) | implemented | THR-003 | Cancel actor attribution |
+| [2026-06-06-thread-escalation-surfacing-design.md](2026-06-06-thread-escalation-surfacing-design.md) | implemented | THR-016 | Thread Escalation Surfacing — Design Spec |
+| [2026-06-08-thread-talk-token-usage-scope-design.md](2026-06-08-thread-talk-token-usage-scope-design.md) | current | not recorded | Thread And Talk Token Usage Scope Design |
+| [2026-06-09-nightly-dreaming-design.md](2026-06-09-nightly-dreaming-design.md) | implemented | not recorded | Nightly Dreaming - Design |
+| [2026-06-09-thread-file-attachments-design.md](2026-06-09-thread-file-attachments-design.md) | proposed; kept as unclear | not recorded | Thread File Attachments Design |
+| [2026-06-10-kb-view-tracking-design.md](2026-06-10-kb-view-tracking-design.md) | implemented | THR-009 | KB View Tracking (Agent-CLI Reads) Design |
+| [2026-06-10-working-hours-design.md](2026-06-10-working-hours-design.md) | implemented | not recorded | Working Hours - Design |
+| [2026-06-27-task-status-pathB-stored-design.md](2026-06-27-task-status-pathB-stored-design.md) | unlisted; retained reference | THR-037 | Task-status model — Path B (stored source-of-truth) — THR-037 Change B |
+| [2026-07-18-agent-scheduled-work-design.md](2026-07-18-agent-scheduled-work-design.md) | unlisted; retained reference | THR-105 | Agent-Owned Scheduled Work ("Todos") — Design Spike |
+| [2026-07-19-custom-cli-adapter-envelope-design.md](2026-07-19-custom-cli-adapter-envelope-design.md) | unlisted; retained reference | THR-107 | Standard Daemon↔CLI Interface: Adapter Contract for Custom CLIs — Design Spike |
+| [2026-07-24-unified-adapter-runtime-architecture.md](2026-07-24-unified-adapter-runtime-architecture.md) | unlisted; retained reference | THR-107 | Unified Adapter-Runtime Architecture — DESIGN ONLY |
+| [2026-08-22-linux-canonical-store-design.md](2026-08-22-linux-canonical-store-design.md) | current | not recorded | Linux Canonical Skill Store Support |
+| [2026-08-24-host-resource-concurrency.md](2026-08-24-host-resource-concurrency.md) | current | THR-207 | Host-Resource Concurrency: Capability-Based Session Supervisor |
+| [2026-08-25-thread-rename-and-pinning-design.md](2026-08-25-thread-rename-and-pinning-design.md) | implemented (rev 2 — msg-9 correction) | THR-209 | Thread Rename and Pinning (THR-209, Phase 1) |
+| [2026-08-26-managed-remote-access-contract.md](2026-08-26-managed-remote-access-contract.md) | current | THR-097 / THR-327 | Managed Remote Access — Normative Contract |
+| [2026-09-01-thread-reply-breaker-persistence.md](2026-09-01-thread-reply-breaker-persistence.md) | current | THR-200 | Thread reply breaker persistence and compatibility substrate |
+| [2026-09-11-memory-telemetry-corrective-guard.md](2026-09-11-memory-telemetry-corrective-guard.md) | current | THR-091 | Memory telemetry corrective guard |
+| [2026-09-20-web-i18n-design.md](2026-09-20-web-i18n-design.md) | current | THR-118 | Typed en/zh-CN catalogs, web translation and browser locale activation |
+| [2026-09-29-authority-v2-schema-refusal-recovery.md](2026-09-29-authority-v2-schema-refusal-recovery.md) | unlisted; retained reference | THR-229 | Authority v2 schema-refusal recovery correction |
+| [2026-09-30-usage-v1-design.md](2026-09-30-usage-v1-design.md) | current (PR1 through PR4 of 4, including PR2b) | THR-272 | Usage v1: parser semantics, lifecycle attribution, and reply linkage |
+| [2026-10-09-human-default-team-roster.md](2026-10-09-human-default-team-roster.md) | current | THR-296 | Human-managed Default roster — current THR296 contract |
+| [2026-10-09-identity-names-core.md](2026-10-09-identity-names-core.md) | current | THR-293 | Identity names v1 — current core, API, routing, CLI, prompt and UI contract |
+| [2026-10-10-root-task-pause-resume.md](2026-10-10-root-task-pause-resume.md) | current | THR-292 | Root task Pause and Resume |
+| [2026-10-11-agent-reasoning-effort.md](2026-10-11-agent-reasoning-effort.md) | current | THR-298 | Optional agent reasoning effort |
+| [2026-10-14-ordered-coding-workflow.md](2026-10-14-ordered-coding-workflow.md) | unlisted; retained reference | THR-308 | Ordered coding workflow — agent-read contract |
+| [2026-10-15-nightly-disk-sweeper.md](2026-10-15-nightly-disk-sweeper.md) | current | THR-307 | Current THR307 nightly disk sweeper contract |
+| [2026-11-08-reusable-workflows-u1a.md](2026-11-08-reusable-workflows-u1a.md) | U1a source; execution pending; kept as unclear | THR-336 | Sequential workflow definition contracts — U1a source pointer |
+| [2026-11-08-reusable-workflows-u1b.md](2026-11-08-reusable-workflows-u1b.md) | U1b pure source; service acceptance pending; kept as unclear | THR-336 | Reusable workflows U1b source pointer |
+| [2026-11-08-sequential-engine-u3a.md](2026-11-08-sequential-engine-u3a.md) | unlisted; retained reference | THR-336 | Sequential U3a source pointer |
+| [2026-11-08-sequential-engine-u3b.md](2026-11-08-sequential-engine-u3b.md) | unlisted; retained reference | THR-336 | U3b selected admission validator and inert first activation |
+| [2026-11-08-sequential-engine-u3c.md](2026-11-08-sequential-engine-u3c.md) | unlisted; retained reference | THR-336 | Sequential engine U3c — inert lifecycle source |
+| [2026-11-08-sequential-engine-u3d1.md](2026-11-08-sequential-engine-u3d1.md) | unlisted; retained reference | THR-336 | U3d-1 sequential callback and original-owner settlement consumer |
+| [2026-11-08-sequential-engine-u3d2.md](2026-11-08-sequential-engine-u3d2.md) | unlisted; retained reference; kept as unclear | THR-336 | U3d-2 sequential queue, launch and native owner ports |
+| [2026-11-08-sequential-storage-u2a.md](2026-11-08-sequential-storage-u2a.md) | unlisted; retained reference; kept as unclear | THR-336 | Sequential storage U2a source boundary |
+| [2026-11-08-sequential-storage-u2b.md](2026-11-08-sequential-storage-u2b.md) | unlisted; retained reference; kept as unclear | THR-336 | U2b explicit sequential storage installer/check source |
+| [2026-11-08-sequential-venue-start.md](2026-11-08-sequential-venue-start.md) | unlisted; retained reference | THR-336 | U3s venue-only sequential start enablement — SB-1 (a) |
+| [2026-11-08-thread-resolution-auto-archive-design.md](2026-11-08-thread-resolution-auto-archive-design.md) | historical; kept as unclear | THR-339 | Explicit thread resolution and safe auto-archive v1 |
+| [2026-11-09-sequential-document-witness-u3f.md](2026-11-09-sequential-document-witness-u3f.md) | unlisted; retained reference | THR-336 | U3f / U5a sequential document witnesses |
+| [2026-11-09-sequential-engine-u3e1a.md](2026-11-09-sequential-engine-u3e1a.md) | unlisted; retained reference | THR-336 | U3e-1a selected-run cancellation |
+| [2026-11-09-sequential-engine-u3e1b-i.md](2026-11-09-sequential-engine-u3e1b-i.md) | unlisted; retained reference; kept as unclear | THR-336 | U3e-1b-i inert sequential start adapter |
+| [2026-11-09-sequential-engine-u3e1b-ii.md](2026-11-09-sequential-engine-u3e1b-ii.md) | unlisted; retained reference; kept as unclear | THR-336 | U3e-1b-ii original source outer producer |
+| [2026-11-09-sequential-engine-u3e2.md](2026-11-09-sequential-engine-u3e2.md) | unlisted; retained reference; kept as unclear | THR-336 | Sequential engine U3e-2: bounded caller return consumer |
+| [2026-11-09-sequential-history-reader-d2.md](2026-11-09-sequential-history-reader-d2.md) | unlisted; retained reference; kept as unclear | THR-336 | Full sequential-history reader — Decision 2 |
+| [2026-11-11-darwin-cleanup-process-use.md](2026-11-11-darwin-cleanup-process-use.md) | current | THR-346 | Darwin cleanup process-use observations — THR-346 S4 |
+| [2026-11-11-knowledge-distill-instill-v1.md](2026-11-11-knowledge-distill-instill-v1.md) | current design; implementation pending | THR-296 | Knowledge Distill & Instill v1 |
+| [2026-11-11-sequential-coding-u4.md](2026-11-11-sequential-coding-u4.md) | unlisted; retained reference | THR-336 | Sequential Coding U4: task-owned repository resolution |
+| [2026-11-11-sequential-coding-u5.md](2026-11-11-sequential-coding-u5.md) | current U5 design; U5a policy and U5b1 assessment producers | THR-336 | Sequential Coding U5: current evidence and local Final capability |
+| [2026-11-11-sequential-coding-u6.md](2026-11-11-sequential-coding-u6.md) | current design; U6b2b mounted | THR-336 | Sequential Coding U6: cancellation and mixed-history closure |
+| [2026-11-11-sequential-coding-u7.md](2026-11-11-sequential-coding-u7.md) | current U7 design; U7a–U7d source delivered | THR-336 | Sequential Coding U7: common transport and agent initiation |
+| [2026-11-11-thread-invocation-resolution.md](2026-11-11-thread-invocation-resolution.md) | unlisted; retained reference | THR-339 | Thread invocation resolution — 2026-11-11 addendum |
+| [2026-11-12-sequential-coding-u4c.md](2026-11-12-sequential-coding-u4c.md) | current | THR-336 | Sequential Coding U4c: selected Developer repository transport |
+| [2026-11-12-sequential-coding-u8.md](2026-11-12-sequential-coding-u8.md) | current U8 design; U8a read journey + U8b Setup source | THR-336 | Sequential Coding U8: common Workflows journey and task integration |
+| [2026-11-12-sequential-coding-u9.md](2026-11-12-sequential-coding-u9.md) | current U9 contract; U9a + complete atomic U9b source | THR-336 | Sequential Coding U9: release selection and atomic fresh-start cutover |
+| [2026-11-13-task-model-reasoning-overrides.md](2026-11-13-task-model-reasoning-overrides.md) | unlisted; retained reference | THR-356 | Per-task model and reasoning effort (THR-356) |
+| [2026-11-14-automatic-workflow-setup.md](2026-11-14-automatic-workflow-setup.md) | I1a/I1b/I2/A1/A2 source | THR-336 | Automatic workflow setup — incremental delivery |
+| [2026-11-16-one-click-remote-access.md](2026-11-16-one-click-remote-access.md) | unlisted; retained reference | THR-327 | One-click remote access and one invite (THR-327) |
+| [2026-11-16-workflow-replace-chain-design.md](2026-11-16-workflow-replace-chain-design.md) | proposal; kept as unclear | THR-336 | Workflow replacement of dispatch chains: technical design and migration plan |
+| [org-portability-reference-consumers.md](org-portability-reference-consumers.md) | current (design reference for THR-187 Step 0 only); kept as unclear | THR-187 | Org Portability — DB-to-Filesystem Reference Consumers (THR-187 Step 0 Evidence Gate) |

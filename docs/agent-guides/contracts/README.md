@@ -24,3 +24,31 @@ OpenAPI snapshot still own runtime rules.
 | [memory-census.md](memory-census.md) | THR-091 memory census, reporting, acceptance and capture rules |
 | [observability.md](observability.md) | Usage v1 attribution/read model, metrics persistence, failure diagnostics |
 | [ci-and-testing.md](ci-and-testing.md) | Lint-only merge CI, daily Product E2E, integration test venue, source boundary lint, retained PR1022 test notes |
+
+## Design reference policy
+
+For end-user setup and product surface, use the repository-root `README.md`.
+When a retained design names a retired `protocol/` document or skill as its
+current source, use the
+matching bundled skill and agent guide instead. Historical `protocol/` paths
+identify documents retired after `01d5ede5`; use Git history for their contents.
+The [specs index](../../superpowers/specs/README.md) identifies current designs.
+When a spec conflicts with current sources, treat it as historical unless the
+index marks it `current`.
+
+### Spec status labels
+
+- `current`: Current design reference for behavior not fully captured elsewhere.
+- `implemented`: Implemented; check current behavior in agent guides, tests and code.
+- `superseded`: Replaced by a later design or implementation shape.
+- `historical`: Background rather than a current contract.
+- `abandoned`: Not implemented or intentionally dropped.
+
+New specs should include a short status block near the top:
+
+```md
+> Status: implemented
+> Current Source: docs/agent-guides/features-and-invariants.md
+> Superseded By: docs/superpowers/specs/YYYY-MM-DD-newer-design.md
+> Notes: Uses old CLI naming; current command is `happyranch`.
+```

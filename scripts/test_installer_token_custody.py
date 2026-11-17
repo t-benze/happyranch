@@ -732,6 +732,320 @@ def staged_inventory(fixture: Fixture) -> dict[str, tuple]:
     return inventory
 
 
+class LifecycleManager(FakeManager):
+    """Fixed-property fake; unknown commands still raise in the shared fixture."""
+
+    def __init__(self, root: Path) -> None:
+        super().__init__(root)
+        self.states: dict[str, str] = {}
+        self.override: dict[str, str] = {}
+        self.stop_error: str | None = None
+        self.sticky = False
+
+    def show_properties(self, unit: str, properties: tuple[str, ...]) -> dict[str, str]:
+        if unit.endswith((".target", ".socket")):
+            assert not {"MainPID", "ControlPID", "ControlGroup"}.intersection(properties)
+        self.calls.append(("show", unit))
+        path = self.root / "etc/systemd/system" / unit
+        loaded = path.is_file()
+        state = self.states.get(unit, "inactive")
+        values = dict(FragmentPath=str(path) if loaded else "", DropInPaths="", NeedDaemonReload="no",
+                      LoadState="loaded" if loaded else "not-found", ActiveState=state,
+                      SubState="dead" if state == "inactive" else state,
+                      MainPID="0", ControlPID="0", ControlGroup="", Job="")
+        values.update(self.override)
+        return {key: values[key] for key in properties}
+
+    def stop(self, unit: str, **kwargs: object) -> None:
+        from runtime.remote_access.service_manager import ServiceManagerError
+        super().stop(unit, **kwargs)
+        if unit == self.stop_error:
+            raise ServiceManagerError("synthetic-manager-secret")
+        if not self.sticky:
+            self.states[unit] = "inactive"
+
+
+def lifecycle_fixture(fixture: Fixture) -> LifecycleManager:
+    manager = LifecycleManager(fixture.root)
+    fixture.installer.manager = manager
+    return manager
+
+
+def inventory_units(fixture: Fixture, *, modern: bool = False, missing: str | None = None) -> None:
+    units = fixture.root / "etc/systemd/system"
+    units.mkdir(parents=True, mode=0o755)
+    for ancestor in units.parents:
+        if ancestor == fixture.root:
+            break
+        ancestor.chmod(0o755)
+    connector = {"managed": {"profile": "linux-managed-identity-v1"}} if modern else {}
+    for name, content in module.managed_units(fixture.installer.layout, connector_config=connector).items():
+        if name != missing:
+            (units / name).write_text(content)
+            (units / name).chmod(0o644)
+
+
+@pytest.mark.parametrize("case, expected", [
+    ("clean", "clean"), ("staged", "modern"), ("staged-private-runtime", "modern"), ("recorded", "modern"),
+    ("failed", "known-failed-or-partial"), ("partial-unit", "known-failed-or-partial"),
+    ("partial-config", "known-failed-or-partial"),
+    ("before-sidecar.json", "known-failed-or-partial"), ("before-policy.json", "known-failed-or-partial"),
+    ("manual-active", "healthy-manual"), ("manual-0600", "healthy-manual"), ("manual-0644", "healthy-manual"),
+    ("manual-stopped", "healthy-manual"), ("manual-recorded", "healthy-manual"),
+    ("unit-only", "known-failed-or-partial"),
+])
+def test_fixed_inventory_classifies_without_effects(
+    fixture: Fixture, monkeypatch: pytest.MonkeyPatch, case: str, expected: str,
+) -> None:
+    manager = lifecycle_fixture(fixture)
+    interrupted = case.startswith("before-")
+    if interrupted:
+        writer = fixture.installer._write_provision_file
+        writes: list[str] = []
+
+        def fail_before(name: str, data: bytes, owner: tuple[int, int], mode: int) -> None:
+            if name == case.removeprefix("before-"):
+                raise OSError("synthetic publication interruption")
+            writer(name, data, owner, mode)
+            writes.append(name)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(fixture.installer, "_write_provision_file", fail_before)
+            with pytest.raises(module.InstallerError, match="provisioning failed"):
+                generated_bundle(fixture)
+        prefix = ["connector.json"] + (["sidecar.json"] if case == "before-policy.json" else [])
+        assert writes == prefix
+        assert {path.name for path in (fixture.root / "etc/happyranch").iterdir()} == set(prefix)
+    elif case in {"staged", "staged-private-runtime", "recorded", "partial-config"}:
+        parent = generated_bundle(fixture)
+        if case == "partial-config":
+            (parent / "sidecar.json").unlink()
+        if case == "staged-private-runtime":
+            (fixture.root / "run/happyranch-connector").chmod(0o700)
+    elif case not in {"clean", "unit-only"}:
+        fixture.provision()
+        if case in {"manual-active", "manual-stopped", "manual-0600", "manual-0644"}:
+            (fixture.root / "etc/happyranch/provision.json").unlink()
+        if case in {"manual-0600", "manual-0644"}:
+            for name in ("connector.json", "sidecar.json", "policy.json"):
+                (fixture.root / "etc/happyranch" / name).chmod(int(case.removeprefix("manual-"), 8))
+    if not interrupted and case not in {"clean", "staged", "staged-private-runtime", "partial-config"}:
+        inventory_units(fixture, modern=case == "recorded",
+                        missing=module.UNITS[1] if case == "partial-unit" else None)
+    if case == "failed":
+        manager.states[module.UNITS[0]] = "failed"
+    if case == "manual-active":
+        manager.states = dict.fromkeys(module.UNITS, "active")
+    before = staged_inventory(fixture)
+    result = fixture.installer.inventory()
+    assert result.state == expected
+    if interrupted:
+        assert result.detail == "partial"
+    if case.startswith("manual-"):
+        assert result.detail == "migration-required"
+    if case in {"staged", "recorded"}:
+        assert result.detail == ("staged-inert" if case == "staged" else "recorded")
+    assert staged_inventory(fixture) == before
+    assert all(call[0] == "show" and call[1] in module.UNITS for call in manager.calls)
+
+
+@pytest.mark.parametrize("case", ["unsafe-mode", "foreign-owner", "unreadable", "unknown-config", "unit-content", "dropin", "runtime-dropin",
+                                 "vendor-fragment", "transaction", "pending-transaction", "digest", "unknown-state",
+                                 "state-symlink", "dangling-link", "unit-symlink", "modern-0600", "modern-0644",
+                                 "unrecorded-extra",
+                                 "unrecorded-connector", "unrecorded-sidecar", "unrecorded-policy"])
+def test_fixed_inventory_conflicts_name_only_safe_paths(
+    fixture: Fixture, monkeypatch: pytest.MonkeyPatch, case: str,
+) -> None:
+    manager = lifecycle_fixture(fixture)
+    parent = generated_bundle(fixture)
+    inventory_units(fixture, modern=True)
+    path = parent / "connector.json"
+    if case.startswith("unrecorded-"):
+        (parent / "provision.json").unlink()
+        if case == "unrecorded-extra":
+            path = parent / "sidecar.json"
+            value = json.loads(path.read_bytes())
+            value["synthetic-secret"] = True
+            path.write_text(json.dumps(value))
+        else:
+            path = parent / (case.removeprefix("unrecorded-") + ".json")
+            path.write_bytes(b'{"synthetic-secret":true}')
+    elif case in {"modern-0600", "modern-0644"}:
+        path.chmod(int(case.removeprefix("modern-"), 8))
+    elif case == "unsafe-mode":
+        path.chmod(0o666)
+    elif case == "foreign-owner":
+        target, fstat = path.stat(), os.fstat
+
+        def foreign(fd: int) -> object:
+            info = fstat(fd)
+            if (info.st_dev, info.st_ino) != (target.st_dev, target.st_ino):
+                return info
+            values = {name: getattr(info, name) for name in dir(info) if name.startswith("st_")}
+            return SimpleNamespace(**{**values, "st_uid": info.st_uid + 1})
+
+        monkeypatch.setattr(os, "fstat", foreign)
+    elif case == "unreadable":
+        read = fixture.installer._read_file
+
+        def unreadable(parent: int, name: str, **kwargs: object) -> bytes:
+            if name == "connector.json":
+                raise OSError("synthetic-secret")
+            return read(parent, name, **kwargs)
+
+        monkeypatch.setattr(fixture.installer, "_read_file", unreadable)
+    elif case == "unknown-config":
+        path = parent / "custom.json"
+        fixture.write(path, b"synthetic-secret")
+    elif case == "unit-content":
+        path = fixture.root / "etc/systemd/system" / module.UNITS[0]
+        path.write_text("ExecStart=synthetic-secret\n")
+    elif case in {"dropin", "runtime-dropin"}:
+        base = "etc" if case == "dropin" else "run"
+        path = fixture.root / base / "systemd/system" / (module.UNITS[0] + ".d") / "custom.conf"
+        path.parent.mkdir(parents=True, mode=0o755)
+        for ancestor in path.parents:
+            if ancestor == fixture.root:
+                break
+            ancestor.chmod(0o755)
+        fixture.write(path, b"synthetic-secret")
+    elif case == "vendor-fragment":
+        path = fixture.root / "usr/lib/systemd/system" / module.UNITS[0]
+        path.parent.mkdir(parents=True, mode=0o755)
+        for ancestor in path.parents:
+            if ancestor == fixture.root:
+                break
+            ancestor.chmod(0o755)
+        fixture.write(path, b"synthetic-secret")
+    elif case in {"transaction", "pending-transaction"}:
+        path = parent / ("install-transaction.json" if case == "transaction" else ".install-transaction.json.pending")
+        fixture.write(path, record_data("install-transaction.json"))
+    elif case == "digest":
+        fixture.write(path, b'{"synthetic-secret":true}')
+        path.chmod(0o640)
+    elif case in {"unknown-state", "state-symlink"}:
+        path = fixture.root / "var/lib/happyranch-tsnet-sidecar" / (
+            "custom.state" if case == "unknown-state" else "tailscaled.state")
+        if case == "state-symlink":
+            path.symlink_to(fixture.token)
+        else:
+            fixture.write(path, b"synthetic-secret")
+    elif case == "dangling-link":
+        path = fixture.root / "etc/systemd/system/multi-user.target.wants" / module.UNITS[2]
+        path.parent.mkdir(mode=0o755)
+        path.symlink_to("/synthetic-missing-unit")
+    else:
+        path = fixture.root / "etc/systemd/system" / module.UNITS[0]
+        path.unlink()
+        path.symlink_to(fixture.inputs / "connector.json")
+    # Snapshot no-follow metadata for the dangling link as well as content.
+    before = {str(p): (p.lstat().st_ino, p.lstat().st_mode,
+                       os.readlink(p) if p.is_symlink() else p.read_bytes() if p.is_file() else None)
+              for p in fixture.root.rglob("*")}
+    result = fixture.installer.inventory()
+    assert result.state == "manual-install-conflict"
+    assert result.paths == (str(parent if case.startswith("unrecorded-") else path),)
+    assert "synthetic-secret" not in repr(result)
+    assert {str(p): (p.lstat().st_ino, p.lstat().st_mode,
+                     os.readlink(p) if p.is_symlink() else p.read_bytes() if p.is_file() else None)
+            for p in fixture.root.rglob("*")} == before
+    assert all(call[0] == "show" for call in manager.calls)
+
+
+@pytest.mark.parametrize("property, value", [("FragmentPath", "/foreign/fragment"), ("DropInPaths", "/foreign/override"),
+                                           ("LoadState", "error"), ("NeedDaemonReload", "yes"), ("ActiveState", "unknown")])
+def test_fixed_inventory_loaded_uncertainty_refuses(fixture: Fixture, property: str, value: str) -> None:
+    manager = lifecycle_fixture(fixture)
+    generated_bundle(fixture)
+    inventory_units(fixture, modern=True)
+    manager.override[property] = value
+    before = staged_inventory(fixture)
+    result = fixture.installer.inventory()
+    assert result.state == "manual-install-conflict"
+    assert result.paths == (str(fixture.root / "etc/systemd/system" / module.UNITS[0]),)
+    assert value not in repr(result)
+    assert staged_inventory(fixture) == before
+
+
+def test_fixed_inventory_never_reads_release_source_or_opaque_state(fixture: Fixture, monkeypatch: pytest.MonkeyPatch) -> None:
+    lifecycle_fixture(fixture)
+    generated_bundle(fixture)
+    lock = fixture.root / "var/lib/happyranch-connector/trust-state.json.lock"
+    fixture.write(lock, b"")
+    fixture.token.unlink()  # Inventory is not an authenticated token-rotation action.
+    read = fixture.installer._read_file
+    reads: list[str] = []
+
+    def observe(parent: int, name: str, **kwargs: object) -> bytes:
+        reads.append(name)
+        return read(parent, name, **kwargs)
+
+    monkeypatch.setattr(fixture.installer, "_read_file", observe)
+    result = fixture.installer.inventory()
+    assert result.state == "modern"
+    assert lock.name not in reads
+
+
+@pytest.mark.parametrize("case", ["success", "stop-error", "still-active", "pid", "control-pid", "cgroup", "job"])
+def test_fixed_quiescence_proves_all_units_before_return(fixture: Fixture, case: str) -> None:
+    manager = lifecycle_fixture(fixture)
+    generated_bundle(fixture)
+    inventory_units(fixture, modern=True)
+    manager.states = dict.fromkeys(module.UNITS, "active")
+    if case == "stop-error":
+        manager.stop_error = module.UNITS[1]
+    elif case == "still-active":
+        manager.sticky = True
+    else:
+        manager.override.update({
+            "pid": {"MainPID": "42"}, "control-pid": {"ControlPID": "42"},
+            "cgroup": {"ControlGroup": "/synthetic/cgroup"}, "job": {"Job": "42 start"},
+        }.get(case, {}))
+    before = staged_inventory(fixture)
+    if case == "success":
+        assert fixture.installer.stop_and_confirm().state == "modern"
+    else:
+        with pytest.raises(module.InstallerError, match="^quiescence unconfirmed: ") as error:
+            fixture.installer.stop_and_confirm()
+        assert "synthetic-manager-secret" not in str(error.value)
+    assert staged_inventory(fixture) == before
+    stops = [call[1] for call in manager.calls if call[0] == "stop"]
+    expected = [module.UNITS[index] for index in (2, 0, 1, 3, 4)]
+    assert stops == (expected[:3] if case == "stop-error" else expected)
+    assert all(call[0] in {"show", "stop"} and call[1] in module.UNITS for call in manager.calls)
+
+
+@pytest.mark.parametrize("case", ["manual-stopped", "conflict", "post-stop-change"])
+def test_fixed_quiescence_does_not_grant_migration_or_cached_authority(
+    fixture: Fixture, monkeypatch: pytest.MonkeyPatch, case: str,
+) -> None:
+    manager = lifecycle_fixture(fixture)
+    if case == "post-stop-change":
+        generated_bundle(fixture)
+    else:
+        fixture.provision()
+    inventory_units(fixture, modern=case == "post-stop-change")
+    if case == "manual-stopped":
+        (fixture.root / "etc/happyranch/provision.json").unlink()
+    elif case == "conflict":
+        fixture.write(fixture.root / "etc/happyranch/unknown.json", b"synthetic-secret")
+    else:
+        stop = manager.stop
+
+        def change(unit: str, **kwargs: object) -> None:
+            stop(unit, **kwargs)
+            if unit == module.UNITS[4]:
+                fixture.write(fixture.root / "etc/happyranch/unknown.json", b"synthetic-secret")
+
+        monkeypatch.setattr(manager, "stop", change)
+    with pytest.raises(module.InstallerError, match="healthy-manual|manual-install-conflict"):
+        fixture.installer.stop_and_confirm()
+    if case != "post-stop-change":
+        assert all(call[0] == "show" for call in manager.calls)
+
+
+
 @pytest.mark.parametrize("layout", ["source", "deb"])
 def test_generated_bundle_identity_policy_metadata_and_real_record(
     fixture: Fixture, monkeypatch: pytest.MonkeyPatch, layout: str,

@@ -228,7 +228,7 @@ export function TeamEscalationPolicyCard({
         </div>
         <span className="bg-accent-soft text-accent-text rounded-full px-2 py-1 text-xs">{t('agents.policy.teamOwned')}</span>
       </div>
-      <div className="bg-tier-amber-soft text-text-secondary mt-3 rounded-md p-3 text-xs">
+      <div className="bg-attention-soft text-text-secondary mt-3 rounded-md p-3 text-xs">
         {render('agents.policy.attribution', { credential: <strong>{t('agents.policy.sharedCredential')}</strong> })}
       </div>
 

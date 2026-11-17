@@ -347,7 +347,9 @@ run_boundary_lint() {
   echo "=== Source boundary lint ==="
   python scripts/check_source_boundaries.py "$@"
   python scripts/check_remote_access_policy.py
+  python scripts/check_private_operator_endpoints.py
   python scripts/validate_source_boundaries.py
+  python scripts/validate_private_operator_endpoints.py
 }
 
 run_web() {

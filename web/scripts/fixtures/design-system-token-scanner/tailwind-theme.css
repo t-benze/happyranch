@@ -1,0 +1,6 @@
+/* Stand-in for node_modules/tailwindcss/theme.css (Tailwind's default theme). */
+@theme default {
+  --radius-xl: 0.75rem;
+  --shadow-sm: 0 1px 3px 0 rgb(0 0 0 / 0.1);
+  --container-md: 28rem;
+}

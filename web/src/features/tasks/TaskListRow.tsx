@@ -151,7 +151,7 @@ export function TaskListColumnHeader(): JSX.Element {
   const { t } = useTranslation();
   return (
     <div
-      className={`${ROW_FLEX} text-text-muted border-border-default bg-surface-page tasks-column-header rounded-xl border shadow-sm font-semibold tracking-wide`}
+      className={`${ROW_FLEX} text-text-muted border-border-default bg-surface-canvas tasks-column-header rounded-xl border shadow-sm font-semibold tracking-wide`}
     >
       <div className={COL.status}>{t('tasks.column.status')}</div>
       <div className={COL.task}>{t('tasks.column.task')}</div>
@@ -184,11 +184,11 @@ export function TaskListRow({ task, to, taskRoutes }: TaskListRowProps): JSX.Ele
         className={`${ROW_FLEX} hover:bg-surface-hover tasks-row rounded-md text-sm no-underline transition-colors`}
       >
         {/* STATUS — compact primary task status only, whitespace-nowrap to prevent wrapping */}
-        <div className={`${COL.status} whitespace-nowrap`}>
-          <StatusBadge status={task.status} presentation="tasks" />
+        <div className={`${COL.status} tasks-status whitespace-nowrap`}>
+          <StatusBadge status={task.status} />
         </div>
         {/* TASK — monospace task-id badge */}
-        <div className={`${COL.task} tasks-id truncate [&>span]:text-text-muted`} title={task.task_id}>
+        <div className={`${COL.task} tasks-id truncate`} title={task.task_id}>
           <IdBadge id={task.task_id} kind="task" />
         </div>
         {/* TITLE — headline text + optional second-line context (waiting qualifier

@@ -12,6 +12,13 @@
 # is retained as the DESIGN.md specification reference. The implementation
 # tokens.css diverges per the Pasture foundation; the semantic token
 # NAMES are identical, only VALUES changed.
+#
+# SUPERSEDED ROWS (2026-11-17, THR-376 PR1): rows marked "SUPERSEDED
+# (Pasture)" below no longer describe the product. Pasture values win:
+# id.thread / id.task (and badge id_thread / id_task) = --color-info blue;
+# status escalated (and badge status_escalated) = attention amber via
+# semanticTone; JetBrains Mono is self-hosted from /fonts (no "Local" face).
+# The rest of this file is unchanged historical reference (Phase 4 rewrites it).
 
 name: HappyRanch Founder Console
 version: 0.1.0
@@ -126,10 +133,10 @@ colors:
         archived:      "{colors.palette.ink_400}"   # greyed — terminal, neutral
         abandoned:     "{colors.palette.red_500}"
         blocked:       "{colors.palette.amber_500}"
-        escalated:     "{colors.palette.red_500}"
+        escalated:     "{colors.palette.red_500}"   # SUPERSEDED (Pasture): attention amber
       id:
-        thread:        "{colors.palette.signal_300}"   # THR-NNN monospace tint
-        task:          "{colors.palette.violet_300}"   # TASK-NNN monospace tint
+        thread:        "{colors.palette.signal_300}"   # THR-NNN monospace tint — SUPERSEDED (Pasture): --color-info
+        task:          "{colors.palette.violet_300}"   # TASK-NNN monospace tint — SUPERSEDED (Pasture): --color-info
       feedback:
         success:       "{colors.palette.green_500}"
         warning:       "{colors.palette.amber_500}"
@@ -174,10 +181,10 @@ colors:
         archived:      "{colors.palette.ink_500}"
         abandoned:     "{colors.palette.red_700}"
         blocked:       "{colors.palette.amber_700}"
-        escalated:     "{colors.palette.red_700}"
+        escalated:     "{colors.palette.red_700}"   # SUPERSEDED (Pasture): attention amber
       id:
-        thread:        "{colors.palette.signal_600}"
-        task:          "{colors.palette.violet_500}"
+        thread:        "{colors.palette.signal_600}"   # SUPERSEDED (Pasture): --color-info
+        task:          "{colors.palette.violet_500}"   # SUPERSEDED (Pasture): --color-info
       feedback:
         success:       "{colors.palette.green_700}"
         warning:       "{colors.palette.amber_700}"
@@ -203,6 +210,8 @@ typography:
     # taller x-height than Fira Code and tighter columns than IBM Plex
     # Mono — better density in tight badges.
     mono:
+      # SUPERSEDED (Pasture): no "JetBrains Mono Local" face; tokens.css self-hosts
+      # JetBrains Mono 400–600 from /fonts/JetBrainsMono-wght.ttf.
       stack: '"JetBrains Mono", "JetBrains Mono Local", ui-monospace, "SF Mono", Menlo, Consolas, monospace'
       weights: [400, 500, 600]
     # No serif. We considered one for an editorial banner, rejected: an
@@ -423,9 +432,9 @@ components:
       status_archived:    { bg: "transparent",                              text: "{colors.semantic.dark.status.archived}",  border_color: "{colors.semantic.dark.border.subtle}" }
       status_abandoned:   { bg: "{colors.semantic.dark.tier.red_tint}",   text: "{colors.semantic.dark.status.abandoned}", border_color: "transparent" }
       status_blocked:     { bg: "{colors.semantic.dark.tier.yellow_tint}", text: "{colors.semantic.dark.status.blocked}",   border_color: "transparent" }
-      status_escalated:   { bg: "{colors.semantic.dark.tier.red_tint}",   text: "{colors.semantic.dark.status.escalated}",  border_color: "transparent" }
-      id_thread:          { bg: "transparent", text: "{colors.semantic.dark.id.thread}", border_color: "transparent", family: "mono" }
-      id_task:            { bg: "transparent", text: "{colors.semantic.dark.id.task}",   border_color: "transparent", family: "mono" }
+      status_escalated:   { bg: "{colors.semantic.dark.tier.red_tint}",   text: "{colors.semantic.dark.status.escalated}",  border_color: "transparent" }  # SUPERSEDED (Pasture): attention amber
+      id_thread:          { bg: "transparent", text: "{colors.semantic.dark.id.thread}", border_color: "transparent", family: "mono" }  # SUPERSEDED (Pasture): --color-info
+      id_task:            { bg: "transparent", text: "{colors.semantic.dark.id.task}",   border_color: "transparent", family: "mono" }  # SUPERSEDED (Pasture): --color-info
 
   agent_chip:
     # The agent name with a leading 6px role-colored dot. Used everywhere

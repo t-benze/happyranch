@@ -1,0 +1,4 @@
+/* @apply lists are class lists: bg-comment-only is ignored in this comment. */
+.panel {
+  @apply bg-ink text-nope;
+}

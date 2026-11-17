@@ -54,6 +54,25 @@ replacement/recovery/rotation and helper/package H2 wiring remain 3b-1c/3b-1d.
 Home `control_tls` generation and `home_transport=True` selection belong to
 slice 3b-2. No automatic migration or deployment occurs in either sub-part.
 
+The first 3b-1c sub-part adds Python-only installer inventory and stop/quiescence
+prerequisites. They inspect fixed managed paths, exact unit bytes and loaded
+fragments/drop-ins, with bounded shallow reads and safe metadata; unknown/unsafe
+residue or transaction records yield `manual-install-conflict` naming paths only.
+Safe unrecorded config subsets, including interrupted generated writer prefixes,
+are known failed/partial after each present artifact is validated. Complete
+unrecorded legacy configs accept 0600/0640/0644, with unchanged owner, no-follow,
+regular-file, single-link and group/world-write checks; recorded provisioning
+retains exact 0640. Intact manual installs require migration even when stopped.
+The stop API refuses those installs/conflicts before effects; recognized installations stop the target,
+connector, sidecar and both verifier units, prove dead inactive/failed states,
+no queued jobs, zero service PIDs and no service cgroups, then re-inventory.
+All files remain intact on stop/proof failure. Inventory reads no release-home
+token and never interprets opaque trust/tsnet state. These APIs grant no cleanup
+or activation authority and have no CLI/helper/package selection. Journaled
+replacement, Disable cleanup and authenticated token rotation remain fail-closed;
+the Go sidecar and `home_transport=False` are unchanged. TODO (3b-2): owned local
+Headscale stop/cleanup, with no callable seam implemented in this sub-part.
+
 Linux home transport (THR-327 1b) adds the optional protected config record
 `"control_tls":{"dial_ip":"192.168.1.10","ca_sha256":"<64 lowercase hex>"}`
 to the identity profile. It requires the canonical control URL
