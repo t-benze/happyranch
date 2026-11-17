@@ -330,16 +330,30 @@ def publication_parent(fixture: Fixture) -> Path:
     return fixture.root / "etc/happyranch"
 
 
+def record_data(name: str, layout: str = "source") -> bytes:
+    digests = {key: hashlib.sha256(b"synthetic-file").hexdigest() for key in (
+        "connector.json", "sidecar.json", "policy.json", "release-daemon.json", "daemon.token")}
+    if name == "install-transaction.json":
+        digests["provision.json"] = hashlib.sha256(b"synthetic-provision").hexdigest()
+    return json.dumps(dict(version=1, layout=layout, digests=digests,
+                          phase="prepared" if name == "install-transaction.json" else "provisioned")).encode()
+
+
+def publication_data(name: str) -> bytes:
+    return record_data(name) if name in ("provision.json", "install-transaction.json") else b"synthetic-bytes!" * 4096
+
+
 @pytest.mark.parametrize("name,mode", [
     ("connector.json", 0o640), ("sidecar.json", 0o640), ("policy.json", 0o640),
     ("release-daemon.json", 0o644), ("daemon.token", 0o600), ("provision.json", 0o600),
+    ("install-transaction.json", 0o600),
 ])
 def test_provision_publication_is_complete_and_durable(
     fixture: Fixture, monkeypatch: pytest.MonkeyPatch, name: str, mode: int,
 ) -> None:
     parent = publication_parent(fixture)
     target = parent / name
-    data = b"synthetic-bytes!" * 4096  # exactly 64 KiB
+    data = publication_data(name)  # Non-record files exercise the exact 64 KiB bound.
     owner = (os.getuid(), os.getgid())
     fsync = os.fsync
     rename = ctypes.CDLL(None, use_errno=True).renameat2
@@ -377,8 +391,9 @@ def test_provision_publication_is_complete_and_durable(
 
 
 @pytest.mark.parametrize("fault", ["file-fsync", "short-write", "rename"])
+@pytest.mark.parametrize("name", ["connector.json", "provision.json", "install-transaction.json"])
 def test_failed_provision_write_never_exposes_partial_final_file(
-    fixture: Fixture, monkeypatch: pytest.MonkeyPatch, fault: str,
+    fixture: Fixture, monkeypatch: pytest.MonkeyPatch, fault: str, name: str,
 ) -> None:
     parent = publication_parent(fixture)
     fsync, fdopen = os.fsync, os.fdopen
@@ -421,15 +436,17 @@ def test_failed_provision_write_never_exposes_partial_final_file(
     if fault == "rename":
         monkeypatch.setattr(ctypes, "CDLL", lambda *args, **kwargs: SimpleNamespace(renameat2=rename))
     with pytest.raises((module.InstallerError, OSError)):
-        fixture.installer._write_provision_file("connector.json", b"synthetic-complete", fixture.installer.root_owner, 0o640)
+        fixture.installer._write_provision_file(name, publication_data(name), fixture.installer.root_owner,
+                                              0o640 if name == "connector.json" else 0o600)
     assert reached == [fault]
     assert list(parent.iterdir()) == []
     assert fixture.manager.calls == []
 
 
 @pytest.mark.parametrize("level", ["etc", "happyranch"])
+@pytest.mark.parametrize("name", ["connector.json", "provision.json", "install-transaction.json"])
 def test_swapped_publication_parent_refuses_before_rename(
-    fixture: Fixture, monkeypatch: pytest.MonkeyPatch, level: str,
+    fixture: Fixture, monkeypatch: pytest.MonkeyPatch, level: str, name: str,
 ) -> None:
     parent = publication_parent(fixture)
     selected = parent if level == "happyranch" else parent.parent
@@ -449,7 +466,8 @@ def test_swapped_publication_parent_refuses_before_rename(
 
     monkeypatch.setattr(os, "fsync", sync)
     with pytest.raises(module.InstallerError):
-        fixture.installer._write_provision_file("connector.json", b"synthetic-complete", fixture.installer.root_owner, 0o640)
+        fixture.installer._write_provision_file(name, publication_data(name), fixture.installer.root_owner,
+                                              0o640 if name == "connector.json" else 0o600)
     assert swapped
     assert list(parent.iterdir()) == []
     old_parent = moved if level == "happyranch" else moved / "happyranch"
@@ -459,11 +477,12 @@ def test_swapped_publication_parent_refuses_before_rename(
 
 @pytest.mark.parametrize("attack", ["symlink", "hardlink", "mode", "oversize", "foreign", "fifo", "safe"])
 @pytest.mark.parametrize("entry", ["target", "pending"])
+@pytest.mark.parametrize("name", ["policy.json", "provision.json", "install-transaction.json"])
 def test_existing_provision_entry_refuses_without_any_publication(
-    fixture: Fixture, monkeypatch: pytest.MonkeyPatch, attack: str, entry: str,
+    fixture: Fixture, monkeypatch: pytest.MonkeyPatch, attack: str, entry: str, name: str,
 ) -> None:
     parent = publication_parent(fixture)
-    target = parent / ("policy.json" if entry == "target" else ".policy.json.pending")
+    target = parent / (name if entry == "target" else f".{name}.pending")
     if attack == "symlink":
         target.symlink_to(fixture.token)
     elif attack == "fifo":
@@ -496,12 +515,13 @@ def test_existing_provision_entry_refuses_without_any_publication(
 
 
 @pytest.mark.parametrize("attack", ["hardlink", "mode", "oversize", "pending-swap"])
+@pytest.mark.parametrize("name", ["connector.json", "provision.json", "install-transaction.json"])
 def test_changed_pending_file_refuses_without_overwriting_or_partial_publication(
-    fixture: Fixture, monkeypatch: pytest.MonkeyPatch, attack: str,
+    fixture: Fixture, monkeypatch: pytest.MonkeyPatch, attack: str, name: str,
 ) -> None:
     parent = publication_parent(fixture)
-    pending = parent / ".connector.json.pending"
-    target = parent / "connector.json"
+    pending = parent / f".{name}.pending"
+    target = parent / name
     fsync = os.fsync
     reached = False
 
@@ -523,7 +543,8 @@ def test_changed_pending_file_refuses_without_overwriting_or_partial_publication
 
     monkeypatch.setattr(os, "fsync", sync)
     with pytest.raises(module.InstallerError):
-        fixture.installer._write_provision_file("connector.json", b"synthetic-complete", fixture.installer.root_owner, 0o640)
+        fixture.installer._write_provision_file(name, publication_data(name), fixture.installer.root_owner,
+                                              0o640 if name == "connector.json" else 0o600)
     assert reached
     assert not target.exists()
     if attack == "pending-swap":
@@ -534,7 +555,7 @@ def test_changed_pending_file_refuses_without_overwriting_or_partial_publication
 @pytest.mark.parametrize("name,data", [
     ("connector.json", b"s" * 65537), ("../escaped.json", b"{}"),
     ("install-transaction.json", b"{}"), ("connector.json", b""),
-], ids=["oversize", "path-escape", "future-transaction", "empty"])
+], ids=["oversize", "path-escape", "transaction-wrong-mode", "empty"])
 def test_unbounded_or_unselectable_publication_refuses(fixture: Fixture, name: str, data: bytes) -> None:
     parent = publication_parent(fixture)
     with pytest.raises(module.InstallerError):
@@ -544,11 +565,12 @@ def test_unbounded_or_unselectable_publication_refuses(fixture: Fixture, name: s
     assert fixture.manager.calls == []
 
 
+@pytest.mark.parametrize("name", ["connector.json", "provision.json", "install-transaction.json"])
 def test_atomic_publication_never_replaces_racing_target(
-    fixture: Fixture, monkeypatch: pytest.MonkeyPatch,
+    fixture: Fixture, monkeypatch: pytest.MonkeyPatch, name: str,
 ) -> None:
     parent = publication_parent(fixture)
-    target = parent / "connector.json"
+    target = parent / name
     rename = ctypes.CDLL(None, use_errno=True).renameat2
     reached = False
 
@@ -561,7 +583,8 @@ def test_atomic_publication_never_replaces_racing_target(
 
     monkeypatch.setattr(ctypes, "CDLL", lambda *args, **kwargs: SimpleNamespace(renameat2=race))
     with pytest.raises(module.InstallerError, match="destination appeared"):
-        fixture.installer._write_provision_file("connector.json", b"synthetic-new", fixture.installer.root_owner, 0o640)
+        fixture.installer._write_provision_file(name, publication_data(name), fixture.installer.root_owner,
+                                              0o640 if name == "connector.json" else 0o600)
     assert reached
     assert target.read_bytes() == b"synthetic-racing-target"
     assert sorted(p.name for p in parent.iterdir()) == [target.name]
@@ -569,8 +592,9 @@ def test_atomic_publication_never_replaces_racing_target(
 
 
 @pytest.mark.parametrize("unavailable", ["symbol", "kernel"])
+@pytest.mark.parametrize("name", ["connector.json", "provision.json", "install-transaction.json"])
 def test_unavailable_atomic_rename_refuses_without_fallback(
-    fixture: Fixture, monkeypatch: pytest.MonkeyPatch, unavailable: str,
+    fixture: Fixture, monkeypatch: pytest.MonkeyPatch, unavailable: str, name: str,
 ) -> None:
     parent = publication_parent(fixture)
     reached = False
@@ -584,7 +608,8 @@ def test_unavailable_atomic_rename_refuses_without_fallback(
     library = SimpleNamespace() if unavailable == "symbol" else SimpleNamespace(renameat2=rename)
     monkeypatch.setattr(ctypes, "CDLL", lambda *args, **kwargs: library)
     with pytest.raises((module.InstallerError, OSError)):
-        fixture.installer._write_provision_file("connector.json", b"synthetic-new", fixture.installer.root_owner, 0o640)
+        fixture.installer._write_provision_file(name, publication_data(name), fixture.installer.root_owner,
+                                              0o640 if name == "connector.json" else 0o600)
     assert reached == (unavailable == "kernel")
     assert list(parent.iterdir()) == []
     assert fixture.manager.calls == []
@@ -602,4 +627,82 @@ def test_oversized_rendered_config_refuses_before_any_publication(fixture: Fixtu
     with pytest.raises(module.InstallerError):
         fixture.provision()
     assert fixture.inventory() == {}
+    assert fixture.manager.calls == []
+
+
+@pytest.mark.parametrize("name", ["provision.json", "install-transaction.json"])
+@pytest.mark.parametrize("layout", ["source", "deb"])
+def test_versioned_records_have_only_fixed_nonsecret_fields(fixture: Fixture, name: str, layout: str) -> None:
+    fixture.installer.layout = layout
+    parent = publication_parent(fixture)
+    fixture.installer._write_provision_file(name, record_data(name, layout), fixture.installer.root_owner, 0o600)
+    data = (parent / name).read_bytes()
+    record = json.loads(data)
+    assert set(record) == {"version", "layout", "digests", "phase"}
+    assert type(record["version"]) is int and record["version"] == 1
+    assert record["layout"] == layout
+    assert record["phase"] == ("prepared" if name == "install-transaction.json" else "provisioned")
+    assert set(record["digests"]) == {"connector.json", "sidecar.json", "policy.json", "release-daemon.json", "daemon.token"} | (
+        {"provision.json"} if name == "install-transaction.json" else set())
+    assert fixture.token.read_bytes().strip() not in data
+    assert fixture.key.read_bytes() not in data
+    assert str(fixture.home).encode() not in data
+    assert fixture.manager.calls == []
+
+
+@pytest.mark.parametrize("name", ["provision.json", "install-transaction.json"])
+@pytest.mark.parametrize("bad", [
+    "extra-secret", "missing", "version-bool", "version-future", "version-string", "layout",
+    "phase", "arbitrary-path", "missing-digest", "secret-digest", "upper-digest", "digest-type",
+    "digests-type", "duplicate", "non-json", "oversize",
+])
+def test_invalid_record_schema_refuses_before_publication(fixture: Fixture, name: str, bad: str) -> None:
+    parent = publication_parent(fixture)
+    record = json.loads(record_data(name))
+    if bad == "extra-secret":
+        record["token"] = fixture.token.read_text().strip()
+    elif bad == "missing":
+        del record["phase"]
+    elif bad.startswith("version-"):
+        record["version"] = {"version-bool": True, "version-future": 2, "version-string": "1"}[bad]
+    elif bad in ("layout", "phase"):
+        record[bad] = "unrecognized"
+    elif bad == "arbitrary-path":
+        record["digests"]["/etc/shadow"] = "a" * 64
+    elif bad == "missing-digest":
+        del record["digests"]["connector.json"]
+    elif bad in ("secret-digest", "upper-digest", "digest-type"):
+        record["digests"]["daemon.token"] = {
+            "secret-digest": fixture.token.read_text().strip(), "upper-digest": "A" * 64, "digest-type": 1,
+        }[bad]
+    elif bad == "digests-type":
+        record["digests"] = []
+    data = json.dumps(record).encode()
+    if bad == "duplicate":
+        data = b'{"version":1,' + data[1:]
+    elif bad == "non-json":
+        data = b"not-json"
+    elif bad == "oversize":
+        data += b" " * 65536
+    with pytest.raises(module.InstallerError):
+        fixture.installer._write_provision_file(name, data, fixture.installer.root_owner, 0o600)
+    assert list(parent.iterdir()) == []
+    assert fixture.manager.calls == []
+
+
+@pytest.mark.parametrize("name", ["install-transaction.json", ".install-transaction.json.pending"])
+@pytest.mark.parametrize("operation", ["provision", "install", "uninstall", "drift"])
+def test_transaction_inventory_never_authorizes_service_or_recovery(
+    fixture: Fixture, name: str, operation: str,
+) -> None:
+    fixture.prepare(operation)
+    parent = publication_parent(fixture)
+    fixture.write(parent / name, record_data("install-transaction.json"))
+    before = fixture.inventory()
+    with pytest.raises(module.InstallerError):
+        if operation == "uninstall":
+            fixture.installer.uninstall(purge=True)
+        else:
+            fixture.invoke(operation)
+    assert fixture.inventory() == before
     assert fixture.manager.calls == []
