@@ -854,6 +854,32 @@ fixture, so it proves neither serving time nor production-size savings.
 It starts no daemon/worker and adds no CI selection, trigger or dependency;
 retired Python units, general integration and Product E2E are not executed.
 
+R1b1 own-task discovery uses the existing private schema-load case table:
+
+```bash
+WORKFLOW_SCHEMA_PYTHON=3.12 bash scripts/test-workflow-schema-load.sh --start-context=all
+WORKFLOW_SCHEMA_PYTHON=3.14 bash scripts/test-workflow-schema-load.sh --start-context=all
+```
+
+Individual selectors are `manager_context`, `thread_origin_manager`,
+`foreign_context`, `direct_thread_refused`, `worker_refused`,
+`ended_or_recovery_sid_refused`, `bearer_audience_refused`, `definition_selector`,
+`unavailable_causes`, `zero_writes`, and `bounds`. The real ASGI route, task
+registry, current profile/authority coordinator and selected settings/pin readers
+operate on private data. Every request compares all-table inventories and
+`total_changes` and rejects traced DML/DDL/COMMIT. The matrix includes absent
+storage, unregistered definitions, Disabled/unset defaults, old model-valid
+Explicit snapshot byte preservation (not legacy execution/admission closure), exact/retired/unknown
+selectors, authority/native loss and fail-safe budget exhaustion. `bounds` adds
+2048 unrelated 4 KiB historical settings rows without imposing a full-history
+scan. No successful-authority mock or production test seam is used. Record
+route-absent RED and audience mutation RED with byte-exact restoration hashes in
+the PR body. Retain `--bundled-catalog=all` and `--returned-storage=all` on both
+runtimes, snapshot `--check`, `boundary-lint` and the worktree guard. Full suites
+are reserved for the manager's final approved-head jobs. No Product E2E/V3,
+live setup or thread notification follows. Start@1 remains one run, fixed
+assignments and old source-terminal semantics.
+
 R1c bundled catalog selection uses this focused private venue on both runtimes:
 
 ```bash

@@ -211,6 +211,29 @@ def _ordinary_source(conn: sqlite3.Connection, org: Any, task_id: str,
     return source, row, seen
 
 
+def read_start_source(conn: sqlite3.Connection, org: Any, *, task_id: str,
+                      principal: str, session_id: str, budget: _ReadBudget) -> dict:
+    """SELECT-only discovery audience; identities come from the session registry.
+
+    This is not callback/native admission and cannot allocate or start work.
+    Thread-origin metadata does not change an ordinary task's ownership.
+    """
+    if not list(_bounded_rows(conn, 'tasks', ('id',), (('text',),), budget,
+                             where='id=?', args=(task_id,), maximum=1)):
+        raise SequentialRefusal('task_not_found')
+    try:
+        source, _, _ = _ordinary_source(conn, org, task_id, budget)
+    except SequentialRefusal:
+        raise SequentialRefusal('sequential_task_session_required') from None
+    _check((source['assigned_agent'], source['current_session_id']) == (principal, session_id),
+           'sequential_task_session_required')
+    # A landed completion can precede the native status/session teardown.
+    _check(not list(_bounded_rows(conn, 'task_results', ('id',), (('integer',),), budget,
+        where='task_id=? AND agent=? AND session_id=?', args=(task_id, principal, session_id), maximum=1)),
+        'sequential_task_session_required')
+    return source
+
+
 def _source(conn: sqlite3.Connection, org: Any, claim: RetryClaim, invocation: Any,
             capture: AuthorityAdmissionCapture, revise_limit: int, budget: _ReadBudget) -> None:
     _check(not org._runner_admission_closed and org.orchestrator._db is org.db

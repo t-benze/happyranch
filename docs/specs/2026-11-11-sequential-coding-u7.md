@@ -27,6 +27,22 @@ PRD v1.0.4 Shared Artifact `product_lead-2026-11-11-workflow-mechanism-prd-v1.0.
 SHA256 `96925395de4e44cc5c1570deb512ec843fcfd72c0b3eaeff0423c00b58a07bb5`,
 Founder THR-336 msg131 ACCESS-1. Source delivery is not deployment or acceptance.
 
+## R1b1 own-task discovery extension
+
+The separate `workflow_sequential_start` router now serves the bounded CLI-only
+GET `/workflows/sequential/start-context?session_id=SID`, with an optional exact
+`definition=release/happyranch/coding@2` selector. Registry-derived live ordinary
+executable team-manager identity and fresh current authority govern disclosure;
+ordinary thread origins qualify, direct thread invocations and bearer/browser,
+foreign, worker, ended/stale/recovery audiences refuse. Founder routes below
+retain their existing bearer dependency. The response contains bundled full
+pins/roles/responsibilities, current settings generation/digest/admission,
+same-team saved defaults and limits, and finite unavailable causes. It has zero
+DML/COMMIT and no start or settings effect. The TS contract is agent-session
+types only. See the [current R1b1 contract](../agent-guides/contracts/reusable-workflows.md#r1b1-own-task-sequential-start-discovery)
+for bounds and refusals. Start@1 retains one run, fixed assignments and old
+source-terminal semantics; composition/prompt work belongs to R1b2.
+
 ## U7a assumptions and scope, declared before edits
 
 No schema/table/column/index/migration, dependency or permission change. This

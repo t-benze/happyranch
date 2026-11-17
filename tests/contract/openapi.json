@@ -5383,6 +5383,31 @@
         ]
       }
     },
+    "/api/v1/orgs/{slug}/workflows/sequential/start-context": {
+      "GET": {
+        "params": [
+          [
+            "definition",
+            "query"
+          ],
+          [
+            "session_id",
+            "query"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "403",
+          "404",
+          "409",
+          "422"
+        ]
+      }
+    },
     "/api/v1/orgs/{slug}/workflows/submissions/handoffs": {
       "POST": {
         "params": [

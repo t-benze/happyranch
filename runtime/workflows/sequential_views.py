@@ -2,13 +2,15 @@
 from __future__ import annotations
 
 import hashlib
+import asyncio
 import sqlite3
 import time
 from contextlib import ExitStack
-from typing import Any, Literal
+from typing import Any, Callable, Literal
 
 from runtime.workflows.sequential_contracts import (
-    BindingClaim, Closed, Counters, DefinitionPin, InputValue, Limits, SettingsPin, effective_limits,
+    BindingClaim, Closed, Counters, DefinitionPin, InputValue, Limits, RoleRequirement,
+    RequiredInput, SettingsPin, effective_limits,
 )
 from runtime.workflows.sequential_definition import compile_definition, parse_result, parse_start
 from runtime.workflows.sequential_engine import SequentialRefusal, _bound_agents, _engine_rows
@@ -119,6 +121,162 @@ class TaskWorkflowView(Closed):
     format: Literal['workflow-sequential-task-link@1'] = 'workflow-sequential-task-link@1'
     task_id: str
     run: RunView | None
+
+
+class StartRoleView(Closed):
+    role: str
+    requirement: RoleRequirement
+    responsibilities: tuple[str, ...]
+
+
+class StartDefinitionView(Closed):
+    selector: str
+    pin: DefinitionPin
+    description: str
+    roles: tuple[StartRoleView, ...]
+    required_inputs: tuple[RequiredInput, ...]
+    definition_limits: Limits
+    registered: bool
+    settings: SettingsView | None
+    admission: Literal['Disabled', 'Allowed']
+    defaults: tuple[BindingClaim, ...]
+    limits: Limits | None
+    unavailable_cause: Literal['sequential_storage_unavailable', 'sequential_definition_not_registered',
+        'sequential_settings_absent', 'sequential_settings_disabled', 'sequential_host_unavailable'] | None
+
+
+class StartContext(Closed):
+    format: Literal['workflow-sequential-start-context@1'] = 'workflow-sequential-start-context@1'
+    start_format: Literal['workflow-sequential-start@1'] = 'workflow-sequential-start@1'
+    max_runs: Literal[1] = 1
+    assignments: Literal['fixed'] = 'fixed'
+    source_semantics: Literal['source-terminal'] = 'source-terminal'
+    definitions: tuple[StartDefinitionView, ...]
+
+
+def _start_definitions(conn: sqlite3.Connection, org: Any, catalog: tuple,
+                       source: dict, capture: Any, budget: _ReadBudget) -> StartContext:
+    from runtime.workflows.coding_authority_history import _bounded_rows
+    from runtime.workflows.sequential_builtin import inspect_definition
+    from runtime.workflows.sequential_run_validation import _pins, _selected_layout
+    from runtime.workflows.sequential_start import _require_runtime
+
+    present = conn.execute("SELECT 1 FROM sqlite_schema WHERE lower(name) GLOB 'workflow_seq_*' LIMIT 1").fetchone()
+    metadata = _selected_layout(conn, budget) if present else None
+    values = []
+    for compiled in catalog:
+        budget.step()
+        cause = 'sequential_storage_unavailable'
+        registered, saved = False, None
+        if metadata is not None:
+            definition, registered = inspect_definition(conn, compiled, budget)
+            cause = 'sequential_definition_not_registered'
+            if registered:
+                # Indexed latest generation only; no whole-history/run scan or
+                # caller-selected generation. _pins authenticates original bytes,
+                # receipt and exact latest pin using the existing start reader.
+                rows = list(_bounded_rows(conn, 'workflow_seq_settings', ('id',), (('text',),), budget,
+                    where='org_slug=? AND definition_identity=? AND generation=(SELECT max(generation) '
+                          'FROM workflow_seq_settings WHERE org_slug=? AND definition_identity=?)',
+                    args=(org.slug, compiled.pin.identity, org.slug, compiled.pin.identity), maximum=1))
+                cause = 'sequential_settings_absent'
+                if rows:
+                    stored, setting, snapshot = _pins(conn, metadata, org_slug=org.slug,
+                        definition_id=definition['id'], settings_id=rows[0][0], budget=budget)
+                    if stored != compiled:
+                        raise ProjectionRefusal('sequential_definition_conflict')
+                    budget.reserve(48 * len(capture.ready.snapshot_bytes) + 512)
+                    agents = _bound_agents(compiled, snapshot, capture)
+                    if any(agent['team'] != source['team'] for agent in agents.values()):
+                        raise ProjectionRefusal('sequential_authority_denied', 403)
+                    saved = SettingsView(id=setting['id'], generation=setting['generation'],
+                        snapshot_digest=setting['snapshot_digest'], snapshot=snapshot)
+                    cause = 'sequential_settings_disabled' if snapshot.admission == 'Disabled' else None
+                    if cause is None:
+                        try:
+                            _require_runtime(org)
+                        except SequentialRefusal:
+                            cause = 'sequential_host_unavailable'
+        roles = tuple(StartRoleView(role=role, requirement=requirement,
+            responsibilities=tuple(text for node in compiled.definition.nodes if node.role == role
+                                   for text in node.responsibilities))
+            for role, requirement in compiled.definition.roles)
+        values.append(StartDefinitionView(selector=f'{compiled.pin.identity}@{compiled.pin.version}',
+            pin=compiled.pin, description=compiled.definition.description, roles=roles,
+            required_inputs=compiled.definition.required_inputs, definition_limits=compiled.definition.limits,
+            registered=registered, settings=saved, admission='Disabled' if saved is None else saved.snapshot.admission,
+            defaults=() if saved is None else saved.snapshot.bindings,
+            limits=None if saved is None else saved.snapshot.limits, unavailable_cause=cause))
+    return StartContext(definitions=tuple(values))
+
+
+async def read_start_context(org: Any, *, task_id: str, principal: str, session_id: str,
+                             selector: str | None, revalidate: Callable[[], None]) -> StartContext:
+    """Own-manager context only; one read allowance, rollback-only snapshots.
+
+    Current authority capture retains its existing cooperative file/lock I/O
+    behavior. The original deadline is checked after capture and before return;
+    it is not a hard OS-I/O or RSS guarantee. No durable lease is acquired.
+    """
+    from runtime.workflows import sequential_release as release
+    from runtime.workflows.sequential_start import read_start_source
+
+    budget = _ReadBudget()
+    revalidate()
+    # Classify the native audience before any settings or authority disclosure.
+    with org.db.coherent_read_view() as conn, _sql_budget(conn, budget):
+        read_start_source(conn, org, task_id=task_id, principal=principal, session_id=session_id, budget=budget)
+    authority = org.workflow_authority
+    capture = authority.capture_admission()
+    budget.check()
+    if not 0 < len(release.MANIFEST) <= 16:
+        raise ProjectionRefusal('sequential_definition_unavailable')
+    entries = tuple(entry for entry in release.MANIFEST.values()
+                    if selector is None or selector == f'{entry.pin.identity}@{entry.pin.version}')
+    if not entries:
+        raise ProjectionRefusal('coding_fresh_start_retired' if selector == 'release/happyranch/coding@1'
+                                else 'sequential_definition_unavailable')
+    catalog = []
+    for entry in entries:
+        release.manifest_entry(entry.pin)
+        budget.reserve(96 * entry.size + 4096)
+        catalog.append(release.select_bundled_release(entry.pin))
+        budget.check()
+    async with asyncio.timeout(max(0, budget.deadline - time.monotonic())), \
+            authority._async_writer_lock, org.teams_lock, org.db_lock:
+        with ExitStack() as fences:
+            for name in capture.profile_names:
+                budget.step()
+                fences.enter_context(authority._profile_coordinator.profile_read(name))
+            fences.enter_context(authority._publisher_lock)
+            fences.enter_context(org.db._lock)
+            fences.enter_context(org.sessions.binding_lease(task_id, principal))
+            conn = org.db._conn
+            if conn.in_transaction:
+                raise ProjectionRefusal('sequential_reader_transaction')
+            conn.execute('BEGIN')
+            try:
+                with _sql_budget(conn, budget):
+                    revalidate()
+                    source = read_start_source(conn, org, task_id=task_id, principal=principal,
+                                               session_id=session_id, budget=budget)
+                    _current_authority(conn, authority, capture, budget)
+                    snapshot = _decode(capture.ready.snapshot_bytes, budget)
+                    managers = [a for a in snapshot['agents'] if a['name'] == principal]
+                    if (len(managers) != 1 or managers[0]['role'] != 'manager'
+                            or managers[0]['status'] != 'active' or not managers[0]['executor']
+                            or managers[0]['team'] != source['team']):
+                        raise ProjectionRefusal('sequential_authority_denied', 403)
+                    value = _start_definitions(conn, org, tuple(catalog), source, capture, budget)
+                    raw = _bytes(value.model_dump(mode='json'))
+                    budget.reserve(96 * len(raw) + 4096)
+                    if len(raw) > 262144:
+                        raise ProjectionRefusal('sequential_context_too_large')
+                    _current_authority(conn, authority, capture, budget)
+                    revalidate()
+                    return value
+            finally:
+                conn.rollback()
 
 
 def _definition(row: dict, budget: _ReadBudget) -> DefinitionView:
