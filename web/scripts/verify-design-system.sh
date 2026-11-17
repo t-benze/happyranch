@@ -9,9 +9,12 @@
 #   1 — typecheck, lint, test, or build failure (or missing scan input)
 #   3 — production colour baseline mismatch
 #   4 — a colour/spacing/radius/shadow utility names an undefined theme token
+#   5 — tokens.css re-maps a numeric --spacing-N off Tailwind's linear scale
+#   6 — a non-semantic (alias) --color-* in tokens.css is not a var() alias of
+#       a semantic token
 #
-# Modes: `--scan-hex` (colour baseline only), `--scan-tokens` (unknown-token
-# utilities only).
+# Modes: `--scan-hex` (colour baseline only), `--scan-tokens` (tokens.css
+# spacing/alias checks, then unknown-token utilities).
 #
 # Run locally before pushing: `bash scripts/verify-design-system.sh`
 set -euo pipefail
@@ -233,6 +236,7 @@ scan_tokens() {
 from __future__ import annotations
 
 from pathlib import Path
+import os
 import re
 import sys
 
@@ -298,6 +302,40 @@ if linear_spacing_hits:
     for hit in linear_spacing_hits:
         print(f"  non-linear spacing token: {hit}", file=sys.stderr)
     sys.exit(5)
+
+# One colour vocabulary (THR-376 PR10). Only the canonical semantic colour names
+# may hold a raw colour value in tokens.css. Every other --color-* declaration
+# (v3, tier-*, status-*, feedback-*, agent-*, id-*, shadcn and duplicate
+# spellings), in any block and either theme, must be an alias of a canonical
+# token: `var(--color-<semantic>)`, or for an alpha tint
+# `color-mix(in oklab, var(--color-<semantic>) N%, transparent)`. An alias of an
+# alias, or a literal, fails, so values cannot drift apart again.
+semantic_colours = set((os.environ.get("DESIGN_SYSTEM_SEMANTIC_COLOURS") or
+    "surface-canvas surface-sunken surface-raised surface-overlay surface-scrim surface-hover surface-subtle "
+    "text-primary text-secondary text-muted text-inverse text-disabled "
+    "border-default border-strong border-subtle "
+    "accent-default accent-hover accent-soft accent-ring accent-text brand-foreground "
+    "attention attention-soft attention-text info info-soft positive danger danger-soft").split())
+semantic_pattern = "|".join(re.escape(name) for name in sorted(semantic_colours, key=len, reverse=True))
+alias_value = re.compile(
+    rf"var\(--color-(?:{semantic_pattern})\)"
+    rf"|color-mix\(in oklab, var\(--color-(?:{semantic_pattern})\) [0-9]{{1,3}}%, transparent\)")
+alias_hits = []
+# Comments are blanked (newlines kept) so reported line numbers match the file.
+tokens_lines = re.sub(r"/\*.*?\*/", lambda comment: re.sub(r"[^\n]", " ", comment.group()),
+                      tokens_path.read_text(encoding="utf-8"), flags=re.S)
+for match in re.finditer(r"(?m)^[ \t]*--color-([a-z0-9-]+)\s*:\s*([^;]*?)\s*;", tokens_lines):
+    name, value = match.group(1), match.group(2)
+    if name in semantic_colours:
+        continue
+    if not alias_value.fullmatch(value):
+        line = tokens_lines.count("\n", 0, match.start(1)) + 1
+        alias_hits.append(f"{tokens_path}:{line}\t--color-{name}: {value}")
+if alias_hits:
+    print("FAIL: tokens.css alias colours must be var() aliases of a semantic token, not literals (THR-376 PR10):", file=sys.stderr)
+    for hit in alias_hits:
+        print(f"  literal alias colour: {hit}", file=sys.stderr)
+    sys.exit(6)
 
 colour_roots = [
     "inset-shadow", "inset-ring", "ring-offset", "decoration", "outline", "divide", "accent", "caret",

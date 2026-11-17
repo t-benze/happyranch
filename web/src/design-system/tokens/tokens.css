@@ -72,7 +72,7 @@
   --color-surface-raised:  oklch(1 0 0);
   --color-surface-overlay: oklch(1 0 0);
   --color-surface-scrim:   rgba(40, 30, 20, 0.25);
-  --color-surface:         oklch(1 0 0);            /* bare "surface" used by attachment labels */
+  --color-surface:         var(--color-surface-raised);            /* bare "surface" used by attachment labels */
   --color-surface-hover:   oklch(0.982 0.006 80);    /* hover on bare surface */
   --color-surface-subtle:  oklch(0.988 0.004 82);    /* skeleton-loading variant */
 
@@ -94,7 +94,7 @@
 
   --color-accent-default:  oklch(0.52 0.11 152);
   --color-accent-hover:    oklch(0.46 0.11 152);
-  --color-accent-muted:    oklch(0.93 0.045 152);
+  --color-accent-muted:    var(--color-accent-soft);
   --color-accent-ring:     rgba(134, 172, 98, 0.45);  /* accent at ~45% */
   --color-accent-text:     oklch(0.46 0.10 152);       /* ds.css --accent-text */
 
@@ -104,14 +104,14 @@
 
   /* ---- TIER / SEMANTIC STATUS ---- */
 
-  --color-tier-green:       oklch(0.52 0.11 152);
-  --color-tier-green-tint:  oklch(0.93 0.045 152 / 0.60);
+  --color-tier-green:       var(--color-positive);
+  --color-tier-green-tint:  color-mix(in oklab, var(--color-accent-soft) 60%, transparent);
 
-  --color-tier-yellow:      oklch(0.70 0.13 64);
-  --color-tier-yellow-tint: oklch(0.94 0.05 70 / 0.60);
+  --color-tier-yellow:      var(--color-attention);
+  --color-tier-yellow-tint: color-mix(in oklab, var(--color-attention-soft) 60%, transparent);
 
-  --color-tier-red:         oklch(0.55 0.16 25);
-  --color-tier-red-tint:    oklch(0.94 0.04 28 / 0.60);
+  --color-tier-red:         var(--color-danger);
+  --color-tier-red-tint:    color-mix(in oklab, var(--color-danger-soft) 60%, transparent);
 
   /* ---- Semantic attention / info / danger soft + text companions (ds.css parity) ---- */
   --color-attention-soft: oklch(0.94 0.05 70);
@@ -124,22 +124,22 @@
   --color-attention:    oklch(0.70 0.13 64);
   --color-positive:     oklch(0.52 0.11 152);
   --color-danger:       oklch(0.55 0.16 25);
-  --color-info:         oklch(0.53 0.10 248);        /* bare info alias — same value as --color-feedback-info */
+  --color-info:         oklch(0.53 0.10 248);
 
   /* ---- AGENT IDENTITY ---- */
 
   --color-agent-manager:   var(--color-info);     /* THR-376 PR9: Pasture info (was off-palette violet) */
-  --color-agent-worker:    var(--color-accent);   /* THR-376 PR9: Pasture accent (was off-palette teal) */
-  --color-agent-founder:   oklch(0.52 0.11 152);
+  --color-agent-worker:    var(--color-accent-default);   /* THR-376 PR9: Pasture accent (was off-palette teal) */
+  --color-agent-founder:   var(--color-accent-default);
 
   /* ---- STATUS ---- */
 
-  --color-status-open:       oklch(0.52 0.11 152);
-  --color-status-archiving:  oklch(0.70 0.13 64);
-  --color-status-archived:   oklch(0.45 0.013 60);
-  --color-status-abandoned:  oklch(0.55 0.16 25);
-  --color-status-blocked:    oklch(0.70 0.13 64);
-  --color-status-escalated:  oklch(0.55 0.16 25);
+  --color-status-open:       var(--color-positive);
+  --color-status-archiving:  var(--color-attention);
+  --color-status-archived:   var(--color-text-secondary);
+  --color-status-abandoned:  var(--color-danger);
+  --color-status-blocked:    var(--color-attention);
+  --color-status-escalated:  var(--color-danger);
 
   /* ---- ID BADGES — Pasture `.id` uses --info for every entity ID (THR-376) ---- */
 
@@ -148,44 +148,31 @@
 
   /* ---- FEEDBACK ---- */
 
-  --color-feedback-success: oklch(0.52 0.11 152);
-  --color-feedback-warning: oklch(0.70 0.13 64);
-  --color-feedback-danger:  oklch(0.55 0.16 25);
-  --color-feedback-info:    oklch(0.53 0.10 248);
+  --color-feedback-success: var(--color-positive);
+  --color-feedback-warning: var(--color-attention);
+  --color-feedback-danger:  var(--color-danger);
+  --color-feedback-info:    var(--color-info);
 
   /* ====================================================================== */
-  /* v3 BACKWARDS-COMPAT ALIASES — pasted into Pasture values.               */
-  /* Per brief: keep all v3 class names working. Per-surface rename is       */
-  /* a follow-on leg.                                                        */
+  /* v3 BACKWARDS-COMPAT ALIASES — var() aliases of the semantic tokens     */
+  /* (THR-376 PR10). Kept so v3 class names work; codemod + removal is a     */
+  /* follow-on leg, scheme by scheme (DESIGN_SYSTEM.md "One colour vocabulary"). */
   /* ====================================================================== */
 
-  --color-bg:              oklch(0.975 0.007 80);
-  --color-bg-subtle:       oklch(0.982 0.006 80);
-  --color-bg-raised:       oklch(1 0 0);
-  --color-bg-muted:        oklch(0.982 0.006 80);    /* used in ErrorBoundary */
+  --color-bg:              var(--color-surface-canvas);
+  --color-bg-subtle:       var(--color-surface-sunken);
+  --color-bg-raised:       var(--color-surface-raised);
+  --color-bg-muted:        var(--color-surface-sunken);    /* used in ErrorBoundary */
 
-  --color-border:          oklch(0.915 0.008 75);
-  --color-border-subtle:   oklch(0.935 0.006 78);
+  --color-border:          var(--color-border-default);
 
-  --color-fg:              oklch(0.28 0.014 60);
-  --color-fg-muted:        oklch(0.45 0.013 60);
-  --color-fg-subtle:       oklch(0.55 0.012 65);
+  --color-fg:              var(--color-text-primary);
+  --color-fg-muted:        var(--color-text-secondary);
+  --color-fg-subtle:       var(--color-text-muted);
 
-  --color-accent:          oklch(0.52 0.11 152);
-  --color-accent-hover:    oklch(0.46 0.11 152);
+  --color-accent:          var(--color-accent-default);
   /* Note: --color-accent-fg used by bg-accent text-accent-fg pattern in Settings */
-  --color-accent-fg:       oklch(0.99 0 0);
-
-  /* ---- v3 tier (same as tier-* above, just v3 names) ---- */
-  --color-tier-green:       oklch(0.52 0.11 152);
-  --color-tier-yellow:      oklch(0.70 0.13 64);
-  --color-tier-red:         oklch(0.55 0.16 25);
-  --color-tier-green-tint:  oklch(0.93 0.045 152 / 0.60);
-  --color-tier-yellow-tint: oklch(0.94 0.05 70 / 0.60);
-  --color-tier-red-tint:    oklch(0.94 0.04 28 / 0.60);
-
-  /* ---- v3 job-status / additional patterns ---- */
-  --color-tier-slate-tint:  oklch(0.94 0.008 75);    /* used by TasksPage resolved group */
+  --color-accent-fg:       var(--color-text-inverse);
 
   /* ====================================================================== */
   /* TYPOGRAPHY — Hanken Grotesk UI, Newsreader display, JetBrains Mono      */
@@ -295,7 +282,7 @@
   --color-secondary-foreground:   var(--color-text-primary);
   --color-muted:                  var(--color-surface-sunken);
   --color-muted-foreground:       var(--color-text-muted);
-  --color-destructive:            var(--color-tier-red);
+  --color-destructive:            var(--color-danger);
   --color-destructive-foreground: var(--color-text-inverse);
   --color-input:                  var(--color-border-default);
   --color-ring:                   var(--color-accent-ring);
@@ -404,7 +391,7 @@
   --color-surface-raised:  oklch(0.245 0.012 70);
   --color-surface-overlay: oklch(0.275 0.013 70);
   --color-surface-scrim:   rgba(0, 0, 0, 0.55);
-  --color-surface:         oklch(0.245 0.012 70);
+  --color-surface:         var(--color-surface-raised);
   --color-surface-hover:   oklch(0.265 0.012 70);
   --color-surface-subtle:  oklch(0.215 0.010 72);
 
@@ -418,12 +405,12 @@
   /* ---- Semantic border (dark) ---- */
   --color-border-default:  oklch(0.32 0.012 72);
   --color-border-strong:   oklch(0.40 0.013 72);
-  --color-border-subtle:   oklch(0.28 0.010 70);
+  --color-border-subtle:   var(--color-border-default);   /* ds.css has no dark subtle border; Pasture uses --border (THR-376 PR10) */
 
   /* ---- Semantic accent (dark) — brighter for dark bg ---- */
   --color-accent-default:  oklch(0.70 0.13 152);
   --color-accent-hover:    oklch(0.76 0.13 152);
-  --color-accent-muted:    oklch(0.32 0.06 152);
+  --color-accent-muted:    var(--color-accent-soft);
   --color-accent-ring:     rgba(165, 207, 112, 0.45);
   --color-accent-text:     oklch(0.80 0.12 152);       /* ds.css --accent-text dark */
 
@@ -431,61 +418,50 @@
   --color-brand-foreground: oklch(0.80 0.12 152);
 
   /* ---- Tier / status (dark) ---- */
-  --color-tier-green:       oklch(0.72 0.12 152);
-  --color-tier-green-tint:  oklch(0.30 0.05 152 / 0.60);
-  --color-tier-yellow:      oklch(0.78 0.13 70);
-  --color-tier-yellow-tint: oklch(0.34 0.05 65 / 0.60);
-  --color-tier-red:         oklch(0.70 0.15 25);
-  --color-tier-red-tint:    oklch(0.34 0.06 28 / 0.60);
+  --color-tier-green:       var(--color-positive);
+  --color-tier-green-tint:  color-mix(in oklab, var(--color-accent-soft) 60%, transparent);
+  --color-tier-yellow:      var(--color-attention);
+  --color-tier-yellow-tint: color-mix(in oklab, var(--color-attention-soft) 60%, transparent);
+  --color-tier-red:         var(--color-danger);
+  --color-tier-red-tint:    color-mix(in oklab, var(--color-danger-soft) 60%, transparent);
 
   /* ---- Agent identity (dark) — aliases of the dark palette tokens (THR-376 PR9) ---- */
   --color-agent-manager:   var(--color-info);     /* THR-376 PR9: Pasture info (was off-palette violet) */
-  --color-agent-worker:    var(--color-accent);   /* THR-376 PR9: Pasture accent (was off-palette teal) */
-  --color-agent-founder:   oklch(0.70 0.13 152);
+  --color-agent-worker:    var(--color-accent-default);   /* THR-376 PR9: Pasture accent (was off-palette teal) */
+  --color-agent-founder:   var(--color-accent-default);
 
   /* ---- Status (dark) ---- */
-  --color-status-open:      oklch(0.72 0.12 152);
-  --color-status-archiving: oklch(0.78 0.13 70);
-  --color-status-archived:  oklch(0.64 0.011 72);
-  --color-status-abandoned: oklch(0.70 0.15 25);
-  --color-status-blocked:   oklch(0.78 0.13 70);
-  --color-status-escalated: oklch(0.70 0.15 25);
+  --color-status-open:      var(--color-positive);
+  --color-status-archiving: var(--color-attention);
+  --color-status-archived:  var(--color-text-muted);
+  --color-status-abandoned: var(--color-danger);
+  --color-status-blocked:   var(--color-attention);
+  --color-status-escalated: var(--color-danger);
 
   /* ---- ID badges (dark) — Pasture `.id` = --info (THR-376) ---- */
   --color-id-thread: var(--color-info);
   --color-id-task:   var(--color-info);
 
   /* ---- Feedback (dark) ---- */
-  --color-feedback-success: oklch(0.72 0.12 152);
-  --color-feedback-warning: oklch(0.78 0.13 70);
-  --color-feedback-danger:  oklch(0.70 0.15 25);
-  --color-feedback-info:    oklch(0.72 0.11 245);
+  --color-feedback-success: var(--color-positive);
+  --color-feedback-warning: var(--color-attention);
+  --color-feedback-danger:  var(--color-danger);
+  --color-feedback-info:    var(--color-info);
 
   /* ---- v3 backwards-compat aliases (dark) ---- */
-  --color-bg:              oklch(0.205 0.011 70);
-  --color-bg-subtle:       oklch(0.225 0.011 70);
-  --color-bg-raised:       oklch(0.245 0.012 70);
-  --color-bg-muted:        oklch(0.245 0.012 70);
+  --color-bg:              var(--color-surface-canvas);
+  --color-bg-subtle:       var(--color-surface-sunken);
+  --color-bg-raised:       var(--color-surface-raised);
+  --color-bg-muted:        var(--color-surface-raised);
 
-  --color-border:          oklch(0.32 0.012 72);
-  --color-border-subtle:   oklch(0.28 0.010 70);
+  --color-border:          var(--color-border-default);
 
-  --color-fg:              oklch(0.94 0.008 80);
-  --color-fg-muted:        oklch(0.76 0.01 75);
-  --color-fg-subtle:       oklch(0.64 0.011 72);
+  --color-fg:              var(--color-text-primary);
+  --color-fg-muted:        var(--color-text-secondary);
+  --color-fg-subtle:       var(--color-text-muted);
 
-  --color-accent:          oklch(0.70 0.13 152);
-  --color-accent-hover:    oklch(0.76 0.13 152);
-  --color-accent-fg:       oklch(0.18 0.02 152);
-
-  --color-tier-green:       oklch(0.72 0.12 152);
-  --color-tier-yellow:      oklch(0.78 0.13 70);
-  --color-tier-red:         oklch(0.70 0.15 25);
-  --color-tier-green-tint:  oklch(0.30 0.05 152 / 0.60);
-  --color-tier-yellow-tint: oklch(0.34 0.05 65 / 0.60);
-  --color-tier-red-tint:    oklch(0.34 0.06 28 / 0.60);
-
-  --color-tier-slate-tint:  oklch(0.28 0.010 72);
+  --color-accent:          var(--color-accent-default);
+  --color-accent-fg:       var(--color-text-inverse);
 
   /* ---- Semantic attention / info / danger soft + text companions (dark) ---- */
   --color-attention-soft: oklch(0.34 0.05 65);
@@ -498,7 +474,7 @@
   --color-attention:    oklch(0.78 0.13 70);
   --color-positive:     oklch(0.72 0.12 152);
   --color-danger:       oklch(0.70 0.15 25);
-  --color-info:         oklch(0.72 0.11 245);        /* bare info alias — same value as --color-feedback-info (dark) */
+  --color-info:         oklch(0.72 0.11 245);
 }
 
 /* Opt-in Tasks standalone-list type metrics. They stay here because Tailwind */
