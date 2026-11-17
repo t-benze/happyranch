@@ -19,6 +19,7 @@ current-source and status conventions live in `docs/agent-guides/contracts/READM
 
 | Surface | Read |
 | --- | --- |
+| End-user commands and configuration reference | `docs/manual/pages/04-reference/00-reference-index.md` |
 | Project shape, architecture, runtime container paths | `docs/agent-guides/project-layout.md` |
 | Settings, daemon startup, test modes, runtime config | `docs/agent-guides/runtime-and-configuration.md` |
 | Executor behavior, workspace bootstrap, allow rules | `docs/agent-guides/agent-executors-and-permissions.md` |
