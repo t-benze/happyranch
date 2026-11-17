@@ -31,9 +31,11 @@ matching `managed.profile` is `linux-managed-identity-v1`; it runs as the fixed
 The renderer's matching `ConnectorUnitSpec.ingress_profile` adds only
 `RuntimeDirectoryMode=0700`; AF_UNIX is already allowed. The existing installer
 still admits legacy configs; generation/migration and connector profile/unit
-wiring belong to slice 3b-1 and remain pending after its token-reader sub-part.
+wiring belong to slice 3b-1 and remain pending after its token-reader and
+per-file atomic provisioning-writer sub-parts. The writer adds no new selectable
+profile or install-transaction record.
 Home `control_tls` generation and `home_transport=True` selection belong to
-slice 3b-2. No automatic migration or deployment occurs in the token-reader change.
+slice 3b-2. No automatic migration or deployment occurs in either sub-part.
 
 Linux home transport (THR-327 1b) adds the optional protected config record
 `"control_tls":{"dial_ip":"192.168.1.10","ca_sha256":"<64 lowercase hex>"}`

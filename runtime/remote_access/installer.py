@@ -8,6 +8,8 @@ present must match the rendered units; interrupted installs need operator care.
 from __future__ import annotations
 
 import argparse
+import ctypes
+import errno
 import grp
 import hashlib
 import json
@@ -433,20 +435,126 @@ class ManagedInstaller:
                 finally:
                     os.close(descriptor)
 
+    @contextmanager
+    def _publication_parent(self) -> Iterator[tuple[int, Callable[[], None]]]:
+        """Pin every literal ancestor until the last pre-rename validation."""
+        descriptor = os.open("/", _DIR_FLAGS)
+        opened = [descriptor]
+        parents = []
+        layout = self._layout()
+        path = Path("/")
+        try:
+            for part in (self.root / "etc/happyranch").parts[1:]:
+                named = os.stat(part, dir_fd=descriptor, follow_symlinks=False)
+                child = os.open(part, _DIR_FLAGS, dir_fd=descriptor)
+                opened.append(child)
+                info = os.fstat(child)
+                if (named.st_dev, named.st_ino) != (info.st_dev, info.st_ino):
+                    raise InstallerError("publication parent changed while opening")
+                path /= part
+                relative = str(path.relative_to(self.root)) if path.is_relative_to(self.root) else None
+                if relative is not None:
+                    self._check_directory(child, str(self.root) if relative == "." else relative,
+                                          layout.get(relative))
+                parents.append((descriptor, part, child, info))
+                descriptor = child
+
+            def revalidate() -> None:
+                try:
+                    for ancestor, name, child, before in parents:
+                        named = os.stat(name, dir_fd=ancestor, follow_symlinks=False)
+                        current = os.fstat(child)
+                        expected = (before.st_dev, before.st_ino, before.st_uid, before.st_gid, before.st_mode)
+                        for info in (named, current):
+                            if ((info.st_dev, info.st_ino, info.st_uid, info.st_gid, info.st_mode) != expected
+                                    or not stat.S_ISDIR(info.st_mode)):
+                                raise InstallerError("publication parent changed before rename")
+                except OSError:
+                    raise InstallerError("publication parent unavailable before rename") from None
+
+            yield descriptor, revalidate
+        finally:
+            for descriptor in reversed(opened):
+                os.close(descriptor)
+
+    @staticmethod
+    def _refuse_provision_entry(parent: int, name: str) -> None:
+        for entry in (name, f".{name}.pending"):
+            try:
+                os.stat(entry, dir_fd=parent, follow_symlinks=False)
+            except FileNotFoundError:
+                continue
+            raise InstallerError("provisioning destination or pending entry exists; inspect partial files before retrying")
+
     def _write_provision_file(self, name: str, data: bytes, owner: tuple[int, int], mode: int) -> None:
-        with self._directory("etc/happyranch") as parent:
-            descriptor = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+        # Closed fresh-install destinations only. Transaction updates/replacement
+        # are deliberately not selectable until their recovery owner ships.
+        metadata = {
+            **{key: ((self.root_owner[0], self._service_owner[1]), 0o640)
+               for key in ("connector.json", "sidecar.json", "policy.json")
+               if self._service_owner is not None},
+            "release-daemon.json": (self.root_owner, 0o644),
+            "daemon.token": (self._service_owner, 0o600),
+            "provision.json": (self.root_owner, 0o600),
+        }
+        if (name not in metadata or metadata[name] != (owner, mode)
+                or owner is None or not 0 < len(data) <= 65536):
+            raise InstallerError("invalid provisioning publication")
+        with self._publication_parent() as (parent, revalidate):
+            self._refuse_provision_entry(parent, name)
+            pending = f".{name}.pending"
+            descriptor = os.open(pending, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
                                  0o600, dir_fd=parent)
+            created = os.fstat(descriptor)
             try:
                 os.fchown(descriptor, *owner)
                 with os.fdopen(descriptor, "wb", closefd=False) as stream:
-                    stream.write(data)
+                    if stream.write(data) != len(data):
+                        raise InstallerError("incomplete provisioning write")
                     stream.flush()
                     os.fchmod(descriptor, mode)
                     os.fsync(descriptor)
+                info = os.fstat(descriptor)
+                named = os.stat(pending, dir_fd=parent, follow_symlinks=False)
+                expected = (created.st_dev, created.st_ino, *owner, stat.S_IFREG | mode, 1, len(data))
+                for value in (info, named):
+                    if ((value.st_dev, value.st_ino, value.st_uid, value.st_gid,
+                         value.st_mode, value.st_nlink, value.st_size) != expected):
+                        raise InstallerError("unsafe or changed pending provisioning file")
+                revalidate()
+                # Recheck the final name after staging; never overwrite a late arrival.
+                try:
+                    os.stat(name, dir_fd=parent, follow_symlinks=False)
+                except FileNotFoundError:
+                    pass
+                else:
+                    raise InstallerError("provisioning destination appeared before rename")
+                # Plain rename can clobber a target arriving after the check.
+                # Preserve the legacy O_EXCL refusal atomically; no fallback.
+                try:
+                    rename = ctypes.CDLL(None, use_errno=True).renameat2
+                except AttributeError:
+                    raise InstallerError("atomic no-replace rename is unavailable") from None
+                rename.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+                rename.restype = ctypes.c_int
+                if rename(parent, os.fsencode(pending), parent, os.fsencode(name), 1):  # RENAME_NOREPLACE
+                    error = ctypes.get_errno()
+                    if error == errno.EEXIST:
+                        raise InstallerError("provisioning destination appeared before rename")
+                    raise OSError(error, "atomic provisioning rename failed")
+                os.fsync(parent)
             finally:
                 os.close(descriptor)
-            os.fsync(parent)
+                # Only our exclusive inode may be removed. A substituted pending
+                # entry belongs to the unknown inventory, never automatic cleanup.
+                try:
+                    named = os.stat(pending, dir_fd=parent, follow_symlinks=False)
+                except FileNotFoundError:
+                    pass
+                else:
+                    if (named.st_dev, named.st_ino) == (created.st_dev, created.st_ino):
+                        os.unlink(pending, dir_fd=parent)
+                        os.fsync(parent)
 
     def _release_record(self, user_name: str, data_home: Path | None) -> dict:
         from runtime.remote_access.release_verifier import FRAGMENT, UNIT, validate_record
@@ -506,6 +614,8 @@ class ManagedInstaller:
             for name, value in (("connector.json", connector), ("sidecar.json", sidecar)):
                 files[name] = json.dumps(value, sort_keys=True).encode()
             self._validate_configs(files, staged=True)
+            if any(not 0 < len(data) <= 65536 for data in files.values()):
+                raise InstallerError("rendered provisioning config exceeds publication bound")
             token = self._input(daemon_token_source, token=True, source_uid=release['uid'])
             self._check_deb_payload()
             self._service_owner = self._account(create=False)
@@ -513,11 +623,7 @@ class ManagedInstaller:
             try:
                 with self._directory("etc/happyranch") as parent:
                     for name in (*files, "daemon.token", "provision.json", "release-daemon.json"):
-                        try:
-                            os.stat(name, dir_fd=parent, follow_symlinks=False)
-                        except FileNotFoundError:
-                            continue
-                        raise InstallerError("provisioning destination exists; inspect partial files before retrying")
+                        self._refuse_provision_entry(parent, name)
             except FileNotFoundError:
                 pass
             self._service_owner = self._account(create=True)

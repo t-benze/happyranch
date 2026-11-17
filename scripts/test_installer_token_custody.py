@@ -4,6 +4,8 @@ Run: uv run --frozen pytest scripts/test_installer_token_custody.py -v --tb=shor
 """
 from __future__ import annotations
 
+import ctypes
+import errno
 import hashlib
 import json
 import os
@@ -318,4 +320,286 @@ def test_rotated_source_refuses_without_recopy_or_service_effects(fixture: Fixtu
     with pytest.raises(module.InstallerError, match="source rotation requires explicit reprovisioning"):
         fixture.installer.install(enrollment_key_file=fixture.key)
     assert fixture.inventory() == before
+    assert fixture.manager.calls == []
+
+
+def publication_parent(fixture: Fixture) -> Path:
+    fixture.installer._service_owner = fixture.installer._account(create=False)
+    with fixture.installer._directory("etc/happyranch", create=True):
+        pass
+    return fixture.root / "etc/happyranch"
+
+
+@pytest.mark.parametrize("name,mode", [
+    ("connector.json", 0o640), ("sidecar.json", 0o640), ("policy.json", 0o640),
+    ("release-daemon.json", 0o644), ("daemon.token", 0o600), ("provision.json", 0o600),
+])
+def test_provision_publication_is_complete_and_durable(
+    fixture: Fixture, monkeypatch: pytest.MonkeyPatch, name: str, mode: int,
+) -> None:
+    parent = publication_parent(fixture)
+    target = parent / name
+    data = b"synthetic-bytes!" * 4096  # exactly 64 KiB
+    owner = (os.getuid(), os.getgid())
+    fsync = os.fsync
+    rename = ctypes.CDLL(None, use_errno=True).renameat2
+    events: list[str] = []
+
+    def sync(fd: int) -> None:
+        if os.fstat(fd).st_mode & 0o170000 == 0o100000:
+            assert not target.exists()  # No final name before durable complete bytes.
+            events.append("file-fsync")
+        else:
+            assert target.read_bytes() == data
+            events.append("parent-fsync")
+        fsync(fd)
+
+    def publish(source_fd: int, source: bytes, destination_fd: int, destination: bytes, flags: int) -> int:
+        assert events == ["file-fsync"]
+        assert destination == os.fsencode(name)
+        assert source_fd == destination_fd
+        assert flags == 1  # Linux RENAME_NOREPLACE, not clobbering POSIX rename.
+        result = rename(source_fd, source, destination_fd, destination, flags)
+        events.append("rename")
+        return result
+
+    monkeypatch.setattr(os, "fsync", sync)
+    monkeypatch.setattr(ctypes, "CDLL", lambda *args, **kwargs: SimpleNamespace(renameat2=publish))
+    fixture.installer._write_provision_file(name, data, owner, mode)
+    assert events == ["file-fsync", "rename", "parent-fsync"]
+    assert target.read_bytes() == data
+    info = target.stat()
+    assert (info.st_uid, info.st_gid, info.st_mode & 0o7777, info.st_nlink) == (*owner, mode, 1)
+    assert parent.stat().st_mode & 0o7777 == 0o755
+    assert (parent.stat().st_uid, parent.stat().st_gid) == owner
+    assert sorted(p.name for p in parent.iterdir()) == [name]
+    assert fixture.manager.calls == []
+
+
+@pytest.mark.parametrize("fault", ["file-fsync", "short-write", "rename"])
+def test_failed_provision_write_never_exposes_partial_final_file(
+    fixture: Fixture, monkeypatch: pytest.MonkeyPatch, fault: str,
+) -> None:
+    parent = publication_parent(fixture)
+    fsync, fdopen = os.fsync, os.fdopen
+    reached: list[str] = []
+
+    def sync(fd: int) -> None:
+        if fault == "file-fsync" and os.fstat(fd).st_mode & 0o170000 == 0o100000:
+            reached.append(fault)
+            raise OSError("synthetic write fault")
+        fsync(fd)
+
+    class ShortWriter:
+        def __init__(self, stream: object) -> None:
+            self.stream = stream
+
+        def __enter__(self) -> ShortWriter:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            self.stream.close()
+
+        def flush(self) -> None:
+            self.stream.flush()
+
+        def write(self, data: bytes) -> int:
+            reached.append(fault)
+            return self.stream.write(data[:1])
+
+    def open_stream(fd: int, mode: str, **kwargs: object) -> object:
+        stream = fdopen(fd, mode, **kwargs)
+        return ShortWriter(stream) if fault == "short-write" and mode == "wb" else stream
+
+    def rename(*args: object) -> int:
+        reached.append(fault)
+        ctypes.set_errno(errno.EIO)
+        return -1
+
+    monkeypatch.setattr(os, "fsync", sync)
+    monkeypatch.setattr(os, "fdopen", open_stream)
+    if fault == "rename":
+        monkeypatch.setattr(ctypes, "CDLL", lambda *args, **kwargs: SimpleNamespace(renameat2=rename))
+    with pytest.raises((module.InstallerError, OSError)):
+        fixture.installer._write_provision_file("connector.json", b"synthetic-complete", fixture.installer.root_owner, 0o640)
+    assert reached == [fault]
+    assert list(parent.iterdir()) == []
+    assert fixture.manager.calls == []
+
+
+@pytest.mark.parametrize("level", ["etc", "happyranch"])
+def test_swapped_publication_parent_refuses_before_rename(
+    fixture: Fixture, monkeypatch: pytest.MonkeyPatch, level: str,
+) -> None:
+    parent = publication_parent(fixture)
+    selected = parent if level == "happyranch" else parent.parent
+    moved = selected.with_name(selected.name + "-previous")
+    fsync = os.fsync
+    swapped = False
+
+    def sync(fd: int) -> None:
+        nonlocal swapped
+        fsync(fd)
+        if not swapped and os.fstat(fd).st_mode & 0o170000 == 0o100000:
+            selected.rename(moved)
+            selected.mkdir(mode=0o755)
+            if level == "etc":
+                parent.mkdir(mode=0o755)
+            swapped = True
+
+    monkeypatch.setattr(os, "fsync", sync)
+    with pytest.raises(module.InstallerError):
+        fixture.installer._write_provision_file("connector.json", b"synthetic-complete", fixture.installer.root_owner, 0o640)
+    assert swapped
+    assert list(parent.iterdir()) == []
+    old_parent = moved if level == "happyranch" else moved / "happyranch"
+    assert list(old_parent.iterdir()) == []
+    assert fixture.manager.calls == []
+
+
+@pytest.mark.parametrize("attack", ["symlink", "hardlink", "mode", "oversize", "foreign", "fifo", "safe"])
+@pytest.mark.parametrize("entry", ["target", "pending"])
+def test_existing_provision_entry_refuses_without_any_publication(
+    fixture: Fixture, monkeypatch: pytest.MonkeyPatch, attack: str, entry: str,
+) -> None:
+    parent = publication_parent(fixture)
+    target = parent / ("policy.json" if entry == "target" else ".policy.json.pending")
+    if attack == "symlink":
+        target.symlink_to(fixture.token)
+    elif attack == "fifo":
+        os.mkfifo(target, mode=0o600)
+    else:
+        fixture.write(target, b"s" * 65537 if attack == "oversize" else b"synthetic-existing")
+        if attack == "hardlink":
+            os.link(target, parent / "extra-link")
+        elif attack == "mode":
+            target.chmod(0o666)
+    if attack == "foreign":
+        named_stat = os.stat
+        inode = target.stat().st_ino
+
+        def foreign(*args: object, **kwargs: object) -> object:
+            info = named_stat(*args, **kwargs)
+            if info.st_ino != inode:
+                return info
+            fields = {name: getattr(info, name) for name in dir(info) if name.startswith("st_")}
+            return SimpleNamespace(**{**fields, "st_uid": info.st_uid + 1})
+
+        monkeypatch.setattr(os, "stat", foreign)
+    before = {p.name: p.lstat() for p in parent.iterdir()}
+    source = fixture.token.read_bytes()
+    with pytest.raises(module.InstallerError):
+        fixture.provision()
+    assert {p.name: p.lstat() for p in parent.iterdir()} == before
+    assert fixture.token.read_bytes() == source
+    assert fixture.manager.calls == []
+
+
+@pytest.mark.parametrize("attack", ["hardlink", "mode", "oversize", "pending-swap"])
+def test_changed_pending_file_refuses_without_overwriting_or_partial_publication(
+    fixture: Fixture, monkeypatch: pytest.MonkeyPatch, attack: str,
+) -> None:
+    parent = publication_parent(fixture)
+    pending = parent / ".connector.json.pending"
+    target = parent / "connector.json"
+    fsync = os.fsync
+    reached = False
+
+    def sync(fd: int) -> None:
+        nonlocal reached
+        fsync(fd)
+        if reached or os.fstat(fd).st_mode & 0o170000 != 0o100000:
+            return
+        reached = True
+        if attack == "pending-swap":
+            pending.rename(parent / "original-pending")
+            fixture.write(pending, b"synthetic-substitution")
+        elif attack == "hardlink":
+            os.link(pending, parent / "extra-link")
+        elif attack == "mode":
+            pending.chmod(0o666)
+        else:
+            pending.write_bytes(b"s" * 65537)
+
+    monkeypatch.setattr(os, "fsync", sync)
+    with pytest.raises(module.InstallerError):
+        fixture.installer._write_provision_file("connector.json", b"synthetic-complete", fixture.installer.root_owner, 0o640)
+    assert reached
+    assert not target.exists()
+    if attack == "pending-swap":
+        assert pending.read_bytes() == b"synthetic-substitution"  # Never delete the substituted entry.
+    assert fixture.manager.calls == []
+
+
+@pytest.mark.parametrize("name,data", [
+    ("connector.json", b"s" * 65537), ("../escaped.json", b"{}"),
+    ("install-transaction.json", b"{}"), ("connector.json", b""),
+], ids=["oversize", "path-escape", "future-transaction", "empty"])
+def test_unbounded_or_unselectable_publication_refuses(fixture: Fixture, name: str, data: bytes) -> None:
+    parent = publication_parent(fixture)
+    with pytest.raises(module.InstallerError):
+        fixture.installer._write_provision_file(name, data, fixture.installer.root_owner, 0o640)
+    assert list(parent.iterdir()) == []
+    assert not (parent.parent / "escaped.json").exists()
+    assert fixture.manager.calls == []
+
+
+def test_atomic_publication_never_replaces_racing_target(
+    fixture: Fixture, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parent = publication_parent(fixture)
+    target = parent / "connector.json"
+    rename = ctypes.CDLL(None, use_errno=True).renameat2
+    reached = False
+
+    def race(source_fd: int, source: bytes, destination_fd: int, destination: bytes, flags: int) -> int:
+        nonlocal reached
+        # Arrive after the last lstat, immediately before the real kernel rename.
+        fixture.write(target, b"synthetic-racing-target")
+        reached = True
+        return rename(source_fd, source, destination_fd, destination, flags)
+
+    monkeypatch.setattr(ctypes, "CDLL", lambda *args, **kwargs: SimpleNamespace(renameat2=race))
+    with pytest.raises(module.InstallerError, match="destination appeared"):
+        fixture.installer._write_provision_file("connector.json", b"synthetic-new", fixture.installer.root_owner, 0o640)
+    assert reached
+    assert target.read_bytes() == b"synthetic-racing-target"
+    assert sorted(p.name for p in parent.iterdir()) == [target.name]
+    assert fixture.manager.calls == []
+
+
+@pytest.mark.parametrize("unavailable", ["symbol", "kernel"])
+def test_unavailable_atomic_rename_refuses_without_fallback(
+    fixture: Fixture, monkeypatch: pytest.MonkeyPatch, unavailable: str,
+) -> None:
+    parent = publication_parent(fixture)
+    reached = False
+
+    def rename(*args: object) -> int:
+        nonlocal reached
+        reached = True
+        ctypes.set_errno(errno.ENOSYS)
+        return -1
+
+    library = SimpleNamespace() if unavailable == "symbol" else SimpleNamespace(renameat2=rename)
+    monkeypatch.setattr(ctypes, "CDLL", lambda *args, **kwargs: library)
+    with pytest.raises((module.InstallerError, OSError)):
+        fixture.installer._write_provision_file("connector.json", b"synthetic-new", fixture.installer.root_owner, 0o640)
+    assert reached == (unavailable == "kernel")
+    assert list(parent.iterdir()) == []
+    assert fixture.manager.calls == []
+
+
+def test_oversized_rendered_config_refuses_before_any_publication(fixture: Fixture) -> None:
+    path = fixture.inputs / "sidecar.json"
+    value = json.loads(path.read_bytes())
+    # A bounded UTF8 input can expand beyond the output bound during JSON
+    # normalization. The earlier connector must not be published first.
+    value["RoleIdentity"] = "home-sidecar-" + "界" * 20000
+    data = json.dumps(value, ensure_ascii=False).encode()
+    assert len(data) < 65536 < len(json.dumps(value).encode())
+    fixture.write(path, data)
+    with pytest.raises(module.InstallerError):
+        fixture.provision()
+    assert fixture.inventory() == {}
     assert fixture.manager.calls == []

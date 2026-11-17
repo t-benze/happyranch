@@ -809,6 +809,25 @@ trust state is fixed under `/var/lib/happyranch-connector`, sidecar state under
 no key generation, pairing or secret diagnostics are added. Existing files
 refuse; partial failure has no automatic rollback or overwrite recovery.
 
+The 3b-1b writer sub-part uses exclusive `.<fixed-name>.pending` files under
+the protected `/etc/happyranch` directory. It bounds each write to 64 KiB,
+sets the exact final owner/mode, fsyncs the complete file, revalidates pinned
+literal parent identities/owners/modes and the pending regular single-link
+inode, then uses descriptor-relative Linux `renameat2(RENAME_NOREPLACE)` and
+fsyncs the parent. Missing libc/kernel support refuses without fallback; even a
+target arriving at rename is retained. Fresh preflight
+refuses any existing final or pending entry across all six provisioning files
+before publication; normalized config sizes are checked before staging. It
+never repairs foreign metadata. Ordinary write failure
+removes only the inode it exclusively created, preserving a substituted entry.
+A crash can retain pending residue; a later file failure can retain earlier
+complete files. There is no multi-file recovery transaction. Generated identity
+configs, new versioned provision/install-transaction records and unit-profile
+selection remain pending; the writer rejects `install-transaction.json` and
+arbitrary names. Legacy provenance/config/unit contracts remain unchanged.
+Replacement/disable recovery (3b-1c), zero-input helper/package wiring with H2
+(3b-1d) and home transport (3b-2) remain unavailable in this sub-part.
+
 Deb install refuses incomplete/unsafe/changed provisioning before unit writes
 or service start. Source installs without a provisioning record retain their
 independently provisioned configs, but also require the root-owned release install
