@@ -38,6 +38,9 @@ class FakeManager:
     def enable(self, unit: str) -> None:
         self.calls.append(("enable", unit))
 
+    def disable(self, unit: str) -> None:
+        self.calls.append(("disable", unit))
+
     def start(self, unit: str, **kwargs: object) -> None:
         self.calls.append(("start", unit))
 
