@@ -268,7 +268,7 @@ export function Composer({
               <span className="max-w-64 truncate">{item.file.name}</span>
               <button
                 type="button"
-                className="text-text-muted hover:text-text"
+                className="text-text-muted hover:text-text-primary"
                 aria-label={L.removeAttachment}
                 onClick={() => removeAttachment(item.id)}
                 disabled={disabled || pending}

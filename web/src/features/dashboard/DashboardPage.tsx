@@ -25,6 +25,7 @@ import { Button } from '@/design-system/primitives/Button';
 import { ContentWrap } from '@/design-system/layouts/ContentWrap/ContentWrap';
 import { CrescentMoonBadge } from '@/design-system/patterns/CrescentMoonBadge';
 import { EmptyState } from '@/design-system/patterns/EmptyState';
+import { IdBadge } from '@/design-system/patterns/IdBadge';
 import { StatValue } from '@/design-system/patterns/StatValue';
 import { TONE_CLASS, type Tone } from '@/design-system/patterns/semanticTone';
 import type { ActivityVerdict } from '@/lib/api/types';
@@ -291,12 +292,12 @@ export function DashboardPage(): JSX.Element {
                         <IdentityName canonicalId={job.agent_name} />
                       </span>
                       <span className="text-text-muted font-mono text-xs">·</span>
-                      <span className="text-id-task font-mono text-xs">{job.id}</span>
+                      <IdBadge id={job.id} kind="job" />
                       <span className="text-text-primary text-sm">{job.title}</span>
                       {slug ? (
                         <Link
                           to={`/orgs/${slug}/jobs/${job.id}`}
-                          className="text-link-primary ml-auto text-sm hover:underline"
+                          className="text-accent-text ml-auto text-sm hover:underline"
                         >
                           {t('dashboard.waiting.reviewJob')}
                         </Link>

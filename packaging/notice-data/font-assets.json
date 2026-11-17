@@ -128,6 +128,38 @@
         "relationship": "Import commit names the pinned upstream revision; font and OFL Git blobs match upstream.",
         "version_note": "Import title and original font say 1.700."
       }
+    },
+    {
+      "family": "JetBrains Mono",
+      "destination": "web/public/fonts/JetBrainsMono-wght.ttf",
+      "size": 303144,
+      "sha256": "662a196d58f1183bf2d77428b6d5283fe3f45161ab021bea4036bc98e5cac016",
+      "git_blob_sha1": "b60e77f5dbf5505436c1904cb7a9ac4111ee76d0",
+      "source": {
+        "repository": "JetBrains/JetBrainsMono",
+        "commit": "cd5227bd1f61dff3bbd6c814ceaf7ffd95e947d9",
+        "tree": "ddd04a3c89d5a956e6e75bd4f95ed232d86be61c",
+        "path": "fonts/variable/JetBrainsMono[wght].ttf",
+        "url": "https://raw.githubusercontent.com/JetBrains/JetBrainsMono/cd5227bd1f61dff3bbd6c814ceaf7ffd95e947d9/fonts/variable/JetBrainsMono%5Bwght%5D.ttf"
+      },
+      "notice": {
+        "destination": "web/public/fonts/JetBrainsMono-OFL.txt",
+        "size": 4399,
+        "sha256": "30f0c136e3c88e422d0791acd97238870f9054a9729bc34cf2ff0d4ed8cac4ad",
+        "git_blob_sha1": "8bee4148c1d54dbf5dae6d6c117fc80414266abb",
+        "source_path": "OFL.txt",
+        "source_url": "https://raw.githubusercontent.com/JetBrains/JetBrainsMono/cd5227bd1f61dff3bbd6c814ceaf7ffd95e947d9/OFL.txt",
+        "source_commit": "cd5227bd1f61dff3bbd6c814ceaf7ffd95e947d9",
+        "source_tree": "ddd04a3c89d5a956e6e75bd4f95ed232d86be61c",
+        "relationship": "Full original OFL.txt colocated at the same immutable upstream revision as the font; unchanged bytes."
+      },
+      "official_release": {
+        "tag": "v2.304",
+        "asset_url": "https://github.com/JetBrains/JetBrainsMono/releases/download/v2.304/JetBrainsMono-2.304.zip",
+        "asset_size": 5622857,
+        "asset_sha256": "6f6376c6ed2960ea8a963cd7387ec9d76e3f629125bc33d1fdcd7eb7012f7bbf",
+        "relationship": "Font fonts/variable/JetBrainsMono[wght].ttf and OFL.txt extracted from the official v2.304 release asset are byte-identical (Git blobs) to the tag commit's tree entries."
+      }
     }
   ]
 }

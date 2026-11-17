@@ -1,12 +1,17 @@
 #!/usr/bin/env bash
 #
 # CI gate for the web design system. Runs typecheck + lint + tests +
-# deterministic Storybook static build + complete production-source colour scan.
+# deterministic Storybook static build + complete production-source colour scan
+# + unknown-token utility scan.
 #
 # Exit codes:
 #   0 — clean
-#   1 — typecheck, lint, test, or build failure
+#   1 — typecheck, lint, test, or build failure (or missing scan input)
 #   3 — production colour baseline mismatch
+#   4 — a colour/spacing/radius/shadow utility names an undefined theme token
+#
+# Modes: `--scan-hex` (colour baseline only), `--scan-tokens` (unknown-token
+# utilities only).
 #
 # Run locally before pushing: `bash scripts/verify-design-system.sh`
 set -euo pipefail
@@ -210,8 +215,210 @@ if errors:
 PY
 }
 
+# Unknown-token utility scan (THR-376). Tailwind v4 silently emits NO CSS for a
+# colour/spacing/radius/shadow utility whose name is not a theme token (e.g.
+# `bg-surface-page` when only `--color-surface-canvas` exists), so the class
+# "works" in review and renders nothing. A name is defined when tokens.css
+# declares it in an @theme block, or when the Tailwind default theme that
+# tokens.css pulls in through `@import "tailwindcss"` declares it
+# (node_modules/tailwindcss/theme.css). Raw/palette colours stay owned by
+# scan_colours above. Only string literals (class lists) and CSS @apply lists
+# are read; comments, JSX prose and the i18n copy catalogs are not class lists.
+scan_tokens() {
+  local source_root=${DESIGN_SYSTEM_SOURCE_ROOT:-src}
+  local tokens=${DESIGN_SYSTEM_TOKENS:-$source_root/design-system/tokens/tokens.css}
+  local default_theme=${DESIGN_SYSTEM_TAILWIND_THEME:-node_modules/tailwindcss/theme.css}
+
+  python3 - "$source_root" "$tokens" "$default_theme" <<'PY'
+from __future__ import annotations
+
+from pathlib import Path
+import re
+import sys
+
+source_root, tokens_path, default_theme_path = (Path(argument) for argument in sys.argv[1:4])
+for required in (tokens_path, default_theme_path):
+    if not required.is_file():
+        print(f"FAIL: unknown-token scan input missing: {required} (run npm ci for the Tailwind default theme)", file=sys.stderr)
+        sys.exit(1)
+
+
+def theme_names(text: str) -> set[str]:
+    """Custom-property names (without the leading --) declared in every @theme block."""
+    names: set[str] = set()
+    text = re.sub(r"/\*.*?\*/", "", text, flags=re.S)
+    for match in re.finditer(r"@theme\b[^{;]*\{", text):
+        depth, index = 0, match.end() - 1
+        while index < len(text):
+            if text[index] == "{":
+                depth += 1
+            elif text[index] == "}":
+                depth -= 1
+                if depth == 0:
+                    break
+            index += 1
+        names.update(re.findall(r"(?m)^\s*--([a-z0-9-]+)\s*:", text[match.end():index]))
+    return names
+
+
+defined = theme_names(tokens_path.read_text(encoding="utf-8")) | theme_names(default_theme_path.read_text(encoding="utf-8"))
+
+colour_roots = [
+    "inset-shadow", "inset-ring", "ring-offset", "decoration", "outline", "divide", "accent", "caret",
+    "stroke", "shadow", "border", "ring", "fill", "from", "via", "text", "bg", "to",
+]
+border_sides = ["border-x", "border-y", "border-t", "border-r", "border-b", "border-l", "border-s", "border-e"]
+spacing_roots = [
+    "scroll-mx", "scroll-my", "scroll-mt", "scroll-mr", "scroll-mb", "scroll-ml", "scroll-ms", "scroll-me", "scroll-m",
+    "scroll-px", "scroll-py", "scroll-pt", "scroll-pr", "scroll-pb", "scroll-pl", "scroll-ps", "scroll-pe", "scroll-p",
+    "translate-x", "translate-y", "space-x", "space-y", "inset-x", "inset-y", "min-w", "max-w", "min-h", "max-h",
+    "gap-x", "gap-y", "indent", "basis", "inset", "bottom", "right", "start", "size", "left", "top", "end", "gap",
+    "px", "py", "pt", "pr", "pb", "pl", "ps", "pe", "mx", "my", "mt", "mr", "mb", "ml", "ms", "me", "p", "m", "w", "h",
+]
+radius_roots = [
+    "rounded-tl", "rounded-tr", "rounded-br", "rounded-bl", "rounded-ss", "rounded-se", "rounded-es", "rounded-ee",
+    "rounded-t", "rounded-r", "rounded-b", "rounded-l", "rounded-s", "rounded-e", "rounded",
+]
+# Longest root first so `border-t-accent` splits as border-t + accent, and
+# `outline-offset-2` is claimed (and skipped, numeric) before `outline`.
+roots = sorted(set(colour_roots + border_sides + spacing_roots + radius_roots + ["outline-offset", "ring-inset"]), key=len, reverse=True)
+css_keywords = {"transparent", "current", "inherit"}
+side_keywords = {"x", "y", "t", "r", "b", "l", "s", "e"}
+corner_keywords = side_keywords | {"tl", "tr", "br", "bl", "ss", "se", "es", "ee"}
+# Non-token keyword values of each utility family (Tailwind v4 static utilities).
+static_values = {
+    "bg": {"none", "fixed", "local", "scroll", "auto", "cover", "contain", "center", "top", "bottom", "left", "right",
+           "left-top", "left-bottom", "right-top", "right-bottom", "top-left", "top-right", "bottom-left", "bottom-right",
+           "repeat", "no-repeat", "repeat-x", "repeat-y", "repeat-round", "repeat-space", "clip-border", "clip-padding",
+           "clip-content", "clip-text", "origin-border", "origin-padding", "origin-content"},
+    "text": {"left", "center", "right", "justify", "start", "end", "ellipsis", "clip", "wrap", "nowrap", "balance", "pretty"},
+    "border": {"solid", "dashed", "dotted", "double", "hidden", "none", "collapse", "separate"},
+    "outline": {"none", "hidden", "solid", "dashed", "dotted", "double"},
+    "ring": {"inset"},
+    "divide": {"x", "y", "x-reverse", "y-reverse", "solid", "dashed", "dotted", "double", "none"},
+    "decoration": {"solid", "double", "dotted", "dashed", "wavy", "auto", "from-font", "clone", "slice"},
+    "accent": {"auto"}, "caret": {"auto"}, "fill": {"none"}, "stroke": {"none"},
+    "shadow": {"none"}, "inset-shadow": {"none"},
+    "spacing": {"auto", "full", "screen", "svw", "lvw", "dvw", "svh", "lvh", "dvh", "min", "max", "fit", "px", "none",
+                "prose", "lh", "reverse", "x-reverse", "y-reverse"},
+    "radius": {"none", "full"},
+}
+
+
+def namespace_defines(namespace: str, value: str) -> bool:
+    return f"{namespace}-{value}" in defined
+
+
+def resolves(root: str, value: str) -> bool:
+    if root in ("outline-offset", "ring-inset"):
+        return True
+    if root in radius_roots:
+        return value in static_values["radius"] or namespace_defines("radius", value)
+    if root in spacing_roots:
+        return (value in static_values["spacing"] or namespace_defines("spacing", value)
+                or namespace_defines("container", value) or namespace_defines("breakpoint", value))
+    family = "border" if root in border_sides else root
+    if value in css_keywords or value in static_values.get(family, set()) or namespace_defines("color", value):
+        return True
+    if root == "text" and (namespace_defines("text", value) or value.startswith("shadow")):
+        return True
+    if root in ("shadow", "inset-shadow") and namespace_defines(root, value):
+        return True
+    if root == "bg" and re.match(r"(?:linear|radial|conic|gradient-to|blend|size|position)\b", value):
+        return True
+    return False
+
+
+def class_lists(text: str, suffix: str):
+    """(offset, body) for each JS/TS string literal, or each CSS @apply list; comments are skipped."""
+    if suffix == ".css":
+        clean = re.sub(r"/\*.*?\*/", lambda match: re.sub(r"[^\n]", " ", match.group()), text, flags=re.S)
+        for match in re.finditer(r"@apply\s+([^;]+);", clean):
+            yield match.start(1), match.group(1)
+        return
+    index, size = 0, len(text)
+    while index < size:
+        char = text[index]
+        if text.startswith("//", index):
+            end = text.find("\n", index)
+            index = size if end < 0 else end
+        elif text.startswith("/*", index):
+            end = text.find("*/", index + 2)
+            index = size if end < 0 else end + 2
+        elif char in "\"'`":
+            end = index + 1
+            while end < size and text[end] != char:
+                if text[end] == "\\":
+                    end += 1
+                elif char != "`" and text[end] == "\n":
+                    break
+                end += 1
+            yield index + 1, text[index + 1:end]
+            index = end + 1
+        else:
+            index += 1
+
+
+word = re.compile(r"[^\s'\"`{}()$,?]+")
+utility = re.compile(r"[a-z][a-z0-9-]*")
+
+
+def unknown_utilities(text: str, suffix: str):
+    for offset, body in class_lists(text, suffix):
+        for match in word.finditer(body):
+            candidate = re.sub(r"/\d+$", "", match.group().split(":")[-1].strip("!").lstrip("-"))
+            if not utility.fullmatch(candidate):
+                continue
+            root = next((name for name in roots if candidate.startswith(name + "-")), None)
+            if root is None:
+                continue
+            value = candidate[len(root) + 1:]
+            if not value[0].isalpha():
+                continue
+            # Bare side utilities (`border-b`, `rounded-tl`) carry no token name.
+            if (root == "border" and value in side_keywords) or (root == "rounded" and value in corner_keywords):
+                continue
+            if not resolves(root, value):
+                yield offset + match.start(), candidate
+
+
+extensions = {".css", ".js", ".jsx", ".ts", ".tsx"}
+excluded_directories = {"__snapshots__", "__tests__", "reports", "screenshots", "test"}
+files: list[str] = []
+hits: list[tuple[str, int, int, str]] = []
+for path in sorted(source_root.rglob("*")):
+    if not path.is_file() or path.suffix not in extensions:
+        continue
+    relative = path.relative_to(source_root).as_posix()
+    if any(part in excluded_directories for part in Path(relative).parts[:-1]):
+        continue
+    if relative == "design-system/tokens/tokens.css" or relative.startswith("lib/i18n/locales/"):
+        continue
+    if ".test." in path.name or ".stories." in path.name:
+        continue
+    files.append(relative)
+    contents = path.read_text(encoding="utf-8")
+    for offset, candidate in unknown_utilities(contents, path.suffix):
+        line = contents.count("\n", 0, offset) + 1
+        column = offset - contents.rfind("\n", 0, offset)
+        hits.append((relative, line, column, candidate))
+hits.sort()
+print(f"Unknown-token scan receipt: denominator={len(files)} production files; theme tokens={len(defined)}; hits={len(hits)}")
+if hits:
+    print("FAIL: utility classes name theme tokens that are not defined (they render no CSS):", file=sys.stderr)
+    for relative, line, column, candidate in hits:
+        print(f"  unknown token utility: {relative}:{line}:{column}\t{candidate}", file=sys.stderr)
+    sys.exit(4)
+PY
+}
+
 if [ "${1:-}" = "--scan-hex" ]; then
   scan_colours
+  exit $?
+fi
+
+if [ "${1:-}" = "--scan-tokens" ]; then
+  scan_tokens
   exit $?
 fi
 
@@ -226,5 +433,8 @@ npm run build-storybook
 
 echo "==> Production colour baseline"
 scan_colours
+
+echo "==> Unknown-token utilities"
+scan_tokens
 
 echo "All design-system checks passed."

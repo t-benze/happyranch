@@ -369,7 +369,7 @@ export function NewThreadDialog({ open, onClose, prefill, onCreated, agents = []
                   <span className="max-w-64 truncate">{item.file.name}</span>
                   <button
                     type="button"
-                    className="text-text-muted hover:text-text"
+                    className="text-text-muted hover:text-text-primary"
                     aria-label={t('threads.newThread.removeAttachment')}
                     onClick={() => removeAttachment(item.id)}
                     disabled={inFlight}
