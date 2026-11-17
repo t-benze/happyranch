@@ -8,9 +8,12 @@
  *   - `underline` — TODO: reserved for future Audit sub-tabs. Not implemented
  *                   in PR 5; document here so the contract is explicit.
  *   - `segmented` — bordered pill CONTAINER with the active trigger filled
- *                   green (accent-soft); the thread-list All/Open/Archived
- *                   control (THR-099, a-threads `.seg`). Additive — the
- *                   `pills`/`underline` triggers are untouched.
+ *                   green (accent-soft). THR-376 PR8: reads the SAME class
+ *                   constants as `SegmentedControl`, so both look identical.
+ *                   Use it only for real tabs WITH panels; a value toggle
+ *                   with no `TabsContent` is a `SegmentedControl` (radio
+ *                   group). Additive — the `pills`/`underline` triggers are
+ *                   untouched.
  *
  * Usage:
  *   <Tabs value={status} onValueChange={(v) => setStatus(v as StatusTab)}>
@@ -26,6 +29,13 @@ import * as React from 'react';
 
 import { cn } from '@/lib/utils';
 
+import {
+  SEGMENTED_ITEM_CLASS,
+  SEGMENTED_LIST_CLASS,
+  SEGMENTED_SIZE_CLASS,
+  SEGMENTED_TEXT_CLASS,
+} from './SegmentedControl';
+
 const Tabs = TabsPrimitive.Root;
 
 const tabsListVariants = cva('inline-flex items-center', {
@@ -34,9 +44,8 @@ const tabsListVariants = cva('inline-flex items-center', {
       pills: 'gap-1',
       // underline TODO — see file header.
       underline: 'border-border-default gap-3 border-b',
-      // segmented — bordered pill container (a-threads `.seg`).
-      segmented:
-        'border-border-default bg-surface-sunken gap-1 rounded-full border p-1',
+      // segmented — shared with SegmentedControl (THR-376 PR8).
+      segmented: SEGMENTED_LIST_CLASS,
     },
   },
   defaultVariants: { variant: 'pills' },
@@ -68,8 +77,13 @@ const tabsTriggerVariants = cva(
           'text-text-muted hover:text-text-primary data-[state=active]:bg-surface-raised data-[state=active]:text-text-primary rounded-md px-2 py-0.5',
         underline:
           'text-text-muted hover:text-text-primary data-[state=active]:border-accent-default data-[state=active]:text-text-primary -mb-px border-b-2 border-transparent px-1 pb-1',
-        segmented:
-          'text-text-muted hover:text-text-primary data-[state=active]:bg-accent-soft data-[state=active]:text-accent-text rounded-full px-3 py-1 font-semibold',
+        // Shared with SegmentedControl; the active fill keys off Radix
+        // data-state instead of aria-checked.
+        segmented: cn(
+          SEGMENTED_ITEM_CLASS,
+          SEGMENTED_SIZE_CLASS.default,
+          'data-[state=active]:bg-accent-soft data-[state=active]:text-accent-text data-[state=active]:hover:text-accent-text',
+        ),
       },
     },
     defaultVariants: { variant: 'pills' },
@@ -86,7 +100,14 @@ const TabsTrigger = React.forwardRef<
 >(({ className, variant, ...props }, ref) => (
   <TabsPrimitive.Trigger
     ref={ref}
-    className={cn(tabsTriggerVariants({ variant }), className)}
+    className={
+      // The segmented label size is prepended outside cn(): tailwind-merge
+      // reads `text-caption` as a colour and would drop it (see
+      // SEGMENTED_TEXT_CLASS).
+      variant === 'segmented'
+        ? `${SEGMENTED_TEXT_CLASS} ${cn(tabsTriggerVariants({ variant }), className)}`
+        : cn(tabsTriggerVariants({ variant }), className)
+    }
     {...props}
   />
 ));

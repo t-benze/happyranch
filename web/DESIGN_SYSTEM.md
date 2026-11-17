@@ -120,6 +120,34 @@ Feature compositions keep using the stable `@/design-system/...` import paths.
   Jobs (status groups), the Agents roster and the Dreams feed. The Tasks
   group cards are `Card as="section" padding="none"` because `TaskListRow`
   already draws its own dividers. Other card sites are not migrated yet.
+- `SegmentedControl` (`primitives/SegmentedControl.tsx`, THR-376 PR8) is the
+  single-select value toggle: pick ONE value from a small fixed set that
+  filters or re-groups what is already on the page (time window, group-by,
+  status bucket, current/removed view). Controlled (`value` /
+  `onValueChange`), generic over string values; options are
+  `{ value, label: ReactNode, disabled? }`; `size` is `default` (`px-3 py-1`)
+  or `sm` (`px-2.5 py-0.5`, compact card headers). It is a WAI-ARIA radio
+  group: `role="radiogroup"` (always pass `aria-label` or
+  `aria-labelledby`), `role="radio"` + `aria-checked` options, roving
+  tabindex, Arrow keys move and select (Home/End jump), disabled options are
+  skipped. A click always calls `onValueChange`, including on the checked
+  option. ds.css has no `.seg` rule; the composed values use ds.css tokens
+  only: container 1px `--border` (`border-border-default`), `--surface-2`
+  fill (`bg-surface-sunken`), `--radius-pill` (`rounded-full`), 4px padding
+  and gap; options 12px / 600 (`text-caption font-semibold`, the `.hr-chip` /
+  `.btn-sm` label), `--ink-3` at rest and `--ink` on hover; the active option
+  is `--accent-soft` + `--accent-text` (`bg-accent-soft text-accent-text`,
+  the ds.css `.tag.ok` / Direction-A `.nav-item.active` pair). The label size
+  is kept out of `cn()` (tailwind-merge reads `text-caption` as a colour).
+  `Tabs variant="segmented"` reads the same class constants.
+  **Tabs vs SegmentedControl vs toggles:** use `Tabs` only when each option
+  owns a panel (`TabsContent`); a value toggle with no panels is a
+  `SegmentedControl`; when several options can be on at once, or clicking
+  the active option clears it back to "all" (facet rails, tag pills, legend
+  filters, day pickers), keep independent `aria-pressed` toggle buttons.
+  Adopted on Tasks (group by), Threads (All/Open/Done), Artifacts (type
+  filter), Audit (time window), Health (window), Home top-token threads
+  (window) and Skills / Custom skills (current/removed).
 - Page-local CSS does not live in `tokens.css`. The Tasks list's `.tasks-*`
   layout rules are in `src/features/tasks/tasks.css`, imported by
   `TasksPage.tsx`; `tokens.css` keeps only the Tasks `--text-task-*` type
@@ -265,7 +293,7 @@ and retry is local state, so Storybook remains daemon-isolated.
 
 ## Coverage ledger
 
-**45 reusable components: 43 story-covered, 2 justified exclusions.** Stories
+**46 reusable components: 44 story-covered, 2 justified exclusions.** Stories
 preserve the former catalogue's descriptions, examples, variants, and token
 visibility through titles, docs, controls, and representative renders.
 
@@ -279,9 +307,10 @@ visibility through titles, docs, controls, and representative renders.
 | `DropdownMenu` | [source:primitives/DropdownMenu.tsx#DropdownMenu] [story:primitives/DropdownMenu.coverage.stories.tsx#Coverage] Primitives / Dropdown Menu Interaction | trigger, populated actions | `components.dropdown_menu` |
 | `Input` | [source:primitives/Input.tsx#Input] [story:primitives/Input.coverage.stories.tsx#Coverage] Primitives / Input States | empty, populated, disabled | `components.input` |
 | `Label` | [source:primitives/Label.tsx#Label] [story:primitives/Label.coverage.stories.tsx#Coverage] Primitives / Label State | associated label | `components.label` |
+| `SegmentedControl` | [source:primitives/SegmentedControl.tsx#SegmentedControl] [story:primitives/SegmentedControl.coverage.stories.tsx#Coverage] Primitives / Segmented Control Variants | default/sm; checked/unchecked; disabled option; keyboard focus; Tabs segmented parity | `--radius-pill`, `--accent-soft`/`--accent-text`, surface-2/border |
 | `Select` | [source:primitives/Select.tsx#Select] [story:primitives/Select.coverage.stories.tsx#Coverage] Primitives / Select Interaction | selected/open options | `components.select` |
 | `SubTabBar` | [source:primitives/SubTabBar.tsx#SubTabBar] [story:primitives/SubTabBar.coverage.stories.tsx#Coverage] Primitives / Sub Tab Bar States | active/inactive navigation | `components.subtabbar` |
-| `Tabs` | [source:primitives/Tabs.tsx#Tabs] [story:primitives/Tabs.coverage.stories.tsx#Coverage] Primitives / Tabs Variants | pills, underline, segmented | `components.tabs` |
+| `Tabs` | [source:primitives/Tabs.tsx#Tabs] [story:primitives/Tabs.coverage.stories.tsx#Coverage] Primitives / Tabs Variants | pills, underline, segmented (shares SegmentedControl classes) | `components.tabs` |
 | `Textarea` | [source:primitives/Textarea.tsx#Textarea] [story:primitives/Textarea.coverage.stories.tsx#Coverage] Primitives / Textarea States | empty, populated/disabled | `components.textarea` |
 | `Tooltip` | [source:primitives/Tooltip.tsx#Tooltip] [story:primitives/Tooltip.coverage.stories.tsx#Coverage] Primitives / Tooltip Interaction | open, hover/focus | `components.tooltip` |
 | `AgentChip` | [source:patterns/AgentChip.tsx#AgentChip] [story:patterns/AgentChip.coverage.stories.tsx#Coverage] Patterns / Agent Chip Roles | founder, manager, worker | `components.agent_chip` |

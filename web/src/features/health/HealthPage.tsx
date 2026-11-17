@@ -21,6 +21,7 @@ import {
 } from '@/hooks/metrics';
 import { PageTitle } from '@/design-system/patterns/PageTitle';
 import { Sparkline } from '@/design-system/patterns/Sparkline';
+import { SegmentedControl } from '@/design-system/primitives/SegmentedControl';
 import { formatCount } from '@/lib/format';
 import { cn } from '@/lib/utils';
 import { useTranslation } from '@/hooks/i18n';
@@ -526,7 +527,7 @@ function HistorySection({
 }
 
 /* ------------------------------------------------------------------ */
-/*  Window toggle (rounded-full pills — matches Spend/Agents)          */
+/*  Window toggle (SegmentedControl, THR-376 PR8)                      */
 /* ------------------------------------------------------------------ */
 
 function WindowToggle({
@@ -538,24 +539,12 @@ function WindowToggle({
 }): JSX.Element {
   const { t } = useTranslation();
   return (
-    <div className="flex gap-1 font-mono text-xs" role="group" aria-label={t('health.window.group')}>
-      {WINDOWS.map((w, i) => (
-        <button
-          key={w.label}
-          type="button"
-          onClick={() => onChange(i)}
-          aria-pressed={i === winIdx}
-          className={cn(
-            'rounded-full border border-transparent px-3 py-1 transition-colors',
-            i === winIdx
-              ? 'bg-accent-soft text-accent-text'
-              : 'text-text-muted hover:text-text-primary',
-          )}
-        >
-          {t(w.label)}
-        </button>
-      ))}
-    </div>
+    <SegmentedControl
+      aria-label={t('health.window.group')}
+      value={String(winIdx)}
+      onValueChange={(v) => onChange(Number(v))}
+      options={WINDOWS.map((w, i) => ({ value: String(i), label: t(w.label) }))}
+    />
   );
 }
 

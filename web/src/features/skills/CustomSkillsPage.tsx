@@ -3,6 +3,7 @@ import { Link, useParams } from 'react-router-dom';
 import { Plus, Shield, Sparkles, TriangleAlert } from 'lucide-react';
 import { EmptyState } from '@/design-system/patterns/EmptyState';
 import { Button } from '@/design-system/primitives/Button';
+import { SegmentedControl } from '@/design-system/primitives/SegmentedControl';
 import { isCustomSkillForbidden, useCustomSkillsCatalog } from '@/hooks/custom-skills';
 import { useTranslation } from '@/hooks/i18n';
 import { CustomSkillCard } from './CustomSkillCard';
@@ -16,7 +17,16 @@ export function CustomSkillsPage(): JSX.Element {
   const skills = query.data?.skills ?? [];
   return <div className="h-full overflow-y-auto"><div className="mx-auto w-full max-w-5xl px-4 py-6 md:px-12 md:py-8">
     <header className="mb-6 flex flex-wrap items-start justify-between gap-3"><div><div className="text-fg-subtle text-overline mb-1 tracking-wider uppercase">{t('skills.customList.overline', { label: t(removed ? 'skills.view.removed' : 'skills.customList.founderWorkspace'), count: skills.length })}</div><h1 className="text-h2 text-fg">{t('skills.customList.title')}</h1><p className="text-fg-muted text-body-sm mt-1">{t('skills.customList.description')}</p></div>{!removed && <Button asChild><Link to={`/orgs/${slug ?? ''}/skills/custom/new`}><Plus />{t('skills.addCustom')}</Link></Button>}</header>
-    <div className="mb-4 flex gap-2" role="group" aria-label={t('skills.view.label')}><Button variant={!removed ? 'secondary' : 'ghost'} aria-pressed={!removed} onClick={() => setRemoved(false)}>{t('skills.view.current')}</Button><Button variant={removed ? 'secondary' : 'ghost'} aria-pressed={removed} onClick={() => setRemoved(true)}>{t('skills.view.removed')}</Button></div>
+    <SegmentedControl
+      className="mb-4"
+      aria-label={t('skills.view.label')}
+      value={removed ? 'removed' : 'current'}
+      onValueChange={(v) => setRemoved(v === 'removed')}
+      options={[
+        { value: 'current', label: t('skills.view.current') },
+        { value: 'removed', label: t('skills.view.removed') },
+      ]}
+    />
     {query.isLoading ? <div className="border-border-subtle bg-surface-subtle h-28 animate-pulse rounded-md border" aria-label={t(removed ? 'skills.customList.loadingRemoved' : 'skills.customList.loadingCurrent')} />
       : isCustomSkillForbidden(query.error) ? <EmptyState icon={<Shield size={28} />} title={t('skills.founderRequired.title')} body={t('skills.founderRequired.body')} />
       : query.isError ? <EmptyState icon={<TriangleAlert size={28} />} title={t(removed ? 'skills.customList.errorTitleRemoved' : 'skills.catalog.customErrorTitle')} body={renderSkillError(classifySkillError(query.error, 'skills.catalog.customErrorBody'), t)} />

@@ -20,7 +20,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/design-system/primitives/Button';
 import { PageTitle } from '@/design-system/patterns/PageTitle';
 import { Input } from '@/design-system/primitives/Input';
-import { Tabs, TabsList, TabsTrigger } from '@/design-system/primitives/Tabs';
+import { SegmentedControl } from '@/design-system/primitives/SegmentedControl';
 import { Composer } from '@/design-system/patterns/Composer';
 import { CrescentMoonBadge } from '@/design-system/patterns/CrescentMoonBadge';
 import { EmptyState } from '@/design-system/patterns/EmptyState';
@@ -871,23 +871,26 @@ export function ThreadsPage(): JSX.Element {
               own full-width line instead of pushing the tabs off-screen at
               375px; at sm+ the row is the same single line as before. */}
           <div className="mt-3 flex flex-wrap items-center gap-2">
-            <Tabs
+            <SegmentedControl
+              aria-label={t('threads.page.statusFilterAria')}
               value={bucket}
-              onValueChange={(v) => changeBucket(v as InboxBucket)}
-            >
-              <TabsList variant="segmented" aria-label={t('threads.page.statusFilterAria')}>
-                {INBOX_BUCKETS.map((b) => {
-                  return (
-                    <TabsTrigger key={b} variant="segmented" value={b}>
-                      {t(BUCKET_LABEL_KEY[b])}
-                      <span className="ml-1 text-xs tabular-nums opacity-60">
-                        {counts[b] === undefined ? '…' : formatCountFor(locale, counts[b]!)}
-                      </span>
-                    </TabsTrigger>
-                  );
-                })}
-              </TabsList>
-            </Tabs>
+              onValueChange={(next) => {
+                // Radix Tabs (the previous control) never re-fired for the
+                // already-active bucket; keep a repeat click a no-op.
+                if (next !== bucket) changeBucket(next);
+              }}
+              options={INBOX_BUCKETS.map((b) => ({
+                value: b,
+                label: (
+                  <>
+                    {t(BUCKET_LABEL_KEY[b])}
+                    <span className="ml-1 text-xs tabular-nums opacity-60">
+                      {counts[b] === undefined ? '…' : formatCountFor(locale, counts[b]!)}
+                    </span>
+                  </>
+                ),
+              }))}
+            />
             <div className="flex-1" />
             <Input
               type="text"

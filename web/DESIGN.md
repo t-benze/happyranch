@@ -44,6 +44,11 @@
 # (shadow-pasture-sm), padding 20; lists are one card per group with
 # hairline-divided rows, not stacks of cards. Use the Card / CardHeader
 # primitives and the List / Row pattern (see DESIGN_SYSTEM.md).
+# THR-376 PR8 adds: this file defines no segmented-control or toggle-group
+# component row, so none is marked SUPERSEDED. Single-select value toggles
+# are the Pasture SegmentedControl primitive (accent-soft active option,
+# pill container); Tabs variant="segmented" shares its classes (see
+# DESIGN_SYSTEM.md).
 # The rest of this file is unchanged historical reference (Phase 4 rewrites it).
 
 name: HappyRanch Founder Console

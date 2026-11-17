@@ -20,6 +20,7 @@ import { useSearchParams } from 'react-router-dom';
 import { Check } from 'lucide-react';
 import { Button } from '@/design-system/primitives/Button';
 import { PageTitle } from '@/design-system/patterns/PageTitle';
+import { SegmentedControl } from '@/design-system/primitives/SegmentedControl';
 import { ContentWrap } from '@/design-system/layouts/ContentWrap/ContentWrap';
 import { cn } from '@/lib/utils';
 import { useAuditList } from '@/hooks/audit';
@@ -174,29 +175,14 @@ export function AuditPage(): JSX.Element {
           }
         />
 
-        {/* Time window chips */}
-        <div className="mt-3 flex flex-wrap items-center gap-2" role="radiogroup" aria-label={t('audit.since.label')}>
-          {SINCE_OPTIONS.map((opt) => {
-            const active = (filters.since ?? 'all') === (opt.value ?? 'all');
-            return (
-              <button
-                key={opt.labelKey}
-                role="radio"
-                aria-checked={active}
-                type="button"
-                onClick={() => setSince(opt.value)}
-                className={cn(
-                  'rounded-full px-3 py-1 text-xs font-medium transition-colors',
-                  active
-                    ? 'bg-accent-soft text-accent-text border border-transparent'
-                    : 'bg-surface-sunken text-text-muted hover:bg-surface-raised hover:text-text-primary',
-                )}
-              >
-                {t(opt.labelKey)}
-              </button>
-            );
-          })}
-        </div>
+        {/* Time window chips (SegmentedControl, THR-376 PR8). */}
+        <SegmentedControl
+          className="mt-3"
+          aria-label={t('audit.since.label')}
+          value={filters.since ?? 'all'}
+          onValueChange={(v) => setSince(v)}
+          options={SINCE_OPTIONS.map((opt) => ({ value: opt.value ?? 'all', label: t(opt.labelKey) }))}
+        />
       </header>
 
       {/* Timeline (left) + Event-types legend-filter rail (right).
