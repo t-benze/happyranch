@@ -506,7 +506,12 @@ Before any preparation effect, no-follow checks refuse foreign fragments and
 applicable drop-ins across the default systemd load paths, including runtime,
 local-vendor, vendor and separate `/lib` paths. The maintained 3b-2f-1 contract
 lists every checked directory and the literal merged-`/usr` alias exception.
-Foreign objects remain intact; refusal is typed secret-free `foreign-unit`
+The same bounded no-follow link inventory used by cleanup runs across every
+listed load path before preparation effects. Any symlink named for or whose
+literal target basename is `happyranch-headscale.service` refuses, including
+dangling wants/requires and aliases. Alias drop-ins in any of those paths cannot
+become applicable: the alias itself refuses, even without a drop-in. Foreign
+objects remain byte/mode/link-exact; refusal is typed secret-free `foreign-unit`
 (unsafe parent/I/O: `custody-uncertain`).
 
 **Owned cleanup:** `python -m runtime.remote_access.installer disable-headscale
@@ -515,8 +520,9 @@ Headscale unit and remove its canonical policy and empty fixed custody. The
 staged-profile uninstall refusal stays unchanged; helper Turn off remains later
 work. Unknown config/DB/Noise/DERP/key/socket entries are preserved and refused:
 this inert slice never creates them and cannot establish their ownership.
-Before stop/disable, matching alias/enablement links anywhere below
-`/etc/systemd/system` or `/run/systemd/system` also refuse with typed secret-free
+Cleanup shares that all-load-path admission. Before stop/disable, the additional
+config-tree check for matching alias/enablement links anywhere below
+`/etc/systemd/system` or `/run/systemd/system` also refuses with typed secret-free
 `cleanup-uncertain`, preserving account, receipt, unit, custody and links without
 stop/disable. This includes wants/requires links, foreign/dangling targets and
 manual links to the managed unit: the inert installer creates no such links.

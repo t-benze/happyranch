@@ -1238,6 +1238,9 @@ class ManagedInstaller:
                         raise headscale.HeadscaleServiceError("foreign-unit")
                 else:
                     paths.append("lib/systemd/system")
+        # Publishing the canonical fragment can make dangling enablement links
+        # and aliases (including their drop-ins) effective. We own no links.
+        self._headscale_cleanup_links(tuple(paths), category="foreign-unit")
         for path in (*paths, *headscale.CUSTODY):
             try:
                 with self._directory(path) as parent:
@@ -1271,11 +1274,12 @@ class ManagedInstaller:
             except FileNotFoundError:
                 pass
 
-    def _headscale_cleanup_links(self) -> None:
-        """disable removes manual links too; this inert installer owns none.
+    def _headscale_cleanup_links(self, paths: tuple[str, ...] = (_UNIT_DIR, "run/systemd/system"),
+                                 *, category: str = "cleanup-uncertain") -> None:
+        """Preparation and disable both require no foreign matching links.
 
-        Inspect config trees without following links, including dangling links
-        to foreign same-named fragments. Exhaustion/unsafe inventory refuses.
+        Inspect supplied unit trees without following links, including dangling
+        links to foreign same-named fragments. Exhaustion/unsafe inventory refuses.
         This is an observation under the cooperative root-writer discipline.
         """
         count = 0
@@ -1283,17 +1287,17 @@ class ManagedInstaller:
         def inspect(parent: int, depth: int) -> None:
             nonlocal count
             if depth > 32:
-                raise headscale.HeadscaleServiceError("cleanup-uncertain")
+                raise headscale.HeadscaleServiceError(category)
             with os.scandir(parent) as entries:
                 for entry in entries:
                     count += 1
                     if count > 65536:
-                        raise headscale.HeadscaleServiceError("cleanup-uncertain")
+                        raise headscale.HeadscaleServiceError(category)
                     info = os.stat(entry.name, dir_fd=parent, follow_symlinks=False)
                     if stat.S_ISLNK(info.st_mode):
                         target = os.readlink(entry.name, dir_fd=parent)
                         if entry.name == headscale.UNIT or Path(target).name == headscale.UNIT:
-                            raise headscale.HeadscaleServiceError("cleanup-uncertain")
+                            raise headscale.HeadscaleServiceError(category)
                     elif stat.S_ISDIR(info.st_mode):
                         child = os.open(entry.name, _DIR_FLAGS, dir_fd=parent)
                         try:
@@ -1302,7 +1306,7 @@ class ManagedInstaller:
                         finally:
                             os.close(child)
 
-        for path in (_UNIT_DIR, "run/systemd/system"):
+        for path in paths:
             opened = False
             try:
                 with self._directory(path) as parent:
@@ -1312,7 +1316,7 @@ class ManagedInstaller:
                 # Only an absent config root is empty; a disappearing entry
                 # during inspection must not clear deletion admission.
                 if opened:
-                    raise headscale.HeadscaleServiceError("cleanup-uncertain") from None
+                    raise headscale.HeadscaleServiceError(category) from None
 
     def _headscale_cleanup_identity(self, receipt: dict | None) -> tuple[bool, bool]:
         """Re-observe remaining identities; a receipt never licenses UID reuse."""

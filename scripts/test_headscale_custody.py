@@ -308,9 +308,44 @@ def test_crash_after_useradd_becomes_unowned(fixture, monkeypatch, capsys) -> No
                    "run/systemd/generator.late", "lib/systemd/system")
       for kind in ("fragment", "fragment-link", "dropin", "dropin-link")
       for account in ("absent", "unowned", "owned")],
-    "prefix-dropin", "type-dropin", "lib-foreign-link"])
+    "prefix-dropin", "type-dropin", "lib-foreign-link",
+    *[f"prelink:{path}:{kind}:{account}"
+      for path in ("etc/systemd/system.control", "run/systemd/system.control",
+                   "run/systemd/transient", "run/systemd/generator.early", "etc/systemd/system",
+                   "etc/systemd/system.attached", "run/systemd/system",
+                   "run/systemd/system.attached", "run/systemd/generator",
+                   "usr/local/lib/systemd/system", "usr/lib/systemd/system",
+                   "run/systemd/generator.late", "lib/systemd/system")
+      for kind in ("wants", "requires", "wants-foreign", "alias", "alias-dropin", "alias-cross-dropin")
+      for account in ("absent", "unowned")
+      if kind != "alias-cross-dropin" or path != "etc/systemd/system"]])
 def test_foreign_custody_preserved(fixture, monkeypatch, capsys, entry) -> None:
-    if entry.startswith("load:"):
+    if entry.startswith("prelink:"):
+        _, path, kind, account = entry.split(":")
+        if account == "unowned":
+            fixture.present = fixture.group_present = True
+        parent = fixture.root / path
+        for directory in reversed((parent, *parent.parents)):
+            if directory.is_relative_to(fixture.root) and directory != fixture.root:
+                directory.mkdir(exist_ok=True, mode=0o755)
+        if kind.startswith("alias"):
+            alias_parent = fixture.root / "etc/systemd/system" if kind == "alias-cross-dropin" else parent
+            for directory in reversed((alias_parent, *alias_parent.parents)):
+                if directory.is_relative_to(fixture.root) and directory != fixture.root:
+                    directory.mkdir(exist_ok=True, mode=0o755)
+            (alias_parent / "operator-alias.service").symlink_to(home.UNIT)
+            if kind != "alias":
+                dropin = parent / "operator-alias.service.d"
+                dropin.mkdir(mode=0o755)
+                (dropin / "override.conf").write_bytes(
+                    b"[Service]\nExecStart=\nExecStart=/foreign/operator-alias-override\n")
+        else:
+            dependency = parent / ("multi-user.target.requires" if kind == "requires"
+                                   else "multi-user.target.wants")
+            dependency.mkdir(mode=0o755)
+            (dependency / home.UNIT).symlink_to("../foreign.service" if kind == "wants-foreign"
+                                               else "../" + home.UNIT)
+    elif entry.startswith("load:"):
         _, path, kind, account = entry.split(":")
         if account == "owned":
             assert fixture.prepare(monkeypatch, capsys)[0] == 0
@@ -357,12 +392,13 @@ def test_foreign_custody_preserved(fixture, monkeypatch, capsys, entry) -> None:
     fixture.calls.clear()
     code, output = fixture.prepare(monkeypatch, capsys)
     assert code == 1 and ("foreign-" in output or "custody-uncertain" in output)
-    if entry.startswith("load:"):
+    if entry.startswith(("load:", "prelink:")):
         assert "foreign-unit" in output
     assert "synthetic private diagnostic" not in output
     assert snapshot() == contents
     assert sorted(str(p.relative_to(fixture.root)) for p in fixture.root.rglob("*")) == before
     assert all(args[0] in {"getent", "passwd"} for args in fixture.calls)
+    assert (fixture.present, fixture.group_present, fixture.receipt().exists()) == identities
     code, output = fixture.cleanup(monkeypatch, capsys)
     assert code == 1 and "cleanup-uncertain" in output
     assert sorted(str(p.relative_to(fixture.root)) for p in fixture.root.rglob("*")) == before

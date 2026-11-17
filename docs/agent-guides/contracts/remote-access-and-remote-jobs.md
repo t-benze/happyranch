@@ -1400,8 +1400,18 @@ parents refuse. At every directory, any `happyranch-headscale.service` object
 outside the exact managed `/etc` fragment is foreign, even with identical bytes.
 Any `happyranch-headscale.service.d`, `happyranch-.service.d` or `service.d`
 object (including empty directories/dangling links) or fixed unit-pending residue
-also refuses. Preparation reports typed secret-free `foreign-unit` (unsafe
-parent/I/O: `custody-uncertain`) with zero effects and preserves foreign objects.
+also refuses. Before these checks, reuse the bounded no-follow cleanup link
+inventory over that same complete directory list. Any symlink named
+`happyranch-headscale.service` or whose literal target basename is that unit
+refuses, including dangling wants/requires links and aliases. Publishing the
+canonical fragment must not turn a dangling dependency into an enabled unit.
+Alias drop-ins (exact-name, dash-prefix or service-wide, in any listed path)
+cannot become applicable because the alias itself refuses, with or without a
+drop-in. No alias target is followed or adopted. Preparation reports typed
+secret-free `foreign-unit` (unsafe parent/I/O: `custody-uncertain`) with zero
+effects and preserves foreign objects byte/mode/link-exact. The shared inventory
+also enforces this admission during cleanup; its existing config-tree recheck
+immediately before disable remains.
 The [systemd.unit load-path and drop-in rules](https://www.freedesktop.org/software/systemd/man/latest/systemd.unit.html)
 justify checking both higher-priority overrides and lower-priority fragments
 that `/etc` would shadow; drop-ins merge across paths. This is the fixed default

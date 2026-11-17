@@ -193,8 +193,15 @@ object is confirmed absent; receipt-only retries converge. Other uncertainty is
 Preparation first refuses competing fragments/drop-ins in the default systemd
 load paths with no-follow checks and zero effects (`foreign-unit`; unsafe
 parent/I/O `custody-uncertain`). The maintained contract lists the exact paths
-and literal merged-`/usr` alias exception. Cleanup refuses before stop/disable
-on any matching alias/enablement symlink under `/etc/systemd/system` or
+and literal merged-`/usr` alias exception. Preparation reuses cleanup's bounded
+no-follow link inventory over all those paths before any account, receipt,
+custody or unit effect. A symlink named for or whose literal target basename is
+the unit refuses even when dangling: wants/requires and aliases are foreign.
+Alias drop-ins across those paths cannot become applicable because the alias
+itself refuses, even without a drop-in. Preserve every foreign byte/mode/link;
+no adoption. Cleanup shares the all-load-path admission and retains its extra
+check before stop/disable for matching alias/enablement symlinks under
+`/etc/systemd/system` or
 `/run/systemd/system`: wants/requires links, foreign/dangling targets and manual
 links to the managed unit are all foreign because this installer creates none.
 Typed secret-free `cleanup-uncertain`, exit1, preserves account, receipt, unit,
