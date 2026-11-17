@@ -1,0 +1,13 @@
+[Unit]
+Description=Read-only Headscale approved-device and key audit
+After=headscale.service
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+UMask=0077
+ExecStart=/usr/local/libexec/happyranch-test-server/check-headscale-devices.sh
+StandardOutput=journal
+StandardError=journal
+TimeoutStartSec=5min

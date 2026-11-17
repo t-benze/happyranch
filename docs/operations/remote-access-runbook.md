@@ -1,5 +1,7 @@
 # HappyRanch Remote Access — Self-Hosted headscale + DERP Runbook
 
+For the fixed outside-home test server, follow the founder-run [test-server hardening guide](remote-access-test-server-hardening.md) (PR-A; version/relay/ACL decisions remain deferred).
+
 **Phase-2 Part A** — deploy artifact runbook
 **Author:** dev_agent (config + docs only — founder executes)
 **Status:** Historical Phase-2 provisioning artifact (THR-097 / PR #425).

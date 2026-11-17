@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily Headscale device audit
+
+[Timer]
+OnCalendar=*-*-* 06:00:00 UTC
+Persistent=true
+RandomizedDelaySec=10min
+Unit=headscale-device-check.service
+
+[Install]
+WantedBy=timers.target
