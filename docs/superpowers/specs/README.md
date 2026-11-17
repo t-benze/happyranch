@@ -64,6 +64,8 @@ New specs should include a short status block near the top:
 
 | Spec | Status | Current source / notes |
 | --- | --- | --- |
+| [2026-07-18-agent-scheduled-work-design.md](2026-07-18-agent-scheduled-work-design.md) | historical design | Original v1 architecture and rulings; [current consolidated product contract](../../product/prds/2026-11-17-agent-todos.md) includes later universal access, recurrence and phase-date rulings plus evidence limits. |
+| [2026-08-10-agent-todos-recurrence-v2-design.md](2026-08-10-agent-todos-recurrence-v2-design.md) | historical design; later ratified | THR-105 seq274 resolved the design’s former sign-off gate. See [current consolidated product contract](../../product/prds/2026-11-17-agent-todos.md) for later PATCH/phase amendments and implementation/acceptance differences. |
 | [2026-11-11-sequential-coding-u6.md](2026-11-11-sequential-coding-u6.md) | current design; U6b2b mounted | Mixed Founder stop, original family writers and aggregate native-tail composition; native/V3 acceptance remains separate. |
 | [2026-11-11-knowledge-distill-instill-v1.md](2026-11-11-knowledge-distill-instill-v1.md) | current design; implementation pending | THR-296 Option A / TASK-15170: pre-Ready curation with an existing task identity, retired-source capture, immutable archives and additive idle-only Instill; acceptance NOT RUN. |
 | [2026-10-11-agent-reasoning-effort.md](2026-10-11-agent-reasoning-effort.md) | current | THR298 optional static selection, adapter input-v2 opt-in/legacy wire, invocation plumbing and conditional authority projection |
