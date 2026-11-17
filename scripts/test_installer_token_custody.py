@@ -10,6 +10,7 @@ import hashlib
 import json
 import os
 import pwd
+import re
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -21,7 +22,7 @@ import pytest
 from runtime.remote_access import installer as module
 from runtime.remote_access import release_verifier
 from runtime.remote_access.managed_provider import ManagedProviderConfig
-from runtime.remote_access.supervisor import ConnectorConfig
+from runtime.remote_access.supervisor import ConnectorConfig, ConnectorConfigError, ConnectorSupervisor
 
 
 class FakeManager:
@@ -709,3 +710,255 @@ def test_transaction_inventory_never_authorizes_service_or_recovery(
             fixture.invoke(operation)
     assert fixture.inventory() == before
     assert fixture.manager.calls == []
+
+
+def generated_bundle(fixture: Fixture) -> Path:
+    fixture.installer.provision(release_user=fixture.user, data_home=fixture.home)
+    return fixture.root / "etc/happyranch"
+
+
+def staged_inventory(fixture: Fixture) -> dict[str, tuple]:
+    inventory = {}
+    for path in (fixture.root, *fixture.root.rglob("*")):
+        info = path.lstat()
+        inventory[str(path.relative_to(fixture.root))] = (
+            info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_gid, info.st_nlink,
+            info.st_size, info.st_mtime_ns, info.st_ctime_ns,
+            path.read_bytes() if path.is_file() else None,
+        )
+    return inventory
+
+
+@pytest.mark.parametrize("layout", ["source", "deb"])
+def test_generated_bundle_identity_policy_metadata_and_real_record(
+    fixture: Fixture, monkeypatch: pytest.MonkeyPatch, layout: str,
+) -> None:
+    fixture.installer.layout = layout
+    if layout == "deb":
+        payload = fixture.root / "opt/happyranch-desktop"
+        for directory in (payload / "bin", payload / "python/bin"):
+            directory.mkdir(parents=True, mode=0o755)
+        for directory in (fixture.root / "opt", payload, payload / "python"):
+            directory.chmod(0o755)
+        for name in ("bin/happyranch-tsnet-sidecar", "python/bin/python3.12"):
+            path = payload / name
+            path.write_bytes(b"synthetic packaged executable")
+            path.chmod(0o755)
+        (payload / "python/bin/python3").symlink_to("python3.12")
+        monkeypatch.setattr(os, "getgrouplist", lambda *args: [os.getgid()])
+    publications: list[str] = []
+    publish = fixture.installer._write_provision_file
+
+    def observe(name: str, data: bytes, owner: tuple[int, int], mode: int) -> None:
+        publications.append(name)
+        publish(name, data, owner, mode)
+
+    monkeypatch.setattr(fixture.installer, "_write_provision_file", observe)
+    parent = generated_bundle(fixture)
+    connector = json.loads((parent / "connector.json").read_bytes())
+    sidecar = json.loads((parent / "sidecar.json").read_bytes())
+    policy = json.loads((parent / "policy.json").read_bytes())
+    ids = [connector[key] for key in ("tenant_id", "home_id", "connector_id")]
+    ids.append(connector["managed"]["control_plane_id"])
+    assert all(re.fullmatch(r"[0-9a-f]{32}", value) for value in ids)
+    assert len(set(ids)) == 4
+    assert connector["managed"]["profile"] == "linux-managed-identity-v1"
+    assert connector["managed"]["bind_host"] == "127.0.0.1"
+    assert connector["managed"]["bind_port"] == 8443  # Existing unused profile default, no TCP endpoint.
+    assert "daemon_port" not in connector
+    assert connector["excluded_daemon_ports"] == [8765]
+    assert connector["daemon_token_path"] == "/etc/happyranch/daemon.token"
+    assert connector["state_path"] == "/var/lib/happyranch-connector/trust-state.json"
+    assert connector["policy_path"] == "/etc/happyranch/policy.json"
+    assert sidecar == dict(Profile="linux-managed-identity-v1", StateDir="/var/lib/happyranch-tsnet-sidecar",
+                          RoleIdentity=f"home-sidecar-{connector['home_id']}", DERPPolicy="private-only",
+                          ListenAddr=":443", ExcludedDaemonPorts=[8765])
+    assert {"ExpectedPeer", "ConnectorAddr", "ControlURL", "control_tls"}.isdisjoint(sidecar)
+    artifact = json.loads(Path("runtime/remote_access/route_policy.json").read_bytes())
+    assert policy["artifact"] == artifact
+    assert policy["artifact"]["default_behavior"] == "deny_unclassified"
+    issued = datetime.fromisoformat(policy["issued_at"])
+    assert 0 <= (datetime.now(timezone.utc) - issued).total_seconds() < 60
+    assert policy["max_age_seconds"] == 3600 and policy["state"] == "active"
+    expected_modes = {"connector.json": 0o640, "sidecar.json": 0o640, "policy.json": 0o640,
+                      "release-daemon.json": 0o644, "daemon.token": 0o600, "provision.json": 0o600}
+    assert set(publications) == set(expected_modes) and len(publications) == 6
+    assert {path.name for path in parent.iterdir()} == set(expected_modes)
+    assert (parent.stat().st_uid, parent.stat().st_gid, parent.stat().st_mode & 0o7777) == (
+        *fixture.installer.root_owner, 0o755)
+    for name, mode in expected_modes.items():
+        info = (parent / name).stat()
+        # root:root, root:hr and hr:hr are simulated by the existing fixture's
+        # same-user owner injection, never host chown/sudo or a foreign inode.
+        assert (info.st_uid, info.st_gid, info.st_mode & 0o7777, info.st_nlink) == (os.getuid(), os.getgid(), mode, 1)
+    record_bytes = (parent / "provision.json").read_bytes()
+    record = json.loads(record_bytes)
+    assert set(record) == {"version", "layout", "digests", "phase"}
+    assert type(record["version"]) is int and record["version"] == 1
+    assert record["layout"] == layout and record["phase"] == "provisioned"
+    assert record["digests"] == {name: hashlib.sha256((parent / name).read_bytes()).hexdigest()
+                                 for name in expected_modes if name != "provision.json"}
+    assert fixture.token.read_bytes().strip() not in record_bytes
+    assert fixture.key.read_bytes() not in record_bytes
+    assert str(fixture.home).encode() not in record_bytes and b"/" not in record_bytes
+    assert not (parent / "install-transaction.json").exists()
+    assert fixture.manager.calls == []
+
+
+@pytest.mark.parametrize("operation", ["install", "install-without-key", "drift", "write-units"])
+@pytest.mark.parametrize("marker", ["connector", "sidecar-only"])
+def test_staged_identity_refuses_before_units_or_service_calls(fixture: Fixture, operation: str, marker: str) -> None:
+    parent = generated_bundle(fixture)
+    if marker == "sidecar-only":
+        (parent / "connector.json").unlink()  # Even incomplete staged inventory cannot start the sidecar.
+    if operation == "drift":
+        units = fixture.root / "etc/systemd/system"
+        units.mkdir(parents=True, mode=0o755)
+        units.parent.chmod(0o755)
+        for name, content in module.managed_units().items():
+            (units / name).write_text(content)
+            (units / name).chmod(0o644)
+    before = staged_inventory(fixture)
+    # A fresh instance must identify the staged profile from disk, not an
+    # in-memory generation flag. Install cannot consume enrollment input first.
+    fixture.installer = module.ManagedInstaller(
+        root=fixture.root, root_owner=fixture.installer.root_owner, manager=fixture.manager,
+        lookup_user=fixture.installer._lookup_user, lookup_group=fixture.installer._lookup_group)
+    with pytest.raises(module.InstallerError, match="^home control binding not provisioned; requires slice 3b-2$"):
+        if operation.startswith("install"):
+            fixture.installer.install(enrollment_key_file=fixture.key if operation == "install" else None)
+        elif operation == "drift":
+            fixture.installer.check_drift()
+        else:
+            fixture.installer._write_units()
+    assert staged_inventory(fixture) == before
+    if operation != "drift":
+        assert not (fixture.root / "etc/systemd").exists()
+    assert fixture.manager.calls == []
+
+
+@pytest.mark.parametrize("operation", ["install", "start", "restart", "enable", "run"])
+def test_staged_identity_cannot_bypass_via_supervisor(
+    fixture: Fixture, monkeypatch: pytest.MonkeyPatch, operation: str,
+) -> None:
+    parent = generated_bundle(fixture)
+    config = ConnectorConfig.from_file(parent / "connector.json")
+    config.managed_dir_root = str(fixture.root / "alternate")
+    config.state_path = str(fixture.root / "source-state/trust-state.json")
+    config.policy_path = str(parent / "policy.json")
+    supervisor = ConnectorSupervisor(config=config, manager=fixture.manager)
+    # Isolate unrelated run-loop/provider and service-user ownership work so an
+    # omitted guard reaches the observable admission assertions without host IO.
+    monkeypatch.setattr(supervisor, "_run_loop", lambda **kwargs: 0)
+    monkeypatch.setattr(supervisor, "_chown_tree", lambda *args: None)
+    monkeypatch.setattr(fixture.manager, "restart", lambda unit: fixture.manager.calls.append(("restart", unit)), raising=False)
+    monkeypatch.setattr(fixture.manager, "install", lambda *args, **kwargs: fixture.manager.calls.append(("install",)), raising=False)
+    before = staged_inventory(fixture)
+    with pytest.raises(ConnectorConfigError, match="^home control binding not provisioned; requires slice 3b-2$"):
+        getattr(supervisor, operation)()
+    assert staged_inventory(fixture) == before
+    assert fixture.manager.calls == []
+
+
+@pytest.mark.parametrize("entry", ["target", "pending"])
+@pytest.mark.parametrize("name", ["release-daemon.json", "install-transaction.json"])
+def test_generated_bundle_preserves_existing_inventory(fixture: Fixture, name: str, entry: str) -> None:
+    parent = publication_parent(fixture)
+    path = parent / (name if entry == "target" else f".{name}.pending")
+    path.symlink_to(fixture.token)  # Refuse even an unsafe entry without following/repairing it.
+    before = {p.name: p.lstat() for p in parent.iterdir()}
+    with pytest.raises(module.InstallerError):
+        generated_bundle(fixture)
+    assert {p.name: p.lstat() for p in parent.iterdir()} == before
+    assert path.is_symlink() and fixture.token.read_bytes() == b"synthetic-release-token\n"
+    assert fixture.manager.calls == []
+
+
+@pytest.mark.parametrize("bad", ["partial-config", "alternate-token"])
+def test_generated_inputs_refuse_before_effects(fixture: Fixture, bad: str) -> None:
+    inputs = {"connector_config": fixture.inputs / "connector.json"} if bad == "partial-config" else {
+        "daemon_token_source": fixture.key}
+    with pytest.raises(module.InstallerError, match="provide all three|fixed release-home token source"):
+        fixture.installer.provision(release_user=fixture.user, data_home=fixture.home, **inputs)
+    assert fixture.inventory() == {}
+    assert list(fixture.root.iterdir()) == []
+    assert fixture.manager.calls == []
+
+
+# Exact main 9a68efc7 rendered bytes, recorded before this slice's edits.
+_MAIN_UNIT_DIGESTS = {
+    "source": ["2911b3eca89178f3d56f4b217382a04161d6fdd33969e2cf18cd4a546dbbba6f",
+               "5cfef118da7b32c67a6c585885971660eef7ca2e5de3f4bd5050036bd34d551c",
+               "af7c83b16489a907a8b58f7a56f5153b3203aab8791df8290af847344375982f",
+               "8db88c53f4a00581009acc58e15cf70c00aabd07f707305242e2494c5d9b1351",
+               "6c837e4f6282fec002645e0e79503721ef098685c3d64611e0fb4bbfedcb7f13"],
+    "deb": ["c0d4c6c8188bc3caf846337f2c076203218b59405bed1353272a39e42f4cf2ea",
+            "c66f28ab9a625ad0dd9b17fdd2fd00f5618f79bde8f4e22d6dddf175ffca48bc",
+            "af7c83b16489a907a8b58f7a56f5153b3203aab8791df8290af847344375982f",
+            "8db88c53f4a00581009acc58e15cf70c00aabd07f707305242e2494c5d9b1351",
+            "3d4ac2db496b321baea22e019b07e1b7194113ed0a77f02594f962688252106a"],
+}
+
+
+@pytest.mark.parametrize("layout", ["source", "deb"])
+def test_generated_profile_unit_bytes_and_legacy_main_parity(fixture: Fixture, layout: str) -> None:
+    parent = generated_bundle(fixture)
+    modern_config = json.loads((parent / "connector.json").read_bytes())
+    legacy_config = json.loads((fixture.inputs / "connector.json").read_bytes())
+    legacy_config["managed"].pop("profile")
+    baseline = module.managed_units(layout)
+    assert [hashlib.sha256(baseline[name].encode()).hexdigest() for name in module.UNITS] == _MAIN_UNIT_DIGESTS[layout]
+    assert module.managed_units(layout, connector_config=legacy_config) == baseline
+    legacy_config["managed"]["profile"] = ""
+    assert module.managed_units(layout, connector_config=legacy_config) == baseline
+    modern = module.managed_units(layout, connector_config=modern_config)
+    assert modern[module.UNITS[0]].encode() == baseline[module.UNITS[0]].replace(
+        "RuntimeDirectory=happyranch-connector\n",
+        "RuntimeDirectory=happyranch-connector\nRuntimeDirectoryMode=0700\n", 1).encode()
+    assert modern[module.UNITS[0]].count("RuntimeDirectoryMode=0700\n") == 1
+    assert {name: modern[name].encode() for name in module.UNITS[1:]} == {
+        name: baseline[name].encode() for name in module.UNITS[1:]}
+    assert "SSL_CERT_" not in modern[module.UNITS[1]]  # Existing home_transport=False default.
+
+
+@pytest.mark.parametrize("profile", ["omitted", "empty"])
+def test_legacy_provenance_and_installed_units_keep_main_bytes(fixture: Fixture, profile: str) -> None:
+    config_path = fixture.inputs / "connector.json"
+    config = json.loads(config_path.read_bytes())
+    if profile == "omitted":
+        config["managed"].pop("profile")
+    fixture.write(config_path, json.dumps(config).encode())
+    inputs = {path.name: path.read_bytes() for path in fixture.inputs.iterdir()}
+    fixture.provision()
+    parent = fixture.root / "etc/happyranch"
+    config.pop("daemon_port")
+    config["excluded_daemon_ports"] = [8765]
+    assert (parent / "connector.json").read_bytes() == json.dumps(config, sort_keys=True).encode()
+    sidecar = json.loads(inputs["sidecar.json"])
+    sidecar["ExcludedDaemonPorts"] = [8765]
+    assert (parent / "sidecar.json").read_bytes() == json.dumps(sidecar, sort_keys=True).encode()
+    assert (parent / "policy.json").read_bytes() == inputs["policy.json"]
+    record = dict(layout="source", token_source=str(fixture.token),
+                  token_sha256=hashlib.sha256(fixture.token.read_bytes()).hexdigest(),
+                  configs={name: hashlib.sha256((parent / name).read_bytes()).hexdigest()
+                           for name in ("connector.json", "sidecar.json", "policy.json")})
+    assert (parent / "provision.json").read_bytes() == json.dumps(record, sort_keys=True).encode()
+    fixture.installer.install(enrollment_key_file=fixture.key)
+    assert [hashlib.sha256((fixture.root / "etc/systemd/system" / name).read_bytes()).hexdigest()
+            for name in module.UNITS] == _MAIN_UNIT_DIGESTS["source"]
+    assert {path.name: path.read_bytes() for path in fixture.inputs.iterdir()} == inputs
+
+
+@pytest.mark.parametrize("mode", [0o600, 0o644])
+def test_legacy_unrecorded_source_install_keeps_config_bytes_and_modes(fixture: Fixture, mode: int) -> None:
+    fixture.provision()
+    parent = fixture.root / "etc/happyranch"
+    (parent / "provision.json").unlink()  # Existing independently provisioned source-install lane.
+    for name in ("connector.json", "sidecar.json"):
+        (parent / name).chmod(mode)
+    configs = {name: ((parent / name).read_bytes(), (parent / name).stat().st_mode)
+               for name in ("connector.json", "sidecar.json", "policy.json")}
+    fixture.installer.install(enrollment_key_file=fixture.key)
+    assert {name: ((parent / name).read_bytes(), (parent / name).stat().st_mode) for name in configs} == configs
+    assert [hashlib.sha256((fixture.root / "etc/systemd/system" / name).read_bytes()).hexdigest()
+            for name in module.UNITS] == _MAIN_UNIT_DIGESTS["source"]

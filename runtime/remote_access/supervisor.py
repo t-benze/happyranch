@@ -941,6 +941,7 @@ class ConnectorSupervisor:
         reinstall/upgrade-recovery), refuses same-generation conflicts, and
         stages any monotonic advance transactionally. A corrupt or partial
         source state refuses installation (fail closed)."""
+        self._refuse_staged_identity()
         if sys.platform == "darwin":
             return self.manager.install(self._launch_agent_text(), self.config.unit_name, enable=enable)
         # Select before staging so unsupported hosts refuse without writing files.
@@ -1125,16 +1126,26 @@ class ConnectorSupervisor:
         self.manager.uninstall(self.config.unit_name)
 
     def start(self) -> None:
+        self._refuse_staged_identity()
         self.manager.start(self.config.unit_name)
 
     def stop(self) -> None:
         self.manager.stop(self.config.unit_name)
 
     def restart(self) -> None:
+        self._refuse_staged_identity()
         self.manager.restart(self.config.unit_name)
 
     def enable(self) -> None:
+        self._refuse_staged_identity()
         self.manager.enable(self.config.unit_name)
+
+    def _refuse_staged_identity(self) -> None:
+        # The generated Linux profile has no control binding in this slice.
+        # Per-unit CLI lifecycle must not bypass the composite install refusal.
+        if (sys.platform == "linux" and self.config.managed is not None
+                and self.config.managed.profile == LINUX_IDENTITY_PROFILE):
+            raise ConnectorConfigError("home control binding not provisioned; requires slice 3b-2")
 
     def disable(self) -> None:
         self.manager.disable(self.config.unit_name)
@@ -1176,6 +1187,7 @@ class ConnectorSupervisor:
         wait_fn: Callable[[float], None] = time.sleep,
     ) -> int:
         """Select platform supervision outside the shared, unchanged notify loop."""
+        self._refuse_staged_identity()
         sink = self._launchd_readiness
         if sink is None:
             return self._run_loop(max_iterations=max_iterations, poll_seconds=poll_seconds, wait_fn=wait_fn)

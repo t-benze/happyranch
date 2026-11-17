@@ -30,14 +30,24 @@ matching `managed.profile` is `linux-managed-identity-v1`; it runs as the fixed
 `happyranch` service UID and requires a 0700 runtime directory and 0600 socket.
 The renderer's matching `ConnectorUnitSpec.ingress_profile` adds only
 `RuntimeDirectoryMode=0700`; AF_UNIX is already allowed. The existing installer
-still admits legacy configs; generation/migration and connector profile/unit
-wiring belong to slice 3b-1 and remain pending after its token-reader,
-per-file atomic provisioning-writer and records-first sub-parts. The writer can
-publish closed version-1 provision/install-transaction records (layout, fixed
-digests and one literal phase only), but the generator does not emit them yet.
+still admits legacy configs. Slice 3b-1b-3 adds Python-only generation of an
+**inert staged bundle**: fresh IDs, the explicit identity profile, fixed Unix
+ingress and the bundled deny-default policy. It omits `ExpectedPeer`,
+`ConnectorAddr`, `ControlURL` and `control_tls`, including any placeholder URL.
+All six files use the existing atomic writer; the generated v1 provision record
+contains actual fixed-file digests and phase `provisioned` (files staged only),
+never secrets or paths. No transaction is generated or consumed.
 Final or pending transaction inventory refuses all legacy installer operations;
-it supplies no recovery or helper action and selects no profile. Legacy units
-remain unchanged, including `SidecarUnitSpec.home_transport=False`.
+it supplies no recovery or helper action. Install/check-drift/unit publication
+and alternate supervisor install/start/restart/enable/run entries refuse the
+modern profile before writes/service calls: `home control binding not provisioned;
+requires slice 3b-2`. Inventory remains unchanged. The Go sidecar is unchanged
+and never starts from this staged bundle. Render-only `managed_units` selection
+from the generated connector adds only the existing `RuntimeDirectoryMode=0700`
+line; legacy and sidecar unit bytes remain unchanged, including
+`SidecarUnitSpec.home_transport=False`. Installed modern-unit proof awaits 3b-2.
+The operator CLI and fixed helper's method selection remain unchanged;
+replacement/recovery/rotation and helper/package H2 wiring remain 3b-1c/3b-1d.
 Home `control_tls` generation and `home_transport=True` selection belong to
 slice 3b-2. No automatic migration or deployment occurs in either sub-part.
 

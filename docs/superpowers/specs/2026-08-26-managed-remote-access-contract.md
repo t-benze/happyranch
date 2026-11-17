@@ -460,8 +460,8 @@ comparison. After the bounded read, parent identities and file identity, owner,
 group, mode, links, size, mtime and ctime must still match. Only bytes read from
 that FD can be staged; unsafe or changed inputs refuse before publication or
 service effects. Rotation still requires explicit reprovisioning and is not
-automatically accepted. Generated configs, replacement/disable transactions and
-the fixed helper's installation wiring remain pending; this sub-part adds no
+automatically accepted. Replacement/disable transactions and
+the fixed helper's installation wiring remain pending; the reader sub-part adds no
 helper input or home-transport selection. H2 still requires the future helper's
 token path to be derived from the authenticated/recorded release home.
 
@@ -479,8 +479,7 @@ before any file publication. Normalized configs are also size-checked together
 before staging. A failed write removes only its own pending inode,
 never a substituted entry. Interrupted process death can leave pending residue
 that requires inspection. This is per-file atomic publication, not a multi-file
-transaction: later I/O failures can leave earlier complete files. Config
-generation and profile/unit selection remain unfinished. No
+transaction: later I/O failures can leave earlier complete files. No
 repair/replacement/helper method is enabled here. The
 legacy provenance schema, config validators and unit bytes remain unchanged.
 
@@ -492,13 +491,42 @@ release-daemon JSON and daemon.token. Transaction records additionally bind
 provision.json. The sole provision phase is `provisioned`, and the sole
 transaction phase is `prepared`. Extra/duplicate fields, other versions/phases,
 arbitrary digest paths, secret fields and non-digest values refuse before publication. The existing
-unversioned `provision` output and its reader remain unchanged. Generation does
-not yet emit the new schemas, and the legacy reader rejects versioned provenance.
+unversioned operator `provision` output and its reader remain unchanged.
 Any final or pending transaction entry blocks provision/install/uninstall and
 drift before file publication or service calls, without parsing or recovering
 it. These inert records provide no transaction update, resume, replacement,
 disable recovery or helper operation; those remain 3b-1c/3b-1d. Per-file atomicity
 still supplies no multi-file rollback. Home transport remains 3b-2.
+
+Slice 3b-1b-3 adds an **inert staged bundle** through the Python
+`ManagedInstaller.provision(release_user=..., data_home=...)` API when all three
+config inputs are omitted. The CLI still requires its original operator inputs;
+no helper method or package activation selects generation yet. Generation creates
+fresh tenant/home/connector/control-plane IDs, the explicit
+`managed.profile="linux-managed-identity-v1"`, fixed Unix-ingress profile settings,
+and a current one-hour envelope around the exact shipped deny-default policy.
+The sidecar has no `ExpectedPeer`, `ConnectorAddr`, `ControlURL` or `control_tls`.
+There is no control binding, placeholder URL, CA or home-transport selection.
+The token source is fixed to the validated release home's `daemon.token`;
+generation refuses an explicit alternate source. The existing atomic writer
+publishes all six files with their existing exact owner/mode contracts. The new
+v1 `provision.json` binds their actual SHA-256 bytes with phase `provisioned`
+(files staged, not installed); it contains no secret or path. Generation writes
+no install transaction and consumes/recovers none.
+
+Install admission, unit publication, check-drift and the alternate connector
+supervisor install/start/restart/enable/foreground-run entries refuse the modern
+profile with `home control binding not provisioned; requires slice 3b-2`, before
+unit writes or service calls. Inventory remains unchanged on refusal. Modern
+service admission stays unavailable even if a URL is supplied; a complete
+protected home binding belongs to 3b-2. `managed_units(connector_config=...)`
+can render the generated profile for inspection: its connector differs from the
+legacy bytes only by the existing `RuntimeDirectoryMode=0700` line. The sidecar
+and other units remain byte-identical, with `home_transport=False`; installed-unit
+proof awaits 3b-2. Legacy/omitted-profile operator configs, provenance and existing
+installs retain their existing behavior. Recovery/rotation (3b-1c), helper/package
+H2 wiring (3b-1d) and home URL/local-CA/Headscale/DERP/LAN generation (3b-2) remain
+unavailable. No renderer, provider admission or Go sidecar change follows.
 
 The root operator supplies `install --enrollment-key-file /absolute/input.key`; the input must be a root:root, single-link regular `0600` file, nonempty and at most 64 KiB. Literal no-follow parent traversal and nonblocking/no-follow file opens refuse symlinks and special files. Every install, including reinstall, requires explicit input; this command does not infer a keyless reinstall from persisted state. Use ordinary service restart for an enrolled host; installing a new key over a consumed marker still refuses at the existing marker-plus-input gate. The customer cell issues the single-use, short-expiry key; the installer does not provision it. The original operator input remains the operator's responsibility to remove promptly.
 

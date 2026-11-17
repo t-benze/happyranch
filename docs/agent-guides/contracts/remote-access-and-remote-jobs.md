@@ -821,8 +821,7 @@ before publication; normalized config sizes are checked before staging. It
 never repairs foreign metadata. Ordinary write failure
 removes only the inode it exclusively created, preserving a substituted entry.
 A crash can retain pending residue; a later file failure can retain earlier
-complete files. There is no multi-file recovery transaction. Generated identity
-configs and unit-profile selection remain pending. The records-first follow-up
+complete files. There is no multi-file recovery transaction. The records-first follow-up
 adds only `install-transaction.json` to the fixed writer map, root:root 0600;
 arbitrary destinations still refuse. Version-1 provision and transaction bodies
 contain exactly `version`, matching `layout`, `digests` and `phase`, with fixed
@@ -830,14 +829,39 @@ lowercase SHA-256 digest keys for connector/sidecar/policy JSON, release-daemon
 JSON and daemon.token (plus provision.json for a transaction). Only provision
 phase `provisioned` and transaction phase `prepared` are accepted. Unknown,
 duplicate or secret fields, paths, versions and phases refuse before writing.
-The legacy provision command still emits its original unversioned provenance;
-generation of the new records/configs and their install selection remain pending.
-The legacy provenance reader does not admit versioned records. Any final or
+The legacy provision command still emits its original unversioned provenance.
+Any final or
 pending transaction entry refuses provision/install/uninstall/drift before
 publication or service calls, without reading it as recovery authority.
 Legacy provenance/config/unit contracts remain unchanged.
 Replacement/disable recovery (3b-1c), zero-input helper/package wiring with H2
 (3b-1d) and home transport (3b-2) remain unavailable in this sub-part.
+
+The 3b-1b-3 Python staging API omits all three config inputs to `provision`, while
+still requiring the validated release user/home. It generates fresh IDs,
+`managed.profile="linux-managed-identity-v1"`, the fixed private Unix-ingress
+profile, and a current 3600-second envelope around the bundled deny-default
+policy. Sidecar JSON omits `ExpectedPeer`, `ConnectorAddr`, `ControlURL` and
+`control_tls`; the staged bundle has no control binding. There is no placeholder
+URL. Only the validated release-home `daemon.token` can supply its token.
+All files use the merged fixed-destination writer and existing owner/mode rules.
+The v1 provision record carries real fixed-file SHA-256 digests and the existing
+`provisioned` phase (staging only), with no secrets or paths. Generation creates
+no transaction file and grants no transaction consumption/recovery operation.
+
+Install, check-drift and unit publication refuse the modern profile before any
+unit write or service call with `home control binding not provisioned; requires
+slice 3b-2`, leaving inventory unchanged. Alternate supervisor install/start/
+restart/enable/run entries enforce the same refusal; modern service admission
+remains unavailable even with a supplied URL. Render-only
+`managed_units(connector_config=...)` selects the existing identity renderer
+profile, adding exactly `RuntimeDirectoryMode=0700` to the connector. Sidecar and
+other unit bytes remain unchanged, including `home_transport=False`.
+Legacy/omitted-profile configs and installed units retain main's exact bytes.
+The CLI still requires all original operator config inputs, and the fixed helper
+does not select generation. Installed modern-unit proof moves to 3b-2 with the
+complete protected home binding; lifecycle/recovery/rotation and helper/package
+H2 wiring remain 3b-1c/3b-1d. No Go/provider-admission/renderer change is included.
 
 Deb install refuses incomplete/unsafe/changed provisioning before unit writes
 or service start. Source installs without a provisioning record retain their
