@@ -33,6 +33,7 @@ from typing import TYPE_CHECKING, Iterator
 if TYPE_CHECKING:
     from runtime.daemon.lifetime_lock import LockProof
     from runtime.daemon.thread_delivery_release_service import _StartupThreadReleases
+    from runtime.daemon.preparation_recovery import StartupPreparations
 
 # Frozen repository children must reach their resource limits/Git exec before
 # importing the daemon. This is the existing fixed helper dispatch, not serve.
@@ -187,6 +188,7 @@ def _sweep_on_startup(
     db: Database, queue: TaskQueue, slug: str,
     orchestrator: Orchestrator | None = None,
     *, startup_releases: _StartupThreadReleases | None = None,
+    startup_preparations: StartupPreparations | None = None,
 ) -> list[str]:
     """Post-restart recovery for a single org (Path B — THR-037 Change B).
 
@@ -259,6 +261,8 @@ def _sweep_on_startup(
         if orchestrator is not None:
             from runtime.orchestrator.task_pause import restore_pause_preparations
             restore_pause_preparations(orchestrator)
+            if startup_preparations is not None:
+                startup_preparations.run()
         startup_connection.require_sweep_entry()
         audit = AuditLogger(db)
 
@@ -736,7 +740,8 @@ def _build_state(settings: Settings, *, lock_proof: LockProof | None = None) -> 
     owner = {"runtime": runtime, "candidate": None}
     try:
         state = DaemonState.from_runtime(runtime, settings,
-                                         construction_owner=owner, automatic_workflow_setup=True)
+                                         construction_owner=owner, automatic_workflow_setup=True,
+                                         startup_lock_proof=lock_proof)
     except BaseException as primary:
         # The original exception carries its original candidate/close owner
         # through the normal startup traceback; no second constructor or retry.
@@ -762,12 +767,13 @@ def _initialize_runnable_startup(state: DaemonState, *, lock_proof: LockProof | 
         try:
             org.db._conn.execute('PRAGMA busy_timeout=0')
             startup_releases = _StartupThreadReleases(org.db, org.slug, lock_proof)
+            startup_preparations = getattr(org.orchestrator, "_startup_preparations", None)
         except Exception as exc:
-            initial.append((org, None, exc))
+            initial.append((org, None, None, exc))
         else:
-            initial.append((org, startup_releases, None))
+            initial.append((org, startup_releases, startup_preparations, None))
     failed = False
-    for org, startup_releases, capture_error in initial:
+    for org, startup_releases, startup_preparations, capture_error in initial:
         try:
             if capture_error is not None:
                 raise capture_error
@@ -798,7 +804,7 @@ def _initialize_runnable_startup(state: DaemonState, *, lock_proof: LockProof | 
                     )
             recovered_tokens = _sweep_on_startup(
                 org.db, state.queue, org.slug, org.orchestrator,
-                startup_releases=startup_releases,
+                startup_releases=startup_releases, startup_preparations=startup_preparations,
             )
             # THR-229 checkpoint C3d4b: publish every pending v2 generation for this
             # org after the sweep (covers ordinary continuations with no recovery Q,

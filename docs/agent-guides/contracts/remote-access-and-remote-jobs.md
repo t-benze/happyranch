@@ -828,7 +828,7 @@ contain exactly `version`, matching `layout`, `digests` and `phase`, with fixed
 lowercase SHA-256 digest keys for connector/sidecar/policy JSON, release-daemon
 JSON and daemon.token (plus provision.json for a transaction). Only provision
 phase `provisioned` and fresh-publication transaction phase `prepared` are accepted;
-the replacement-only stopped phase is described below. Unknown,
+the replacement-only stopped/quarantine phases are described below. Unknown,
 duplicate or secret fields, paths, versions and phases refuse before writing.
 The legacy provision command still emits its original unversioned provenance.
 Any final or
@@ -894,53 +894,68 @@ consumption remain fail-closed, as do existing modern activation entries. The
 required temp-root/fake-manager checks remain in `scripts/test_installer_token_custody.py`.
 TODO (3b-2): owned local Headscale stop/cleanup; no callable seam is added here.
 
-The 3b-1c Python-only replacement consumer now implements a **journal-bearing
-stop/intent sub-part**, not completed failed-install replacement. The v1 record
-still has exactly `version`, `layout`, `digests` and `phase`; only this consumer
-adds the phase `replacement-stopped` alongside `prepared`. Ordinary publication
-still accepts only `prepared`. All six original fixed-file digests, including
-provision.json, must match; root:root 0600 journal metadata and exact journal
-bytes are checked repeatedly. Stopped intents require the exact generated
-canonical bytes; `journal_generation` hashes those exact bytes.
-Unknown/malformed/mismatched records, missing files and pending entries refuse.
-Clean, successful modern staged-inert/recorded and intact manual installs still
-refuse before any mutation. An unjournaled failed/partial candidate also remains
-unavailable without effects in this bounded sub-part.
+The 3b-1c Python-only replacement consumer implements a **stop/intent and
+config-quarantine sub-part**, not completed failed-install replacement. The v1
+record still has exactly `version`, `layout`, `digests` and `phase`, with the six
+original fixed-file digests (including provision.json) unchanged throughout.
+Ordinary transaction publication still accepts only `prepared`. Only this
+consumer advances the closed linear sequence:
+
+`prepared` → `replacement-stopped` → `replacement-quarantine-connector` →
+`replacement-quarantine-sidecar` → `replacement-quarantine-policy` →
+`replacement-quarantined`.
+
+Root:root 0600 journal metadata and exact bytes are checked repeatedly. All
+replacement phases require exact generated canonical bytes; `journal_generation`
+hashes those bytes. Unknown/malformed/mismatched records, missing files, wrong
+placements and pending entries refuse before mutation. Clean, successful modern
+staged-inert/recorded and intact manual installs still refuse; an unjournaled
+failed/partial candidate remains unavailable without effects.
 
 For a proven journal-bearing failed/partial candidate, `replace_failed()`
 revalidates the recorded release home and reads only its fixed daemon.token
 through the merged same-FD source-UID reader before any mutating manager call.
 It re-inventories, calls the existing `stop_and_confirm()` owner, and requires
 dead inactive/failed states, no jobs, zero service PIDs and no cgroups before
-file changes. Stop/proof failure preserves every file. The merged atomic writer
-then fsyncs a root:root 0600 `replacement-stopped` intent with unchanged six
-digests, rechecks exact old journal bytes, fixed files and pinned parents, and
-atomically replaces only that journal followed by parent fsync. The ordinary
-no-replace writer contract is unchanged for every other publication. These
-sampled checks assume the existing single protected root writer; they are not
-a concurrent-root-writer fence.
+file changes. Stop/proof failure preserves every file. A prepared candidate
+still fsyncs only the `replacement-stopped` intent and raises the existing stop
+boundary diagnostic. Interruption before that publication can leave `prepared`;
+if stopping erased the failed indication, the next call refuses rather than
+inventing failure provenance.
 
-An interrupted published stopped intent is recognized only while its exact
-journal bytes and all six original files still validate. A later call rechecks
-the fixed token and quiescence, leaves the intent bytes unchanged, and raises
-`replacement paused after stop intent; quarantine/removal and fresh staging unavailable`.
-It never starts/enables a service or claims replacement success. Interruption
-before intent publication can leave `prepared`; if stopping erased the failed
-indication, a later call refuses rather than inventing failure provenance.
-Pending/uncertain entries are never automatically repaired or replayed.
+A later call resumes the published stopped intent through config quarantine.
+Before each rename the existing atomic writer publishes and fsyncs its exact
+fixed-path intent, preserving all six digests. Only that intent's source may
+be in its original 0640 root:hr state or partially tightened 0600 root:hr/root:root
+state. Each previous config must already be quarantined and each later config
+must still be at its original path. Exactly one location per config is required.
+The consumer tightens the descriptor to root:root 0600, fsyncs it, rechecks the
+journal, all digests and pinned parents, then uses atomic no-replace rename to
+`/etc/happyranch/.replacement-connector.json`, `.replacement-sidecar.json` or
+`.replacement-policy.json` and fsyncs the parent. No old config is executed,
+restored or used to select argv/control settings. Only these three original
+fixed paths move; unknown files, custom units/drop-ins, the release daemon and
+package are untouched. No recursive removal occurs.
 
-Quarantine/removal, fresh IDs/config/enrollment after replacement, unjournaled
-replacement and resume to staged-inert are still undelivered and unavailable.
-No old credentials, trust, control settings or argv are copied or restored.
-Ordinary inventory/stop/provision/install/uninstall/drift and modern activation
-retain their transaction/profile refusals, including the existing slice-3b-2
-home-control diagnostic. The fixed legacy system connector supervisor also
-consults the same transaction-refusal owner before install/uninstall/start/stop/
-restart/enable/disable/upgrade/rollback/run; a journal cannot reopen that path.
-No release daemon/package effect or CLI/helper/D-Bus/
-package caller is added. Disable/account cleanup, rotation/repair, 3b-1d and
-3b-2 remain outside this sub-part. All five unit strings in both layouts and
-`home_transport=False` remain unchanged.
+After all three renames it publishes `replacement-quarantined` and raises
+`replacement paused after config quarantine; removal and fresh staging unavailable`.
+Interruption at each new phase or metadata/rename boundary leaves services off;
+a new consumer instance resumes only the exact digest-bound before/after
+placement. Repeating terminal quarantine rechecks token/quiescence but changes
+no files or journal bytes. These sampled checks assume the existing single
+protected root writer; they are not a concurrent-root-writer fence. Pending or
+uncertain entries are never automatically repaired or replayed.
+
+The quarantined diagnostic copies remain root-only. Their removal, removal of
+old units/state/enrollment, fresh IDs/config/enrollment generation, transaction
+finalization and resume to staged-inert remain undelivered and fail-closed.
+No revoked credentials/trust are restored into service. Ordinary inventory/stop/
+provision/install/uninstall/drift and all ten fixed legacy system supervisor
+lifecycle entries retain their final/pending transaction refusals. Modern
+activation still refuses exactly `home control binding not provisioned; requires slice 3b-2`.
+No CLI/helper/D-Bus/package caller is added. Disable/account cleanup, token
+rotation/repair, 3b-1d and 3b-2 remain outside this sub-part. All five unit strings
+in both layouts/profiles and `SidecarUnitSpec.home_transport=False` are unchanged.
 
 Deb install refuses incomplete/unsafe/changed provisioning before unit writes
 or service start. Source installs without a provisioning record retain their
@@ -1134,6 +1149,53 @@ protected dial-IP publication. Successful installed-path startup, full packaged
 lifecycle/MDWE, generated Headscale maps, packet-wide public/DNS egress exclusion
 and native Darwin remain NOT RUN. See the [sidecar README](../../../app/linux/tsnet-sidecar/README.md) and
 [Round-7 specification](../../specs/2026-11-16-one-click-remote-access.md#6-invite-selected-bootstrap-and-secret-handling).
+
+### Pure home CA and server leaf core (THR-327 slice 3b-2b)
+
+`app/linux/tsnet-sidecar/homeca` is an **unwired**, Go-stdlib-only generation
+and validation package. Every issuance takes an explicit `time.Time` and
+`io.Reader`; it performs no file, network, process or ambient-clock operation.
+No command, binary, dependency or production importer is added. Root invocation,
+on-disk custody, authenticated `RefreshHomeAddress`, Headscale TLS installation
+and transaction/recovery wiring remain the Linux track's TASK-16780 work.
+
+| Choice | Contract and reason |
+| --- | --- |
+| CA and leaf keys | ECDSA P-256 with ECDSA/SHA-256 certificates and PKCS#8 private-key DER. This matches the Mac Go ephemeral issuer and standard Go/Swift Security certificate parsing; Swift's invite DER walker imposes no key-algorithm allowlist. Native Swift execution remains a Mac acceptance obligation. |
+| CA lifetime | Ten calendar years from issuance, with CA:TRUE, BasicConstraintsValid, CertSign and pathLen=0 (no intermediate issuers). Expiry/loss/replacement is a home-identity change: authenticated turn-off/re-enable, fresh invites and Linux approval. Never silently generate or repin a replacement CA. |
+| Leaf lifetime | 365 days from issuance, capped at the existing CA's NotAfter; the total backdated interval remains below 397 days. Issuance refuses with typed `ErrInsufficientCALifetime` if less than 30 days remain from the supplied current time, with no partial result or new-CA fallback. Exactly 30 days is accepted. |
+| Renewal | `LeafRenewalDue(leafDER, caDER, now)` is true at at most 90 days remaining, or for an invalid profile. It grants no issuance/trust authority. `IssueLeaf` uses only the supplied current CA and its matching key; an expired leaf can be recovered under that still-usable CA. No timer is introduced. |
+| Clock skew | NotBefore is backdated five minutes, clamped to CA NotBefore for leaves. Issuance dates are UTC whole seconds; validity is `NotBefore <= now < NotAfter`. Backdating never extends NotAfter or permits an expired/not-yet-valid CA. |
+| Serial and subject | Positive serials use 159 random bits (20 reader-supplied bytes with the sign bit cleared; all-zero refuses). CA CN is `HappyRanch home CA`; leaf CN is `control.happyranch.invalid`. Names carry no per-home authority; the exact pinned CA DER does. |
+| SAN and address | Exactly one DNS SAN, `control.happyranch.invalid`, and only serverAuth EKU. No IP/email/URI/other SAN, wildcard or caller-supplied name/address is accepted. A dial-IP change alone does not require a leaf change; authenticated refresh renews only when the expiry window requires it, under the same CA. |
+
+`NewCA(now, random)` and `IssueLeaf(caDER, caKey, now, random)` return one
+certificate DER plus a redacted `PrivateKey`. `ImportPrivateKey` accepts a
+copied PKCS#8 P-256 key for later same-CA issuance; `PrivateKey.DER()` is the
+explicit sensitive export for custody, never for diagnostics. Every fmt verb,
+String and GoString redacts the wrapper. Errors are closed typed categories;
+parser/signer/reader errors and private inputs are never wrapped or logged.
+Explicit exported key bytes and caller-owned buffers remain sensitive; the
+package does not promise memory erasure or protect a caller that logs them.
+
+`Check(caDER, leafDER, now)` admits exactly one self-signed P-256 CA DER
+(at most 4096 bytes), verifies CA constraints/signature/current validity, and
+validates a current leaf directly to that exact CA with an isolated root pool
+and standard DNS/time/serverAuth verification. It additionally closes the raw
+SAN extension to one fixed dNSName, refuses CA leaves, and requires the leaf's
+window to fit inside the CA's. `Fingerprint` is exactly
+64 lowercase hex SHA-256 characters over the supplied DER, without PEM
+normalization; hashing alone grants no trust. The certificate outputs fit the
+invite-v2 bounded DER walker and existing Linux/Mac Go CA admission checks.
+
+Root must retain the CA signing key separately from Headscale, which receives
+only its leaf key and certificate. The CA-only PEM goes to the protected
+`/etc/happyranch/control-ca.pem`; no host/system trust-store change is allowed.
+PEM encoding belongs to that future custody boundary and uses stdlib
+`encoding/pem`; this core has no PEM or filesystem API. Tests exercise generated
+CA PEM through the existing Linux `homeTrustPolicy.admit` temporary-root pattern;
+installed root custody, real Headscale TLS and native Mac acceptance remain
+separate, unexecuted obligations of the wiring/native tracks.
 
 ### Pure home Headscale renderers and LAN selector (THR-327 slice 3b-2a)
 

@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from runtime.daemon.lifetime_lock import LockProof
     from runtime.daemon.cleanup_diagnostics import _CleanupDiagnostics
     from runtime.daemon.thread_delivery_release_service import _ThreadDeliveryReleaseService
 
@@ -385,7 +386,8 @@ class DaemonState:
 
     @classmethod
     def from_runtime(cls, runtime: RuntimeDir, settings: Settings, *, construction_owner: dict | None = None,
-                     automatic_workflow_setup: bool = False) -> "DaemonState":
+                     automatic_workflow_setup: bool = False,
+                     startup_lock_proof: LockProof | None = None) -> "DaemonState":
         state = cls(runtime=runtime, settings=settings)
         construction = construction_owner if construction_owner is not None else {}
         construction["candidate"] = state
@@ -481,7 +483,7 @@ class DaemonState:
                     fence = (state._workflow_bootstrap.take_shared(root)
                              if state._workflow_bootstrap is not None else None)
                     org = OrgState.load(slug=slug, root=root, settings=settings, attachment_owner=owner,
-                                        access_fence=fence)
+                                        access_fence=fence, startup_lock_proof=startup_lock_proof)
                     owner['load_returned'] = True
                     owner["org"] = org
                     org._profile_coordinator = state.profile_coordinator

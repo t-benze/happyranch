@@ -2,7 +2,7 @@
 
 Use the source that matches the question:
 
-- [Project README](../README.md) — end-user setup and product surface.
+- [Project README](../README.md) — end-user setup and quick start.
 - [Agent and developer guides](agent-guides/) — maintained architecture,
   configuration, executor, orchestration, feature, web, and CLI guidance.
 - [Product E2E reporting and browser observations](../e2e/README.md#current-reporting-contract--slice-3-of-3-thr-291-seq659) — current lane/Health and standard diagnostic contract.
@@ -11,6 +11,7 @@ Use the source that matches the question:
   conventions, and scoped requirements; each document's status and the shipped
   implementation still matter.
 - [Manual site](manual/pages/index.md) — source for the user-facing manual.
+- [Command and configuration reference](manual/pages/04-reference/00-reference-index.md) — CLI commands, runtime layout, settings and agent workspaces.
 - [Architecture decisions](adr/) — durable decisions with their recorded scope.
 - [Specs](specs/README.md) — retained current and
   referenced designs. Historical implementation plans were removed; see Git history.

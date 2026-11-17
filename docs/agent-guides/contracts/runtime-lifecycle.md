@@ -269,6 +269,49 @@ Linux desktop waits/reaps its child (60+2 seconds), and service restart delegate
 to synchronous systemd stop/start with `TimeoutStopSec=60`. Connector/sidecar
 units and disposable test cleanup are separate lifetimes.
 
+
+### Prepared-only startup settlement (THR-357 Fix 2 / #1247)
+
+Initial construction forwards main's acquired PROVEN daemon LockProof through
+DaemonState to OrgState.load, capturing non-job `prepared` entries before its
+first restore can change prepared to unknown. The later sweep reuses that
+captured population once, immediately after `restore_pause_preparations` and
+before queues/runners/HTTP. Dynamic attachment and periodic discovery never run it.
+Unproven transition boots close nothing. TASK-12738/TASK-12724 stay excluded.
+
+The committed prepared-only phase is positive never-created-executor evidence:
+SID binding, session_start and possible_launch commit together before any agent
+spawn. No prior task SID/PID is reused and no session start is fabricated.
+Possible-launch or later entries remain unknown even with missing/dead PIDs.
+Every recorded unfinished repository child requires a valid PID/start pin and
+kill(pid,0) -> ProcessLookupError; alive, EPERM, missing/malformed identity or
+an attempted creation without a recorded start retains the entry. No reboot
+inference is used for repository children. Complete matching original consumed
+and quiescent finished receipts can discharge that child instead.
+
+Under the existing cooperative common-git-dir lease, startup checks literal
+repository identity, current checkout Git/admin lock files, refs locks and the task worktree's
+reciprocal registration/admin metadata and locked marker. Worktrees must be
+absent or valid registered; unsupported layouts, locks and broken metadata stay
+retained, with the exact path in `preparation_startup` log records. Each candidate
+uses complete scoped histories (preparation: 4096 rows/2MiB; native boundaries:
+128 rows with 8KiB payloads); exhausted/invalid history is never absence and
+cannot make an unrelated candidate or the entire startup depend on that history.
+Repository inspection is bounded to 4096 observations and 0.5 seconds per candidate.
+
+A single ordinary root-writer transaction appends the
+`repository_preparation_startup_closed` receipt/audit (real task ID, agent daemon),
+including the original prepared entry, restored unknown facts, child proofs and
+repository checks, then removes only that journal entry as normal closure does.
+It never fabricates a native repository closed event or edits earlier receipts,
+failed_cleanup/execution_unknown facts or audits. Any failure rolls back and
+leaves existing cleanup_diagnostics/preparation-recovery visibility. One attempt
+per record per boot; no timer/retry. Continuation uses ordinary launch admission
+and the unchanged three-attempt launch-refusal budget. Human reconcile retains
+its original-owner/native-receipt rule and unchanged human authority; startup
+settlement is a separate narrow predicate beside that decision, never an owner
+reconstruction. No new status, transition or schema is introduced.
+
 ### Narrow previous-boot thread release (THR-357 Fix 1 / #1136)
 
 Before startup recovery can mint current-boot thread invocations, the initial org

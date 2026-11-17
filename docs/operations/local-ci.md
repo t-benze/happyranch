@@ -1,5 +1,15 @@
 # Local CI
 
+## Focused repository preparation startup settlement (THR-357 Fix 2)
+
+`uv run --frozen python -B -m unittest scripts.test_preparation_startup -v`
+uses the existing synthetic-org standalone venue, real task prepare/refresh-worker
+receipts and an owned native process-group backend (no service installation).
+It exercises prepared-only closure/normal continuation, registered task worktrees,
+linked-repository admin locks, proof/repository refusals,
+atomic rollback/no same-boot retry, and candidate-local grown-history exhaustion.
+It starts no task executor, serving daemon or retired unit/integration suite.
+
 ## Focused thread startup release
 
 `uv run --frozen python -B -m unittest scripts.test_thread_startup_release -v`

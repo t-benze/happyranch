@@ -5,6 +5,8 @@ import dataclasses
 import inspect
 import json
 import shutil
+import subprocess
+import sys
 from pathlib import Path
 import tempfile
 from types import SimpleNamespace
@@ -85,6 +87,11 @@ class StartupReleaseTests(unittest.IsolatedAsyncioTestCase):
         from runtime.infrastructure.workflow_schema import initialize_complete_org_schema
         from runtime.orchestrator._paths import OrgPaths
         from runtime.orchestrator.org_config import initialize_fresh_reviewer_agents
+        from scripts.mac_native.suite_repo_refresh import git_environment
+        from scripts.test_preparation_startup import (
+            ACTION as PREPARATION_ACTION, capture as capture_preparation,
+            journal as preparation_journal,
+        )
 
         for case in ("success", "tail_failure", "capture_unavailable", "constructor_failure"):
             with self.subTest(case=case), tempfile.TemporaryDirectory() as scratch:
@@ -103,6 +110,33 @@ class StartupReleaseTests(unittest.IsolatedAsyncioTestCase):
                     state.orgs[second.slug] = second
                     originals = {org.slug: seed(org, "THR-original") for org in (first, second)}
                     before_first = snapshot(first.db, "THR-original")
+                    preparations = {}
+                    with git_environment(Path(scratch)):
+                        for org in (first, second):
+                            (org.root/"workspaces"/"worker").mkdir(parents=True, exist_ok=True)
+                            # Use the preparation suite's fresh-process receipt
+                            # isolation; the original owning child exits before
+                            # this parent captures the real persisted journal.
+                            result = subprocess.run([sys.executable, "-B", "-c", """
+from pathlib import Path
+import asyncio
+import sys
+from scripts.test_preparation_startup import seed
+from runtime.config import Settings
+from runtime.daemon.state import DaemonState
+from runtime.runtime import RuntimeDir
+root = Path(sys.argv[1])
+state = DaemonState.from_runtime(RuntimeDir.load(root.parent.parent), Settings())
+try:
+    seed(state.orgs[root.name], Path(sys.argv[2]))
+finally:
+    asyncio.run(state.close_all())
+""", str(org.root), str(Path(scratch)/f"preparation-{org.slug}")],
+                                capture_output=True, text=True, timeout=20)
+                            self.assertEqual(result.returncode, 0, result.stdout[-8000:] + result.stderr[-8000:])
+                            preparations[org.slug] = capture_preparation(org)
+                            org.orchestrator._startup_preparations = preparations[org.slug]
+                    preparation_before = {org.slug: preparation_journal(org) for org in (first, second)}
                     captures, events, current = {}, [], []
                     original_capture = _StartupThreadReleases.__init__
                     original_bind = OrgState.bind_authority_v2_owner
@@ -135,11 +169,15 @@ class StartupReleaseTests(unittest.IsolatedAsyncioTestCase):
                         original_bind(org)
 
                     def observed_sweep(db: Any, queue: Any, slug: str, orchestrator: Any,
-                                       *, startup_releases: Any = None) -> list[str]:
+                                       *, startup_releases: Any = None,
+                                       startup_preparations: Any = None) -> list[str]:
                         events.append((slug, "sweep"))
                         self.assertIs(startup_releases, captures[slug])
+                        if startup_preparations is not None:
+                            self.assertIs(startup_preparations, preparations[slug])
                         tokens = original_sweep(db, queue, slug, orchestrator,
-                                                startup_releases=startup_releases)
+                                                startup_releases=startup_releases,
+                                                startup_preparations=startup_preparations)
                         self.assertTrue(startup_releases.used)
                         return tokens
 
@@ -152,6 +190,21 @@ class StartupReleaseTests(unittest.IsolatedAsyncioTestCase):
                             self.fail(f"{case}: startup aborted instead of containing the org: {exc!r}")
 
                     self.assertIn((second.slug, "sweep"), events)
+                    for org in (first, second):
+                        held = org is first and case in ("tail_failure", "constructor_failure")
+                        entries = preparation_journal(org)
+                        closed = org.db.execute(
+                            "SELECT COUNT(*) FROM audit_log WHERE action=? AND task_id=?",
+                            (PREPARATION_ACTION, "TASK-stuck"),
+                        ).fetchone()[0]
+                        if held:
+                            self.assertEqual(entries, preparation_before[org.slug])
+                            self.assertEqual(closed, 0)
+                            self.assertFalse(preparations[org.slug].used)
+                        else:
+                            self.assertEqual(entries, [], "healthy startup must close captured preparation")
+                            self.assertEqual(closed, 1)
+                            self.assertTrue(preparations[org.slug].used)
                     self.assertTrue(captures[second.slug].used)
                     self.assertEqual(second.db.execute(
                         "SELECT COUNT(*) FROM audit_log WHERE action=? AND task_id=?",

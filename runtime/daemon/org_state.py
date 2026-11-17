@@ -432,7 +432,7 @@ class OrgState:
     @_startup_load_timing()
     def load(cls, *, slug: str, root: Path, settings: Settings, attachment_owner: dict | None = None,
              access_fence: OrgAccessFence | None = None,
-             bootstrap_registration: Any = None) -> "OrgState":
+             bootstrap_registration: Any = None, startup_lock_proof: Any = None) -> "OrgState":
         from runtime.infrastructure.org_access_fence import OrgAccessFence, bind_org_fence
         owner = attachment_owner if attachment_owner is not None else {}
         owner['load_db_closed'] = True
@@ -452,7 +452,8 @@ class OrgState:
         try:
             fence.assert_held()
             state = cls._load_fenced(slug=slug, root=root, settings=settings,
-                                     attachment_owner=owner, access_fence=fence)
+                                     attachment_owner=owner, access_fence=fence,
+                                     startup_lock_proof=startup_lock_proof)
             bind_org_fence(fence)
             return state
         except BaseException:
@@ -466,7 +467,8 @@ class OrgState:
 
     @classmethod
     def _load_fenced(cls, *, slug: str, root: Path, settings: Settings,
-                     attachment_owner: dict | None, access_fence: OrgAccessFence) -> "OrgState":
+                     attachment_owner: dict | None, access_fence: OrgAccessFence,
+                     startup_lock_proof: Any = None) -> "OrgState":
         from runtime.daemon.__main__ import _startup_span
         paths = OrgPaths(root=root)
         from runtime.identities.schema import preflight
@@ -573,6 +575,12 @@ class OrgState:
                         teams=teams,
                         authority_evaluator=_build_authority_evaluator(),
                     )
+                # Only initial main construction forwards its actual acquired
+                # lock proof. Capture before this FIRST restore destroys the
+                # prepared/possible-launch distinction; dynamic loads omit it.
+                if startup_lock_proof is not None:
+                    from runtime.daemon.preparation_recovery import StartupPreparations
+                    orchestrator._startup_preparations = StartupPreparations(orchestrator, startup_lock_proof)
                 with _startup_span("org_pause_restore", org=slug):
                     from runtime.orchestrator.task_pause import restore_pause_preparations
                     restore_pause_preparations(orchestrator)

@@ -27,6 +27,10 @@ from runtime.remote_access.managed_provider import ManagedProviderConfig
 from runtime.remote_access.service_manager import SystemdServiceManager
 from runtime.remote_access.supervisor import ConnectorConfig, ConnectorConfigError, ConnectorSupervisor
 
+QUARANTINE_PHASES = ["replacement-quarantine-connector", "replacement-quarantine-sidecar",
+                     "replacement-quarantine-policy", "replacement-quarantined"]
+QUARANTINE_CONFIGS = ["connector.json", "sidecar.json", "policy.json"]
+
 
 class FakeManager:
     def __init__(self, root: Path) -> None:
@@ -699,7 +703,7 @@ def test_invalid_record_schema_refuses_before_publication(fixture: Fixture, name
 
 @pytest.mark.parametrize("name", ["install-transaction.json", ".install-transaction.json.pending"])
 @pytest.mark.parametrize("operation", ["provision", "install", "uninstall", "drift"])
-@pytest.mark.parametrize("phase", ["prepared", "replacement-stopped"])
+@pytest.mark.parametrize("phase", ["prepared", "replacement-stopped", *QUARANTINE_PHASES])
 def test_transaction_inventory_never_authorizes_service_or_recovery(
     fixture: Fixture, name: str, operation: str, phase: str,
 ) -> None:
@@ -966,10 +970,17 @@ def test_replacement_stop_intent_preserves_six_files_and_resumes(
     assert result.installation.detail == "replacement-stopped"
     assert result.journal_generation == hashlib.sha256(stopped).hexdigest()
     manager.calls.clear()
-    with pytest.raises(module.InstallerError, match="^replacement paused after stop intent;"):
+    with pytest.raises(module.InstallerError, match="^replacement paused after config quarantine;"):
         fixture.installer.replace_failed()
-    assert staged_inventory(fixture) == after  # Resume does not rewrite the intent.
-    assert [call[1] for call in manager.calls if call[0] == "stop"] == [
+    assert json.loads(journal.read_bytes()) == {**expected, "phase": "replacement-quarantined"}
+    for name in expected["digests"]:
+        path = parent / ((".replacement-" if name in QUARANTINE_CONFIGS else "") + name)
+        assert hashlib.sha256(path.read_bytes()).hexdigest() == expected["digests"][name]
+    completed = staged_inventory(fixture)
+    with pytest.raises(module.InstallerError, match="^replacement paused after config quarantine;"):
+        fixture.installer.replace_failed()
+    assert staged_inventory(fixture) == completed  # Terminal quarantine never rewrites the intent.
+    assert [call[1] for call in manager.calls if call[0] == "stop"] == 2 * [
         module.UNITS[i] for i in (2, 0, 1, 3, 4) if case != "partial" or i != 1]
     assert all(call[0] in {"show", "stop"} and call[1] in module.UNITS for call in manager.calls)
 
@@ -996,10 +1007,15 @@ def test_replacement_stop_failure_preserves_all_files(fixture: Fixture, failure:
 
 
 @pytest.mark.parametrize("attack", ["foreign-owner", "parent-swap", "leaf-swap", "mode", "links", "size", "mtime"])
+@pytest.mark.parametrize("candidate", ["prepared", "stopped", "quarantined"])
 def test_replacement_token_refuses_before_stop_or_publication(
-    fixture: Fixture, monkeypatch: pytest.MonkeyPatch, attack: str,
+    fixture: Fixture, monkeypatch: pytest.MonkeyPatch, attack: str, candidate: str,
 ) -> None:
-    manager, _, _ = prepared_replacement(fixture)
+    manager, _, _ = (prepared_replacement(fixture) if candidate == "prepared" else stopped_replacement(fixture))
+    if candidate == "quarantined":
+        with pytest.raises(module.InstallerError, match="^replacement paused after config quarantine;"):
+            fixture.installer.replace_failed()
+    manager.calls.clear()
     before = staged_inventory(fixture)
     target, fstat = fixture.token.stat(), os.fstat
 
@@ -1115,9 +1131,16 @@ def test_replacement_intent_interruption_never_reopens_services(
     before = staged_inventory(fixture)
     manager.calls.clear()
     with pytest.raises(module.InstallerError, match=("^replacement refused: healthy-manual:" if point == "pending-fsync"
-                                                   else "^replacement paused after stop intent;")):
+                                                   else "^replacement paused after config quarantine;")):
         fixture.installer.replace_failed()
-    assert staged_inventory(fixture) == before
+    if point == "pending-fsync":
+        assert staged_inventory(fixture) == before
+    else:
+        record = json.loads(journal.read_bytes())
+        assert record == {**json.loads(prepared), "phase": "replacement-quarantined"}
+        for name, data in original_files.items():
+            entry = (".replacement-" if name in QUARANTINE_CONFIGS else "") + name
+            assert (parent / entry).read_bytes() == data
     assert all(call[0] in ({"show"} if point == "pending-fsync" else {"show", "stop"})
                and call[1] in module.UNITS for call in manager.calls)
 
@@ -1177,6 +1200,217 @@ def test_replacement_observation_never_relaxes_other_transaction_guards(fixture:
             fixture.installer.stop_and_confirm()
         assert all(call[0] == "show" for call in manager.calls)
     assert staged_inventory(fixture) == before
+
+
+def stopped_replacement(fixture: Fixture, case: str = "failed") -> tuple[LifecycleManager, Path, bytes]:
+    manager, parent, prepared = prepared_replacement(fixture, case)
+    with pytest.raises(module.InstallerError, match="^replacement paused after stop intent;"):
+        fixture.installer.replace_failed()
+    manager.calls.clear()
+    return manager, parent, prepared
+
+
+@pytest.mark.parametrize("case", ["failed", "partial", "modern-failed"])
+def test_replacement_quarantines_only_exact_configs(fixture: Fixture, case: str) -> None:
+    manager, parent, prepared = stopped_replacement(fixture, case)
+    for path in (fixture.root / "opt/happyranch/operator-data",
+                 fixture.root / "etc/systemd/system/custom.service",
+                 fixture.root / "etc/systemd/system/happyranch.service"):
+        fixture.write(path, b"synthetic-unrelated-release-data")
+    before = staged_inventory(fixture)
+    original = {name: (parent / name).read_bytes() for name in QUARANTINE_CONFIGS}
+    with pytest.raises(module.InstallerError):
+        fixture.installer.replace_failed()
+    record = json.loads((parent / "install-transaction.json").read_bytes())
+    assert record == {**json.loads(prepared), "phase": "replacement-quarantined"}
+    for name in QUARANTINE_CONFIGS:
+        path = parent / (".replacement-" + name)
+        assert not (parent / name).exists()
+        assert path.read_bytes() == original[name]
+        info = path.stat()
+        assert (info.st_uid, info.st_gid) == fixture.installer.root_owner
+        assert info.st_mode & 0o777 == 0o600
+    after = staged_inventory(fixture)
+    affected = {"etc/happyranch", "etc/happyranch/install-transaction.json", *[
+        "etc/happyranch/" + prefix + name for prefix in ("", ".replacement-") for name in QUARANTINE_CONFIGS]}
+    assert {key for key in before.keys() | after.keys() if before.get(key) != after.get(key)} == affected
+    assert all(call[0] in {"show", "stop"} and call[1] in module.UNITS for call in manager.calls)
+    assert all(state == "inactive" for state in manager.states.values())
+    manager.calls.clear()
+    with pytest.raises(module.InstallerError, match="^replacement paused after config quarantine;"):
+        fixture.installer.replace_failed()
+    assert staged_inventory(fixture) == after
+    assert all(call[0] in {"show", "stop"} for call in manager.calls)
+
+
+@pytest.mark.parametrize("phase,point", [(phase, point) for phase in QUARANTINE_PHASES[:3]
+                                       for point in ("intent", "chmod", "chown", "tightened", "renamed")]
+                         + [("replacement-quarantined", "intent")])
+def test_replacement_quarantine_interruption_resumes_exact_generation(
+    fixture: Fixture, monkeypatch: pytest.MonkeyPatch, phase: str, point: str,
+) -> None:
+    manager, parent, prepared = stopped_replacement(fixture)
+    write, fsync = fixture.installer._write_provision_file, os.fsync
+    interrupted = False
+
+    def publish(name: str, data: bytes, *args: object, **kwargs: object) -> None:
+        nonlocal interrupted
+        write(name, data, *args, **kwargs)
+        if json.loads(data)["phase"] == phase and (point == "intent" or phase == QUARANTINE_PHASES[-1]):
+            interrupted = True
+            raise SystemExit("synthetic-process-death")
+
+    def sync(fd: int) -> None:
+        nonlocal interrupted
+        fsync(fd)
+        if json.loads((parent / "install-transaction.json").read_bytes())["phase"] != phase:
+            return
+        if phase == QUARANTINE_PHASES[-1]:
+            return
+        name = QUARANTINE_CONFIGS[QUARANTINE_PHASES.index(phase)]
+        original, quarantine = parent / name, parent / (".replacement-" + name)
+        info = os.fstat(fd)
+        target = original if original.exists() else quarantine
+        if ((point == "tightened" and original.exists() and info.st_ino == target.stat().st_ino
+             and target.stat().st_mode & 0o777 == 0o600)
+                or (point == "renamed" and quarantine.exists() and info.st_ino == parent.stat().st_ino)):
+            interrupted = True
+            raise SystemExit("synthetic-process-death")
+
+    def metadata_change(method: Callable, boundary: str) -> Callable:
+        def changed(fd: int, *args: object) -> None:
+            nonlocal interrupted
+            method(fd, *args)
+            if point == boundary and json.loads((parent / "install-transaction.json").read_bytes())["phase"] == phase:
+                name = QUARANTINE_CONFIGS[QUARANTINE_PHASES.index(phase)]
+                if os.fstat(fd).st_ino == (parent / name).stat().st_ino:
+                    interrupted = True
+                    raise SystemExit("synthetic-process-death")
+        return changed
+
+    with monkeypatch.context() as patch:
+        patch.setattr(fixture.installer, "_write_provision_file", publish)
+        patch.setattr(os, "fsync", sync)
+        patch.setattr(os, "fchmod", metadata_change(os.fchmod, "chmod"))
+        patch.setattr(os, "fchown", metadata_change(os.fchown, "chown"))
+        with pytest.raises((module.InstallerError, SystemExit)):
+            fixture.installer.replace_failed()
+    assert interrupted, "requested durable quarantine boundary was not reached"
+    assert all(state == "inactive" for state in manager.states.values())
+    # Lose all in-memory observations; only the closed on-disk generation resumes.
+    fixture.installer = module.ManagedInstaller(
+        root=fixture.root, root_owner=fixture.installer.root_owner, manager=manager,
+        lookup_user=fixture.installer._lookup_user, lookup_group=fixture.installer._lookup_group,
+    )
+    observed = fixture.installer.replacement_inventory()
+    assert observed.installation.detail == phase
+    assert observed.journal_generation == hashlib.sha256((parent / "install-transaction.json").read_bytes()).hexdigest()
+    with pytest.raises(module.InstallerError, match="^replacement paused after config quarantine;"):
+        fixture.installer.replace_failed()
+    assert json.loads((parent / "install-transaction.json").read_bytes()) == {
+        **json.loads(prepared), "phase": "replacement-quarantined"}
+    assert all(not (parent / name).exists() and (parent / (".replacement-" + name)).is_file()
+               for name in QUARANTINE_CONFIGS)
+    assert all(call[0] in {"show", "stop"} and call[1] in module.UNITS for call in manager.calls)
+
+
+@pytest.mark.parametrize("bad", ["unknown", "malformed", "digest", "downgraded", "prepared-downgrade", "missing", "duplicate",
+                                 "future", "mode", "pending", "foreign-file", "custom-dropin", "symlink", "hardlink",
+                                 "foreign-owner", "changed-bytes"])
+def test_replacement_quarantine_refuses_unproven_placement(
+    fixture: Fixture, monkeypatch: pytest.MonkeyPatch, bad: str,
+) -> None:
+    manager, parent, _ = stopped_replacement(fixture)
+    with pytest.raises(module.InstallerError):
+        fixture.installer.replace_failed()
+    journal = parent / "install-transaction.json"
+    record = json.loads(journal.read_bytes())
+    if bad in {"unknown", "digest", "downgraded", "prepared-downgrade", "future"}:
+        if bad == "unknown":
+            record["phase"] = "replacement-unrecognized"
+        elif bad == "digest":
+            record["digests"]["connector.json"] = "f" * 64
+        elif bad == "prepared-downgrade":
+            record["phase"] = "prepared"
+        else:
+            record["phase"] = "replacement-stopped" if bad == "downgraded" else QUARANTINE_PHASES[0]
+        fixture.write(journal, json.dumps(record, sort_keys=True).encode())
+    elif bad == "malformed":
+        fixture.write(journal, b"{invalid")
+    elif bad == "missing":
+        (parent / ".replacement-sidecar.json").unlink()
+    elif bad == "duplicate":
+        fixture.write(parent / "connector.json", (parent / ".replacement-connector.json").read_bytes())
+    elif bad == "mode":
+        (parent / ".replacement-policy.json").chmod(0o640)
+    elif bad == "pending":
+        fixture.write(parent / ".install-transaction.json.pending", journal.read_bytes())
+    elif bad == "changed-bytes":
+        fixture.write(journal, journal.read_bytes() + b"\n")
+    elif bad == "symlink":
+        target = parent / ".replacement-policy.json"
+        target.unlink()
+        target.symlink_to(fixture.inputs / "policy.json")
+    elif bad == "hardlink":
+        os.link(parent / ".replacement-policy.json", fixture.inputs / "linked-policy")
+    elif bad == "foreign-owner":
+        target, fstat = (parent / ".replacement-policy.json").stat(), os.fstat
+
+        def foreign(fd: int) -> object:
+            info = fstat(fd)
+            if (info.st_dev, info.st_ino) != (target.st_dev, target.st_ino):
+                return info
+            values = {name: getattr(info, name) for name in dir(info) if name.startswith("st_")}
+            return SimpleNamespace(**{**values, "st_uid": info.st_uid + 1})
+
+        monkeypatch.setattr(os, "fstat", foreign)
+    elif bad == "foreign-file":
+        fixture.write(parent / "foreign.json", b"synthetic-foreign-data")
+    else:
+        dropin = fixture.root / "etc/systemd/system" / (module.UNITS[0] + ".d")
+        dropin.mkdir(mode=0o755)
+        fixture.write(dropin / "custom.conf", b"synthetic-foreign-data")
+    manager.calls.clear()
+    before = staged_inventory(fixture)
+    result = fixture.installer.replacement_inventory()
+    assert result.installation.state == "manual-install-conflict"
+    assert result.journal_generation is None
+    with pytest.raises(module.InstallerError, match="^replacement refused:"):
+        fixture.installer.replace_failed()
+    assert staged_inventory(fixture) == before
+    assert all(call[0] == "show" and call[1] in module.UNITS for call in manager.calls)
+
+
+@pytest.mark.parametrize("attack", ["journal", "source", "target", "parent"])
+def test_replacement_quarantine_rechecks_published_intent(
+    fixture: Fixture, monkeypatch: pytest.MonkeyPatch, attack: str,
+) -> None:
+    manager, parent, _ = stopped_replacement(fixture)
+    publish = fixture.installer._write_provision_file
+    attacked: list[dict[str, tuple]] = []
+
+    def changed(name: str, data: bytes, *args: object, **kwargs: object) -> None:
+        publish(name, data, *args, **kwargs)
+        if json.loads(data)["phase"] != QUARANTINE_PHASES[0]:
+            return
+        if attack == "journal":
+            fixture.write(parent / "install-transaction.json", data + b"\n")
+        elif attack == "source":
+            path = parent / "connector.json"
+            path.write_bytes(path.read_bytes() + b"\n")
+        elif attack == "target":
+            fixture.write(parent / ".replacement-connector.json", b"synthetic-foreign-data")
+        else:
+            parent.rename(parent.with_name("old-config"))
+            parent.mkdir(mode=0o755)
+        attacked.append(staged_inventory(fixture))
+
+    monkeypatch.setattr(fixture.installer, "_write_provision_file", changed)
+    with pytest.raises(module.InstallerError):
+        fixture.installer.replace_failed()
+    assert len(attacked) == 1
+    assert staged_inventory(fixture) == attacked[0]
+    assert all(call[0] in {"show", "stop"} and call[1] in module.UNITS for call in manager.calls)
 
 
 def inventory_units(fixture: Fixture, *, modern: bool = False, missing: str | None = None) -> None:
@@ -1670,7 +1904,7 @@ def test_staged_identity_cannot_bypass_via_supervisor(
 
 @pytest.mark.parametrize("operation", ["install", "uninstall", "start", "stop", "restart", "enable", "disable", "upgrade", "rollback", "run"])
 @pytest.mark.parametrize("entry", ["install-transaction.json", ".install-transaction.json.pending"])
-@pytest.mark.parametrize("phase", ["prepared", "replacement-stopped"])
+@pytest.mark.parametrize("phase", ["prepared", "replacement-stopped", *QUARANTINE_PHASES])
 def test_replacement_transaction_blocks_legacy_supervisor_lifecycle(
     fixture: Fixture, monkeypatch: pytest.MonkeyPatch, operation: str, entry: str, phase: str,
 ) -> None:
