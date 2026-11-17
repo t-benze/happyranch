@@ -866,6 +866,33 @@ does not select generation. Installed modern-unit proof moves to 3b-2 with the
 complete protected home binding; lifecycle/recovery/rotation and helper/package
 H2 wiring remain 3b-1c/3b-1d. No Go/provider-admission/renderer change is included.
 
+The first 3b-1c sub-part exposes only Python `inventory()` and
+`stop_and_confirm()` prerequisites on `ManagedInstaller`; no CLI/helper/package
+method selects them. Fixed config/state/runtime locations, five exact unit
+fragments, fixed override directories and enable links are inspected without
+executing old config/argv. Reads are bounded (64 KiB configs/units, 64 shallow
+entries per managed directory); opaque state leaves receive metadata checks only.
+The result is clean, modern staged-inert/recorded, known failed/partial, intact
+manual requiring migration, or `manual-install-conflict` with non-secret paths.
+Safe unrecorded config subsets, including actual interrupted generated writer
+prefixes, are known failed/partial after validating each present artifact.
+Complete unrecorded legacy configs support modes 0600/0640/0644; recorded
+provisioning still requires exact 0640 configs. Owner, no-follow, regular-file,
+single-link and group/world-write checks remain mandatory. Stopped intact manual
+installs, including legacy-provisioned ones, still need explicit migration.
+Unsafe/unknown entries, digests, fragments/drop-ins or final/pending transactions
+refuse; release-home tokens are never read by inventory.
+
+For recognized installations only, stop target, connector, sidecar, verifier
+socket and verifier service, prove dead inactive/failed state and no queued jobs,
+and require zero main/control PIDs and no cgroup for services. Re-inventory before
+returning; no file changes occur, including on stop/proof failure. This sampled
+observation is not later mutation authority. No Off/cleanup claim is made.
+Journaled replacement, Disable cleanup, token rotation/repair and transaction
+consumption remain fail-closed, as do existing modern activation entries. The
+required temp-root/fake-manager checks remain in `scripts/test_installer_token_custody.py`.
+TODO (3b-2): owned local Headscale stop/cleanup; no callable seam is added here.
+
 Deb install refuses incomplete/unsafe/changed provisioning before unit writes
 or service start. Source installs without a provisioning record retain their
 independently provisioned configs, but also require the root-owned release install
