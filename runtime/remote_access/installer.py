@@ -232,22 +232,36 @@ class ManagedInstaller:
     @staticmethod
     @contextmanager
     def _input_parent(path: Path) -> Iterator[int]:
-        if not path.is_absolute() or ".." in path.parts or path == Path("/"):
+        if path.anchor != "/" or ".." in path.parts or path == Path("/"):
             raise InstallerError("provisioning inputs require absolute literal file paths")
         parent = os.open("/", _DIR_FLAGS)
+        opened = [parent]
+        parents = []
         try:
             for part in path.parts[1:-1]:
+                named = os.stat(part, dir_fd=parent, follow_symlinks=False)
                 child = os.open(part, _DIR_FLAGS, dir_fd=parent)
-                os.close(parent)
+                opened.append(child)
+                info = os.fstat(child)
+                if (named.st_dev, named.st_ino) != (info.st_dev, info.st_ino):
+                    raise InstallerError("input parent changed while opening")
+                parents.append((parent, part, child, (info.st_dev, info.st_ino)))
                 parent = child
             yield parent
+            for ancestor, name, child, identity in parents:
+                named, info = os.stat(name, dir_fd=ancestor, follow_symlinks=False), os.fstat(child)
+                if (not stat.S_ISDIR(named.st_mode)
+                        or (named.st_dev, named.st_ino) != identity
+                        or (info.st_dev, info.st_ino) != identity):
+                    raise InstallerError("input parent changed during read")
         finally:
-            os.close(parent)
+            for descriptor in reversed(opened):
+                os.close(descriptor)
 
     @staticmethod
     def _read_file(
         parent: int, name: str, *, owner: tuple[int, int] | None = None,
-        mode: int | None = None,
+        mode: int | None = None, source_uid: int | None = None,
     ) -> bytes:
         named = os.stat(name, dir_fd=parent, follow_symlinks=False)
         if not stat.S_ISREG(named.st_mode):
@@ -257,23 +271,31 @@ class ManagedInstaller:
             info = os.fstat(descriptor)
             if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size > 65536
                     or info.st_mode & 0o022 or (owner is not None and (info.st_uid, info.st_gid) != owner)
+                    or (source_uid is not None and info.st_uid != source_uid)
                     or (mode is not None and stat.S_IMODE(info.st_mode) != mode)
                     or (named.st_dev, named.st_ino) != (info.st_dev, info.st_ino)):
                 raise InstallerError("unsafe provisioning file ownership, mode, links or size")
             with os.fdopen(descriptor, "rb", closefd=False) as stream:
-                data = stream.read(65537)
+                data = stream.read(65536)
             after = os.fstat(descriptor)
+            named_after = os.stat(name, dir_fd=parent, follow_symlinks=False)
+            def signature(value: os.stat_result) -> tuple[int, ...]:
+                return (value.st_dev, value.st_ino, value.st_uid, value.st_gid, value.st_mode,
+                        value.st_nlink, value.st_size, value.st_mtime_ns, value.st_ctime_ns)
             if (len(data) > 65536 or not data.strip()
-                    or (info.st_size, info.st_mtime_ns, info.st_ctime_ns)
-                    != (after.st_size, after.st_mtime_ns, after.st_ctime_ns)):
+                    or len(data) != info.st_size or signature(named) != signature(info)
+                    or signature(info) != signature(after) or signature(info) != signature(named_after)):
                 raise InstallerError("empty, oversized or changing provisioning file")
             return data
         finally:
             os.close(descriptor)
 
-    def _input(self, path: Path, *, token: bool = False) -> bytes:
+    def _input(self, path: Path, *, token: bool = False, source_uid: int | None = None) -> bytes:
+        if token and (type(source_uid) is not int or not 0 < source_uid < 2**32 - 1):
+            raise InstallerError("daemon token source requires the release UID")
         with self._input_parent(path) as parent:
-            data = self._read_file(parent, path.name, mode=0o600 if token else None)
+            data = self._read_file(parent, path.name, mode=0o600 if token else None,
+                                   source_uid=source_uid)
         if token:
             try:
                 if not data.decode("utf-8").strip():
@@ -484,7 +506,7 @@ class ManagedInstaller:
             for name, value in (("connector.json", connector), ("sidecar.json", sidecar)):
                 files[name] = json.dumps(value, sort_keys=True).encode()
             self._validate_configs(files, staged=True)
-            token = self._input(daemon_token_source, token=True)
+            token = self._input(daemon_token_source, token=True, source_uid=release['uid'])
             self._check_deb_payload()
             self._service_owner = self._account(create=False)
             self._preflight()
@@ -518,7 +540,7 @@ class ManagedInstaller:
 
     def _check_provisioning(self) -> None:
         try:
-            self._check_release_record()
+            release = self._check_release_record()
             with self._directory("etc/happyranch") as parent:
                 record = self._json(self._read_file(parent, "provision.json", owner=self.root_owner, mode=0o600))
                 if record.keys() != {"layout", "token_source", "token_sha256", "configs"} or record["layout"] != self.layout:
@@ -531,7 +553,7 @@ class ManagedInstaller:
                     raise InstallerError("provisioned configuration drift")
                 self._validate_configs(files, staged=True)
                 staged = self._read_file(parent, "daemon.token", owner=self._service_owner, mode=0o600)
-            source = self._input(Path(record["token_source"]), token=True)
+            source = self._input(Path(record["token_source"]), token=True, source_uid=release['uid'])
             if (hashlib.sha256(source).hexdigest() != record["token_sha256"]
                     or hashlib.sha256(staged).hexdigest() != record["token_sha256"]):
                 raise InstallerError("daemon token drift; source rotation requires explicit reprovisioning")

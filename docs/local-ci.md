@@ -3448,6 +3448,16 @@ checks change systemd hardening, required CI selection or workflow triggers.
 
 ## Fixed remote-access helper (THR-327 slice 3a)
 
+The slice 3b-1 token-reader sub-part uses the existing standalone venue:
+`uv run --frozen pytest scripts/test_installer_token_custody.py -v --tb=short`.
+It drives real temp-root provisioning, install admission and drift with a fake
+service manager, real FDs, source swaps and metadata changes. Foreign ownership
+is simulated at the OS stat boundary without chown or sudo. Refusal must leave
+the managed file inventory unchanged and make zero service calls. It also checks
+the exact 64 KiB read bound, same-FD copying and rotation refusal. Enable/repair/
+ReplaceFailed helper integration, installed root startup, native polkit dialogs
+and packaged runtime acceptance remain NOT RUN; this adds no required CI check.
+
 `uv run --frozen --python /usr/bin/python3 pytest scripts/test_remote_access_helper.py -v --tb=short`
 uses the existing standalone script venue with a disposable private dbus-daemon,
 a fake polkit Authority, and temporary Unix sockets. System Python needs the
