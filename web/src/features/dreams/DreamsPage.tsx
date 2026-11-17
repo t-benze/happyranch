@@ -35,6 +35,7 @@ import { Link, useParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { useDreamsList } from '@/hooks/dreams';
 import { ContentWrap } from '@/design-system/layouts/ContentWrap/ContentWrap';
+import { PageTitle } from '@/design-system/patterns/PageTitle';
 import { Button } from '@/design-system/primitives/Button';
 import { CrescentMoonBadge } from '@/design-system/patterns/CrescentMoonBadge';
 import { EmptyState } from '@/design-system/patterns/EmptyState';
@@ -299,12 +300,10 @@ export function DreamsPage(): JSX.Element {
             SCHED-02 header idiom. The "Next run tonight" pill is omitted: no
             next-run field is on the dreams payload the page loads. */}
         <header className="border-border-default mb-8 border-b pb-4">
-          <p className="text-text-muted text-xs font-medium tracking-wide uppercase">
-            {t('dreams.header.eyebrow', { count: nightCount })}
-          </p>
-          <h1 className="font-display text-display text-text-primary mt-1 font-medium">
-            {t('dreams.header.statement')}
-          </h1>
+          <PageTitle
+            eyebrow={t('dreams.header.eyebrow', { count: nightCount })}
+            title={t('dreams.header.statement')}
+          />
         </header>
 
         {/* Single-column reflection feed + right-side rail (DREAMS-02) */}

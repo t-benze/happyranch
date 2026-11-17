@@ -19,6 +19,7 @@ import { useMemo, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { Check } from 'lucide-react';
 import { Button } from '@/design-system/primitives/Button';
+import { PageTitle } from '@/design-system/patterns/PageTitle';
 import { ContentWrap } from '@/design-system/layouts/ContentWrap/ContentWrap';
 import { cn } from '@/lib/utils';
 import { useAuditList } from '@/hooks/audit';
@@ -162,21 +163,16 @@ export function AuditPage(): JSX.Element {
       <ContentWrap className="flex h-full min-h-0 flex-col gap-4">
       {/* --- Top bar --- */}
       <header className="bg-surface border-border-default shrink-0 rounded-lg border p-4">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          {/* AUDIT-03: uppercase eyebrow + Newsreader serif title, matching the
-              a-audit Direction-A reference and the Tasks/Agents surfaces. */}
-          <div className="min-w-0 flex-1">
-            <p className="text-text-muted text-xs font-medium tracking-wide uppercase">
-              {t('audit.page.eyebrow')}
-            </p>
-            <h1 className="font-display text-display text-text-primary mt-1 font-medium">
-              {t('audit.page.title')}
-            </h1>
-          </div>
-          <Button variant="secondary" size="sm" onClick={handleExport}>
-            {t('audit.page.export')}
-          </Button>
-        </div>
+        {/* AUDIT-03: uppercase eyebrow + page title (PageTitle). */}
+        <PageTitle
+          eyebrow={t('audit.page.eyebrow')}
+          title={t('audit.page.title')}
+          actions={
+            <Button variant="secondary" size="sm" onClick={handleExport}>
+              {t('audit.page.export')}
+            </Button>
+          }
+        />
 
         {/* Time window chips */}
         <div className="mt-3 flex flex-wrap items-center gap-2" role="radiogroup" aria-label={t('audit.since.label')}>

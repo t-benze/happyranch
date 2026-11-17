@@ -53,6 +53,7 @@ import { useOrgSlug } from '@/lib/orgSlug';
 import { useTranslation } from '@/hooks/i18n';
 import { formatCountFor, formatAttachmentSizeFor, type MessageKey } from '@/lib/i18n';
 import { Button } from '@/design-system/primitives/Button';
+import { PageTitle } from '@/design-system/patterns/PageTitle';
 import { Input } from '@/design-system/primitives/Input';
 import { Label } from '@/design-system/primitives/Label';
 import { ContentWrap } from '@/design-system/layouts/ContentWrap/ContentWrap';
@@ -487,29 +488,23 @@ export function ArtifactsPage(): JSX.Element {
           <ContentWrap> overflow-y-auto is inert on this content-height header. */}
       <header className="border-border-default shrink-0 border-b">
         <ContentWrap>
-        <div className="flex items-start justify-between gap-3">
-          <div className="min-w-0">
-            {hasData && (
-              <p className="text-text-secondary text-xs font-semibold tracking-wider uppercase">
-                {eyebrow}
-              </p>
-            )}
-            <h1 className="font-display text-display text-text-primary mt-2 font-medium">
-              {t('artifacts.pageTitle')}
-            </h1>
-          </div>
-          {/* Solid green "↑ Upload" pill per the a-artifacts reference (THR-099
-              Batch 3); switches to a quiet ghost "Cancel" once the form is open
-              so the dismiss action does not read as a second primary action. */}
-          <Button
-            variant={showUpload ? 'ghost' : 'default'}
-            size="sm"
-            onClick={() => setShowUpload((v) => !v)}
-          >
-            <Upload aria-hidden="true" size={14} />
-            {showUpload ? t('common.cancel') : t('artifacts.upload')}
-          </Button>
-        </div>
+        {/* Solid green "↑ Upload" pill per the a-artifacts reference (THR-099
+            Batch 3); switches to a quiet ghost "Cancel" once the form is open
+            so the dismiss action does not read as a second primary action. */}
+        <PageTitle
+          eyebrow={hasData ? eyebrow : undefined}
+          title={t('artifacts.pageTitle')}
+          actions={
+            <Button
+              variant={showUpload ? 'ghost' : 'default'}
+              size="sm"
+              onClick={() => setShowUpload((v) => !v)}
+            >
+              <Upload aria-hidden="true" size={14} />
+              {showUpload ? t('common.cancel') : t('artifacts.upload')}
+            </Button>
+          }
+        />
 
         {/* Upload form (collapsible) — secondary affordance, not primary chrome. */}
         {showUpload && (

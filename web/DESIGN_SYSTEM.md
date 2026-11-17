@@ -76,8 +76,21 @@ Feature compositions keep using the stable `@/design-system/...` import paths.
   `font-display` (Newsreader) for top-level page titles. `--text-eyebrow` is
   Pasture `.eyebrow`, 11px / 600, 0.07em tracking, 1.5 line height; pair it
   with `uppercase` and `text-text-muted` (ink-3). `--text-display` (30px)
-  stays for the Home greeting only. PR5 only defines these tokens; the
-  Phase 3 `PageTitle` component adopts them across pages.
+  stays for the Home greeting only.
+- `PageTitle` (`patterns/PageTitle.tsx`, THR-376 PR6) is the title block of
+  every top-level page (each Sidebar destination's list/index page): an
+  optional `eyebrow` (`text-eyebrow uppercase text-text-muted`), exactly one
+  `<h1>` (`font-display text-page-title text-text-primary`), an optional
+  `lede` (`text-body text-text-secondary`, Pasture `.muted`, phrasing content
+  only) and an optional right-aligned `actions` slot that stacks below the
+  text under `sm`. Eyebrow, title and lede are 4px apart (`mt-1`). The page
+  keeps its own outer wrapper (border, padding, margin below). Render one
+  `PageTitle` per page so there is one `<h1>`. The Home greeting is not a
+  `PageTitle`: it keeps its own `text-display` h1. Do not pass the h1 classes
+  through `cn()`: tailwind-merge reads `text-page-title` as a text colour and
+  drops it next to `text-text-primary`. The old `PageHeader` (h2, Hanken
+  18/600) is removed; `ThreadHeader` keeps its own h2 detail-pane header.
+  Detail, onboarding and story headings are not migrated yet.
 - Page-local CSS does not live in `tokens.css`. The Tasks list's `.tasks-*`
   layout rules are in `src/features/tasks/tasks.css`, imported by
   `TasksPage.tsx`; `tokens.css` keeps only the Tasks `--text-task-*` type
@@ -256,7 +269,7 @@ visibility through titles, docs, controls, and representative renders.
 | `MentionTextarea` | [source:patterns/MentionTextarea.tsx#MentionTextarea] [story:patterns/MentionTextarea.coverage.stories.tsx#Coverage] Patterns / Mention Textarea Interaction | editable mention | `components.textarea` |
 | `Mermaid` | [source:patterns/Mermaid.tsx#default] [story:patterns/Mermaid.coverage.stories.tsx#Coverage] Patterns / Mermaid Diagram | loading → diagram | `components.code_block` |
 | `MessageBubble` | [source:patterns/MessageBubble.tsx#MessageBubble] [story:patterns/MessageBubble.coverage.stories.tsx#Coverage] Patterns / Message Bubble Variants | founder, worker, manager, decline, system; non-system shells remain 18px | `components.message_bubble`, `--radius-lg` |
-| `PageHeader` | [source:patterns/PageHeader.tsx#PageHeader] [story:patterns/PageHeader.coverage.stories.tsx#Coverage] Patterns / Page Header With Actions | metadata/action | heading/caption |
+| `PageTitle` | [source:patterns/PageTitle.tsx#PageTitle] [story:patterns/PageTitle.coverage.stories.tsx#Coverage] Patterns / Page Title Slots | title only; eyebrow; lede; eyebrow + lede + actions; actions | `--text-page-title`, `--text-eyebrow`, body |
 | `RecipientsInput` | [source:patterns/RecipientsInput.tsx#RecipientsInput] [story:patterns/RecipientsInput.coverage.stories.tsx#Coverage] Patterns / Recipients Input Interaction | editable prefix | mention/surface |
 | `Sparkline` | [source:patterns/Sparkline.tsx#Sparkline] [story:patterns/Sparkline.coverage.stories.tsx#Coverage] Patterns / Sparkline Variants | default/green/yellow/red | semantic tiers |
 | `StatValue` | [source:patterns/StatValue.tsx#StatValue] [story:patterns/StatValue.coverage.stories.tsx#Coverage] Patterns / Stat Value Formats | token/count, right/inline | `components.stat_value` |

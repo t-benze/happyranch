@@ -1,7 +1,8 @@
 /**
  * ThreadHeader — the band above the message transcript. Per UI_SPEC §3.
- * Composes PageHeader + inline Pasture status pill + IdBadge + participant
- * list + actions.
+ * Title (h2) + meta line (IdBadge + participant list) + actions, with an
+ * inline Pasture status pill. This is a detail-pane header under the page's
+ * own <h1>, so it keeps an h2; top-level page titles use PageTitle.
  *
  * Direction-A Pasture: subject title uses --font-display (Newsreader serif),
  * status pill matches ds.css .tag pattern.
@@ -21,7 +22,6 @@ import { useEffect, useRef } from 'react';
 import { Button } from '@/design-system/primitives/Button';
 import { CrescentMoonBadge } from './CrescentMoonBadge';
 import { IdBadge } from './IdBadge';
-import { PageHeader } from './PageHeader';
 
 /**
  * Optional product-copy overrides (THR-118 W3a). Omitted fields keep the
@@ -146,17 +146,21 @@ export function ThreadHeader({
 
   return (
     <header className="border-border-default bg-surface-sunken border-b px-4 py-2">
-      <PageHeader
-        title={title}
-        meta={
-          <div className="flex flex-wrap items-center gap-2">
-            <IdBadge id={threadId} kind="thread" />
-            <span aria-hidden="true">·</span>
-            <span>{participantLabels ?? (participants.join(', ') || L.noParticipants)}</span>
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0 flex-1">
+          <h2 className="text-h2 text-text-primary truncate">{title}</h2>
+          <div className="text-caption text-text-muted mt-1">
+            <div className="flex flex-wrap items-center gap-2">
+              <IdBadge id={threadId} kind="thread" />
+              <span aria-hidden="true">·</span>
+              <span>{participantLabels ?? (participants.join(', ') || L.noParticipants)}</span>
+            </div>
           </div>
-        }
-        actions={actions}
-      />
+        </div>
+        {actions && (
+          <div className="flex shrink-0 items-center gap-1">{actions}</div>
+        )}
+      </div>
       {archiveSummary && (
         <p className="border-border-default bg-surface-raised text-caption text-text-muted mt-2 rounded-md border p-2">
           <strong className="text-text-primary">{L.archiveSummary}</strong>{' '}

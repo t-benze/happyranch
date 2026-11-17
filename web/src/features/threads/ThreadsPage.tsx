@@ -18,6 +18,7 @@ import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useSta
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/design-system/primitives/Button';
+import { PageTitle } from '@/design-system/patterns/PageTitle';
 import { Input } from '@/design-system/primitives/Input';
 import { Tabs, TabsList, TabsTrigger } from '@/design-system/primitives/Tabs';
 import { Composer } from '@/design-system/patterns/Composer';
@@ -842,31 +843,26 @@ export function ThreadsPage(): JSX.Element {
             max-width at the feature layer (eslint no-arbitrary-value). */}
         <header className="border-border-default shrink-0 border-b">
           <ContentWrap>
-          <div className="flex items-start justify-between gap-2">
-            {/* THREADS-04: uppercase eyebrow (org-wide thread + dream-opened
-                counts) + Newsreader serif title, matching the a-threads
-                Direction-A reference and the KB/Audit surfaces. */}
-            <div className="min-w-0 flex-1">
-              <p className="text-text-muted text-xs font-medium tracking-wide uppercase">
-                {totals ? t('threads.page.eyebrow', {
-                  count: totals.all,
-                  total: formatCountFor(locale, totals.all),
-                  dream: formatCountFor(locale, dreamOpenedCount ?? 0),
-                }) : t('threads.page.list.unknown')}
-              </p>
-              <h1 className="font-display text-display text-text-primary mt-1 font-medium">
-                {t('threads.page.title')}
-              </h1>
-            </div>
-            <Button
-              size="sm"
-              onClick={openNew}
-              aria-label={t('threads.page.newThreadAria')}
-              title={t('threads.page.newThreadTitle')}
-            >
-              {t('threads.page.newThread')}
-            </Button>
-          </div>
+          {/* THREADS-04: uppercase eyebrow (org-wide thread + dream-opened
+              counts) + page title (THR-376 PageTitle). */}
+          <PageTitle
+            eyebrow={totals ? t('threads.page.eyebrow', {
+              count: totals.all,
+              total: formatCountFor(locale, totals.all),
+              dream: formatCountFor(locale, dreamOpenedCount ?? 0),
+            }) : t('threads.page.list.unknown')}
+            title={t('threads.page.title')}
+            actions={
+              <Button
+                size="sm"
+                onClick={openNew}
+                aria-label={t('threads.page.newThreadAria')}
+                title={t('threads.page.newThreadTitle')}
+              >
+                {t('threads.page.newThread')}
+              </Button>
+            }
+          />
           {/* THR-099: segmented All/Open/Archived pills on the LEFT, compact
               live-text Filter right-aligned on the SAME row (a-threads `.seg`
               row). The filter keeps its working substring match — just compact

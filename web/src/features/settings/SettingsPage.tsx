@@ -43,7 +43,7 @@ import type { ReactNode } from 'react';
 import { useSettings } from '@/hooks/settings';
 import { useTranslation } from '@/hooks/i18n';
 import type { MessageKey } from '@/lib/i18n';
-import { PageHeader } from '@/design-system/patterns/PageHeader';
+import { PageTitle } from '@/design-system/patterns/PageTitle';
 
 const SECTIONS = [
   { key: 'daemon-capacity', labelKey: 'settings.nav.daemonCapacity', icon: Gauge },
@@ -101,10 +101,7 @@ export function SettingsPage(): JSX.Element {
   return (
     <div className="bg-surface-canvas flex h-full flex-col">
       <header className="border-border-default border-b p-4">
-        <PageHeader
-          title={<span className="font-display">{t('settings.page.title')}</span>}
-          meta={t('settings.page.meta')}
-        />
+        <PageTitle title={t('settings.page.title')} lede={t('settings.page.meta')} />
       </header>
 
       <Routes>

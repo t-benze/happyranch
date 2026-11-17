@@ -22,7 +22,7 @@ import { IdentityName } from '@/shared/identities/IdentityName';
  *
  * Pasture vocabulary:
  *   Cards: bg-surface + border-border-default + shadow-pasture-sm + rounded-lg
- *   Page heading: font-display serif (Newsreader) via PageHeader
+ *   Page heading: PageTitle (eyebrow + Newsreader h1 + lede)
  *   Agent names: font-display
  *   IDs / times / counts: font-mono tabular-nums
  *   Status pills: rounded-full bg-accent-soft/text-accent-text (completed/running),
@@ -53,6 +53,7 @@ import { IdentityName } from '@/shared/identities/IdentityName';
 import { useMemo } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { EmptyState } from '@/design-system/patterns/EmptyState';
+import { PageTitle } from '@/design-system/patterns/PageTitle';
 import { IdBadge } from '@/design-system/patterns/IdBadge';
 import { Button } from '@/design-system/primitives/Button';
 import { useWorkHoursList } from '@/hooks/schedule';
@@ -291,18 +292,13 @@ export function WakesView(): JSX.Element {
 
   return (
     <div className="flex h-full flex-col">
-      {/* Header — SCHED-02: Direction-A uppercase eyebrow + Newsreader serif
-          title (a-schedule reference), matching the Tasks/KB/Audit surfaces. */}
+      {/* Header — SCHED-02: Direction-A eyebrow + title via PageTitle. */}
       <header className="border-border-default border-b p-4">
-        <p className="text-text-muted text-xs font-medium tracking-wide uppercase">
-          {t('workHours.wakes.eyebrow')}
-        </p>
-        <h1 className="font-display text-display text-text-primary mt-1 font-medium">
-          {t('workHours.wakes.title')}
-        </h1>
-        <p className="text-caption text-text-muted mt-1">
-          {t('workHours.wakes.description')}
-        </p>
+        <PageTitle
+          eyebrow={t('workHours.wakes.eyebrow')}
+          title={t('workHours.wakes.title')}
+          lede={t('workHours.wakes.description')}
+        />
         <p className="text-text-muted mt-2 text-xs">
           {t('workHours.wakes.viewOnly')}
         </p>

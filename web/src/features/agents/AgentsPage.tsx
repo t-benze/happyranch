@@ -18,7 +18,7 @@ import { Plus } from 'lucide-react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { NewThreadDialog } from '@/shared/threads/NewThreadDialog';
 import { useThreadRoutes } from '@/hooks/threads';
-import { PageHeader } from '@/design-system/patterns/PageHeader';
+import { PageTitle } from '@/design-system/patterns/PageTitle';
 import {
   Tabs,
   TabsList,
@@ -131,21 +131,19 @@ export function AgentsPage(): JSX.Element {
     <div className="bg-surface-canvas flex h-full flex-col">
       {/* --- Top bar --- */}
       <header className="border-border-subtle border-b p-4">
-        <div className="flex items-start justify-between gap-3">
-          <PageHeader
-            title={t('agents.page.title')}
-            meta={t('agents.page.meta')}
-          />
-          {/* AGENTS-03: align the primary action to the Direction-A
-              `a-agents` reference — leading "+" glyph + "New agent" label
-              (was "Add agent"). The reference renders this in the app bar;
-              relocating it into the shared AppShell AppBar is a cross-surface
-              change held out of this presentation-only single-surface fix. */}
-          <Button onClick={() => setAddOpen(true)}>
-            <Plus aria-hidden="true" />
-            {t('agents.page.newAgent')}
-          </Button>
-        </div>
+        {/* AGENTS-03: the primary action is the Direction-A `a-agents`
+            "+ New agent" button; the reference renders it in the app bar,
+            which is a cross-surface change held out of this page. */}
+        <PageTitle
+          title={t('agents.page.title')}
+          lede={t('agents.page.meta')}
+          actions={
+            <Button onClick={() => setAddOpen(true)}>
+              <Plus aria-hidden="true" />
+              {t('agents.page.newAgent')}
+            </Button>
+          }
+        />
         <Tabs value={tab} onValueChange={onTabChange} className="mt-3">
           <TabsList>
             <TabsTrigger value="active">{t('agents.tab.active')}</TabsTrigger>

@@ -1,6 +1,7 @@
 import { useAgentsList } from '@/hooks/agents';
 import { useIdentityOptions, useIdentityPresentation, usePreflightAddresses, namingAddressError } from '@/hooks/identities';
 import { RecipientsInput } from '@/design-system/patterns/RecipientsInput';
+import { PageTitle } from '@/design-system/patterns/PageTitle';
 import { renderThreadErrorDetail, type ThreadErrorDetail } from '@/lib/threadErrors';
 /**
  * Tasks list — Direction-A Pasture, roots-only dense list.
@@ -434,16 +435,13 @@ function TasksList({ groupBy, setGroupBy, filters, setFilters }: {
       <main className="min-h-0 flex-1">
         <ContentWrap>
         {/* Heading, filters and rows share the list scroll owner. */}
-        <div data-testid="tasks-page-header" className="tasks-heading flex flex-col items-start justify-between gap-4 sm:flex-row">
-          <div className="min-w-0">
-            <p className="tasks-eyebrow text-text-muted font-semibold tracking-wide uppercase">
-              {eyebrow}
-            </p>
-            <h1 className="font-display text-text-primary text-task-heading font-medium">
-              {t('tasks.page.title')}
-            </h1>
-          </div>
-          <div className="flex shrink-0 items-center gap-2.5">
+        <PageTitle
+          data-testid="tasks-page-header"
+          className="tasks-heading"
+          eyebrow={eyebrow}
+          title={t('tasks.page.title')}
+          actions={
+          <div className="flex items-center gap-2.5">
           <Tabs
             className="shrink-0"
             value={groupBy}
@@ -471,7 +469,8 @@ function TasksList({ groupBy, setGroupBy, filters, setFilters }: {
             <Plus size={14} aria-hidden /> {t('tasks.page.newTask')}
           </Button>
           </div>
-        </div>
+          }
+        />
         {filterOpen && (
           <form aria-label={t('tasks.filters.label')} className="mb-4 flex flex-wrap items-end gap-3" onSubmit={async (event) => {
             event.preventDefault();

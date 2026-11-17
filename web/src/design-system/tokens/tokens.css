@@ -506,7 +506,6 @@
 /* the page-local `.tasks-*` rules live in src/features/tasks/tasks.css,     */
 /* imported by the Tasks feature (THR-376 PR5).                              */
 @theme {
-  --text-task-heading: 26px;
   --text-task-title: 13.5px;
   --text-task-meta: 11.5px;
   --text-task-group: 13px;

@@ -17,6 +17,7 @@ import { useSettings } from '@/hooks/settings';
 import { useAgentsList } from '@/hooks/agents';
 import { useTeamsList } from '@/hooks/teams';
 import { Button } from '@/design-system/primitives/Button';
+import { PageTitle } from '@/design-system/patterns/PageTitle';
 import {
   Select,
   SelectContent,
@@ -281,23 +282,23 @@ function Header({ slug }: { slug: string | undefined }): JSX.Element {
   const { t } = useTranslation();
   return (
     <header className="border-border-default border-b p-4">
-      <p className="text-text-muted text-xs font-medium tracking-wide uppercase">
-        {t('workHours.header.eyebrow')}
-      </p>
-      <h1 className="font-display text-display text-text-primary mt-1 font-medium">
-        {t('workHours.header.title')}
-      </h1>
-      <p className="text-caption text-text-muted mt-1">
-        {t('workHours.header.description')}{' '}
-        {slug && (
-          <Link
-            to={`/orgs/${slug}/work-hours?view=wakes`}
-            className="text-accent-text hover:underline"
-          >
-            {t('workHours.header.wakeHistory')}
-          </Link>
-        )}
-      </p>
+      <PageTitle
+        eyebrow={t('workHours.header.eyebrow')}
+        title={t('workHours.header.title')}
+        lede={
+          <>
+            {t('workHours.header.description')}{' '}
+            {slug && (
+              <Link
+                to={`/orgs/${slug}/work-hours?view=wakes`}
+                className="text-accent-text hover:underline"
+              >
+                {t('workHours.header.wakeHistory')}
+              </Link>
+            )}
+          </>
+        }
+      />
     </header>
   );
 }

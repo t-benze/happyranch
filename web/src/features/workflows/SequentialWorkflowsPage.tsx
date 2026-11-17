@@ -6,6 +6,7 @@
  */
 import { Link, useParams } from 'react-router-dom';
 import { ContentWrap } from '@/design-system/layouts/ContentWrap/ContentWrap';
+import { PageTitle } from '@/design-system/patterns/PageTitle';
 import { SubTabBar } from '@/design-system/primitives/SubTabBar';
 import { useTranslation } from '@/hooks/i18n';
 import { useSequentialDefinition, useSequentialDefinitions, useSequentialRuns } from '@/hooks/workflows';
@@ -30,7 +31,7 @@ export function SequentialWorkflowsPage({ view }: { view: 'definitions' | 'setup
       {(view === 'definition' || view === 'run') && <><span aria-hidden="true">›</span><span className="text-text-primary font-mono wrap-anywhere">{view === 'run' ? runId : definitionId}</span></>}
     </nav>
     {view === 'definitions' || view === 'runs' || view === 'setup' ? <>
-      <h1 className="font-display text-h1 text-text-primary">{t('seqwf.title')}</h1>
+      <PageTitle title={t('seqwf.title')} />
       {view === 'setup' ? <p className="bg-info-soft text-text-primary mt-3 rounded-md px-3 py-2 text-sm">{t('seqwf.setup.note')}</p> : <ReadOnlyNote />}
       <SubTabBar className="mt-4" active={view} tabs={[
         { value: 'definitions', label: t('seqwf.tab.definitions'), to: base },
