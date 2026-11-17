@@ -43,7 +43,7 @@ it.
 
 Read before drafting: TASK-16298 `design.md` rev2; TASK-16362 `architecture-review.md`; the [current
 contract](../agent-guides/contracts/remote-access-and-remote-jobs.md) and
-[RUNBOOK](../../deploy/remote-access/RUNBOOK.md). Baseline code facts:
+[RUNBOOK](../operations/remote-access-runbook.md). Baseline code facts:
 
 - `installer.py` provisions operator JSON, then separately installs; it refuses
   existing destinations and has no replacement journal. `--layout deb` uses
@@ -786,10 +786,10 @@ and flag a miss immediately if the 11-18 gate or integration milestones slip. Do
 success outside-home readiness or silently extend the server term, skip gates or deploy to recover.
 
 Doc parity in the owning implementation slices: current remote-access contract;
-`deploy/remote-access/RUNBOOK.md` (replace operator steps for desktop users, keep historical server
+`docs/operations/remote-access-runbook.md` (replace operator steps for desktop users, keep historical server
 provisioning separate); `app/linux/tsnet-sidecar/README.md`; `app/mac/README.md`;
-`docs/runbooks/linux-release-handbook.md`; normative `2026-08-26-managed-remote-access-contract.md`;
-M1/M2 workflow comments and M3/M4 runbooks; `docs/local-ci.md` for supported commands. No bundled
+`docs/operations/linux-release-handbook.md`; normative `2026-08-26-managed-remote-access-contract.md`;
+M1/M2 workflow comments and M3/M4 runbooks; `docs/operations/local-ci.md` for supported commands. No bundled
 remote-access skill was found in the repository; inspect published skill consumers before
 implementation and update any owning remote-install instructions alongside it. Do not change agent
 permissions, jobs/jenkins skill authority or test cadence.

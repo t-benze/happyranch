@@ -4804,7 +4804,7 @@ that this historical host command installed or registered sequential Coding.
 Sequential installation, registration and admission require their own separately
 authorized path; U9a supplies no public publisher or cutover. Historical Explicit
 settings never transfer. Keep uncertain saves under their original key and use
-Check original save. See the [cutover/backout runbook](../runbooks/sequential-coding-cutover.md).
+Check original save. See the [cutover/backout runbook](../operations/sequential-coding-cutover.md).
 The command chooses/saves/enables nothing. Real
 workflow/Founder persistence/scratch/rejection/revision/control/cross-team/two-org/
 backup/restore/reopen/rollback acceptance remains NOT RUN/open before ordinary use.

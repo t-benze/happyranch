@@ -663,7 +663,7 @@ schema check compares a complete independent combined reference; original native
 connection/budget guards remain. Normal installed schema readers outside that
 scope still refuse the extension. No installation is authorized by source delivery.
 See [the reusable storage boundary](reusable-workflows.md#u2a-storage-and-standalone-reader-boundary)
-and [UNVERIFIED operator draft](../../runbooks/sequential-workflow-storage.md).
+and [UNVERIFIED operator draft](../../operations/sequential-workflow-storage.md).
 
 
 ## Sequential U6b2b document cancellation composition (TASK-15349)

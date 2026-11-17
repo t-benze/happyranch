@@ -128,7 +128,7 @@ OpenAPI generation uses `uv run python scripts/generate_openapi_snapshot.py
 
 > Test-policy amendment (THR-291 seq40): Python unit source and gates cited below
 > are retired. Product invariants and acceptance obligations remain unchanged;
-> replacement E2E coverage is PENDING. See [the coverage gap record](../python-test-reset.md).
+> replacement E2E coverage is PENDING. See [the coverage gap record](../operations/python-test-reset.md).
 
 **Date:** 2026-05-26
 **Status:** Draft, pending implementation plan.

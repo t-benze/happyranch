@@ -1,7 +1,7 @@
 # Sequential Coding U9: release selection and atomic fresh-start cutover
 
 > Status: current source contract; U9a, inert U9b setup and atomic U9b obligations 2+3+4 delivered. TASK-15624 mounts reviewed-v2 public fresh Coding selection together with unconditional old-fresh refusal. Separate installation/loaded identity/admission/native acceptance remain open.
-> Current Source: docs/agent-guides/contracts/reusable-workflows.md; docs/runbooks/sequential-coding-cutover.md
+> Current Source: docs/agent-guides/contracts/reusable-workflows.md; docs/operations/sequential-coding-cutover.md
 
 2026-11-17 A2 supersession: distinct positively fresh org creation installs
 J + Coding + sequential/ownership-2. Qualified literal Coding v2 catalog

@@ -445,7 +445,7 @@ Both selected scalar readers return the exact sequential kind.
 Selected lookup uses the mark/binding index and scalar run/visit/native relations,
 not a full-history scan. Complete inventory remains at the compatibility boundary.
 No install/reopen/backout result or compatibility safety claim follows
-from this reader boundary. [Installation/backout contract](../../runbooks/sequential-workflow-storage.md)
+from this reader boundary. [Installation/backout contract](../../operations/sequential-workflow-storage.md)
 is UNVERIFIED. V3 and actual runs remain NOT RUN; old bytes and historical
 receipts remain unchanged. U4–U9 remain held on the separate U4.0 NO-GO.
 
@@ -489,7 +489,7 @@ shapes refuse. Original complete-reader caps and refusals remain intact. File an
 lifecycle checks are cooperative observations, not an OS fence or native closure
 proof. Even empty installed ownership@2/storage requires compatible code;
 old-code-only downgrade is unsupported and must refuse. See the
-[runbook](../../runbooks/sequential-workflow-storage.md) for backup, custody and
+[runbook](../../operations/sequential-workflow-storage.md) for backup, custody and
 backout limits. Execution behavior remains **UNVERIFIED**: disposable structural
 SQLite observations do not establish real install/reopen/backout safety, V3,
 current authority, native settlement or ordinary-use acceptance. U3–U9 remain
@@ -1861,7 +1861,7 @@ out-of-repo SYNTHETIC diagnostics do not prove live installation, loaded identit
 native/V3/V5/M4 or operator acceptance. TASK-15719 repairs the installer ceiling through its own finite operator allowance
 and complete preservation; copy execution is separate from live acceptance. See the
 [compatibility table/full caller inventory](../../specs/2026-11-12-sequential-coding-u9.md)
-and [operator install/backout](../../runbooks/sequential-coding-cutover.md).
+and [operator install/backout](../../operations/sequential-coding-cutover.md).
 
 ## U9b inert operator registration and admission (TASK-15616)
 
@@ -1899,7 +1899,7 @@ COMMIT/rollback/close/delivery/post-publication uncertainty, with no automatic r
 It installs no schema, creates no marker/run/task or native/remote action, converts
 no old Explicit setting and runs nothing at startup. Installation remains the
 existing explicit offline schema path. See the
-[operator procedure](../../runbooks/sequential-coding-cutover.md).
+[operator procedure](../../operations/sequential-coding-cutover.md).
 
 The original TASK-15616 setup unit was inert. TASK-15624 now supplies the paired
 public Coding selector/old-fresh fence described above and updates host setup

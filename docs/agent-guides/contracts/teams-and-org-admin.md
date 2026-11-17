@@ -228,7 +228,7 @@ L1/L4/L5/L7/L8/L9/W10 selections with the closed integration parent,
 independently pinned b317 reader and transient exact browser tooling.
 Merged PR1025/THR291seq69 supersedes that automatic PR entry with lint-only
 checks and daily-only Product E2E; retained case source grants no new execution.
-See `docs/local-ci.md`. Python units remain RETIRED and broad integration SKIPPED.
+See `docs/operations/local-ci.md`. Python units remain RETIRED and broad integration SKIPPED.
 The removed maintenance cases supplied no executed move/restore/reboot proof.
 Source checks are not behavioral proof; preserve exits and missing evidence.
 

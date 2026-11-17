@@ -138,7 +138,7 @@ is still acquired/decoded under the original limits only after the whole-table
 type/size prerequisite passes in the same snapshot. This does not extend the
 load reuse contract above or remove any FK/history check. See the
 [shared finite SQL contract](reusable-workflows.md) for the unchanged charges.
-The A0b-2 [requirement-to-case map](../../local-ci.md#a0b-2-requirement-to-case-map-v3-section-4-and-f1)
+The A0b-2 [requirement-to-case map](../../operations/local-ci.md#a0b-2-requirement-to-case-map-v3-section-4-and-f1)
 distinguishes reachable nonallocating source/mapping/settings history from the
 old queued-family column limitation. The original Coding reconstruction retains
 27 task columns; today's native schema has 30. Full matching therefore refuses
@@ -377,7 +377,7 @@ no global infeasibility, candidate-guard/full F5/F8/program/runtime PASS follows
 Historical native0/verifier2/42-INCOMPLETE and earlier ROOT10693 source waivers
 remain history. They do not waive current allocated M1–M6/S1–S8 sensitivity,
 forward restoration, GREEN/five fresh-process repetitions or independent
-same-head executable QA. See docs/local-ci.md for exact command and exits.
+same-head executable QA. See docs/operations/local-ci.md for exact command and exits.
 
 The start_in_writer/support._storage pre-write composition now consumes the
 internally reconstructed complete-schema mapping/import/queued inventory under
@@ -2223,7 +2223,7 @@ empty catalog requires separately authorized sequential installation and
 registration; this historical host command supplies neither. Historical Explicit
 settings do not transfer. Use Check original save for uncertainty. U9b now
 mounts reviewed-v2 public selection and old-fresh refusal together; see the
-[operator runbook](../../runbooks/sequential-coding-cutover.md).
+[operator runbook](../../operations/sequential-coding-cutover.md).
 Source/static delivery is not host acceptance.
 Real workflow, Founder persistence, scratch/rejection/revision/control,
 cross-team/two-org, backup/restore/reopen/rollback acceptance remain NOT RUN/open
@@ -2731,7 +2731,7 @@ separately; TASK-15741 caps complete-reader acquisition at160,000 tasks and
 ownership marks plus64MiB of task-ID/ownership cells before payload fetch.
 Default/runtime/venue/startup budgets remain unchanged. See the
 [compatibility table/full caller inventory](../../specs/2026-11-12-sequential-coding-u9.md)
-and [operator install/backout](../../runbooks/sequential-coding-cutover.md).
+and [operator install/backout](../../operations/sequential-coding-cutover.md).
 
 ## U9b inert operator registration and admission (TASK-15616)
 
@@ -2767,12 +2767,12 @@ The separate explicit installer now streams every retained row under its own
 complete reader it gates160,000 tasks and ownership marks and64MiB of their
 acquired cells, refusing with named count/byte causes. Shared inventory defaults
 stay8192-row/64MiB/5s; setup and shared reader behavior are unchanged. See the
-[installer limits and measurements](../../runbooks/sequential-coding-cutover.md). Exit4 retains
+[installer limits and measurements](../../operations/sequential-coding-cutover.md). Exit4 retains
 COMMIT/rollback/close/delivery/post-publication uncertainty, with no automatic retry.
 It installs no schema, creates no marker/run/task or native/remote action, converts
 no old Explicit setting and runs nothing at startup. Installation remains the
 existing explicit offline schema path. See the
-[operator procedure](../../runbooks/sequential-coding-cutover.md).
+[operator procedure](../../operations/sequential-coding-cutover.md).
 
 The original TASK-15616 setup unit was inert. TASK-15624 now supplies the paired
 public Coding selector/old-fresh fence described above and updates host setup

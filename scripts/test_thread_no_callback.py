@@ -1,4 +1,4 @@
-"""Standalone no-provider regressions for #395 and #219; see docs/local-ci.md."""
+"""Standalone no-provider regressions for #395 and #219; see docs/operations/local-ci.md."""
 from __future__ import annotations
 
 import json

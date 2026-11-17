@@ -37,7 +37,7 @@ check, deadline or caller changes here. The current [I2 policy](../specs/2026-11
 requires successful primary/tail reads under the 10s all-org envelope.
 Automatic install stays size-guarded/held for over-budget orgs; no setup or
 operating authority follows.
-The [v3/F1 case map](../local-ci.md#a0b-2-requirement-to-case-map-v3-section-4-and-f1)
+The [v3/F1 case map](local-ci.md#a0b-2-requirement-to-case-map-v3-section-4-and-f1)
 records each named assertion and the separately evidenced old-Coding queued-family
 applicability limit. It is not an executed capacity or readiness receipt.
 
@@ -283,3 +283,19 @@ complete reads under the original budgets and deadline.
 The supported explicit installers/migration writers now acquire stable EX before the first org connection; read-only check branches acquire SH. Sequential setup holds EX across its source reads, writer, close and publication. The source-only preflight/backup reader and maintenance readers acquire SH. Existing human-host exclusions precede any new fence-file effect. Operator confirmation, registry/lifecycle, backup, source/target checks, original deadlines and uncertain-outcome handling remain required.
 
 Lock files live under `<daemon_home>/org-access-fences/` and are never removed/replaced by the protocol. EX is cooperative exclusion, not original native closure or migration permission. Old/nonparticipating/unknown native custody remains unproved: preserve it and reconcile its original owner. Never infer safety from a free lock or dead PID. Automatic bootstrap and its full original-owner qualification remain the separate A4 owner.
+
+## History
+
+These references remain inline to preserve sentence meaning and owner, artifact,
+or case identity.
+
+- `TASK-14597` — Sequential workflow storage — operator draft (original line 51).
+- `THR336 msg85` — Sequential workflow storage — operator draft (original line 55).
+- `TASK14461` — Sequential workflow storage — operator draft (original line 55).
+- `TASK14595` — Sequential workflow storage — operator draft (original line 56).
+- `ROOT14563` — Sequential workflow storage — operator draft (original line 56).
+- `TASK-14576` — Sequential workflow storage — operator draft (original line 60).
+- `TASK-15719` — Explicit check/install interface (isolated copies executed) (original line 143).
+- `TASK-15741` — Explicit check/install interface (isolated copies executed) (original line 156).
+- `TASK-14552` — Explicit check/install interface (isolated copies executed) (original line 252).
+- `TASK-14576` — Explicit check/install interface (isolated copies executed) (original line 257).

@@ -3,7 +3,7 @@
 
 Authority/conditions and four authoring answers: accepted TASK11962 case record,
 sole ROOT11948 implementation-brief. No live org, callback or native writer.
-Run only with the bounded task/job allocation documented in docs/local-ci.md.
+Run only with the bounded task/job allocation documented in docs/operations/local-ci.md.
 F is this process and the subreaper; W is a controlled child, never a replacement
 reaper. Rescue is recorded separately and cannot make backend assertions pass.
 """
