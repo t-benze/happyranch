@@ -2923,8 +2923,12 @@ fallback to the fresh `daemon.port` file. Timeout can leave a possible launch
 running; the nonblocking daemon lifetime lock refuses a second startup before
 state/sweeps. Lock refusal is included in the startup log tail. Stop retains
 60 seconds of TERM grace plus up to 2 seconds to observe exit after KILL;
-an unconfirmed exit returns nonzero and retains the markers. Never remove
-`daemon.lock`. See [the lock and transition-proof contract](contracts/runtime-lifecycle.md#daemon-lifetime-lock-thr-357).
+every success path also waits up to 2s for lifetime-lock release using the
+checkout's uv/Python and a no-follow nonblocking flock probe. Missing/stale PID
+alone is insufficient: held or ambiguous locks return nonzero with the lock path
+and readable PID and retain markers. An absent/free regular lock permits stopped
+homes. Applying legacy migration has the same requirement; dry-run is a preview
+only. Never remove `daemon.lock`. See [the lock and transition-proof contract](contracts/runtime-lifecycle.md#daemon-lifetime-lock-thr-357).
 
 Startup timing is additive: `HAPPYRANCH_LAUNCHER_START_EPOCH` is captured at
 the start of the launch command and passed to the child. The daemon logs

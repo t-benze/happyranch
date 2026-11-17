@@ -44,8 +44,18 @@ unproven. Only a proven transition publishes the marker under the held lock.
 The shell preserves stale `daemon.pid` until lock-owning Python startup observes
 it; only that owner discards the stale port. Shell and legacy migration stop
 retain the 60-second TERM grace, then wait up to 2 seconds for observed exit
-after KILL. Failure retains lifecycle evidence and refuses success/restart or
-migration. Existing `--force` only guards the default-home stop; no semantics
+after KILL. Before every stop-success/applying-migration continuation, including
+missing/stale PID and observed live-PID exit, they additionally wait up to 2s
+for lifetime-lock release (the same bound as post-KILL observation). A no-follow,
+nonblocking real flock probe acquires and immediately releases; it never creates,
+holds while waiting, or unlinks the lock. Only a genuinely absent lock or an
+acquirable regular single-link file allows success. Held-after-bound, open/flock
+errors, symlinks, unexpected file types or changed inode evidence refuse with
+the lock path and readable PID, preserving lifecycle markers. Shell stop uses
+the checkout's uv/Python environment for this portable probe. Migration dry-run
+remains a signal-free/mutation-free preview and makes no stopped claim.
+Failure refuses success/restart or applying migration. Existing `--force` only
+guards the default-home stop; no semantics
 are added. In-repo Mac managed restart waits for its actual exit callback;
 Linux desktop waits/reaps its child (60+2 seconds), and service restart delegates
 to synchronous systemd stop/start with `TimeoutStopSec=60`. Connector/sidecar

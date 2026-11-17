@@ -23,9 +23,11 @@ already exists, and the JSON rewrites are pure string substitutions.
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import os
 import signal
+import stat
 import sys
 import time
 from pathlib import Path
@@ -44,9 +46,52 @@ def warn(msg: str) -> None:
     print(f"WARN: {msg}", file=sys.stderr)
 
 
+def wait_for_daemon_lock_release(home: Path, pid: int | None) -> None:
+    """Observe release for at most 2s, matching the post-KILL exit bound."""
+    lock_path = home / "daemon.lock"
+    deadline = time.monotonic() + 2
+    identity = None
+    context = f"{lock_path} (pid {pid if pid is not None else 'unavailable'})"
+    while True:
+        try:
+            fd = os.open(lock_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        except FileNotFoundError as exc:
+            if identity is None:
+                return  # Compatibility with genuinely stopped pre-lock homes.
+            raise RuntimeError(f"Cannot confirm daemon stop: lock disappeared: {context}") from exc
+        except OSError as exc:
+            raise RuntimeError(f"Cannot confirm daemon stop: lock {context}: {exc}") from exc
+        try:
+            opened = os.fstat(fd)
+            current = (opened.st_dev, opened.st_ino)
+            named = os.stat(lock_path, follow_symlinks=False)
+            if (not stat.S_ISREG(opened.st_mode) or opened.st_nlink != 1
+                    or not stat.S_ISREG(named.st_mode)
+                    or (named.st_dev, named.st_ino) != current
+                    or (identity is not None and identity != current)):
+                raise OSError("unsafe or changed lock file")
+            identity = current
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise RuntimeError(f"Daemon stop incomplete: lock held after 2s: {context}; migration must not continue")
+            else:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+                return
+        except OSError as exc:
+            raise RuntimeError(f"Cannot confirm daemon stop: lock {context}: {exc}") from exc
+        finally:
+            os.close(fd)
+        time.sleep(min(0.1, remaining))
+
+
 def stop_daemon_if_running(home: Path, dry: bool) -> None:
     pid_file = home / "daemon.pid"
     if not pid_file.exists():
+        if not dry:
+            wait_for_daemon_lock_release(home, None)
         return
     try:
         pid = int(pid_file.read_text().strip())
@@ -58,6 +103,8 @@ def stop_daemon_if_running(home: Path, dry: bool) -> None:
         os.kill(pid, 0)
     except ProcessLookupError:
         info(f"  stale daemon.pid (pid {pid} not alive) — leaving alone")
+        if not dry:
+            wait_for_daemon_lock_release(home, pid)
         return
     info(f"  stopping daemon (pid {pid})")
     if dry:
@@ -65,21 +112,25 @@ def stop_daemon_if_running(home: Path, dry: bool) -> None:
     try:
         os.kill(pid, signal.SIGTERM)
     except ProcessLookupError:
+        wait_for_daemon_lock_release(home, pid)
         return
     for _ in range(60):
         time.sleep(1)
         try:
             os.kill(pid, 0)
         except ProcessLookupError:
+            wait_for_daemon_lock_release(home, pid)
             return
     try:
         os.kill(pid, signal.SIGKILL)
     except ProcessLookupError:
+        wait_for_daemon_lock_release(home, pid)
         return
     for _ in range(20):
         try:
             os.kill(pid, 0)
         except ProcessLookupError:
+            wait_for_daemon_lock_release(home, pid)
             return
         time.sleep(0.1)
     raise RuntimeError(f"Daemon stop incomplete (pid {pid}); migration must not continue")

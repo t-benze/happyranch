@@ -11,7 +11,12 @@ including SIGKILL release, duplicate main refusal without startup writes, the
 transition PID matrix and the real main/build ordering/error-tail boundary.
 Only PID read/probe errors are injected; flock is never mocked. Hidden cleanup
 dispatch runs under a competing holder. Existing stop-policy checks accelerate
-clock waits while verifying the 60s TERM and bounded post-KILL refusal. Offline
+clock waits while verifying the 60s TERM and bounded post-KILL refusal. Real
+subprocesses hold flock while actual shell/migration stop handles missing/stale
+PID and an exited live PID; held locks refuse after the real 2s observation
+bound, preserving evidence. Free/absent locks succeed, while symlink, dangling,
+directory, FIFO and unreadable lock paths refuse without blocking or mutation.
+Offline
 maintenance refuses a competing holder before registry/DB preflight, without
 leaking the configured path. These checks run without a
 provider, live runtime, retired units, integration or Product E2E.
