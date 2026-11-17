@@ -246,7 +246,7 @@ class ReplyDeliveryMixin:
                 try:
                     reader.execute("BEGIN IMMEDIATE").close()
                     view = ReleaseReader(reader, startup.slug)
-                    view.inventory()
+                    view.inventory(automatic_thread_id=original["thread_id"])
                     e = view.thread(original["thread_id"])
                     history = e.histories.get(original["id"])
                     inv = next((v for v in e.invocations if v["id"] == original["id"]), None)
@@ -298,7 +298,7 @@ class ReplyDeliveryMixin:
                     self._insert_thread_release_audit_uncommitted(reader, selection.thread_id, "daemon",
                         STARTUP_ACTION, payload.model_dump(mode="json"))
                     closing = ReleaseReader(reader, startup.slug)
-                    closing.inventory()  # independent prospective graph validation
+                    closing.inventory(automatic_thread_id=original["thread_id"])  # independent prospective graph validation
                     budget.check()
                     committing = True
                     self._conn.commit()

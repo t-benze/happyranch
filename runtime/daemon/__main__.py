@@ -571,8 +571,9 @@ def _sweep_on_startup(
             _now = datetime.now(timezone.utc).isoformat()
 
             # C1a: orphan/raw reaper paths below may never visit a participant
-            # pair. Validate the COMPLETE companion family before any thread
-            # recovery/rekeying. The narrow automatic pass follows this validation.
+            # pair. Validate the complete human companion family here. Automatic
+            # evidence is validated per thread below; exhaustion retains that
+            # thread rather than making unrelated recovery/startup unavailable.
             from runtime.infrastructure.thread_delivery_release import delivery_view
             with db._lock:
                 delivery_view(db)

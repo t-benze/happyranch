@@ -75,7 +75,7 @@ no-downgrade assumptions above, plus no current-boot admission before the sweep;
 PID absence, timestamps, terminal task status and ended sessions are never proof.
 Changed native rows or later lifecycle appends are excluded.
 
-Next to `recover_reply_delivery_state`, after complete release-family validation
+Next to `recover_reply_delivery_state`, after complete human release-family validation
 and before cutover/queues/runners/HTTP admission, consume that population once.
 Reuse the diagnostics' exact `_late_failure` predicate: a final `failed_cleanup`,
 a settled producer, nonempty attempts all settled AND quiescent, and an earlier
@@ -104,6 +104,18 @@ COMMIT or unsafe rollback/settings restoration aborts startup; it never authoriz
 a retry in that boot. These are cooperative bounds, not hard OS I/O guarantees.
 The broader dormant founder risk override and active #1273 attestation keep their
 existing authority and behavior. Source delivery does not repair a live daemon.
+
+Automatic companion interpretation is thread-local: startup's global preflight
+validates the unchanged human family, and cutover/recovery validate the complete
+automatic family for each visited thread. The automatic writer likewise reads
+that thread's automatic family plus the complete human family, including its
+independent prospective closing validation. No automatic permission depends on
+unrelated threads. Later history still receives full strict validation within
+the existing allowance. If an automatic delivery read exhausts it, discard all
+partial permission and return an explicit unavailable-thread view after snapshot
+and settings restoration. That thread stays stuck and visible in raw diagnostics;
+startup and unrelated delivery continue. Exhaustion never means absence. Human
+inventory errors and unsafe rollback/settings restoration still propagate.
 
 ### Ordinary Pause-unknown crash recovery (THR-350)
 

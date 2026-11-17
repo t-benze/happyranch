@@ -73,6 +73,52 @@ def sweep(org: Any, captured: _StartupThreadReleases) -> list[str]:
 
 
 class StartupReleaseTests(unittest.IsolatedAsyncioTestCase):
+    async def test_released_history_growth_is_thread_local(self) -> None:
+        with tempfile.TemporaryDirectory() as scratch:
+            async with fixture(Path(scratch)/"org") as (org, _):
+                released = []
+                for n in range(3):
+                    inv = seed(org, "THR-grown-" + str(n))
+                    sweep(org, _StartupThreadReleases(org.db, org.slug, PROVEN))
+                    self.assertEqual(org.db.execute(
+                        "SELECT COUNT(*) FROM audit_log WHERE action=?", (STARTUP_ACTION,)
+                    ).fetchone()[0], n + 1)
+                    released.append(inv)
+                fresh = seed(org, "THR-next-startup")
+                # Real presentation writes AFTER each release committed. This
+                # matches ordinary production histories, not fabricated evidence.
+                for inv in released:
+                    for n in range(4000):
+                        self.assertTrue(org.db.set_thread_pinned_with_audit(
+                            inv.thread_id, pinned=n % 2 == 0))
+                    self.assertGreaterEqual(org.db.execute(
+                        "SELECT COUNT(*) FROM audit_log WHERE task_id=?", (inv.thread_id,)
+                    ).fetchone()[0], 4000)
+                before = {inv.id: snapshot(org.db, inv.thread_id) for inv in released}
+                org.db.insert_thread(ThreadRecord(id="THR-unrelated", subject="Unrelated"))
+                org.db.add_thread_participant("THR-unrelated", "worker", added_by="founder")
+                with self.subTest(boundary="unrelated_arrival"):
+                    org.db.record_conversational_arrival(thread_id="THR-unrelated", speaker="founder",
+                        kind=ThreadMessageKind.MESSAGE, body_markdown="Still deliver", recipients=["worker"])
+                    self.assertIsNotNone(org.db.get_reply_delivery_state(
+                        "THR-unrelated", "worker").queued_invocation_token)
+                with self.subTest(boundary="subsequent_startup"):
+                    sweep(org, _StartupThreadReleases(org.db, org.slug, PROVEN))
+                    self.assertEqual(org.db.execute(
+                        "SELECT COUNT(*) FROM audit_log WHERE action=?", (STARTUP_ACTION,)
+                    ).fetchone()[0], 4)
+                    self.assertIsNone(org.db.get_reply_delivery_state(
+                        fresh.thread_id, "worker").running_invocation_token)
+                for inv in released:
+                    with self.subTest(boundary="exhausted_retained", thread=inv.thread_id):
+                        from runtime.infrastructure.thread_delivery_release import pair_permission
+                        with org.db._lock:
+                            view = delivery_view(org.db, inv.thread_id)
+                            self.assertIsNotNone(view)  # unavailable is never absence
+                            self.assertFalse(view.released(inv.id))
+                            self.assertFalse(pair_permission(view, inv.thread_id, "worker"))
+                        self.assertEqual(snapshot(org.db, inv.thread_id), before[inv.id])
+
     async def test_previous_boot_release_and_next_reply_admits(self) -> None:
         with tempfile.TemporaryDirectory() as scratch:
             async with fixture(Path(scratch)/"org") as (org, _):

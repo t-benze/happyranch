@@ -490,6 +490,7 @@ class ReleaseReader:
         self.threads: dict[str, ThreadEvidence] = {}
         self.records: dict[str, tuple[dict, Companion | StartupCompanion, ReleaseCommand | StartupCommand]] = {}
         self.current: dict[int, bool] = {}
+        self.unavailable_threads: set[str] = set()
 
     def thread(self, thread_id: str) -> ThreadEvidence:
         if thread_id in self.threads:
@@ -576,10 +577,16 @@ class ReleaseReader:
         self.threads[thread_id] = evidence
         return evidence
 
-    def inventory(self, family: list[dict] | None = None) -> None:
+    def inventory(self, family: list[dict] | None = None, *, automatic_thread_id: str | None = None) -> None:
         if family is None:
-            family = self.reader.rows("audit_log", "action IN (?,?)", (ACTION, STARTUP_ACTION), "id")
-        owners: set[tuple] = set()
+            if automatic_thread_id is None:
+                family = self.reader.rows("audit_log", "action IN (?,?)", (ACTION, STARTUP_ACTION), "id")
+            else:
+                family = self.reader.rows("audit_log", "action=? OR (action=? AND task_id=?)",
+                    (ACTION, STARTUP_ACTION, automatic_thread_id), "id")
+        owners = {(cmd.selection.thread_id, cmd.selection.invocation_id, cmd.selection.agent_id,
+                   cmd.selection.session_id, cmd.selection.preparation_id)
+                  for _, _, cmd in self.records.values()}
         for row in family:
             self.reader.budget.check()
             automatic = row["action"] == STARTUP_ACTION
@@ -834,39 +841,65 @@ def native_authority(db: Any, selection: Selection) -> Iterator[Any]:
 
 
 def delivery_view(db: Any, thread_id: str | None = None) -> ReleaseReader | None:
-    """Caller holds DB. No-companion path keeps literal legacy behavior."""
-    # Even the no-companion action-family census is bounded. An exhausted
-    # scan is never absence. No nested B/collection settings owner is stolen.
+    """Caller holds DB. Human census is global; automatic evidence is local.
+
+    Automatic exhaustion retains the entire requested thread, with no partial
+    permission. The startup preflight (no thread) leaves automatic validation
+    to the recovery/cutover readers that actually visit each thread.
+    """
     move = getattr(db, "_team_move_coordinator", None)
-    with native_read(db, Budget()) as native:
-        own_snapshot = not db._conn.in_transaction
-        if own_snapshot:
-            native.execute("BEGIN").close()
-        try:
-            family = native.rows("audit_log", "action IN (?,?)", (ACTION, STARTUP_ACTION), "id")
-            if not family:
-                return None
-            if move is None:
-                raise ReleaseUnavailable("org_owner_unavailable")
-            view = ReleaseReader(native, move.store.org_slug)
-            view.inventory(family)
-            if thread_id is not None:
-                view.thread(thread_id)
-            return view
-        finally:
+    automatic = False
+    try:
+        with native_read(db, Budget()) as native:
+            own_snapshot = not db._conn.in_transaction
             if own_snapshot:
-                try:
-                    db._conn.rollback()  # SELECT-only snapshot; never outer TX
-                except BaseException:
-                    db._thread_release_settings_unsafe = True
-                    raise ReleaseUnavailable("read_snapshot_unrestored", committed=None,
-                        settings_restored=False) from None
+                native.execute("BEGIN").close()
+            try:
+                human = native.rows("audit_log", "action=?", (ACTION,), "id")
+                if human and move is None:
+                    raise ReleaseUnavailable("org_owner_unavailable")
+                view = ReleaseReader(native, move.store.org_slug if move is not None else "")
+                view.inventory(human)  # unchanged complete founder validation
+                if thread_id is not None:
+                    automatic = True
+                    family = native.rows("audit_log", "task_id=? AND action=?",
+                        (thread_id, STARTUP_ACTION), "id")
+                    automatic = bool(family)
+                    if not human and not family:
+                        return None  # complete relevant census, never exhaustion
+                    if move is None:
+                        raise ReleaseUnavailable("org_owner_unavailable")
+                    view.inventory(family)
+                    view.thread(thread_id)
+                elif not human:
+                    return None
+                return view
+            finally:
+                if own_snapshot:
+                    try:
+                        db._conn.rollback()  # SELECT-only snapshot; never outer TX
+                    except BaseException:
+                        db._thread_release_settings_unsafe = True
+                        raise ReleaseUnavailable("read_snapshot_unrestored", committed=None,
+                            settings_restored=False) from None
+    except ReleaseUnavailable as exc:
+        # Contain only automatic budget exhaustion AFTER native_read restored
+        # connection settings and our read snapshot. Human errors, unknown
+        # COMMIT and unsafe restoration retain their existing refusal semantics.
+        if (not automatic or exc.code != "budget_unavailable" or exc.committed is not False
+                or not exc.settings_restored or move is None or thread_id is None):
+            raise
+        retained = ReleaseReader(native, move.store.org_slug)
+        retained.unavailable_threads.add(thread_id)
+        return retained
 
 
 def pair_permission(view: ReleaseReader | None, thread_id: str, agent_id: str) -> bool:
     """Only release-linked pairs change; every other raw obstruction survives."""
     if view is None:
         return True
+    if thread_id in view.unavailable_threads:
+        return False
     evidence = view.threads[thread_id]
     if not any(cmd.selection.thread_id == thread_id and cmd.selection.agent_id == agent_id
                for _, _, cmd in view.records.values()):
