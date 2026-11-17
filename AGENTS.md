@@ -12,8 +12,8 @@ Add at most a one-line pointer below when a new feature needs one.
 instruction file; `CLAUDE.md` is a raw relative compatibility symlink to it, so
 edit `AGENTS.md` only. Implementation, behavior tests and the OpenAPI snapshot
 own runtime rules. Bundled agent instructions live in `runtime/skills/bundled/`.
-`docs/superpowers/specs/` is append-only design history unless a spec is marked
-current in `docs/superpowers/specs/README.md`.
+`docs/specs/README.md` indexes retained current and referenced designs;
+current-source and status conventions live in `docs/agent-guides/contracts/README.md`.
 
 ## Read When Touching
 
@@ -32,6 +32,7 @@ current in `docs/superpowers/specs/README.md`.
 
 - Packaged Python source is `runtime` and `cli`; `pyproject.toml` builds those packages. Do not treat top-level `src/` as canonical source unless tracked `.py` files and packaging/imports are updated.
 - The daemon is FastAPI in `runtime/daemon/`; the CLI is a thin HTTP client in `cli/`; the SPA is in `web/` and builds to `web/dist/`.
+- Daemon startup holds `<daemon_home>/daemon.lock` before state construction/sweeps through process exit; never unlink it. Shell stop and applying legacy migration confirm lock release with a bounded 2s no-follow flock probe even if the PID is missing/stale. Held or ambiguous locks refuse success and preserve evidence; absent/free locks allow stopped homes. Only proven lock exclusion permits the narrow previous-boot thread release; unproven transition boots release nothing. See [daemon lifecycle](docs/agent-guides/contracts/runtime-lifecycle.md#daemon-lifetime-lock-thr-357).
 - Runtime containers are schema v2 multi-org trees: `<runtime>/orgs/<slug>/...`. Per-org routes are under `/api/v1/orgs/<slug>/...`; container-level routes are under `/api/v1/runtime` and `/api/v1/orgs`.
 - Settings come from `HAPPYRANCH_` env vars, then `~/.happyranch/config.yaml`, then code defaults. There is no `.env` support.
 - Agent names are plain strings discovered from `<runtime>/orgs/<slug>/org/agents/*.md`; do not introduce static agent enums.
@@ -40,7 +41,7 @@ current in `docs/superpowers/specs/README.md`.
 
 ## Task model rules
 
-- Task-local and manager-handoff `model`/`reasoning_effort`, retry carry and explicit clear: [THR-356 contract](docs/superpowers/specs/2026-11-13-task-model-reasoning-overrides.md).
+- Task-local and manager-handoff `model`/`reasoning_effort`, retry carry and explicit clear: [THR-356 contract](docs/specs/2026-11-13-task-model-reasoning-overrides.md).
 
 - Task owners (`task_type='task'`) produce `decision` blocks; delegated subtask agents (`task_type='subtask'`) produce plain completions. Prose uses "task owner" and "subtask agent" rather than "team manager"/"worker".
 - Only root tasks (`parent_task_id is None`) escalate to the founder; non-root tasks fail and hand back to their parent (bounded recovery carries it up).
@@ -270,10 +271,10 @@ One line per area; read the linked contract before changing it.
 
 - **Coding workflow** (disabled by default; built-in definition, historical Founder settings at `/orgs/:slug/settings/coding` — since U8b a pointer to Workflows → Setup with read-only original-save recovery — `scripts/setup_coding.py`): [coding-workflow.md](docs/agent-guides/contracts/coding-workflow.md)
 - **Sequential Coding cutover** (atomic v2 fresh-start selection/old-fresh fence; separate offline setup/admission): [operator install/backout](docs/runbooks/sequential-coding-cutover.md)
-- **Workflow schema, activation and document review** (F–J; fresh combined storage, existing migrations stay explicit until A4): [document-workflows.md](docs/agent-guides/contracts/document-workflows.md), [automatic setup](docs/superpowers/specs/2026-11-14-automatic-workflow-setup.md#a2-fresh-creation-and-definition-only-catalog).
+- **Workflow schema, activation and document review** (F–J; fresh combined storage, existing migrations stay explicit until A4): [document-workflows.md](docs/agent-guides/contracts/document-workflows.md), [automatic setup](docs/specs/2026-11-14-automatic-workflow-setup.md#a2-fresh-creation-and-definition-only-catalog).
 - **Escalation authority policy** (THR-181/229/277/279; THR308 T-0 ordinary callbacks omit attempt/admitted audit/token, retained escalation and lineage admission): [authority-policy.md](docs/agent-guides/contracts/authority-policy.md)
 - **Task orchestration** (attachments, retries, root Pause/Resume, creation-time ownership marks): [task-orchestration.md](docs/agent-guides/contracts/task-orchestration.md)
-- **Launch, preparation and daemon lifecycle** (repository refresh, preparation recovery, startup safety, ordinary Pause-unknown crash recovery, shutdown): [runtime-lifecycle.md](docs/agent-guides/contracts/runtime-lifecycle.md)
+- **Launch, preparation and daemon lifecycle** (repository refresh, preparation recovery, startup safety, narrow proven-lock thread release, ordinary Pause-unknown crash recovery, shutdown): [runtime-lifecycle.md](docs/agent-guides/contracts/runtime-lifecycle.md)
 - **Teams and org admin**: [teams-and-org-admin.md](docs/agent-guides/contracts/teams-and-org-admin.md)
 - **Threads, routing and naming** (mention routing is unconditional; no switch exists): [threads-and-naming.md](docs/agent-guides/contracts/threads-and-naming.md)
 - **Thread prompt bound (#832 slice 1):** every launch phase preflights the complete prompt, including the executor-added session-lifetime preamble, against `THREAD_PROMPT_MAX_BYTES` (512 KiB UTF-8). Only older optional history may be omitted; an oversized mandatory delivery range fails `prompt_too_large` before launch, without session save, delivery advance, provider-breaker count or a new automatic retry loop. See the thread contract above.
@@ -286,5 +287,5 @@ One line per area; read the linked contract before changing it.
 
 - **Agent retirement:** Founder-only `agents retire` preserves archives and may retire an empty non-routing manager team; manager-session terminate stays worker-only. See [agent lifecycle](docs/agent-guides/orchestrator-contracts.md#agent-lifecycle-enrollment-approval-and-termination).
 
-- **Org access fencing (A1):** preconstructor org EX/SH, original native child/guardian custody and sorted profile-org order: [automatic setup contract](docs/superpowers/specs/2026-11-14-automatic-workflow-setup.md#a1-cooperative-org-access-fence).
+- **Org access fencing (A1):** preconstructor org EX/SH, original native child/guardian custody and sorted profile-org order: [automatic setup contract](docs/specs/2026-11-14-automatic-workflow-setup.md#a1-cooperative-org-access-fence).
 - **Startup attachment custody (A4):** partial constructor handles, bounded SQLite admission, per-org isolation and mounted automatic backup/install, qualified registrar and private worker/parent COMMIT custody (A4:2 cooperative startup trust): [lifecycle contract](docs/agent-guides/contracts/runtime-lifecycle.md#a4-startup-attachment-custody).

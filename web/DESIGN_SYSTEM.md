@@ -24,6 +24,60 @@ Feature compositions keep using the stable `@/design-system/...` import paths.
   changing, duplicating, adding, or deleting a listed occurrence fails until
   the baseline is deliberately reconciled in review. A baseline row records
   temporary residue; it does not create visual or token authority.
+- Utility classes may only name theme tokens that exist. Tailwind v4 emits no
+  CSS for a colour/spacing/radius/shadow utility whose name is not a theme
+  token, so `bg-surface-page` silently renders nothing.
+  `scripts/verify-design-system.sh --scan-tokens` (also run by the shared
+  `verify-design-system-colour-gate.sh` CI gate) fails (exit 4) on any such
+  utility in a production class list (string literals and CSS `@apply`; not
+  comments or the i18n copy catalogs). A name is defined when a `tokens.css`
+  `@theme` block declares it, or when the Tailwind default theme that
+  `tokens.css` imports does (for example `rounded-xl`, `shadow-sm`); values
+  declared only outside `@theme` (such as the dark override block) do not
+  count. Map a missing name to an existing semantic token; add a token only
+  when none fits. `scripts/test-design-system-token-scanner.sh` is its fixture
+  suite.
+- `StatusBadge` routes every task/thread status through `semanticTone`
+  (`open`/`in_progress` info, `pending`/`escalated` attention, `completed`
+  positive, `failed` danger, the rest neutral) in the body font; there is no
+  per-page presentation. The positive tone is Pasture `--accent-text` on
+  `--accent-soft`. Entity IDs follow Pasture `.id`: `--color-id-task` and
+  `--color-id-thread` alias `--color-info`, and `IdBadge` also renders `job`,
+  `schedule` and `run` IDs in `--color-info`.
+- `AppBar` renders the Pasture `.topbar` on every page: 56px tall, 26px
+  inline padding, a 1px `--border` bottom rule and a translucent `bg-bg/80`
+  background (ds.css `color-mix(in oklab, var(--bg) 80%, transparent)`), with
+  the page title in Newsreader 18/500. It has no `presentation` prop and no
+  page-local `.tasks-appbar` class. Optional `status` (rendered after the
+  title) and `actions` (rendered before the language/theme controls) slots
+  take a `ReactNode`; pages supply them instead of adding a per-page header.
+- The `Sidebar` active nav row follows Pasture `[data-dir="a"]
+  .nav-item.active`: `bg-accent-soft text-accent-text font-semibold`, with no
+  left bar or border. Nav rows use `text-nav` (13.5px) at weight 500, and the
+  brand mark is 30px.
+- Colour contrast (THR-376 seq9, WCAG AA). `web/design/pasture-ds.css` is
+  the visual authority for Direction A light/dark colour values; it is a
+  reference copy only and is not imported by the app build. `tokens.css`
+  carries its lightness values for the text and accent ramps (chroma/hue
+  unchanged), including every literal duplicate of the same semantic token:
+
+  | Pasture token | tokens.css properties | Light | Dark |
+  | --- | --- | --- | --- |
+  | `--ink-2` | `text-secondary`, `fg-muted` (+ light `status-archived`) | `oklch(0.45 0.013 60)` | `oklch(0.76 0.01 75)` |
+  | `--ink-3` | `text-muted`, `fg-subtle` (+ dark `status-archived`) | `oklch(0.55 0.012 65)` | `oklch(0.64 0.011 72)` |
+  | `--accent` | `accent-default` (`primary`), `accent`, `agent-founder` | `oklch(0.52 0.11 152)` | `oklch(0.70 0.13 152)` |
+  | `--accent-press` | `accent-hover` | `oklch(0.46 0.11 152)` | `oklch(0.76 0.13 152)` |
+  | `--positive` | `positive`, `tier-green`, `status-open`, `feedback-success` | `oklch(0.52 0.11 152)` | `oklch(0.72 0.12 152)` |
+  | `--info` | `info` (`id-task`, `id-thread`), `feedback-info` | `oklch(0.53 0.10 248)` | `oklch(0.72 0.11 245)` |
+
+  Measured WCAG 2.x ratios: light ink-3 4.52:1 on `--bg` and 4.86:1 on the
+  raised surface, ink-2 6.94:1, white on accent/positive 5.23:1, info 4.88:1;
+  dark ink-3 5.32:1 on `--bg` and 4.82:1 raised, ink-2 8.34:1, dark
+  `accent-fg` on accent 7.40:1 and on positive 7.93:1, info 7.30:1. The
+  primary Button's hover and press states use the opaque `accent-hover`
+  token (Pasture `.btn-primary:hover` → `--accent-press`), not a translucent
+  `primary/90`: label on hover/press is 6.57:1 light and 9.19:1 dark. Keep
+  new text colours at or above 4.5:1 against the surfaces they sit on.
 - Primitives wrap basic interaction and Radix behavior. Patterns combine them
   into reusable product language. Layouts own reusable geometry.
 - Components are pure props-in/events-out unless a documented role requires an
@@ -31,20 +85,23 @@ Feature compositions keep using the stable `@/design-system/...` import paths.
 
 ## Self-hosted typography
 
-The four `@font-face` rules in `tokens.css` load unmodified full upstream
+The five `@font-face` rules in `tokens.css` load unmodified full upstream
 variable TTFs from `public/fonts/`: Hanken Grotesk normal 400–700,
-Newsreader normal 400–600 / italic 400, and the Sidebar brand wordmark's
-Baloo 2 normal 800 (`/fonts/Baloo2-wght.ttf`). Family names, weight ranges,
+Newsreader normal 400–600 / italic 400, the Sidebar brand wordmark's
+Baloo 2 normal 800 (`/fonts/Baloo2-wght.ttf`), and JetBrains Mono normal
+400–600 (`/fonts/JetBrainsMono-wght.ttf`, the official v2.304 release) for
+`--font-mono` IDs and code. Family names, weight ranges,
 `font-display: swap`, fallbacks and automatic optical sizing stay in the
-existing type system. All four faces use local URLs; `web/index.html` loads
+existing type system. All five faces use local URLs; `web/index.html` loads
 no external font stylesheet.
 
 The Hanken Grotesk and Newsreader payload is 1,080,240 bytes before transport
 compression, replacing 229,724 bytes of WOFF2 subsets (+850,516 bytes). The
-Baloo 2 variable TTF adds 683,200 bytes, for 1,763,440 font bytes in total.
-The full original `HankenGrotesk-OFL.txt`, `Newsreader-OFL.txt` and
-`Baloo2-OFL.txt` add 13,180 bytes alongside the fonts. Vite's existing
-public-copy step carries all seven files unchanged into `dist/fonts/`. Immutable upstream revisions, true Git trees, blobs and
+Baloo 2 variable TTF adds 683,200 bytes and the JetBrains Mono variable TTF
+303,144 bytes, for 2,066,584 font bytes in total. The full original
+`HankenGrotesk-OFL.txt`, `Newsreader-OFL.txt`, `Baloo2-OFL.txt` and
+`JetBrainsMono-OFL.txt` add 17,579 bytes alongside the fonts. Vite's existing
+public-copy step carries all nine files unchanged into `dist/fonts/`. Immutable upstream revisions, true Git trees, blobs and
 notice relations are factual metadata in
 [`font-assets.json`](../packaging/notice-data/font-assets.json); that record
 does not establish complete emitted or native package attribution.
@@ -145,8 +202,7 @@ visibility through titles, docs, controls, and representative renders.
 | `EmptyState` | [source:patterns/EmptyState.tsx#EmptyState] [story:patterns/EmptyState.coverage.stories.tsx#Coverage] Patterns / Empty State With Action | empty with CTA | `components.empty_state` |
 | `FilterSidebar` | [source:patterns/FilterSidebar.tsx#FilterSidebar] [story:patterns/FilterSidebar.coverage.stories.tsx#Coverage] Patterns / Filter Sidebar Interaction | all/selected, counts | `components.filter_sidebar` |
 | `FormField` | [source:patterns/FormField.tsx#FormField] [story:patterns/FormField.coverage.stories.tsx#Coverage] Patterns / Form Field States | normal, error | input/label tokens |
-| `HelpSheet` | [source:patterns/HelpSheet.tsx#HelpSheet] [story:patterns/HelpSheet.coverage.stories.tsx#Coverage] Patterns / Help Sheet Interaction | open shortcuts | dialog/kbd tokens |
-| `IdBadge` | [source:patterns/IdBadge.tsx#IdBadge] [story:patterns/IdBadge.coverage.stories.tsx#Coverage] Patterns / Id Badge Kinds | thread, task | `components.badge` |
+| `IdBadge` | [source:patterns/IdBadge.tsx#IdBadge] [story:patterns/IdBadge.coverage.stories.tsx#Coverage] Patterns / Id Badge Kinds | thread, task, job, schedule, run | `components.badge` |
 | `InboxRow` | [source:patterns/InboxRow.tsx#InboxRow] [story:patterns/InboxRow.coverage.stories.tsx#Coverage] Patterns / Inbox Row States | default/thread × active/open/archived; default rows retain the 8px bordered interactive shell, while grouped thread rows are flush and their enclosing list owns the border/dividers; nested pills preserved | `components.inbox_row`, `--radius-sm` |
 | `KbdChip` | [source:patterns/KbdChip.tsx#KbdChip] [story:patterns/KbdChip.coverage.stories.tsx#Coverage] Patterns / Kbd Chip Combinations | key, chord | `components.kbd_chip` |
 | `Markdown` | [source:patterns/Markdown.tsx#Markdown] [story:patterns/Markdown.coverage.stories.tsx#Coverage] Patterns / Markdown Content | heading/list/emphasis/code | typography/code |

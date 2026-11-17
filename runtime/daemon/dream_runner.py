@@ -483,6 +483,13 @@ async def _run_dream(
             return
         result = launch.payload
 
+    from runtime.skills.usage import observe_skill_use
+
+    observe_skill_use(
+        org_state.db, result, org_slug=org_state.slug, agent_name=dream.agent_name,
+        task_id=None, session_context="dream", executor=executor_name,
+    )
+
     if getattr(result, "token_usage", None) is not None:
         org_state.db.insert_session_token_usage(
             task_id=None,

@@ -28,7 +28,11 @@ from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
 from datetime import datetime, timezone
 from types import FrameType
-from typing import Iterator
+from typing import TYPE_CHECKING, Iterator
+
+if TYPE_CHECKING:
+    from runtime.daemon.lifetime_lock import LockProof
+    from runtime.daemon.thread_delivery_release_service import _StartupThreadReleases
 
 # Frozen repository children must reach their resource limits/Git exec before
 # importing the daemon. This is the existing fixed helper dispatch, not serve.
@@ -182,6 +186,7 @@ async def discover_completed_workflow_handoffs(state: DaemonState) -> None:
 def _sweep_on_startup(
     db: Database, queue: TaskQueue, slug: str,
     orchestrator: Orchestrator | None = None,
+    *, startup_releases: _StartupThreadReleases | None = None,
 ) -> list[str]:
     """Post-restart recovery for a single org (Path B — THR-037 Change B).
 
@@ -570,11 +575,17 @@ def _sweep_on_startup(
             _now = datetime.now(timezone.utc).isoformat()
 
             # C1a: orphan/raw reaper paths below may never visit a participant
-            # pair. Validate the COMPLETE companion family before any thread
-            # recovery/rekeying. This is a reader, never an automatic release.
+            # pair. Validate the complete human companion family here. Automatic
+            # evidence is validated per thread below; exhaustion retains that
+            # thread rather than making unrelated recovery/startup unavailable.
             from runtime.infrastructure.thread_delivery_release import delivery_view
             with db._lock:
                 delivery_view(db)
+
+            # THR-357 Fix 1: one captured pre-admission population, only with
+            # proven lifetime-lock exclusion and recorded late-failure proof.
+            if startup_releases is not None:
+                startup_releases.run()
 
             # 6a. Activate per-pair reply delivery state for every OPEN thread
             # (idempotent cutover: seeds/coalesces legacy pending REPLYs).
@@ -697,7 +708,7 @@ def _publish_v2_generations_on_startup(org, queue: TaskQueue) -> None:
 
 
 @_startup_span("build_state")
-def _build_state(settings: Settings) -> DaemonState:
+def _build_state(settings: Settings, *, lock_proof: LockProof | None = None) -> DaemonState:
     reg = runtimes.load()
     if reg.active is None:
         # Auto-provision a default runtime on first launch so the daemon
@@ -732,7 +743,7 @@ def _build_state(settings: Settings) -> DaemonState:
         primary._attachment_owner = owner
         raise
     try:
-        _initialize_runnable_startup(state)
+        _initialize_runnable_startup(state, lock_proof=lock_proof)
     except BaseException as primary:
         state._fail_construction(owner, primary)
         primary._attachment_owner = owner
@@ -740,11 +751,26 @@ def _build_state(settings: Settings) -> DaemonState:
     return state
 
 
-def _initialize_runnable_startup(state: DaemonState) -> None:
+def _initialize_runnable_startup(state: DaemonState, *, lock_proof: LockProof | None = None) -> None:
     """Contain the final original per-org tail before serving any attachment."""
-    failed = False
+    from runtime.daemon.thread_delivery_release_service import _StartupThreadReleases
+    # Capture every initial population before any org can admit current-boot
+    # work. Keep unexpected capture errors for the same contained org tail;
+    # the release owner's own capture_unavailable remains an empty population.
+    initial = []
     for org in state.orgs_snapshot().values():
         try:
+            org.db._conn.execute('PRAGMA busy_timeout=0')
+            startup_releases = _StartupThreadReleases(org.db, org.slug, lock_proof)
+        except Exception as exc:
+            initial.append((org, None, exc))
+        else:
+            initial.append((org, startup_releases, None))
+    failed = False
+    for org, startup_releases, capture_error in initial:
+        try:
+            if capture_error is not None:
+                raise capture_error
             # from_runtime also serves direct attachment callers, which restore
             # their serving timeout. This final startup tail must not inherit
             # a fresh five-second wait at every native statement.
@@ -772,6 +798,7 @@ def _initialize_runnable_startup(state: DaemonState) -> None:
                     )
             recovered_tokens = _sweep_on_startup(
                 org.db, state.queue, org.slug, org.orchestrator,
+                startup_releases=startup_releases,
             )
             # THR-229 checkpoint C3d4b: publish every pending v2 generation for this
             # org after the sweep (covers ordinary continuations with no recovery Q,
@@ -912,6 +939,12 @@ def run_maintenance() -> int:
         # returns exit 1 with fixed redacted guidance instead of an uncaught
         # traceback out of ``main()``.
         paths.ensure_daemon_home()
+
+        # Serialize offline DB work with normal startup, including the interval
+        # before a serving daemon has published daemon.pid. Keep lock failures
+        # inside this existing redacted boundary. The fd lives until exit.
+        from runtime.daemon.lifetime_lock import acquire_daemon_lock
+        lifetime_lock = acquire_daemon_lock(paths.daemon_home())
 
         # Offline guard (belt-and-suspenders): SQLite fail-closes on a
         # concurrent holder anyway (checkpoint busy / VACUUM locked), but a
@@ -1111,6 +1144,22 @@ def main(argv: list[str] | None = None) -> int:
     try:
         paths.ensure_daemon_home()
 
+        from runtime.daemon.lifetime_lock import acquire_daemon_lock
+        try:
+            lifetime_lock = acquire_daemon_lock(paths.daemon_home())
+        except OSError as exc:
+            logger.error("daemon startup refused: %s", exc)
+            return 1
+        # Do not close this fd on main's return/error tail: kernel process exit
+        # releases it after all shutdown work. Helpers dispatched above skip it.
+        proof = lifetime_lock.proof
+        logger.info("daemon_lock path=%s proof=%s transition_boot=%s reason=%s previous_pid=%s",
+                    paths.daemon_home() / "daemon.lock",
+                    "PROVEN" if proof.proven else "NOT_PROVEN",
+                    proof.transition_boot, proof.reason, proof.previous_pid)
+        # Only the lock owner may discard a previous listener marker.
+        paths.port_file().unlink(missing_ok=True)
+
         paths.ensure_token()
 
         settings = Settings()
@@ -1122,7 +1171,7 @@ def main(argv: list[str] | None = None) -> int:
         # executor is constructed (issue #254).
         from runtime.orchestrator.executors import _normalize_path
         _normalize_path()
-        state = _build_state(settings)
+        state = _build_state(settings, lock_proof=proof)
         app = create_app(state)
 
         sock, port = _bind_port(settings.daemon_bind_host, settings.daemon_port)

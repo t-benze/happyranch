@@ -8,7 +8,7 @@ The steps below preserve that earlier self-hosted control-plane/Mac environment
 setup, including its reusable-key example. Current THR-327 seq187/227 managed
 Linux installation, single-use credential-file handoff and lifecycle are maintained
 in [the remote-access guide](../../docs/agent-guides/contracts/remote-access-and-remote-jobs.md)
-and [the normative contract](../../docs/superpowers/specs/2026-08-26-managed-remote-access-contract.md#managed-linux-m1-acceptance-thr-327-seq187).
+and [the normative contract](../../docs/specs/2026-08-26-managed-remote-access-contract.md#managed-linux-m1-acceptance-thr-327-seq187).
 Bounded M1 **PASSED** on main `455c9c5b689fa25f625e2df8cae1b551c2a1de86`
 ([run 42978877282](https://github.com/t-benze/happyranch/actions/runs/42978877282)).
 M2 tailnet transport, full-daemon acceptance, restart/reboot recovery and deployment
@@ -79,7 +79,7 @@ paths, including private `/var/lib/happyranch-tsnet-sidecar`. `sidecar.json` is:
 ```json
 {
   "StateDir": "/var/lib/happyranch-tsnet-sidecar",
-  "ControlURL": "https://47-242-34-153.sslip.io:8443",
+  "ControlURL": "https://<TEST_CONTROL_HOST>:8443",
   "RoleIdentity": "home-sidecar-YOUR-STABLE-ID",
   "ExpectedPeer": "YOUR-EXPECTED-PEER",
   "DERPPolicy": "private-only",
@@ -88,6 +88,8 @@ paths, including private `/var/lib/happyranch-tsnet-sidecar`. `sidecar.json` is:
   "ExcludedDaemonPorts": [8765]
 }
 ```
+
+The real `ControlURL` comes from private operator configuration outside this repository.
 
 Do not put an enrollment key or `CredentialFile` in this JSON. The existing
 systemd credential-file override supplies it. The operator supplies a fresh

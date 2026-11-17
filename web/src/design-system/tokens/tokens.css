@@ -15,7 +15,8 @@
  */
 
 /* ========================================================================== */
-/* SELF-HOSTED FONTS — Hanken Grotesk + Newsreader, SIL OFL 1.1              */
+/* SELF-HOSTED FONTS — Hanken Grotesk, Newsreader, Baloo 2, JetBrains Mono,  */
+/* SIL OFL 1.1                                                               */
 /* Unmodified full upstream TTFs; weights match the type scale below.              */
 /* ========================================================================== */
 
@@ -51,6 +52,14 @@
   src: url('/fonts/Baloo2-wght.ttf') format('truetype');
 }
 
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 400 600;
+  font-display: swap;
+  src: url('/fonts/JetBrainsMono-wght.ttf') format('truetype');
+}
+
 @import "tailwindcss";
 
 @theme {
@@ -70,8 +79,8 @@
   /* ---- SEMANTIC TEXT ---- */
 
   --color-text-primary:    oklch(0.28 0.014 60);
-  --color-text-secondary:  oklch(0.50 0.013 60);
-  --color-text-muted:      oklch(0.66 0.012 65);
+  --color-text-secondary:  oklch(0.45 0.013 60);
+  --color-text-muted:      oklch(0.55 0.012 65);
   --color-text-inverse:    oklch(0.99 0 0);
   --color-text-disabled:   oklch(0.78 0.010 72);
 
@@ -83,8 +92,8 @@
 
   /* ---- SEMANTIC ACCENT (green) ---- */
 
-  --color-accent-default:  oklch(0.58 0.11 152);
-  --color-accent-hover:    oklch(0.52 0.11 152);
+  --color-accent-default:  oklch(0.52 0.11 152);
+  --color-accent-hover:    oklch(0.46 0.11 152);
   --color-accent-muted:    oklch(0.93 0.045 152);
   --color-accent-ring:     rgba(134, 172, 98, 0.45);  /* accent at ~45% */
   --color-accent-text:     oklch(0.46 0.10 152);       /* ds.css --accent-text */
@@ -95,7 +104,7 @@
 
   /* ---- TIER / SEMANTIC STATUS ---- */
 
-  --color-tier-green:       oklch(0.58 0.11 152);
+  --color-tier-green:       oklch(0.52 0.11 152);
   --color-tier-green-tint:  oklch(0.93 0.045 152 / 0.60);
 
   --color-tier-yellow:      oklch(0.70 0.13 64);
@@ -113,36 +122,36 @@
   /* ---- Direct semantic names (ds.css Direction-A parity) ---- */
   --color-accent-soft:  oklch(0.93 0.045 152);
   --color-attention:    oklch(0.70 0.13 64);
-  --color-positive:     oklch(0.58 0.11 152);
+  --color-positive:     oklch(0.52 0.11 152);
   --color-danger:       oklch(0.55 0.16 25);
-  --color-info:         oklch(0.56 0.10 248);        /* bare info alias — same value as --color-feedback-info */
+  --color-info:         oklch(0.53 0.10 248);        /* bare info alias — same value as --color-feedback-info */
 
   /* ---- AGENT IDENTITY ---- */
 
   --color-agent-manager:   #8265c8;
   --color-agent-worker:    #2a9a93;
-  --color-agent-founder:   oklch(0.58 0.11 152);
+  --color-agent-founder:   oklch(0.52 0.11 152);
 
   /* ---- STATUS ---- */
 
-  --color-status-open:       oklch(0.58 0.11 152);
+  --color-status-open:       oklch(0.52 0.11 152);
   --color-status-archiving:  oklch(0.70 0.13 64);
-  --color-status-archived:   oklch(0.50 0.013 60);
+  --color-status-archived:   oklch(0.45 0.013 60);
   --color-status-abandoned:  oklch(0.55 0.16 25);
   --color-status-blocked:    oklch(0.70 0.13 64);
   --color-status-escalated:  oklch(0.55 0.16 25);
 
-  /* ---- ID BADGES ---- */
+  /* ---- ID BADGES — Pasture `.id` uses --info for every entity ID (THR-376) ---- */
 
-  --color-id-thread:       oklch(0.56 0.10 152);
-  --color-id-task:         #b6a3e1;
+  --color-id-thread:       var(--color-info);
+  --color-id-task:         var(--color-info);
 
   /* ---- FEEDBACK ---- */
 
-  --color-feedback-success: oklch(0.58 0.11 152);
+  --color-feedback-success: oklch(0.52 0.11 152);
   --color-feedback-warning: oklch(0.70 0.13 64);
   --color-feedback-danger:  oklch(0.55 0.16 25);
-  --color-feedback-info:    oklch(0.56 0.10 248);
+  --color-feedback-info:    oklch(0.53 0.10 248);
 
   /* ====================================================================== */
   /* v3 BACKWARDS-COMPAT ALIASES — pasted into Pasture values.               */
@@ -159,16 +168,16 @@
   --color-border-subtle:   oklch(0.935 0.006 78);
 
   --color-fg:              oklch(0.28 0.014 60);
-  --color-fg-muted:        oklch(0.50 0.013 60);
-  --color-fg-subtle:       oklch(0.66 0.012 65);
+  --color-fg-muted:        oklch(0.45 0.013 60);
+  --color-fg-subtle:       oklch(0.55 0.012 65);
 
-  --color-accent:          oklch(0.58 0.11 152);
-  --color-accent-hover:    oklch(0.52 0.11 152);
+  --color-accent:          oklch(0.52 0.11 152);
+  --color-accent-hover:    oklch(0.46 0.11 152);
   /* Note: --color-accent-fg used by bg-accent text-accent-fg pattern in Settings */
   --color-accent-fg:       oklch(0.99 0 0);
 
   /* ---- v3 tier (same as tier-* above, just v3 names) ---- */
-  --color-tier-green:       oklch(0.58 0.11 152);
+  --color-tier-green:       oklch(0.52 0.11 152);
   --color-tier-yellow:      oklch(0.70 0.13 64);
   --color-tier-red:         oklch(0.55 0.16 25);
   --color-tier-green-tint:  oklch(0.93 0.045 152 / 0.60);
@@ -223,6 +232,12 @@
   --text-body-sm:              0.8125rem;
   --text-body-sm--line-height: 1.25rem;
   --text-body-sm--font-weight: 400;
+
+  /* THR-376 PR2: Pasture ds.css `.nav-item` row text (13.5px). Size only;
+     weight is set at the call site (500 rest / 600 active). Theme-independent,
+     so it has no dark override. */
+  --text-nav:                  0.84375rem;
+  --text-nav--line-height:     1.25rem;
 
   --text-label:                0.75rem;
   --text-label--line-height:   1rem;
@@ -374,8 +389,8 @@
 
   /* ---- Semantic text (dark) ---- */
   --color-text-primary:    oklch(0.94 0.008 80);
-  --color-text-secondary:  oklch(0.72 0.01 75);
-  --color-text-muted:      oklch(0.56 0.011 72);
+  --color-text-secondary:  oklch(0.76 0.01 75);
+  --color-text-muted:      oklch(0.64 0.011 72);
   --color-text-inverse:    oklch(0.18 0.02 152);
   --color-text-disabled:   oklch(0.45 0.010 70);
 
@@ -410,14 +425,14 @@
   /* ---- Status (dark) ---- */
   --color-status-open:      oklch(0.72 0.12 152);
   --color-status-archiving: oklch(0.78 0.13 70);
-  --color-status-archived:  oklch(0.56 0.011 72);
+  --color-status-archived:  oklch(0.64 0.011 72);
   --color-status-abandoned: oklch(0.70 0.15 25);
   --color-status-blocked:   oklch(0.78 0.13 70);
   --color-status-escalated: oklch(0.70 0.15 25);
 
-  /* ---- ID badges (dark) ---- */
-  --color-id-thread: oklch(0.80 0.12 152);
-  --color-id-task:   #d0c4f0;
+  /* ---- ID badges (dark) — Pasture `.id` = --info (THR-376) ---- */
+  --color-id-thread: var(--color-info);
+  --color-id-task:   var(--color-info);
 
   /* ---- Feedback (dark) ---- */
   --color-feedback-success: oklch(0.72 0.12 152);
@@ -435,8 +450,8 @@
   --color-border-subtle:   oklch(0.28 0.010 70);
 
   --color-fg:              oklch(0.94 0.008 80);
-  --color-fg-muted:        oklch(0.72 0.01 75);
-  --color-fg-subtle:       oklch(0.56 0.011 72);
+  --color-fg-muted:        oklch(0.76 0.01 75);
+  --color-fg-subtle:       oklch(0.64 0.011 72);
 
   --color-accent:          oklch(0.70 0.13 152);
   --color-accent-hover:    oklch(0.76 0.13 152);
@@ -484,5 +499,4 @@
 .tasks-group li:last-child > div { border-bottom: 0; }
 .tasks-id span { font-size: 11.5px; }
 .tasks-row .text-task-title, .tasks-group-heading .text-task-group { letter-spacing: -0.1px; }
-.tasks-status { font-size: 11px; gap: 5px; padding: 3px 8px; white-space: nowrap; max-width: 100%; }
-.tasks-appbar { height: 56px; padding: 0 26px; gap: 14px; }
+.tasks-status > span { font-size: 11px; gap: 5px; padding: 3px 8px; white-space: nowrap; max-width: 100%; }

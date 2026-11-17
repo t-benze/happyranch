@@ -4,14 +4,14 @@
  * active states, tinted fills.
  *
  * Task vocabulary follows THR-037 Change B (Path B, stored source-of-truth):
- * `blocked` is gone. `escalated` is a first-class red status; `cancelled` is a
- * muted terminal. A parked in_progress badge receives observed child text
- * from its feature caller. The ordinary job default remains supported.
+ * `blocked` is gone. `escalated` is a first-class status (Pasture attention
+ * amber, THR-376); `cancelled` is a muted terminal. A parked in_progress
+ * badge receives observed child text from its feature caller. The ordinary job default remains supported.
  *
  * Pure prop-driven.
  */
 
-import { TONE_CLASS } from './semanticTone';
+import { TONE_CLASS, type Tone } from './semanticTone';
 
 export type ThreadStatus = 'open' | 'archived';
 export type TaskStatus =
@@ -31,8 +31,6 @@ export type BlockKind = 'delegated' | 'blocked_on_job' | 'escalated';
 interface StatusBadgeProps {
   status: ThreadStatus | TaskStatus;
   blockKind?: BlockKind | null;
-  /** Opt-in standalone Tasks list appearance; shared defaults stay unchanged. */
-  presentation?: 'tasks';
   /**
    * Optional localized waiting-qualifier text (without the leading `· `).
    * Null suppresses text. Undefined retains only the ordinary job default.
@@ -41,24 +39,22 @@ interface StatusBadgeProps {
   waitingLabels?: Partial<Record<'delegated' | 'blocked_on_job', string>>;
 }
 
-// Tinted pill tones read from the shared semantic colour vocabulary
-// (semanticTone.TONE_CLASS) so this DS badge matches every other status/type
-// badge once Batches 2–3 wire the feature surfaces onto the map.
-// THR-099 fix: thread `open` moves GREEN → BLUE (info) per the design
-// vocabulary (open=blue / archived=grey). `pending` (amber) and `failed`
-// (abandoned-red) keep their own distinct tokens — they are not tones in the
-// shared set — so they stay literal.
-const STATUS_STYLE: Record<ThreadStatus | TaskStatus, string> = {
-  open: TONE_CLASS.info,
-  archived: TONE_CLASS.neutral,
-  pending: 'text-status-archiving bg-tier-yellow-tint',
-  in_progress: TONE_CLASS.positive,
-  escalated: TONE_CLASS.danger,
-  blocked: TONE_CLASS.danger,
-  completed: TONE_CLASS.positive,
-  failed: 'text-status-abandoned bg-tier-red-tint',
-  cancelled: TONE_CLASS.neutral,
-  superseded: TONE_CLASS.neutral,
+// Every status resolves through the shared semantic tone vocabulary
+// (semanticTone.TONE_CLASS) so the badge reads the same on every surface
+// (THR-376, Pasture): open/in_progress = info blue, escalated (and its legacy
+// `blocked` alias) and pending = attention amber, completed = positive green,
+// failed = danger red, archived/cancelled/superseded = neutral grey.
+const STATUS_TONE: Record<ThreadStatus | TaskStatus, Tone> = {
+  open: 'info',
+  archived: 'neutral',
+  pending: 'attention',
+  in_progress: 'info',
+  escalated: 'attention',
+  blocked: 'attention',
+  completed: 'positive',
+  failed: 'danger',
+  cancelled: 'neutral',
+  superseded: 'neutral',
 };
 
 /**
@@ -82,17 +78,15 @@ function label(status: ThreadStatus | TaskStatus): string {
   return status;
 }
 
-export function StatusBadge({ status, blockKind, presentation, waitingLabels, waitingQualifier: resolved }: StatusBadgeProps): JSX.Element {
-  const cls = presentation === 'tasks' && status === 'in_progress' ? TONE_CLASS.info
-    : presentation === 'tasks' && status === 'escalated' ? TONE_CLASS.attention
-    : STATUS_STYLE[status];
+export function StatusBadge({ status, blockKind, waitingLabels, waitingQualifier: resolved }: StatusBadgeProps): JSX.Element {
+  const cls = TONE_CLASS[STATUS_TONE[status]];
   const qualifier = waitingQualifier(status, blockKind, waitingLabels, resolved);
   // Led dot for live/active states only (matches ds.css .tag led).
   const showDot =
     status === 'in_progress' || status === 'completed' || status === 'pending';
   return (
     <span
-      className={`text-mono-sm inline-flex max-w-full items-center gap-1.5 rounded-full px-2.5 py-0.5 font-semibold tabular-nums ${cls} ${presentation === 'tasks' ? 'tasks-status' : ''}`}
+      className={`font-sans text-overline inline-flex max-w-full items-center gap-1.5 rounded-full px-2.5 py-0.5 font-semibold tabular-nums ${cls}`}
     >
       {showDot && (
         <span className="inline-block h-1.5 w-1.5 rounded-full bg-current opacity-70" aria-hidden />

@@ -20,7 +20,7 @@ retries after a rate-limited response re-verify the artifact before the next
 Popen — D4 fail-closed trust boundary).
 D12: finalized stable external contract — this module is the authoritative
 code-level reference. Current optional input-v2 prose is in
-docs/superpowers/specs/2026-10-11-agent-reasoning-effort.md; original
+docs/specs/2026-10-11-agent-reasoning-effort.md; original
 unified-adapter and Protocol references remain historical.
 
 THR-107 seq244: dependency-manifest extension — adds ``DependencyManifest``

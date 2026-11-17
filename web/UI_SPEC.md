@@ -1,6 +1,6 @@
 # UI_SPEC.md — HappyRanch Founder Console
 
-**Companion to:** `web/DESIGN.md` (tokens), `web/ARCHITECTURE.md` (layer rules), `docs/superpowers/specs/2026-05-14-web-ui-design.md` (the original web-UI design doc), `docs/agent-guides/web-and-cli.md` (informs the future Audit / Trends surface).
+**Companion to:** `web/DESIGN.md` (tokens), `web/ARCHITECTURE.md` (layer rules), `docs/specs/2026-05-14-web-ui-design.md` (the original web-UI design doc), `docs/agent-guides/web-and-cli.md` (informs the future Audit / Trends surface).
 
 **Status:** v0.1 spec. Threads is implemented; the other four nav slots (Tasks, KB, Audit, Agents) are sketched only to anchor the navigation model.
 
@@ -8,7 +8,7 @@
 
 ## About this document
 
-A structured-markdown UX specification with one section per screen (Purpose / Layout / States / Interactions / Data / A11y / Empty + error / Keyboard). Token references point at `web/DESIGN.md`. Implementation contract — how the screens become real React code — lives in `web/DESIGN_SYSTEM.md`.
+A structured-markdown UX specification with one section per screen (Purpose / Layout / States / Interactions / Data / A11y / Empty + error / Keyboard). The web app has no keyboard shortcuts (removed by THR-372); Keyboard subsections list only standard keys such as `Esc` and `Enter`. Token references point at `web/DESIGN.md`. Implementation contract — how the screens become real React code — lives in `web/DESIGN_SYSTEM.md`.
 
 ---
 
@@ -18,14 +18,14 @@ A structured-markdown UX specification with one section per screen (Purpose / La
 2. Threads — Inbox pane
 3. Threads — Detail pane
 4. Threads — Dialogs (NewThread / Invite / Archive / Abandon)
-5. Threads — HelpDrawer
+5. (Removed) Threads — HelpDrawer
 6. Empty states (cross-screen)
 7. Error and disconnected states
 8. Tasks — placeholder shell
 9. KB — placeholder shell
 10. Audit — placeholder shell
 11. Agents — placeholder shell
-12. Global UX — keyboard map, toast queue, theme toggle, density toggle
+12. Global UX — keyboard, toast queue, theme toggle, density toggle
 
 ---
 
@@ -47,7 +47,7 @@ Three regions, fixed: a 48px TopBar, a flexible body, a 24px Statusbar. Every sc
 |                                                                          |
 |                                                                          |
 +--------------------------------------------------------------------------+
-| ● daemon  org: hk-macau-tourism  streams: 2  v0.1.0+a6e654e          ?    |  24px Statusbar
+| ● daemon  org: hk-macau-tourism  streams: 2  v0.1.0+a6e654e               |  24px Statusbar
 +--------------------------------------------------------------------------+
 ```
 
@@ -62,7 +62,6 @@ Statusbar elements, left to right:
 - Org slug in `typography.mono_sm`, prefixed `org:`.
 - Active SSE stream count (e.g., `streams: 2`), updates whenever a `useSSE` hook mounts/unmounts.
 - Build version: `vX.Y.Z+<git-short-sha>`. Click → opens a tiny popover with full SHA + build date.
-- Right edge: a `?` kbd chip — global "press ? for help" cue.
 
 ### States
 
@@ -76,7 +75,7 @@ Statusbar elements, left to right:
 
 ### Interactions
 
-- Cmd/Ctrl-K is unbound after System Assistant retirement (THR-294); the existing command-palette trigger remains available.
+- Cmd/Ctrl-K is unbound (System Assistant retired by THR-294; all keyboard shortcuts removed by THR-372).
 - Tab cycles through TopBar then into the active feature body. The active nav item has `aria-current="page"`.
 - Switching org via the dropdown replaces `:slug` in the URL and remounts the feature. We do NOT preserve thread selection across orgs — that would surface a thread that doesn't exist in the new scope.
 
@@ -96,8 +95,6 @@ Statusbar elements, left to right:
 
 | Key | Action |
 |---|---|
-| `g i` | Jump to Threads inbox |
-| `?` | Open HelpDrawer (handled per-feature; global no-op when no feature owns it) |
 | `Esc` | Close any open drawer/dialog/toast |
 
 ---
@@ -106,7 +103,7 @@ Statusbar elements, left to right:
 
 ### Purpose
 
-The founder's primary surface. Email-client inbox: list of threads grouped by status, scannable in under a second, keyboard-first. This is where most session-time is spent.
+The founder's primary surface. Email-client inbox: list of threads grouped by status, scannable in under a second. This is where most session-time is spent.
 
 ### Layout (340px column)
 
@@ -146,7 +143,7 @@ A row is `active` when `:thread_id` matches its id: gets `accent.muted` backgrou
 |---|---|
 | Loading | "Loading…" placeholder in `text.muted`, no skeleton — list arrives in one batch |
 | Error | "Failed to load threads." in `tier.red`, `body_sm` |
-| Empty (no threads, no filter) | EmptyState "No threads yet. Press N to compose." |
+| Empty (no threads, no filter) | EmptyState "No threads yet." |
 | Empty (filter typed, no matches) | "No threads match the filter." in `text.muted` |
 | Stale (no SSE invalidation in >60s) | Statusbar `streams` count drops; rows render as-is — no per-row badge |
 
@@ -155,7 +152,7 @@ A row is `active` when `:thread_id` matches its id: gets `accent.muted` backgrou
 - Click anywhere on a row → navigate `/orgs/:slug/threads/:thread_id`. The whole row is one `<NavLink>`.
 - Type into Filter input → client-side substring match against subject AND thread_id. Debounce 0ms — the list is small (hundreds at most).
 - Status tabs swap query key (`status: open|archived|abandoned`). Selected tab uses `surface.raised`, inactive uses `text.muted`.
-- "+ New" button → opens NewThreadDialog (§4.1). Hotkey: `N`.
+- "+ New" button → opens NewThreadDialog (§4.1).
 
 ### Data dependencies
 
@@ -172,10 +169,7 @@ A row is `active` when `:thread_id` matches its id: gets `accent.muted` backgrou
 
 | Key | Action |
 |---|---|
-| `j` / `k` | Move selection down / up (future — not in v0.1) |
-| `Enter` | Open selected row (future) |
-| `/` | Focus the Filter input |
-| `N` | Open NewThreadDialog |
+| `Tab` / `Enter` | Move to and open a row (standard link behavior) |
 
 ---
 
@@ -207,7 +201,7 @@ Read messages, send a reply, manage thread lifecycle (invite, archive, abandon).
 |                                                                  |
 +------------------------------------------------------------------+
 | [textarea, 4 rows, body_lg, 72ch measure, sticky bottom]         |  Composer
-| Sends as founder; @all by default.            [Send Ctrl+Enter] |
+| Sends as founder; @all by default.            [Send]           |
 +------------------------------------------------------------------+
 ```
 
@@ -233,7 +227,7 @@ Auto-scroll to bottom on message-count change. The scroll respects user-initiate
 ### Composer anatomy
 
 - Sticky bottom bar, `surface.sunken` background, `border.subtle` top border, `spacing.3` padding.
-- One `textarea`: 4 rows default, auto-grows to 8 rows max then scrolls, measure 72ch, placeholder "Write a message… Ctrl+Enter to send."
+- One `textarea`: 4 rows default, auto-grows to 8 rows max then scrolls, measure 72ch, placeholder "Write a message…"; `Enter` sends and `Shift+Enter` inserts a newline.
 - Below the textarea: a meta row. Left: helper text "Sends as **founder**; @all by default." OR error message in `tier.red`. Right: `Send` primary Button.
 - Disabled when thread status ≠ "open" — placeholder changes to "Thread is closed."
 
@@ -243,7 +237,7 @@ Future-extension: a `To:` chip-picker right above the Send button, constrained t
 
 | State | Visual |
 |---|---|
-| No thread selected | EmptyState "Select a thread from the inbox. Press `N` to compose." with the kbd hint baked in |
+| No thread selected | EmptyState "Select a thread from the inbox." |
 | Loading | Centered "Loading…" in `text.muted` |
 | Error | Centered "Failed to load thread." in `tier.red`, with a "Retry" ghost button |
 | Closed (archived/abandoned) | All action buttons disabled, composer disabled with placeholder. The Archive summary block (if any) is the most visually weighted row. |
@@ -253,7 +247,7 @@ Future-extension: a `To:` chip-picker right above the Send button, constrained t
 ### Interactions
 
 - Clicking an AgentChip in the participant list → opens an "Agent detail" Drawer (future). v0.1: AgentChip is non-interactive in the detail pane.
-- Ctrl/Cmd-Enter in the composer → submits. Plain Enter inserts a newline (markdown).
+- `Enter` in the composer → submits; `Shift+Enter` inserts a newline.
 - Send error → inline error in the meta row + a toast.
 
 ### Data dependencies
@@ -266,18 +260,13 @@ Future-extension: a `To:` chip-picker right above the Send button, constrained t
 ### A11y
 
 - The message list is `<ol role="list">` with `aria-label="Thread messages"`. Each bubble is an `<li>`. The seq is read first ("Message 3, from founder, addressed to @all, sent April 11 14:40, …") via an `aria-label` on the bubble.
-- The composer textarea has `aria-label="Compose follow-up"`. The send button is `aria-keyshortcuts="Control+Enter Meta+Enter"`.
+- The composer textarea has `aria-label="Compose follow-up"`.
 
 ### Keyboard
 
 | Key | Action |
 |---|---|
-| `R` | Focus the composer |
-| `I` | Open Invite dialog |
-| `A` | Open Archive dialog |
-| `X` | Open Abandon dialog |
-| `F` | Open NewThreadDialog prefilled as forward |
-| `Ctrl/Cmd+Enter` | Submit composer |
+| `Enter` | In the composer, send (`Shift+Enter` inserts a newline) |
 | `Esc` | If a dialog is open, close it; otherwise no-op |
 
 ---
@@ -299,7 +288,7 @@ All dialogs use the `dialog` component token (elevation 3, 32rem max width, scri
 
 **Validation:** All three required. Inline error message above the footer, `tier.red`, body_sm: "Subject, recipients, and body are all required."
 
-**Submit:** Ctrl/Cmd+Enter in any field also submits. On success: dialog closes, parent navigates to the new thread. On API error: error message replaces the validation message; dialog stays open with values preserved.
+**Submit:** On success: dialog closes, parent navigates to the new thread. On API error: error message replaces the validation message; dialog stays open with values preserved.
 
 ### 4.2 InviteDialog
 
@@ -335,36 +324,9 @@ All dialogs use the `dialog` component token (elevation 3, 32rem max width, scri
 
 **Confirmation:** Above the footer, a `caption` warning in `tier.red`: "Abandoning is irreversible. Use Archive if the thread completed successfully."
 
-## 5. Threads — HelpDrawer
+## 5. (Removed) Threads — HelpDrawer
 
-### Purpose
-
-Cheat sheet for keyboard shortcuts. Triggered by `?`.
-
-### Layout
-
-A `dialog`-style modal (not a side drawer in v0.1 — the name "HelpDrawer" is historical; we keep the name in code but it renders as a modal). Title: "Keyboard shortcuts." Body: a two-column list of KbdChips + description text, gap = `spacing.2`.
-
-```
-+-----------------------------------------------+
-| Keyboard shortcuts                       [✕] |
-+-----------------------------------------------+
-| [ N    ]  New thread                          |
-| [ I    ]  Invite participant                  |
-| [ A    ]  Archive thread                      |
-| [ X    ]  Abandon thread                      |
-| [ F    ]  Forward thread                      |
-| [ R    ]  Focus composer                      |
-| [ Ctrl+Enter ]  Send (in composer)            |
-| [ Esc  ]  Close dialog                        |
-| [ ?    ]  Show this help                      |
-|                                               |
-| Shortcuts are disabled while focus is inside  |
-| an input or textarea.                         |
-+-----------------------------------------------+
-```
-
-Future: when other features ship, this becomes a tabbed reference — one tab per feature — with a global "g i / g t / g k / g a / g g" jump table at the top.
+The `?` keyboard-shortcut help drawer was removed with all web keyboard shortcuts (THR-372).
 
 ---
 
@@ -374,7 +336,7 @@ Standard component (`empty_state` token), centered in its container, 28rem max-w
 
 1. A 32px icon (lineart, `text.muted` color). Reserve a small set: `inbox-empty`, `search-empty`, `disconnected`, `not-permitted`, `no-orgs`.
 2. Title in `h3`, `text.secondary`.
-3. Body in `body`, `text.muted`. May contain an inline KbdChip.
+3. Body in `body`, `text.muted`.
 4. Optional primary CTA Button below.
 
 Five canonical empty states:
@@ -382,9 +344,9 @@ Five canonical empty states:
 | Where | Title | Body | CTA |
 |---|---|---|---|
 | Orgs list empty | "No orgs in this runtime." | "Initialize one with `happyranch orgs init <slug>`." | (none) |
-| Inbox open, no threads | "No threads yet." | "Press `N` to compose, or have an agent dispatch one." | "+ New thread" |
+| Inbox open, no threads | "No threads yet." | "Use + New thread, or have an agent dispatch one." | "+ New thread" |
 | Inbox filter, no match | "No threads match the filter." | (none) | "Clear filter" (ghost) |
-| Detail, none selected | "Select a thread from the inbox." | "Or press `N` to start a new one." | (none) |
+| Detail, none selected | "Select a thread from the inbox." | (none) | (none) |
 | Detail, thread has no messages | "No messages yet." | "Waiting for the first reply." | (none) |
 
 ---
@@ -449,7 +411,6 @@ Polled at 10s via TanStack Query (`refetchInterval: 10_000`). Filter groups: Sta
 
 ### Keyboard
 
-- `g t` — jump to Tasks inbox (registered by TopBar via `useGlobalJump('t', ...)`).
 - `Esc` — close Drawer or dialog.
 
 ### Data dependencies
@@ -490,10 +451,6 @@ The build-time flag `kb_compose_ui` (THR-305; default `false` in every profile) 
 ### Work Hours visibility (THR-305)
 
 With `work_hours_ui` off (the production profile) the Work Hours Sidebar item, the AppBar title, the overview, `?view=wakes` and agent detail routes, the legacy `/schedule` redirect, and the Organization Settings operating block are all absent. That block covers the heading, explanatory link, feedback, switch, eligibility editor and disable-confirm dialog. Direct and legacy URLs render the existing not-found page. Other Organization settings and their Save behave as before. This is UI visibility only, not access control.
-
-### Jump-key
-
-`g k` from anywhere navigates to `/orgs/<active-slug>/kb` (registered in `TopBar`).
 
 ---
 
@@ -600,36 +557,21 @@ the enrollments list so the post-action UI flips immediately.
 
 ### Keyboard
 
-- `g g` — jump to the Agents page (registered by TopBar via
-  `useGlobalJump('g', …)`).
 - `Esc` — close the Drawer or the reject dialog.
 
 ---
 
 ## 13. Global UX — keyboard, toasts, theme, density
 
-### Keyboard map (canonical)
+### Keyboard
+
+The web app has no keyboard shortcuts: the `?` help drawer, `g <letter>` jump chords, single-key Threads shortcuts, Cmd/Ctrl+S save and Cmd/Ctrl+K were removed (THR-372). Standard keys remain:
 
 | Key | Scope | Action |
 |---|---|---|
-| `g i` | global | Jump to `/orgs/:slug/threads` (inbox) |
-| `g t` | global (future) | Jump to Tasks |
-| `g k` | global (future) | Jump to KB |
-| `g l` | global | (reserved — previously Jump to Talks) |
-| `g a` | global (future) | Jump to Audit |
-| `g g` | global (future) | Jump to Agents |
-| `/` | active feature | Focus that feature's filter/search input |
-| `N` | Threads | New thread |
-| `I` | Threads detail | Invite |
-| `A` | Threads detail | Archive |
-| `X` | Threads detail | Abandon |
-| `F` | Threads detail | Forward |
-| `R` | Threads detail | Focus composer |
-| `Ctrl+Enter` | Composer | Send |
+| `Enter` / `Shift+Enter` | Thread composer | Send / newline |
 | `Esc` | any dialog/drawer | Close |
-| `?` | global | Help |
-
-Shortcuts are suppressed when focus is inside an `<input>`, `<textarea>`, or `[contenteditable]`. Multi-key combos (`g i`) have a 1.0s buffer.
+| Arrows / `Enter` / `Tab` | @-mention autocomplete, recipients input | Select a suggestion |
 
 ### Toast queue
 

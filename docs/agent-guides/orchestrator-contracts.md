@@ -80,7 +80,7 @@ Allowed NEW settings, compatible storage, mounted native runtime and current
 authority/eligible roles. Fresh selection and engine prepare-admission both
 check the latest Allowed generation; old Explicit settings cannot substitute.
 Disabled remains the default; ordinary routing remains legacy. See
-`docs/superpowers/specs/2026-11-12-sequential-coding-u9.md` for the current cutover.
+`docs/specs/2026-11-12-sequential-coding-u9.md` for the current cutover.
 
 Authenticated admitted old @1/@2 replay/continuation retains its original pins
 across later disable/default changes and still requires current selected-role/
@@ -1040,7 +1040,11 @@ has a dormant service bound to the actual initial app/state/runtime/org-map,
 org/DB/path, supervisor/tracker and attachment generation. Only actual successful
 ASGI/listener startup admits it; construction/readiness performs no operation or
 selection. Native preview/show and the sole `release_exact_thread_delivery`
-transaction have no ACTIVE HTTP/CLI, startup, reaper or automatic release caller.
+human transaction have no ACTIVE HTTP/CLI, startup, reaper or automatic caller.
+THR-357 adds a separate narrow proven-lock startup release; its exact predicate,
+append-only daemon record and refusal rules are in the maintained
+[lifecycle contract](contracts/runtime-lifecycle.md#narrow-previous-boot-thread-release-thr-357-fix-1--1136).
+The human command/confirmation/serving authority is unchanged.
 Temporary, dynamic, custom, replaced and missing contexts refuse. Neither
 ambient credentials nor caller proof flags enable mutation. Proof-backed release
 is unavailable. The approved human risk override requires exact preview, stable
@@ -1145,7 +1149,7 @@ Only authenticated false pending never-launched prerequisite loss commits
 failed/spawn_failed with NULL start/exit, actual finish/diagnostic/agent audit
 and journal settlement before that bridge. Hold/owner/session refusal, uncertain
 launch and race winners remain unchanged, as do the running-only terminal CAS,
-limits, genuine callback/final-action and durable job rules. [Current jobs contract](../superpowers/specs/2026-05-26-jobs-design.md).
+limits, genuine callback/final-action and durable job rules. [Current jobs contract](../specs/2026-05-26-jobs-design.md).
 
 Adapter removal translates only `ProfileCoordinatorError` from its coordinator
 span to HTTP409 with `detail.code`. Unrelated exceptions keep their existing
@@ -1534,7 +1538,7 @@ renders shipping builders and scenario9 checks bindings. Source-pinned maker
 E2E receipts do not establish real provider-resume launches or independent
 acceptance. UI/type source is published; final independent whole-candidate
 review/QA/checks and guarded merge remain required.
-See the [current naming contract](../superpowers/specs/2026-10-09-identity-names-core.md).
+See the [current naming contract](../specs/2026-10-09-identity-names-core.md).
 
 ## Naming v1 core, API and routing source
 
@@ -1586,7 +1590,7 @@ resources, output, deadline and actual cleanup. Independent full review,
 behavioral QA, applicable checks, normal publication and guarded merge remain.
 
 
-[Current contract](../superpowers/specs/2026-10-09-identity-names-core.md).
+[Current contract](../specs/2026-10-09-identity-names-core.md).
 
 
 **H handoff storage — U3a(a), THR139 seq445/465.** Proven-fresh org creation
@@ -1748,7 +1752,7 @@ replacement binding cannot receive a cached done disposition.
 - Agent names are plain strings; agents are discovered dynamically from `<runtime>/orgs/<slug>/org/agents/*.md`.
 - Tests should cover business logic such as escalation rules and audit-log shape.
 
-`README.md` is for end users. `CLAUDE.md` is for repo-wide agent instructions. Implementation and behavior tests own runtime rules. These guides explain them; `docs/superpowers/specs/` retains design history.
+`README.md` is for end users. `CLAUDE.md` is for repo-wide agent instructions. Implementation and behavior tests own runtime rules. These guides explain them; `docs/specs/` retains design history.
 
 When starting a feature, read the relevant design doc first and follow existing patterns in `runtime/orchestrator/`.
 
@@ -2053,13 +2057,13 @@ JSON and org/audit `process_scope` state that process usage is not checked;
 neither process absence nor executable authentication. Filesystem mount boundaries
 still retain via `/proc/self/mountinfo` on Linux and validated native
 getmntinfo/statfs evidence on Darwin; unavailable or malformed mount evidence
-retains. See the [maintained disk-sweeper contract](../superpowers/specs/2026-10-15-nightly-disk-sweeper.md)
+retains. See the [maintained disk-sweeper contract](../specs/2026-10-15-nightly-disk-sweeper.md)
 for Darwin's no-leaf-open signature checks and accepted observation/race limits.
 Other owners' legacy/root-terminal process gates are unchanged. Ended tasks/root
 status does not prove OS-process quiescence.
 
 
-See the [full current contract](../superpowers/specs/2026-10-15-nightly-disk-sweeper.md)
+See the [full current contract](../specs/2026-10-15-nightly-disk-sweeper.md)
 for evidence semantics, limitations, finite disposable verification and staged
 operational acceptance. Root TASK12353 owns reviewed delivery and normal rollout,
 serving verification and seven actual scheduled on-night receipts. Founder
@@ -2381,7 +2385,7 @@ exclusively from ``AgentDef`` (the ``.md`` frontmatter). The workspace
 
 Selected effort follows model into existing task normal/followup/resume/recovery, thread fresh/resume/fallback, dream, wake and schedule executor calls/spec builders. `session_start` (including recovery) and `dream_started` JSON add `reasoning_effort` only when set. Thread invocations retain their existing model column and associate optional selection through `thread_reasoning_selection` audit JSON; wakes/schedules use `work_hour_reasoning_selection` / `schedule_reasoning_selection`. Task/thread/dream/wake/schedule selection uses one loaded canonical AgentDef for executor/model/effort. Wake/schedule selection audit `executor` records the effective lowercase registered provider, or the existing Claude fallback for an unregistered provider; `model` and `reasoning_effort` remain the configured overrides from that same definition. Fallback does not clear those overrides or guarantee native acceptance. The same effective provider reaches materialization and executor construction. An atomic save after the read applies to the next selection. These records describe selection, not provider-reported actual reasoning; token usage model reporting is unchanged. No SQL field or lifecycle state is added.
 
-Workflow authority `_agent_projection` appends `reasoning_effort` only when set. Absent-field canonical bytes/digests match the current projection baseline without effort; clear returns to that shape. Set values participate in canonical snapshot digest/publication/admission at the same existing writer intervals. Retained journal snapshots are immutable and never rewritten. Current profile requirement and activation readers address named agent fields and accept the optional field; digest/retained readers authenticate whole bytes. Older readers may ignore a set effort and older whole-definition writers may drop it: absent equality is not all-old-reader compatibility. Use a compatible writer and clear/reconcile before an intentional rollback. Effort adds no snapshot format bump of its own: the inherited roster writer emits schema2, and current version-aware readers retain schema1 and schema2 roster meanings. Historical bytes and meaning are preserved; effort adds no migration/capsule framework. See the [current contract](../superpowers/specs/2026-10-11-agent-reasoning-effort.md).
+Workflow authority `_agent_projection` appends `reasoning_effort` only when set. Absent-field canonical bytes/digests match the current projection baseline without effort; clear returns to that shape. Set values participate in canonical snapshot digest/publication/admission at the same existing writer intervals. Retained journal snapshots are immutable and never rewritten. Current profile requirement and activation readers address named agent fields and accept the optional field; digest/retained readers authenticate whole bytes. Older readers may ignore a set effort and older whole-definition writers may drop it: absent equality is not all-old-reader compatibility. Use a compatible writer and clear/reconcile before an intentional rollback. Effort adds no snapshot format bump of its own: the inherited roster writer emits schema2, and current version-aware readers retain schema1 and schema2 roster meanings. Historical bytes and meaning are preserved; effort adds no migration/capsule framework. See the [current contract](../specs/2026-10-11-agent-reasoning-effort.md).
 
 `runtime/orchestrator/prompt_loader.py` is the API for reading/writing agent files: `load_agent`, `list_agents`, `list_pending`, `write_pending_agent`, `approve_agent`, `reject_agent`, `load_terminated_agent`, `list_terminated`, `is_terminated`, and `is_name_unavailable`. Routes and orchestrator code should read through this module against the per-org root.
 
@@ -4075,7 +4079,7 @@ entry, including startup and zombie recovery even if a caller omits the
 well. Replaying a persisted result therefore cannot append another
 `orchestration_step`, escalate/notify/follow up twice, remint v2 evidence,
 create a child or enqueue work. See
-`docs/superpowers/specs/2026-09-29-authority-v2-schema-refusal-recovery.md`.
+`docs/specs/2026-09-29-authority-v2-schema-refusal-recovery.md`.
 
 Checkpoint C3d4a (same unmerged draft PR) adds the common DB-aware TASK enqueue
 boundary and converges the direct producers onto it.
@@ -4323,7 +4327,7 @@ Then settings persist as optional additive JSON keys; omitted keys, legacy
 state and unset audits stay unchanged. Auto-advance stores the saved setting;
 the unchanged PR1 pre-launch check refuses invalidated choices with
 `saved model no longer valid for this agent` before executor construction.
-See [THR-356](../superpowers/specs/2026-11-13-task-model-reasoning-overrides.md).
+See [THR-356](../specs/2026-11-13-task-model-reasoning-overrides.md).
 
 A manager can declare a multi-leg workflow in one `delegate` decision using `NextStep.then` and optional per-leg `expect_verdict` gates. The orchestrator auto-advances to the next leg when a child terminates completed with a matching verdict. Since THR-211, auto-advance may also fire from a child whose completion report has durably landed while its task row still reads `in_progress` (the completion-status-lag window) — the recognition is session-safe and at-most-once, and the chain gate consumes the exact authenticated `(task_id, assigned_agent, current_session_id)` report so a newer unrelated row can never advance or clear the chain; see `tests/test_thr211_completion_status_lag.py` for the session-bound regression cases.
 
@@ -4349,7 +4353,7 @@ global dataclass and omitted YAML default is empty; it is never a reader
 fallback or a substitute for the isolated legacy compatibility pin.
 Historical chain payloads and the explicit APPROVE guard remain unchanged.
 
-Implementation: `runtime/orchestrator/chain.py` and `runtime/orchestrator/run_step.py`. Spec: `docs/superpowers/specs/2026-05-30-inline-delegation-chain-design.md`.
+Implementation: `runtime/orchestrator/chain.py` and `runtime/orchestrator/run_step.py`. Spec: `docs/specs/2026-05-30-inline-delegation-chain-design.md`.
 
 Example:
 
@@ -4925,7 +4929,7 @@ This observational extension does not consume results or grant runnable/joined/
 resumed status. Partial recall is never zero. Execution, chains and wakes retain
 their existing owners; current observation does not prove process quiescence.
 
-Pause gates future execution commitment of the actual root tree, not the lifecycle or accepted-result consumer. Pure preparation precedes the short final admission writer. The existing workflow authority validator is shared by public admission_writer and private draft composition; profile/publisher ownership and short lease transactions precede binding/root/DB/terminal ownership, with rollback before release and no ownership across waits. Final admitted cleanup ACTION runs unlocked under its real scheduler owner; known prompt suffix is retained and interrupted ACTION stays unknown. SAME-owner retry/recovery retains original identity and budgets and is durably rediscovered. Genuine manager supersession keeps its separate NULL-parent unheld successor; a held predecessor does not hold that root. Terminal cleanup refuses uncertain/held execution. Details: [current Pause contract](../superpowers/specs/2026-10-10-root-task-pause-resume.md).
+Pause gates future execution commitment of the actual root tree, not the lifecycle or accepted-result consumer. Pure preparation precedes the short final admission writer. The existing workflow authority validator is shared by public admission_writer and private draft composition; profile/publisher ownership and short lease transactions precede binding/root/DB/terminal ownership, with rollback before release and no ownership across waits. Final admitted cleanup ACTION runs unlocked under its real scheduler owner; known prompt suffix is retained and interrupted ACTION stays unknown. SAME-owner retry/recovery retains original identity and budgets and is durably rediscovered. Genuine manager supersession keeps its separate NULL-parent unheld successor; a held predecessor does not hold that root. Terminal cleanup refuses uncertain/held execution. Details: [current Pause contract](../specs/2026-10-10-root-task-pause-resume.md).
 
 Pause reads all current non-recovery tracker bindings inside the serialized root/DB writer and keeps the short tracker mutex through COMMIT. Durable positively-running evidence, exact current task/agent/SID and server-admitted ordinary purpose must agree. New or moved bindings are considered there; ended or replaced SIDs are excluded. Advisory pre-request snapshots never decide capture. The tracker mutex is a leaf lock: no binding lease is acquired beneath root/DB, and no await, host/provider operation or backoff runs under these locks. Duplicate Pause preserves capture; Resume followed by a new Pause replaces previous-generation capture.
 
@@ -5338,7 +5342,7 @@ required lint/static CI on that head, independent scoped QA, normal hooks and
 guarded manager merge. Target-base conditional support is optional later;
 artifact comparison-base identity remains immutable across review/QA.
 
-See [the current ordered-coding K0 contract](../superpowers/specs/2026-10-14-ordered-coding-workflow.md).
+See [the current ordered-coding K0 contract](../specs/2026-10-14-ordered-coding-workflow.md).
 Independent final-head source review/scoped QA and lint/static checks remain
 separate gates. Python units RETIRED; integration including callback SKIPPED24342;
 behavioral/negative/mutation/repetition/protected proof UNEXECUTED /
@@ -5368,7 +5372,7 @@ post-await authority revalidation. No live adoption/setup, execution or coding
 readiness is delivered. Python units RETIRED; integration/callback SKIPPED24342;
 behavior/security/protected proof UNEXECUTED/FOUNDER-WAIVED139429/430. Source-only
 review/static checks cannot establish reader-security or behavioral acceptance.
-See [the current K0/K1 contract](../superpowers/specs/2026-10-14-ordered-coding-workflow.md).
+See [the current K0/K1 contract](../specs/2026-10-14-ordered-coding-workflow.md).
 
 ## Empty-only coding schema — K2a1
 
@@ -6375,7 +6379,7 @@ business writer. COMMIT and reservation/lease settlement are separate facts.
 After response/settlement uncertainty, original-key readback authenticates
 publication without clearing native ownership. Historical native families and
 current execution denials stay intact. See the
-[complete R2 contract](../superpowers/specs/2026-10-14-ordered-coding-workflow.md#canonical-founder-settings-backend-r2-source).
+[complete R2 contract](../specs/2026-10-14-ordered-coding-workflow.md#canonical-founder-settings-backend-r2-source).
 
 The same-Founder-auth options GET composes the existing settings locks and
 CodingImportSupport's SELECT-only interval. It uses the actual yielded capture,

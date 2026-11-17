@@ -51,7 +51,7 @@ The one-time pre-serving upgrade window remains 120s/org, 180s total, 20s reserv
 Ordinary all-org load/listener remains <=10s, with 32M SQL, separate A/B/C and
 5s complete readers. Diagnostics separate actual upgrade work from ordinary
 startup; focused private shells establish neither live-org nor whole-listener
-timing acceptance. See the [current R2 amendment](../../superpowers/specs/2026-11-14-automatic-workflow-setup.md#a4-startup-and-r2-amendment--thr-336-msg250251-a42).
+timing acceptance. See the [current R2 amendment](../../specs/2026-11-14-automatic-workflow-setup.md#a4-startup-and-r2-amendment--thr-336-msg250251-a42).
 
 `DaemonState.from_runtime` contains each org's construction and post-load binding
 before adding it to the runnable map. Expected SQLite/filesystem/data refusals
@@ -64,6 +64,9 @@ Profile discovery keeps its existing conservative dependency closure; an
 unexpected classification failure marks the whole unknown scope held and
 returns without aborting the listener. Process cancellation, KeyboardInterrupt
 and SystemExit still propagate through the original cleanup boundary.
+
+All initial org release populations are captured first under the proven lifetime
+lock, before any contained per-org startup tail runs.
 
 The final `__main__._initialize_runnable_startup` tail applies the same per-org
 boundary to original authority-owner binding, the later selector initialization,
@@ -110,7 +113,7 @@ original close once. Its focused
 `--bootstrap-backup` cases cover WAL/preservation/fsync/failure custody before any
 source checkpoint; they supply no native-owner qualification or installed result.
 Automatic startup integration and installation were incomplete then; see the
-[source/backup checkpoint](../../superpowers/specs/2026-11-14-automatic-workflow-setup.md#a4-coherent-source-and-verified-backup-checkpoint).
+[source/backup checkpoint](../../specs/2026-11-14-automatic-workflow-setup.md#a4-coherent-source-and-verified-backup-checkpoint).
 
 `BootstrapSource.backup` itself now enforces the complete shared-device volume
 policy before exclusive backup inode creation, rather than trusting its caller
@@ -206,6 +209,121 @@ ordinary installed loads do not enter this source/installer stage.
 > their original relative order. Where a later section says it supersedes or
 > extends an earlier one, the later section controls; sections marked
 > "Historical" are retained evidence, not current instructions.
+
+### Daemon lifetime lock (THR-357)
+
+Normal source and frozen daemon startup acquire nonblocking exclusive `flock`
+on `<daemon_home>/daemon.lock` before token creation, settings, `_build_state`,
+startup sweeps, listener binding or PID publication. The owned regular file is
+opened no-follow with owner-only permissions; symlinks and hardlinks refuse.
+The descriptor remains open through main's error/shutdown tails until process
+exit, including kernel release after SIGKILL. A competing daemon exits nonzero
+with the lock path and a strictly readable PID, if available. Never unlink or
+replace the lock file: that would create a different lock inode. Hidden cleanup,
+workflow-integrity and connector helper dispatches remain separate processes
+before daemon startup. Offline `--maintenance` also acquires the lock before
+registry/SQLite access, within its existing redacted failure boundary, and
+retains its additional PID guard; it never writes serving PID/port markers.
+
+`lifetime_lock.LockProof` records `proven`, `transition_boot`, `reason` and
+`previous_pid`; startup logs the result and the narrow thread pass below consumes it. A held lock
+excludes all earlier lock-holding daemons, so records already present at
+acquisition belong to a previous boot. It says nothing about later records or
+surviving children/external processes, and is not sufficient release authority.
+Fix 2 preparation recovery remains separate; no task state or schema changes
+are introduced by the thread pass.
+
+A valid `happyranch-daemon-lock@1` marker in that same locked inode identifies
+lock-era operation. **Assumption:** pre-lock binaries are not subsequently run
+against this home; a downgrade/replacement or manual marker edit invalidates
+that inference and needs operator reconciliation. Without the exact marker,
+this is a transition boot: proof additionally requires a strictly positive,
+distinct old `daemon.pid` and `os.kill(pid, 0)` raising `ProcessLookupError`.
+Missing, malformed, unreadable, aliased, own, alive or ambiguous/permission-error
+PID evidence means NOT PROVEN. Normal serving may continue, but later cleanup
+must release nothing using that proof. An unproven transition never publishes
+the marker, so its uncertainty cannot disappear next boot. Consequently a fresh
+empty home, or repeated clean boots without a retained dead PID, can remain
+unproven. Only a proven transition publishes the marker under the held lock.
+
+The shell preserves stale `daemon.pid` until lock-owning Python startup observes
+it; only that owner discards the stale port. Shell and legacy migration stop
+retain the 60-second TERM grace, then wait up to 2 seconds for observed exit
+after KILL. Before every stop-success/applying-migration continuation, including
+missing/stale PID and observed live-PID exit, they additionally wait up to 2s
+for lifetime-lock release (the same bound as post-KILL observation). A no-follow,
+nonblocking real flock probe acquires and immediately releases; it never creates,
+holds while waiting, or unlinks the lock. Only a genuinely absent lock or an
+acquirable regular single-link file allows success. Held-after-bound, open/flock
+errors, symlinks, unexpected file types or changed inode evidence refuse with
+the lock path and readable PID, preserving lifecycle markers. Shell stop uses
+the checkout's uv/Python environment for this portable probe. Migration dry-run
+remains a signal-free/mutation-free preview and makes no stopped claim.
+The migration entrypoint gates the selected existing home before discovery or
+mutation: `~/.opc` when present, otherwise `~/.happyranch`, including reruns
+after the home rename and partially migrated runtimes.
+Failure refuses success/restart or applying migration. Existing `--force` only
+guards the default-home stop; no semantics
+are added. In-repo Mac managed restart waits for its actual exit callback;
+Linux desktop waits/reaps its child (60+2 seconds), and service restart delegates
+to synchronous systemd stop/start with `TimeoutStopSec=60`. Connector/sidecar
+units and disposable test cleanup are separate lifetimes.
+
+### Narrow previous-boot thread release (THR-357 Fix 1 / #1136)
+
+Before startup recovery can mint current-boot thread invocations, the initial org
+population captures pending started REPLY rows and an audit-ID boundary under
+main's already-held daemon lifetime lock. Dynamic org loads do not run this pass.
+Capture all initial org populations before any A4 contained per-org tail; an
+internal capture-unavailable result releases nothing without holding the org,
+while an unexpected constructor exception holds only that org and skips its tail.
+Only `LockProof.proven is True` permits capture; unproven transition boots release
+nothing and log the lock reason. This relies on the lock's cooperating-daemon and
+no-downgrade assumptions above, plus no current-boot admission before the sweep;
+PID absence, timestamps, terminal task status and ended sessions are never proof.
+Changed native rows or later lifecycle appends are excluded.
+
+Next to `recover_reply_delivery_state`, after complete human release-family validation
+and before cutover/queues/runners/HTTP admission, consume that population once.
+Reuse the diagnostics' exact `_late_failure` predicate: a final `failed_cleanup`,
+a settled producer, nonempty attempts all settled AND quiescent, and an earlier
+non-failed row with identical stable preparation/session/phase/retry/attempt facts.
+Shared strict release selection also rejects missing/malformed/conflicting history,
+unsafe ranges, unrelated owners, held deferrals and unsafe breaker/exchange state.
+Active move/Pause controls and current producers also refuse.
+
+One `BEGIN IMMEDIATE` transaction appends `thread_delivery_startup_release`
+(agent `daemon`, task_id = the existing real thread ID), applies the existing
+running-slot CAS and mints one covering queued replacement, with its wake audit.
+The companion uses a separate daemon command/record, never founder confirmation.
+An independent reader validates the prospective complete graph before COMMIT.
+Original lifecycle rows, sticky `failed_cleanup`, history and earlier audits stay
+byte-for-byte intact. Existing invocation `failed`/normal replacement admission
+are reused; acknowledgement, breaker and held state are not reset. No TaskStatus
+or transition is added. Later ORIGINAL lifecycle writes revoke delivery permission;
+raw safety/diagnostic census remains unchanged.
+
+Capture and the whole release pass each use the existing cooperative bounded
+reader allowance (3s/1024 rows/4MiB/256 statements/5M steps), without per-record
+budget renewal. Every captured record gets at most one attempt this boot; no
+retry loop, timer or dynamic rescan exists. Exhaustion/error before COMMIT rolls
+back the entire record transaction and retains diagnostic visibility. Unknown
+COMMIT or unsafe rollback/settings restoration aborts that org's A4 startup tail; it never authorizes
+a retry in that boot. These are cooperative bounds, not hard OS I/O guarantees.
+The broader dormant founder risk override and active #1273 attestation keep their
+existing authority and behavior. Source delivery does not repair a live daemon.
+
+Automatic companion interpretation is thread-local: startup's global preflight
+validates the unchanged human family, and cutover/recovery validate the complete
+automatic family for each visited thread. The automatic writer likewise reads
+that thread's automatic family plus the complete human family, including its
+independent prospective closing validation. No automatic permission depends on
+unrelated threads. Later history still receives full strict validation within
+the existing allowance. If an automatic delivery read exhausts it, discard all
+partial permission and return an explicit unavailable-thread view after snapshot
+and settings restoration. That thread stays stuck and visible in raw diagnostics;
+startup and unrelated delivery continue. Exhaustion never means absence. Human
+inventory errors and unsafe rollback/settings restoration still propagate.
 
 ### Ordinary Pause-unknown crash recovery (THR-350)
 
@@ -991,7 +1109,7 @@ No native visit recovery or original host settlement is inferred. Existing
 unknown-owner rules, repository/mixed U5 hold and the rule to
 roll back only with no nonterminal sequential Pause entries remain unchanged.
 The settings-generation limitation at this U3e-2 checkpoint is historical:
-[U9 Option A](../../superpowers/specs/2026-11-12-sequential-coding-u9.md#mounted-atomic-boundary-and-pin-compatibility-repair-task-15624)
+[U9 Option A](../../specs/2026-11-12-sequential-coding-u9.md#mounted-atomic-boundary-and-pin-compatibility-repair-task-15624)
 supersedes the newer-generation continuation veto. Admitted runs validate their
 original Allowed pins; fresh selection and engine prepare-admission require
 latest Allowed settings. Native recovery and settlement uncertainty remain.
@@ -1028,7 +1146,7 @@ generation/digest/admission snapshot through admission replay, lifecycle and the
 cancel fence after a newer Allowed or Disabled generation. Fresh
 `sequential_start._selection` and engine `_prepare_admission` independently
 require latest Allowed settings; invalid/missing/originally Disabled pins refuse.
-See [U9's mounted boundary and pin compatibility repair](../../superpowers/specs/2026-11-12-sequential-coding-u9.md#mounted-atomic-boundary-and-pin-compatibility-repair-task-15624).
+See [U9's mounted boundary and pin compatibility repair](../../specs/2026-11-12-sequential-coding-u9.md#mounted-atomic-boundary-and-pin-compatibility-repair-task-15624).
 Only the historical settings veto is superseded: cancellation still does not
 consult the marker, marker removal creates no settings generation, and the
 no-nonterminal-sequential-Pause rollback rule remains. Original native/receipt
@@ -1095,7 +1213,7 @@ positive original null-visit source-outer evidence. U3e-1b-ii owns that separate
 producer and manager skill instructions. Existing U3e-1a cancellation, U3e-2
 caller return, default Disabled admission, repository/mixed U5 successful-output hold,
 Pause backout remains controlling. The stale-settings continuation limit is
-historical and superseded by [U9 Option A](../../superpowers/specs/2026-11-12-sequential-coding-u9.md#mounted-atomic-boundary-and-pin-compatibility-repair-task-15624):
+historical and superseded by [U9 Option A](../../specs/2026-11-12-sequential-coding-u9.md#mounted-atomic-boundary-and-pin-compatibility-repair-task-15624):
 admission replay, lifecycle and the cancel fence retain admitted original Allowed
 pins after newer Allowed or Disabled settings; fresh selection and engine
 prepare-admission still require latest Allowed settings. Marker removal refuses
@@ -1217,7 +1335,7 @@ original budget. The repository-success hold and foreign-result refusal have
 zero new proof serializations, matching B. No reset/refund or protected fragment
 change follows; NEW uncharged work beyond F-U3f-AUTH/ENTRY/MOVE requires STOP.
 See [the current contract](reusable-workflows.md#u3f--u5a-document-witnesses-and-addressed-delivery)
-and [U3f source record](../../superpowers/specs/2026-11-09-sequential-document-witness-u3f.md).
+and [U3f source record](../../specs/2026-11-09-sequential-document-witness-u3f.md).
 
 
 ## U6a history inventory and native ownership
@@ -1230,7 +1348,7 @@ keeps audit/CAS COMMIT before opaque controls outside locks; mixed ancestor
 cancellation still refuses. U6b must compose native root-tail consumers before
 attachment. Ended SID, missing PID, launcher TERM/INT and successful Stop request
 remain insufficient settlement/cancellation proof. See the
-[U6 split](../../superpowers/specs/2026-11-11-sequential-coding-u6.md).
+[U6 split](../../specs/2026-11-11-sequential-coding-u6.md).
 
 
 ## U6b1 native handoff remains unmounted
@@ -1242,7 +1360,7 @@ settlement. Prepared/unknown/running owners and original Final receipt uncertain
 stay retained. Cancelled sequential dependencies conservatively retain the
 incomplete disposition until U6b2 composes positive original-owner evidence and
 the native-tail consumer. Existing native-tail/Founder cancellation behavior and
-Pause generations remain unchanged. See the [U6 split](../../superpowers/specs/2026-11-11-sequential-coding-u6.md).
+Pause generations remain unchanged. See the [U6 split](../../specs/2026-11-11-sequential-coding-u6.md).
 
 
 ## U6b2a original-owner qualification, without attachment
@@ -1258,7 +1376,7 @@ insufficient. A positive result qualifies only that original owner, never the
 whole root; no aggregate teardown-incomplete flag may be cleared from it.
 Native consumers and Founder cancellation stay unchanged until U6b2b composes
 every captured owner, live retained-family overlays and the complete attachment.
-See the [U6 split](../../superpowers/specs/2026-11-11-sequential-coding-u6.md).
+See the [U6 split](../../specs/2026-11-11-sequential-coding-u6.md).
 
 
 ## U6b2b original-owner aggregate (TASK-15349)
@@ -1281,7 +1399,7 @@ unsettled outer, failed control or route failure supplies one incomplete batch.
 No attempted transition is reset/retried. Lost memory grants no recovery action.
 This does not alter Pause admission generation or Final action/receipt uncertainty,
 or treat launcher TERM/INT, ended SID or missing PID as product cancellation.
-See the [U6 composition table](../../superpowers/specs/2026-11-11-sequential-coding-u6.md#u6b2b-mounted-composition-task-15349).
+See the [U6 composition table](../../specs/2026-11-11-sequential-coding-u6.md#u6b2b-mounted-composition-task-15349).
 
 The original document terminal writer (also inherited by review) preserves a
 native row already stamped cancelled by the mixed stop. It emits its unchanged

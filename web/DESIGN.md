@@ -12,6 +12,22 @@
 # is retained as the DESIGN.md specification reference. The implementation
 # tokens.css diverges per the Pasture foundation; the semantic token
 # NAMES are identical, only VALUES changed.
+#
+# SUPERSEDED ROWS (2026-11-17, THR-376 PR1): rows marked "SUPERSEDED
+# (Pasture)" below no longer describe the product. Pasture values win:
+# id.thread / id.task (and badge id_thread / id_task) = --color-info blue;
+# status escalated (and badge status_escalated) = attention amber via
+# semanticTone; JetBrains Mono is self-hosted from /fonts (no "Local" face).
+# THR-376 PR2 adds: layout.grid.app_shell 48px topbar row and
+# components.topbar = Pasture .topbar (56px, --bg 80% translucent,
+# Newsreader 18/500 title, 26px padding). The active sidebar nav row is
+# Pasture accent-soft / accent-text / 600 with no left marker (this file
+# has no sidebar-nav row; see DESIGN_SYSTEM.md).
+# THR-376 PR3 adds: semantic text secondary/muted, accent default/hover,
+# tier green, agent founder, status open/archived and feedback
+# success/info rows follow the founder-approved WCAG AA Pasture values in
+# web/design/pasture-ds.css (see DESIGN_SYSTEM.md "Colour contrast").
+# The rest of this file is unchanged historical reference (Phase 4 rewrites it).
 
 name: HappyRanch Founder Console
 version: 0.1.0
@@ -97,20 +113,20 @@ colors:
         scrim:         "rgba(0, 0, 0, 0.55)"        # modal backdrop
       text:
         primary:       "{colors.palette.ink_100}"   # body text, message bodies
-        secondary:     "{colors.palette.ink_300}"   # meta, labels, timestamps
-        muted:         "{colors.palette.ink_400}"   # placeholders, disabled labels
+        secondary:     "{colors.palette.ink_300}"   # meta, labels, timestamps   # SUPERSEDED (Pasture): --color-text-secondary (ink-2)
+        muted:         "{colors.palette.ink_400}"   # placeholders, disabled labels   # SUPERSEDED (Pasture): --color-text-muted (ink-3)
         inverse:       "{colors.palette.ink_900}"   # text on accent fills
       border:
         subtle:        "{colors.palette.ink_800}"   # divider between siblings
         default:       "{colors.palette.ink_700}"   # input border, card edge
         strong:        "{colors.palette.ink_600}"   # focused / hovered border
       accent:
-        default:       "{colors.palette.signal_500}"
-        hover:         "{colors.palette.signal_400}"
+        default:       "{colors.palette.signal_500}"   # SUPERSEDED (Pasture): --color-accent-default
+        hover:         "{colors.palette.signal_400}"   # SUPERSEDED (Pasture): --color-accent-hover (accent-press)
         muted:         "rgba(24, 148, 211, 0.12)"   # signal_500 @ 12% — tinted bg
         ring:          "rgba(24, 148, 211, 0.45)"   # focus ring
       tier:
-        green:         "{colors.palette.green_500}"
+        green:         "{colors.palette.green_500}"   # SUPERSEDED (Pasture): --color-tier-green (positive)
         green_tint:    "rgba(46, 163, 106, 0.14)"
         yellow:        "{colors.palette.amber_500}"
         yellow_tint:   "rgba(202, 167, 42, 0.14)"
@@ -119,22 +135,22 @@ colors:
       agent:
         manager:       "{colors.palette.violet_500}"   # 6px dot
         worker:        "{colors.palette.teal_500}"
-        founder:       "{colors.palette.signal_400}"   # founder is "you"
+        founder:       "{colors.palette.signal_400}"   # founder is "you"   # SUPERSEDED (Pasture): --color-agent-founder (accent)
       status:
-        open:          "{colors.palette.green_500}"
+        open:          "{colors.palette.green_500}"   # SUPERSEDED (Pasture): --color-status-open (positive)
         archiving:     "{colors.palette.amber_500}"
-        archived:      "{colors.palette.ink_400}"   # greyed — terminal, neutral
+        archived:      "{colors.palette.ink_400}"   # greyed — terminal, neutral   # SUPERSEDED (Pasture): --color-status-archived
         abandoned:     "{colors.palette.red_500}"
         blocked:       "{colors.palette.amber_500}"
-        escalated:     "{colors.palette.red_500}"
+        escalated:     "{colors.palette.red_500}"   # SUPERSEDED (Pasture): attention amber
       id:
-        thread:        "{colors.palette.signal_300}"   # THR-NNN monospace tint
-        task:          "{colors.palette.violet_300}"   # TASK-NNN monospace tint
+        thread:        "{colors.palette.signal_300}"   # THR-NNN monospace tint — SUPERSEDED (Pasture): --color-info
+        task:          "{colors.palette.violet_300}"   # TASK-NNN monospace tint — SUPERSEDED (Pasture): --color-info
       feedback:
-        success:       "{colors.palette.green_500}"
+        success:       "{colors.palette.green_500}"   # SUPERSEDED (Pasture): --color-feedback-success (positive)
         warning:       "{colors.palette.amber_500}"
         danger:        "{colors.palette.red_500}"
-        info:          "{colors.palette.signal_400}"
+        info:          "{colors.palette.signal_400}"   # SUPERSEDED (Pasture): --color-feedback-info (info)
 
     light:
       surface:
@@ -145,20 +161,20 @@ colors:
         scrim:         "rgba(12, 13, 15, 0.35)"
       text:
         primary:       "{colors.palette.ink_900}"
-        secondary:     "{colors.palette.ink_600}"
-        muted:         "{colors.palette.ink_500}"
+        secondary:     "{colors.palette.ink_600}"   # SUPERSEDED (Pasture): --color-text-secondary (ink-2)
+        muted:         "{colors.palette.ink_500}"   # SUPERSEDED (Pasture): --color-text-muted (ink-3)
         inverse:       "{colors.palette.ink_025}"
       border:
         subtle:        "{colors.palette.ink_100}"
         default:       "{colors.palette.ink_200}"
         strong:        "{colors.palette.ink_300}"
       accent:
-        default:       "{colors.palette.signal_600}"
-        hover:         "{colors.palette.signal_700}"
+        default:       "{colors.palette.signal_600}"   # SUPERSEDED (Pasture): --color-accent-default
+        hover:         "{colors.palette.signal_700}"   # SUPERSEDED (Pasture): --color-accent-hover (accent-press)
         muted:         "rgba(16, 120, 176, 0.10)"
         ring:          "rgba(16, 120, 176, 0.35)"
       tier:
-        green:         "{colors.palette.green_700}"
+        green:         "{colors.palette.green_700}"   # SUPERSEDED (Pasture): --color-tier-green (positive)
         green_tint:    "rgba(30, 122, 76, 0.10)"
         yellow:        "{colors.palette.amber_700}"
         yellow_tint:   "rgba(160, 113, 7, 0.10)"
@@ -167,22 +183,22 @@ colors:
       agent:
         manager:       "{colors.palette.violet_500}"
         worker:        "{colors.palette.teal_500}"
-        founder:       "{colors.palette.signal_600}"
+        founder:       "{colors.palette.signal_600}"   # SUPERSEDED (Pasture): --color-agent-founder (accent)
       status:
-        open:          "{colors.palette.green_700}"
+        open:          "{colors.palette.green_700}"   # SUPERSEDED (Pasture): --color-status-open (positive)
         archiving:     "{colors.palette.amber_700}"
-        archived:      "{colors.palette.ink_500}"
+        archived:      "{colors.palette.ink_500}"   # SUPERSEDED (Pasture): --color-status-archived
         abandoned:     "{colors.palette.red_700}"
         blocked:       "{colors.palette.amber_700}"
-        escalated:     "{colors.palette.red_700}"
+        escalated:     "{colors.palette.red_700}"   # SUPERSEDED (Pasture): attention amber
       id:
-        thread:        "{colors.palette.signal_600}"
-        task:          "{colors.palette.violet_500}"
+        thread:        "{colors.palette.signal_600}"   # SUPERSEDED (Pasture): --color-info
+        task:          "{colors.palette.violet_500}"   # SUPERSEDED (Pasture): --color-info
       feedback:
-        success:       "{colors.palette.green_700}"
+        success:       "{colors.palette.green_700}"   # SUPERSEDED (Pasture): --color-feedback-success (positive)
         warning:       "{colors.palette.amber_700}"
         danger:        "{colors.palette.red_700}"
-        info:          "{colors.palette.signal_600}"
+        info:          "{colors.palette.signal_600}"   # SUPERSEDED (Pasture): --color-feedback-info (info)
 
 # -------------------------------------------------------------------- #
 # 2. Typography — two families. Generous body, dense meta, mono-first  #
@@ -203,6 +219,8 @@ typography:
     # taller x-height than Fira Code and tighter columns than IBM Plex
     # Mono — better density in tight badges.
     mono:
+      # SUPERSEDED (Pasture): no "JetBrains Mono Local" face; tokens.css self-hosts
+      # JetBrains Mono 400–600 from /fonts/JetBrainsMono-wght.ttf.
       stack: '"JetBrains Mono", "JetBrains Mono Local", ui-monospace, "SF Mono", Menlo, Consolas, monospace'
       weights: [400, 500, 600]
     # No serif. We considered one for an editorial banner, rejected: an
@@ -257,7 +275,7 @@ layout:
 
   grid:
     app_shell:
-      rows: "48px 1fr 24px"          # topbar / body / statusbar
+      rows: "48px 1fr 24px"          # topbar / body / statusbar  # SUPERSEDED (Pasture): topbar 56px
       cols: "1fr"
     threads_page:
       cols: "340px 1fr"               # inbox / detail
@@ -423,9 +441,9 @@ components:
       status_archived:    { bg: "transparent",                              text: "{colors.semantic.dark.status.archived}",  border_color: "{colors.semantic.dark.border.subtle}" }
       status_abandoned:   { bg: "{colors.semantic.dark.tier.red_tint}",   text: "{colors.semantic.dark.status.abandoned}", border_color: "transparent" }
       status_blocked:     { bg: "{colors.semantic.dark.tier.yellow_tint}", text: "{colors.semantic.dark.status.blocked}",   border_color: "transparent" }
-      status_escalated:   { bg: "{colors.semantic.dark.tier.red_tint}",   text: "{colors.semantic.dark.status.escalated}",  border_color: "transparent" }
-      id_thread:          { bg: "transparent", text: "{colors.semantic.dark.id.thread}", border_color: "transparent", family: "mono" }
-      id_task:            { bg: "transparent", text: "{colors.semantic.dark.id.task}",   border_color: "transparent", family: "mono" }
+      status_escalated:   { bg: "{colors.semantic.dark.tier.red_tint}",   text: "{colors.semantic.dark.status.escalated}",  border_color: "transparent" }  # SUPERSEDED (Pasture): attention amber
+      id_thread:          { bg: "transparent", text: "{colors.semantic.dark.id.thread}", border_color: "transparent", family: "mono" }  # SUPERSEDED (Pasture): --color-info
+      id_task:            { bg: "transparent", text: "{colors.semantic.dark.id.task}",   border_color: "transparent", family: "mono" }  # SUPERSEDED (Pasture): --color-info
 
   agent_chip:
     # The agent name with a leading 6px role-colored dot. Used everywhere
@@ -440,7 +458,7 @@ components:
     color_text:    "{colors.semantic.dark.text.primary}"
 
   kbd_chip:
-    # The little keycaps in the HelpDrawer and inline hints.
+    # The little keycaps for inline key labels.
     bg: "{colors.semantic.dark.surface.raised}"
     text: "{colors.semantic.dark.text.primary}"
     border: "1px solid {colors.semantic.dark.border.default}"
@@ -450,11 +468,11 @@ components:
     font: "{typography.scale.mono_sm}"
     box_shadow: "inset 0 -1px 0 rgba(0, 0, 0, 0.4)"   # subtle keycap depth
 
-  topbar:
-    height: "48px"
-    bg: "{colors.semantic.dark.surface.sunken}"
-    border_bottom: "1px solid {colors.semantic.dark.border.subtle}"
-    padding_x: "{layout.spacing.4}"
+  topbar:   # SUPERSEDED (Pasture): .topbar 56px, --bg 80% translucent, 1px --border, padding 0 26px, title Newsreader 18/500
+    height: "48px"   # SUPERSEDED (Pasture): 56px
+    bg: "{colors.semantic.dark.surface.sunken}"   # SUPERSEDED (Pasture): color-mix(--bg 80%, transparent)
+    border_bottom: "1px solid {colors.semantic.dark.border.subtle}"   # SUPERSEDED (Pasture): 1px --border
+    padding_x: "{layout.spacing.4}"   # SUPERSEDED (Pasture): 26px
     elevation: "{elevation.1}"
 
   statusbar:
@@ -527,8 +545,8 @@ components:
     backdrop: "{colors.semantic.dark.surface.scrim}"
 
   drawer:
-    # Right-side slide-out. Reserved for HelpDrawer in v1; designed so the
-    # future "Agent detail" drawer (clicking an agent_chip) drops in.
+    # Right-side slide-out, designed so the future "Agent detail" drawer
+    # (clicking an agent_chip) drops in.
     width: "20rem"                # 320px
     elevation: "{elevation.3}"
     bg: "{colors.semantic.dark.surface.overlay}"
@@ -581,8 +599,8 @@ elevation, except where elevation actually means "this is floating
 above the page" (popovers, modals, drawers).
 
 Why this matters for HappyRanch specifically: every screen carries org slug,
-agent identity, IDs (THR-NNN / TASK-NNN), tier color, timestamps, status,
-keyboard hints. If the chrome is loud, the signal disappears. The design
+agent identity, IDs (THR-NNN / TASK-NNN), tier color, timestamps and
+status. If the chrome is loud, the signal disappears. The design
 language is built to make the *data* the foreground and the *UI* the
 parchment.
 
@@ -725,7 +743,7 @@ on intent for the founder-facing inventory:
 - **Dialog** is 512px wide, never page-wide. The product has dialogs for
   *actions*, not for content; if a screen needs a wider surface, it's a
   page, not a dialog.
-- **Drawer** is reserved for right-side panels: HelpDrawer today, future
+- **Drawer** is reserved for right-side panels, such as a future
   "Agent detail" sidecar from clicking an AgentChip.
 - **ToastQueue** docks bottom-right. 22rem wide. Variants are
   border-left-colored, not background-tinted — toasts are interruptive
@@ -773,7 +791,7 @@ tier/status/feedback semantic tokens or propose a new semantic token —
 do not invent a magenta because "we needed something different."
 
 **DON'T** all-caps form labels. Only the `overline` step is uppercase,
-used for section headers (INBOX, PARTICIPANTS, SHORTCUTS). Field labels
+used for section headers (INBOX, PARTICIPANTS). Field labels
 use the `label` step in title case.
 
 **DON'T** animate inbox/list state changes. Power users notice movement
@@ -787,5 +805,5 @@ sub-routes under Audit. If a sixth needs a top-level slot, we are
 designing a different product.
 
 **DON'T** use icon-only buttons for destructive actions. Archive and
-Abandon are text buttons with a keyboard hint. Icon-only is fine for
+Abandon are text buttons. Icon-only is fine for
 "refresh" and "filter clear"; never for "destroy this thread."

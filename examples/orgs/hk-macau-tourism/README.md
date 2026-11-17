@@ -7,7 +7,7 @@ exists in the platform; this example shows how to assemble them.
 
 The canonical recipe is documented in the KB at `goal-pattern-on-working-hours`.
 The working-hours feature design lives in the spec at
-`docs/superpowers/specs/2026-06-10-working-hours-design.md`.
+`docs/specs/2026-06-10-working-hours-design.md`.
 
 ## The six-part goal sentence
 

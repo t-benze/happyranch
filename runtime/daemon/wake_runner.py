@@ -444,6 +444,13 @@ async def _run_wake(
             return
         result = launch.payload
 
+    from runtime.skills.usage import observe_skill_use
+
+    observe_skill_use(
+        org_state.db, result, org_slug=org_state.slug, agent_name=record.agent_name,
+        task_id=None, session_context="wake", executor=executor_name,
+    )
+
     if getattr(result, "token_usage", None) is not None:
         org_state.db.insert_session_token_usage(
             task_id=None,

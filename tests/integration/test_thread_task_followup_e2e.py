@@ -6,7 +6,7 @@ dispatching agent with purpose=task_followup so it can post the reply it
 promised. These tests verify the full wiring: dispatch → task run → followup
 system message → followup agent invocation → followup reply.
 
-Spec: docs/superpowers/specs/2026-05-28-thread-task-followup-design.md §11
+Spec: docs/specs/2026-05-28-thread-task-followup-design.md §11
 """
 from __future__ import annotations
 

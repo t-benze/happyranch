@@ -65,7 +65,7 @@ and independent RO original-inventory equality; uncertain proof is `unknown`
 The existing offline backup remains operator-created and untouched; A4 owns
 automatic bootstrap/phase publication. I2 removes inline physical checks;
 the daily read-only report is I1b. See the
-[I1a contract](../superpowers/specs/2026-11-14-automatic-workflow-setup.md).
+[I1a contract](../specs/2026-11-14-automatic-workflow-setup.md).
 
 Database owns composed native trace registration through `observe_trace`; native
 connection type, constructor and independent authorizer/progress slots stay exact.
@@ -85,7 +85,7 @@ never PASS. Retain the once-only original pre-A0b-2 observation of that private
 image; continuation and head re-verification must not repeat it.
 Installed happyranch FIRST/NEXT/Pause/all-org-tail capacity acceptance belongs to
 I2, on its fresh base and capture; all other A0b-2 cases remain required. No cap,
-check, deadline or caller changes here. The current [I2 policy](../superpowers/specs/2026-11-14-automatic-workflow-setup.md#i2-load-and-revalidation-policy)
+check, deadline or caller changes here. The current [I2 policy](../specs/2026-11-14-automatic-workflow-setup.md#i2-load-and-revalidation-policy)
 requires successful primary/tail reads under the 10s all-org envelope.
 Automatic install stays size-guarded/held for over-budget orgs; no setup or
 operating authority follows.
@@ -153,7 +153,7 @@ selection transfers its original SH into the normal loader. The same
 remain; these clocks are not a hard bound on filesystem I/O. Native supervision,
 registration and startup are mounted; whole-listener acceptance is separate.
 See the historical
-[discovery checkpoint](../superpowers/specs/2026-11-14-automatic-workflow-setup.md#a4-original-discovery-and-upgrade-window-checkpoint).
+[discovery checkpoint](../specs/2026-11-14-automatic-workflow-setup.md#a4-original-discovery-and-upgrade-window-checkpoint).
 
 ## Explicit check/install interface (isolated copies executed)
 
@@ -181,7 +181,7 @@ acceptance remains separate.
 
 The A4 draft added an optional pre-COMMIT coordinator callback to the owning
 primitive and a private durable phase publisher. The offline interface above
-does not select either automatically. See the [A4 checkpoint](../superpowers/specs/2026-11-14-automatic-workflow-setup.md#a4-phase-publication-and-commit-boundary-checkpoint)
+does not select either automatically. See the [A4 checkpoint](../specs/2026-11-14-automatic-workflow-setup.md#a4-phase-publication-and-commit-boundary-checkpoint)
 for their historical boundary before startup integration. These source
 owners grant no live install, restart, restore or retry authority.
 
@@ -191,7 +191,7 @@ native coherent RO WAL snapshot, exact preservation inventory, exclusive native
 online backup, file/directory fsync and independent RO full-integrity/inventory/
 hash verification before backup_verified. Its failed/partial backup is retained;
 original close uncertainty never becomes retry authority. The [source/backup
-checkpoint](../superpowers/specs/2026-11-14-automatic-workflow-setup.md#a4-coherent-source-and-verified-backup-checkpoint)
+checkpoint](../specs/2026-11-14-automatic-workflow-setup.md#a4-coherent-source-and-verified-backup-checkpoint)
 records the then-remaining volume, rehearsal and startup integration gates.
 The offline commands below still require their own explicit checkpointed image and guards.
 
@@ -202,7 +202,7 @@ original read exhaustion, insufficient rehearsal-volume headroom or pre-COMMIT
 time refuse before any source writer. Scratch is outside backup/output storage
 and is disposable only after positive original closure and directory identity
 checks. That checkpoint added no source restore, live native-owner inference or
-automatic caller. See the [rehearsal checkpoint](../superpowers/specs/2026-11-14-automatic-workflow-setup.md#a4-private-writable-rehearsal-checkpoint);
+automatic caller. See the [rehearsal checkpoint](../specs/2026-11-14-automatic-workflow-setup.md#a4-private-writable-rehearsal-checkpoint);
 the offline commands and their explicit guards remain unchanged.
 
 The writer checkpoint's then-unmounted `BootstrapInstall` composed original
@@ -219,7 +219,7 @@ creation. The supervised helper must select its private writable
 SQLITE_TMPDIR before SQLite work. These observations do not reserve disk blocks.
 This is a source stage, not an added command or live migration authorization.
 Original-owner qualification, parent supervision, registration/audit/status and
-automatic startup integration were still required at that checkpoint. See the [writer boundary](../superpowers/specs/2026-11-14-automatic-workflow-setup.md#a4-original-writer-and-independent-reopen-checkpoint).
+automatic startup integration were still required at that checkpoint. See the [writer boundary](../specs/2026-11-14-automatic-workflow-setup.md#a4-original-writer-and-independent-reopen-checkpoint).
 
 The selection checkpoint's then-unmounted `BootstrapSelection` added no command
 or setup action. Its bounded read-only routing honors prior attempt latches before SQL and closes its original

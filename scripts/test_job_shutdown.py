@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import ExitStack
+import fcntl
 import importlib.util
 import os
 from pathlib import Path
@@ -10,6 +11,8 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 from types import ModuleType, SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
@@ -247,6 +250,250 @@ class ShutdownTests(unittest.IsolatedAsyncioTestCase):
 
 
 class StopPolicyTests(unittest.TestCase):
+    def lock_holder(self, home: Path) -> subprocess.Popen:
+        child = subprocess.Popen([sys.executable, "-B", "-c", """
+import fcntl, pathlib, sys, time
+with (pathlib.Path(sys.argv[1]) / 'daemon.lock').open('a+') as lock:
+    fcntl.flock(lock, fcntl.LOCK_EX)
+    print('locked', flush=True)
+    time.sleep(60)
+""", str(home)], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        self.addCleanup(self.reap, child)
+        self.assertEqual(child.stdout.readline().strip(), "locked")
+        return child
+
+    @staticmethod
+    def reap(child: subprocess.Popen) -> None:
+        if child.poll() is None:
+            child.kill()
+        child.communicate(timeout=5)
+
+    def run_stop(self, home: Path, entrypoint: str) -> subprocess.CompletedProcess:
+        command = (["bash", str(ROOT / "scripts/daemon.sh"), "stop"]
+            if entrypoint == "shell" else [sys.executable, "-B", "-c", """
+import os
+from pathlib import Path
+from scripts.migrate_opc_to_grassland import stop_daemon_if_running
+stop_daemon_if_running(Path(os.environ['HAPPYRANCH_DAEMON_HOME']), dry=False)
+"""])
+        return subprocess.run(command, cwd=ROOT,
+            env={**os.environ, "HAPPYRANCH_DAEMON_HOME": str(home)},
+            capture_output=True, text=True, timeout=10)
+
+    def seed_pid(self, home: Path, state: str) -> str | None:
+        if state == "missing":
+            return None
+        dead = subprocess.Popen([sys.executable, "-B", "-c", "pass"])
+        dead.wait(timeout=5)
+        pid = str(dead.pid)
+        (home / "daemon.pid").write_text(pid)
+        return pid
+
+    def assert_lock_held(self, home: Path) -> None:
+        with (home / "daemon.lock").open() as lock:
+            with self.assertRaises(BlockingIOError):
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    def migration_fixture(self, user_home: Path, home_name: str) -> tuple[Path, Path]:
+        home = user_home / home_name
+        home.mkdir()
+        runtime = user_home / "fixture-runtime"
+        runtime.mkdir()
+        (runtime / "opc.yaml").write_text("fixture: legacy config\n")
+        (home / "runtimes.yaml").write_text(f"registered:\n- {runtime}\nactive: {runtime}\n")
+        return home, runtime
+
+    def run_migration(self, home: Path, *args: str) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            [sys.executable, "-B", str(ROOT / "scripts/migrate_opc_to_grassland.py"), *args],
+            cwd=ROOT, env={**os.environ, "HOME": str(home.parent)},
+            capture_output=True, text=True, timeout=10)
+
+    def test_migration_cli_refuses_held_or_unsafe_selected_home(self) -> None:
+        for home_name in (".opc", ".happyranch"):
+            for state in ("missing", "stale"):
+                for kind in ("held", "symlink"):
+                    with self.subTest(home=home_name, pid=state, lock=kind), tempfile.TemporaryDirectory() as temp, ExitStack() as stack:
+                        home, runtime = self.migration_fixture(Path(temp), home_name)
+                        pid = self.seed_pid(home, state)
+                        if kind == "held":
+                            holder = self.lock_holder(home)
+                            stack.callback(self.reap, holder)
+                        else:
+                            target = home / "lock-target"
+                            target.write_text("retained lock target")
+                            (home / "daemon.lock").symlink_to(target)
+                        before = {p: p.read_bytes() for p in home.rglob("*") if p.is_file()}
+                        lock_stat = (home / "daemon.lock").lstat()
+                        result = self.run_migration(home)
+                        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                        self.assertIn(str(home / "daemon.lock"), result.stderr)
+                        self.assertIn(pid or "unavailable", result.stderr)
+                        self.assertNotIn("step 3:", result.stdout)
+                        self.assertEqual((runtime / "opc.yaml").read_text(), "fixture: legacy config\n")
+                        self.assertFalse((runtime / "happyranch.yaml").exists())
+                        self.assertEqual({p: p.read_bytes() for p in home.rglob("*") if p.is_file()}, before)
+                        self.assertEqual((home / "daemon.lock").lstat().st_ino, lock_stat.st_ino)
+                        if kind == "held":
+                            self.assertIsNone(holder.poll())
+                            self.assert_lock_held(home)
+                        else:
+                            self.assertTrue((home / "daemon.lock").is_symlink())
+
+    def test_migration_cli_accepts_absent_or_free_selected_home_lock(self) -> None:
+        for home_name in (".opc", ".happyranch"):
+            for present in (False, True):
+                with self.subTest(home=home_name, lock=present), tempfile.TemporaryDirectory() as temp:
+                    home, runtime = self.migration_fixture(Path(temp), home_name)
+                    pid = self.seed_pid(home, "stale")
+                    if present:
+                        (home / "daemon.lock").write_text("retained lock evidence")
+                        inode = (home / "daemon.lock").stat().st_ino
+                    result = self.run_migration(home)
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertIn("migration complete.", result.stdout)
+                    self.assertFalse((runtime / "opc.yaml").exists())
+                    self.assertEqual((runtime / "happyranch.yaml").read_text(), "fixture: legacy config\n")
+                    selected = home.parent / ".happyranch"
+                    self.assertEqual((selected / "daemon.pid").read_text(), pid)
+                    self.assertEqual((selected / "daemon.lock").exists(), present)
+                    if present:
+                        self.assertEqual((selected / "daemon.lock").read_text(), "retained lock evidence")
+                        self.assertEqual((selected / "daemon.lock").stat().st_ino, inode)
+                        with (selected / "daemon.lock").open() as lock:
+                            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    def test_migration_cli_dry_run_preserves_live_selected_home(self) -> None:
+        for home_name in (".opc", ".happyranch"):
+            with self.subTest(home=home_name), tempfile.TemporaryDirectory() as temp, ExitStack() as stack:
+                home, runtime = self.migration_fixture(Path(temp), home_name)
+                holder = self.lock_holder(home)
+                stack.callback(self.reap, holder)
+                (home / "daemon.pid").write_text(str(holder.pid))
+                before = {p: p.read_bytes() for p in home.rglob("*") if p.is_file()}
+                lock_inode = (home / "daemon.lock").stat().st_ino
+                result = self.run_migration(home, "--dry-run")
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn("rename: opc.yaml -> happyranch.yaml", result.stdout)
+                self.assertIn("(dry-run)", result.stdout)
+                self.assertTrue((runtime / "opc.yaml").exists())
+                self.assertEqual((runtime / "opc.yaml").read_text(), "fixture: legacy config\n")
+                self.assertFalse((runtime / "happyranch.yaml").exists())
+                self.assertEqual({p: p.read_bytes() for p in home.rglob("*") if p.is_file()}, before)
+                self.assertEqual((home / "daemon.lock").stat().st_ino, lock_inode)
+                self.assertIsNone(holder.poll())
+                self.assert_lock_held(home)
+
+    def test_missing_or_stale_pid_refuses_held_lock(self) -> None:
+        for entrypoint in ("shell", "migration"):
+            for state in ("missing", "stale"):
+                with self.subTest(entrypoint=entrypoint, pid=state), tempfile.TemporaryDirectory() as temp, ExitStack() as stack:
+                    home = Path(temp)
+                    pid = self.seed_pid(home, state)
+                    (home / "daemon.port").write_text("1234")
+                    holder = self.lock_holder(home)
+                    stack.callback(self.reap, holder)
+                    lock_stat = (home / "daemon.lock").stat()
+                    started = time.monotonic()
+                    result = self.run_stop(home, entrypoint)
+                    elapsed = time.monotonic() - started
+                    self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertIn(str(home / "daemon.lock"), result.stderr)
+                    if pid is not None:
+                        self.assertIn(pid, result.stderr)
+                    self.assertGreaterEqual(elapsed, 1.8)
+                    self.assertLess(elapsed, 8)
+                    self.assertIsNone(holder.poll())
+                    self.assert_lock_held(home)
+                    self.assertEqual((home / "daemon.lock").stat().st_ino, lock_stat.st_ino)
+                    self.assertEqual((home / "daemon.port").read_text(), "1234")
+                    self.assertEqual((home / "daemon.pid").read_text() if pid else None, pid)
+
+    def test_missing_or_stale_pid_accepts_free_or_absent_lock(self) -> None:
+        for entrypoint in ("shell", "migration"):
+            for state in ("missing", "stale"):
+                for present in (False, True):
+                    with self.subTest(entrypoint=entrypoint, pid=state, lock=present), tempfile.TemporaryDirectory() as temp:
+                        home = Path(temp)
+                        self.seed_pid(home, state)
+                        lock_path = home / "daemon.lock"
+                        if present:
+                            lock_path.write_text("retained evidence")
+                            inode = lock_path.stat().st_ino
+                        result = self.run_stop(home, entrypoint)
+                        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                        self.assertEqual(lock_path.exists(), present)
+                        if present:
+                            self.assertEqual(lock_path.read_text(), "retained evidence")
+                            self.assertEqual(lock_path.stat().st_ino, inode)
+                            with lock_path.open() as lock:
+                                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                                fcntl.flock(lock, fcntl.LOCK_UN)
+
+    def test_stop_refuses_unsafe_lock_evidence(self) -> None:
+        for entrypoint in ("shell", "migration"):
+            for kind in ("symlink", "dangling", "directory", "fifo", "unreadable"):
+                with self.subTest(entrypoint=entrypoint, kind=kind), tempfile.TemporaryDirectory() as temp:
+                    home = Path(temp)
+                    pid = self.seed_pid(home, "stale")
+                    lock = home / "daemon.lock"
+                    target = home / "target"
+                    if kind in ("symlink", "dangling"):
+                        if kind == "symlink":
+                            target.write_text("untouched")
+                        lock.symlink_to(target)
+                    elif kind == "directory":
+                        lock.mkdir()
+                    elif kind == "fifo":
+                        os.mkfifo(lock)
+                    else:
+                        lock.touch()
+                        lock.chmod(0)
+                    try:
+                        result = self.run_stop(home, entrypoint)
+                        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                        self.assertIn(str(lock), result.stderr)
+                        self.assertIn(pid, result.stderr)
+                        self.assertEqual((home / "daemon.pid").read_text(), pid)
+                        self.assertTrue(lock.exists() or lock.is_symlink())
+                        if kind == "symlink":
+                            self.assertEqual(target.read_text(), "untouched")
+                    finally:
+                        if kind == "unreadable":
+                            lock.chmod(0o600)
+
+    def test_exited_live_pid_still_requires_lock_release(self) -> None:
+        for entrypoint in ("shell", "migration"):
+            with self.subTest(entrypoint=entrypoint), tempfile.TemporaryDirectory() as temp, ExitStack() as stack:
+                home = Path(temp)
+                holder = self.lock_holder(home)
+                stack.callback(self.reap, holder)
+                child = subprocess.Popen([sys.executable, "-B", "-c", """
+import time
+print('ready', flush=True)
+time.sleep(60)
+"""], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                self.addCleanup(self.reap, child)
+                self.assertEqual(child.stdout.readline().strip(), "ready")
+                pid = str(child.pid)
+                (home / "daemon.pid").write_text(pid)
+                # Reap the actual signalled child so a zombie cannot masquerade
+                # as a live PID during the production kill(0) observation.
+                reaper = threading.Thread(target=child.wait, daemon=True)
+                reaper.start()
+                try:
+                    result = self.run_stop(home, entrypoint)
+                    self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertIn(str(home / "daemon.lock"), result.stderr)
+                    self.assertIn(pid, result.stderr)
+                    self.assertEqual(child.returncode, -signal.SIGTERM)
+                    self.assertEqual((home / "daemon.pid").read_text(), pid)
+                    self.assertIsNone(holder.poll())
+                    self.assert_lock_held(home)
+                finally:
+                    self.reap(child)
+                    reaper.join(timeout=5)
+
     def test_shell_stop_allows_sixty_seconds_before_kill(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             home = Path(temp)
@@ -260,11 +507,41 @@ bash "$1" stop
 """, "shutdown-test", str(ROOT / "scripts/daemon.sh")],
                 env={**os.environ, "HAPPYRANCH_DAEMON_HOME": str(home), "SHUTDOWN_TEST_LOG": str(log)},
                 capture_output=True, text=True, timeout=10)
-            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.returncode, 1, result.stderr)
             lines = log.read_text().splitlines()
             self.assertEqual(lines.count("sleep 1"), 60)
             self.assertLess(lines.index("kill -TERM 424242"), lines.index("sleep 1"))
-            self.assertEqual(lines[-1], "kill -KILL 424242")
+            self.assertEqual(lines.count("sleep 0.1"), 20)
+            self.assertLess(lines.index("kill -KILL 424242"), lines.index("sleep 0.1"))
+            self.assertIn("stop incomplete", result.stderr)
+            self.assertTrue((home / "daemon.pid").exists())
+            stop_command = ["bash", "-c", """
+kill() {
+    if [[ "${1:-}" == "-KILL" ]]; then killed=yes; return 0; fi
+    if [[ "${1:-}" == "-0" && "${killed:-}" == yes ]]; then return 1; fi
+    return 0
+}
+sleep() { :; }
+export -f kill sleep
+bash "$1" stop
+""", "shutdown-test", str(ROOT / "scripts/daemon.sh")]
+            holder = self.lock_holder(home)
+            try:
+                result = subprocess.run(stop_command,
+                    env={**os.environ, "HAPPYRANCH_DAEMON_HOME": str(home)},
+                    capture_output=True, text=True, timeout=10)
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertIn(str(home / "daemon.lock"), result.stderr)
+                self.assertTrue((home / "daemon.pid").exists())
+                self.assert_lock_held(home)
+            finally:
+                self.reap(holder)
+            result = subprocess.run(stop_command,
+                env={**os.environ, "HAPPYRANCH_DAEMON_HOME": str(home)},
+                capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("stopped after KILL", result.stdout)
+            self.assertFalse((home / "daemon.pid").exists())
 
     def test_desktop_daemon_stop_and_service_allow_sixty_seconds(self) -> None:
         window = load_script("shutdown_window", "packaging/linux/desktop/happyranch_window.py")
@@ -292,9 +569,33 @@ bash "$1" stop
             home = Path(temp)
             (home / "daemon.pid").write_text("424242")
             with patch.object(migration.os, "kill") as kill, patch.object(migration.time, "sleep") as sleep:
+                with self.assertRaisesRegex(RuntimeError, "stop incomplete"):
+                    migration.stop_daemon_if_running(home, dry=False)
+            self.assertEqual(sleep.call_count, 80)
+            self.assertIn((424242, signal.SIGKILL), tuple(call.args for call in kill.call_args_list))
+            self.assertEqual(kill.call_args.args, (424242, 0))
+            killed = False
+            def observe_exit(pid, sig):
+                nonlocal killed
+                if sig == signal.SIGKILL:
+                    killed = True
+                elif sig == 0 and killed:
+                    raise ProcessLookupError
+            holder = self.lock_holder(home)
+            real_sleep = time.sleep
+            try:
+                with patch.object(migration.os, "kill", side_effect=observe_exit), patch.object(
+                    migration.time, "sleep", side_effect=lambda seconds: real_sleep(seconds) if seconds < 1 else None
+                ):
+                    with self.assertRaisesRegex(RuntimeError, str(home / "daemon.lock")):
+                        migration.stop_daemon_if_running(home, dry=False)
+                self.assertEqual((home / "daemon.pid").read_text(), "424242")
+                self.assert_lock_held(home)
+            finally:
+                self.reap(holder)
+            killed = False
+            with patch.object(migration.os, "kill", side_effect=observe_exit), patch.object(migration.time, "sleep"):
                 migration.stop_daemon_if_running(home, dry=False)
-            self.assertEqual(sleep.call_count, 60)
-            self.assertEqual(kill.call_args.args, (424242, signal.SIGKILL))
 
 
 if __name__ == "__main__":

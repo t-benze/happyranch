@@ -1,6 +1,6 @@
 """End-to-end test for the autonomous blocked-by-job flow.
 
-Spec: docs/superpowers/specs/2026-05-28-task-blocked-by-job-design.md §9.2
+Spec: docs/specs/2026-05-28-task-blocked-by-job-design.md §9.2
 
 Covers the full autonomous happy-path:
   1. Agent submits a review_required=false job (auto-runs immediately).

@@ -310,7 +310,7 @@ export const COVERAGE_MANIFEST: readonly NamespaceCoverage[] = [
     namespace: 'help-and-palette',
     routeTokens: [],
     status: 'translated',
-    surfaces: ['HelpDrawerHost', 'CommandPaletteHost'],
+    surfaces: ['CommandPaletteHost'],
   },
   {
     namespace: 'prototypes',

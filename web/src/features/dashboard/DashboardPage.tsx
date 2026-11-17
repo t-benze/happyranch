@@ -13,7 +13,7 @@ import { IdentityName } from '@/shared/identities/IdentityName';
  * Pasture tokens (tokens.css) provide the full warm/green OKLCH palette
  * with Hanken Grotesk UI, Newsreader display serif, JetBrains Mono.
  *
- * Spec: docs/superpowers/specs/2026-05-30-dashboard-overhaul-design.md
+ * Spec: docs/specs/2026-05-30-dashboard-overhaul-design.md
  */
 import { useState, type ReactNode } from 'react';
 import { ChevronRight } from 'lucide-react';
@@ -25,6 +25,7 @@ import { Button } from '@/design-system/primitives/Button';
 import { ContentWrap } from '@/design-system/layouts/ContentWrap/ContentWrap';
 import { CrescentMoonBadge } from '@/design-system/patterns/CrescentMoonBadge';
 import { EmptyState } from '@/design-system/patterns/EmptyState';
+import { IdBadge } from '@/design-system/patterns/IdBadge';
 import { StatValue } from '@/design-system/patterns/StatValue';
 import { TONE_CLASS, type Tone } from '@/design-system/patterns/semanticTone';
 import type { ActivityVerdict } from '@/lib/api/types';
@@ -291,12 +292,12 @@ export function DashboardPage(): JSX.Element {
                         <IdentityName canonicalId={job.agent_name} />
                       </span>
                       <span className="text-text-muted font-mono text-xs">·</span>
-                      <span className="text-id-task font-mono text-xs">{job.id}</span>
+                      <IdBadge id={job.id} kind="job" />
                       <span className="text-text-primary text-sm">{job.title}</span>
                       {slug ? (
                         <Link
                           to={`/orgs/${slug}/jobs/${job.id}`}
-                          className="text-link-primary ml-auto text-sm hover:underline"
+                          className="text-accent-text ml-auto text-sm hover:underline"
                         >
                           {t('dashboard.waiting.reviewJob')}
                         </Link>

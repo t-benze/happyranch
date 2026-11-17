@@ -5,7 +5,7 @@
 | Status | build-spec |
 | Owner | product_lead |
 | Date | 2026-07-19 |
-| Source Links | THR-105 messages 1-20; PR #464 design spike `docs/superpowers/specs/2026-07-18-agent-scheduled-work-design.md`; KB `agent-todos-autonomous-scheduling-ruling` |
+| Source Links | THR-105 messages 1-20; PR #464 design spike `docs/specs/2026-07-18-agent-scheduled-work-design.md`; KB `agent-todos-autonomous-scheduling-ruling` |
 | Commitment Boundary | build-ready |
 | Founder Decisions | Required: none — all product decisions resolved via THR-105 seq19-20. Ruled: Fully-autonomous arming with mandatory normalization (seq19); user-facing label "Todos", internal primitive "Schedule" (seq19); v1 scope: one-shot + weekly recurrence, self-target only (seq19); founder-visible list/detail/pause/cancel/edit (seq19); default caps: 20 armed Todos per agent, 100 org-wide, 90-day one-shot horizon, 90-day recurring review/expiry unless explicitly marked indefinite (seq19); PRD #475 ratified as source of truth, defaults confirmed (seq20). |
 

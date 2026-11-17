@@ -31,7 +31,7 @@ The ordinary all-org load/listener gate remains <=10s, with unchanged 32M SQL,
 separate A/B/C limits and 5s complete readers. `startup_total`/`workflow_upgrade`
 are separate diagnostics; ordinary timing excludes actual upgrade work only.
 Focused synthetic shells do not establish whole-listener or live-org acceptance.
-See the [current R2 amendment and startup contract](../superpowers/specs/2026-11-14-automatic-workflow-setup.md#a4-startup-and-r2-amendment--thr-336-msg250251-a42)
+See the [current R2 amendment and startup contract](../specs/2026-11-14-automatic-workflow-setup.md#a4-startup-and-r2-amendment--thr-336-msg250251-a42)
 and [attachment custody](contracts/runtime-lifecycle.md#a4-startup-attachment-custody).
 
 POST `/orgs` now creates J + Coding + sequential storage and ownership-2 through
@@ -43,7 +43,7 @@ the literal Coding v2 catalog adds definition bytes only: exact existing rows
 write zero, mismatches refuse, missing defaults stay Disabled and roles unset.
 Historical constructors and saved settings/admission/history are unchanged.
 Existing-org automatic storage installation belongs to A4; see the
-[A2 contract](../superpowers/specs/2026-11-14-automatic-workflow-setup.md#a2-fresh-creation-and-definition-only-catalog).
+[A2 contract](../specs/2026-11-14-automatic-workflow-setup.md#a2-fresh-creation-and-definition-only-catalog).
 
 `Database.observe_trace(callback)` explicitly owns and composes the native trace
 slot on Database-owned connections. Production callers register through this
@@ -325,7 +325,7 @@ Allowed NEW settings, compatible storage, mounted native runtime and current
 authority/eligible roles. Fresh selection and engine prepare-admission both
 check the latest Allowed generation; old Explicit settings cannot substitute.
 Disabled remains the default; ordinary routing remains legacy. See
-`docs/superpowers/specs/2026-11-12-sequential-coding-u9.md` for the current cutover.
+`docs/specs/2026-11-12-sequential-coding-u9.md` for the current cutover.
 
 Authenticated admitted old @1/@2 replay/continuation retains its original pins
 across later disable/default changes and still requires current selected-role/
@@ -1146,7 +1146,11 @@ has a dormant service bound to the actual initial app/state/runtime/org-map,
 org/DB/path, supervisor/tracker and attachment generation. Only actual successful
 ASGI/listener startup admits it; construction/readiness performs no operation or
 selection. Native preview/show and the sole `release_exact_thread_delivery`
-transaction have no ACTIVE HTTP/CLI, startup, reaper or automatic release caller.
+human transaction have no ACTIVE HTTP/CLI, startup, reaper or automatic caller.
+THR-357 adds a separate narrow proven-lock startup release; its exact predicate,
+append-only daemon record and refusal rules are in the maintained
+[lifecycle contract](contracts/runtime-lifecycle.md#narrow-previous-boot-thread-release-thr-357-fix-1--1136).
+The human command/confirmation/serving authority is unchanged.
 Temporary, dynamic, custom, replaced and missing contexts refuse. Neither
 ambient credentials nor caller proof flags enable mutation. Proof-backed release
 is unavailable. The approved human risk override requires exact preview, stable
@@ -1369,7 +1373,7 @@ The combined candidate includes UI/type consumers. Its maker handoff records
 source-pinned frontend, disposable E2E, browser and schema receipts. Published
 source still requires final independent review/QA/checks and guarded merge.
 No live runtime/provider/config/restart or deployment is authorized by the
-frontend verification leg. See the [current naming contract](../superpowers/specs/2026-10-09-identity-names-core.md).
+frontend verification leg. See the [current naming contract](../specs/2026-10-09-identity-names-core.md).
 
 ## Naming v1 core, API and routing source
 
@@ -1434,7 +1438,7 @@ resources, output, deadline and actual cleanup. Independent full review,
 behavioral QA, applicable checks, normal publication and guarded merge remain.
 
 
-[Current contract](../superpowers/specs/2026-10-09-identity-names-core.md).
+[Current contract](../specs/2026-10-09-identity-names-core.md).
 
 
 **Document review — THR139465/480/493/506, ROOT TASK10693.**
@@ -2332,7 +2336,7 @@ own-unlink hardlink adjustment. Darwin requires validated native getmntinfo/stat
 mount evidence; unavailable or malformed evidence retains. It loses post-unlink
 observation and accepts the non-atomic stat-to-unlink window within the existing
 same-UID threat model, without an atomic identity guarantee. See the
-[maintained disk-sweeper contract](../superpowers/specs/2026-10-15-nightly-disk-sweeper.md)
+[maintained disk-sweeper contract](../specs/2026-10-15-nightly-disk-sweeper.md)
 for the exact platform and hardlink contract. Devices/unknown special types retain. Worktrees and
 Git metadata keep strict special-object checks; all ownership/jobs/age/link/
 mount gates and durable manifest/lock/output exclusions remain.
@@ -2381,13 +2385,13 @@ JSON and org/audit `process_scope` state that process usage is not checked;
 neither process absence nor executable authentication. Filesystem mount boundaries
 still retain via `/proc/self/mountinfo` on Linux and validated native
 getmntinfo/statfs evidence on Darwin; unavailable or malformed mount evidence
-retains. See the [maintained disk-sweeper contract](../superpowers/specs/2026-10-15-nightly-disk-sweeper.md)
+retains. See the [maintained disk-sweeper contract](../specs/2026-10-15-nightly-disk-sweeper.md)
 for Darwin's no-leaf-open signature checks and accepted observation/race limits.
 Other owners' legacy/root-terminal process gates are unchanged. Ended tasks/root
 status does not prove OS-process quiescence.
 
 
-See the [full current contract](../superpowers/specs/2026-10-15-nightly-disk-sweeper.md)
+See the [full current contract](../specs/2026-10-15-nightly-disk-sweeper.md)
 for evidence semantics, limitations, finite disposable verification and staged
 operational acceptance. The bounded `--corrections-only` lane now runs C1–C7 plus S1–S5 (cases8–12),
 with finding-specific selection through `--correction-cases`; C4–C7 cover all-org
@@ -2628,7 +2632,7 @@ Bounded evidence does not verify dynamic manage_agent update/enrollment at runti
 
 `reasoning_effort` is optional frontmatter beside `model`, never a second YAML store. Omitted updates preserve it; explicit `null` clears it. A real CLI change clears omitted model/effort; an explicit new pair is validated together. Unrelated whole-definition writes preserve the field. The residual YAML importer preserves it for the same CLI, clears it on a CLI change, and refuses incompatible model/effort before replacing canonical content.
 
-Built-in tokens follow the shared grammar above; approved custom input-v2 declarations retain finite membership, surfaced through existing executor prerequisite metadata. Unset preserves existing model transport and emits no effort override. Static support says nothing about the chosen model/account accepting a level. OpenCode requires `provider/model`; embedded OpenCode `#variant` and recognized Pi `:thinking` must agree with explicit effort. See the [current contract](../superpowers/specs/2026-10-11-agent-reasoning-effort.md) for mappings/defaults and compatibility limits.
+Built-in tokens follow the shared grammar above; approved custom input-v2 declarations retain finite membership, surfaced through existing executor prerequisite metadata. Unset preserves existing model transport and emits no effort override. Static support says nothing about the chosen model/account accepting a level. OpenCode requires `provider/model`; embedded OpenCode `#variant` and recognized Pi `:thinking` must agree with explicit effort. See the [current contract](../specs/2026-10-11-agent-reasoning-effort.md) for mappings/defaults and compatibility limits.
 
 ## Session Timeout Resolution
 
@@ -2897,7 +2901,7 @@ Contract (founder-approved in THR-028, refined in THR-078):
    helpers preserve their transaction; full sweep entry refuses it before Pause
    or workflow effects. Earlier committed effects remain, with cleanup explicitly
    incomplete and no automatic retry/repair. See the
-   [refusal safety contract](../superpowers/specs/2026-09-29-authority-v2-schema-refusal-recovery.md).
+   [refusal safety contract](../specs/2026-09-29-authority-v2-schema-refusal-recovery.md).
 
 4. **Chain-leg failure.** A failed chain leg clears the chain and returns a
    decision owner to bounded wake. Passive pipeline carriers instead fail
@@ -2944,14 +2948,25 @@ UI visibility only: daemon settings, scheduler, API and CLI behavior do not depe
 on them. See
 `web/ARCHITECTURE.md` § Build-time UI flags.
 
-`scripts/daemon.sh start` removes a stale port file, launches the daemon, and
+`scripts/daemon.sh start` preserves the previous PID for transition proof and
+launches the daemon. Lock-owning Python startup removes the stale port; the launcher
 waits up to `HAPPYRANCH_DAEMON_START_TIMEOUT` seconds (default `120`, positive
 integers only) for `GET /api/v1/health` to answer on the configured bind host.
+Readiness must name this launch (the uv wrapper or its Python child), so a
+competing daemon cannot hide this launch's lock refusal.
 Wildcard bind addresses are probed through their loopback equivalent. If the
 background process exits or readiness times out, startup exits 1 and prints
 the last 20 lines of `daemon.log`; if `curl` is unavailable, it announces a
 fallback to the fresh `daemon.port` file. Timeout can leave a possible launch
-running; actual-Python lifetime duplicate-start protection remains separate.
+running; the nonblocking daemon lifetime lock refuses a second startup before
+state/sweeps. Lock refusal is included in the startup log tail. Stop retains
+60 seconds of TERM grace plus up to 2 seconds to observe exit after KILL;
+every success path also waits up to 2s for lifetime-lock release using the
+checkout's uv/Python and a no-follow nonblocking flock probe. Missing/stale PID
+alone is insufficient: held or ambiguous locks return nonzero with the lock path
+and readable PID and retain markers. An absent/free regular lock permits stopped
+homes. Applying legacy migration has the same requirement; dry-run is a preview
+only. Never remove `daemon.lock`. See [the lock and transition-proof contract](contracts/runtime-lifecycle.md#daemon-lifetime-lock-thr-357).
 
 Startup timing is additive: `HAPPYRANCH_LAUNCHER_START_EPOCH` is captured at
 the start of the launch command and passed to the child. The daemon logs
@@ -3168,7 +3183,7 @@ from publishing S2 source.
 
 ## Root task Pause and Resume (THR-292)
 
-The supported single daemon per org owns task_pause_controls installation/complete validation before recovery/admission; fresh org creation initializes the same literal extension. Generic Database and runtime-audit remain pause-free. No new config, dependency or permission switch is introduced. Durable holds/release intent and deferred original owners survive lost notifications. Startup preserves possible-launch/ACTION uncertainty and uses actual existing callback consumers, never consumed-result replay. Complete independent schema references include the pause dimension without weakening F/E/G/H comparisons; v2 raw schema is still observed-only. Rollback requires compatible code, including for an empty extension. Deployment/restart/live migration require their separate operator authority. [Current contract](../superpowers/specs/2026-10-10-root-task-pause-resume.md).
+The supported single daemon per org owns task_pause_controls installation/complete validation before recovery/admission; fresh org creation initializes the same literal extension. Generic Database and runtime-audit remain pause-free. No new config, dependency or permission switch is introduced. Durable holds/release intent and deferred original owners survive lost notifications. Startup preserves possible-launch/ACTION uncertainty and uses actual existing callback consumers, never consumed-result replay. Complete independent schema references include the pause dimension without weakening F/E/G/H comparisons; v2 raw schema is still observed-only. Rollback requires compatible code, including for an empty extension. Deployment/restart/live migration require their separate operator authority. [Current contract](../specs/2026-10-10-root-task-pause-resume.md).
 
 Unclaimed completion recovery retains the actual original return and SIDs while held, with no running deadline. Its 120-second deadline is pinned atomically with the accepted real admission/claim, binding and launch journal. Preclaim/admission waiting spends nothing; claimed recovery retains its expiry across Resume, duplicates, retry and restart, including committed no-launch failure. Unresolved original host/tree evidence is separately retained under the original session/owner/generation before recovery conversion. It remains an unknown drain blocker after callbacks, terminal lifecycle, restart or quiescent recovery, without owning a new producer. Known-quiescent originals add no unknown blocker, and deferred unclaimed recovery alone is not execution.
 
@@ -3260,7 +3275,7 @@ bytes refuse500 resource_corrupt. Static inventory is not installed-wheel or
 frozen-loader evidence; both remain unverified. No startup read/seed, migration,
 capability issuance, mapping, readiness flag, deployment or restart follows.
 
-See [the current ordered-coding K0 contract](../superpowers/specs/2026-10-14-ordered-coding-workflow.md).
+See [the current ordered-coding K0 contract](../specs/2026-10-14-ordered-coding-workflow.md).
 Independent final-head source review/scoped QA and lint/static checks remain
 separate gates. Python units RETIRED; integration including callback SKIPPED24342;
 behavioral/negative/mutation/repetition/protected proof UNEXECUTED /
@@ -3290,7 +3305,7 @@ post-await authority revalidation. No live adoption/setup, execution or coding
 readiness is delivered. Python units RETIRED; integration/callback SKIPPED24342;
 behavior/security/protected proof UNEXECUTED/FOUNDER-WAIVED139429/430. Source-only
 review/static checks cannot establish reader-security or behavioral acceptance.
-See [the current K0/K1 contract](../superpowers/specs/2026-10-14-ordered-coding-workflow.md).
+See [the current K0/K1 contract](../specs/2026-10-14-ordered-coding-workflow.md).
 
 ## Empty-only coding schema — K2a1
 
@@ -4454,7 +4469,7 @@ later saves preserve current admission. Saving never enables admission or
 allocates work. Stable original-operation lookup returns the original receipt,
 separately from current settings. No schema installation/migration or live
 config is performed by source delivery. See the current
-[U7 specification](../superpowers/specs/2026-11-11-sequential-coding-u7.md).
+[U7 specification](../specs/2026-11-11-sequential-coding-u7.md).
 
 ## I1a explicit install-time physical integrity
 
@@ -4468,7 +4483,7 @@ No post-COMMIT physical veto or automatic restore is added. I2 removes inline
 physical checks while retaining full FK/domain validation; daily read-only
 reporting is I1b and bootstrap calling is A4.
 No daemon scheduling, startup or activation changes land here. See the
-[I1a contract](../superpowers/specs/2026-11-14-automatic-workflow-setup.md).
+[I1a contract](../specs/2026-11-14-automatic-workflow-setup.md).
 
 
 ## I1b daily read-only workflow integrity
@@ -4505,7 +4520,7 @@ runtime switch cannot consume another runtime's same-day attempt.
 
 ## Cooperative org access (A1)
 
-Supported org loads, fresh/reclaim routes and raw maintenance/offline openers acquire an org access fence before opening SQLite or constructing Database. Normal org connections retain SH through local close; explicit offline schema operations take EX without replacing their existing confirmation/lifecycle gates. Profile writers acquire affected org SH descriptors in stable key order before profile/publication/DB locks. Startup cache reads gate the metadata-only runtime org inventory before loading orgs; writers refuse unloaded dependencies. Original dynamic attachment includes exactly its own loaded, unpublished candidate in the sorted fence/membership capture; unrelated unloaded dependencies still refuse. Input/skeleton and existing-directory refusals close their route fence when no DB/native operation began or the original probe positively closed; probe errors without closure proof and unknown ownership stay held. Generic Database and machine-global stores remain workflow-free. See the [A1 contract](../superpowers/specs/2026-11-14-automatic-workflow-setup.md#a1-cooperative-org-access-fence).
+Supported org loads, fresh/reclaim routes and raw maintenance/offline openers acquire an org access fence before opening SQLite or constructing Database. Normal org connections retain SH through local close; explicit offline schema operations take EX without replacing their existing confirmation/lifecycle gates. Profile writers acquire affected org SH descriptors in stable key order before profile/publication/DB locks. Startup cache reads gate the metadata-only runtime org inventory before loading orgs; writers refuse unloaded dependencies. Original dynamic attachment includes exactly its own loaded, unpublished candidate in the sorted fence/membership capture; unrelated unloaded dependencies still refuse. Input/skeleton and existing-directory refusals close their route fence when no DB/native operation began or the original probe positively closed; probe errors without closure proof and unknown ownership stay held. Generic Database and machine-global stores remain workflow-free. See the [A1 contract](../specs/2026-11-14-automatic-workflow-setup.md#a1-cooperative-org-access-fence).
 
 
 ### A4 private worker and original parent permission
@@ -4517,3 +4532,14 @@ runtime audit and final registered status now belong to that same helper interva
 EOF/cancellation/duplicate permission revoke subsequent cooperative effects.
 The startup owner retains pending originals and late-child callbacks, and failed
 or uncertain records never replay. See the [current lifecycle contract](contracts/runtime-lifecycle.md#a4-startup-attachment-custody).
+
+## Proven-lock thread startup release (THR-357 Fix 1)
+
+The initial startup sweep may release only previous-boot pending replies with
+recorded settled/quiescent attempts, a settled producer and the diagnostics' exact
+late `failed_cleanup` predicate. A NOT PROVEN lock releases nothing. All initial
+org populations are captured before any A4 contained per-org startup tail runs.
+The pass appends a separate daemon release audit
+and uses normal reply replacement/admission without rewriting lifecycle history.
+See [the full contract](contracts/runtime-lifecycle.md#narrow-previous-boot-thread-release-thr-357-fix-1--1136)
+and [logging](contracts/observability.md#narrow-thread-startup-release-thr-357).

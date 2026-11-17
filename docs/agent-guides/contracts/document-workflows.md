@@ -680,7 +680,7 @@ cancellation owner refuse. No new document lifecycle/event/schema is defined.
 Captured document invocations cannot gain positive aggregate settlement because
 there is no existing positive family cancellation-outer qualifier; manager
 Option B explicitly keeps them UNSETTLED. See the
-[U6 composition contract](../../superpowers/specs/2026-11-11-sequential-coding-u6.md#u6b2b-mounted-composition-task-15349).
+[U6 composition contract](../../specs/2026-11-11-sequential-coding-u6.md#u6b2b-mounted-composition-task-15349).
 
 The original document terminal writer (also inherited by review) preserves a
 native row already stamped cancelled by the mixed stop. It emits its unchanged

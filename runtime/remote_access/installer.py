@@ -21,7 +21,7 @@ import stat
 import sys
 import uuid
 from contextlib import contextmanager
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Iterator
@@ -58,6 +58,28 @@ _FILE_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
 
 class InstallerError(RuntimeError):
     """An unsafe path, incompatible account, command failure, or unit drift."""
+
+
+@dataclass(frozen=True)
+class InstallInventory:
+    """Read-only classification, never authority to remove or replay files."""
+
+    state: str
+    detail: str
+    paths: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class ReplacementInventory:
+    """Read-only replacement candidate, never permission to replay a journal.
+
+    The generation fingerprints the exact validated prepared-record bytes. It
+    is absent unless all six fixed-file digests match a known failed/partial
+    installation. No transaction execution or recovery is available yet.
+    """
+
+    installation: InstallInventory
+    journal_generation: str | None = None
 
 
 def managed_units(layout: str = "source", *, connector_config: dict | None = None) -> dict[str, str]:
@@ -109,6 +131,310 @@ class ManagedInstaller:
         self.units = managed_units(layout)
         self.layout = layout
         self._service_owner: tuple[int, int] | None = None
+
+    def _inventory_files(
+        self, relative: str, allowed: dict[str, tuple[tuple[int, int] | None, int | tuple[int, ...], bool | None]],
+    ) -> dict[str, bytes]:
+        """Bounded, shallow inventory of one fixed directory; no unknown reads."""
+        files: dict[str, bytes] = {}
+        try:
+            with self._directory(relative) as parent:
+                with os.scandir(parent) as entries:
+                    for index, entry in enumerate(entries):
+                        path = str(self.root / relative / entry.name)
+                        if index >= 64 or entry.name not in allowed:
+                            raise InstallerError(path if index < 64 else str(self.root / relative))
+                        owner, mode, socket = allowed[entry.name]
+                        if owner is None:
+                            raise InstallerError(path)
+                        try:
+                            if socket is not False:
+                                info = os.stat(entry.name, dir_fd=parent, follow_symlinks=False)
+                                known_type = stat.S_ISSOCK if socket else stat.S_ISREG
+                                if (not known_type(info.st_mode) or info.st_nlink != 1
+                                        or (info.st_uid, info.st_gid) != owner
+                                        or stat.S_IMODE(info.st_mode) != mode):
+                                    raise InstallerError(path)
+                                files[entry.name] = b""
+                            else:
+                                if isinstance(mode, tuple):
+                                    actual_mode = stat.S_IMODE(os.stat(entry.name, dir_fd=parent, follow_symlinks=False).st_mode)
+                                    if actual_mode not in mode:
+                                        raise InstallerError(path)
+                                else:
+                                    actual_mode = mode
+                                files[entry.name] = self._read_file(parent, entry.name, owner=owner, mode=actual_mode)
+                        except (OSError, InstallerError):
+                            raise InstallerError(path) from None
+        except FileNotFoundError:
+            return files
+        except OSError:
+            raise InstallerError(str(self.root / relative)) from None
+        return files
+
+    def _inventory_units(self, connector: dict) -> tuple[set[str], dict[str, dict[str, str]]]:
+        if connector and not isinstance(connector.get("managed"), dict):
+            raise InstallerError(str(self.root / "etc/happyranch/connector.json"))
+        expected = managed_units(self.layout, connector_config=connector)
+        present: set[str] = set()
+        properties: dict[str, dict[str, str]] = {}
+        for name, text in expected.items():
+            path = str(self.root / _UNIT_DIR / name)
+            try:
+                with self._directory(_UNIT_DIR) as parent:
+                    if self._read_unit(parent, name) != text.encode():
+                        raise InstallerError(path)
+                    present.add(name)
+            except FileNotFoundError:
+                pass
+            except (OSError, InstallerError):
+                raise InstallerError(path) from None
+            # Inspect only these unit names, never neighboring custom units.
+            for base in (_UNIT_DIR, "run/systemd/system", "usr/local/lib/systemd/system", "usr/lib/systemd/system"):
+                dropins = f"{base}/{name}.d"
+                try:
+                    with self._directory(dropins) as parent:
+                        with os.scandir(parent) as entries:
+                            entry = next(entries, None)
+                            if entry is not None:
+                                raise InstallerError(str(self.root / dropins / entry.name))
+                    if base != _UNIT_DIR:
+                        with self._directory(base) as parent:
+                            os.stat(name, dir_fd=parent, follow_symlinks=False)
+                            raise InstallerError(str(self.root / base / name))
+                except FileNotFoundError:
+                    # A missing drop-in directory says nothing about a fragment.
+                    if base != _UNIT_DIR:
+                        try:
+                            with self._directory(base) as parent:
+                                os.stat(name, dir_fd=parent, follow_symlinks=False)
+                                raise InstallerError(str(self.root / base / name))
+                        except FileNotFoundError:
+                            pass
+                except (OSError, InstallerError) as exc:
+                    if isinstance(exc, InstallerError) and str(exc).startswith(str(self.root) + "/"):
+                        raise
+                    raise InstallerError(str(self.root / dropins)) from None
+            try:
+                props = self.manager.show_properties(name, (
+                    "FragmentPath", "DropInPaths", "NeedDaemonReload", "LoadState", "ActiveState",
+                ))
+            except (ServiceManagerError, OSError):
+                raise InstallerError(path) from None
+            loaded = name in present
+            if (props.get("FragmentPath") != (path if loaded else "")
+                    or props.get("DropInPaths") != "" or props.get("NeedDaemonReload") != "no"
+                    or props.get("LoadState") != ("loaded" if loaded else "not-found")
+                    or props.get("ActiveState") not in ({"active", "inactive", "failed"} if loaded else {"inactive"})):
+                # Manager strings can contain arbitrary data: report fixed paths only.
+                raise InstallerError(path)
+            properties[name] = props
+        for directory, name in (("multi-user.target.wants", UNITS[2]),
+                                (f"{UNITS[2]}.wants", UNITS[3])):
+            path = str(self.root / _UNIT_DIR / directory / name)
+            try:
+                with self._directory(f"{_UNIT_DIR}/{directory}") as parent:
+                    info = os.stat(name, dir_fd=parent, follow_symlinks=False)
+                    if (not stat.S_ISLNK(info.st_mode) or info.st_nlink != 1
+                            or (info.st_uid, info.st_gid) != self.root_owner or name not in present
+                            or os.readlink(name, dir_fd=parent) not in {f"../{name}", str(self.root / _UNIT_DIR / name)}):
+                        raise InstallerError(path)
+            except FileNotFoundError:
+                pass
+            except (OSError, InstallerError) as exc:
+                if isinstance(exc, InstallerError) and str(exc).startswith(str(self.root) + "/"):
+                    raise
+                raise InstallerError(path) from None
+        return present, properties
+
+    def inventory(self) -> InstallInventory:
+        """Classify only fixed managed destinations without executing old inputs.
+
+        Unknown, unsafe or transaction-bearing inventories refuse. Stopped intact
+        manual installs still require migration. This supplies no replacement,
+        cleanup, source-token read or activation authority.
+        """
+        return self._inventory()
+
+    def _inventory(self, *, prepared_transaction: bytes | None = None) -> InstallInventory:
+        location = str(self.root / "etc/happyranch")
+        paths: list[str] = []
+        try:
+            self._service_owner = self._account(create=False)
+            service = self._service_owner
+            config_owner = None if service is None else (self.root_owner[0], service[1])
+            files = self._inventory_files("etc/happyranch", {
+                **{name: (config_owner, (0o600, 0o640, 0o644), False)
+                   for name in ("connector.json", "sidecar.json", "policy.json")},
+                "release-daemon.json": (self.root_owner, 0o644, False),
+                "provision.json": (self.root_owner, 0o600, False),
+                "daemon.token": (service, 0o600, False),
+                "enrollment.key": (self.root_owner, 0o600, False),
+                **({"install-transaction.json": (self.root_owner, 0o600, False)}
+                   if prepared_transaction is not None else {}),
+            })
+            paths.extend(str(self.root / "etc/happyranch" / name) for name in files)
+            if prepared_transaction is not None:
+                location = str(self.root / "etc/happyranch/install-transaction.json")
+                if files.pop("install-transaction.json", None) != prepared_transaction:
+                    raise InstallerError(location)
+                self._validate_install_record("install-transaction.json", prepared_transaction)
+                digests = self._json(prepared_transaction)["digests"]
+                if any(name not in files or hashlib.sha256(files[name]).hexdigest() != digest
+                       for name, digest in digests.items()):
+                    raise InstallerError(location)
+            connector = self._json(files["connector.json"]) if "connector.json" in files else {}
+            provenance = files.get("provision.json")
+            modern = False
+            required = {"connector.json", "sidecar.json", "policy.json", "release-daemon.json", "daemon.token"}
+            if provenance is not None:
+                # Recorded provisioning retains its exact mode contract. Only
+                # unrecorded legacy configs may use the other safe modes above.
+                with self._directory("etc/happyranch") as parent:
+                    for name in ("connector.json", "sidecar.json", "policy.json"):
+                        if name in files:
+                            location = str(self.root / "etc/happyranch" / name)
+                            if self._read_file(parent, name, owner=config_owner, mode=0o640) != files[name]:
+                                raise InstallerError(location)
+                location = str(self.root / "etc/happyranch/provision.json")
+                self._validate_install_record("provision.json", provenance)
+                record = self._json(provenance)
+                modern = "version" in record
+                digests = record["digests"] if modern else {
+                    **record["configs"], "daemon.token": record["token_sha256"],
+                }
+                if (set(digests) != (required if modern else required - {"release-daemon.json"})
+                        or any(not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None
+                               for value in digests.values())):
+                    raise InstallerError(location)
+                for name, digest in digests.items():
+                    if name in files and hashlib.sha256(files[name]).hexdigest() != digest:
+                        raise InstallerError(str(self.root / "etc/happyranch" / name))
+            elif files:
+                # Interrupted publication may precede the next config or record.
+                # Validate every present artifact, including cross-config checks
+                # when both are present; absence alone is a known partial state.
+                self._validate_configs(files, staged=True, partial=True)
+            if "release-daemon.json" in files:
+                from runtime.remote_access.release_verifier import validate_record
+                location = str(self.root / "etc/happyranch/release-daemon.json")
+                validate_record(self._json(files["release-daemon.json"]))
+            for relative, names in (
+                (_STATE_DIRS[0], ("trust-state.json", "trust-state.json.anchor", "trust-state.json.lock")),
+                (_STATE_DIRS[1], ("tailscaled.state", "credential.consumed", "tailscaled.log.conf",
+                                  "tailscaled.log1.txt", "tailscaled.log2.txt")),
+            ):
+                location = str(self.root / relative)
+                # State contents are never interpreted, replayed or copied.
+                state = self._inventory_files(relative, {name: (service, 0o600, None) for name in names})
+                paths.extend(str(self.root / relative / name) for name in state)
+            for relative, entries in (
+                ("run/happyranch-connector", {name: (service, 0o600, True) for name in ("ingress.sock", "control.sock")}),
+                ("run/happyranch-tsnet-sidecar", {"health.json": (service, 0o644, False)}),
+                ("run/happyranch-release-verifier", {"control.sock": (
+                    None if service is None else (self.root_owner[0], service[1]), 0o660, True)}),
+            ):
+                location = str(self.root / relative)
+                runtime = self._inventory_files(relative, entries)
+                paths.extend(str(self.root / relative / name) for name in runtime)
+            location = str(self.root / _CREDSTORE / _CREDENTIAL_NAME)
+            self._check_enrollment()
+            with_enrollment = False
+            try:
+                with self._directory(_CREDSTORE) as parent:
+                    os.stat(_CREDENTIAL_NAME, dir_fd=parent, follow_symlinks=False)
+                    with_enrollment = True
+                    paths.append(location)
+            except FileNotFoundError:
+                pass
+            location = str(self.root / _UNIT_DIR)
+            units, properties = self._inventory_units(connector)
+            paths.extend(str(self.root / _UNIT_DIR / name) for name in units)
+            complete = required <= files.keys()
+            failed = any(props["ActiveState"] == "failed" for props in properties.values())
+            if modern and complete and len(units) in {0, len(UNITS)} and not failed:
+                managed = connector.get("managed")
+                profile = managed.get("profile") if isinstance(managed, dict) else None
+                if profile != "linux-managed-identity-v1":
+                    raise InstallerError(str(self.root / "etc/happyranch/connector.json"))
+                return InstallInventory("modern", "recorded" if units else "staged-inert", tuple(sorted(paths)))
+            if not files and not units and not paths and not with_enrollment:
+                return InstallInventory("clean", "absent", ())
+            if complete and len(units) == len(UNITS) and not failed:
+                return InstallInventory("healthy-manual", "migration-required", tuple(sorted(paths)))
+            return InstallInventory("known-failed-or-partial", "failed" if failed else "partial", tuple(sorted(paths)))
+        except (OSError, ValueError, TypeError, KeyError, InstallerError) as exc:
+            # Only our fixed diagnostic paths escape; never config/manager values.
+            if isinstance(exc, InstallerError) and str(exc).startswith(str(self.root) + "/"):
+                location = str(exc)
+            return InstallInventory("manual-install-conflict", "unsafe-or-unrecognized", (location,))
+
+    def replacement_inventory(self) -> ReplacementInventory:
+        """Inspect a prepared journal only for replacement candidate selection.
+
+        The existing closed v1 schema/phase is unchanged. A pending entry,
+        missing/different fixed file, unsafe metadata or changed journal refuses.
+        Normal inventory and every lifecycle operation still reject journals.
+        This observation neither reads a release-home token nor stops services.
+        """
+        location = str(self.root / "etc/happyranch/install-transaction.json")
+        try:
+            with self._directory("etc/happyranch") as parent:
+                transaction = self._read_file(parent, "install-transaction.json", owner=self.root_owner, mode=0o600)
+        except FileNotFoundError:
+            return ReplacementInventory(self.inventory())
+        except (OSError, InstallerError):
+            return ReplacementInventory(InstallInventory("manual-install-conflict", "unsafe-or-unrecognized", (location,)))
+        installation = self._inventory(prepared_transaction=transaction)
+        generation = (hashlib.sha256(transaction).hexdigest()
+                      if installation.state == "known-failed-or-partial" else None)
+        return ReplacementInventory(installation, generation)
+
+    def replace_failed(self) -> None:
+        """Refuse non-candidates; hold mutation until journal execution ships.
+
+        This is the read-only admission sub-part, not a replacement transaction.
+        No stop, token copy, journal update, quarantine or removal is selectable.
+        """
+        candidate = self.replacement_inventory()
+        installation = candidate.installation
+        if installation.state != "known-failed-or-partial":
+            raise InstallerError(f"replacement refused: {installation.state}: " + ", ".join(installation.paths))
+        raise InstallerError("replacement mutation unavailable; journal execution requires the next 3b-1c sub-part")
+
+    def stop_and_confirm(self) -> InstallInventory:
+        """Stop only recognized remote units and prove manager quiescence.
+
+        No filesystem mutation or admission reopening is performed. Callers must
+        not cache this sampled observation as later file-mutation authority.
+        """
+        inventory = self.inventory()
+        if inventory.state in {"manual-install-conflict", "healthy-manual"}:
+            raise InstallerError(f"{inventory.state}: " + ", ".join(inventory.paths))
+        order = (UNITS[2], UNITS[0], UNITS[1], UNITS[3], UNITS[4])
+        for name in order:
+            try:
+                props = self.manager.show_properties(name, ("LoadState",))
+                if props.get("LoadState") != "not-found":
+                    self.manager.stop(name, timeout=50.0)
+            except (ServiceManagerError, OSError):
+                raise InstallerError(f"quiescence unconfirmed: {self.root / _UNIT_DIR / name}") from None
+        for name in order:
+            process_keys = ("MainPID", "ControlPID", "ControlGroup") if name in (UNITS[0], UNITS[1], UNITS[4]) else ()
+            try:
+                props = self.manager.show_properties(name, ("ActiveState", "SubState", "Job", *process_keys))
+            except (ServiceManagerError, OSError):
+                props = {}
+            if (props.get("ActiveState") not in {"inactive", "failed"}
+                    or props.get("SubState") not in {"dead", "failed"}
+                    or (process_keys and (props.get("MainPID") != "0" or props.get("ControlPID") != "0"
+                                          or props.get("ControlGroup") != ""))
+                    or props.get("Job") != ""):
+                raise InstallerError(f"quiescence unconfirmed: {self.root / _UNIT_DIR / name}")
+        confirmed = self.inventory()
+        if confirmed.state in {"manual-install-conflict", "healthy-manual"}:
+            raise InstallerError(f"{confirmed.state}: " + ", ".join(confirmed.paths))
+        return confirmed
 
     def _account(self, *, create: bool) -> tuple[int, int] | None:
         try:
@@ -206,9 +532,10 @@ class ManagedInstaller:
         allowed_modes = (expected[0],) if expected else ()
         if expected and path == _CREDSTORE:
             allowed_modes += (0o755,)
-        if expected and path == _STATE_DIRS[0]:
+        if expected and path in {_STATE_DIRS[0], "run/happyranch-connector"}:
             # Creation follows systemd's mode; the trust-state store tightens
-            # this directory to owner-only on save. Preserve either safe mode.
+            # state on save; the identity unit also tightens its runtime dir.
+            # Preserve either known safe mode without changing ownership.
             allowed_modes += (0o700,)
         if ((owner is not None and (info.st_uid, info.st_gid) != owner) or info.st_mode & 0o022
                 or (expected and stat.S_IMODE(info.st_mode) not in allowed_modes)):
@@ -327,47 +654,57 @@ class ManagedInstaller:
         except (ValueError, UnicodeError):
             raise InstallerError("invalid provisioning JSON object") from None
 
-    def _validate_configs(self, files: dict[str, bytes], *, staged: bool = False) -> None:
+    def _validate_configs(self, files: dict[str, bytes], *, staged: bool = False, partial: bool = False) -> None:
         # Reuse shipping connector/policy validators; never start a supervisor.
         from runtime.remote_access.managed_provider import ManagedProviderConfig
         from runtime.remote_access.policy import PolicyEnvelope, RoutePolicyConsumer
         from runtime.remote_access.supervisor import ConnectorConfig
 
         try:
-            raw = self._json(files["connector.json"])
-            managed = raw.pop("managed")
-            if not isinstance(managed, dict) or raw.get("lab") is not None or raw.get("diy") is not None:
-                raise ValueError
-            cfg = ConnectorConfig(**raw, managed=ManagedProviderConfig(**managed))
-            cfg.validate()
-            if (any(not isinstance(value, str) or not value.strip() for value in (cfg.tenant_id, cfg.home_id, cfg.connector_id))
-                    or cfg.system is not True or cfg.service_user != "happyranch" or cfg.service_group != "happyranch"
-                    or cfg.daemon_port is not None
-                    or not 1 <= cfg.managed.bind_port <= 65535
-                    or cfg.daemon_token_path != "/etc/happyranch/daemon.token"
-                    or cfg.policy_path != "/etc/happyranch/policy.json"
-                    or cfg.state_path != "/var/lib/happyranch-connector/trust-state.json"
-                    or cfg.credentials_directory is not None or cfg.exec_start is not None
-                    or cfg.managed_dir_root is not None or cfg.unit_name != UNITS[0]
-                    or any(value != "happyranch-connector" for value in (cfg.state_dir, cfg.run_dir, cfg.logs_dir))
-                    or any(type(value) not in (int, float) or not math.isfinite(value) or value <= 0
-                           for value in (cfg.watchdog_sec, cfg.poll_seconds, cfg.restart_sec))):
-                raise ValueError
-            policy = RoutePolicyConsumer.from_envelope(PolicyEnvelope(**self._json(files["policy.json"])))
-            policy.require_current(datetime.now(timezone.utc))
+            cfg = None
+            if not partial or "connector.json" in files:
+                raw = self._json(files["connector.json"])
+                managed = raw.pop("managed")
+                if not isinstance(managed, dict) or raw.get("lab") is not None or raw.get("diy") is not None:
+                    raise ValueError
+                cfg = ConnectorConfig(**raw, managed=ManagedProviderConfig(**managed))
+                cfg.validate()
+                if (any(not isinstance(value, str) or not value.strip() for value in (cfg.tenant_id, cfg.home_id, cfg.connector_id))
+                        or cfg.system is not True or cfg.service_user != "happyranch" or cfg.service_group != "happyranch"
+                        or cfg.daemon_port is not None
+                        or not 1 <= cfg.managed.bind_port <= 65535
+                        or cfg.daemon_token_path != "/etc/happyranch/daemon.token"
+                        or cfg.policy_path != "/etc/happyranch/policy.json"
+                        or cfg.state_path != "/var/lib/happyranch-connector/trust-state.json"
+                        or cfg.credentials_directory is not None or cfg.exec_start is not None
+                        or cfg.managed_dir_root is not None or cfg.unit_name != UNITS[0]
+                        or any(value != "happyranch-connector" for value in (cfg.state_dir, cfg.run_dir, cfg.logs_dir))
+                        or any(type(value) not in (int, float) or not math.isfinite(value) or value <= 0
+                               for value in (cfg.watchdog_sec, cfg.poll_seconds, cfg.restart_sec))):
+                    raise ValueError
+                if (cfg.managed.profile == "linux-managed-identity-v1"
+                        and (cfg.excluded_daemon_ports != [8765] or not cfg.managed.control_plane_id)):
+                    raise ValueError
+            if not partial or "policy.json" in files:
+                policy = RoutePolicyConsumer.from_envelope(PolicyEnvelope(**self._json(files["policy.json"])))
+                policy.require_current(datetime.now(timezone.utc))
+            if partial and "sidecar.json" not in files:
+                return
             sidecar = self._json(files["sidecar.json"])
-            if cfg.managed.profile == "linux-managed-identity-v1":
+            profile = cfg.managed.profile if cfg is not None else sidecar.get("Profile")
+            if profile == "linux-managed-identity-v1":
                 # An inert staged bundle, not a runnable home transport. In
                 # particular, never publish a URL without its protected CA.
                 if (sidecar.keys() != {"Profile", "StateDir", "RoleIdentity", "DERPPolicy",
                                       "ListenAddr", "ExcludedDaemonPorts"}
-                        or sidecar["Profile"] != cfg.managed.profile
+                        or sidecar["Profile"] != profile
                         or sidecar["StateDir"] != "/var/lib/happyranch-tsnet-sidecar"
-                        or sidecar["RoleIdentity"] != f"home-sidecar-{cfg.home_id}"
+                        or not isinstance(sidecar["RoleIdentity"], str)
+                        or not sidecar["RoleIdentity"].startswith("home-sidecar-")
+                        or len(sidecar["RoleIdentity"]) <= len("home-sidecar-")
+                        or (cfg is not None and sidecar["RoleIdentity"] != f"home-sidecar-{cfg.home_id}")
                         or sidecar["DERPPolicy"] != "private-only" or sidecar["ListenAddr"] != ":443"
-                        or cfg.excluded_daemon_ports != [8765]
-                        or sidecar["ExcludedDaemonPorts"] != [8765]
-                        or not cfg.managed.control_plane_id):
+                        or sidecar["ExcludedDaemonPorts"] != [8765]):
                     raise ValueError
                 return
             required = {"StateDir", "ControlURL", "RoleIdentity", "ExpectedPeer", "DERPPolicy", "ListenAddr", "ConnectorAddr"}
@@ -378,11 +715,11 @@ class ManagedInstaller:
             if (not isinstance(sidecar_excluded, list)
                     or any(type(port) is not int or not 1 <= port <= 65535 for port in sidecar_excluded)):
                 raise ValueError
-            excluded = sorted({8765, *cfg.excluded_daemon_ports, *sidecar_excluded})
-            if (cfg.managed.bind_port in excluded
+            excluded = sorted({8765, *(cfg.excluded_daemon_ports if cfg is not None else []), *sidecar_excluded})
+            if cfg is not None and (cfg.managed.bind_port in excluded
                     or sidecar["ConnectorAddr"] != f"127.0.0.1:{cfg.managed.bind_port}"):
                 raise ValueError
-            if (staged and self.layout == "deb"
+            if (cfg is not None and staged and self.layout == "deb"
                     and (cfg.excluded_daemon_ports != excluded or sidecar_excluded != excluded)):
                 raise ValueError
             control = urlsplit(sidecar["ControlURL"])
@@ -395,7 +732,7 @@ class ManagedInstaller:
                     or not sidecar["ExpectedPeer"].strip() or sidecar["DERPPolicy"] != "private-only"
                     or sidecar["StateDir"] != "/var/lib/happyranch-tsnet-sidecar"
                     or listen is None or not 1 <= int(listen[1]) <= 65535
-                    or ingress is None or not 1 <= int(ingress[1]) <= 65535 or int(ingress[1]) == 8765):
+                    or ingress is None or not 1 <= int(ingress[1]) <= 65535 or int(ingress[1]) in excluded):
                 raise ValueError
         except Exception:
             # Validators can include input values. Keep all diagnostics secret-free.

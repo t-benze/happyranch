@@ -289,7 +289,7 @@ class AuditLogger:
         agent_exception / session_failed); hoisted to top-level of the
         payload so per-kind cap counting can read it with a single dict
         lookup without parsing ``error_context``. See
-        ``docs/superpowers/specs/2026-05-25-session-timeout-auto-route-design.md``.
+        ``docs/specs/2026-05-25-session-timeout-auto-route-design.md``.
 
         ``error_context`` is the structured failure payload produced by
         ``_executor_failure_context``: mode, rc, stderr/stdout tail, etc.

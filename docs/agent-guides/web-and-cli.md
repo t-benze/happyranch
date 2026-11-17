@@ -135,7 +135,7 @@ Allowed NEW settings, compatible storage, mounted native runtime and current
 authority/eligible roles. Fresh selection and engine prepare-admission both
 check the latest Allowed generation; old Explicit settings cannot substitute.
 Disabled remains the default; ordinary routing remains legacy. See
-`docs/superpowers/specs/2026-11-12-sequential-coding-u9.md` for the current cutover.
+`docs/specs/2026-11-12-sequential-coding-u9.md` for the current cutover.
 
 Authenticated admitted old @1/@2 replay/continuation retains its original pins
 across later disable/default changes and still requires current selected-role/
@@ -850,7 +850,11 @@ has a dormant service bound to the actual initial app/state/runtime/org-map,
 org/DB/path, supervisor/tracker and attachment generation. Only actual successful
 ASGI/listener startup admits it; construction/readiness performs no operation or
 selection. Native preview/show and the sole `release_exact_thread_delivery`
-transaction have no ACTIVE HTTP/CLI, startup, reaper or automatic release caller.
+human transaction have no ACTIVE HTTP/CLI, startup, reaper or automatic caller.
+THR-357 adds a separate narrow proven-lock startup release; its exact predicate,
+append-only daemon record and refusal rules are in the maintained
+[lifecycle contract](contracts/runtime-lifecycle.md#narrow-previous-boot-thread-release-thr-357-fix-1--1136).
+The human command/confirmation/serving authority is unchanged.
 Temporary, dynamic, custom, replaced and missing contexts refuse. Neither
 ambient credentials nor caller proof flags enable mutation. Proof-backed release
 is unavailable. The approved human risk override requires exact preview, stable
@@ -973,7 +977,7 @@ a thread BEFORE submission. Old CLI may need upgrading or rationale for false;
 new clients cannot change old-daemon policy. Admission is not script success:
 retain status/reason/output and natural completed/nonzero. Served OpenAPI uses
 the supported non-test scripts/generate_openapi_snapshot.py; browser
-classification excludes the compatibility tombstone. [Current jobs contract](../superpowers/specs/2026-05-26-jobs-design.md).
+classification excludes the compatibility tombstone. [Current jobs contract](../specs/2026-05-26-jobs-design.md).
 
 ## CLI human names and fresh prompt context
 
@@ -1022,7 +1026,7 @@ published on the open naming PR. The maker handoff attributes actual frontend,
 scenario5/8/9 daemon/DB, standalone/served OpenAPI and browser results to their
 source. Final independent full review/QA, applicable checks/hooks and guarded
 merge remain required. Source publication authorizes no deployment.
-See the [current naming contract](../superpowers/specs/2026-10-09-identity-names-core.md).
+See the [current naming contract](../specs/2026-10-09-identity-names-core.md).
 
 ## Founder New agent dialog
 
@@ -1109,7 +1113,7 @@ resources, output, deadline and actual cleanup. Independent full review,
 behavioral QA, applicable checks, normal publication and guarded merge remain.
 
 
-[Current contract](../superpowers/specs/2026-10-09-identity-names-core.md).
+[Current contract](../specs/2026-10-09-identity-names-core.md).
 
 
 **Document review — THR139465/480/493/506, ROOT TASK10693.**
@@ -1751,10 +1755,10 @@ committed Sidebar/AppBar DOM plus `<html lang>` and the real navigator
 read-back, retains a causal negative control (`I18N_W2A_EVIDENCE=negative`:
 wrong first shell, later corrected, must be rejected by the same predicate), and
 covers both locales across the observed 1440x900/390x844 light/dark
-combinations for root loading/no-org/NotFound/help (S11/S16)/AddOrg
+combinations for root loading/no-org/NotFound/AddOrg
 (S12/S17)/error/dormant-palette. In both switch directions it records the actual
 `document.activeElement`, retained DOM node identity, open state and
-selection/value for the help non-default tab (S16), the AddOrg typed slug +
+selection/value for the AddOrg typed slug +
 mapped error (S12 wide-light; S17 zh-narrow-light/en-narrow-dark/zh-wide-dark)
 and the palette query + non-default selected row (S13 wide-light; S18
 zh-narrow-light/en-narrow-dark/zh-wide-dark), and asserts each switch window
@@ -1764,7 +1768,8 @@ palette's localized X close control (S19) with native Enter/Space/Escape in both
 locales with populated and empty results (closes once, zero selection, unchanged
 pathname) while the search-input and non-default-row Enter still select once, and
 adds CJK-font and viewport-containment checks. Positive receipt: 375/375
-assertions, 30 PNGs. W2b onboarding evidence runs via
+assertions, 30 PNGs (recorded before THR-372 removed the help-drawer
+S6/S11/S16 cases and the S13/S18 dormant-⌘K assertions). W2b onboarding evidence runs via
 `web/scripts/w2b-onboarding-browser-evidence.mjs` against the ORDINARY
 `web/dist` bundle and a synthetic `/api/v1` stub, driving the real `/onboarding`
 route with NO evidence-only bundle instrumentation: locale switches go through
@@ -1787,11 +1792,11 @@ guidance, which now translates; machine/executable fields, raw identifiers,
 routes, tokens, commands and authored values remain verbatim. Historical
 outcomes and built-in prompt claims are unchanged.
 Current contract:
-`docs/superpowers/specs/2026-09-20-web-i18n-design.md`.
+`docs/specs/2026-09-20-web-i18n-design.md`.
 
 ### Web contract and navigation
 
-Layer rules, boundary rules, and agent-callback omissions live in `web/ARCHITECTURE.md`. Full design: `docs/superpowers/specs/2026-05-14-web-ui-design.md`.
+Layer rules, boundary rules, and agent-callback omissions live in `web/ARCHITECTURE.md`. Full design: `docs/specs/2026-05-14-web-ui-design.md`.
 
 Every browser-callable daemon route maps to one TypeScript function in `web/src/lib/api/`. The maintained contract sources are:
 
@@ -1822,8 +1827,8 @@ which appears in Resolved; display order does not change severity rollups or
 filter-option order. Resting list rows and their lineage use the existing raised
 section surface (white in light mode, semantic raised override in dark mode),
 with distinct hover styling. Only superseded rows are dimmed in every grouping.
-Tasks opts into blue in-progress and amber escalated badges and its own AppBar metrics; other
-surfaces retain their defaults.
+Tasks uses the shared status badges and the shared Pasture AppBar (THR-376);
+there is no Tasks-only badge or AppBar presentation.
 
 Filter supports status and exact assigned-agent name. Apply submits both drafts;
 closing the panel leaves applied values unchanged. Clear omits both parameters.
@@ -1946,7 +1951,8 @@ their separate rendering paths. CLI transcript formatting is unchanged.
 The AppShell keeps the sidebar within the window height. Its organization
 switcher and Settings/account footer do not shrink; the primary navigation
 uses the remaining space and scrolls internally when needed. Navigation items
-and typography retain their existing sizes, order and destinations. The rail
+keep their order and destinations; their size and weight follow the Sidebar
+contract in `web/DESIGN_SYSTEM.md` (`text-nav`, 13.5px). The rail
 remains 244px wide on desktop and collapses to 56px below the `md` breakpoint.
 
 The navigation container uses `min-h-0` to permit flex shrinking and `relative`
@@ -2309,6 +2315,16 @@ scripts/daemon.sh status
 scripts/daemon.sh stop --force     # graceful shutdown (default daemon needs --force)
 happyranch web [--no-open]
 ```
+
+Daemon startup acquires `daemon.lock` before state/sweeps and reports duplicate
+lock refusal in `daemon.log`. Never unlink the lock. Stop reports success only
+after observed process exit (60s TERM grace, then up to 2s after KILL) and an
+additional bounded 2s no-follow flock release check, including missing/stale PID
+paths. The checkout's uv/Python performs the probe. Held or ambiguous locks
+retain lifecycle markers and return nonzero with lock path/readable PID;
+genuinely absent or acquirable regular locks permit stopped homes. Applying
+legacy migration requires the same release observation. See the
+[transition-proof contract](contracts/runtime-lifecycle.md#daemon-lifetime-lock-thr-357).
 
 ### Team-manager agent updates
 
@@ -2834,7 +2850,7 @@ the roster: its effective value shows as returned, and a null value reads
 default, applies. After a
 successful revisit the dialog opens the new root (`new_root_task_id`). All states are in English and
 zh-CN. See the
-[full task design](../superpowers/specs/2026-11-13-task-model-reasoning-overrides.md).
+[full task design](../specs/2026-11-13-task-model-reasoning-overrides.md).
 
 ### Per-agent model and reasoning-effort selection
 
@@ -2861,9 +2877,9 @@ happyranch set-model --org <org> dev_agent --reasoning-effort high
 happyranch set-model --org <org> dev_agent --clear-reasoning-effort
 ```
 
-The CLI with no model/effort options still clears model. The UI presents a plain text input; blank on explicit Save uses Default; a custom adapter without an input-v2 effort declaration is disabled with an English/zh-CN explanation. Unsupported levels and conflicts show localized errors and retain the draft; Save uses actual persistence and refetch. OpenCode requires a pinned `provider/model`, while existing `#variant` or Pi thinking suffixes are preserved when effort is unset and must agree when explicit. [Static mappings and custom opt-in](../superpowers/specs/2026-10-11-agent-reasoning-effort.md) describe transport only; account/model support and native OpenCode transport remain separate limits.
+The CLI with no model/effort options still clears model. The UI presents a plain text input; blank on explicit Save uses Default; a custom adapter without an input-v2 effort declaration is disabled with an English/zh-CN explanation. Unsupported levels and conflicts show localized errors and retain the draft; Save uses actual persistence and refetch. OpenCode requires a pinned `provider/model`, while existing `#variant` or Pi thinking suffixes are preserved when effort is unset and must agree when explicit. [Static mappings and custom opt-in](../specs/2026-10-11-agent-reasoning-effort.md) describe transport only; account/model support and native OpenCode transport remain separate limits.
 
-Model/effort drafts require the actual selected agent and successfully loaded executor metadata; loading, failed reads and empty lists remain distinct from a ready custom adapter without effort support. Saved values and failed drafts stay visible. Both the Save button and keyboard shortcut enforce readiness and prevent duplicate in-flight saves. A display placeholder never binds a request. Ready legacy/model-only adapters still allow model edits; repository-only edits do not depend on effort support. Refetch does not rebind an authored pair to a new executor: its original expected_executor still reaches the server stale409 check. Explicit executor selection resets the dependent draft, then executor and pair saves remain two separate writes.
+Model/effort drafts require the actual selected agent and successfully loaded executor metadata; loading, failed reads and empty lists remain distinct from a ready custom adapter without effort support. Saved values and failed drafts stay visible. The Save button enforces readiness and prevents duplicate in-flight saves. A display placeholder never binds a request. Ready legacy/model-only adapters still allow model edits; repository-only edits do not depend on effort support. Refetch does not rebind an authored pair to a new executor: its original expected_executor still reaches the server stale409 check. Explicit executor selection resets the dependent draft, then executor and pair saves remain two separate writes.
 
 The backend route is `PUT /api/v1/orgs/{slug}/agents/{agent_name}/model` with payload
 `{"model": "<id>" | null, "reasoning_effort": "<level>" | null, "expected_executor": "<profile>"}`. Each selection member is optional: omission preserves it and null clears it. Invalid types/values or unsupported/conflicting effort return422 before canonical replacement. The UI binds each draft to its selected CLI; a saved CLI mismatch returns409 `reasoning_executor_changed`. It atomically updates the selection in org/agents/<name>.md frontmatter (THR-095).
@@ -3404,7 +3420,7 @@ Backend/protected proof remains missing; manual frontend observations and
 lint/static checks do not establish behavior, deployment or historical cleanup.
 
 
-Use `happyranch pause TASK --org ORG`, `resume TASK --org ORG` and `tasks --org ORG --pause-overview`. Controls read the generation and POST once unless --expected-generation is supplied; stale conflicts are not retried. --json preserves the separate pause projection; details supports --json. Overview requires explicit --org, uses bounded root pages (--all-pages follows them), reports unavailable counts honestly and never promises a safe restart. API POST /tasks/{task_id}/pause|resume accepts only expected_generation; GET /tasks/pause-overview precedes dynamic task routes. TS task client/types and OpenAPI/classification share this contract. All rendered pause UI lives on Task detail only: founder THR-292 seq41 removed the former standalone Task pause overview panel and seq45 removed every pause control, state label, drain evidence, blocker list, unavailable message and inherited-root explanation from Tasks list rows, so the list performs no overview read and shows only ordinary lifecycle, navigation and lineage (the JSON/API list projection still carries `pause`; use the CLI/API overview). Task detail adds bilingual root-only Pause/Resume in its existing header action row (founder THR-292 seq77): an unheld root shows only a compact Pause beside Revisit/Cancel and the audit link, with no unheld label, drain evidence or timestamp; Pausing shows an amber "Waiting for current work to finish" indicator with secondary Resume and a default-collapsed native disclosure whose rows link the actual task/job IDs and keep raw owner_kind/reason verbatim; Paused shows a separate Paused indicator with primary Resume. The disclosure summary counts only task_session/job blockers as "still running" and reports unknown job items separately as cleanup unconfirmed, remaining launch/result_processing/unknown as other items to resolve, plus incomplete evidence; the projection observation time and incomplete-evidence notice stay inside the disclosure, which also carries terminal/inherited drain diagnostics. Mobile document order is indicator/Resume, disclosure, then ordinary actions/audit; desktop keeps one row with the disclosure below. Pending roots have no Pause; parked in_progress roots can Pause. Descendant detail shows inherited hold and the actual root link. Escalated/terminal lifecycle and waiting/attention/lineage remain separate; terminal drain diagnostics stay visible and Resume never resolves escalation or revives a terminal task. Missing projection or unsafe/missing generation is unavailable. Each deliberate action uses the displayed generation once in the task provider; repeated submissions are disabled while pending, conflicts/refusals are accessible and translated, and the provider refreshes the originating org's list families and all details without automatically replaying or opposing the action. The shared HTTP client's existing401 bootstrap/retry is unchanged and is authentication recovery, not Pause enforcement evidence. CLI/API overview pages carry server timestamps, evidence_complete and nullable counts; a next page replaces the observation, never a summed completeness/zero claim. Other roots/thread/dream/wake/scheduled activity and eligible manager-created separate unheld successor roots stay independent; this is never a safe-restart certification. Prototype controls refuse as unavailable. The task-owned pause browser harness records ordinary-build UI/transport requests and bilingual responsive/keyboard evidence without a live daemon, including list absence of all pause UI and the overview panel, zero overview reads, and detail-only actions/refusals/locale focus. [Contract](../superpowers/specs/2026-10-10-root-task-pause-resume.md).
+Use `happyranch pause TASK --org ORG`, `resume TASK --org ORG` and `tasks --org ORG --pause-overview`. Controls read the generation and POST once unless --expected-generation is supplied; stale conflicts are not retried. --json preserves the separate pause projection; details supports --json. Overview requires explicit --org, uses bounded root pages (--all-pages follows them), reports unavailable counts honestly and never promises a safe restart. API POST /tasks/{task_id}/pause|resume accepts only expected_generation; GET /tasks/pause-overview precedes dynamic task routes. TS task client/types and OpenAPI/classification share this contract. All rendered pause UI lives on Task detail only: founder THR-292 seq41 removed the former standalone Task pause overview panel and seq45 removed every pause control, state label, drain evidence, blocker list, unavailable message and inherited-root explanation from Tasks list rows, so the list performs no overview read and shows only ordinary lifecycle, navigation and lineage (the JSON/API list projection still carries `pause`; use the CLI/API overview). Task detail adds bilingual root-only Pause/Resume in its existing header action row (founder THR-292 seq77): an unheld root shows only a compact Pause beside Revisit/Cancel and the audit link, with no unheld label, drain evidence or timestamp; Pausing shows an amber "Waiting for current work to finish" indicator with secondary Resume and a default-collapsed native disclosure whose rows link the actual task/job IDs and keep raw owner_kind/reason verbatim; Paused shows a separate Paused indicator with primary Resume. The disclosure summary counts only task_session/job blockers as "still running" and reports unknown job items separately as cleanup unconfirmed, remaining launch/result_processing/unknown as other items to resolve, plus incomplete evidence; the projection observation time and incomplete-evidence notice stay inside the disclosure, which also carries terminal/inherited drain diagnostics. Mobile document order is indicator/Resume, disclosure, then ordinary actions/audit; desktop keeps one row with the disclosure below. Pending roots have no Pause; parked in_progress roots can Pause. Descendant detail shows inherited hold and the actual root link. Escalated/terminal lifecycle and waiting/attention/lineage remain separate; terminal drain diagnostics stay visible and Resume never resolves escalation or revives a terminal task. Missing projection or unsafe/missing generation is unavailable. Each deliberate action uses the displayed generation once in the task provider; repeated submissions are disabled while pending, conflicts/refusals are accessible and translated, and the provider refreshes the originating org's list families and all details without automatically replaying or opposing the action. The shared HTTP client's existing401 bootstrap/retry is unchanged and is authentication recovery, not Pause enforcement evidence. CLI/API overview pages carry server timestamps, evidence_complete and nullable counts; a next page replaces the observation, never a summed completeness/zero claim. Other roots/thread/dream/wake/scheduled activity and eligible manager-created separate unheld successor roots stay independent; this is never a safe-restart certification. Prototype controls refuse as unavailable. The task-owned pause browser harness records ordinary-build UI/transport requests and bilingual responsive/keyboard evidence without a live daemon, including list absence of all pause UI and the overview panel, zero overview reads, and detail-only actions/refusals/locale focus. [Contract](../specs/2026-10-10-root-task-pause-resume.md).
 
 
 ### U3a(c) public handoff and unsigned request surfaces
@@ -3497,7 +3513,7 @@ served daemon/CLI/native callback/browser-to-SQL assertions for2/3/6/8/9 and
 real390x844/1440x900 en/zh-CN light/dark captures. Source-pinned hosted receipts
 record actual daemon/browser outcomes separately from MSW/component evidence. The
 current case record, mutations and unselected historical branches are in
-`docs/superpowers/specs/2026-10-09-identity-names-core.md` under Current finite
+`docs/specs/2026-10-09-identity-names-core.md` under Current finite
 naming verification source. Standalone OpenAPI --check and a genuine served
 schema comparison are both retained in the historical hosted receipts.
 The Nightly integration workflow (schedule and manual lanes) was retired under THR-291; daily Product E2E (`e2e.yml`, 19:00 UTC) is the behavioral lane.
@@ -3706,7 +3722,7 @@ caller is shipped in K0. Authentication and existing-org resolution precede the
 package read. Unknown kind/version is404;503 resource_unavailable and500
 resource_corrupt expose only category, not a resource path.
 
-See [the current ordered-coding K0 contract](../superpowers/specs/2026-10-14-ordered-coding-workflow.md).
+See [the current ordered-coding K0 contract](../specs/2026-10-14-ordered-coding-workflow.md).
 Independent final-head source review/scoped QA and lint/static checks remain
 separate gates. Python units RETIRED; integration including callback SKIPPED24342;
 behavioral/negative/mutation/repetition/protected proof UNEXECUTED /
@@ -3736,7 +3752,7 @@ post-await authority revalidation. No live adoption/setup, execution or coding
 readiness is delivered. Python units RETIRED; integration/callback SKIPPED24342;
 behavior/security/protected proof UNEXECUTED/FOUNDER-WAIVED139429/430. Source-only
 review/static checks cannot establish reader-security or behavioral acceptance.
-See [the current K0/K1 contract](../superpowers/specs/2026-10-14-ordered-coding-workflow.md).
+See [the current K0/K1 contract](../specs/2026-10-14-ordered-coding-workflow.md).
 
 ## Empty-only coding schema — K2a1
 
@@ -4458,7 +4474,7 @@ task-detail and thread-linked observations in en/zh-CN at 390×844 and 1440×900
 
 
 The ROOT12299 step31 disabled final-manager source is documented in
-[the coding contract](../superpowers/specs/2026-10-14-ordered-coding-workflow.md#disabled-live-final-manager-source).
+[the coding contract](../specs/2026-10-14-ordered-coding-workflow.md#disabled-live-final-manager-source).
 The fourth coding-owned manager uses a LOCAL single-attempt finalize command;
 only original settled QA PASS admits the repaired event@6 edge. Historical held QA
 records stay held. Own-session selected upstream metadata, strict actual exact-H
@@ -4499,7 +4515,7 @@ may be newer than the returned original receipt. Unsafe JavaScript integers
 refuse rather than round a CAS. This backend has no new CLI command;
 existing agent mapping publication cannot replace Founder-owned defaults after
 S1. The page below consumes this client. No configuration save enables the currently disabled engine. See
-[R2](../superpowers/specs/2026-10-14-ordered-coding-workflow.md#canonical-founder-settings-backend-r2-source).
+[R2](../specs/2026-10-14-ordered-coding-workflow.md#canonical-founder-settings-backend-r2-source).
 
 ### Founder coding settings page
 
@@ -4527,7 +4543,7 @@ Saved mappings keep repositories/replacements by default; explicit adoption can
 use newer authority for changed roles. Options loading/error/refresh never changes
 a draft, receipt, original command or fence and never auto-sends. No access or
 observed object format is inferred. Copy is en/zh-CN.
-See [the page section](../superpowers/specs/2026-10-14-ordered-coding-workflow.md#founder-coding-settings-page--root12568--task12632).
+See [the page section](../specs/2026-10-14-ordered-coding-workflow.md#founder-coding-settings-page--root12568--task12632).
 
 
 ## Historical settings-pinned coding start syntax
@@ -4998,7 +5014,7 @@ Six existing-Founder-bearer GETs expose stored sequential definition versions,
 repo-free settings, runs/detail and source/carrier/visit task links, under
 `/workflows/sequential` and `/tasks/{task_id}/sequential-workflow`. Exact paths,
 closed records, audience/privacy and remaining U7b–U7d work are in the current
-[U7 specification](../superpowers/specs/2026-11-11-sequential-coding-u7.md).
+[U7 specification](../specs/2026-11-11-sequential-coding-u7.md).
 SELECT-only snapshots authenticate complete history and fresh current authority;
 GET allocates/writes nothing. Absent-task404 precedes ownership409. Denied/foreign
 reads return no workflow content or link. Existing Founder task-result visibility
@@ -5032,7 +5048,7 @@ warning and a Refresh of that read on transport failure; otherwise an explicit
 The three locked PRD design corrections
 (exhaustion, preserved approval/Revise with separate pending rechecks, selected
 reviewer vs legacy reviewer list) and the bilingual copy are specified in the
-[U8 specification](../superpowers/specs/2026-11-12-sequential-coding-u8.md).
+[U8 specification](../specs/2026-11-12-sequential-coding-u8.md).
 U8b (below) adds Setup/Save custody and the Settings → Coding redirect.
 
 ## U8b Workflows Setup and Settings → Coding redirect (TASK-15605)
@@ -5066,7 +5082,7 @@ Workflows → Setup and keeps historical repo-bearing saves recoverable by a rea
 GET `/settings/coding?operation_key=KEY` lookup (the old send fence was memory-only, so
 recovery is by the original key the old page displayed). Nothing there sends a PUT,
 converts or resends the historical command. See the
-[U8 specification](../superpowers/specs/2026-11-12-sequential-coding-u8.md).
+[U8 specification](../specs/2026-11-12-sequential-coding-u8.md).
 
 ## U7b repo-free settings and original save (TASK-15482)
 
@@ -5106,14 +5122,14 @@ only the genuine manager's own FINAL callback supplies native provenance.
 U5b2b2 validates after positive outer settlement; **Final success remains Held**.
 U7c2 still owes compatible Final witness/output acceptance, U7d agent initiation,
 and U9 atomic fresh-start cutover. Full command/route grammar, audience exclusions,
-per-read allowances and SYNTHETIC evidence limits: [current U7 spec](../superpowers/specs/2026-11-11-sequential-coding-u7.md).
+per-read allowances and SYNTHETIC evidence limits: [current U7 spec](../specs/2026-11-11-sequential-coding-u7.md).
 No schema/permission/credential/access observer or live operation is introduced.
 
 
 ## U4c current selected-Developer repository transport (TASK-15660)
 
 The earlier U4 checkpoint's unavailable public subject-binding adapter is
-superseded by [U4c](../superpowers/specs/2026-11-12-sequential-coding-u4c.md).
+superseded by [U4c](../specs/2026-11-12-sequential-coding-u4c.md).
 `happyranch workflows sequential repository-resolve` and `repository-bind`
 require `--org ORG --session-id CURRENT --from-file /absolute/command.json --json`.
 The canonical closed command contains exactly `format` with value

@@ -1159,7 +1159,7 @@ class SchemaMixin:
         ``CREATE TABLE IF NOT EXISTS jobs`` below becomes a no-op on an
         already-migrated DB.
 
-        See spec docs/superpowers/specs/2026-05-26-jobs-design.md §6.2.
+        See spec docs/specs/2026-05-26-jobs-design.md §6.2.
         """
         # `executescript` does not return rows, so use a plain execute+fetchall
         # to inspect the schema first.
@@ -2160,6 +2160,24 @@ class SchemaMixin:
             );
             CREATE INDEX IF NOT EXISTS idx_csee_skill_id ON custom_skill_eligibility_events(skill_id);
 
+            CREATE TABLE IF NOT EXISTS skill_use_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                org_slug TEXT NOT NULL,
+                skill_slug TEXT NOT NULL,
+                skill_source TEXT NOT NULL CHECK (skill_source IN ('custom', 'bundled', 'unknown')),
+                custom_skill_id TEXT,
+                agent_name TEXT NOT NULL,
+                task_id TEXT,
+                session_context TEXT NOT NULL CHECK (session_context IN ('task', 'thread', 'wake', 'dream')),
+                session_id TEXT NOT NULL,
+                executor TEXT NOT NULL,
+                signal_kind TEXT NOT NULL CHECK (signal_kind IN ('invoked', 'opened_skill_file')),
+                provider_session_id TEXT,
+                observed_at TEXT NOT NULL,
+                source_ref TEXT NOT NULL,
+                CHECK (session_context != 'task' OR task_id IS NOT NULL)
+            );
+
             CREATE TABLE IF NOT EXISTS custom_skill_materializations (
                 id              INTEGER PRIMARY KEY AUTOINCREMENT,
                 skill_id        TEXT NOT NULL REFERENCES custom_skills(id),
@@ -2203,6 +2221,12 @@ class SchemaMixin:
                 ON custom_skill_purge_events(org_slug, slug);
 
             """)
+        # Also upgrades legacy databases without the observation table. Keep
+        # indexes on new columns outside the fresh executescript (MEM-498).
+        self._conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_skill_use_event_identity "
+            "ON skill_use_events(org_slug, session_id, executor, source_ref, skill_slug)"
+        )
         # Knowledge tables are additive and installed after the fresh block;
         # keep their SQL and behavior with the feature, not the Database facade.
         from runtime.knowledge.archives import install_archive_schema
@@ -2297,7 +2321,7 @@ class SchemaMixin:
             "ALTER TABLE tasks RENAME COLUMN crew TO team",
             # Per-agent output-dir rename (2026-06-02). Idempotent: fails on DBs
             # where the column is already `final_output_dir`/`output_dir` (fresh or
-            # already-renamed). See docs/superpowers/plans/2026-06-01-rename-assets-to-artifacts.md.
+            # already-renamed). Historical rename plan removed; see Git history.
             "ALTER TABLE tasks RENAME COLUMN final_artifact_dir TO final_output_dir",
             "ALTER TABLE task_results RENAME COLUMN artifact_dir TO output_dir",
         ):
@@ -2349,7 +2373,7 @@ class SchemaMixin:
             # SIGTERM'd session as "cancelled" (not a retryable failure) and
             # idempotent _fail calls don't overwrite the founder's note.
             "ALTER TABLE tasks ADD COLUMN cancelled_at TEXT",
-            # Revisit link: see docs/superpowers/specs/2026-04-23-revisit-root-link-design.md.
+            # Revisit link: see docs/specs/2026-04-23-revisit-root-link-design.md.
             # Sideways reference to the predecessor root of a revisit; NULL for
             # non-revisit tasks. walk_ancestors MUST NOT follow this column —
             # that's the attempt-isolation invariant from the v2 revisit spec.
@@ -2593,7 +2617,7 @@ class SchemaMixin:
             # are LEFT AS-IS; only new cancellations write status='cancelled'
             # (derivations read cancelled_at, not the status label). Forward-only
             # posture; the reverse migration is published in the Path-B spec
-            # (docs/superpowers/specs/2026-06-27-task-status-pathB-stored-design.md).
+            # (docs/specs/2026-06-27-task-status-pathB-stored-design.md).
             # No DDL: neither status nor block_kind has a CHECK constraint, so
             # the new values are application-enum-only.
             self._conn.execute(

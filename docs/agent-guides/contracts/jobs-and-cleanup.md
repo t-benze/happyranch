@@ -31,7 +31,7 @@ never-launched prerequisite loss alone may commit failed/spawn_failed with
 NULL start/exit, genuine finish/diagnostic/agent audit and postcommit wake.
 Preserve owner/session/Pause/possible-launch/race winners, existing running CAS,
 limits and all-terminal resumption. No schema/auth/permission/credential/general
-notifier change or deployment follows. Current contract: [Jobs](../../superpowers/specs/2026-05-26-jobs-design.md).
+notifier change or deployment follows. Current contract: [Jobs](../../specs/2026-05-26-jobs-design.md).
 
 
 Stop200 means an actual owned Stop signal request, never exit. CLI says “Stop
@@ -442,7 +442,7 @@ explicit preview; reports no longer carry `configured_mode`. Founder seq134/136
 authorizes all-org activation after reviewed delivery without another activation
 decision; root TASK12353 owns normal rollout/serving verification and seven actual
 on-night receipts. Source publication alone does not change loaded code. Original
-TASK11742/JOB4898 recovery and root11948/PR1128 remain separate. Read the [current contract](../../superpowers/specs/2026-10-15-nightly-disk-sweeper.md)
+TASK11742/JOB4898 recovery and root11948/PR1128 remain separate. Read the [current contract](../../specs/2026-10-15-nightly-disk-sweeper.md)
 and runtime guide before changing it; independent review/scoped disposable QA and
 normal hooks/static checks remain mandatory. Python units stay retired.
 
@@ -560,7 +560,7 @@ Source-native evidence does not establish frozen-app acceptance. S4c scratch
 routing uses this shared leaf with all-PID scope and EPERM retention, as described
 above; cleanup authority and the separate nightly no-process policy are unchanged.
 See the [current S4
-spec](../../superpowers/specs/2026-11-11-darwin-cleanup-process-use.md).
+spec](../../specs/2026-11-11-darwin-cleanup-process-use.md).
 
 **Forward-only root-terminal worktree reconciliation (THR-259 seq476 adopting474).** Each original newly committed structural root in `completed`, `failed`, `cancelled` or `superseded`, including NULL-parent workflow tasks, reconciles only its parent ancestry after existing history/teardown and outside owner locks. Recorded child `worktree-deferred:` evidence becomes advisory at this root pass without rewriting results/history. Child hooks retain their one-task/five-second deferral policy; manual/daily retain age/ordinal/peer/history/host-job/cache authority. The shared bundled safety owner proves fresh exact-HEAD preservation with live owning-branch precedence, recursive no-follow boundaries, unchanged same-user scanner and action-time registration/ownership/protected identities. Dirty/local-only/open/active/held/successor-used/unknown paths retain; terminality is not quiescence. Existing append-only audit start INTEGER id plus root id/created_at identify a pass; mutable timestamps, replay and missing finish never create a retry. One owner batch shares 10s work including 0.5s DB/50ms lock admissions,1s report,1s owned-group reap;16 events/256 nodes/depth64/page64/16 attempts/5s clipped candidates/200000 entries/1MiB capture/256KiB receipts. The 12s ordinary-I/O target cannot interrupt SQLite/fsync/kernel I/O. Incomplete membership/protection starts zero removal and names exact frontier/remainder; possible post-action or report anomaly halts. Success requires absence, unregistration, branch preservation and protected identities. No force, cache-only action, task-tmp action, new schedule/queue/retry, schema/auth/permission change, historical sweep or deployment follows. See [the full contract](../../agent-guides/orchestrator-contracts.md#forward-only-terminal-task-worktrees).
 

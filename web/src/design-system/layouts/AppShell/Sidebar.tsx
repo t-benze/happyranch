@@ -31,16 +31,12 @@ import {
   TooltipTrigger,
 } from '@/design-system/primitives/Tooltip';
 import { AddOrgDialog } from '@/features/orgs/AddOrgDialog';
-import { useAgentsRoutes } from '@/hooks/agents';
 import { useDashboardSummary } from '@/hooks/dashboard';
 import { useTranslation } from '@/hooks/i18n';
 import { identityInitials, useFounderName, useHasIdentityProvider } from '@/hooks/identities';
 
-import { useKbRoutes } from '@/hooks/kb';
 import { useOrgsList } from '@/hooks/orgs';
-import { useTasksRoutes } from '@/hooks/tasks';
 import { useThreadRoutes } from '@/hooks/threads';
-import { useGlobalJump } from '@/hooks/global-jump';
 import { useOrgSlugOptional } from '@/lib/orgSlug';
 import { features } from '@/config/features';
 
@@ -75,9 +71,6 @@ export function Sidebar(): JSX.Element {
   const orgsQuery = useOrgsList();
   const [addOrgOpen, setAddOrgOpen] = useState(false);
   const routes = useThreadRoutes();
-  const tasksRoutes = useTasksRoutes();
-  const agentsRoutes = useAgentsRoutes();
-  const kbRoutes = useKbRoutes();
 
   // BUG-08: Day-N comes from the SAME dashboard-summary query DashboardPage
   // consumes — React Query dedupes by key, so this is not a new data path.
@@ -85,28 +78,6 @@ export function Sidebar(): JSX.Element {
   // fetch.
   const summary = useDashboardSummary().data;
   const orgAgeDays = summary?.org_age_days;
-
-  // Global jump chords retained with the sidebar navigation.
-  useGlobalJump('d', () => {
-    if (activeSlug && !isPrototype) navigate(`/orgs/${activeSlug}/dashboard`);
-  });
-  useGlobalJump('i', () => {
-    if (activeSlug && !isPrototype) navigate(routes.inboxForOrg(activeSlug));
-  });
-  useGlobalJump('t', () => {
-    if (activeSlug && !isPrototype) navigate(tasksRoutes.inboxForOrg(activeSlug));
-  });
-  useGlobalJump('k', () => {
-    if (activeSlug && !isPrototype) navigate(kbRoutes.inboxForOrg(activeSlug));
-  });
-  useGlobalJump('l', () => {
-  });
-  useGlobalJump('a', () => {
-    if (activeSlug && !isPrototype) navigate(`/orgs/${activeSlug}/audit`);
-  });
-  useGlobalJump('g', () => {
-    if (activeSlug && !isPrototype) navigate(agentsRoutes.inboxForOrg(activeSlug));
-  });
 
   const switchEnabled = !orgsQuery.isLoading && (orgsQuery.data?.orgs.length ?? 0) > 0;
 
@@ -310,8 +281,8 @@ function Brandmark(): JSX.Element {
   return (
     <svg
       viewBox="0 0 100 100"
-      width="22"
-      height="22"
+      width="30"
+      height="30"
       aria-hidden="true"
       className="text-brand-foreground shrink-0"
     >
@@ -354,7 +325,7 @@ export function SidebarNavItem({
   if (!enabled) {
     const span = (
       <span
-        className="text-fg-subtle flex cursor-not-allowed items-center justify-center gap-2.5 rounded-sm px-2 py-1.5 text-sm md:justify-start"
+        className="text-fg-subtle text-nav flex cursor-not-allowed items-center justify-center gap-2.5 rounded-sm px-2 py-1.5 font-medium md:justify-start"
         aria-disabled="true"
       >
         <Icon size={16} aria-hidden="true" className="shrink-0" />
@@ -373,10 +344,12 @@ export function SidebarNavItem({
     <NavLink
       to={to}
       className={({ isActive }) =>
-        `flex items-center gap-2.5 rounded-sm border-l-2 border-l-transparent px-2 py-1.5 text-sm transition-colors focus-visible:ring-2 focus-visible:outline-none focus-visible:ring-accent justify-center md:justify-start ${
+        // THR-376 PR2: Pasture `[data-dir="a"] .nav-item.active` — accent-soft
+        // fill, accent-text ink, weight 600, no left bar; rows 13.5px/500.
+        `flex items-center gap-2.5 rounded-sm px-2 py-1.5 text-nav transition-colors focus-visible:ring-2 focus-visible:outline-none focus-visible:ring-accent justify-center md:justify-start ${
           isActive
-            ? 'border-l-accent bg-bg-raised text-fg font-medium'
-            : 'text-fg-muted hover:bg-bg-raised hover:text-fg'
+            ? 'bg-accent-soft text-accent-text font-semibold'
+            : 'text-fg-muted font-medium hover:bg-bg-raised hover:text-fg'
         }`
       }
     >

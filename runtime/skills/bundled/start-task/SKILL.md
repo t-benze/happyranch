@@ -317,7 +317,7 @@ own-unlink hardlink adjustment. Darwin requires validated native getmntinfo/stat
 mount evidence; unavailable or malformed evidence retains. It loses post-unlink
 observation and accepts the non-atomic stat-to-unlink window within the existing
 same-UID threat model, without an atomic identity guarantee. See the maintained
-`docs/superpowers/specs/2026-10-15-nightly-disk-sweeper.md` for the exact platform
+`docs/specs/2026-10-15-nightly-disk-sweeper.md` for the exact platform
 and hardlink contract. Devices/unknown special types retain. Worktrees and
 Git metadata keep strict special-object checks; all ownership/jobs/age/link/
 mount gates and durable manifest/lock/output exclusions remain.
@@ -478,7 +478,7 @@ For a genuinely bound sequential visit, follow only its `workflow-sequential-nod
 
 For a sequential document supplement selected by its immutable output contract, keep capability_claims empty. A document author uses produced with completed status and null verdict, or BLOCK with empty content and own causal findings. A document reviewer uses APPROVE, REQUEST_CHANGES or BLOCK with matching verdict; APPROVE content is a nonempty canonical JSON object, while REQUEST_CHANGES/BLOCK content is empty with own findings. Review only addressed selected document inputs; no client subject field is required or trusted. Preserve actual native failed/blocked causes. References, JSON and URLs grant no repository capability or effect, and native task-result visibility supplies no role-private custody. Syntax and process success do not establish semantic truth. Keep the original sequential callback and genuine FINAL report-completion contract above.
 
-Sequential Coding U4a provides repository preflight records; U4b2 attaches an internal subject binder with complete/selected readers, with U4c own-current Developer repository-resolve/repository-bind transport (see below). A selected code-change task follows its trusted phase supplement: resolve-only until positive subject COMMIT, then editing only under the original bound repository/origin/base/scope. Resolve actual repository/origin, base and authorized scope and verify SHA1 before editing; unsupported format/scope holds editing with cause for the accountable manager. A different target/base/origin or expanded scope needs a new authorized run; development evidence must carry actual repository/base/head/PR. There is no four-role effective-duty-access checkpoint or readiness label. An observation receipt or configured eligibility is not a lasting grant: ACCESS-1 THR-336 msg131 requires the daemon to revalidate only current authority and unchanged subject at later disclosure/publication/action; effective access is established by the selected agent’s own actual operation. Preserve the genuine FINAL callback; no self-installation, admission change or receipt fabrication follows. Use U4c repository-resolve/repository-bind in this own-current ordinary session; never invent a command or receipt. Exact replay retains original bytes/IDs; correction visits inherit the original subject. Narrower scope cannot rewrite original prefixes. A changed subject/expanded scope or unsupported preflight durably holds editing with a finite cause and accountable-manager new-authorized-run action; no automatic retry/resume follows. The authenticated original live task/principal/SID may still commit its canonical negative `BLOCK` callback under current authority, with empty content/claims and causal findings. Success-shaped callbacks and foreign sessions refuse; exact full-payload replay retains the one original INTEGER result. Original safe terminal/positive outer settlement drains without sequential acceptance: run/visit stay Held, accepted result stays NULL, and no output, successor, editing release, resume or retry follows. Native completed/failed status is retained; a blocked callback keeps its blocked result/classification and closes the native task as failed after safe terminal proof. Cancellation wins over fresh callbacks/settlement; an already committed callback may only replay unchanged. The immutable subject, hold bytes/cause and event prefix are preserved. Failed binding COMMIT releases no editing. Native provenance stays NULL until genuine results exist; the original append-only subject row is never backfilled. U4b3 now attaches code-change declaration composition and downstream current-authority disclosure checks; U5b1 attaches assessment composition/disclosure below; U4c below supplies Developer repository transport; U5b2 merge and other U7 transport retain their own contracts. See docs/superpowers/specs/2026-11-11-sequential-coding-u4.md for the inert/attached split.
+Sequential Coding U4a provides repository preflight records; U4b2 attaches an internal subject binder with complete/selected readers, with U4c own-current Developer repository-resolve/repository-bind transport (see below). A selected code-change task follows its trusted phase supplement: resolve-only until positive subject COMMIT, then editing only under the original bound repository/origin/base/scope. Resolve actual repository/origin, base and authorized scope and verify SHA1 before editing; unsupported format/scope holds editing with cause for the accountable manager. A different target/base/origin or expanded scope needs a new authorized run; development evidence must carry actual repository/base/head/PR. There is no four-role effective-duty-access checkpoint or readiness label. An observation receipt or configured eligibility is not a lasting grant: ACCESS-1 THR-336 msg131 requires the daemon to revalidate only current authority and unchanged subject at later disclosure/publication/action; effective access is established by the selected agent’s own actual operation. Preserve the genuine FINAL callback; no self-installation, admission change or receipt fabrication follows. Use U4c repository-resolve/repository-bind in this own-current ordinary session; never invent a command or receipt. Exact replay retains original bytes/IDs; correction visits inherit the original subject. Narrower scope cannot rewrite original prefixes. A changed subject/expanded scope or unsupported preflight durably holds editing with a finite cause and accountable-manager new-authorized-run action; no automatic retry/resume follows. The authenticated original live task/principal/SID may still commit its canonical negative `BLOCK` callback under current authority, with empty content/claims and causal findings. Success-shaped callbacks and foreign sessions refuse; exact full-payload replay retains the one original INTEGER result. Original safe terminal/positive outer settlement drains without sequential acceptance: run/visit stay Held, accepted result stays NULL, and no output, successor, editing release, resume or retry follows. Native completed/failed status is retained; a blocked callback keeps its blocked result/classification and closes the native task as failed after safe terminal proof. Cancellation wins over fresh callbacks/settlement; an already committed callback may only replay unchanged. The immutable subject, hold bytes/cause and event prefix are preserved. Failed binding COMMIT releases no editing. Native provenance stays NULL until genuine results exist; the original append-only subject row is never backfilled. U4b3 now attaches code-change declaration composition and downstream current-authority disclosure checks; U5b1 attaches assessment composition/disclosure below; U4c below supplies Developer repository transport; U5b2 merge and other U7 transport retain their own contracts. See docs/specs/2026-11-11-sequential-coding-u4.md for the inert/attached split.
 
 For a selected sequential code-change output, keep capability_claims empty. A produced/completed/null-verdict result uses canonical JSON content with exactly format=workflow-sequential-code-change@1, subject (the complete original committed subject), epoch (this visit's content epoch), head (full lowercase 40-hex SHA1), and pr containing exactly repository (owner/repo), number (positive INTEGER), url (https://github.com/owner/repo/pull/number). The ordinary carrier and genuine FINAL callback are unchanged; BLOCK has empty content/claims and own causal findings. Repository/base/head/PR declarations do not prove remote head/existence, diff scope or effective access. Founder THR-336 msg131 ACCESS-1 controls earlier PRD v1.0.3 wording; v1.0.4 update is tracked in THR-351. Agents share one OS user and one gh credential, so per-agent effective repository access is not independently observable by the runtime. Selected reviewer/QA prove access with their own exact-head fetch; final-manager expected-head non-admin guarded merge remains unavailable pending U5b2. A failed required operation uses BLOCK and records denied versus unverified; it grants no new adapter/credential/permission. Every downstream disclosure rechecks current authority before returning selected inputs; a denied/unverified block preserves original bindings, recipient set and selection. Earlier preflight is not a lasting grant. U4b3 checks provenance and unchanged subject only, without daemon GitHub/network I/O or fetch. Preserve document witnesses/limits and all native settlement bytes; no live install or enablement follows.
 
@@ -1451,7 +1451,7 @@ observation/native settlement. ACCESS-1 msg131 / PRD v1.0.4 means daemon current
 authority only; own live-session repository-operation failure is denied versus
 unverified BLOCK -> Held. No daemon GitHub/network I/O, new credential, access
 observer, job finalizer or permission grant. Historical local adapters and U4
-clone preflight remain unchanged. See docs/superpowers/specs/2026-11-11-sequential-coding-u5.md.
+clone preflight remain unchanged. See docs/specs/2026-11-11-sequential-coding-u5.md.
 
 
 Sequential Coding U5b2a supplies only an unmounted original-live-Final selection
@@ -1487,7 +1487,7 @@ validation/mount and U7 transport remain. Existing mixed cancellation refusal,
 original budgets/uncertainty/Pause generation and genuine FINAL callback contract
 are unchanged. Do not invent a command or treat launcher TERM/INT, ended SID,
 missing PID/control or successful Stop request as product cancellation/cleanup.
-See docs/superpowers/specs/2026-11-11-sequential-coding-u6.md.
+See docs/specs/2026-11-11-sequential-coding-u6.md.
 
 
 ## Sequential U6b1 source boundary
@@ -1513,7 +1513,7 @@ to force a safe result. U6b2b live retained-family/cross-family overlays, owner
 aggregation/history and Founder/native-tail attachment remain implementation.
 U6b1 stays unmounted; existing Founder cancellation, original budgets, Pause,
 Final receipt uncertainty and genuine FINAL callback contract are unchanged.
-See docs/superpowers/specs/2026-11-11-sequential-coding-u6.md.
+See docs/specs/2026-11-11-sequential-coding-u6.md.
 
 
 ## Sequential U6b2b mounted business-stop boundary
@@ -1585,7 +1585,7 @@ are separate reads. Historical repo-bearing settings/key recovery is unchanged.
 U7c2b/U7d below supersede this earlier transport/Final-Held checkpoint.
 Public Coding fresh start uses U9's reviewed-v2 selection and old-fresh fence. No browser
 start, daemon repository I/O or Final job/recovery executor follows. See the
-current docs/superpowers/specs/2026-11-11-sequential-coding-u7.md.
+current docs/specs/2026-11-11-sequential-coding-u7.md.
 
 
 Sequential U7c1 supplies OWN-current-ordinary-session CLI reads through
@@ -1714,4 +1714,4 @@ same-body reissue uses current bind semantics. Use repository-preflight to read
 the already-bound subject. Browser/bearer, foreign/ended/recovery/thread sessions
 are unavailable. No new credential, permission, daemon network/effect or live
 setup follows. Original native FINAL callback and all holds/limits remain.
-See docs/superpowers/specs/2026-11-12-sequential-coding-u4c.md.
+See docs/specs/2026-11-12-sequential-coding-u4c.md.
