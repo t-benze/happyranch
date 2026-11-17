@@ -53,6 +53,16 @@ names the path and permission; fresh-host provisioning rechecks after account
 creation. The installer never creates or chmods the dpkg prefix. Install/upgrade
 the package separately with the required deployment approval; neither provisioning nor installation below builds a package.
 
+The .deb additionally ships checksum-pinned Headscale v0.25.1 inert at
+`/opt/happyranch-desktop/libexec/headscale/headscale` (0755, dpkg root ownership).
+It is outside `bin/`, with no wrapper or symlink. Payload builds verify the
+official native amd64/arm64 asset before copying or inspecting it and never
+execute it. Exact BSD-3-Clause text, linked-module originals/inventory and Go
+1.23.4 toolchain notices ship in the payload's `licenses/` and the .deb's
+`/usr/share/doc/happyranch/licenses/`; see the [release handbook](linux-release-handbook.md#build-the-intermediate-payload).
+This bundling creates no service, user, config, socket or state and performs no
+start/enable. TASK-16780 owns lifecycle wiring to this fixed path.
+
 Prepare operator-owned, single-link regular JSON input files with no symlinked
 parents and no group/world write bits. Inputs are bounded to 64 KiB each. Supply
 stable tenant/home/connector IDs; keep the same files for that installation.
