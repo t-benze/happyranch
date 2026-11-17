@@ -1751,10 +1751,10 @@ committed Sidebar/AppBar DOM plus `<html lang>` and the real navigator
 read-back, retains a causal negative control (`I18N_W2A_EVIDENCE=negative`:
 wrong first shell, later corrected, must be rejected by the same predicate), and
 covers both locales across the observed 1440x900/390x844 light/dark
-combinations for root loading/no-org/NotFound/help (S11/S16)/AddOrg
+combinations for root loading/no-org/NotFound/AddOrg
 (S12/S17)/error/dormant-palette. In both switch directions it records the actual
 `document.activeElement`, retained DOM node identity, open state and
-selection/value for the help non-default tab (S16), the AddOrg typed slug +
+selection/value for the AddOrg typed slug +
 mapped error (S12 wide-light; S17 zh-narrow-light/en-narrow-dark/zh-wide-dark)
 and the palette query + non-default selected row (S13 wide-light; S18
 zh-narrow-light/en-narrow-dark/zh-wide-dark), and asserts each switch window
@@ -1764,7 +1764,8 @@ palette's localized X close control (S19) with native Enter/Space/Escape in both
 locales with populated and empty results (closes once, zero selection, unchanged
 pathname) while the search-input and non-default-row Enter still select once, and
 adds CJK-font and viewport-containment checks. Positive receipt: 375/375
-assertions, 30 PNGs. W2b onboarding evidence runs via
+assertions, 30 PNGs (recorded before THR-372 removed the help-drawer
+S6/S11/S16 cases and the S13/S18 dormant-⌘K assertions). W2b onboarding evidence runs via
 `web/scripts/w2b-onboarding-browser-evidence.mjs` against the ORDINARY
 `web/dist` bundle and a synthetic `/api/v1` stub, driving the real `/onboarding`
 route with NO evidence-only bundle instrumentation: locale switches go through

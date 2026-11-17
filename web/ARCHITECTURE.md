@@ -392,13 +392,15 @@ import. The palette's container keydown defers Enter to natively-activatable
 descendants (`button`, `a[href]`, `[role="option"]`), so the localized X close
 control closes on Enter without selecting a row while the search input still
 selects the active row; the browser harness exercises this (S19: both locales,
-populated and empty results) and covers the shell/help (S11/S16), AddOrg (S12
+populated and empty results) and covers AddOrg (S12
 wide-light; S17 zh-narrow-light/en-narrow-dark/zh-wide-dark) and palette (S13
 wide-light; S18 zh-narrow-light/en-narrow-dark/zh-wide-dark) states across the
 observed 1440x900/390x844 light/dark combinations in both switch directions,
 recording the actual `document.activeElement`, retained node identity, open state
 and selection/value before and after each switch plus precisely scoped
-switch-window request assertions (positive receipt 375/375 assertions, 30 PNGs).
+switch-window request assertions (positive receipt 375/375 assertions, 30 PNGs,
+recorded before THR-372 removed the help-drawer S6/S11/S16 cases and the
+S13/S18 dormant-⌘K assertions with the keyboard shortcuts).
 Both env gates are no-ops for every ordinary build. See
 `docs/superpowers/specs/2026-09-20-web-i18n-design.md`.
 
