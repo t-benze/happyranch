@@ -68,15 +68,16 @@ connector, sidecar and both verifier units, prove dead inactive/failed states,
 no queued jobs, zero service PIDs and no service cgroups, then re-inventory.
 All files remain intact on stop/proof failure. Inventory reads no release-home
 token and never interprets opaque trust/tsnet state. These APIs grant no cleanup
-or activation authority and have no CLI/helper/package selection. Journaled
-replacement, Disable cleanup and authenticated token rotation remain fail-closed;
+or activation authority and have no CLI/helper/package selection. Disable cleanup
+and authenticated token rotation remain fail-closed; journaled replacement
+closure is described below;
 the Go sidecar and `home_transport=False` are unchanged. TODO (3b-2): owned local
 Headscale stop/cleanup, with no callable seam implemented in this sub-part.
 
 The 3b-1c Python-only replacement consumer implements **stop/intent, config
 quarantine, fixed state/enrollment, quarantined config and owned unit removal,
-and fresh inert staging**,
-not completed failed-install replacement. The v1
+fresh inert staging and transaction closure** into ordinary modern staged-inert
+inventory. The v1
 record still has exactly `version`, `layout`, `digests` and `phase`, with the six
 original fixed-file digests (including provision.json) unchanged through unit
 removal. Staging replaces only each current new file's digest; the record format
@@ -106,8 +107,10 @@ Root:root 0600 journal metadata and exact bytes are checked repeatedly. All
 replacement phases require exact generated canonical bytes; `journal_generation`
 hashes those bytes. Except for exact current/completed removal and staging intents,
 missing files refuse. Unknown/malformed/mismatched records, wrong placements
-and pending entries refuse before mutation. Clean, successful modern
-staged-inert/recorded and intact manual installs still refuse; an unjournaled
+and unrecognized pending entries refuse before mutation (the exact own-intent
+exception is described below). Clean, modern recorded and intact
+manual installs still refuse. Journal-free modern staged-inert inventory also
+refuses exactly `replacement refused: modern:` without effects; an unjournaled
 failed/partial candidate remains unavailable without effects.
 
 For a proven journal-bearing failed/partial candidate, `replace_failed()`
@@ -177,7 +180,8 @@ digests remain unchanged in the journal. Once the connector copy is absent,
 validated provision provenance selects only the existing exact legacy/identity
 unit-byte profile; no old configuration, ID, key, trust or control binding is
 reconstructed or executed. Fresh-instance resume handles every intent/unlink/
-parent-fsync boundary; pending or mismatched records still refuse safely.
+parent-fsync boundary; unrecognized pending or mismatched records still refuse
+safely. Exact own journal-pending intents use the recovery rule below.
 
 At `replacement-configs-removed`, the consumer raises exactly
 `replacement paused after config removal; unit removal and fresh staging unavailable`.
@@ -222,11 +226,22 @@ slots remain unchanged. The final modern `provision.json` binds the five actual
 staged files and the retained journal binds all six. Custody through the same-FD
 source-UID reader, full bounded inventory, retired-state/unit/enrollment absence,
 quiescence and pinned no-follow parents are rechecked before intent publication
-and file effects, including after the pending-file fsync. Unknown/pending residue
-refuses; substituted pending entries are never cleaned up. Only the writer's own
-exclusive inode receives its existing exception cleanup. Fresh instances resume
-published intents and completed effects; uncatchable machine-crash durability and
-unsafe/partial pending-residue recovery are not claimed.
+and file effects, including after the pending-file fsync. Replacement recovery
+also recognizes the fixed `.install-transaction.json.pending` leaf as interrupted
+writer intent only under a pinned no-follow parent: regular single-link file,
+exact writer owner/0600 mode, at most 64 KiB, strict canonical v1 bytes. A next-phase
+intent must equal exactly the committed generation with only its immediate phase
+advance. A same-phase staging rebind may differ only in that phase's current
+destination digest, with both destination and its payload-pending leaf absent.
+After fresh custody, quiescence, full inventory, digest, parent and leaf rechecks,
+recovery discards only this validated journal pending inode and fsyncs its parent;
+the normal writer republishes intent and regenerates unpublished content. It never
+rolls forward a digest rebind or reconstructs lost UUID/policy bytes. Other pending
+content, metadata, generations, phases, digest differences and unknown entries
+refuse and remain byte-exact. Payload-pending leaves retain their separate refusal
+surface. Fork/real-fsync/os._exit cases cover every replacement journal transition
+and all five rebinds; existing SystemExit coverage remains. Machine-power-loss
+durability and racing root writers are not claimed.
 
 Inert inventory and journaled replacement recovery validate the full policy
 schema/artifact and every recorded file digest without requiring a current
@@ -238,17 +253,42 @@ this grants no unjournaled replacement authority. Provisioning admission,
 install/start/enable paths and runtime readiness/request admission still require
 current policy or refuse activation. An expired staged policy must be re-issued
 through a future authorized flow before activation; this slice neither re-issues
-it nor implements activation or transaction closure.
+it nor implements activation.
 
-At `replacement-staged`, the consumer raises exactly
-`replacement paused after fresh staging; transaction closure unavailable`.
-Repeating this boundary rechecks token/quiescence without changing files or journal
-bytes. Safe journal closure remains undelivered and fail-closed. This retained
-transaction is not ordinary modern staged-inert.
-No revoked credentials/trust are restored into service. Ordinary inventory/stop/
-provision/install/uninstall/drift and all ten fixed legacy system supervisor
-lifecycle entries retain their final/pending transaction refusals. Modern
-activation still refuses exactly `home control binding not provisioned; requires slice 3b-2`.
+Fresh staging pauses at `replacement-staged` with
+`replacement paused after fresh staging; retry ReplaceFailed to close transaction`.
+The next authenticated call resumes this retained v1 generation through
+`replacement-reload` → `replacement-retire-journal`. Each new intent is atomically
+published and fsynced with the same six digests before its effect. The existing
+quarantine/config removal intents have already destroyed the root-only old
+configs/secrets, and the staging intent has already published the final modern
+`provision.json` exactly as clean-host generation does. Closure never regenerates
+or rewrites those files, IDs or an expired policy.
+
+The reload intent rechecks custody, full fixed inventory, quiescence and pinned
+no-follow parents before daemon-reload. It may repeat after interruption. The
+retirement intent additionally requires the ordinary no-unit manager shape;
+cached own fragments no longer qualify. Immediately before descriptor-relative
+journal unlink, closure repeats exact journal/leaf metadata, source-UID/same-FD
+token custody, full bounded inventory, quiescence and pinned-parent checks. It
+fsyncs the journal's parent last. Unknown, unsafe, unrecognized pending, quarantined or changed
+residue refuses with non-secret fixed paths and remains untouched. There is no
+unjournaled recovery or restoration of revoked credentials/trust.
+
+While a recognized replacement journal remains, a fresh instance resumes each
+exact closure intent or completed effect and converges to retirement without
+duplicate effects. After durable retirement, ordinary inventory returns `modern` /
+`staged-inert`, with no transaction journal or quarantine residue. A fresh-instance
+ReplaceFailed retry then refuses exactly `replacement refused: modern:` with zero
+filesystem, journal or service effects, just like clean-host staging. No completion
+marker or new durable provenance distinguishes these states. V1's existing phases
+and record shape remain readable; policy currentness is not required for closure.
+Own journal-pending-intent recovery is covered as above; unsafe or partial pending
+residue remains refusal-only. Racing root writers and actual machine-power-loss
+durability remain unverified. Until journal retirement,
+ordinary inventory/stop/provision/install/uninstall/drift and all ten fixed legacy
+system supervisor lifecycle entries retain their final/pending transaction
+refusals. Modern activation still refuses exactly `home control binding not provisioned; requires slice 3b-2`.
 No CLI/helper/D-Bus/package caller is added. Disable/account cleanup, token
 rotation/repair, 3b-1d and 3b-2 remain outside this sub-part. All five unit strings
 in both layouts/profiles and `SidecarUnitSpec.home_transport=False` are unchanged.

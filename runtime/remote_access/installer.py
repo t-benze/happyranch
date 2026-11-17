@@ -3,7 +3,7 @@
 Provision binaries separately; the provision command stages configuration.
 Journal-bearing failed installs can stop and quarantine their exact old configs;
 fixed state/enrollment, quarantined config and owned unit removal are journaled.
-Fresh replacement staging is journaled; transaction closure and upgrade rollback remain unavailable. Enrollment sources are removed on
+Fresh replacement staging and closure are journaled; upgrade rollback remains unavailable. Enrollment sources are removed on
 success and failure; issue a fresh single-use key before retrying. Files already
 present must match the rendered units; interrupted installs need operator care.
 """
@@ -100,8 +100,9 @@ _STAGING_FILES = (
     ("replacement-stage-provision", "provision.json"),
 )
 _STAGING_PHASES = (*[phase for phase, _ in (*_STAGING_REMOVALS, *_STAGING_FILES)], "replacement-staged")
+_CLOSURE_PHASES = ("replacement-reload", "replacement-retire-journal")
 _REPLACEMENT_PHASES = ("replacement-stopped", *_QUARANTINE_PHASES, *_REMOVAL_PHASES,
-                       *_CONFIG_REMOVAL_PHASES, *_UNIT_REMOVAL_PHASES, *_STAGING_PHASES)
+                       *_CONFIG_REMOVAL_PHASES, *_UNIT_REMOVAL_PHASES, *_STAGING_PHASES, *_CLOSURE_PHASES)
 
 
 class InstallerError(RuntimeError):
@@ -123,7 +124,7 @@ class ReplacementInventory:
 
     The generation fingerprints the exact validated transaction-record bytes. It
     is absent unless all six fixed-file digests match a known failed/partial
-    installation, or an exact replacement intent. Transaction closure is held.
+    installation, or an exact replacement intent. It never authorizes activation.
     """
 
     installation: InstallInventory
@@ -325,7 +326,7 @@ class ManagedInstaller:
             if prepared_transaction is not None:
                 self._validate_install_record("install-transaction.json", prepared_transaction, replacement=True)
                 phase = self._json(prepared_transaction)["phase"]
-            if phase in _STAGING_PHASES:
+            if phase in (*_STAGING_PHASES, *_CLOSURE_PHASES):
                 return self._staging_inventory(prepared_transaction, pending=pending)
             unit_removal = phase in _UNIT_REMOVAL_PHASES
             quarantine_phase = ("replacement-configs-removed" if unit_removal else
@@ -491,23 +492,77 @@ class ManagedInstaller:
     def replacement_inventory(self) -> ReplacementInventory:
         """Inspect a journal only for replacement candidate selection.
 
-        V1 stopped/quarantine phases belong only to this consumer. A pending entry,
-        missing/different fixed file, wrong placement or unsafe metadata refuses.
+        V1 stopped/quarantine phases belong only to this consumer. Only exact
+        interrupted writer intents qualify; observation never discards them.
+        Missing/different fixed files, wrong placement or unsafe metadata refuse.
         Normal inventory and every lifecycle operation still reject journals.
         This observation neither reads a release-home token nor stops services.
         """
         location = str(self.root / "etc/happyranch/install-transaction.json")
         try:
-            with self._directory("etc/happyranch") as parent:
+            with self._publication_parent() as (parent, revalidate):
                 transaction = self._read_file(parent, "install-transaction.json", owner=self.root_owner, mode=0o600)
+                pending = self._replacement_pending(parent, transaction)
+                installation = self._inventory(prepared_transaction=transaction,
+                    pending=("install-transaction.json", pending) if pending is not None else None)
+                revalidate()
         except FileNotFoundError:
             return ReplacementInventory(self.inventory())
         except (OSError, InstallerError):
             return ReplacementInventory(InstallInventory("manual-install-conflict", "unsafe-or-unrecognized", (location,)))
-        installation = self._inventory(prepared_transaction=transaction)
         generation = (hashlib.sha256(transaction).hexdigest()
                       if installation.state == "known-failed-or-partial" else None)
         return ReplacementInventory(installation, generation)
+
+    def _replacement_pending(self, parent: int, transaction: bytes) -> bytes | None:
+        """Recognize only the normal writer's exact interrupted journal intent."""
+        name = ".install-transaction.json.pending"
+        try:
+            data = self._read_file(parent, name, owner=self.root_owner, mode=0o600)
+        except FileNotFoundError:
+            return None
+        self._validate_install_record("install-transaction.json", transaction, replacement=True)
+        self._validate_install_record("install-transaction.json", data, replacement=True)
+        expected, intent = self._json(transaction), self._json(data)
+        phases = ("prepared", *_REPLACEMENT_PHASES)
+        previous = phases.index(expected["phase"])
+        staged_name = dict(_STAGING_FILES).get(expected["phase"])
+        if staged_name is not None and intent["phase"] == expected["phase"]:
+            if expected["digests"][staged_name] == intent["digests"][staged_name]:
+                raise InstallerError("replacement pending is not a digest rebind")
+            self._refuse_provision_entry(parent, staged_name)
+            expected["digests"][staged_name] = intent["digests"][staged_name]
+        elif previous + 1 < len(phases):
+            expected["phase"] = phases[previous + 1]
+        else:
+            raise InstallerError("replacement pending has no successor")
+        if data != json.dumps(expected, sort_keys=True).encode():
+            raise InstallerError("replacement pending is not the exact writer intent")
+        return data
+
+    def _discard_replacement_pending(self, transaction: bytes) -> None:
+        """Discard validated intent only; the normal writer regenerates/rebinds."""
+        with self._publication_parent() as (parent, revalidate):
+            pending = self._replacement_pending(parent, transaction)
+            if pending is None:
+                return
+            name = ".install-transaction.json.pending"
+            before = os.stat(name, dir_fd=parent, follow_symlinks=False)
+            self._check_replacement_transaction(parent, transaction)
+            self._staging_custody()
+            if self._inventory(prepared_transaction=transaction,
+                               pending=("install-transaction.json", pending)).state != "known-failed-or-partial":
+                raise InstallerError("replacement pending inventory changed before discard")
+            self._check_replacement_transaction(parent, transaction)
+            if self._replacement_pending(parent, transaction) != pending:
+                raise InstallerError("replacement pending changed before discard")
+            revalidate()
+            after = os.stat(name, dir_fd=parent, follow_symlinks=False)
+            fields = ("st_dev", "st_ino", "st_uid", "st_gid", "st_mode", "st_nlink", "st_size", "st_mtime_ns", "st_ctime_ns")
+            if any(getattr(before, field) != getattr(after, field) for field in fields):
+                raise InstallerError("replacement pending metadata changed before discard")
+            os.unlink(name, dir_fd=parent)
+            os.fsync(parent)
 
     def replace_failed(self) -> None:
         """Resume exact config quarantine, then fixed state/enrollment removal.
@@ -515,12 +570,16 @@ class ManagedInstaller:
         Prepared candidates publish stopped intent first; the next call quarantines
         configs. A later call consumes quarantine to remove fixed retired state.
         A further call removes quarantined configs, then another removes only
-        owned unit entries. A later call stages fresh inert files. Transaction
-        closure stays unavailable; never report success.
+        owned unit entries. A later call stages fresh inert files; the next call
+        closes that exact generation into ordinary modern staged-inert inventory.
         Unjournaled candidates stay unavailable until their recovery owner ships.
         """
         candidate = self.replacement_inventory()
         installation = candidate.installation
+        if installation.state == "modern" and installation.detail == "staged-inert":
+            # Only a recognized journal resumes closure below. Retired staging
+            # is indistinguishable from a clean-host non-candidate.
+            raise InstallerError("replacement refused: modern:")
         if installation.state != "known-failed-or-partial":
             raise InstallerError(f"replacement refused: {installation.state}: " + ", ".join(installation.paths))
         if candidate.journal_generation is None:
@@ -536,12 +595,16 @@ class ManagedInstaller:
             self._input(Path(release["data_home"]) / "daemon.token", token=True, source_uid=release["uid"])
             if self.replacement_inventory() != candidate:
                 raise InstallerError("replacement inventory changed before stop")
+            self._discard_replacement_pending(transaction)
             self.stop_and_confirm(_replacement_transaction=transaction)
             record = self._json(transaction)
             if record["phase"] == "prepared":
                 record["phase"] = "replacement-stopped"
                 self._write_provision_file("install-transaction.json", json.dumps(record, sort_keys=True).encode(),
                                            self.root_owner, 0o600, expected_transaction=transaction)
+            elif record["phase"] in ("replacement-staged", *_CLOSURE_PHASES):
+                self._close_replacement(transaction)
+                return
             elif record["phase"] in ("replacement-units-removed", *_STAGING_PHASES):
                 self._stage_replacement(transaction)
             elif record["phase"] in (*_REMOVAL_PHASES, *_CONFIG_REMOVAL_PHASES, *_UNIT_REMOVAL_PHASES,
@@ -646,7 +709,8 @@ class ManagedInstaller:
         a published destination is immutable and must match its recorded digest.
         """
         record = self._json(transaction)
-        current = _STAGING_PHASES.index(record["phase"])
+        current = (_STAGING_PHASES.index(record["phase"]) if record["phase"] in _STAGING_PHASES
+                   else len(_STAGING_PHASES))
         self._check_deb_payload()
         config_owner = (self.root_owner[0], self._service_owner[1])
         metadata = {**{name: (config_owner, 0o640, False) for name in _QUARANTINE_CONFIGS},
@@ -704,7 +768,7 @@ class ManagedInstaller:
         if self._check_enrollment():
             raise InstallerError("replacement enrollment reappeared")
         units, _ = self._inventory_units({"managed": {"profile": "linux-managed-identity-v1"}},
-                                         removing_units=set(UNITS))
+                                         removing_units=set() if record["phase"] == "replacement-retire-journal" else set(UNITS))
         if units:
             raise InstallerError("replacement units reappeared")
         for relative, entries in (
@@ -777,7 +841,44 @@ class ManagedInstaller:
             self._write_provision_file("install-transaction.json", updated, self.root_owner, 0o600,
                                        expected_transaction=transaction)
             transaction = updated
-        raise InstallerError("replacement paused after fresh staging; transaction closure unavailable")
+        raise InstallerError("replacement paused after fresh staging; retry ReplaceFailed to close transaction")
+
+    def _close_replacement(self, transaction: bytes) -> None:
+        """Keep the existing v1 payloads; retire the journal only after reload.
+
+        Old quarantine destruction and final provenance publication already have
+        individual fsynced intents. No file is regenerated or policy re-issued.
+        """
+        record = self._json(transaction)
+        while record["phase"] != "replacement-retire-journal":
+            if record["phase"] == "replacement-reload":
+                with self._publication_parent() as (parent, revalidate):
+                    self._check_replacement_transaction(parent, transaction)
+                    self._staging_custody()
+                    inventory = self._inventory(prepared_transaction=transaction)
+                    if inventory.state != "known-failed-or-partial":
+                        raise InstallerError("replacement closure inventory changed: " + ", ".join(inventory.paths))
+                    revalidate()
+                    self.manager.daemon_reload()
+            record["phase"] = _CLOSURE_PHASES[0] if record["phase"] == "replacement-staged" else _CLOSURE_PHASES[1]
+            updated = json.dumps(record, sort_keys=True).encode()
+            self._write_provision_file("install-transaction.json", updated, self.root_owner, 0o600,
+                                       expected_transaction=transaction)
+            transaction = updated
+        with self._publication_parent() as (parent, revalidate):
+            before = os.stat("install-transaction.json", dir_fd=parent, follow_symlinks=False)
+            self._check_replacement_transaction(parent, transaction)
+            self._staging_custody()
+            inventory = self._inventory(prepared_transaction=transaction)
+            if inventory.state != "known-failed-or-partial":
+                raise InstallerError("replacement closure inventory changed: " + ", ".join(inventory.paths))
+            revalidate()
+            after = os.stat("install-transaction.json", dir_fd=parent, follow_symlinks=False)
+            fields = ("st_dev", "st_ino", "st_uid", "st_gid", "st_mode", "st_nlink", "st_size", "st_mtime_ns", "st_ctime_ns")
+            if any(getattr(before, field) != getattr(after, field) for field in fields):
+                raise InstallerError(str(self.root / "etc/happyranch/install-transaction.json"))
+            os.unlink("install-transaction.json", dir_fd=parent)
+            os.fsync(parent)
 
     def _unit_wants_names(self) -> set[str]:
         try:
@@ -942,7 +1043,7 @@ class ManagedInstaller:
         if self._read_file(parent, "install-transaction.json", owner=self.root_owner, mode=0o600) != transaction:
             raise InstallerError("replacement generation changed before mutation")
         record = self._json(transaction)
-        if record["phase"] in _STAGING_PHASES:
+        if record["phase"] in (*_STAGING_PHASES, *_CLOSURE_PHASES):
             return  # The staging consumer checks the complete phase-bound inventory.
         phase = ("replacement-configs-removed" if record["phase"] in _UNIT_REMOVAL_PHASES else
                  "replacement-quarantined" if record["phase"] in _REMOVAL_PHASES else record["phase"])
@@ -1437,7 +1538,7 @@ class ManagedInstaller:
             phases = ("prepared", *_REPLACEMENT_PHASES)
             previous = phases.index(expected_record["phase"])
             if previous + 1 == len(phases):
-                raise InstallerError("replacement transaction closure is the unfinished boundary")
+                raise InstallerError("replacement retirement intent has no successor")
             updated_record = self._json(data)
             staged_name = dict(_STAGING_FILES).get(expected_record["phase"])
             rebinding = staged_name is not None and updated_record["phase"] == expected_record["phase"]
@@ -1461,7 +1562,7 @@ class ManagedInstaller:
                 if self._inventory(prepared_transaction=expected_transaction).state == "manual-install-conflict":
                     raise InstallerError("replacement inventory changed before intent publication")
                 if self._json(expected_transaction)["phase"] in ("replacement-configs-removed", *_UNIT_REMOVAL_PHASES,
-                                                                  *_STAGING_PHASES):
+                                                                  *_STAGING_PHASES, *_CLOSURE_PHASES):
                     token = self._staging_custody()
                     if name == "daemon.token" and token != data:
                         raise InstallerError("release token changed before staging")
@@ -1503,7 +1604,7 @@ class ManagedInstaller:
                     if self._read_file(parent, "install-transaction.json", owner=self.root_owner, mode=0o600) != expected_transaction:
                         raise InstallerError("replacement journal changed before rename")
                     self._check_replacement_transaction(parent, expected_transaction)
-                    if self._json(expected_transaction)["phase"] in ("replacement-units-removed", *_STAGING_PHASES):
+                    if self._json(expected_transaction)["phase"] in ("replacement-units-removed", *_STAGING_PHASES, *_CLOSURE_PHASES):
                         token = self._staging_custody()
                         if name == "daemon.token" and token != data:
                             raise InstallerError("release token changed before staging rename")

@@ -67,7 +67,8 @@ STAGING_FILES = [("replacement-stage-" + label, name) for label, name in (
     ("token", "daemon.token"), ("provision", "provision.json"))]
 STAGING_PHASES = ["replacement-discard-token", "replacement-discard-provision",
                   *[phase for phase, _ in STAGING_FILES], "replacement-staged"]
-STAGING_BOUNDARY = "^replacement paused after fresh staging; transaction closure unavailable$"
+STAGING_BOUNDARY = "^replacement paused after fresh staging; retry ReplaceFailed to close transaction$"
+CLOSURE_PHASES = ["replacement-reload", "replacement-retire-journal"]
 
 
 class FakeManager:
@@ -1556,8 +1557,12 @@ def test_fixed_inventory_classifies_without_effects(
         assert result.detail == ("staged-inert" if case == "staged" else "recorded")
     if delay:
         assert fixture.installer.replacement_inventory().journal_generation is None
-        with pytest.raises(module.InstallerError, match="unjournaled replacement|replacement refused"):
-            fixture.installer.replace_failed()
+        if case == "staged":
+            with pytest.raises(module.InstallerError, match="^replacement refused: modern:$"):
+                fixture.installer.replace_failed()
+        else:
+            with pytest.raises(module.InstallerError, match="unjournaled replacement|replacement refused"):
+                fixture.installer.replace_failed()
     assert staged_inventory(fixture) == before
     assert all(call[0] == "show" and call[1] in module.UNITS for call in manager.calls)
 
@@ -2985,9 +2990,6 @@ def test_replacement_stages_fresh_inert_generation(fixture: Fixture, monkeypatch
     assert fixture.installer.replacement_inventory().installation.detail == "replacement-staged"
     assert fixture.installer.inventory().state == "manual-install-conflict"
     before = staged_inventory(fixture)
-    with pytest.raises(module.InstallerError, match=STAGING_BOUNDARY):
-        fixture.installer.replace_failed()
-    assert staged_inventory(fixture) == before
     # Recovery may retain expired bytes, but neither policy readiness nor any
     # activation route can use them. Inspect the actual current_policy gate so
     # an unrelated missing trust/credential gate cannot satisfy this assertion.
@@ -3006,23 +3008,45 @@ def test_replacement_stages_fresh_inert_generation(fixture: Fixture, monkeypatch
     assert report.gates["current_policy"].category == "policy_stale"
     with pytest.raises(module.InstallerError, match="current policy provisioning"):
         fixture.installer._check_provisioning()
+    fresh_staging_instance(fixture)
+    fixture.installer.replace_failed()
+    assert_closed_replacement(fixture, before)
+    with pytest.raises(module.InstallerError, match="current policy provisioning"):
+        fixture.installer._check_provisioning()
     for operation in (fixture.installer.install, fixture.installer._write_units,
                       supervisor.install, supervisor.start, supervisor.restart, supervisor.enable, supervisor.run):
         with pytest.raises((module.InstallerError, ConnectorConfigError),
                            match="^home control binding not provisioned; requires slice 3b-2$"):
             operation()
+    completed = staged_inventory(fixture)
+    manager.calls.clear()
     fresh_staging_instance(fixture)
-    with pytest.raises(module.InstallerError, match=STAGING_BOUNDARY):
+    with pytest.raises(module.InstallerError, match="^replacement refused: modern:$"):
         fixture.installer.replace_failed()
-    assert staged_inventory(fixture) == before
-    assert all(call[0] in {"show", "stop"} for call in manager.calls)
+    assert staged_inventory(fixture) == completed
+    assert all(call[0] == "show" and call[1] in module.UNITS for call in manager.calls)
 
 
 @pytest.mark.parametrize("phase,point,delay", [(phase, point, 0) for phase in STAGING_PHASES for point in
     ("intent", "pending-fsync", "rename", "parent-fsync")] + [
-    (phase, "intent", 3601) for phase in ("replacement-stage-token", "replacement-stage-provision", "replacement-staged")])
+    (phase, "intent", 3601) for phase in ("replacement-stage-token", "replacement-stage-provision", "replacement-staged")] + [
+    (phase, point, 3601) for phase in CLOSURE_PHASES for point in ("intent", "pending-fsync", "rename", "parent-fsync")] + [
+    (phase, "abrupt-next", 0) for phase in ["replacement-stopped", *QUARANTINE_PHASES, *REMOVAL_PHASES,
+        *CONFIG_REMOVAL_PHASES, *UNIT_REMOVAL_PHASES, *STAGING_PHASES, *CLOSURE_PHASES]] + [
+    (phase, "abrupt-rebind", 0) for phase, _ in STAGING_FILES] + [
+    ("replacement-reload", "abrupt-next:" + bad, 0) for bad in (
+        "malformed", "foreign-owner", "mode", "directory", "hardlink", "symlink", "oversized", "unknown-entry",
+        "wrong-phase", "skipped-phase", "earlier-phase", "wrong-generation", "extra-field", "noncanonical")] + [
+    ("replacement-stage-connector", "abrupt-rebind:" + bad, 0) for bad in (
+        "second-digest", "destination", "payload-pending", "token-mode", "pid", "changed-config", "parent-swap")])
 def test_replacement_staging_publication_resumes(fixture: Fixture, monkeypatch: pytest.MonkeyPatch, phase: str, point: str, delay: int) -> None:
+    if point.startswith("abrupt-"):
+        assert_abrupt_publication_recovery(fixture, monkeypatch, phase, point)
+        return
     manager, parent = units_removed_for_staging(fixture)
+    if phase in CLOSURE_PHASES:
+        with pytest.raises(module.InstallerError, match=STAGING_BOUNDARY):
+            fixture.installer.replace_failed()
     write, rename, fsync = fixture.installer._write_provision_file, fixture.installer._rename_provision_entry, os.fsync
     interrupted = False
     def die() -> None:
@@ -3059,12 +3083,155 @@ def test_replacement_staging_publication_resumes(fixture: Fixture, monkeypatch: 
     external = {path: path.read_bytes() for base in (fixture.home, fixture.inputs) for path in base.iterdir()}
     fresh_staging_instance(fixture)
     assert fixture.installer.replacement_inventory().journal_generation == hashlib.sha256((parent / "install-transaction.json").read_bytes()).hexdigest()
-    with pytest.raises(module.InstallerError, match=STAGING_BOUNDARY):
+    if json.loads(before["etc/happyranch/install-transaction.json"][-1])["phase"] in ["replacement-staged", *CLOSURE_PHASES]:
         fixture.installer.replace_failed()
-    assert json.loads((parent / "install-transaction.json").read_bytes())["phase"] == "replacement-staged"
-    assert_staging_preserved(fixture, before)
+        assert_closed_replacement(fixture, before)
+        completed = staged_inventory(fixture)
+        manager.calls.clear()
+        fresh_staging_instance(fixture)
+        with pytest.raises(module.InstallerError, match="^replacement refused: modern:$"):
+            fixture.installer.replace_failed()
+        assert staged_inventory(fixture) == completed
+        assert all(call[0] == "show" and call[1] in module.UNITS for call in manager.calls)
+    else:
+        with pytest.raises(module.InstallerError, match=STAGING_BOUNDARY):
+            fixture.installer.replace_failed()
+        assert json.loads((parent / "install-transaction.json").read_bytes())["phase"] == "replacement-staged"
+        assert_staging_preserved(fixture, before)
     assert {path: path.read_bytes() for path in external} == external
-    assert all(call[0] in {"show", "stop"} for call in manager.calls)
+    assert all(call[0] in {"show", "stop", "reload"} for call in manager.calls)
+
+
+def assert_abrupt_publication_recovery(fixture: Fixture, monkeypatch: pytest.MonkeyPatch, phase: str, point: str) -> None:
+    # The same publication owner also covers death without finally/unwinding.
+    # Fake manager memory is not shared by fork; use the quiescent partial
+    # candidate so its external state is identical in both processes.
+    manager, parent, _ = prepared_replacement(fixture, "partial")
+    fixture.write(fixture.token, b"synthetic-rotated-source-token\n")
+    journal, pending = parent / "install-transaction.json", parent / ".install-transaction.json.pending"
+    kind, _, bad = point.partition(":")
+    pid = os.fork()
+    if pid == 0:
+        fsync = os.fsync
+        def sync(fd: int) -> None:
+            fsync(fd)  # Real durability boundary, followed by no Python cleanup.
+            if not pending.exists() or os.fstat(fd).st_ino != pending.stat().st_ino:
+                return
+            current, intent = json.loads(journal.read_bytes()), json.loads(pending.read_bytes())
+            if (intent["phase"] == phase and
+                    (current["phase"] == phase) == (kind == "abrupt-rebind")):
+                os._exit(77)
+        os.fsync = sync
+        for _ in range(8):
+            try:
+                fixture.installer.replace_failed()
+            except module.InstallerError as exc:
+                if not str(exc).startswith("replacement paused after"):
+                    os._exit(79)
+        os._exit(78)
+    _, status = os.waitpid(pid, 0)
+    assert os.waitstatus_to_exitcode(status) == 77, "requested real-fsync abrupt-death boundary was not reached"
+    current, intent = json.loads(journal.read_bytes()), json.loads(pending.read_bytes())
+    assert intent["phase"] == phase
+    if kind == "abrupt-rebind":
+        name = dict(STAGING_FILES)[phase]
+        assert current["phase"] == phase
+        assert [key for key in current["digests"] if current["digests"][key] != intent["digests"][key]] == [name]
+        assert not (parent / name).exists() and not (parent / ("." + name + ".pending")).exists()
+    if bad in {"wrong-phase", "skipped-phase", "earlier-phase", "wrong-generation", "extra-field", "second-digest"}:
+        if bad == "wrong-phase":
+            intent["phase"] = "replacement-stage-connector"
+        elif bad == "skipped-phase":
+            intent["phase"] = "replacement-retire-journal"
+        elif bad == "earlier-phase":
+            intent["phase"] = "replacement-stage-provision"
+        elif bad == "extra-field":
+            intent["foreign"] = True
+        else:
+            intent["digests"]["release-daemon.json"] = "f" * 64
+        fixture.write(pending, json.dumps(intent, sort_keys=True).encode())
+    elif bad == "malformed":
+        fixture.write(pending, b"{synthetic-invalid")
+    elif bad == "noncanonical":
+        fixture.write(pending, pending.read_bytes() + b"\n")
+    elif bad == "oversized":
+        fixture.write(pending, pending.read_bytes() + b" " * 65536)
+    elif bad == "mode":
+        pending.chmod(0o644)
+    elif bad == "directory":
+        pending.unlink()
+        pending.mkdir()
+    elif bad == "hardlink":
+        os.link(pending, fixture.inputs / "extra-link")
+    elif bad == "symlink":
+        pending.unlink()
+        pending.symlink_to(journal)
+    elif bad == "unknown-entry":
+        fixture.write(parent / "foreign", b"synthetic-foreign")
+    elif bad in {"destination", "payload-pending"}:
+        fixture.write(parent / (name if bad == "destination" else "." + name + ".pending"), b"synthetic-foreign")
+    elif bad == "token-mode":
+        fixture.token.chmod(0o640)
+    elif bad == "pid":
+        manager.override["MainPID"] = "42"
+    elif bad == "changed-config":
+        (parent / "release-daemon.json").write_bytes((parent / "release-daemon.json").read_bytes() + b"\n")
+    elif bad == "foreign-owner":
+        target, fstat = pending.stat(), os.fstat
+        def foreign(fd: int) -> object:
+            info = fstat(fd)
+            if (info.st_dev, info.st_ino) != (target.st_dev, target.st_ino):
+                return info
+            values = {key: getattr(info, key) for key in dir(info) if key.startswith("st_")}
+            return SimpleNamespace(**{**values, "st_uid": info.st_uid + 1})
+        monkeypatch.setattr(os, "fstat", foreign)
+    before = staged_inventory(fixture)
+    external = {path: path.read_bytes() for base in (fixture.home, fixture.inputs) for path in base.iterdir()}
+    pending_bytes = pending.read_bytes() if pending.is_file() else None
+    manager.calls.clear()
+    fresh_staging_instance(fixture)
+    if bad:
+        if bad == "parent-swap":
+            custody = fixture.installer._staging_custody
+            def swap() -> bytes:
+                token = custody()
+                parent.rename(parent.with_name("previous-parent"))
+                parent.mkdir(mode=0o755)
+                before.clear()
+                before.update(staged_inventory(fixture))
+                return token
+            monkeypatch.setattr(fixture.installer, "_staging_custody", swap)
+        with pytest.raises(module.InstallerError):
+            fixture.installer.replace_failed()
+        assert staged_inventory(fixture) == before
+        actual_pending = parent.with_name("previous-parent") / pending.name if bad == "parent-swap" else pending
+        if pending_bytes is not None:
+            assert actual_pending.read_bytes() == pending_bytes
+        assert all(call[0] == "show" for call in manager.calls)
+        return
+    assert fixture.installer.replacement_inventory().journal_generation == hashlib.sha256(journal.read_bytes()).hexdigest()
+    assert staged_inventory(fixture) == before  # Observation never discards intent.
+    for _ in range(8):
+        fresh_staging_instance(fixture)
+        try:
+            fixture.installer.replace_failed()
+        except module.InstallerError as exc:
+            assert str(exc).startswith("replacement paused after"), str(exc)
+        if not journal.exists():
+            break
+    assert not journal.exists() and not pending.exists()
+    assert fixture.installer.inventory().state == "modern"
+    if phase in CLOSURE_PHASES:
+        assert_closed_replacement(fixture, {key: value for key, value in before.items()
+                                          if key != "etc/happyranch/.install-transaction.json.pending"})
+    assert {path: path.read_bytes() for path in external} == external
+    completed = staged_inventory(fixture)
+    manager.calls.clear()
+    fresh_staging_instance(fixture)
+    with pytest.raises(module.InstallerError, match="^replacement refused: modern:$"):
+        fixture.installer.replace_failed()
+    assert staged_inventory(fixture) == completed
+    assert all(call[0] == "show" for call in manager.calls)
 
 
 @pytest.mark.parametrize("phase,name,point,delay,damage", [(phase, name, point, 0, "intact") for phase, name in STAGING_FILES
@@ -3214,3 +3381,214 @@ def test_replacement_staging_rechecks_before_publication(fixture: Fixture, monke
     if attack == "pending":
         assert (parent / ".connector.json.pending").read_bytes() == b"synthetic-substitution"
     assert all(call[0] in {"show", "stop"} for call in manager.calls)
+
+
+def staged_for_closure(fixture: Fixture) -> tuple[LifecycleManager, Path]:
+    manager, parent = units_removed_for_staging(fixture)
+    with pytest.raises(module.InstallerError, match=STAGING_BOUNDARY):
+        fixture.installer.replace_failed()
+    # This is the literal retained v1 terminal journal from prefix b: no new
+    # key, migration, original-ID recovery or client-provided authority.
+    record = json.loads((parent / "install-transaction.json").read_bytes())
+    assert record.keys() == {"version", "layout", "phase", "digests"}
+    assert record["version"] == 1 and record["phase"] == "replacement-staged"
+    manager.calls.clear()
+    return manager, parent
+
+
+def assert_closed_replacement(fixture: Fixture, before: dict[str, tuple]) -> None:
+    parent = fixture.root / "etc/happyranch"
+    after = staged_inventory(fixture)
+    journal = "etc/happyranch/install-transaction.json"
+    assert journal not in after
+    assert set(after) == set(before) - {journal}
+    for path, value in before.items():
+        if path not in {"etc/happyranch", journal}:
+            assert after[path] == value, path
+    expected_names = {"connector.json", "sidecar.json", "policy.json", "release-daemon.json", "daemon.token", "provision.json"}
+    assert {path.name for path in parent.iterdir()} == expected_names
+    # Independent clean-host modern provenance shape and actual fixed-file hashes.
+    assert json.loads((parent / "provision.json").read_bytes()) == dict(
+        version=1, layout=fixture.installer.layout, phase="provisioned",
+        digests={name: hashlib.sha256((parent / name).read_bytes()).hexdigest()
+                 for name in expected_names - {"provision.json"}})
+    expected = module.InstallInventory("modern", "staged-inert", tuple(sorted(str(parent / name) for name in expected_names)))
+    assert fixture.installer.inventory() == expected
+    assert fixture.installer.replacement_inventory() == module.ReplacementInventory(expected)
+
+
+@pytest.mark.parametrize("point", ["reload-before", "reload-after", "reload-error", "unlink-before", "unlink-after", "parent-fsync"])
+def test_replacement_closure_effect_resumes(fixture: Fixture, monkeypatch: pytest.MonkeyPatch, point: str) -> None:
+    manager, parent = staged_for_closure(fixture)
+    before = staged_inventory(fixture)
+    journal = parent / "install-transaction.json"
+    reload, unlink, fsync = manager.daemon_reload, os.unlink, os.fsync
+    interrupted = False
+    def die() -> None:
+        nonlocal interrupted
+        interrupted = True
+        raise SystemExit("synthetic-closure-death")
+    def reload_units() -> None:
+        nonlocal interrupted
+        assert json.loads(journal.read_bytes())["phase"] == "replacement-reload"
+        if point == "reload-before":
+            die()
+        reload()
+        if point == "reload-after":
+            die()
+        if point == "reload-error":
+            interrupted = True
+            raise module.ServiceManagerError("synthetic-manager-private-detail")
+    def remove(name: str, *, dir_fd: int) -> None:
+        if name == "install-transaction.json":
+            assert json.loads(journal.read_bytes())["phase"] == "replacement-retire-journal"
+            assert fixture.installer.inventory().state == "manual-install-conflict"
+            if point == "unlink-before":
+                die()
+        unlink(name, dir_fd=dir_fd)
+        if name == "install-transaction.json" and point == "unlink-after":
+            die()
+    def sync(fd: int) -> None:
+        fsync(fd)
+        if point == "parent-fsync" and not journal.exists() and os.fstat(fd).st_ino == parent.stat().st_ino:
+            die()
+    with monkeypatch.context() as patch:
+        patch.setattr(manager, "daemon_reload", reload_units)
+        patch.setattr(os, "unlink", remove)
+        patch.setattr(os, "fsync", sync)
+        with pytest.raises((module.InstallerError, SystemExit)):
+            fixture.installer.replace_failed()
+    assert interrupted, "requested closure effect was not reached"
+    if point == "reload-error":
+        assert journal.exists()
+    # Only persisted exact-generation intent is carried into the new instance.
+    expire_staged_policy(fixture, monkeypatch)
+    fresh_staging_instance(fixture)
+    manager.calls.clear()
+    if journal.exists():
+        fixture.installer.replace_failed()
+        if point == "unlink-before":
+            assert all(call[0] != "reload" for call in manager.calls)
+    else:
+        retired = staged_inventory(fixture)
+        with pytest.raises(module.InstallerError, match="^replacement refused: modern:$"):
+            fixture.installer.replace_failed()
+        assert staged_inventory(fixture) == retired
+        assert all(call[0] == "show" and call[1] in module.UNITS for call in manager.calls)
+    assert_closed_replacement(fixture, before)
+    completed = staged_inventory(fixture)
+    manager.calls.clear()
+    fresh_staging_instance(fixture)
+    with pytest.raises(module.InstallerError, match="^replacement refused: modern:$"):
+        fixture.installer.replace_failed()
+    assert staged_inventory(fixture) == completed
+    assert all(call[0] == "show" and call[1] in module.UNITS for call in manager.calls)
+
+
+@pytest.mark.parametrize("bad", ["none", "cached", "reload-stuck", "unknown", "quarantine", "provision-digest", "policy-schema", "policy-artifact"])
+def test_replacement_closure_validates_v1_generation(fixture: Fixture, monkeypatch: pytest.MonkeyPatch, bad: str) -> None:
+    manager, parent = staged_for_closure(fixture)
+    journal = parent / "install-transaction.json"
+    if bad in {"cached", "reload-stuck"}:
+        show, reload = manager.show_properties, manager.daemon_reload
+        cached = True
+        def properties(unit: str, keys: tuple[str, ...]) -> dict[str, str]:
+            values = show(unit, keys)
+            if cached:
+                replacement = dict(FragmentPath=str(fixture.root / "etc/systemd/system" / unit), LoadState="loaded",
+                                   NeedDaemonReload="yes", ActiveState="failed")
+                values.update({key: value for key, value in replacement.items() if key in keys})
+            return values
+        def reload_units() -> None:
+            nonlocal cached
+            reload()
+            if bad != "reload-stuck":
+                cached = False
+        monkeypatch.setattr(manager, "show_properties", properties)
+        monkeypatch.setattr(manager, "daemon_reload", reload_units)
+    elif bad == "unknown":
+        fixture.write(parent / "unknown.json", b"synthetic-unknown")
+    elif bad == "quarantine":
+        fixture.write(parent / ".replacement-policy.json", b"synthetic-revoked")
+    elif bad == "provision-digest":
+        path = parent / "provision.json"
+        path.write_bytes(path.read_bytes() + b"\n")
+    elif bad.startswith("policy-"):
+        path = parent / "policy.json"
+        policy = json.loads(path.read_bytes())
+        if bad == "policy-schema":
+            policy["issued_at"] = "invalid"
+        else:
+            policy["artifact"]["default_behavior"] = "allow_unclassified"
+        path.write_bytes(json.dumps(policy, sort_keys=True).encode())
+        # Rebind both provenance and journal so schema/artifact validation,
+        # rather than a mismatched digest, must be the refusing owner.
+        provision_path = parent / "provision.json"
+        provision = json.loads(provision_path.read_bytes())
+        provision["digests"]["policy.json"] = hashlib.sha256(path.read_bytes()).hexdigest()
+        provision_path.write_bytes(json.dumps(provision, sort_keys=True).encode())
+        record = json.loads(journal.read_bytes())
+        record["digests"].update({name: hashlib.sha256((parent / name).read_bytes()).hexdigest()
+                                  for name in ("policy.json", "provision.json")})
+        journal.write_bytes(json.dumps(record, sort_keys=True).encode())
+    before = staged_inventory(fixture)
+    fresh_staging_instance(fixture)
+    if bad in {"none", "cached"}:
+        expire_staged_policy(fixture, monkeypatch)
+        fixture.installer.replace_failed()
+        assert_closed_replacement(fixture, before)
+    else:
+        with pytest.raises(module.InstallerError):
+            fixture.installer.replace_failed()
+        assert journal.exists()
+        assert_staging_preserved(fixture, before)
+        assert all(call[0] in {"show", "stop", "reload"} for call in manager.calls)
+        if bad in {"unknown", "quarantine"}:
+            name = "unknown.json" if bad == "unknown" else ".replacement-policy.json"
+            assert fixture.installer.replacement_inventory().installation.paths == (str(parent / name),)
+
+
+@pytest.mark.parametrize("attack", ["journal", "config", "state", "enrollment", "pending", "parent", "token-mode",
+                                  "journal-mode", "journal-symlink", "journal-hardlink", "pid", "job", "foreign-fragment"])
+def test_replacement_closure_rechecks_before_retirement(fixture: Fixture, monkeypatch: pytest.MonkeyPatch, attack: str) -> None:
+    manager, parent = staged_for_closure(fixture)
+    check = fixture.installer._check_replacement_transaction
+    attacked: dict = {}
+    def checked(fd: int, transaction: bytes) -> None:
+        check(fd, transaction)
+        if attacked or json.loads(transaction)["phase"] != "replacement-retire-journal":
+            return
+        journal = parent / "install-transaction.json"
+        if attack == "journal":
+            fixture.write(journal, transaction + b"\n")
+        elif attack == "config":
+            fixture.write(parent / "unknown.json", b"synthetic-foreign")
+        elif attack == "state":
+            fixture.write(fixture.root / "var/lib/happyranch-connector/trust-state.json", b"synthetic-revoked")
+        elif attack == "enrollment":
+            fixture.write(parent / "enrollment.key", b"synthetic-revoked")
+        elif attack == "pending":
+            fixture.write(parent / ".install-transaction.json.pending", b"synthetic-foreign")
+        elif attack == "parent":
+            parent.rename(parent.with_name("moved-config"))
+            parent.mkdir(mode=0o755)
+        elif attack == "token-mode":
+            fixture.token.chmod(0o644)
+        elif attack == "journal-mode":
+            journal.chmod(0o644)
+        elif attack in {"journal-symlink", "journal-hardlink"}:
+            journal.rename(parent / "foreign-journal")
+            if attack == "journal-symlink":
+                journal.symlink_to(parent / "foreign-journal")
+            else:
+                os.link(parent / "foreign-journal", journal)
+        else:
+            manager.override.update({"pid": {"MainPID": "42"}, "job": {"Job": "42 start"},
+                                     "foreign-fragment": {"FragmentPath": "/foreign/unit"}}[attack])
+        attacked.update(staged_inventory(fixture))
+    monkeypatch.setattr(fixture.installer, "_check_replacement_transaction", checked)
+    with pytest.raises(module.InstallerError):
+        fixture.installer.replace_failed()
+    assert attacked, "late closure retirement boundary was not reached"
+    assert staged_inventory(fixture) == attacked
+    assert all(call[0] in {"show", "stop", "reload"} for call in manager.calls)
