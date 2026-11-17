@@ -12,8 +12,8 @@ Add at most a one-line pointer below when a new feature needs one.
 instruction file; `CLAUDE.md` is a raw relative compatibility symlink to it, so
 edit `AGENTS.md` only. Implementation, behavior tests and the OpenAPI snapshot
 own runtime rules. Bundled agent instructions live in `runtime/skills/bundled/`.
-`docs/superpowers/specs/` is append-only design history unless a spec is marked
-current in `docs/superpowers/specs/README.md`.
+`docs/superpowers/specs/README.md` indexes retained current and referenced designs;
+current-source and status conventions live in `docs/agent-guides/contracts/README.md`.
 
 ## Read When Touching
 

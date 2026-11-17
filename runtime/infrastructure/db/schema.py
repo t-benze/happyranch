@@ -2297,7 +2297,7 @@ class SchemaMixin:
             "ALTER TABLE tasks RENAME COLUMN crew TO team",
             # Per-agent output-dir rename (2026-06-02). Idempotent: fails on DBs
             # where the column is already `final_output_dir`/`output_dir` (fresh or
-            # already-renamed). See docs/superpowers/plans/2026-06-01-rename-assets-to-artifacts.md.
+            # already-renamed). Historical rename plan removed; see Git history.
             "ALTER TABLE tasks RENAME COLUMN final_artifact_dir TO final_output_dir",
             "ALTER TABLE task_results RENAME COLUMN artifact_dir TO output_dir",
         ):
