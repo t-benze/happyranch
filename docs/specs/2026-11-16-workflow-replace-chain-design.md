@@ -6,7 +6,7 @@ Design proposal, 2026-11-16. TASK-16668; root TASK-16667; THR-336. Author: dev_a
 
 Use the sequential engine for generic nodes, role responsibilities, assignment, bounded outcome routing and genuine task/result lifecycle. Run failures and holds wake the **initiator**, the agent owning the task that started the run. Run return also wakes that task; it never completes the wider goal. A task can own several concurrent runs; each run has at most one outstanding step. Coding is the pilot definition, with repository work and merge performed by its agents using existing tools.
 
-Binding inputs are Founder THR-336 message 228 and EM's interpretation in messages 227/230; TASK-16680 identifies EM message 229 as the binding hold definition quoted below. The original read-only receipt is `dev_agent/output/TASK-16668/founder-rulings.txt`. Nothing here introduces a founder/thread notification for a workflow hold or return.
+Binding inputs are Founder THR-336 message 228 and EM's interpretation in messages 227/230; the binding hold definition quoted below is msg230, confirmed by Founder msg231 (msg229 is the dispatch record). The original read-only receipt is `dev_agent/output/TASK-16668/founder-rulings.txt`. Nothing here introduces a founder/thread notification for a workflow hold or return.
 
 The original source base is **`1a8efca4d5d7903701276d97ee6f66d1d5b85bdf`**, not the older gap-review pin `ffc5517ee9666573f947e04396aa62bff7480c52`. Original inventory references retain that pin: `gap-reference-recheck.txt` reopens the review's 43 source references; `source-reference-index.txt` records symbols and locations. **Round-2 corrections (TASK-16680) use freshly fetched origin/main `e1ff752dc59a0f953f6c5784f6727738335d2fcf`**: the return/thread owners in section 5, shared terminality in section 4, completion schema in S6a and repository-subject preimage in Appendix A were re-read there; exact excerpts are `dev_agent/output/TASK-16680/source-evidence.txt`. This does not rebase the PR or claim the entire original inventory was regenerated. Shorthand references must resolve to actual paths. Original receipts retain unsuccessful broad scans and the corrected integration scan; missing-path stderr is not an empty-search finding.
 
@@ -39,7 +39,7 @@ Read inputs: the TASK-16662 gap review; PRD artifact `product_lead-2026-11-11-wo
 
 ## 2. Run states, exception recovery and wake contract
 
-Use the hold definition attributed to EM message 229 by TASK-16680 as written:
+Use the hold definition in msg230, confirmed by Founder msg231 (msg229 is the dispatch record), as written:
 
 > A run is in exactly one of three states:
 > - **Running:** one of its step tasks is in progress.

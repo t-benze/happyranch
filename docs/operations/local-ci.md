@@ -855,13 +855,34 @@ It starts no daemon/worker and adds no CI selection, trigger or dependency;
 retired Python units, general integration and Product E2E are not executed.
 
 The same schema-load script covers `returned_run_ids` and sequential
-`recovery.rediscover_returned`: absent native-only/legacy storage skips a raising
-complete-reader stub, while mixed-case table, view and TEMP presence propagates
-that reader's refusal and incomplete layouts also fail through the real reader.
-The timing script additionally observes per-org Coding/sequential rediscovery
-log count, duration/outcome and unchanged queue/order/caught-error handling.
-These disposable in-process checks do not establish restart latency or genuine
-returned-workflow caller execution.
+`recovery.rediscover_returned`. Run only this focused selection for R1a:
+
+```bash
+WORKFLOW_SCHEMA_PYTHON=3.12 bash scripts/test-workflow-schema-load.sh --returned-storage=all
+# One case, using the same private fixture and production boundaries:
+WORKFLOW_SCHEMA_PYTHON=3.12 bash scripts/test-workflow-schema-load.sh --returned-storage=duplicate_return
+```
+
+The selection retains absent native-only/legacy and malformed table/view/TEMP
+storage checks. Its finite cases are `thread_source`, `thread_ancestor`,
+`thread_root_return`, `thread_ancestor_nonroot_return`, `parked_no_tail`,
+`duplicate_return`, `concurrent_return`, `restart_before_tail`,
+`restart_marker_only`, `restart_pending_or_settled_tail`,
+`composed_archive_recheck` and `marker_read_unavailable`. It drives actual
+complete-reader-authorized sequential return/recovery and ordinary SYSTEM,
+cap/mint and archive admission writers on private valid history/thread rows.
+It inspects source/status/original attribution, invocation IDs, cap and supplied
+queue publication. No executor starts and no successful tail is mocked.
+
+These cases establish the scoped in-process R1a contracts, not serving restart
+latency or eventual thread delivery after a partial tail. Start@1 remains one
+run, fixed assignments and old source-terminal return semantics, with no chain
+replacement or R3–R7. No full schema-load, local-CI all, Product E2E or V3 runs
+are authorized by this focused R1a procedure; the manager runs full suites at the
+final reviewed head. Local `scripts/local_ci.sh boundary-lint`, normal hooks,
+independent review/QA and hosted Source Boundary Lint / Web Lint (Node 24)
+remain required. The timing script's separate rediscovery observations retain
+their original queue/order/error and latency limitations.
 
 Focused audit-removal observation: run
 `bash scripts/test-coding-audit-removal.sh` locally with frozen Python3.14.

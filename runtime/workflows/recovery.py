@@ -115,7 +115,7 @@ def recover_owned_task(db: Any, queue: Any, slug: str, task_id: str, *, orchestr
 def rediscover_returned(coding: Any, *, queue: Any = None, sequential: bool = False) -> None:
     """Replay only committed caller notifications, never a stage or PR action.
 
-    Terminal coding sources are absent from ordinary nonterminal startup scans.
+    Terminal coding and sequential sources are absent from nonterminal startup scans.
     Complete reader validation precedes any notification; literal old complete
     records without the additive return are deliberately left alone.
     """

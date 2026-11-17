@@ -630,7 +630,7 @@ settlement remain UNVERIFIED; labelled fixtures do not close those gaps.
 
 ## U3e-1b-ii source outer producer (ROOT TASK-14640)
 
-A genuine executable team manager may use its own final completion decision `workflow_start` with the unchanged `workflow-sequential-start@1` StartCommand, exact pins, stable key and actual remaining limits. Unavailable venue is a refusal, never setup authority. Thread-originated and nested sources remain refused by the inert adapter; no other callback/route/CLI contract changes.
+A genuine executable team manager may use its own final completion decision `workflow_start` with the unchanged `workflow-sequential-start@1` StartCommand, exact pins, stable key and actual remaining limits. Unavailable venue is a refusal, never setup authority. R1a permits otherwise eligible ordinary sources with thread-originated ancestry; genuine task-session authority and the existing manager, same-team, bounded ancestry and ownership guards remain required. Direct thread invocations still refuse.
 
 Admission alone cannot publish the first visit. After the original native invocation settles, the source producer reselects the retained source/run/current first visit and actual completed INTEGER result, authenticates the saved command and checks cancellation inside the existing evidence writer. It uses the existing null-visit outer identity and exact source callback identity. One positive evidence COMMIT precedes the existing notify_queued port; exact replay is a no-op and conflicts roll back. Carrier and source gain no result/SID. Existing visit settlement is unchanged; report-completion remains FINAL.
 
@@ -861,7 +861,15 @@ settings, compatible storage, mounted native runtime and current authority;
 supplies no authority and a marker cannot bypass Coding selection. There is no
 flag shortcut or historical engine fallback. Admitted old @1/@2, original return and
 source/thread association, U7a/U7b/U7c, Pause/U6 and LOCAL Final/receipt uncertainty
-are unchanged; thread sources still refuse, notifications remain excluded.
+are unchanged. R1a permits thread-origin metadata on eligible ordinary task
+ancestry and extends the complete-reader-authorized return owner with the
+ordinary terminal thread tail. Root/revisit-root terminals use the original
+thread; non-root sources wake their parent only. Persisted source/status markers
+under the DB lock suppress duplicate/concurrent cap/mint effects; restart retains
+partial tails and refuses unreadable marker evidence. Composed-thread archive
+admission still runs. This remains Start@1: one run, fixed assignments and old
+source-terminal return semantics, with no chain replacement or R3–R7 behavior.
+See [R1a return details](reusable-workflows.md#r1a-thread-originated-ordinary-sources-and-terminal-return).
 No new route/schema/credential/permission/access observer or daemon network I/O.
 See the [current U7 source and evidence limits](../../specs/2026-11-11-sequential-coding-u7.md#u7d-ordinary-source-completion-consumer-task-15578).
 

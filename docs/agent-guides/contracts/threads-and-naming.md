@@ -521,3 +521,21 @@ and historical delivery stay unchanged. No render-time naming or recipient infer
 Shared data is protocol/thread-mention-corpus.json (51 lexical +13 write-path rows).
 Public-unexposed mentions_json, authentic debt/outage and genuine task/dream/callback
 proof require actual evidence and cannot be inferred from static/mock checks.
+
+## Sequential Start@1 terminal followup (R1a)
+
+An ordinary manager task may have thread-originated ancestry while retaining
+its genuine task/SID/result authority. A direct thread invocation cannot start
+a run. Start@1 still has one run, fixed assignments and old source-terminal
+return semantics; R1a is no chain replacement or R3–R7 implementation.
+
+The sequential return/restart owner now reuses the ordinary terminal facade and
+SYSTEM writer. Root/revisit-root sources use their original thread; a non-root
+source wakes its parent only, and a parked source has no tail. Under the DB lock,
+a bounded marker read keys suppression by actual terminal source ID/status.
+Duplicate/concurrent returns never append another marker, extend the cap or mint
+again. Existing composed-thread archive admission still evaluates terminal
+sources even with a marker. Restart before a marker attempts the tail; after a
+marker it preserves partial cap/mint/queue effects without redelivery. Unreadable
+or over-budget evidence refuses another tail. This is not an exactly-once
+eventual delivery claim. See the [R1a contract](reusable-workflows.md#r1a-thread-originated-ordinary-sources-and-terminal-return).
