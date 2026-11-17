@@ -15,7 +15,8 @@
  */
 
 /* ========================================================================== */
-/* SELF-HOSTED FONTS — Hanken Grotesk + Newsreader, SIL OFL 1.1              */
+/* SELF-HOSTED FONTS — Hanken Grotesk, Newsreader, Baloo 2, JetBrains Mono,  */
+/* SIL OFL 1.1                                                               */
 /* Unmodified full upstream TTFs; weights match the type scale below.              */
 /* ========================================================================== */
 
@@ -49,6 +50,14 @@
   font-weight: 800;
   font-display: swap;
   src: url('/fonts/Baloo2-wght.ttf') format('truetype');
+}
+
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 400 600;
+  font-display: swap;
+  src: url('/fonts/JetBrainsMono-wght.ttf') format('truetype');
 }
 
 @import "tailwindcss";
@@ -132,10 +141,10 @@
   --color-status-blocked:    oklch(0.70 0.13 64);
   --color-status-escalated:  oklch(0.55 0.16 25);
 
-  /* ---- ID BADGES ---- */
+  /* ---- ID BADGES — Pasture `.id` uses --info for every entity ID (THR-376) ---- */
 
-  --color-id-thread:       oklch(0.56 0.10 152);
-  --color-id-task:         #b6a3e1;
+  --color-id-thread:       var(--color-info);
+  --color-id-task:         var(--color-info);
 
   /* ---- FEEDBACK ---- */
 
@@ -415,9 +424,9 @@
   --color-status-blocked:   oklch(0.78 0.13 70);
   --color-status-escalated: oklch(0.70 0.15 25);
 
-  /* ---- ID badges (dark) ---- */
-  --color-id-thread: oklch(0.80 0.12 152);
-  --color-id-task:   #d0c4f0;
+  /* ---- ID badges (dark) — Pasture `.id` = --info (THR-376) ---- */
+  --color-id-thread: var(--color-info);
+  --color-id-task:   var(--color-info);
 
   /* ---- Feedback (dark) ---- */
   --color-feedback-success: oklch(0.72 0.12 152);
@@ -484,5 +493,5 @@
 .tasks-group li:last-child > div { border-bottom: 0; }
 .tasks-id span { font-size: 11.5px; }
 .tasks-row .text-task-title, .tasks-group-heading .text-task-group { letter-spacing: -0.1px; }
-.tasks-status { font-size: 11px; gap: 5px; padding: 3px 8px; white-space: nowrap; max-width: 100%; }
+.tasks-status > span { font-size: 11px; gap: 5px; padding: 3px 8px; white-space: nowrap; max-width: 100%; }
 .tasks-appbar { height: 56px; padding: 0 26px; gap: 14px; }

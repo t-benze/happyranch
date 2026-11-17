@@ -259,7 +259,7 @@ export function SkillAssignmentPanel({
       {/* ── Applied confirmation ─────────────────────────────────── */}
       {applied && pendingCount === 0 && (
         <p
-          className="text-status-open border-tier-green-line bg-tier-green-tint text-body-sm mt-4 flex items-start gap-2.5 rounded-md border p-3"
+          className="text-status-open border-accent-muted bg-tier-green-tint text-body-sm mt-4 flex items-start gap-2.5 rounded-md border p-3"
           role="status"
         >
           <BadgeCheck size={15} aria-hidden="true" className="mt-0.5 shrink-0" />
@@ -279,7 +279,7 @@ export function SkillAssignmentPanel({
               <button
                 type="button"
                 onClick={() => setReviewOpen(true)}
-                className="bg-accent text-on-accent hover:bg-accent-hover text-body-sm inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 font-semibold"
+                className="bg-accent text-accent-fg hover:bg-accent-hover text-body-sm inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 font-semibold"
               >
                 <ClipboardCheck size={14} aria-hidden="true" />
                 {t('skills.assign.reviewApply')}
@@ -326,7 +326,7 @@ export function SkillAssignmentPanel({
                   type="button"
                   onClick={apply}
                   disabled={applying}
-                  className="bg-accent text-on-accent hover:bg-accent-hover text-body-sm inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 font-semibold disabled:opacity-60"
+                  className="bg-accent text-accent-fg hover:bg-accent-hover text-body-sm inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 font-semibold disabled:opacity-60"
                 >
                   {applying
                     ? t('skills.assign.applying')

@@ -1192,7 +1192,7 @@ export function TaskDetailPage(): JSX.Element {
             )}
             {(escalationPrimary || escalationSecondary) && (
               <div
-                className="bg-tier-amber-tint text-status-escalated mt-3 max-h-32 overflow-y-auto rounded-md px-3 py-2 text-sm"
+                className="bg-tier-yellow-tint text-status-escalated mt-3 max-h-32 overflow-y-auto rounded-md px-3 py-2 text-sm"
               >
                 {escalationPrimary && (
                   <p>
