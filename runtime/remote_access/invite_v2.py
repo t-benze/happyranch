@@ -268,10 +268,14 @@ def _validate(fields: object, *, now: int) -> DecodedInvite:
     if tls.keys() != _TLS_KEYS:
         raise InviteError("schema")
     dial_ip = _text(tls, "dial_ip")
+    ip = None
     try:
         ip = ipaddress.IPv4Address(dial_ip)
     except ipaddress.AddressValueError:
-        raise InviteError("url") from None
+        pass
+    # Leave the handler first: `from None` still retains the raw exception.
+    if ip is None:
+        raise InviteError("url")
     octets = ip.packed
     if str(ip) != dial_ip or not (octets[0] == 10 or (octets[0] == 172 and 16 <= octets[1] <= 31) or octets[:2] == b"\xc0\xa8"):
         raise InviteError("url")
@@ -323,11 +327,15 @@ def decode(invite_text: str, *, now: int) -> DecodedInvite:
     raw = _unb64(invite_text[len(_PREFIX):], "encoding")
     if len(raw) > 4096:
         raise InviteError("oversized")
+    malformed = False
     try:
         fields = json.loads(raw.decode("utf-8"), object_pairs_hook=_object,
                             parse_int=_integer, parse_float=_not_integer, parse_constant=_not_integer)
     except (UnicodeError, json.JSONDecodeError, RecursionError):
-        raise InviteError("schema") from None
+        malformed = True
+    # Retain only a category decision, never the library exception or its doc.
+    if malformed:
+        raise InviteError("schema")
     return _validate(fields, now=now)
 
 

@@ -1285,6 +1285,9 @@ with redacted display/repr and no Pydantic validation/copy/update API. Invalid
 construction, reinitialization, assignment and deletion raise constant-message
 `InviteError` refusals; those model refusal frames release input references
 before raising and retain no input-bearing structured or chained library error.
+Codec parsing refusals also leave library exception handlers before raising
+their closed category, so neither cause nor context retains a raw library
+exception, including malformed JSON, UTF-8 and address diagnostics.
 Explicit transport fields must never be logged or persisted as diagnostics.
 
 Assumption and division of checks (TASK-16835 manager ruling): row 5's

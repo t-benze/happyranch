@@ -366,17 +366,31 @@ def test_certificate_refusals(case: str) -> None:
         encode(**(inputs() | {"ca_der": ca}))
 
 
-@pytest.mark.parametrize("field", ["pair_secret", "join_key", "invite_text"])
-@pytest.mark.parametrize("failure", ["assignment", "deletion", "construction-type", "construction-missing",
-    "construction-extra", "construction-positional", "reinitialization", "copy-update"])
-def test_redaction(capsys: pytest.CaptureFixture, field: str, failure: str) -> None:
+@pytest.mark.parametrize("field,failure", [
+    (field, failure)
+    for failure in ("assignment", "deletion", "construction-type", "construction-missing",
+                    "construction-extra", "construction-positional", "reinitialization", "copy-update")
+    for field in ("pair_secret", "join_key", "invite_text")
+] + [("codec", case) for case in (
+    "json-syntax", "utf8", "json-deep", "json-recursion", "json-integer", "json-integer-range",
+    "json-float", "json-constant", "json-object",
+    "dial-ip-decode", "dial-ip-encode", "endpoint-ipv4-decode", "endpoint-ipv4-encode",
+    "endpoint-ipv6-decode", "endpoint-ipv6-encode", "endpoint-dns-decode", "endpoint-dns-encode",
+    "base64-outer", "base64-ca", "base64-invite-id", "base64-pair-secret", "base64-canonical", "der", "fingerprint", "identity",
+)])
+def test_redaction(capsys: pytest.CaptureFixture, monkeypatch: pytest.MonkeyPatch, field: str, failure: str) -> None:
     # Swift testSecretRepresentationsAreRedacted :182-189.
-    result = encode(**(inputs() | {"join_key": secrets.token_hex(24)}))
+    # Fresh numeric hex also lets the IPv4 grammar reach its library parser
+    # with a complete synthetic secret in an invalid (overlong) octet.
+    result = encode(**(inputs() | {"join_key": "".join(str(secrets.randbelow(10)) for _ in range(48))}))
     decoded = decode(result.invite_text, now=NOW)
     private = (decoded.join_key, decoded.pair_secret, result.invite_text)
     displays = repr(result) + str(result) + repr(decoded) + str(decoded)
+    unchained = True
+    retained_exception = False
 
     def error_displays(error: Exception, *, model_failure: bool = False) -> str:
+        nonlocal unchained, retained_exception
         rendered = ""
         pending = [error]; seen = set()
         while pending:
@@ -384,23 +398,30 @@ def test_redaction(capsys: pytest.CaptureFixture, field: str, failure: str) -> N
             if id(item) in seen:
                 continue
             seen.add(id(item))
+            unchained = unchained and item.__cause__ is None and item.__context__ is None
             rendered += str(item) + repr(item) + repr(item.args) + repr(vars(item))
             if hasattr(item, "errors"):
                 rendered += repr(item.errors())
             if hasattr(item, "json"):
                 rendered += item.json()
             pending.extend(e for e in (item.__cause__, item.__context__) if e is not None)
-            if model_failure:
-                tb = item.__traceback__
-                while tb is not None:
-                    # Consumer/test frames own their inputs; model refusal
-                    # frames must release input references before raising.
-                    if tb.tb_frame.f_globals.get("__name__") == "runtime.remote_access.invite_v2":
+            tb = item.__traceback__
+            while tb is not None:
+                if tb.tb_frame.f_globals.get("__name__") == "runtime.remote_access.invite_v2":
+                    # No raw library exception may survive in a codec frame,
+                    # even if the outward chain was detached manually.
+                    retained = [value for value in tb.tb_frame.f_locals.values()
+                                if isinstance(value, BaseException)]
+                    retained_exception = retained_exception or bool(retained)
+                    pending.extend(retained)
+                    if model_failure:
+                        # Consumer/test frames own their inputs; model refusal
+                        # frames must release input references before raising.
                         rendered += repr(tb.tb_frame.f_locals)
                         retained_receiver = any(isinstance(value, (type(result), type(decoded)))
                                                 for value in tb.tb_frame.f_locals.values())
                         assert not retained_receiver, "model refusal retains a secret-bearing receiver"
-                    tb = tb.tb_next
+                tb = tb.tb_next
         return rendered
 
     for category in ("entropy", "certificate", "schema", "time"):
@@ -410,6 +431,73 @@ def test_redaction(capsys: pytest.CaptureFixture, field: str, failure: str) -> N
         with pytest.raises(InviteError) as error:
             operation()
         displays += error_displays(error.value)
+
+    if field == "codec":
+        fields = json.loads(base64.urlsafe_b64decode(result.invite_text[10:] +
+                                                   "=" * (-len(result.invite_text[10:]) % 4)))
+        raw = json_bytes(fields)
+        category = "schema"
+        if failure == "json-syntax": text = raw_wire(raw[:-1])
+        elif failure == "utf8": text = raw_wire(raw + b"\xff")
+        elif failure in ("json-deep", "json-recursion"):
+            text = raw_wire(raw.replace(b'"home_id":"test-home"', b'"home_id":' + b"[" * 1100 + b"0" + b"]" * 1100))
+        elif failure in ("json-integer", "json-integer-range", "json-float", "json-constant"):
+            token = {"json-integer": decoded.join_key.encode(), "json-integer-range": b"9223372036854775808",
+                     "json-float": b"1.5", "json-constant": b"NaN"}[failure]
+            text = raw_wire(raw.replace(b'"issued_at":1800000000', b'"issued_at":' + token))
+        elif failure == "json-object": text = raw_wire(raw[:-1] + b',"v":2}')
+        elif failure.startswith(("dial-ip-", "endpoint-")):
+            category = "url"
+            if failure.startswith("dial-ip-"):
+                change = {"dial_ip": decoded.pair_secret}
+                fields["control_tls"]["dial_ip"] = decoded.pair_secret
+            else:
+                if "ipv4" in failure: endpoint = decoded.join_key + ".1.1.1:443"
+                elif "ipv6" in failure: endpoint = "[" + decoded.pair_secret + "]:443"
+                else: endpoint = decoded.pair_secret + "|:443"
+                change = {"home_endpoint": endpoint}
+                fields.update(change)
+            text = wire(fields)
+        elif failure == "base64-outer":
+            category = "encoding"; text = result.invite_text + "="
+        elif failure.startswith("base64-"):
+            key = failure.removeprefix("base64-")
+            category = "certificate" if key == "ca" else "entropy"
+            if key == "ca": fields["control_tls"]["ca_der"] = decoded.pair_secret + "="
+            elif key == "canonical": fields["invite_id"] = "AB"
+            else: fields[key.replace("-", "_")] = decoded.pair_secret + "="
+            text = wire(fields)
+        elif failure == "der":
+            category = "certificate"
+            fields["control_tls"] = trust(b"\x30\x82\xff\xff" + decoded.pair_secret.encode())
+            text = wire(fields)
+        elif failure == "fingerprint":
+            category = "fingerprint"
+            fields["control_tls"]["sha256"] = decoded.pair_secret
+            text = wire(fields)
+        else:
+            fields["home_id"] = "!" + decoded.pair_secret
+            text = wire(fields)
+        private += (text,)
+        if failure == "json-recursion":
+            # Exercise the real stdlib Python scanner's recursion failure.
+            # The C scanner can finish this bounded input before hook refusal.
+            monkeypatch.setattr(json.scanner, "make_scanner", json.scanner.py_make_scanner)
+        with pytest.raises(InviteError) as error:
+            if failure.endswith("-encode"):
+                encode(**(inputs() | {"join_key": decoded.join_key} | change))
+            else:
+                decode(text, now=NOW)
+        displays += error_displays(error.value)
+        closed_category = str(error.value) == category
+        captured = capsys.readouterr()
+        displays += captured.out + captured.err
+        leaked = any(value in displays for value in private)
+        assert not leaked, "secret disclosure in codec/error diagnostics"
+        assert unchained, "codec refusal retains a cause or context"
+        assert not retained_exception, "codec frame retains an exception object"
+        assert closed_category, "codec refusal category changed"
+        return
 
     target = result if field == "invite_text" else decoded
     values = ({"invite_text": result.invite_text, "pair_secret_digest": result.pair_secret_digest,
@@ -443,6 +531,8 @@ def test_redaction(capsys: pytest.CaptureFixture, field: str, failure: str) -> N
     displays += captured.out + captured.err
     leaked = any(value in displays for value in private)
     assert not leaked, "secret disclosure in object/error diagnostics"
+    assert unchained, "model refusal retains a cause or context"
+    assert not retained_exception, "model frame retains an exception object"
     assert closed_failure, "model failure must be closed"
 
 
