@@ -23,6 +23,10 @@
 # Newsreader 18/500 title, 26px padding). The active sidebar nav row is
 # Pasture accent-soft / accent-text / 600 with no left marker (this file
 # has no sidebar-nav row; see DESIGN_SYSTEM.md).
+# THR-376 PR3 adds: semantic text secondary/muted, accent default/hover,
+# tier green, agent founder, status open/archived and feedback
+# success/info rows follow the founder-approved WCAG AA Pasture values in
+# web/design/pasture-ds.css (see DESIGN_SYSTEM.md "Colour contrast").
 # The rest of this file is unchanged historical reference (Phase 4 rewrites it).
 
 name: HappyRanch Founder Console
@@ -109,20 +113,20 @@ colors:
         scrim:         "rgba(0, 0, 0, 0.55)"        # modal backdrop
       text:
         primary:       "{colors.palette.ink_100}"   # body text, message bodies
-        secondary:     "{colors.palette.ink_300}"   # meta, labels, timestamps
-        muted:         "{colors.palette.ink_400}"   # placeholders, disabled labels
+        secondary:     "{colors.palette.ink_300}"   # meta, labels, timestamps   # SUPERSEDED (Pasture): --color-text-secondary (ink-2)
+        muted:         "{colors.palette.ink_400}"   # placeholders, disabled labels   # SUPERSEDED (Pasture): --color-text-muted (ink-3)
         inverse:       "{colors.palette.ink_900}"   # text on accent fills
       border:
         subtle:        "{colors.palette.ink_800}"   # divider between siblings
         default:       "{colors.palette.ink_700}"   # input border, card edge
         strong:        "{colors.palette.ink_600}"   # focused / hovered border
       accent:
-        default:       "{colors.palette.signal_500}"
-        hover:         "{colors.palette.signal_400}"
+        default:       "{colors.palette.signal_500}"   # SUPERSEDED (Pasture): --color-accent-default
+        hover:         "{colors.palette.signal_400}"   # SUPERSEDED (Pasture): --color-accent-hover (accent-press)
         muted:         "rgba(24, 148, 211, 0.12)"   # signal_500 @ 12% — tinted bg
         ring:          "rgba(24, 148, 211, 0.45)"   # focus ring
       tier:
-        green:         "{colors.palette.green_500}"
+        green:         "{colors.palette.green_500}"   # SUPERSEDED (Pasture): --color-tier-green (positive)
         green_tint:    "rgba(46, 163, 106, 0.14)"
         yellow:        "{colors.palette.amber_500}"
         yellow_tint:   "rgba(202, 167, 42, 0.14)"
@@ -131,11 +135,11 @@ colors:
       agent:
         manager:       "{colors.palette.violet_500}"   # 6px dot
         worker:        "{colors.palette.teal_500}"
-        founder:       "{colors.palette.signal_400}"   # founder is "you"
+        founder:       "{colors.palette.signal_400}"   # founder is "you"   # SUPERSEDED (Pasture): --color-agent-founder (accent)
       status:
-        open:          "{colors.palette.green_500}"
+        open:          "{colors.palette.green_500}"   # SUPERSEDED (Pasture): --color-status-open (positive)
         archiving:     "{colors.palette.amber_500}"
-        archived:      "{colors.palette.ink_400}"   # greyed — terminal, neutral
+        archived:      "{colors.palette.ink_400}"   # greyed — terminal, neutral   # SUPERSEDED (Pasture): --color-status-archived
         abandoned:     "{colors.palette.red_500}"
         blocked:       "{colors.palette.amber_500}"
         escalated:     "{colors.palette.red_500}"   # SUPERSEDED (Pasture): attention amber
@@ -143,10 +147,10 @@ colors:
         thread:        "{colors.palette.signal_300}"   # THR-NNN monospace tint — SUPERSEDED (Pasture): --color-info
         task:          "{colors.palette.violet_300}"   # TASK-NNN monospace tint — SUPERSEDED (Pasture): --color-info
       feedback:
-        success:       "{colors.palette.green_500}"
+        success:       "{colors.palette.green_500}"   # SUPERSEDED (Pasture): --color-feedback-success (positive)
         warning:       "{colors.palette.amber_500}"
         danger:        "{colors.palette.red_500}"
-        info:          "{colors.palette.signal_400}"
+        info:          "{colors.palette.signal_400}"   # SUPERSEDED (Pasture): --color-feedback-info (info)
 
     light:
       surface:
@@ -157,20 +161,20 @@ colors:
         scrim:         "rgba(12, 13, 15, 0.35)"
       text:
         primary:       "{colors.palette.ink_900}"
-        secondary:     "{colors.palette.ink_600}"
-        muted:         "{colors.palette.ink_500}"
+        secondary:     "{colors.palette.ink_600}"   # SUPERSEDED (Pasture): --color-text-secondary (ink-2)
+        muted:         "{colors.palette.ink_500}"   # SUPERSEDED (Pasture): --color-text-muted (ink-3)
         inverse:       "{colors.palette.ink_025}"
       border:
         subtle:        "{colors.palette.ink_100}"
         default:       "{colors.palette.ink_200}"
         strong:        "{colors.palette.ink_300}"
       accent:
-        default:       "{colors.palette.signal_600}"
-        hover:         "{colors.palette.signal_700}"
+        default:       "{colors.palette.signal_600}"   # SUPERSEDED (Pasture): --color-accent-default
+        hover:         "{colors.palette.signal_700}"   # SUPERSEDED (Pasture): --color-accent-hover (accent-press)
         muted:         "rgba(16, 120, 176, 0.10)"
         ring:          "rgba(16, 120, 176, 0.35)"
       tier:
-        green:         "{colors.palette.green_700}"
+        green:         "{colors.palette.green_700}"   # SUPERSEDED (Pasture): --color-tier-green (positive)
         green_tint:    "rgba(30, 122, 76, 0.10)"
         yellow:        "{colors.palette.amber_700}"
         yellow_tint:   "rgba(160, 113, 7, 0.10)"
@@ -179,11 +183,11 @@ colors:
       agent:
         manager:       "{colors.palette.violet_500}"
         worker:        "{colors.palette.teal_500}"
-        founder:       "{colors.palette.signal_600}"
+        founder:       "{colors.palette.signal_600}"   # SUPERSEDED (Pasture): --color-agent-founder (accent)
       status:
-        open:          "{colors.palette.green_700}"
+        open:          "{colors.palette.green_700}"   # SUPERSEDED (Pasture): --color-status-open (positive)
         archiving:     "{colors.palette.amber_700}"
-        archived:      "{colors.palette.ink_500}"
+        archived:      "{colors.palette.ink_500}"   # SUPERSEDED (Pasture): --color-status-archived
         abandoned:     "{colors.palette.red_700}"
         blocked:       "{colors.palette.amber_700}"
         escalated:     "{colors.palette.red_700}"   # SUPERSEDED (Pasture): attention amber
@@ -191,10 +195,10 @@ colors:
         thread:        "{colors.palette.signal_600}"   # SUPERSEDED (Pasture): --color-info
         task:          "{colors.palette.violet_500}"   # SUPERSEDED (Pasture): --color-info
       feedback:
-        success:       "{colors.palette.green_700}"
+        success:       "{colors.palette.green_700}"   # SUPERSEDED (Pasture): --color-feedback-success (positive)
         warning:       "{colors.palette.amber_700}"
         danger:        "{colors.palette.red_700}"
-        info:          "{colors.palette.signal_600}"
+        info:          "{colors.palette.signal_600}"   # SUPERSEDED (Pasture): --color-feedback-info (info)
 
 # -------------------------------------------------------------------- #
 # 2. Typography — two families. Generous body, dense meta, mono-first  #

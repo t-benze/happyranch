@@ -55,6 +55,26 @@ Feature compositions keep using the stable `@/design-system/...` import paths.
   .nav-item.active`: `bg-accent-soft text-accent-text font-semibold`, with no
   left bar or border. Nav rows use `text-nav` (13.5px) at weight 500, and the
   brand mark is 30px.
+- Colour contrast (THR-376 seq9, WCAG AA). `web/design/pasture-ds.css` is
+  the visual authority for Direction A light/dark colour values; it is a
+  reference copy only and is not imported by the app build. `tokens.css`
+  carries its lightness values for the text and accent ramps (chroma/hue
+  unchanged), including every literal duplicate of the same semantic token:
+
+  | Pasture token | tokens.css properties | Light | Dark |
+  | --- | --- | --- | --- |
+  | `--ink-2` | `text-secondary`, `fg-muted` (+ light `status-archived`) | `oklch(0.45 0.013 60)` | `oklch(0.76 0.01 75)` |
+  | `--ink-3` | `text-muted`, `fg-subtle` (+ dark `status-archived`) | `oklch(0.55 0.012 65)` | `oklch(0.64 0.011 72)` |
+  | `--accent` | `accent-default` (`primary`), `accent`, `agent-founder` | `oklch(0.52 0.11 152)` | `oklch(0.70 0.13 152)` |
+  | `--accent-press` | `accent-hover` | `oklch(0.46 0.11 152)` | `oklch(0.76 0.13 152)` |
+  | `--positive` | `positive`, `tier-green`, `status-open`, `feedback-success` | `oklch(0.52 0.11 152)` | `oklch(0.72 0.12 152)` |
+  | `--info` | `info` (`id-task`, `id-thread`), `feedback-info` | `oklch(0.53 0.10 248)` | `oklch(0.72 0.11 245)` |
+
+  Measured WCAG 2.x ratios: light ink-3 4.52:1 on `--bg` and 4.86:1 on the
+  raised surface, ink-2 6.94:1, white on accent/positive 5.23:1, info 4.88:1;
+  dark ink-3 5.32:1 on `--bg` and 4.82:1 raised, ink-2 8.34:1, dark
+  `accent-fg` on accent 7.40:1 and on positive 7.93:1, info 7.30:1. Keep new
+  text colours at or above 4.5:1 against the surfaces they sit on.
 - Primitives wrap basic interaction and Radix behavior. Patterns combine them
   into reusable product language. Layouts own reusable geometry.
 - Components are pure props-in/events-out unless a documented role requires an
