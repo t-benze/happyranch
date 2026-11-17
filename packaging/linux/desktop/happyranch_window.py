@@ -122,7 +122,10 @@ class ServiceMode:
 
     def command(self, *args: str) -> subprocess.CompletedProcess:
         try:
-            return self.runner(list(args), capture_output=True, text=True, timeout=10)
+            stopping = args[:3] in (("systemctl", "--user", "stop"),
+                                    ("systemctl", "--user", "restart"))
+            return self.runner(list(args), capture_output=True, text=True,
+                               timeout=60 if stopping else 10)
         except (OSError, subprocess.TimeoutExpired) as exc:
             # Do not include command output or environment values in diagnostics.
             raise LaunchError(f"Could not run {args[0]}.") from exc
@@ -591,7 +594,7 @@ def wait_for_health(child: subprocess.Popen, home: Path, cancel: threading.Event
     raise LaunchError("Startup cancelled.")
 
 
-def stop_child(child: subprocess.Popen, home: Path, term_timeout: float = 5,
+def stop_child(child: subprocess.Popen, home: Path, term_timeout: float = 60,
                kill_timeout: float = 2, *, markers_absent_at_spawn: bool = False) -> None:
     """Signal only the Popen child; bounded TERM/KILL waits also reap it."""
     pid_file, port_file = home / "daemon.pid", home / "daemon.port"

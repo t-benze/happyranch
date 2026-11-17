@@ -386,6 +386,8 @@ async def _lifespan(app: FastAPI):
         # attachment before the first shutdown await. Native owners remain live
         # through worker completion, effects unwind and their final settlement.
         state._stop_runner_admission()
+        from runtime.daemon.jobs_runner import begin_job_shutdown
+        begin_job_shutdown()
         await state._drain_attachments()
         # C native work/outer retirement must be positively idle before host
         # shutdown. Revoke or drain failure forbids every close fallthrough.
@@ -439,9 +441,8 @@ async def _lifespan(app: FastAPI):
         zombie_reaper_task.cancel()
         direct_connect_projection_sweep_task.cancel()
         workspace_cleanup_scheduler_task.cancel()
-        # Fence task consumers and every producer entrypoint before job
-        # shutdown can fire a blocked-task resume check. The parked task then
-        # stays blocked_on_job until the next startup recovery pass.
+        # Finish the existing task-consumer/native drain before the final job
+        # KILL and finalizer wait. Early job TERM already fenced resume hooks.
         try:
             await state.queue.stop()
         except asyncio.CancelledError as exc:
@@ -454,7 +455,7 @@ async def _lifespan(app: FastAPI):
             logger.exception("Task drain incomplete; org databases remain open")
             raise
         from runtime.daemon.jobs_runner import terminate_all_inflight
-        await terminate_all_inflight(grace_seconds=5)
+        await terminate_all_inflight(grace_seconds=30)
         await state._drain_cleanup_diagnostics()
         await state.close_all()
         if shutdown_cancellation is not None:

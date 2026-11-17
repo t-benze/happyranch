@@ -197,7 +197,7 @@ cmd_stop() {
         exit 0
     fi
     kill -TERM "$pid"
-    for _ in 1 2 3 4 5 6 7 8 9 10; do
+    for ((waited=0; waited<60; waited++)); do
         if ! kill -0 "$pid" 2>/dev/null; then
             rm -f "$PID_FILE" "$PORT_FILE"
             echo "daemon stopped"

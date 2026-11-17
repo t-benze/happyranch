@@ -404,22 +404,36 @@ Non-persistent jobs (`persistent=false`) are bound by their `max_runtime_seconds
 
 ### 5.2 Daemon shutdown
 
-Implemented shutdown protocol (`TaskQueue.stop` + `terminate_all_inflight`):
+Implemented shutdown protocol (`begin_job_shutdown` + `TaskQueue.stop` +
+`terminate_all_inflight`, THR-357 Fix 3 mitigation):
 
-1. Permanently stop task-queue consumers and producer admission first. A job's
-   terminal resume hook therefore cannot claim or buffer its blocked waiter
-   during teardown.
-2. Snapshot the in-flight subprocess registry and install
-   `daemon_shutdown` overrides for the whole snapshot before the first
-   SIGTERM. An existing/concurrent `task_ended` override has precedence.
-3. Signal each process that is still running. If it exited naturally in the
-   snapshot-to-signal window or the process group is already gone, remove only
-   the shutdown override installed here and retain the natural result.
-4. After the 5 s grace, SIGKILL any survivor, then await runner background
-   tasks (with timeout) so `failed/daemon_shutdown` plus the real exit code is
-   persisted before per-org DBs close.
-5. Leave the waiter `in_progress(blocked_on_job)` for the existing startup
-   Branch 3 / lifespan scan to resume once through queue deduplication.
+1. The existing synchronous runner/attachment fence closes task-queue producer
+   admission. Immediately fence job-terminal resume hooks and send TERM to
+   owned in-flight jobs, before the first shutdown await and runner drain.
+   A Process whose spawn was already awaiting completion receives TERM when
+   it binds to its original registration. No new task state is introduced.
+2. Preserve the first actual timeout/cap/task/shutdown/Stop cause. A process
+   already exited naturally or whose group is gone keeps its natural result;
+   only a successfully issued signal establishes `daemon_shutdown`.
+3. Drain attachments, thread releases, host sessions, producer runners and
+   reapers in their existing order, then stop task-queue consumers with the
+   existing `TaskQueue.stop` native drain. Do not move the DB-close fence.
+4. In the existing final job phase, allow the remainder of the **30 s** grace
+   measured from each actual TERM, SIGKILL survivors, then await runner
+   finalizers with the existing bounded wait before cleanup diagnostics and
+   per-org DB close. A slow runner drain consumes grace rather than starting
+   another full grace. A timed-out finalizer is not proof of cleanup.
+5. The waiter remains `in_progress(blocked_on_job)` with its session unchanged
+   for the existing startup Branch 3 / lifespan scan and queue deduplication.
+   Startup wiring resets the process-local resume fence; it does not rewrite
+   job or task history.
+
+Daemon stop wrappers allow **60 s** before KILL: `scripts/daemon.sh`, the
+packaged Linux daemon service/desktop child, the in-repo Mac managed child and
+legacy migration helper. Remote-access connector/sidecar/verifier units stop
+separate processes and retain their 10/35/5 s limits. The separate
+`happyranch-app` repo is not changed. This is graceful-stop mitigation only;
+crash recovery and the rest of #1276 remain on hold.
 
 ### 5.3 Startup recovery
 

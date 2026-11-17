@@ -1,5 +1,24 @@
 # Local CI
 
+## Focused jobs shutdown mitigation (#1276)
+
+```sh
+uv run --frozen python -B -m unittest scripts.test_job_shutdown -v
+```
+
+These standalone checks reuse the synthetic-org/real-job venue, with real
+SQLite and owned Linux subprocesses. A controlled lifespan uses stand-in
+background producers without a server, listeners or providers to observe TERM
+before runner drain and KILL/finalizer completion before DB close. The job
+terminal check drives the real production writer and resume hook, including a
+normal-resume positive control with an open queue. Clock waiting is accelerated
+for the 30-second policy check; shell signals/sleeps and migration signals are
+intercepted for the 60-second wrapper checks. The generated daemon service bytes
+and desktop child/control waits are checked as well. Mac managed-child stop
+execution remains a separate macOS native venue. These checks add no required
+CI check or E2E trigger; retired Python units and skipped general integration
+are not run.
+
 ## Focused memory compaction and writer salience (THR-366 PR-B/C)
 
 ```sh
