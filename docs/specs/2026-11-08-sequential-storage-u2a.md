@@ -1,5 +1,12 @@
 # Sequential storage U2a source boundary
 
+> S2a versioning (THR-336 / TASK-17139): this spec's schema1 history is retained.
+> The separately selected schema2 reference, verified-backup empty-only upgrade,
+> visible nonempty refusal and inert membership/inbox/control records are defined
+> in the [current storage contract](../agent-guides/contracts/reusable-workflows.md#s2a-schema2-reference-inert).
+> A2/A4 keep selecting schema1 until S2b; no live install or @2 admission follows.
+
+
 > Supersession — 2026-11-16, I2 / Founder THR-336 msg194: full SQLite physical checks are removed from every load/revalidation, cutover recovery/projection/request/replay/get/downgrade and native constructor helper. Full foreign keys and parts 2–7, all budgets/deadlines and callers remain. Explicit install-time full checks and the daily advisory monitor remain separate. See [current policy](2026-11-14-automatic-workflow-setup.md#i2-load-and-revalidation-policy).
 
 TASK-14536 / root TASK-14531 implements the canonical records and standalone

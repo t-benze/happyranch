@@ -61,6 +61,13 @@ if len(sys.argv) == 2 and sys.argv[1].startswith('--returned-storage='):
     returned_case = sys.argv[1].split('=', 1)[1]
     sys.argv[1:] = ['--returned-storage']
 
+schema2_case = None
+SCHEMA2_CASES = ('two_runs_one_result', 'schema1_preserved', 'empty_upgrade', 'nonempty_upgrade_refused', 'rollback', 'one_outstanding')
+if len(sys.argv) == 2 and sys.argv[1].startswith('--schema2='):
+    schema2_case = sys.argv[1].split('=', 1)[1]
+    assert schema2_case in ('all', *SCHEMA2_CASES)
+    sys.argv[1:] = ['--schema2']
+
 generic_abi_case = None
 GENERIC_ABI_CASES = ('generic_outcome', 'json_limit', 'document_limit', 'node_limit', 'bounded_cycle', 'legacy_bytes')
 if len(sys.argv) == 2 and sys.argv[1].startswith('--generic-abi='):
@@ -182,7 +189,7 @@ if len(sys.argv) == 2 and sys.argv[1].startswith('--retained-corruption-phase=')
         uncommitted='between uncommitted')[sys.argv[1].split('=', 1)[1]]
     sys.argv[1:] = ['--retained-corruption']
 
-assert sys.argv[1:] in ([], ['--generic-abi'], ['--start-compose'], ['--start-context'], ['--bundled-catalog'], ['--returned-storage'], ['--bootstrap-startup'], ['--bootstrap-worker'], ['--bootstrap-owners'], ['--bootstrap-discovery'], ['--bootstrap-selection'], ['--bootstrap-install'], ['--bootstrap-rehearsal'], ['--bootstrap-backup'], ['--bootstrap-journal'], ['--bootstrap-precommit'], ['--startup-isolation'], ['--fresh-catalog'], ['--org-access-fence'], ['--org-access-openers'], ['--org-access-native'], ['--org-access-guardian'], ['--org-access-profile'], ['--setup-status'], ['--daily-integrity'], ['--install-integrity'], ['--bounded-acquisition'], ['--trace-custody'], ['--sequential-reuse'], ['--sequential-load'], ['--sequential-freshness'], ['--sequential-faults'], ['--sequential-sql-exhaustion'], ['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--coding-authority-corruption'], ['--document-native-corruption'], ['--author-handoff-corruption'], ['--document-revision-corruption'], ['--coding-history-corruption'], ['--physical-corruption'], ['--sequential-uncommitted'], ['--i2-cutover'], ['--i2-native']), 'unknown schema-load selection'
+assert sys.argv[1:] in ([], ['--schema2'], ['--generic-abi'], ['--start-compose'], ['--start-context'], ['--bundled-catalog'], ['--returned-storage'], ['--bootstrap-startup'], ['--bootstrap-worker'], ['--bootstrap-owners'], ['--bootstrap-discovery'], ['--bootstrap-selection'], ['--bootstrap-install'], ['--bootstrap-rehearsal'], ['--bootstrap-backup'], ['--bootstrap-journal'], ['--bootstrap-precommit'], ['--startup-isolation'], ['--fresh-catalog'], ['--org-access-fence'], ['--org-access-openers'], ['--org-access-native'], ['--org-access-guardian'], ['--org-access-profile'], ['--setup-status'], ['--daily-integrity'], ['--install-integrity'], ['--bounded-acquisition'], ['--trace-custody'], ['--sequential-reuse'], ['--sequential-load'], ['--sequential-freshness'], ['--sequential-faults'], ['--sequential-sql-exhaustion'], ['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--coding-authority-corruption'], ['--document-native-corruption'], ['--author-handoff-corruption'], ['--document-revision-corruption'], ['--coding-history-corruption'], ['--physical-corruption'], ['--sequential-uncommitted'], ['--i2-cutover'], ['--i2-native']), 'unknown schema-load selection'
 
 
 print('SCHEMA_RUNTIME', json.dumps(dict(python=sys.version, executable=sys.executable, sqlite=sqlite3.sqlite_version,
@@ -478,7 +485,7 @@ from runtime.workflows.sequential_history import read_sequential_history
 from runtime.workflows import sequential_history as seq_history
 
 @contextmanager
-def sequential_fixture():
+def sequential_fixture(*, schema_version=1, trace=True):
     with tempfile.TemporaryDirectory(prefix='sequential-load-reuse-') as scratch:
         root = Path(scratch) / 'orgs' / 'scratch'
         (root / 'org/agents').mkdir(parents=True)
@@ -495,11 +502,12 @@ def sequential_fixture():
             def offline():
                 assert _coding_org_identity(db._conn, expected_org_slug='scratch',
                                             expected_path=str(db.db_path)) == identity
-            assert install_sequential_schema(db._conn, expected_org_slug='scratch',
-                expected_path=str(db.db_path), source_identity=identity,
-                source_inventory=inventory, offline_check=offline) == 'installed'
+            if schema_version:
+                assert install_sequential_schema(db._conn, expected_org_slug='scratch',
+                    expected_path=str(db.db_path), source_identity=identity,
+                    source_inventory=inventory, offline_check=offline, schema_version=schema_version) == 'installed'
             sql = []
-            with db.observe_trace(sql.append):
+            with (db.observe_trace(sql.append) if trace else ExitStack()):
                 yield db, root, sql
         finally:
             db.close()
@@ -573,17 +581,17 @@ def populate_sequential(db, *, settled=False):
     conn.execute('INSERT INTO workflow_seq_settings_operations VALUES (?,?,?,?,?,?,?,?,?)',
         ('settings-op', 'scratch', 'synthetic-manager', 'synthetic-settings', request,
          digest(request), 'settings', receipt, digest(receipt)))
-    conn.execute('INSERT INTO workflow_seq_runs VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+    conn.execute('INSERT INTO workflow_seq_runs (id,org_slug,definition_id,settings_id,source_task_id,source_principal,source_session_id,source_result_id,carrier_task_id,start_operation_key,start_bytes,start_digest,original_limits_bytes,active_visit_id,state,epoch,content_returns,visit_count,event_count,cas,last_event_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
         ('run', 'scratch', 'definition', 'settings', 'source', 'synthetic-manager', 'source-session',
          source_result, 'carrier', 'synthetic-start', start, digest(start), encode(limits),
          'visit', 'active', 1, 0, 1, 1, 0, 'event'))
-    conn.execute('INSERT INTO workflow_seq_visits VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+    conn.execute('INSERT INTO workflow_seq_visits (id,run_id,node_id,ordinal,epoch,predecessor_event_id,task_id,principal,session_id,result_id,result_bytes,result_digest,verified_checks_bytes,input_selection_bytes,input_selection_digest,state,selected) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
         ('visit', 'run', 'author', 1, 1, None, 'visit-task', 'synthetic-author', 'visit-session',
          visit_result, envelope, digest(envelope), encode(dict(checks=['immutable-document@1'] + (['native-success-and-positive-outer-settlement@1'] if settled else []))),
          selection, digest(selection), 'waiting', 1))
-    conn.execute('INSERT INTO workflow_seq_events VALUES (?,?,?,?,?,?,?,?,?,?)',
+    conn.execute('INSERT INTO workflow_seq_events (id,run_id,sequence,operation_key,kind,prior_digest,event_bytes,event_digest,source_visit_id,source_result_id) VALUES (?,?,?,?,?,?,?,?,?,?)',
         ('event', 'run', 1, 'synthetic-start', 'admitted', '0' * 64, event, digest(event), None, None))
-    conn.execute('INSERT INTO workflow_seq_outputs VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
+    conn.execute('INSERT INTO workflow_seq_outputs (id,run_id,visit_id,slot,epoch,contract,task_id,session_id,result_id,content_bytes,content_digest,recipients_bytes) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
         ('output', 'run', 'visit', 'document', 1, 'immutable-document@1', 'visit-task',
          'visit-session', visit_result, content, digest(content), encode(dict(roles=['author']))))
     conn.execute('INSERT INTO workflow_seq_evidence VALUES (?,?,?,?,?,?,?,?,?,?)',
@@ -939,6 +947,265 @@ def returned_tail_cases(selected):
                     runner.join(5)
                     loop.close()
 
+
+# S2a observes the real offline installer on private checkpointed databases.
+# Reference DML below tests persisted SQLite constraints, not engine admission.
+if sys.argv[1:] in ([], ['--schema2']):
+    from scripts import install_workflow_sequential_schema as schema2_installer
+    from runtime.infrastructure import workflow_schema as schema2_owner
+    from runtime.infrastructure.workflow_sequential_schema import (
+        SEQUENTIAL_TABLES, SEQUENTIAL_V2_TABLES, SEQUENTIAL_RETAINED_TABLES,
+    )
+
+    def schema2_inventory(path):
+        with closing(sqlite3.connect(path)) as conn:
+            conn.execute('BEGIN')
+            return sequential_storage_inventory(conn)
+
+    def schema2_call(argv):
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with redirect_stdout(stdout), redirect_stderr(stderr):
+            result = schema2_installer.main(argv)
+        return result, stdout.getvalue() + stderr.getvalue()
+
+    @contextmanager
+    def schema2_fixture(*, source=1, history=None):
+        with sequential_fixture(schema_version=source, trace=False) as (db, org, _):
+            runtime = org.parents[1]
+            (runtime / 'happyranch.yaml').write_text('schema_version: 2\ntype: multi-org-runtime\n')
+            (org / 'org/teams.yaml').write_text('teams: {}\n')
+            home = runtime / 'private-daemon-home'
+            home.mkdir()
+            (home / 'runtimes.yaml').write_text(json.dumps({'active': str(runtime), 'registered': [str(runtime)]}))
+            if source:
+                if history:
+                    (populate_returned if history == 'finished' else populate_sequential)(db)
+                else:
+                    # Reuse the nearest real fixture's valid immutable definition,
+                    # saved settings and original-save rows. Stop fixture DML at
+                    # the first run; no schema is reproduced on the test side.
+                    db._conn.set_authorizer(lambda op, table, *_: sqlite3.SQLITE_DENY
+                        if op == sqlite3.SQLITE_INSERT and table == 'workflow_seq_runs' else sqlite3.SQLITE_OK)
+                    try:
+                        populate_sequential(db)
+                    except sqlite3.DatabaseError as exc:
+                        assert str(exc) == 'not authorized', exc
+                    else:
+                        raise AssertionError('S2a fixture crossed run boundary')
+                    finally:
+                        db._conn.set_authorizer(None)
+                    db._conn.commit()
+                    assert read_sequential_history(db._conn, expected_org_slug='scratch').run_ids == ()
+                    assert all(db._conn.execute('SELECT count(*) FROM ' + table).fetchone()[0] == 1
+                               for table in SEQUENTIAL_RETAINED_TABLES)
+            path = db.db_path.resolve()
+            db.close()
+            backup = runtime / 'schema2-verified-backup.db'
+            with closing(sqlite3.connect(path)) as original, closing(sqlite3.connect(backup)) as copy:
+                original.backup(copy)
+            original = schema2_inventory(path)
+            before = hashlib.sha256(path.read_bytes()).hexdigest()
+            backup_hash = hashlib.sha256(backup.read_bytes()).hexdigest()
+            argv = ['--runtime-root', str(runtime), '--org', 'scratch', '--schema-version', '2',
+                    '--confirm-cooperative-offline', '--backup', str(backup), '--backup-sha256', backup_hash]
+            with patch.dict(os.environ, {'HAPPYRANCH_DAEMON_HOME': str(home)}):
+                yield path, argv, original, before, backup, backup_hash
+            assert hashlib.sha256(backup.read_bytes()).hexdigest() == backup_hash, 'S2a changed verified backup'
+
+    def schema2_row(conn, table, row):
+        columns = ','.join(row)
+        conn.execute('INSERT INTO ' + table + ' (' + columns + ') VALUES (' + ','.join('?' for _ in row) + ')', tuple(row.values()))
+
+    def schema2_refuses(conn, statement, values=(), *, contains):
+        conn.execute('SAVEPOINT s2a_negative')
+        try:
+            conn.execute(statement, values)
+        except sqlite3.IntegrityError as exc:
+            assert contains in str(exc), (contains, str(exc))
+            print('S2a intended constraint refusal:', str(exc), flush=True)
+        else:
+            raise AssertionError('S2a accepted forbidden DML: ' + statement)
+        finally:
+            conn.execute('ROLLBACK TO s2a_negative')
+            conn.execute('RELEASE s2a_negative')
+
+    def schema2_reference_run(conn, suffix, *, source='source', operation=None, running=False):
+        source_result = conn.execute('SELECT id FROM task_results WHERE task_id=?', (source,)).fetchone()[0]
+        carrier = 'carrier-' + suffix
+        # Native fixture rows are synthetic; this DML grants no execution owner.
+        conn.execute('INSERT INTO tasks(id,brief,parent_task_id,assigned_agent,created_at,updated_at) VALUES (?,?,?,?,?,?)',
+                     (carrier, 'schema2 reference only', source, 'synthetic-manager', '2026-11-17T00:00:00+00:00', '2026-11-17T00:00:00+00:00'))
+        run, event, visit = 'run-' + suffix, 'event-' + suffix, 'visit-' + suffix
+        row = dict(id=run, org_slug='scratch', definition_id='definition', settings_id='settings',
+            source_task_id=source, source_principal='synthetic-manager', source_session_id='source-session',
+            source_result_id=source_result, carrier_task_id=carrier, start_operation_key=operation or suffix,
+            start_bytes=b'{}', start_digest='reference', original_limits_bytes=b'{}', engine_version=2,
+            assignment_snapshot_bytes=b'{}', assignment_snapshot_digest='reference', assignment_generation=1,
+            active_visit_id=visit if running else None, state='running' if running else 'finished', epoch=None,
+            content_returns=None, terminal_outcome=None if running else 'completed', progress='queued' if running else None,
+            visit_count=1 if running else 0, event_count=1, cas=0, last_event_id=event)
+        schema2_row(conn, 'workflow_seq_runs', row)
+        schema2_row(conn, 'workflow_seq_events', dict(id=event, run_id=run, engine_version=2, sequence=1,
+            operation_key=operation or suffix, kind='admitted', prior_digest='0'*64, event_bytes=b'{}', event_digest='reference'))
+        return run, event, visit
+
+    cases = SCHEMA2_CASES if schema2_case in (None, 'all') else (schema2_case,)
+    for case in cases:
+        if case == 'schema1_preserved':
+            with schema2_fixture(history='finished') as (path, argv, original, before, *_):
+                with closing(sqlite3.connect(path)) as conn:
+                    conn.row_factory = sqlite3.Row
+                    history = read_sequential_history(conn, expected_org_slug='scratch')
+                    assert history.layout.schema_version == 1 and history.run_ids == ('run',), history
+                    assert conn.execute('SELECT state FROM workflow_seq_runs').fetchone()[0] == 'completed'
+                    assert conn.execute('SELECT verified_checks_bytes FROM workflow_seq_visits').fetchone()[0] is not None
+                # Historical schema1 remains an exact compatible read/no-op.
+                old_args = argv[:4] + ['--schema-version','1']
+                assert schema2_call(old_args) == (0, 'compatible-already-installed: compatible reader required, engine unavailable\n')
+                assert schema2_inventory(path) == original and hashlib.sha256(path.read_bytes()).hexdigest() == before
+            # Original @1 rows also remain readable/settleable under the new
+            # reference; versions never reinterpret epoch or verified checks.
+            with sequential_fixture(schema_version=2) as (db, _, _):
+                populate_returned(db)
+                history = read_sequential_history(db._conn, expected_org_slug='scratch')
+                assert history.layout.schema_version == 2 and history.run_ids == ('run',)
+                assert tuple(db._conn.execute('SELECT engine_version,epoch,content_returns FROM workflow_seq_runs').fetchone()) == (1,1,0)
+                from runtime.workflows.sequential_run_validation import validate_selected_run_uncommitted
+                db._conn.execute('BEGIN')
+                validate_selected_run_uncommitted(db._conn,org_slug='scratch',run_id='run',scope='return')
+                db._conn.rollback()
+        elif case == 'nonempty_upgrade_refused':
+            for state in ('active', 'finished'):
+                with schema2_fixture(history=state) as (path, argv, original, before, *_):
+                    result, message = schema2_call(argv)
+                    assert result == 1 and 'nonempty_upgrade_refused' in message, (state, result, message)
+                    assert schema2_inventory(path) == original and hashlib.sha256(path.read_bytes()).hexdigest() == before
+                    with closing(sqlite3.connect(path)) as conn:
+                        assert read_sequential_history(conn, expected_org_slug='scratch').run_ids == ('run',)
+        elif case in ('empty_upgrade', 'rollback'):
+            for source in (0, 1):
+                with schema2_fixture(source=source) as (path, argv, original, before, *_):
+                    # Wrong/missing backup and omitted offline confirmation must
+                    # preserve both fresh and legacy sources before any writer.
+                    for broken in (argv[:6], [*argv[:-1], '0'*64]):
+                        result, _ = schema2_call(broken)
+                        assert result == 1
+                        assert schema2_inventory(path) == original and hashlib.sha256(path.read_bytes()).hexdigest() == before
+                    if case == 'rollback':
+                        actual_install = schema2_owner.install_sequential_schema
+                        reached = []
+                        def faulting_install(conn, **kwargs):
+                            def fault():
+                                assert conn.in_transaction and conn.execute('SELECT version FROM workflow_seq_schema_versions').fetchone()[0] == 2
+                                reached.append('owned-pre-COMMIT')
+                                raise ValueError('S2a test-side owned pre-COMMIT fault')
+                            return actual_install(conn, **kwargs, before_commit=fault)
+                        with patch.object(schema2_installer, 'install_sequential_schema', faulting_install):
+                            result, message = schema2_call(argv)
+                        assert reached == ['owned-pre-COMMIT'] and result == 1 and 'S2a test-side owned pre-COMMIT fault' in message, (result, message, reached)
+                        assert schema2_inventory(path) == original and hashlib.sha256(path.read_bytes()).hexdigest() == before
+                    result, message = schema2_call(argv)
+                    assert result == 0 and message.startswith('upgraded:' if source else 'installed:'), (result, message)
+                    after = schema2_inventory(path)
+                    retained = set(original[1]) - (set(SEQUENTIAL_TABLES) - set(SEQUENTIAL_RETAINED_TABLES))
+                    assert all(after[1][table] == original[1][table] for table in retained), 'S2a changed retained typed rows/rowids'
+                    objects = {(row[0], row[1]): row for row in after[0]}
+                    assert all(objects[(row[0], row[1])] == row for row in original[0]
+                        if row[2] in retained and row[1] not in ('workflow_task_ownership','workflow_task_owner_bindings')), 'S2a changed retained SQL'
+                    with closing(sqlite3.connect(path)) as conn:
+                        history = read_sequential_history(conn, expected_org_slug='scratch')
+                        assert history.layout.schema_version == 2 and history.run_ids == ()
+                        assert conn.execute('PRAGMA foreign_key_check').fetchone() is None
+                        layout = seq_history.read_sequential_layout(conn)
+                        assert layout.schema_version == 2
+                    assert schema2_call(argv)[0] == 0 and schema2_inventory(path) == after, 'S2a rerun changed storage'
+                    if source == 0:
+                        fresh_schema = after[0]
+                    else:
+                        assert after[0] == fresh_schema, 'S2a fresh/upgraded references diverged'
+        elif case in ('two_runs_one_result', 'one_outstanding'):
+            if case == 'two_runs_one_result':
+                # Intended prechange failure through the actual schema1 installer.
+                with schema2_fixture(history='active') as (path, *_):
+                    with closing(sqlite3.connect(path)) as conn:
+                        conn.row_factory = sqlite3.Row
+                        conn.execute('PRAGMA foreign_keys=ON')
+                        old = dict(conn.execute('SELECT * FROM workflow_seq_runs').fetchone())
+                        old.update(id='second', carrier_task_id='carrier2', start_operation_key='second', last_event_id='event2')
+                        conn.execute("INSERT INTO tasks(id,brief,parent_task_id,created_at,updated_at) VALUES ('carrier2','reference','source','2026-11-17T00:00:00+00:00','2026-11-17T00:00:00+00:00')")
+                        try:
+                            schema2_row(conn, 'workflow_seq_runs', old)
+                        except sqlite3.IntegrityError as exc:
+                            assert str(exc) == 'UNIQUE constraint failed: workflow_seq_runs.source_result_id', exc
+                            print('PASS S2a prechange intended singleton constraint failure:', exc, flush=True)
+                        else:
+                            raise AssertionError('S2a schema1 singleton constraint missing')
+                        conn.rollback()
+            with schema2_fixture() as (path, argv, *_):
+                result, message = schema2_call(argv)
+                assert result == 0, (result, message)
+                with closing(sqlite3.connect(path)) as conn:
+                    conn.execute('PRAGMA foreign_keys=ON')
+                    conn.execute('BEGIN')
+                    run, event, visit = schema2_reference_run(conn, 'a', running=case == 'one_outstanding')
+                    if case == 'two_runs_one_result':
+                        other, other_event, _ = schema2_reference_run(conn, 'b')
+                        assert conn.execute('SELECT count(DISTINCT id),count(DISTINCT source_task_id),count(DISTINCT source_result_id) FROM workflow_seq_runs').fetchone() == (2,1,1)
+                        schema2_row(conn, 'workflow_seq_source_wait_sets', dict(id='wait',org_slug='scratch',source_task_id='source',source_principal='synthetic-manager'))
+                        for item, key in ((run, 'a'), (other, 'b')):
+                            schema2_row(conn, 'workflow_seq_source_memberships', dict(wait_set_id='wait',source_task_id='source',run_id=item,
+                                source_result_id=conn.execute("SELECT id FROM task_results WHERE task_id='source'").fetchone()[0],start_operation_key=key))
+                        from runtime.infrastructure.workflow_sequential_ownership import read_sequential_owner
+                        conn.execute("UPDATE workflow_task_ownership SET version=3,kind='seq_source_wait_set',owner_id='wait' WHERE task_id='source'")
+                        assert read_sequential_owner(conn,task_id='source',org_slug='scratch') == ('seq_source_wait_set','wait',None)
+                        # Actor + task scope is retained; result/session changes do not mint a second operation.
+                        original = dict(zip([r[1] for r in conn.execute('PRAGMA table_info(workflow_seq_runs)')], conn.execute('SELECT * FROM workflow_seq_runs WHERE id=?', (run,)).fetchone()))
+                        original.update(id='duplicate',carrier_task_id='carrier',last_event_id=event)
+                        columns=','.join(original)
+                        schema2_refuses(conn, 'INSERT INTO workflow_seq_runs ('+columns+') VALUES ('+','.join('?' for _ in original)+')', tuple(original.values()), contains='UNIQUE constraint failed: workflow_seq_runs.org_slug')
+                        # Same key in another task's actor scope is distinct.
+                        conn.execute("INSERT INTO tasks(id,brief,assigned_agent,created_at,updated_at) VALUES ('other-source','reference','synthetic-manager','2026-11-17T00:00:00+00:00','2026-11-17T00:00:00+00:00')")
+                        conn.execute("INSERT INTO task_results(task_id,agent,session_id,created_at) VALUES ('other-source','synthetic-manager','other-session','2026-11-17T00:00:00+00:00')")
+                        schema2_reference_run(conn,'other',source='other-source',operation='a')
+                        assert conn.execute("EXPLAIN QUERY PLAN SELECT notification_id FROM workflow_seq_inbox WHERE initiator_task_id=? AND notification_id=?", ('source','notification')).fetchone()[3].startswith('SEARCH')
+                        schema2_row(conn,'workflow_seq_inbox',dict(initiator_task_id='source',notification_id='notification',initiator_principal='synthetic-manager',run_id=run,event_id=event,notification_bytes=b'{}',notification_digest='reference'))
+                        schema2_row(conn,'workflow_seq_inbox_deliveries',dict(initiator_task_id='source',session_id='source-session',notification_id='notification'))
+                        schema2_row(conn,'workflow_seq_consumption_receipts',dict(id='receipt',initiator_task_id='source',principal='synthetic-manager',session_id='source-session',result_id=original['source_result_id'],decision_bytes=b'{}',decision_digest='reference',receipt_bytes=b'{}',receipt_digest='reference'))
+                        values=('source','notification','source-session','receipt')
+                        conn.execute('INSERT INTO workflow_seq_consumed_notifications VALUES (?,?,?,?)', values)
+                        schema2_refuses(conn,'INSERT INTO workflow_seq_consumed_notifications VALUES (?,?,?,?)',values,contains='UNIQUE constraint failed')
+                        for table in ('workflow_seq_source_wait_sets','workflow_seq_source_memberships','workflow_seq_inbox','workflow_seq_inbox_deliveries','workflow_seq_consumption_receipts','workflow_seq_consumed_notifications'):
+                            schema2_refuses(conn,'DELETE FROM '+table,contains='sequential history is immutable')
+                    else:
+                        schema2_row(conn,'workflow_seq_assignments',dict(id='assignment',run_id=run,node_id='author',generation=1,principal='synthetic-author',snapshot_bytes=b'{}',snapshot_digest='reference'))
+                        for name in ('one','two'):
+                            conn.execute('INSERT INTO tasks(id,brief,parent_task_id,created_at,updated_at) VALUES (?,?,?,?,?)', ('step-'+name,'reference','carrier-a','2026-11-17T00:00:00+00:00','2026-11-17T00:00:00+00:00'))
+                        record=dict(id=visit,run_id=run,engine_version=2,node_id='author',ordinal=1,epoch=None,task_id='step-one',principal='synthetic-author',input_selection_bytes=b'{}',input_selection_digest='reference',state='queued',selected=1,assignment_id='assignment',assignment_generation=1)
+                        schema2_row(conn,'workflow_seq_visits',record)
+                        record.update(id='visit-b',task_id='step-two',ordinal=2)
+                        conn.execute('UPDATE workflow_seq_runs SET active_visit_id=? WHERE id=?',('visit-b',run))
+                        columns=','.join(record)
+                        schema2_refuses(conn,'INSERT INTO workflow_seq_visits ('+columns+') VALUES ('+','.join('?' for _ in record)+')',tuple(record.values()),contains='UNIQUE constraint failed: workflow_seq_visits.run_id')
+                        conn.execute('UPDATE workflow_seq_runs SET active_visit_id=? WHERE id=?',(visit,run))
+                        assert conn.execute('SELECT count(*) FROM workflow_seq_visits WHERE selected=1 AND run_id=?',(run,)).fetchone() == (1,)
+                        conn.execute('SAVEPOINT selected_pointer')
+                        conn.execute('UPDATE workflow_seq_visits SET selected=0 WHERE id=?',(visit,))
+                        assert conn.execute('PRAGMA foreign_key_check').fetchone() is not None, 'S2a active pointer lost selected outstanding constraint'
+                        conn.execute('ROLLBACK TO selected_pointer'); conn.execute('RELEASE selected_pointer')
+                        schema2_row(conn,'workflow_seq_node_counters',dict(run_id=run,node_id='author',visits=1,revisions=1))
+                        schema2_refuses(conn,'UPDATE workflow_seq_node_counters SET revisions=0',contains='sequential counters cannot reset')
+                        schema2_refuses(conn,'UPDATE workflow_seq_assignments SET principal=?',('other',),contains='sequential history is immutable')
+                    assert conn.execute('PRAGMA foreign_key_check').fetchone() is None
+                    conn.commit()
+                    try:
+                        read_sequential_history(conn,expected_org_slug='scratch')
+                    except ValueError as exc:
+                        assert str(exc) == 'workflow_seq_schema2_runtime_history_unavailable', exc
+                    else:
+                        raise AssertionError('S2a silently interpreted @2 reference rows as @1 history')
+        print('PASS S2a',case,flush=True)
+    if sys.argv[1:] == ['--schema2']:
+        raise SystemExit(0)
 
 if sys.argv[1:] == ['--returned-storage']:
     returned_tail_cases(returned_case)

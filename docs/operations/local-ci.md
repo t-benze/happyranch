@@ -854,6 +854,27 @@ fixture, so it proves neither serving time nor production-size savings.
 It starts no daemon/worker and adds no CI selection, trigger or dependency;
 retired Python units, general integration and Product E2E are not executed.
 
+S2a schema2 uses the real offline installer on private checkpointed databases:
+
+```bash
+WORKFLOW_SCHEMA_PYTHON=3.12 bash scripts/test-workflow-schema-load.sh --schema2=all
+WORKFLOW_SCHEMA_PYTHON=3.14 bash scripts/test-workflow-schema-load.sh --schema2=all
+```
+
+Named selectors: `two_runs_one_result`, `schema1_preserved`, `empty_upgrade`,
+`nonempty_upgrade_refused`, `rollback`, `one_outstanding`. They observe actual
+SQLite constraints, schema1 singleton failure, exact retained SQL/typed rows/rowids,
+fresh/upgraded reference equality, active AND finished history refusal, verified
+backup/offline refusals, idempotent reopen, test-side owned pre-COMMIT fault/rollback,
+selected visit uniqueness/FKs, inbox receipt identities and immutable histories.
+No test-side DDL implementation or production test-only seam is added. Record the
+four answers per named case, attributable absent-selector/prechange RED, credible
+mutation REDs, byte-exact production restoration hashes and restored GREEN.
+Retain the S1/R1 selectors below and existing focused installation/storage selectors
+on both runtimes; run boundary-lint, guard and base-to-head diff check/stat.
+Full schema-load/local_ci all remain the manager's final-head work. This adds no
+CI trigger, live install, @2 admission, Product E2E, V3 or automatic setup behavior.
+
 S1 generic ABI uses the existing private shell owner's explicit selector:
 
 ```bash

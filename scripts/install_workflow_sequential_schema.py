@@ -143,6 +143,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--runtime-root', type=Path, required=True)
     parser.add_argument('--org', required=True)
+    parser.add_argument('--schema-version', type=int, choices=(1, 2), default=1,
+                        help='Explicit reference target; A2/A4 remain schema1 until S2b')
     parser.add_argument('--check', action='store_true', help=(
         'Read-only: 0 compatible-already-installed, 3 install-needed, 1 refused (2 usage)'))
     parser.add_argument('--backup', type=Path, help='Absolute separate checkpointed SQLite backup; required for installation')
@@ -165,7 +167,7 @@ def main(argv: list[str] | None = None) -> int:
         if (resolve_org_database(args.runtime_root, args.org) != path
                 or _checkpoint_observation(path) != original):
             raise ValueError('workflow_seq_source_identity_changed')
-        if layout.sequential:
+        if layout.sequential and layout.schema_version == args.schema_version:
             outcome = 'compatible-already-installed: compatible reader required, engine unavailable'
             result = 0
         elif args.check:
@@ -200,7 +202,7 @@ def main(argv: list[str] | None = None) -> int:
             installed = install_sequential_schema(
                 conn, expected_org_slug=args.org, expected_path=str(path),
                 source_identity=identity, source_inventory=inventory, offline_check=offline_check,
-                allowance=allowance, integrity=integrity)
+                allowance=allowance, integrity=integrity, schema_version=args.schema_version)
             outcome = f'{installed}: org {args.org}; compatible reader required, engine unavailable'
             result = 0
     except SequentialInstallUncertain as exc:

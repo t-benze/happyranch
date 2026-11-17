@@ -1,5 +1,25 @@
 # Sequential workflow storage — operator draft
 
+## Explicit schema2 reference target (S2a)
+
+The explicit offline command below may select `--schema-version 2` to install a
+fresh schema2 layout or upgrade a validated **zero-run, zero-history** schema1
+layout. Omission retains schema1; A2/A4 automatic behavior is unchanged until S2b.
+`--check --schema-version 2` reports install-needed for a valid older layout;
+actual upgrade still requires the original verified backup/offline guards.
+Any @1 run/history refuses with `workflow_seq_nonempty_upgrade_refused`, including
+finished history. Successful upgrade reports `upgraded`; compatible schema2
+reruns remain read-only. No downgrade, live install or @2 start is authorized.
+
+Definitions/settings/original-save operations and evidence keep exact SQL and
+typed rows/rowids; only affected empty sequential tables and the ownership
+companion are rebuilt in the original owning transaction. New assignments,
+held cursors/counters, controls, wait-set membership and inbox/delivery/consumption
+references remain inert, with explicit engine versions, indexes and immutable
+history. Full FKs and original budgets are unchanged. See the [schema2 contract](../agent-guides/contracts/reusable-workflows.md#s2a-schema2-reference-inert).
+The schema1 descriptions below retain their original-target meanings.
+
+
 ## Automatic daemon-start installation (A4:2)
 
 Founder THR-336 msg250/251 amends design v2 R2 (retained by v6): positive
