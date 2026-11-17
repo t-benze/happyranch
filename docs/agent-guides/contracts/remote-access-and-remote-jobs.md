@@ -1135,6 +1135,97 @@ lifecycle/MDWE, generated Headscale maps, packet-wide public/DNS egress exclusio
 and native Darwin remain NOT RUN. See the [sidecar README](../../../app/linux/tsnet-sidecar/README.md) and
 [Round-7 specification](../../specs/2026-11-16-one-click-remote-access.md#6-invite-selected-bootstrap-and-secret-handling).
 
+### Pure home Headscale renderers and LAN selector (THR-327 slice 3b-2a)
+
+`runtime/remote_access/home_headscale.py` is an **unwired** pure source unit.
+`render_headscale_config(dial_ip=..., policy_path=...)` and
+`render_private_derp_map(dial_ip=...)` return deterministic, sorted-key YAML
+text with a final newline. They perform no filesystem, process, network or
+clock operation. They do not install files, validate certificates, bind ports,
+author policy/users, or establish readiness. TASK-16780 owns those operations,
+kernel inventory collection and caller wiring; it must call these renderers.
+
+`select_lan_dial_ip(interfaces, default_routes)` consumes immutable tuples of
+frozen `LANInterface(index, up, loopback, addresses)` and
+`LANDefaultRoute(interface_index, source_ip)` records. Addresses are literal
+local addresses without CIDRs. The collector supplies **every usable default
+route**, its selected source and complete interface identities, including IPv6
+and equal-cost routes; it must not preselect a winner or omit unresolved sources.
+Down/loopback interfaces cannot supply a candidate. A selected source must be
+assigned to that interface. Exactly one candidate is accepted; multiple routes
+refuse even with the same source. The selector never ranks metrics. Nonselected
+secondary interface addresses are not candidates. Missing/duplicate interface
+identities, wrong field/container types and unassigned sources refuse as
+`inventory`; no candidate gives `no_address`, multiple candidates give
+`multiple_addresses`. An invalid candidate gives `dial_ip` before cardinality.
+
+Selection and both renderers reuse `invite_v2._canonical_dial_ip`: canonical
+RFC1918 IPv4 only. No normalization, public/CGNAT, loopback, link-local or IPv6
+source is accepted. The codec still reports its existing `url` category through
+both encode and decode. Renderer failures are `HomeHeadscaleError` with only
+`dial_ip` or `policy_path`; no input or parser exception is included/chained.
+The policy input must be a direct `.hujson` child of
+`/etc/happyranch/headscale/` with a 1–64-character ASCII alphanumeric/underscore/
+hyphen basename starting alphanumeric. Empty, relative, aliased lexical paths,
+subdirectories and other suffixes refuse. The caller must separately prove
+ownership, no symlinks, file availability and reviewed restrictive ACL content.
+
+The v0.25.1 configuration pins HTTPS/control and embedded DERP to
+`dial_ip:8443`, STUN to `dial_ip:3478`, metrics to `127.0.0.1:19090`, and TLS
+gRPC to `127.0.0.1:50443` with insecure mode false. The URL remains
+`https://control.happyranch.invalid:8443`. No wildcard/IPv6 listener, ACME or
+port-80 listener is configured. The private map has exactly region 999 and node
+999a, `HostName=control.happyranch.invalid`, `IPv4=dial_ip`, `IPv6=none`,
+`DERPPort=8443`, `STUNPort=3478`; no `CertName`, `InsecureForTests` or loopback
+entry. Its lowercase YAML keys match Headscale's `derp.paths` loader (not the
+capitalized wire-JSON names). Empty IPv6 would allow AAAA lookup and is forbidden.
+Automatic embedded-region insertion is false; only the protected private map is
+loaded. This is a rendering contract, not executed Headscale/relay qualification.
+
+Restrictive defaults beyond the specification's literal pins:
+
+| Keys | Value and reason |
+| --- | --- |
+| `tls_cert_path`, `tls_key_path` | `/etc/happyranch/headscale/server.crt`, `server.key`; fixed leaf-only custody, no signing key. |
+| `noise.private_key_path`, `derp.server.private_key_path` | Separate `/var/lib/happyranch-headscale/noise.key`, `derp.key`; no key reuse or writable arbitrary path. |
+| `unix_socket`, `unix_socket_permission` | `/run/happyranch-headscale/headscale.sock`, quoted `0600`; service/root access only. Parent protection is the installer's gate. |
+| `policy.mode`, `policy.path` | `file`, validated required input; never empty/default-allow policy or mutable database policy. No content rendered. |
+| `acme_url`, `acme_email`, `tls_letsencrypt_hostname`, `tls_letsencrypt_listen` | Empty; no enrollment, challenge listener or external issuer. |
+| `tls_letsencrypt_challenge_type` | `TLS-ALPN-01`; v0.25.1 validates this enum even with ACME disabled. Avoid the HTTP-01/80 path. |
+| `tls_letsencrypt_cache_dir` | `/var/lib/happyranch-headscale/acme-unused`; unused, still within protected state if later inspected. |
+| `derp.server.region_id`, `region_code`, `region_name` | `999`, `happyranch-home`, `HappyRanch Home`; one fixed end-user region, no location disclosure. |
+| Map `nodes.name`, `stunonly`, `canport80` | `999a`, false, false; one fixed node, retain the required DERP relay alongside STUN, advertise no HTTP/80 capability. Map region metadata matches the config. |
+| `derp.server.ipv4`, `ipv6` | Validated dial IP, `none`; no hostname/AAAA fallback in either explicit or generated tuple. |
+| `derp.paths` | Only `/etc/happyranch/headscale/derp.yaml`; no extra maps. |
+| `derp.urls`, `auto_update_enabled`, `update_frequency` | Empty list, false, `0s`; no external DERP fetch or refresh worker. |
+| `disable_check_updates` | true; no CLI/startup release lookup. |
+| `database.type`, `database.sqlite.path` | `sqlite`, `/var/lib/happyranch-headscale/db.sqlite`; local protected state, no external database. |
+| `database.debug`, `database.gorm.parameterized_queries`, `skip_err_record_not_found`, `slow_threshold` | false, true, true, 0; suppress debug/not-found/slow-query disclosure and parameter interpolation. |
+| `database.gorm.prepare_stmt`, `database.sqlite.write_ahead_log`, `wal_autocheckpoint` | false, false, 1; no prepared-statement cache or normal WAL state copies; earliest positive checkpoint if WAL exists. |
+| `prefixes.v4`, `v6`, `allocation` | `100.64.0.0/10`, empty, `random`; supported tailnet identity space, no IPv6 allocation, unpredictable addresses. Prefix size grants no peer access; required policy governs access. |
+| `dns.magic_dns`, `base_domain`, `nameservers.global`, `nameservers.split`, `search_domains`, `extra_records` | false, empty, empty list/map/list/list; no DNS takeover, public resolver or injected records. `dns.extra_records_path` is omitted: v0.25.1 rejects both extra-record keys being present, even when empty. No file watcher is configured. |
+| `oidc.issuer`, `client_id`, `client_secret`, `client_secret_path` | Empty; no external authentication provider, secret read or alternate enrollment. Inactive OIDC-only defaults remain unused. |
+| `cli.address`, `api_key`, `insecure`, `timeout` | Empty, empty, false, `5s`; socket-only administration without standing API credentials, bounded CLI calls. |
+| `logtail.enabled`, `log.level`, `log.format` | false, `disabled`, `json`; no telemetry or input-bearing logs, structured format if separately enabled. |
+| `randomize_client_port` | false; no additional server-directed client-port behavior. |
+| `ephemeral_node_inactivity_timeout` | `120s`, validated upstream default above the mandatory 65s floor; unused for the required persistent home identities, no persistent authority expiry decision. |
+
+Unspecified transport batching/tuning retains upstream defaults; it neither
+adds authority nor enables an external service. Environment and service
+hardening remain the owning installer's responsibility. In particular this pure
+unit cannot prevent Headscale environment overrides, prove custody or promise
+packet-wide absence of fallback traffic. Such installed/runtime qualification
+remains NOT RUN here. Upstream semantics checked against the tagged
+[configuration loader](https://github.com/juanfont/headscale/blob/v0.25.1/hscontrol/types/config.go),
+[listener owner](https://github.com/juanfont/headscale/blob/v0.25.1/hscontrol/app.go),
+[private-map loader](https://github.com/juanfont/headscale/blob/v0.25.1/hscontrol/derp/derp.go)
+and [startup update gate](https://github.com/juanfont/headscale/blob/v0.25.1/cmd/headscale/cli/root.go).
+
+Focused commands: `uv run --frozen pytest scripts/test_home_headscale.py -v`
+and `uv run --frozen pytest scripts/test_invite_v2.py -v`. These standalone
+synthetic checks do not run the retired units, skipped integration suite or
+Product E2E and add no CI trigger.
+
 ### Linux managed identity ingress v1 (THR-327 slice 1a)
 
 The explicit `linux-managed-identity-v1` profile uses the fixed
