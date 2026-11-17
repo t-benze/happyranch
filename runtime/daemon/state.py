@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from runtime.daemon.lifetime_lock import LockProof
     from runtime.daemon.cleanup_diagnostics import _CleanupDiagnostics
     from runtime.daemon.thread_delivery_release_service import _ThreadDeliveryReleaseService
 
@@ -367,7 +368,8 @@ class DaemonState:
             )
 
     @classmethod
-    def from_runtime(cls, runtime: RuntimeDir, settings: Settings, *, construction_owner: dict | None = None) -> "DaemonState":
+    def from_runtime(cls, runtime: RuntimeDir, settings: Settings, *, construction_owner: dict | None = None,
+                     startup_lock_proof: LockProof | None = None) -> "DaemonState":
         state = cls(runtime=runtime, settings=settings)
         construction = construction_owner if construction_owner is not None else {}
         construction["candidate"] = state
@@ -453,7 +455,8 @@ class DaemonState:
                 token = object()
                 state._attachment_owners[token] = owner
                 try:
-                    org = OrgState.load(slug=slug, root=root, settings=settings, attachment_owner=owner)
+                    org = OrgState.load(slug=slug, root=root, settings=settings, attachment_owner=owner,
+                                        startup_lock_proof=startup_lock_proof)
                     owner["org"] = org
                     # Strong custody and both coordinator bindings precede selectors
                     # and any other fallible post-load work.

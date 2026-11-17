@@ -377,3 +377,17 @@ audit/storage save failure remains an explicit
 persistence limitation, not a durable count or terminal-success claim. No new timer,
 service, automatic successor or permission follows. Source/scoped verification is
 separate from deployment, running-code identity and operational acceptance.
+
+## THR-357 Fix 2: initial prepared-only repository recovery
+
+The narrow owner-less exception is specified in
+[the runtime lifecycle contract](../agent-guides/contracts/runtime-lifecycle.md#prepared-only-startup-settlement-thr-357-fix-2--1247).
+Initial startup captures prepared-only non-job entries before restore, requires
+the acquired PROVEN daemon LockProof, positive unfinished repository-child death
+proof and clean cooperative Git/worktree checks, then appends a closing receipt
+and removes only that journal entry. SID/session_start/possible_launch remain
+atomic before executor spawn. Unknown history is preserved; possible_launch+,
+jobs, exhausted/ambiguous records and TASK-12738/TASK-12724 remain retained.
+One attempt per record per boot precedes queue/runners/HTTP; dynamic and periodic
+paths have no automatic settlement. Normal continuation/refusal budgets and human
+reconcile authority are unchanged. No new status/transition/schema is added.
