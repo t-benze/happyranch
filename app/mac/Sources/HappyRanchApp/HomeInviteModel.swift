@@ -6,7 +6,7 @@ import HappyRanchSupervisor
 @MainActor
 final class HomeInviteModel: ObservableObject {
     enum Phase: Equatable {
-        case idle, checkingSavedAccess, validating, joining, pairing, awaitingApproval, opening, connected, stopping
+        case idle, checkingSavedAccess, validating, joining, pairing, awaitingApproval, saving, opening, connected, stopping
         case failed(HomeConnectionFailure), keychain(SavedAccessFailure)
 
         var message: String {
@@ -17,14 +17,22 @@ final class HomeInviteModel: ObservableObject {
             case .joining: return "Joining network"
             case .pairing: return "Pairing"
             case .awaitingApproval: return "Awaiting Linux approval"
+            case .saving: return "Saving access in login Keychain"
             case .opening: return "Opening runtime"
             case .connected: return "Connected"
-            case .stopping: return "Closing local session"
+            case .stopping: return "Closing local session; waiting for any storage write/readback to settle"
             case .failed(let failure): return failure.localizedDescription
             case .keychain(let failure): return failure.localizedDescription
             }
         }
-        var busy: Bool { [.checkingSavedAccess, .validating, .joining, .pairing, .awaitingApproval, .opening, .stopping].contains(self) }
+        var busy: Bool { [.checkingSavedAccess, .validating, .joining, .pairing, .awaitingApproval, .saving, .opening, .stopping].contains(self) }
+    }
+
+    /// Captured by operations and by the native release-UI callbacks. A URL
+    /// alone cannot identify a document: loopback addresses can be reused.
+    struct Lifetime: Equatable, Hashable {
+        let attempt: UUID
+        let document: UUID
     }
 
     struct SavedHome: Identifiable {
@@ -43,6 +51,12 @@ final class HomeInviteModel: ObservableObject {
     @Published private(set) var discoveryFailures: [SavedAccessFailure] = []
     @Published var selectedHomeID: UUID?
     private(set) var attemptID = UUID()
+    @Published private(set) var documentGeneration = UUID()
+    var lifetime: Lifetime { Lifetime(attempt: attemptID, document: documentGeneration) }
+    private var confirmation: Lifetime?
+    private var loadedURL: URL?
+    private var saving: Lifetime?
+    private var cancelledSave: Lifetime?
     private var operation: Task<Void, Never>?
     private var expiryTask: Task<Void, Never>?
     private var navigationDeadline: Task<Void, Never>?
@@ -70,6 +84,7 @@ final class HomeInviteModel: ObservableObject {
 
     var busy: Bool { phase.busy || operation != nil }
     var retryGuidance: String {
+        if saveFailure != nil, unsaved == nil { return "Saving was not confirmed. Retry checks saved access again; a new invite may be needed." }
         if saveFailure != nil { return "Retry saving while this session is open. If the app quits before saving, create a new invite on Linux." }
         return needsNewInvite ? "Create a new invite on Linux. Retry accepts a new invite; the spent key is never reused." :
             "Connect to your home network / Retry. Saved access needs no new invite while its grant remains valid."
@@ -78,10 +93,13 @@ final class HomeInviteModel: ObservableObject {
     func prepare() {
         guard !prepared, !busy else { return }
         prepared = true
+        let token = lifetime
         phase = .checkingSavedAccess
         operation = Task {
+            defer { settleOperation(token) }
             do {
                 let discovery = try await store.savedHomes()
+                try check(token)
                 let credentials = discovery.credentials
                 discoveryFailures = discovery.failures
                 needsReplacementConsent = !discovery.failures.isEmpty
@@ -100,6 +118,7 @@ final class HomeInviteModel: ObservableObject {
                 // A single saved computer is the ordinary quit/reopen path.
                 if savedHomes.count == 1 { reconnect() }
             } catch {
+                guard lifetime == token else { return }
                 phase = .keychain((error as? SavedAccessFailure) ?? .unavailable)
                 needsReplacementConsent = true
                 operation = nil
@@ -111,7 +130,8 @@ final class HomeInviteModel: ObservableObject {
     func accept(_ raw: String, replacementConsent: Bool = false) {
         guard !busy, session == nil, pendingRemoval == nil else { return }
         guard !needsReplacementConsent || replacementConsent else { return }
-        let token = UUID(); attemptID = token
+        attemptID = UUID(); let token = lifetime
+        confirmation = nil; loadedURL = nil
         phase = .validating; needsNewInvite = true; removalFailures = []
         activeCredential = nil
         var draft = raw
@@ -121,7 +141,7 @@ final class HomeInviteModel: ObservableObject {
                 var invite: RemoteInvite? = try await Task.detached { [input = draft] in try RemoteInvite.parse(input) }.value
                 draft.removeAll()
                 try Task.checkCancellation()
-                guard attemptID == token, invite != nil else { return }
+                guard lifetime == token, invite != nil else { return }
                 let trust = invite!.trust
                 let deadline = invite!.expiresAt
                 target = trust; expiresAt = deadline
@@ -160,10 +180,8 @@ final class HomeInviteModel: ObservableObject {
                                   recovered.withBearer({ old in saved.withBearer { old == $0 } }) else {
                                 throw HomeConnectionFailure.identityUnavailable
                             }
-                            let updated = try await store.refreshAddress(from: saved, to: trust)
+                            let updated = try await refreshAddress(saved, to: trust, token: token)
                             try check(token)
-                            records[id] = updated
-                            savedHomes.removeAll { $0.id == id }; savedHomes.append(SavedHome(id: id, trust: trust))
                             expiryTask?.cancel(); expiryTask = nil; expiresAt = nil
                             needsNewInvite = false
                             try await open(candidate, credential: updated, token: token)
@@ -200,6 +218,7 @@ final class HomeInviteModel: ObservableObject {
                     // explicit empty-key check can establish reusable membership.
                     do {
                         try await candidate.join(trust: trust, profileID: id, key: nil)
+                        try check(token)
                         reopened = true
                     } catch {
                         try check(token)
@@ -225,8 +244,9 @@ final class HomeInviteModel: ObservableObject {
                 while true {
                     try check(token)
                     guard Date() < pending.expiresAt else { throw HomeConnectionFailure.expiredInvite }
-                    if let delivered = try await candidate.complete(pending, trust: trust, profileID: id) {
-                        try check(token)
+                    let delivery = try await candidate.complete(pending, trust: trust, profileID: id)
+                    try check(token)
+                    if let delivered = delivery {
                         guard Date() < pending.expiresAt else { throw HomeConnectionFailure.expiredInvite }
                         expiryTask?.cancel(); expiryTask = nil
                         expiresAt = nil; comparisonPhrase = nil
@@ -246,7 +266,7 @@ final class HomeInviteModel: ObservableObject {
                 if let error = error as? RemoteInviteError { failure = error == .reapprovalRequired ? .reapprovalRequired : (error == .time ? .expiredInvite : .malformedInvite) }
                 else { failure = (error as? HomeConnectionFailure) ?? .authorizationIncomplete }
                 await fail(failure, token: token)
-                if let custody = error as? SavedAccessFailure, attemptID == token, session == nil {
+                if let custody = error as? SavedAccessFailure, lifetime == token, session == nil {
                     phase = .keychain(custody)
                     if custody != .saveFailed {
                         needsReplacementConsent = true
@@ -259,7 +279,8 @@ final class HomeInviteModel: ObservableObject {
 
     func reconnect() {
         guard !busy, session == nil, pendingRemoval == nil, let id = selectedHomeID, let metadata = records[id] else { return }
-        let token = UUID(); attemptID = token; needsNewInvite = false
+        attemptID = UUID(); let token = lifetime
+        confirmation = nil; loadedURL = nil; needsNewInvite = false
         phase = .checkingSavedAccess
         operation = Task {
             defer { settleOperation(token) }
@@ -267,7 +288,7 @@ final class HomeInviteModel: ObservableObject {
                 let credential: SavedDeviceCredential
                 do { credential = try await store.load(binding: metadata.binding, trust: metadata.trust) }
                 catch {
-                    guard attemptID == token else { return }
+                    guard lifetime == token else { return }
                     needsReplacementConsent = true
                     rePairHomeIDs.insert(id)
                     phase = .keychain((error as? SavedAccessFailure) ?? .unavailable); return
@@ -287,38 +308,83 @@ final class HomeInviteModel: ObservableObject {
         }
     }
 
-    private func saveDelivered(token: UUID) async {
-        guard let credential = unsaved, let id = credential.networkProfileID else { return }
+    /// A storage write/readback is one uninterruptible settlement. Cancel may
+    /// invalidate its lifetime, but owns the observed outcome until this returns.
+    private func saveDelivered(token: Lifetime) async {
+        guard lifetime == token, let credential = unsaved else { return }
+        let previousPhase = phase
+        phase = .saving; saving = token
+        defer {
+            saving = nil; cancelledSave = nil
+            if lifetime == token {
+                if previousPhase == .connected || previousPhase == .opening {
+                    phase = .opening
+                    if let loadedURL { webLoaded(url: loadedURL, lifetime: token) }
+                } else if previousPhase != .awaitingApproval { phase = previousPhase }
+            }
+        }
+        let write = Task { try await store.save(credential) }
         do {
-            try await store.save(credential)
-            guard attemptID == token else { return }
-            records[id] = credential
-            savedHomes.removeAll { $0.id == id }
-            savedHomes.append(SavedHome(id: id, trust: credential.trust))
-            selectedHomeID = id; saveFailure = nil; unsaved = nil
-            needsReplacementConsent = false
+            try await write.value
+            guard lifetime == token || cancelledSave == token else { return }
+            retainSaved(credential)
         } catch {
-            guard attemptID == token else { return }
+            guard lifetime == token || cancelledSave == token else { return }
             saveFailure = (error as? SavedAccessFailure) == .identityChanged ? .identityChanged : .saveFailed
         }
     }
 
+    private func retainSaved(_ credential: SavedDeviceCredential) {
+        guard let id = credential.networkProfileID else { return }
+        records[id] = credential
+        savedHomes.removeAll { $0.id == id }
+        savedHomes.append(SavedHome(id: id, trust: credential.trust))
+        selectedHomeID = id; saveFailure = nil; unsaved = nil
+        needsReplacementConsent = false
+    }
+
+    private func refreshAddress(_ saved: SavedDeviceCredential, to trust: SavedHomeTrust,
+                                token: Lifetime) async throws -> SavedDeviceCredential {
+        try check(token)
+        phase = .saving; saving = token
+        defer { saving = nil; cancelledSave = nil }
+        let write = Task { try await store.refreshAddress(from: saved, to: trust) }
+        let updated: SavedDeviceCredential
+        do { updated = try await write.value }
+        catch {
+            if lifetime == token || cancelledSave == token {
+                saveFailure = (error as? SavedAccessFailure) == .identityChanged ? .identityChanged : .saveFailed
+            }
+            throw error
+        }
+        if lifetime == token || cancelledSave == token { retainSaved(updated) }
+        try check(token)
+        return updated
+    }
+
     func retrySave(replacing: Bool = false) {
         guard operation == nil, let delivered = unsaved else { return }
-        let token = attemptID
+        let token = lifetime
         operation = Task {
-            defer { if attemptID == token { operation = nil } }
+            defer { settleOperation(token) }
             if replacing {
                 // Called only after fresh approval/delivery and explicit UI consent.
-                do { try await store.delete(binding: delivered.binding) }
-                catch { saveFailure = .deletionFailed; return }
+                do {
+                    try await store.delete(binding: delivered.binding)
+                    try check(token)
+                } catch {
+                    guard lifetime == token else { return }
+                    saveFailure = .deletionFailed; return
+                }
             }
             await saveDelivered(token: token)
         }
     }
 
-    private func open(_ candidate: any HomeInviteSession, credential: SavedDeviceCredential, token: UUID) async throws {
+    private func open(_ candidate: any HomeInviteSession, credential: SavedDeviceCredential, token: Lifetime) async throws {
+        try check(token)
         activeCredential = credential
+        loadedURL = nil
         phase = .opening
         let url = try await candidate.open(credential)
         try check(token)
@@ -326,26 +392,31 @@ final class HomeInviteModel: ObservableObject {
         navigationDeadline?.cancel()
         navigationDeadline = Task {
             do { try await Task.sleep(for: .seconds(10)) } catch { return }
-            guard attemptID == token, phase == .opening else { return }
+            guard lifetime == token, phase == .opening else { return }
             cancel(endingAt: .failed(.homeUnavailable))
         }
     }
 
     /// Called only for the expected main-frame 2xx navigation, after connector
     /// authorization and release-verifier admission. Health alone cannot call it.
-    func webLoaded(url: URL, attempt: UUID) {
-        guard attemptID == attempt, phase == .opening, webURL == url else { return }
+    func webLoaded(url: URL, lifetime context: Lifetime) {
+        guard lifetime == context, phase == .opening, webURL == url else { return }
         navigationDeadline?.cancel(); navigationDeadline = nil
+        loadedURL = url
+        guard confirmation == nil else { return }
         phase = .connected
-        let token = attemptID
+        monitor?.cancel()
+        let token = context
         monitor = Task {
             while !Task.isCancelled {
                 do {
                     try await Task.sleep(for: .seconds(5))
-                    guard attemptID == token, let session else { return }
+                    try check(token)
+                    guard let session else { return }
                     try await session.checkAccess()
+                    try check(token)
                 } catch {
-                    guard attemptID == token, !Task.isCancelled else { return }
+                    guard lifetime == token, !Task.isCancelled else { return }
                     let failure = (error as? HomeConnectionFailure) ?? .homeUnavailable
                     cancel(endingAt: .failed(failure))
                     return
@@ -354,36 +425,64 @@ final class HomeInviteModel: ObservableObject {
         }
     }
 
-    func webFailed(url: URL, attempt: UUID) {
-        guard attemptID == attempt, webURL == url else { return }
+    func webFailed(url: URL, lifetime context: Lifetime) {
+        guard lifetime == context, webURL == url else { return }
         cancel(endingAt: .failed(.homeUnavailable))
     }
 
-    private func check(_ token: UUID) throws {
-        try Task.checkCancellation()
-        guard attemptID == token else { throw CancellationError() }
+    /// One native confirmation at a time. Dismissal can release only an already
+    /// observed native load, never infer Connected from join or health success.
+    func beginConfirmation(for context: Lifetime) -> Bool {
+        guard lifetime == context, confirmation == nil else { return false }
+        confirmation = context
+        return true
     }
 
-    private func armExpiry(_ expiry: Date, token: UUID) {
+    func endConfirmation(for context: Lifetime) {
+        guard lifetime == context, confirmation == context else { return }
+        confirmation = nil
+        if let loadedURL { webLoaded(url: loadedURL, lifetime: context) }
+    }
+
+    /// The document owner calls this when replacing/losing its admitted document.
+    /// 3b-2 will bind this seam to the static connection document's generation.
+    func documentDidChange() {
+        documentGeneration = UUID()
+        cancel()
+    }
+
+    private func check(_ token: Lifetime) throws {
+        try Task.checkCancellation()
+        guard lifetime == token else { throw CancellationError() }
+    }
+
+    private func armExpiry(_ expiry: Date, token: Lifetime) {
         expiryTask?.cancel()
         expiryTask = Task {
             do { try await Task.sleep(for: .seconds(max(0, expiry.timeIntervalSinceNow))) } catch { return }
-            guard attemptID == token else { return }
+            guard lifetime == token else { return }
             cancel(endingAt: .failed(.expiredInvite))
         }
     }
 
-    private func fail(_ failure: HomeConnectionFailure, token: UUID) async {
+    private func fail(_ failure: HomeConnectionFailure, token: Lifetime) async {
         // Cancellation owner changes attemptID and performs its own settlement.
-        guard attemptID == token else { return }
+        guard lifetime == token else { return }
         expiryTask?.cancel(); expiryTask = nil
         expiresAt = nil; comparisonPhrase = nil; webURL = nil
         if failure == .revoked {
             pendingRemoval = activeCredential
             unsaved = nil; saveFailure = nil
         }
-        do { try await session?.stop(); session = nil; phase = .failed(failure) }
-        catch { phase = .failed(.cleanupIncomplete) }
+        let candidate = session
+        do {
+            try await candidate?.stop()
+            guard lifetime == token else { return }
+            session = nil; phase = .failed(failure)
+        } catch {
+            guard lifetime == token else { return }
+            phase = .failed(.cleanupIncomplete)
+        }
         if failure == .approvalDenied || failure == .revoked || failure == .identityUnavailable { needsNewInvite = true }
         if failure == .approvalDenied || failure == .identityUnavailable, let id = activeCredential?.networkProfileID {
             rePairHomeIDs.insert(id); needsReplacementConsent = true
@@ -393,21 +492,34 @@ final class HomeInviteModel: ObservableObject {
     /// Disconnect retains the Keychain record and native membership. Cancel
     /// invalidates every late result and forgets pending secrets/handles.
     func cancel(endingAt finalPhase: Phase = .idle) {
-        let old = operation; old?.cancel()
+        let old = operation
+        // Do not interrupt Keychain create/update + readback. Fencing is
+        // immediate; teardown waits for its independently observed result.
+        if let saving { cancelledSave = saving }
+        else { old?.cancel() }
         if finalPhase == .failed(.revoked) { pendingRemoval = activeCredential }
-        attemptID = UUID(); let token = attemptID
+        attemptID = UUID(); let token = lifetime
+        confirmation = nil; loadedURL = nil
         expiryTask?.cancel(); monitor?.cancel(); navigationDeadline?.cancel()
-        expiresAt = nil; comparisonPhrase = nil; webURL = nil; unsaved = nil; saveFailure = nil
+        expiresAt = nil; comparisonPhrase = nil; webURL = nil; unsaved = nil
+        if finalPhase == .failed(.revoked) { saveFailure = nil }
         phase = .stopping
         operation = Task {
             await old?.value
-            guard attemptID == token else { return }
+            guard lifetime == token else { return }
             do {
-                try await session?.stop(); session = nil
+                let candidate = session
+                try await candidate?.stop()
+                guard lifetime == token else { return }
+                session = nil
                 if finalPhase != .failed(.revoked) { activeCredential = nil }
                 phase = finalPhase
             }
-            catch { phase = .failed(.cleanupIncomplete) }
+            catch {
+                guard lifetime == token else { return }
+                phase = .failed(.cleanupIncomplete)
+            }
+            guard lifetime == token else { return }
             operation = nil
             if finalPhase == .failed(.revoked) { removeSavedComputer(afterRevocation: true) }
         }
@@ -422,8 +534,8 @@ final class HomeInviteModel: ObservableObject {
         else { phase = .idle }
     }
 
-    private func settleOperation(_ token: UUID) {
-        guard attemptID == token else { return }
+    private func settleOperation(_ token: Lifetime) {
+        guard lifetime == token else { return }
         operation = nil
         if phase == .failed(.revoked) { removeSavedComputer(afterRevocation: true) }
     }
@@ -434,21 +546,37 @@ final class HomeInviteModel: ObservableObject {
         guard let credential = pendingRemoval ?? (afterRevocation ? activeCredential : selected),
               let id = credential.networkProfileID else { return }
         pendingRemoval = credential
-        let token = UUID(); attemptID = token
+        attemptID = UUID(); let token = lifetime
+        confirmation = nil; loadedURL = nil
         monitor?.cancel(); navigationDeadline?.cancel(); expiryTask?.cancel()
         webURL = nil; unsaved = nil; comparisonPhrase = nil; expiresAt = nil
         phase = .stopping; removalFailures = []
         operation = Task {
-            defer { if attemptID == token { operation = nil } }
-            do { try await session?.stop(); session = nil }
-            catch { removalFailures = ["Local session could not be confirmed stopped"]; phase = .failed(.cleanupIncomplete); return }
-            do { try await Task.detached { try HomeNetworkState.remove(id) }.value }
-            catch {
+            defer { if lifetime == token { operation = nil } }
+            do {
+                let candidate = session
+                try await candidate?.stop()
+                try check(token)
+                session = nil
+            } catch {
+                guard lifetime == token else { return }
+                removalFailures = ["Local session could not be confirmed stopped"]; phase = .failed(.cleanupIncomplete); return
+            }
+            do {
+                try await Task.detached { try HomeNetworkState.remove(id) }.value
+                try check(token)
+            } catch {
+                guard lifetime == token else { return }
                 removalFailures = ["Saved network state could not be erased", "Login Keychain access retained for Retry removal"]
                 phase = .failed(.cleanupIncomplete); return
             }
-            do { try await store.delete(binding: credential.binding) }
-            catch { removalFailures = ["Login Keychain bearer and trust could not be erased"]; phase = .keychain(.deletionFailed); return }
+            do {
+                try await store.delete(binding: credential.binding)
+                try check(token)
+            } catch {
+                guard lifetime == token else { return }
+                removalFailures = ["Login Keychain bearer and trust could not be erased"]; phase = .keychain(.deletionFailed); return
+            }
             records.removeValue(forKey: id); savedHomes.removeAll { $0.id == id }
             if selectedHomeID == id { selectedHomeID = savedHomes.first?.id }
             if activeCredential?.binding == credential.binding { activeCredential = nil }

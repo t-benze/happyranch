@@ -107,5 +107,13 @@ struct ConnectionContractTests {
         #expect(app.clientPairingCode == "synthetic-pair-secret")
         #expect(app.homeInvite.phase == .idle)
         #expect(app.managedJoin.phase == .draft)
+        app.clientLane = .managed
+        let model = app.homeInvite, context = app.homeInvite.lifetime
+        #expect(model.beginConfirmation(for: context))
+        model.webLoaded(url: URL(string: "http://127.0.0.1:49152/")!, lifetime: context)
+        model.endConfirmation(for: context)
+        #expect(model.phase == .idle && model.webURL == nil)
+        #expect(ConnectionClientProjection.snapshot(app: app)["stage"] as? String == "idle")
     }
+
 }

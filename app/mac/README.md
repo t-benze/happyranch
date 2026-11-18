@@ -31,12 +31,20 @@ URL/key intake does not exist and is not planned; outside-home access uses a fix
 build-configured server (see [the spec](../../docs/specs/2026-11-16-one-click-remote-access.md#outside-home-access-fixed-operator-server)).
 QR transfer remains deferred.
 
-`HomeInviteModel` owns attempt IDs, the actual invite-expiry countdown and cancel
-fencing. `ManagedHomeInviteSession` uses the 5b helper and the existing managed
-peer-only bridge for every ceremony, health and product request. Native/helper
+`HomeInviteModel` owns attempt IDs, native document generations, the actual
+invite-expiry countdown and cancel fencing. Native load callbacks capture both
+identities, including on saved reconnect. A native confirmation hold defers
+Connected until dismissal and a still-current authorized load; direct Cancel in
+the native attempt form needs no second confirmation. Static bridge dispatch and
+web-initiated confirmations remain a later slice. `ManagedHomeInviteSession`
+uses the 5b helper and the existing managed peer-only bridge for every ceremony, health and product request. Native/helper
 join has a 120-second bound, each ceremony request and opening navigation a
 10-second bound, and approval cannot outlive the invite. Cancel forgets draft,
-pairing material and handle; late results cannot reconnect. A failed join,
+pairing material and handle; late results cannot reconnect. The explicit Saving
+phase covers Keychain write/readback. Cancel fences progression immediately and
+shows Stopping until that storage step settles, retaining its observed saved
+access or save failure before local teardown; it cannot advance to Opening or
+Connected. Failed or unknown teardown remains visible. A failed join,
 including a helper TLS-close failure, reaches a closed failure with Retry (#1563).
 A spent join key is never retried. A retained same-trust unfinished membership,
 or a saved computer, reopens with an empty key. An interrupted first enrollment
