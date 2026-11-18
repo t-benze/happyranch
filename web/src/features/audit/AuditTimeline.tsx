@@ -15,6 +15,7 @@ import { useEffect, useMemo, useRef } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { CrescentMoonBadge } from '@/design-system/patterns/CrescentMoonBadge';
 import { EmptyState } from '@/design-system/patterns/EmptyState';
+import { IdBadge } from '@/design-system/patterns/IdBadge';
 import { Button } from '@/design-system/primitives/Button';
 import { cn } from '@/lib/utils';
 import { useAuditList } from '@/hooks/audit';
@@ -107,14 +108,6 @@ function groupByDay(entries: AuditEntry[]): { date: string; entries: AuditEntry[
 /*  Entity links                                                       */
 /* ------------------------------------------------------------------ */
 
-/** Color per entity kind. task/thread reuse their locked id tokens; job and
- *  agent links use the accent token (no `--color-id-job` token exists). */
-const REF_COLOR: Record<EntityRef['type'], string> = {
-  task: 'text-id-task',
-  thread: 'text-id-thread',
-  job: 'text-accent-text',
-  agent: 'text-accent-text',
-};
 
 function routeFor(ref: EntityRef, slug: string): string {
   switch (ref.type) {
@@ -130,7 +123,8 @@ function routeFor(ref: EntityRef, slug: string): string {
 }
 
 /** Render one narrative segment: bold subject, plain prose, or an entity link.
- *  Id-shaped refs (task/thread/job) render monospace; agent refs stay prose. */
+ *  Id-shaped refs (task/thread/job) render through the shared IdBadge (mono
+ *  12/500, --info, THR-376 r2 Au3); agent refs stay accent-coloured prose. */
 function Segment({ seg, slug, actor }: { seg: NarrativeSegment; slug: string; actor?: string | null }): JSX.Element {
   if (seg.kind === 'subject') {
     return <span className="text-text-primary font-medium">{actor ? <IdentityName canonicalId={actor} /> : seg.text}</span>;
@@ -139,16 +133,12 @@ function Segment({ seg, slug, actor }: { seg: NarrativeSegment; slug: string; ac
     return <span>{seg.text}</span>;
   }
   const { ref } = seg;
+  if (ref.type !== 'agent') {
+    return <IdBadge id={ref.label} kind={ref.type} to={routeFor(ref, slug)} />;
+  }
   return (
-    <Link
-      to={routeFor(ref, slug)}
-      className={cn(
-        'hover:underline',
-        REF_COLOR[ref.type],
-        ref.type !== 'agent' && 'font-mono',
-      )}
-    >
-      {ref.type === 'agent' ? <IdentityName canonicalId={ref.id} /> : ref.label}
+    <Link to={routeFor(ref, slug)} className="text-accent-text hover:underline">
+      <IdentityName canonicalId={ref.id} />
     </Link>
   );
 }

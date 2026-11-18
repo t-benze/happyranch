@@ -23,6 +23,7 @@ import { Lock } from 'lucide-react';
 import { Link, useParams } from 'react-router-dom';
 import { ContentWrap } from '@/design-system/layouts/ContentWrap/ContentWrap';
 import { List, Row, RowAction } from '@/design-system/patterns/List';
+import { IdBadge } from '@/design-system/patterns/IdBadge';
 import { PageTitle } from '@/design-system/patterns/PageTitle';
 import { TONE_CLASS, toneClass } from '@/design-system/patterns/semanticTone';
 import { useJobsList } from '@/hooks/jobs';
@@ -154,19 +155,25 @@ function OutcomeCell({ job }: { job: JobRecord }): JSX.Element {
 function JobCard({ job, to }: { job: JobRecord; to: string }): JSX.Element {
   return (
     <RowAction asChild>
-      <Link
-        to={to}
-        className={`${CARD_ROW} ${
-          job.status === 'rejected' ? 'opacity-70 hover:opacity-100' : ''
-        }`}
-      >
+      {/* Rejected rows are de-emphasised with muted text tokens on the title
+          (plus the struck-through command), never row-level opacity — opacity
+          would drop the JOB/TASK IdBadges below AA (THR-376 r2 PR-P0a). */}
+      <Link to={to} className={CARD_ROW}>
         {/* JOB */}
-        <span className={`${CARD_COL.job} text-mono-sm text-accent-text tracking-wide`}>{job.id}</span>
+        <span className={CARD_COL.job}>
+          <IdBadge id={job.id} kind="job" />
+        </span>
 
         {/* COMMAND — title + verbatim command */}
         <div className={`${CARD_COL.command} flex flex-col gap-1`}>
           <div className="flex min-w-0 items-center gap-2">
-            <span className="text-text-primary truncate text-sm font-medium">{job.title}</span>
+            <span
+              className={`truncate text-sm font-medium ${
+                job.status === 'rejected' ? 'text-text-secondary' : 'text-text-primary'
+              }`}
+            >
+              {job.title}
+            </span>
             {job.status === 'pending' && job.review_required && <NeedsReviewPill />}
           </div>
           <code
@@ -186,7 +193,9 @@ function JobCard({ job, to }: { job: JobRecord; to: string }): JSX.Element {
         </div>
 
         {/* TASK */}
-        <span className={`${CARD_COL.task} text-mono-sm text-accent-text truncate`}>{job.task_id}</span>
+        <span className={`${CARD_COL.task} truncate`}>
+          <IdBadge id={job.task_id} kind="task" />
+        </span>
 
         {/* OPENED */}
         <div className={`${CARD_COL.opened} flex justify-end`}>

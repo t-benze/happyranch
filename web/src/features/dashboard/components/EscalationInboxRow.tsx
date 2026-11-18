@@ -12,9 +12,9 @@ import { IdentityName } from '@/shared/identities/IdentityName';
  * KB promotion is deferred — see spec §4.6.
  */
 import { useEffect, useRef, useState } from 'react';
-import { Link } from 'react-router-dom';
 import type { DashboardEscalationRow } from '@/lib/api/types';
 import { useResolveEscalation } from '@/hooks/tasks';
+import { IdBadge } from '@/design-system/patterns/IdBadge';
 import { Button } from '@/design-system/primitives/Button';
 import { Textarea } from '@/design-system/primitives/Textarea';
 import { useTranslation } from '@/hooks/i18n';
@@ -105,12 +105,7 @@ export function EscalationInboxRow({
         </span>
         <span className="text-text-muted font-mono text-xs">·</span>
         <span className="text-text-muted font-mono text-xs">
-          <Link
-            to={`/orgs/${slug}/tasks/${row.task_id}`}
-            className="text-id-task hover:underline"
-          >
-            {row.task_id}
-          </Link>
+          <IdBadge id={row.task_id} kind="task" to={`/orgs/${slug}/tasks/${row.task_id}`} />
           {' · '}{row.team}{' · '}
           <span
             className={isStale ? 'text-status-escalated font-medium' : undefined}

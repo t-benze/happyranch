@@ -404,7 +404,7 @@ function BriefSection({ brief }: { brief: string }): JSX.Element {
           <button
             type="button"
             onClick={() => setExpanded((v) => !v)}
-            className="text-accent-default mt-2 text-xs hover:underline"
+            className="text-accent-text mt-2 text-xs hover:underline"
           >
             {expanded
               ? t('tasks.detail.brief.showLess')
@@ -1093,7 +1093,7 @@ export function TaskDetailPage(): JSX.Element {
       {slug && (
         <Link
           to={`/orgs/${slug}/audit?task_id=${taskId}`}
-          className="text-accent-default ml-auto self-center text-xs hover:underline"
+          className="text-accent-text ml-auto self-center text-xs hover:underline"
         >
           {t('tasks.detail.viewAudit')}
         </Link>
