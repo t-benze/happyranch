@@ -1753,6 +1753,9 @@ class TasksMixin:
         }
 
     # Read bounds for the THR-358 plan recovery (per carrier, by parent id).
+    # Each bounded stream reads one sentinel row past its bound; a stream that
+    # reaches the bound is truncated, so uniqueness/agreement cannot be proven
+    # and the plan is unavailable (never inferred from a partial candidate set).
     _RECALL_PLAN_AUDIT_LIMIT = 64
     _RECALL_PLAN_RESULT_LIMIT = 64
 
@@ -1791,7 +1794,8 @@ class TasksMixin:
         """Recover an ended carrier's plan from already-persisted rows only.
 
         Bounded lookups keyed by the parent task id.  Any ambiguity, missing
-        provenance or malformed JSON returns ``(None, None)``.
+        provenance, malformed JSON or a stream that reaches its read bound
+        (truncated history) returns ``(None, None)``.
         """
         parent_id = task.parent_task_id
         if not parent_id:
@@ -1831,8 +1835,10 @@ class TasksMixin:
         spawned = self._conn.execute(
             "SELECT payload FROM audit_log WHERE task_id = ? AND action = 'fanout_spawned' "
             "ORDER BY id DESC LIMIT ?",
-            (parent_id, self._RECALL_PLAN_AUDIT_LIMIT),
+            (parent_id, self._RECALL_PLAN_AUDIT_LIMIT + 1),
         ).fetchall()
+        if len(spawned) > self._RECALL_PLAN_AUDIT_LIMIT:
+            return None, None
         matches: list[list[str]] = []
         for row in spawned:
             try:
@@ -1855,21 +1861,27 @@ class TasksMixin:
                 ids,
             ).fetchall()
         }
-        decisions: list[object] = []
-        for r in self._conn.execute(
+        step_rows = self._conn.execute(
             "SELECT payload FROM audit_log WHERE task_id = ? AND action = 'orchestration_step' "
             "ORDER BY id DESC LIMIT ?",
-            (parent_id, self._RECALL_PLAN_AUDIT_LIMIT),
-        ).fetchall():
+            (parent_id, self._RECALL_PLAN_AUDIT_LIMIT + 1),
+        ).fetchall()
+        if len(step_rows) > self._RECALL_PLAN_AUDIT_LIMIT:
+            return None, None
+        result_rows = self._conn.execute(
+            "SELECT decision_json FROM task_results WHERE task_id = ? AND decision_json IS NOT NULL "
+            "ORDER BY id DESC LIMIT ?",
+            (parent_id, self._RECALL_PLAN_RESULT_LIMIT + 1),
+        ).fetchall()
+        if len(result_rows) > self._RECALL_PLAN_RESULT_LIMIT:
+            return None, None
+        decisions: list[object] = []
+        for r in step_rows:
             try:
                 decisions.append(json.loads(r["payload"]).get("decision"))
             except (TypeError, ValueError, AttributeError):
                 continue
-        for r in self._conn.execute(
-            "SELECT decision_json FROM task_results WHERE task_id = ? AND decision_json IS NOT NULL "
-            "ORDER BY id DESC LIMIT ?",
-            (parent_id, self._RECALL_PLAN_RESULT_LIMIT),
-        ).fetchall():
+        for r in result_rows:
             try:
                 decisions.append(json.loads(r["decision_json"]))
             except (TypeError, ValueError):
