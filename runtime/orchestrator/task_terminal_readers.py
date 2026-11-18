@@ -88,14 +88,14 @@ def _progress_passive_chain_owner(orch: "Orchestrator", task: "TaskRecord") -> b
 
 
 def _passive_parent_wake_handled(orch: "Orchestrator", parent: "TaskRecord") -> bool:
-    """After sibling evaluation, retain chains or finish sessionless carriers.
+    """After sibling evaluation, retain passive owners or handle terminal aborts.
 
     Re-read after chain progression: its snapshot may still contain the chain
     that just cleared. A stale older-leg callback cannot wake an active owner.
     """
     from runtime.models import BlockKind, TaskStatus
     from runtime.orchestrator.run_step import (
-        TERMINAL_STATES, _carrier_complete_on_chain_complete, _carrier_fail_immediate,
+        TERMINAL_STATES, _carrier_fail_immediate,
     )
 
     current = orch._db.get_task(parent.id)
@@ -115,7 +115,10 @@ def _passive_parent_wake_handled(orch: "Orchestrator", parent: "TaskRecord") -> 
         if not orch._db.try_clear_chain(current.id, current.active_chain):
             return True
         return _carrier_fail_immediate(orch, current, newest.id)
-    return _carrier_complete_on_chain_complete(orch, current)
+    # NULL does not distinguish a matched final leg from an abort. The caller
+    # that won the chain-clear CAS owns that outcome through terminal commit;
+    # a concurrent dequeue must neither infer success nor run a carrier session.
+    return _is_carrier(orch, current)
 
 
 def _child_has_modern_fingerprint(child: "TaskRecord") -> bool:

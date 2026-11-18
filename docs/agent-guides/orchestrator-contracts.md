@@ -4353,6 +4353,15 @@ through its existing failure path and feeds that failure to the fan-out barrier.
 Admission failure never counts as successful carrier completion; actual final-leg
 completion retains the existing success path.
 
+A NULL `active_chain` alone never authorizes carrier success: it can also mean
+an abort, mismatch or failed admission. Only the newest child's matched final-leg
+report, read through the existing exact authenticated report rules (with the
+fingerprint-absence legacy fallback), selects completion. The chain-clear CAS
+winner retains that selected outcome through carrier terminalization. A concurrent
+callback or dequeue that sees the cleared chain leaves the carrier passive;
+it cannot infer success or replace the winner's failure. Terminal tails run only
+for the actual transition winner, which alone feeds the outer fan-out barrier.
+
 A configured reviewer leg (the classified v2 org setting `reviewer_agents`) MUST declare `expect_verdict: "APPROVE"`; omission is a HARD REJECT — the whole delegation is denied before any child spawns, the owner receives a feedback task result and feedback orchestration step naming the required `expect_verdict: "APPROVE"`, and the root stays PENDING and is re-enqueued for a corrected decision (never a root failure). Missing agent / missing workspace delegates keep hard terminal failure. Same semantics apply to pipeline-carrier legs in fan-out decisions.
 
 Reviewer resolution distinguishes `none`, `configured`, `missing` and `invalid`.
@@ -4471,7 +4480,8 @@ Mechanical contract (THR-028/THR-078; not a rule to select linked retries):
    fan-out barrier and never runs its own session; a fanout-dispatched `task`
    manager remains its local owner and cannot run mid-chain.
    A cancelled or superseded newest leg also clears the current chain and uses
-   carrier failure or manager wake after sibling evaluation.
+   carrier failure or manager wake after sibling evaluation. The clear winner
+   owns this failure; a concurrent NULL-chain dequeue cannot complete the carrier.
 
 5. **Happy path unchanged.** All subtasks COMPLETED → parent enqueued for
    next decision step. REVISE-verdict auto-advance in chains is unchanged.

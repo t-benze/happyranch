@@ -4790,7 +4790,8 @@ def _fail(
     orch: "Orchestrator", task_id: str, *, note: str,
     reclaim_terminal_worktree: bool = True,
     current_owner: Callable[[], bool] | None = None,
-) -> None:
+) -> bool:
+    """Fail a live task; return whether this caller committed the transition."""
     root_transitions = _RootWorktreeTransitions()
     from datetime import datetime, timezone
     # Idempotence guard — same rationale as _complete. When /cancel SIGTERMs
@@ -4798,7 +4799,7 @@ def _fail(
     # tries to write a "session failed (rc=-15; ...)" note. That must NOT
     # overwrite the cancel route's "cancelled by <actor>: ..." note.
     if _is_already_terminal(orch, task_id):
-        return
+        return False
     with orch._db._lock:
         current = orch._db.get_task(task_id)
         if current is not None:
@@ -4811,11 +4812,11 @@ def _fail(
                 if accepted is not None:
                     # Only a caller presenting actual R may consume it. A late
                     # provider failure cannot clear or overwrite its winner.
-                    return
+                    return False
         if _is_already_terminal(orch, task_id):
-            return
+            return False
         if current_owner is not None and not current_owner():
-            return
+            return False
         # THR-181 Track A (founder lifecycle envelope): a failure closes the single-use
         # continuation window fail-closed — the continuation was never exercised
         # for its permitted action and must never be re-used.
@@ -4852,6 +4853,7 @@ def _fail(
         root_transitions=root_transitions,
         expected_note=note if current_owner is not None else None,
     )
+    return True
 
 
 def _task_matches_authority_v2_refusal_failure(
@@ -5251,7 +5253,8 @@ def _advance_chain_for_completed_child(
     """Inspect the parent's active_chain against the just-completed subtask's
     report, distinguishing a normal wake from failed next-leg admission.
 
-    Returns "advance", "wake", "admission_failed" or "lost_race". Failed
+    Returns "advance", "complete", "wake", "admission_failed" or "lost_race".
+    Only a matched final-leg report can select "complete". A failed leg or
     next-leg admission clears the current chain and must fail a carrier.
     A lost race leaves the parent untouched and must not wake or terminate it.
     When "advance" is returned, the parent is NOT re-enqueued and
@@ -5319,7 +5322,7 @@ def _advance_chain_for_completed_child(
         reviewer_agents=reviewer_agents,
     )
     if action.kind == "wake":
-        return clear_chain("wake")
+        return clear_chain("complete" if action.reason == "chain_complete" else "wake")
 
     # THR-109: validate attachments FIRST, before any state change.
     # If validation fails the chain is cleared and admission fails — no
@@ -5403,14 +5406,15 @@ from runtime.orchestrator.task_terminal_readers import (
 )
 
 
-def _carrier_fail_on_verdict_mismatch(
+def _carrier_fail_on_chain_abort(
     orch: "Orchestrator", parent: "TaskRecord",
     child_task_id: str, chain_snapshot: str | None, report=None,
 ) -> bool:
-    """After a carrier's chain leg completed but the chain did not advance
-    (outcome == "wake"), check if this was a verdict mismatch.  If so, fail
-    the carrier immediately (fail-closed at carrier).  Returns True if the
-    carrier was failed, False otherwise (including non-carriers).
+    """Fail a carrier after the chain-clear winner selected an abort ("wake").
+
+    A matched final leg has a separate "complete" outcome. Every other wake,
+    including a missing legacy report or blocked leg, fails closed. Returns
+    True for a handled carrier, False for non-carriers.
 
     THR-211: ``report`` carries the exact authenticated CompletionReport for
     the child's current session when one exists; it is authoritative over the
@@ -5429,9 +5433,10 @@ def _carrier_fail_on_verdict_mismatch(
     try:
         reviewer_agents = _reviewer_agents_for(orch)
     except (OrgConfigError, sqlite3.Error, OSError) as exc:
-        _fail(orch, parent.id, note=f"carrier reviewer configuration unavailable: {exc}")
-        _enqueue_parent_if_waiting(orch, parent.id)
-        return True
+        return _carrier_fail_immediate(
+            orch, parent, child_task_id,
+            note=f"carrier reviewer configuration unavailable: {exc}",
+        )
     if report is _NO_AUTHENTICATED_REPORT:
         # TASK-5818: the child has a modern fingerprint but no acceptable
         # exact authenticated report — the leg's outcome cannot be verified.
@@ -5444,26 +5449,18 @@ def _carrier_fail_on_verdict_mismatch(
         )
         if expected is not None:
             note += f" (expected {expected!r})"
-        _fail(orch, parent.id, note=note)
-        # Feed carrier failure into the fan-out parent's barrier.
-        _enqueue_parent_if_waiting(orch, parent.id)
-        return True
+        return _carrier_fail_immediate(orch, parent, child_task_id, note=note)
     if report is None:
         report = orch._db.get_latest_completion_report(child_task_id)
     if report is None:
-        # No report for the completed child — fail-closed only when a verdict
-        # expectation exists (pre-existing semantics).
+        # No report cannot establish matched final-leg success, even for a
+        # legacy child without an explicit verdict expectation.
         expected = chain.current_expect_verdict()
-        if expected is None:
-            return False
-        _fail(
-            orch, parent.id,
-            note=f"carrier verdict mismatch: expected {expected!r}, got None",
+        return _carrier_fail_immediate(
+            orch, parent, child_task_id,
+            note=(f"carrier leg {child_task_id} outcome unverifiable: "
+                  f"no completion report (expected {expected!r})"),
         )
-        # Feed carrier failure into the fan-out parent's barrier.  Returning
-        # True without these side effects strands both carrier and parent.
-        _enqueue_parent_if_waiting(orch, parent.id)
-        return True
     completed_child = orch._db.get_task(child_task_id)
     completed_agent = completed_child.assigned_agent if completed_child is not None else None
     action = compute_advance_action(
@@ -5476,12 +5473,12 @@ def _carrier_fail_on_verdict_mismatch(
     # reviewer leg) must fail the whole carrier — never chain-complete it as a
     # false success.
     if action.kind == "wake" and action.reason in ("verdict_mismatch", "reviewer_non_approve"):
-        _fail(orch, parent.id,
-               note=f"carrier verdict mismatch: expected {action.expected!r}, got {action.actual!r}")
-        # Feed carrier failure into the fan-out parent's barrier.
-        _enqueue_parent_if_waiting(orch, parent.id)
-        return True
-    return False
+        note = f"carrier verdict mismatch: expected {action.expected!r}, got {action.actual!r}"
+    else:
+        # The clear winner already selected failure. A later configuration
+        # observation cannot turn it into success or leave the carrier parked.
+        note = f"carrier chain aborted after {child_task_id}"
+    return _carrier_fail_immediate(orch, parent, child_task_id, note=note)
 
 
 def _carrier_fail_immediate(
@@ -5502,7 +5499,7 @@ def _carrier_fail_immediate(
     # truthfully carries the leaf that caused it.  Fan-out join context reads
     # direct child rows, so this preserves causal provenance without a new
     # stored field or accidentally selecting an unrelated sibling.
-    _fail(
+    failed = _fail(
         orch,
         parent.id,
         note=note or (
@@ -5514,8 +5511,9 @@ def _carrier_fail_immediate(
             f"causal_reason={reason}"
         ),
     )
-    # Feed carrier failure into the fan-out parent's barrier.
-    _enqueue_parent_if_waiting(orch, parent.id)
+    # Only the actual terminal-transition winner feeds the outer barrier.
+    if failed:
+        _enqueue_parent_if_waiting(orch, parent.id)
     return True
 
 
@@ -5852,7 +5850,12 @@ def _enqueue_parent_if_waiting(
                 )
                 if outcome in ("advance", "lost_race"):
                     return  # spawned next leg, or parent ownership/state changed
-                if outcome == "admission_failed":
+                if outcome == "complete":
+                    # Only the matched final-leg chain-clear winner can
+                    # complete a carrier. NULL alone carries no outcome.
+                    if _carrier_complete_on_chain_complete(orch, parent):
+                        return
+                elif outcome == "admission_failed":
                     if _carrier_fail_immediate(
                         orch, parent, task_id,
                         note=(f"carrier next-leg admission failed after {task_id}; "
@@ -5860,15 +5863,11 @@ def _enqueue_parent_if_waiting(
                     ):
                         return  # failure feeds the fan-out barrier once
                     # Manager parent: chain cleared; normal wake below.
-                elif _carrier_fail_on_verdict_mismatch(
+                elif _carrier_fail_on_chain_abort(
                     orch, parent, task_id, chain_snapshot,
                     report=authenticated_report,
                 ):
                     return  # carrier failed; outer _enqueue_parent_if_waiting skipped
-                # Chain complete + verdict matched → carrier auto-completes
-                # directly (no _run_agent session, no manager-wake).
-                elif _carrier_complete_on_chain_complete(orch, parent):
-                    return  # carrier completed; outer _enqueue_parent_if_waiting skipped
             # Stale re-trigger for a leg the chain already advanced past, or a
             # non-newest child: fall through to sibling-check + parent-wake.
         else:
@@ -5907,7 +5906,8 @@ def _enqueue_parent_if_waiting(
             if parent.active_chain is not None:
                 if current_owner is not None and not current_owner():
                     return
-                orch._db.update_task_active_chain(parent.id, None)
+                if not orch._db.try_clear_chain(parent.id, parent.active_chain):
+                    return
             if _is_carrier(orch, parent):
                 causal_leaf = next(
                     (leaf for leaf in unresolved_leaves if leaf.id == task_id),
