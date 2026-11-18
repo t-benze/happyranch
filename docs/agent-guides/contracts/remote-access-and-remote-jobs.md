@@ -2053,11 +2053,14 @@ binding is covered in the slice 2b-2 section below.
 `remote_access_helper.py` exports `ai.happyranch.RemoteAccess1` at
 `/ai/happyranch/RemoteAccess1` with zero-input Status, NextDevice,
 ApprovePending, RejectPending and RevokeSelected. Only the last three request
-fresh interactive polkit authorization. The protected release UID is a mandatory
-trusted constructor value; slice 3b must supply it from its validated root-owned
-release record. The root-only `serve()` connects Gio to the fixed system-bus socket
-(`/run/dbus/system_bus_socket`), ignoring address environment overrides; package activation and
-installation of the source bus/polkit definitions remain pending. Run the fixed
+fresh interactive polkit authorization. B8's `helper_owner.py` now derives the
+release owner from the bus credential UID, passwd and validated protected release
+record when present; the optional trusted constructor UID remains a compatibility
+pin. The root-only `serve()` connects Gio to the fixed system-bus socket
+(`/run/dbus/system_bus_socket`), ignoring address environment overrides. B8 packages
+the bus/polkit definitions and root Type=dbus unit; package install registers the
+service without running Enable. Installer-backed lifecycle activation remains
+deferred to serial integration. Run the fixed
 packaged entry with system Python `-I`, without user settings or argv overrides.
 
 The helper captures caller/UID, target, ownership and snapshot generation before
@@ -2646,6 +2649,25 @@ status at most 2 seconds. B15 conveys progress/terminal outcomes using
 `ready`, `off`, `in_progress`, `failed`, `uncertain`, `partial_cleanup`.
 Transport loss after dispatch never means no change.
 Why no founder: supports the approved progress/ready/failure screens unchanged.
+
+B9 implementation: `helper_lifecycle.py` supplies connector-independent capture,
+the existing helper's single mutation-slot adapter, monotonic budgets and closed
+accepted/refused admission before effects. Capture and admission revalidation
+share the original approximately 122-second call deadline. Each injected effect revalidates the
+bus UID, B8 owner binding and opaque protected-generation token under that slot;
+busy calls refuse without queuing. Remaining time includes capture/auth and is
+passed to each step, with expired returns suppressed. Executors must enforce the
+supplied timeout; these primitives do not preempt blocking code. Auth transport
+uncertainty retains the slot until terminal reply/cancellation acknowledgement.
+The six outcomes reuse B15's `status_v2.SetupPhase`, excluding UNKNOWN/STALE.
+The native 120-second auth and approximately 122-second transport are unchanged.
+No lifecycle method is exported and no root lifecycle effect is reachable.
+The concrete generation reader (intended source: Track A's HomeActivationStore,
+whose `read()` currently requires an expected generation), native lifecycle-auth
+wiring, installer/B6/B17 step executors and B15 helper status wiring remain
+DEFERRED to serial integration. No activation-record path/format or B16 audit
+persistence is defined here. Focused verification uses the existing private-bus
+venue: `uv run --frozen --python /usr/bin/python3 pytest scripts/test_helper_lifecycle.py scripts/test_remote_access_helper.py -v --tb=short`.
 
 **B10 — Root-to-connector issuance IPC.**
 Extend existing `control.sock` OperationAPI only with `invite-reserve@1`
