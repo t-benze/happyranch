@@ -2701,6 +2701,57 @@ Recover proves no usable key remains and consumes the old ceremony. Only a later
 IssueInvite, still limited to one/minute, creates fresh authority.
 Why no founder: names already-approved Cancel and authenticated recovery actions.
 
+B11 backend assumptions and inert boundary (`invite_recovery.py`): the freshly
+authenticated root caller holds the helper mutation slot throughout, supplies
+the protected current connector generation, the remaining original monotonic
+authorization/operation deadline (at most 120 seconds ahead), and the live-caller
+revalidation hook. The functions accept no operation ID. They select the current
+entry using the issuer's existing protected binding/metadata checks and
+nonblocking journal lock. Lock order is helper slot → short journal transaction
+→ IPC: the journal lock is released before IPC and minter calls; no trust flock
+is held across IPC. A durable `uncertain` intent fences new issuance before
+dispatch; final publication reacquires the journal and compares the entire
+selected record. Lock contention, unsafe/pending state or binding drift refuses
+without repair. An absent current entry returns invite `none`, cleanup
+`not_needed`; it does not claim recovery or infer that Headscale has no keys.
+
+Both operations acknowledge B10 connector invalidation before key cleanup.
+Cancel expires keys through the minter's existing cleanup-and-complete-relist
+proof, rather than treating one expire reply as proof. The injected B11 minter
+must implement `recover(operation_id, *, deadline)` with the existing exact-true,
+no-usable-key and settled-late-create semantics, clipping **every** admin step
+to the remaining original deadline. The inert `HeadscaleRecoveryMinter` supplies
+that adapter around the existing Headscale cleanup/relist implementation and
+injected admin transport, clipping each list/expire timeout and refusing create.
+Its caller also holds the existing dedicated invite-user mutation lock within
+the original budget. There is no unbounded legacy fallback or new lock owner.
+Deadline checks bracket journal, IPC, revalidation, minter and final publication;
+a late reply never yields `complete`. OS I/O and dependency time bounds remain
+cooperative, not a hard interruption guarantee.
+
+Results use closed outcomes `complete`, `refused`, `uncertain`,
+`partial_cleanup` and the existing B15 invite/cleanup enums, without changing
+StatusV2 bytes. Acknowledged product invalidation can report invite `cancelled`
+with cleanup `uncertain` independently. Lost replies after dispatch retain
+`uncertain`, never “no change” or rollback. Only acknowledged invalidation plus
+exact-true cleanup permits terminal `recovered` journal publication for either
+action. This preserves the existing issuer/installer journal vocabulary and
+meaning (no usable key remains); Cancel's returned invite phase is separately
+`cancelled`. All other cases preserve uncertainty and the existing `not_before`
+rate limit. Recovery mints nothing; only a later separately authorized
+IssueInvite creates fresh authority. Returned results contain no operation IDs
+or invitation/key material.
+
+Deferred integration: Track B owns zero-input D-Bus methods and fresh polkit
+actions; serial integration supplies the one helper mutation slot, protected
+issuer/config/generation selection, live-caller hook, existing invite-user lock
+and protected admin/store inputs for `HeadscaleRecoveryMinter`, serving supervisor
+`InviteControl` capability and issuer B10 wiring
+(including durable uncertainty after lost reserve replies), and B15 observation
+projection. No helper, supervisor, service, timer, package or public call is wired
+by this backend. Focused standalone checks:
+`uv run --frozen --python /usr/bin/python3 pytest scripts/test_invite_recovery.py`.
+
 **B12 — Bounded recorded-node cleanup.**
 At approval record control-plane StableID → Headscale node ID using B2-style
 authoritative observation. Delete only recorded-owned nodes on revoke,

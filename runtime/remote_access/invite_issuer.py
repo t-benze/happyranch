@@ -282,6 +282,31 @@ class HomeInviteIssuer:
         self._pairing.issue_invite_record(secrets.token_hex(32),
                                          datetime.fromtimestamp(self._now() + 299, timezone.utc))
 
+    @contextmanager
+    def _recovery_record(self) -> Iterator[tuple[int, dict | None]]:
+        """B11-only protected current selection; release before any IPC.
+
+        The helper mutation slot is already held by the caller. Reuse the
+        issuer's custody, binding and nonblocking lock without accepting IDs.
+        """
+        binding = self._binding()
+        with _directory(self._state_dir) as parent:
+            fd = os.open("invite-issuer.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK,
+                         0o600, dir_fd=parent)
+            with os.fdopen(fd, "rb") as lock:
+                _metadata(lock.fileno(), parent, "invite-issuer.lock")
+                try:
+                    fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    raise IssuerError("busy") from None
+                try:
+                    os.stat("invite-issuer.pending", dir_fd=parent, follow_symlinks=False)
+                except FileNotFoundError:
+                    pass
+                else:
+                    raise IssuerError("state")
+                yield parent, self._read(parent, binding)
+
     def _operate(self, operation_id: str | None, recovery: bool) -> IssuedInvite | None:
         binding = self._binding()
         with _directory(self._state_dir) as parent:
