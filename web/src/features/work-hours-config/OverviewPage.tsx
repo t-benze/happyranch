@@ -108,8 +108,8 @@ export function OverviewPage(): JSX.Element {
       <WorkHoursTabs slug={slug} active="overview" />
 
       <div className="min-w-0 flex-1 overflow-y-auto">
-        {/* a-workhours wh-wrap: 1120 centered cap (THR-099 Slice 8). */}
-        <div className="max-w-content-wide mx-auto min-w-0 p-4">
+        {/* a-workhours wh-wrap: 1120 cap, left-aligned to the header edge (THR-376 r2 WH1). */}
+        <div className="max-w-content-wide min-w-0 p-4">
         {saved && <SavedBanner message={t('workHours.saved')} />}
 
         {/* Read-only status bar + tier editing */}
@@ -153,7 +153,7 @@ export function OverviewPage(): JSX.Element {
                 setTier({ kind: 'team', team: v });
               }}
             >
-              <SelectTrigger className="h-16 w-40">
+              <SelectTrigger className="w-40">
                 <SelectValue placeholder={t('workHours.editTeamPlaceholder')} />
               </SelectTrigger>
               <SelectContent>

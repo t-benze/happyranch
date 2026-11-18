@@ -586,6 +586,7 @@ export const en = {
   'shell.title.audit': 'Audit',
   'shell.title.settings': 'Settings',
   'shell.title.jobs': 'Jobs',
+  'shell.title.todos': 'Todos',
   'shell.title.runtimeHealth': 'Runtime Health',
   'shell.title.getStarted': 'Get started',
 

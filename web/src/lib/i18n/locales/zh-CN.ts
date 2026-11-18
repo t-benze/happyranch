@@ -583,6 +583,7 @@ export const zhCN: Record<MessageKey, MessageValue> = {
   'shell.title.audit': '审计',
   'shell.title.settings': '设置',
   'shell.title.jobs': '作业',
+  'shell.title.todos': '待办',
   'shell.title.runtimeHealth': '运行状况',
   'shell.title.getStarted': '开始使用',
 
