@@ -407,6 +407,15 @@ Non-persistent jobs (`persistent=false`) are bound by their `max_runtime_seconds
 Implemented shutdown protocol (`begin_job_shutdown` + `TaskQueue.stop` +
 `terminate_all_inflight`, THR-357 Fix 3 mitigation):
 
+Before this protocol, the normal daemon's Uvicorn configuration allows at most
+**5 s** for open HTTP connections and request tasks to drain. On expiry it
+cancels remaining requests (including long-lived streams), then sends the ASGI
+lifespan shutdown event. This prevents a streaming client from indefinitely
+delaying the first job TERM. Within the unchanged **60 s** wrapper window,
+5 s HTTP drain + 30 s job grace + up to 5 s finalizer wait leaves 20 s for
+other existing drains/overhead. This does not impose a new overall cleanup
+deadline or waive any native quiescence/DB-close proof.
+
 1. The existing synchronous runner/attachment fence closes task-queue producer
    admission. Immediately fence job-terminal resume hooks and send TERM to
    owned in-flight jobs, before the first shutdown await and runner drain.

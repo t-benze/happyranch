@@ -111,6 +111,14 @@ This source change grants no restart, deploy or historical-row repair.
 
 ## Graceful daemon stop (THR-357 Fix 3)
 
+On TERM, Uvicorn bounds its pre-lifespan connection/task drain to 5 seconds.
+It then cancels requests still open (including SSE/streaming) and enters
+lifespan teardown. This leaves 55 seconds of the existing 60-second wrapper
+window: 30 seconds for job grace, up to 5 seconds for job finalizers, and
+20 seconds for other existing drains and overhead. This allocation is not a
+hard deadline for all cleanup; an incomplete native drain still retains its
+barriers and cannot claim successful shutdown.
+
 Teardown closes runner/attachment and queue producer admission synchronously,
 then fences job-terminal resumes and sends job TERM before its first await and
 runner drain. The existing queue consumer/native drain remains in place. The

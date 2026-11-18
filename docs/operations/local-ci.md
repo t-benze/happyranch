@@ -87,6 +87,18 @@ execution remains a separate macOS native venue. These checks add no required
 CI check or E2E trigger; retired Python units and skipped general integration
 are not run.
 
+The same standalone command includes two isolated real-daemon/curl checks:
+`StopPolicyTests.test_term_with_open_event_stream_reaches_lifespan` holds the
+actual `/threads/events` SSE endpoint across TERM, while
+`StopPolicyTests.test_term_bounds_uncooperative_stream_before_lifespan` adds a
+test-side ASGI stream that never polls disconnect. Both use synthetic orgs,
+an ephemeral loopback port and a temp `HAPPYRANCH_DAEMON_HOME` (also exported as
+`HAPPYRANCH_HOME`), signal only the exact child PID, and require application
+shutdown plus clean exit within 12 seconds. The latter must observe Uvicorn's
+graceful timeout, exercising the 5-second bound even when the frozen Uvicorn
+already closes ordinary SSE on TERM. No production test hook or CI trigger is
+added; these checks do not exercise live runtime data or the full jobs fix.
+
 ## Focused memory compaction and writer salience
 
 ```sh
