@@ -589,6 +589,17 @@ not universal config safety or a hard bound on Git's own parsing memory. Root
 config equality does not snapshot nested repos, hook/filter/include file content,
 external state, environment or backend files; cooperative ABA/final-window limits
 remain. Credential mechanisms remain unchanged; cooperative refresh exclusion is specified below.
+Each identity uses three supervised Git calls: one bounded `rev-parse` stream
+for storage object format, HEAD/commit availability and exact branch/upstream,
+the unchanged selected config capture, and authoritative
+`remote get-url --all origin`. Legacy `.git/remotes/origin` transport remains
+supported and compared independently of config. All changed-target identity
+checkpoints remain: admission, after fetch, before merge, after merge and after
+optional submodule update; the final exact branch/HEAD probes remain too.
+An incomplete batched ref result or HEAD that peels to a different commit repeats
+the original observations and their error types, without using a valid prefix
+as authority. This exceptional path preserves the original type-only HEAD check
+and can cost more calls; an unavailable supervised observation still refuses.
 Unsupported config, missing/detached/unborn/unreadable/no-upstream or absent exact
 source stays false/stale before mutation, with a fixed safe reason and no newly
 latched failed_cleanup solely for that refusal. Existing uncertainty stays sticky.
@@ -605,8 +616,15 @@ tracking contents supply no U provenance. Merge uses literal full U with explici
 `--ff-only`, retaining inherited merge settings and pull.autostash true/false
 precedence; absent pull override uses rebase.autostash when resolved rebase is
 on, otherwise inherits merge behavior. Git owns stash/apply/conflicts.
+If U equals the admitted HEAD L, the refresh instead confirms the complete
+identity once more, then the exact branch/HEAD and original deadline/cancellation,
+and returns the settled fetch success through the ordinary preparation closure.
+There is no ancestry, merge, submodule update or post-merge work on this path.
+The final identity covers changes during advertisement/target validation; the
+branch/HEAD probes cover those fields changing during that identity's later
+config/transport reads. The usual last-window/ABA limitations remain.
 After successful merge, effective submodule.recurse requires one supervised
-`submodule update --recursive --checkout`, also for equal/local-ahead no-ops.
+`submodule update --recursive --checkout`, also for local-ahead merge no-ops.
 No init/force/remote/rebase workaround or completion after failed merge.
 True requires all required children and final exact original-branch/HEAD oracle
 AFTER completion: behind ends U; equal stays L=U; local-ahead preserves EXACT L;
