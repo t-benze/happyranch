@@ -121,6 +121,8 @@ the existing queue; notification loss never rolls back, remints or reapplies.
 
 The separate automatic startup release is limited to proven-lock previous-boot
 pending REPLY invocations with the exact diagnostic late-failure predicate.
+Normal startup's retained `daemon.lock.pid` lets a post-clean-stop transition
+positively probe the previous PID dead; it changes no proof or release predicate.
 It appends `thread_delivery_startup_release` under agent `daemon`, reuses strict
 selection and running-slot replacement, and leaves lifecycle facts, breaker state,
 acknowledgement and founder override authority intact. The maintained

@@ -2986,7 +2986,12 @@ checkout's uv/Python and a no-follow nonblocking flock probe. Missing/stale PID
 alone is insufficient: held or ambiguous locks return nonzero with the lock path
 and readable PID and retain markers. An absent/free regular lock permits stopped
 homes. Applying legacy migration has the same requirement; dry-run is a preview
-only. Never remove `daemon.lock`. See [the lock and transition-proof contract](contracts/runtime-lifecycle.md#daemon-lifetime-lock-thr-357).
+only. Clean stop removes the serving PID/port markers, while normal lock-owning
+startup's atomically written `daemon.lock.pid` survives. When `daemon.pid` is
+genuinely absent, the next transition boot must positively observe that retained
+PID dead before it can publish the lock-era marker. Missing, self, reused-alive
+or ambiguous PID evidence remains unproven. Never remove `daemon.lock`. See
+[the lock and transition-proof contract](contracts/runtime-lifecycle.md#daemon-lifetime-lock-thr-357).
 
 Startup timing is additive: `HAPPYRANCH_LAUNCHER_START_EPOCH` is captured at
 the start of the launch command and passed to the child. The daemon logs

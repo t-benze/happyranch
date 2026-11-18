@@ -339,6 +339,16 @@ with patch.object(entry, 'create_app', app_with_stream):
                         self.assertIn("timeout graceful shutdown exceeded", log_path.read_text())
                     self.assertFalse((home / "daemon.pid").exists())
                     self.assertFalse((home / "daemon.port").exists())
+                    self.assertTrue((home / "daemon.lock.pid").exists(), "clean stop lost previous PID evidence")
+                    self.assertEqual((home / "daemon.lock.pid").read_text().strip(), str(daemon.pid))
+                    from runtime.daemon.lifetime_lock import acquire_daemon_lock
+                    held = acquire_daemon_lock(home)
+                    try:
+                        self.assertTrue(held.proof.proven)
+                        self.assertEqual(held.proof.reason, "previous_pid_confirmed_dead")
+                        self.assertEqual((home / "daemon.lock").read_bytes(), b"happyranch-daemon-lock@1\n")
+                    finally:
+                        os.close(held.fd)
                     curl_code = stream.wait(timeout=3)
                     self.assertIn(curl_code, (0, 18), log_path.read_text())
                     print(f"temp HAPPYRANCH_HOME={home}; daemon_pid={daemon.pid}", flush=True)

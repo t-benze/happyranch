@@ -296,6 +296,13 @@ Worktrees live inside the repo they branch from, following Claude Code's `.claud
 
 ## 8. Lifecycle Script — `scripts/daemon.sh`
 
+The historical commands below predate the current home and lifetime-lock
+protocol. The maintained [lifecycle contract](../agent-guides/contracts/runtime-lifecycle.md#daemon-lifetime-lock-thr-357)
+owns current startup/shutdown behavior: normal lock-owning startup records an
+atomic `daemon.lock.pid` sidecar, retained when clean stop removes serving
+PID/port markers, so the next transition can positively probe the old PID dead.
+Missing PID alone never proves death or permits a lock-era marker.
+
 Shell script, one argument: `start`, `stop`, or `status`.
 
 ### `start`

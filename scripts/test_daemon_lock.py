@@ -89,18 +89,59 @@ with patch.object(entry, '_build_state', build):
         cases = {"missing": None, "garbage": "nonsense", "zero": "0", "negative": "-1",
                  "own": str(os.getpid()), "alive": str(alive.pid), "dead": str(dead.pid),
                  "oversized": "1" * 65}
-        for name, content in cases.items():
-            with self.subTest(case=name), tempfile.TemporaryDirectory() as temp:
-                home = Path(temp)
-                if content is not None:
-                    (home / "daemon.pid").write_text(content)
-                held = acquire_daemon_lock(home)
+        for source in ("daemon.pid", "daemon.lock.pid"):
+            for name, content in cases.items():
+                with self.subTest(source=source, case=name), tempfile.TemporaryDirectory() as temp:
+                    home = Path(temp)
+                    if content is not None:
+                        (home / source).write_text(content)
+                    held = acquire_daemon_lock(home)
+                    try:
+                        self.assertEqual(held.proof.proven, name == "dead")
+                        self.assertTrue(held.proof.transition_boot)
+                        self.assertEqual(bool((home / "daemon.lock").read_bytes()), name == "dead")
+                        if name == "own":
+                            self.assertEqual(held.proof.reason, "previous_pid_is_self")
+                        elif name == "alive":
+                            # An unrelated process reusing the saved PID is still alive evidence.
+                            self.assertEqual(held.proof.reason, "previous_pid_alive")
+                    finally:
+                        os.close(held.fd)
+
+    def test_current_pid_refusal_never_falls_back_to_dead_sidecar(self) -> None:
+        dead = subprocess.Popen([sys.executable, "-c", "pass"])
+        dead.wait(timeout=3)
+        (self.home / "daemon.lock.pid").write_text(str(dead.pid))
+        pid_path = self.home / "daemon.pid"
+        for content in ("garbage", str(os.getpid())):
+            with self.subTest(content=content):
+                pid_path.write_text(content)
+                held = acquire_daemon_lock(self.home)
                 try:
-                    self.assertEqual(held.proof.proven, name == "dead")
-                    self.assertTrue(held.proof.transition_boot)
-                    self.assertEqual(bool((home / "daemon.lock").read_bytes()), name == "dead")
+                    self.assertFalse(held.proof.proven)
+                    self.assertEqual((self.home / "daemon.lock").read_bytes(), b"")
                 finally:
                     os.close(held.fd)
+        pid_path.unlink()
+        pid_path.symlink_to(self.home / "absent")
+        held = self.acquire()
+        self.assertFalse(held.proof.proven)
+        self.assertEqual((self.home / "daemon.lock").read_bytes(), b"")
+
+    def test_unsafe_or_ambiguous_sidecar_never_proves_transition(self) -> None:
+        from runtime.daemon import lifetime_lock as locks
+        sidecar = self.home / "daemon.lock.pid"
+        sidecar.write_text("12345")
+        with patch.object(locks.os, "kill", side_effect=PermissionError("synthetic EPERM")):
+            held = acquire_daemon_lock(self.home)
+        self.assertFalse(held.proof.proven)
+        self.assertEqual(held.proof.reason, "previous_pid_probe_ambiguous")
+        os.close(held.fd)
+        sidecar.unlink()
+        sidecar.symlink_to(self.home / "absent")
+        held = self.acquire()
+        self.assertFalse(held.proof.proven)
+        self.assertEqual((self.home / "daemon.lock").read_bytes(), b"")
 
     def test_unreadable_and_ambiguous_pid_fail_closed(self) -> None:
         from runtime.daemon import lifetime_lock as locks

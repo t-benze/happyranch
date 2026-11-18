@@ -10,6 +10,7 @@ import errno
 import fcntl
 import os
 import stat
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -75,6 +76,37 @@ def _proof(lock_era: bool, pid: int | None) -> LockProof:
     return LockProof(False, True, "previous_pid_alive", pid)
 
 
+def _previous_pid(home: Path) -> int | None:
+    # Prefer the serving PID, including any unsafe/unreadable evidence. Only
+    # genuine absence permits the lock-holder sidecar retained across clean stop.
+    path = home / "daemon.pid"
+    try:
+        path.lstat()
+    except FileNotFoundError:
+        return _read_pid(home / "daemon.lock.pid")
+    except OSError:
+        return None
+    return _read_pid(path)
+
+
+def record_daemon_pid(home: Path) -> None:
+    """Normal main's lock owner records its PID before serving publication.
+
+    Keep this separate from daemon.pid so clean shutdown can remove serving
+    markers without losing the next boot's dead-PID probe target. Replace only
+    the sidecar, never the flock inode; a partial write must not become a PID.
+    """
+    fd, pending = tempfile.mkstemp(prefix=".daemon.lock.pid-", dir=home)
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(f"{os.getpid()}\n".encode("ascii"))
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(pending, home / "daemon.lock.pid")
+    finally:
+        Path(pending).unlink(missing_ok=True)
+
+
 def acquire_daemon_lock(home: Path) -> DaemonLock:
     """Acquire before DB/token/settings/sweep/port/PID publication.
 
@@ -103,7 +135,7 @@ def acquire_daemon_lock(home: Path) -> DaemonLock:
             raise OSError(errno.EINVAL, "daemon lock changed during acquisition", path)
         os.fchmod(fd, 0o600)
         lock_era = os.pread(fd, len(_MARKER) + 1, 0) == _MARKER
-        proof = _proof(lock_era, _read_pid(home / "daemon.pid"))
+        proof = _proof(lock_era, _previous_pid(home))
         if proof.proven and not lock_era:
             if os.pwrite(fd, _MARKER, 0) != len(_MARKER):
                 raise OSError(errno.EIO, "incomplete daemon lock marker", path)
