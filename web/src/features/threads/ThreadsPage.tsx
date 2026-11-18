@@ -706,16 +706,11 @@ export function ThreadsPage(): JSX.Element {
 
   // Dialog state
   const [showNew, setShowNew] = useState(false);
-  const [newPrefill, setNewPrefill] = useState<
-    | { subject?: string; recipients?: string[]; body?: string; forwarded_from_id?: string; forwarded_from_kind?: 'thread' }
-    | undefined
-  >(undefined);
   const [showInvite, setShowInvite] = useState(false);
   const [showArchive, setShowArchive] = useState(false);
   // Participant pending removal — drives the confirm dialog; null keeps it closed.
   const [removeTarget, setRemoveTarget] = useState<string | null>(null);
   const openNew = () => {
-    setNewPrefill(undefined);
     setShowNew(true);
   };
 
@@ -1097,7 +1092,6 @@ export function ThreadsPage(): JSX.Element {
       <NewThreadDialog
         open={showNew}
         onClose={() => setShowNew(false)}
-        prefill={newPrefill}
         onCreated={(newId) => navigate(routes.detail(newId))}
         agents={agents}
       />

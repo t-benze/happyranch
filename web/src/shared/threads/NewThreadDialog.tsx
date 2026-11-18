@@ -32,8 +32,6 @@ interface Prefill {
   subject?: string;
   recipients?: string[];
   body?: string;
-  forwarded_from_id?: string;
-  forwarded_from_kind?: 'thread';
 }
 
 interface ReflectionTrigger {
@@ -202,12 +200,6 @@ export function NewThreadDialog({ open, onClose, prefill, onCreated, agents = []
         recipients: resolved.recipients,
         body_markdown: body,
         ...(refs.length ? { attachments: refs } : {}),
-        ...(prefill?.forwarded_from_id
-          ? {
-              forwarded_from_id: prefill.forwarded_from_id,
-              forwarded_from_kind: prefill.forwarded_from_kind,
-            }
-          : {}),
         // Capture the destination org so an org switch during the upload cannot
         // retarget the compose to the new org (stripped before the request body).
         destination: { slug: capturedSlug },
@@ -234,7 +226,7 @@ export function NewThreadDialog({ open, onClose, prefill, onCreated, agents = []
     } finally {
       if (isCurrent()) setUploading(false);
     }
-  }, [subject, recipientsRaw, body, pendingAttachments, prefill, compose, slug, onCreated, onClose, preflight, knownAgentIds]);
+  }, [subject, recipientsRaw, body, pendingAttachments, compose, slug, onCreated, onClose, preflight, knownAgentIds]);
 
   const handleReflection = useCallback(async () => {
     if (submittingRef.current) return;
@@ -286,9 +278,7 @@ export function NewThreadDialog({ open, onClose, prefill, onCreated, agents = []
       <DialogContent closeLabel={t('common.close')}>
         <DialogHeader>
           <DialogTitle>
-            {prefill?.forwarded_from_id
-              ? t('threads.newThread.forwardTitle')
-              : t('threads.newThread.title')}
+            {t('threads.newThread.title')}
           </DialogTitle>
           <DialogDescription className="sr-only">
             {t('threads.newThread.description')}

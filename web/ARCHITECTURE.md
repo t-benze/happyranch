@@ -306,7 +306,7 @@ message with English grammar (`resolveMessage` reports the supplying catalog
 locale), never a raw key. **W2a** translated the mounted shell (AppBar titles,
 Sidebar nav/aria/org-switcher/account, root loading and NotFound, the
 ErrorBoundary fallback copy, AddOrgDialog, and the shared help/palette
-presentation) and added CJK-capable SYSTEM font fallbacks to the tokens.
+presentation; THR-372 later deleted the unreachable command palette) and added CJK-capable SYSTEM font fallbacks to the tokens.
 **W2b** translated the onboarding route (`features/onboarding/OnboardingPage.tsx`,
 `ConnectRuntimeStep.tsx`) and the shared `shared/connect/ConnectFlow.tsx`,
 extracting the single `lib/addOrgError.ts` classifier consumed by both
@@ -386,21 +386,16 @@ directions; every immediately scoped switch window proves zero
 settings/org/connect/mint mutations and zero `/api/` requests. A
 backward-compatible optional `DialogContent.closeLabel` supplies the
 localized accessible name for the built-in close control (defaulting to the
-legacy English `Close`); AddOrgDialog and CommandPalette pass it from
-their callers and the patterns/primitives stay prop-driven with no locale hook
-import. The palette's container keydown defers Enter to natively-activatable
-descendants (`button`, `a[href]`, `[role="option"]`), so the localized X close
-control closes on Enter without selecting a row while the search input still
-selects the active row; the browser harness exercises this (S19: both locales,
-populated and empty results) and covers AddOrg (S12
-wide-light; S17 zh-narrow-light/en-narrow-dark/zh-wide-dark) and palette (S13
-wide-light; S18 zh-narrow-light/en-narrow-dark/zh-wide-dark) states across the
+legacy English `Close`); AddOrgDialog passes it from its caller and the
+patterns/primitives stay prop-driven with no locale hook import. The browser
+harness covers AddOrg (S12 wide-light; S17
+zh-narrow-light/en-narrow-dark/zh-wide-dark) states across the
 observed 1440x900/390x844 light/dark combinations in both switch directions,
 recording the actual `document.activeElement`, retained node identity, open state
 and selection/value before and after each switch plus precisely scoped
 switch-window request assertions (positive receipt 375/375 assertions, 30 PNGs,
-recorded before THR-372 removed the help-drawer S6/S11/S16 cases and the
-S13/S18 dormant-⌘K assertions with the keyboard shortcuts).
+recorded before THR-372 removed the help-drawer S6/S11/S16 cases and then the
+dead command palette with its test-only probe and S9/S13/S18/S19 scenarios).
 Both env gates are no-ops for every ordinary build. See
 `docs/specs/2026-09-20-web-i18n-design.md`.
 
@@ -477,11 +472,9 @@ ordinary threads.
 
 ## Thread list cache ownership (THR-289)
 
-`useThreadsInfiniteList` observes committed page data under each provider's existing thread-list key family; legacy `useThreadsList` remains available. Real keys include org/status/page size, and the prototype uses its isolated provider client/module store. Shared request ownership is scoped to the QueryClient/key and survives multiple mounted consumers. Refresh stages to prior depth outside the query cache and commits the replacement together. Only committed pages/summary enter palette reads; optimistic pin retains shape and metadata and fences paging until authoritative reconciliation. No change to transcript queries or other domain caches.
+`useThreadsInfiniteList` observes committed page data under each provider's existing thread-list key family; legacy `useThreadsList` remains available. Real keys include org/status/page size, and the prototype uses its isolated provider client/module store. Shared request ownership is scoped to the QueryClient/key and survives multiple mounted consumers. Refresh stages to prior depth outside the query cache and commits the replacement together. Optimistic pin retains shape and metadata and fences paging until authoritative reconciliation. No change to transcript queries or other domain caches.
 
 Loaded inbox rows keep the newest accepted projection for each repeated thread ID, then use the complete active bucket comparator before literal subject-or-ID filtering. Open uses pin/numeric-ID/start/ID rank; Archived uses archive-or-start/ID rank; All uses global start/ID rank. This projection preserves each committed page’s authoritative totals, sample, cursor and termination metadata. Live movement can repeat IDs; only quiescent refresh/traversal promises the complete current set.
-
-The palette also chooses the newest repeated-ID projection within each committed page stream before its existing cross-cache deduplication; legacy array extraction stays unchanged and performs no fetch.
 
 
 ## Root-task Pause/Resume frontend (THR-292 PR2)

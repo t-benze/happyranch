@@ -365,7 +365,7 @@ elevation:
     shadow: "0 1px 0 rgba(0, 0, 0, 0.35)"   # SUPERSEDED (Pasture): --shadow-pasture-sm
     bg: "{colors.semantic.dark.surface.sunken}"
   "2":
-    description: "Popovers, dropdown menus, command palette."
+    description: "Popovers, dropdown menus."
     shadow: "0 8px 24px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(255, 255, 255, 0.04)"   # SUPERSEDED (Pasture): --shadow-pasture
     bg: "{colors.semantic.dark.surface.overlay}"
   "3":
@@ -458,8 +458,8 @@ components:
     font: "{typography.scale.body}"
 
   select:
-    # Native <select>, themed. We do not roll a custom combobox in v1 —
-    # native + Command-K palette for power use is the right combination.
+    # Native <select>, themed. We do not roll a custom combobox in v1.
+    # (The Command-K palette was removed under THR-372.)
     extends: "{components.input}"
     chevron: "{colors.semantic.dark.text.muted}"
 
@@ -737,7 +737,7 @@ Shadows exist only for *floating* elements:
 |---|---|---|
 | 0 | Resting cards, rows, message bubbles | No shadow; sits on parent surface — SUPERSEDED (Pasture): cards use `shadow-pasture-sm`; rows inside a card stay flush |
 | 1 | Header bands (TopBar, ThreadHeader) | Single 1px ink line below |
-| 2 | Popovers, dropdowns, command palette | Soft 8/24 shadow + 1px halo |
+| 2 | Popovers, dropdowns | Soft 8/24 shadow + 1px halo |
 | 3 | Modals, drawers, toasts | Stronger 24/64 shadow + scrim backdrop |
 
 Reduced-motion users get instant transitions; everyone else gets a single
