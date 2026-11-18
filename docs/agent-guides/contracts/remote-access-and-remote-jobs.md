@@ -2664,6 +2664,72 @@ new operation ID or automatic reconciliation. G2-D owns observation/ready; G2-E
 must wire production owners, protected live config admission and service integration.
 Why no founder: internal transaction with unchanged, fail-closed admission.
 
+**Manager Ruling 13 (G2-E1, B4 home_config owner), corrected by 13a below:**
+The B4 home_config effect owns a new deterministic exported renderer, A5 publisher
+and independent verifier. This implements the settled staged-to-live transition;
+it grants no installer admission. Sidecar live bytes add ONLY
+`ControlURL=https://control.happyranch.invalid:8443`, closed slice-1b `control_tls`
+(`dial_ip, ca_sha256`) and Ruling 11's closed `home_binding`, derived from protected
+B1 receipt/config values. Preserve immutable IDs and every other prepared byte.
+Connector fields may change only if already parsed for the home profile; absent
+such a need, connector bytes remain unchanged and digest-bound. An unparsed field
+is a STOP, not permission to extend a parser. Publication uses literal no-follow
+parents, exclusive pending, file/directory fsync and rename, without mkdir or
+pending adoption. Independent verification re-reads live bytes, compares them to
+the renderer output and checks the transaction's done home_config digests.
+The renderer is E2's single source; `_write_provision_file` stays unchanged.
+
+**Manager Ruling 13a (G2-E1, authoritative prepared-byte binding):**
+Ruling 13's original phrase "receipt-bound prepared digests" is corrected:
+B1's six-member digest set excludes connector/sidecar configs, and B4 admits their
+digests only on done home_config. Neither record is extended. The existing
+protected `/etc/happyranch/provision.json` supplies the prepared hashes, read only
+through existing ManagedInstaller custody/validator rules (literal no-follow
+parent, root:root 0600). Require versioned `version==1`, `phase==provisioned`,
+matching layout and the existing closed digest keys; legacy unversioned refuses.
+Read connector/sidecar bytes once as the renderer inputs, hash-check both against
+provenance and apply the existing staged linux-managed-identity-v1 validation
+(six-key inert sidecar). Cross-bind their home/connector IDs, and control-plane ID
+where carried, to B1. The digest-checked release-daemon.json UID must equal B1's
+release UID; B1 generation/operation must equal the coordinator's expected (G,O).
+Any mismatch or absence refuses without publication: pre-intent no effect,
+post-intent Rulings 6/7 failed_uncertain. Re-hash the exact captured input bytes
+immediately before rendering and publish only from those bytes. Done verification
+compares fresh live bytes to renderer output and transaction member digests;
+B7 recovery uses transaction digests, not provision.json. Do not write provenance.
+After home_config, the existing installer intentionally reports drift/refuses
+the live profile until E2. G+1 with already-live configs likewise refuses without
+effect until B6 restoration/Turn off/ReplaceFailed; E1 adds no restoration path.
+Why no founder: implements settled B4 using an existing protected record with
+stricter cross-checks, without schema, dependency, user, UX or check relaxation.
+
+**G2-E1a delivered boundary and stated assumptions:**
+`home_activation_owner.py` supplies unmounted fixed-effect adapters, an independent
+same-FD release-token source verifier and the observer's exact-unit process owner.
+The coordinator retains all intent/lock/mint/recovery ownership; adapters issue
+no retry after a lost native/admin reply. Systemd process observation checks exact
+Id/Names/fragment, no drop-ins/reload, active/running, fixed User/Group, no dynamic
+user and canonical MainPID against exact unit bytes. UID comes from the existing
+account validator for systemd's declared fixed user; B2's SO_PEERCRED independently
+checks the actual UID/PID and re-observes process identity after the exchange.
+Service verification also uses fixed B3 lists, the reservation window, consumed
+credential custody, the RELEASE verifier and B2 node observation. No cached
+successful effect reply establishes verification. Native account/certificate/unit
+readers remain their original owners; certificate checks invoke status only.
+
+The roughly 1500-line E1 limit is handled by the authorized E1a/E1b split. E1a
+REQUIRES an explicitly supplied config owner with no default: its preflight must
+implement 13a prepared binding (or txn-bound live verification after publication),
+and its home_config perform/verify must implement Ruling 13. **E1b's concrete
+config owner, exported renderer, protected home_binding writer and corresponding
+13a refusal proofs remain undelivered.** E1a cannot instantiate a complete
+production activation composition without that owner. Assumptions: a future
+authenticated caller supplies expected G/O under the original coordinator lock;
+E2 owns complete live admission and unit publication/selection. Exact home unit
+renderings here are comparisons only. No caller, CLI/D-Bus/helper entry, public
+Enable, installer/supervisor validator/admission/provenance/drift change or
+installer home_transport selection is mounted. Existing install remains inert.
+
 **B5 — Home-only Headscale boot/stop dependency and inventory gates.**
 Only the home Headscale rendering adds
 `Before=happyranch-tsnet-sidecar.service` and
