@@ -55,6 +55,7 @@ from __future__ import annotations
 import hashlib
 import secrets
 import threading
+import time
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from typing import Callable, ContextManager
@@ -75,7 +76,7 @@ from runtime.remote_access.identity import (
 from runtime.remote_access.revocation import RevocationCoordinator, RevocationIncomplete
 from runtime.remote_access.state import TrustStateStore
 from runtime.remote_access.state_store import AtomicFileTrustStateStore, MAX_PINNED_DEVICES, StateStoreError
-from runtime.remote_access.streams import StreamRegistry
+from runtime.remote_access.streams import StreamCloseError, StreamRegistry
 
 # THR-034 wire contract constants (match the legacy Swift store so the
 # existing macOS ClientBridge works unchanged).
@@ -545,53 +546,75 @@ class PinnedPairingManager:
         state.invite_record = state.pending_approval = state.delivery = None
         self._delivery.clear()
 
+    @staticmethod
+    def _expect_deadline(deadline: float | None) -> None:
+        if deadline is not None and time.monotonic() >= deadline:
+            raise PairingError("authorization_expired")
+
     def issue_invite_record(self, invite_secret_digest: str, expires_at: datetime,
-                            *, expected_generation: int | None = None) -> int:
+                            *, expected_generation: int | None = None, deadline: float | None = None) -> int:
         """Replace the active ceremony; only the received digest is persisted."""
         from runtime.remote_access.authorization import InviteRecord
         from runtime.remote_access.state_store import _digest
         _digest(invite_secret_digest)
-        now = self._now_fn()
-        if not isinstance(expires_at, datetime) or expires_at.tzinfo is None or not now < expires_at <= now + timedelta(minutes=5):
-            raise PairingError("invite_denied")
         with self._lock, self._store.transaction() as tx:
             self._expect_generation(tx.generation, expected_generation)
+            self._expect_deadline(deadline)
+            now = self._now_fn()
+            if deadline is not None and isinstance(expires_at, datetime) and expires_at.tzinfo is not None and expires_at <= now:
+                raise PairingError("authorization_expired")
+            if not isinstance(expires_at, datetime) or expires_at.tzinfo is None or not now < expires_at <= now + timedelta(minutes=5):
+                raise PairingError("invite_denied")
             self._burn(tx.state)
             tx.state.invite_record = InviteRecord(invite_secret_digest, expires_at, tx.generation)
             tx.commit()
             self._burned_invite = None
             return tx.generation
 
-    def invalidate_invite(self, *, expected_generation: int) -> int:
+    def invalidate_invite(self, *, expected_generation: int, deadline: float | None = None) -> int:
         """Consume the current ceremony, including any undelivered grant."""
         with self._lock, self._store.transaction() as tx:
             self._expect_generation(tx.generation, expected_generation)
+            self._expect_deadline(deadline)
             self._burn(tx.state)
             tx.commit()
             return tx.generation
 
-    def revoke_all(self, *, expected_generation: int) -> int:
+    def revoke_all(self, *, expected_generation: int, deadline: float | None = None) -> int:
         """Burn ceremony, then use the existing durable deny/close transaction.
 
         Each transaction compares the preceding committed generation. A racing
         external writer refuses rather than inheriting snapshot authority; prior
-        denies are never rolled back. Cleanup failure on one device must not
-        prevent denial and closure of the remaining devices.
+        denies are never rolled back. Expiry stops new writes, not cleanup of
+        committed work. Cleanup failure on one device must not prevent denial
+        and closure of the remaining devices.
         """
         if getattr(self._in_revoke, "active", False):
             raise RuntimeError("re-entrant revocation transaction rejected")
         with self._lock:
             with self._store.transaction() as tx:
                 self._expect_generation(tx.generation, expected_generation)
+                self._expect_deadline(deadline)
                 devices = tuple(tx.state.devices)
                 self._burn(tx.state)
                 tx.commit()
                 generation = tx.generation
+                epoch = tx.state.revocation_epoch
             failures: list[str] = []
-            epoch = 0
+            # Separate-process removal can leave a live attributed owner until
+            # supervisor reconciliation. Fence and acknowledge those owners too,
+            # after the committed burn and outside the trust flock. Like current
+            # device cleanup, this must finish even if authorization now expires.
+            self._in_revoke.active = True
+            try:
+                self._registry.close_removed_devices(set(devices), epoch)
+            except StreamCloseError as error:
+                failures.extend(error.stream_ids)
+            finally:
+                self._in_revoke.active = False
             for device_id in devices:
                 try:
-                    result = self.revoke_device(device_id, expected_generation=generation)
+                    result = self.revoke_device(device_id, expected_generation=generation, deadline=deadline)
                     epoch = result.epoch
                 except RevocationIncomplete as error:
                     epoch = error.applied_epoch
@@ -754,7 +777,8 @@ class PinnedPairingManager:
         except StateStoreError:
             return None
 
-    def revoke_device(self, device_id: str, *, expected_generation: int | None = None) -> RevokeOutcome:
+    def revoke_device(self, device_id: str, *, expected_generation: int | None = None,
+                      deadline: float | None = None) -> RevokeOutcome:
         """Persist invalidation, then close ONLY this device before success."""
         if getattr(self._in_revoke, "active", False):
             raise RuntimeError("re-entrant revocation transaction rejected")
@@ -771,6 +795,7 @@ class PinnedPairingManager:
                 # its update or turn this snapshot into mutation authority.
                 with self._store.transaction() as tx:
                     self._expect_generation(tx.generation, expected_generation)
+                    self._expect_deadline(deadline)
                     current = tx.state
                     if ((current.pairing_epoch, current.revocation_epoch) != captured_epochs
                             or device_id not in current.devices):

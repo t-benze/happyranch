@@ -47,13 +47,13 @@ class InviteOperations(LegacyOperations):
         self.effects.append((method, generation, *args))
         return generation + 1
 
-    def reserve_invite(self, generation, digest, expires_at):
+    def reserve_invite(self, generation, digest, expires_at, *, deadline):
         return self.record(METHODS[0], generation, digest, expires_at)
 
-    def invalidate_invite(self, generation):
+    def invalidate_invite(self, generation, *, deadline):
         return self.record(METHODS[1], generation)
 
-    def revoke_all(self, generation):
+    def revoke_all(self, generation, *, deadline):
         return self.record(METHODS[2], generation)
 
 
@@ -422,3 +422,175 @@ def test_wire_checks_deadline_after_final_status(method, monkeypatch):
         connection.sendall(b'{"commit":true}\n')
         assert control._receive(connection) == {'error': 'expired'}
     assert not operations.effects
+
+
+@pytest.mark.parametrize('method,bound', [(method, 'deadline') for method in METHODS] +
+                         [(METHODS[0], 'invite-expiry')])
+def test_wire_deadline_expires_waiting_for_trust_writer(owner, method, bound):
+    """A coherent shared reader changes no generation but delays mutation."""
+    from runtime.remote_access.state_store import AtomicFileTrustStateStore
+    adapter, manager, store, _ = owner
+    # This wire test uses real UTC, like the reviewer probe, rather than NOW.
+    clock = [datetime.now(timezone.utc)]
+    manager._now_fn = lambda: clock[0]
+    manager.issue_invite_record(DIGEST, datetime.now(timezone.utc) + timedelta(minutes=4))
+    _, generation = store.snapshot()
+    before = Path(store._path).read_bytes()
+    reader = AtomicFileTrustStateStore(store._path, store.load())
+    held = threading.Event()
+    def hold_reader():
+        with reader._lock_file(shared=True):
+            held.set()
+            time.sleep(.4)
+            if bound == 'invite-expiry':
+                clock[0] += timedelta(minutes=5)
+    holder = threading.Thread(target=hold_reader)
+    class Operations:
+        reads = 0
+        def mutation_lock(self):
+            return manager.mutation_lock()
+        def status(self):
+            _, current = store.snapshot()
+            self.reads += 1
+            if self.reads == 2:
+                holder.start()
+                assert held.wait(1)
+            return control.Snapshot(current, os.getuid(), True, 'ready', True, None, ())
+        def reserve_invite(self, *args, **kwargs):
+            return adapter.reserve_invite(*args, **kwargs)
+        def invalidate_invite(self, *args, **kwargs):
+            return adapter.invalidate_invite(*args, **kwargs)
+        def revoke_all(self, *args, **kwargs):
+            return adapter.revoke_all(*args, **kwargs)
+    with exchange(Operations()) as (connection, _):
+        value = request(method)
+        value.update(expected_generation=generation,
+                     deadline=time.monotonic() + (.25 if bound == 'deadline' else 60))
+        connection.sendall(encode(value))
+        assert control._receive(connection) == {'result': 'ready'}
+        connection.sendall(b'{"commit":true}\n')
+        reply = control._receive(connection)
+    holder.join(2)
+    assert not holder.is_alive()
+    assert reply == {'error': 'expired'}
+    assert store.snapshot()[1] == generation
+    assert Path(store._path).read_bytes() == before
+
+
+@pytest.mark.parametrize('fails', [False, True])
+def test_adapter_revoke_all_closes_removed_owner_before_success(owner, fails):
+    from runtime.remote_access.pairing import PairingManager
+    from runtime.remote_access.state_store import AtomicFileTrustStateStore
+    from runtime.remote_access.streams import StreamClosed, StreamRegistry
+    adapter, manager, store, registry = owner
+    grants, streams, closed = [], [], []
+    for node in ('node-a', 'node-b'):
+        manager.issue_invite_record(DIGEST, NOW + timedelta(minutes=4))
+        pending = manager.redeem('synthetic-invite-secret', node, 'control', NOW)
+        device = manager.approve_pending(pending.generation, ('control', node))
+        credential = manager.complete(pending.completion_handle, node, 'control', NOW)
+        grants.append((device, credential, node))
+        class Handle:
+            def __init__(self, device, node):
+                self.device, self.node = device, node
+            def close(self):
+                # A distinct store must acquire SH here: no EX across callbacks.
+                snapshot = AtomicFileTrustStateStore(store._path, store.load()).load()
+                assert self.device not in snapshot.devices or snapshot.devices[self.device].revoked
+                closed.append(self.device)
+                if fails and self.node == 'node-a':
+                    raise OSError('synthetic removed-owner close failure')
+            def receive(self):
+                return b'synthetic-live-frame'
+        streams.append(registry.open(node, Handle(device, node), device_id=device,
+                                     epoch=store.load().devices[device].authorization_epoch))
+    external = PairingManager(state_store=AtomicFileTrustStateStore(store._path, store.load()),
+                              identity=store.load().connector_identity, registry=StreamRegistry())
+    removed, credential, node = grants[0]
+    old_epoch = store.load().devices[removed].authorization_epoch
+    external.remove_device(removed)
+    assert removed not in store.load().devices
+    assert streams[0].receive() == b'synthetic-live-frame'
+    _, generation = store.snapshot()
+    if fails:
+        with pytest.raises(control.Refused, match='unavailable'):
+            adapter.revoke_all(generation)
+    else:
+        assert adapter.revoke_all(generation) == store.snapshot()[1]
+    assert set(closed) == {device for device, _, _ in grants}
+    assert all(stream.closed for stream in streams)
+    for stream in streams:
+        with pytest.raises(StreamClosed):
+            stream.receive()
+    assert not manager.admit(credential, node, 'control', NOW).ok
+    assert all(device.revoked for device in store.load().devices.values())
+    # Removed-owner fencing also rejects an admission delayed until after cleanup.
+    with pytest.raises(StreamClosed):
+        registry.open('late-removed', Handle(removed, node), device_id=removed, epoch=old_epoch)
+
+
+def test_wire_bulk_expiry_preserves_committed_cleanup_and_stops_later_write(owner):
+    from runtime.remote_access.state_store import AtomicFileTrustStateStore
+    from runtime.remote_access.streams import StreamClosed
+    adapter, manager, store, registry = owner
+    for node in ('node-a', 'node-b'):
+        manager.issue_invite_record(DIGEST, NOW + timedelta(minutes=4))
+        pending = manager.redeem('synthetic-invite-secret', node, 'control', NOW)
+        manager.approve_pending(pending.generation, ('control', node))
+        assert manager.complete(pending.completion_handle, node, 'control', NOW)
+    state, generation = store.snapshot()
+    first, second = tuple(state.devices)
+    held = threading.Event()
+    reader = AtomicFileTrustStateStore(store._path, state)
+    def hold_reader():
+        with reader._lock_file(shared=True):
+            held.set()
+            time.sleep(.4)
+    holder = threading.Thread(target=hold_reader)
+    closed = []
+    class Handle:
+        def __init__(self, name):
+            self.name = name
+        def close(self):
+            assert store.load().devices[first].revoked
+            if self.name == 'first-a':
+                holder.start()
+                assert held.wait(1)
+                # Expire during committed cleanup. Its remaining handle must
+                # still close; the later device's EX waits on this real reader.
+                time.sleep(.3)
+            closed.append(self.name)
+        def receive(self):
+            return b'synthetic-live-frame'
+    streams = [registry.open(name, Handle(name), device_id=device,
+                             epoch=state.devices[device].authorization_epoch)
+               for name, device in [('first-a', first), ('first-b', first), ('second', second)]]
+    class Operations:
+        def mutation_lock(self):
+            return manager.mutation_lock()
+        def status(self):
+            return control.Snapshot(store.snapshot()[1], os.getuid(), True, 'ready', True, None, ())
+        def reserve_invite(self, *args, **kwargs):
+            return adapter.reserve_invite(*args, **kwargs)
+        def invalidate_invite(self, *args, **kwargs):
+            return adapter.invalidate_invite(*args, **kwargs)
+        def revoke_all(self, *args, **kwargs):
+            return adapter.revoke_all(*args, **kwargs)
+    with exchange(Operations()) as (connection, _):
+        value = request(METHODS[2])
+        value.update(expected_generation=generation, deadline=time.monotonic() + .25)
+        connection.sendall(encode(value))
+        assert control._receive(connection) == {'result': 'ready'}
+        connection.sendall(b'{"commit":true}\n')
+        reply = control._receive(connection)
+    holder.join(2)
+    assert not holder.is_alive()
+    assert reply == {'error': 'expired'}
+    state, committed = store.snapshot()
+    assert committed == generation + 2  # ceremony burn and one durable deny
+    assert state.devices[first].revoked and not state.devices[second].revoked
+    assert closed == ['first-a', 'first-b']
+    for stream in streams[:2]:
+        with pytest.raises(StreamClosed):
+            stream.receive()
+    assert streams[2].receive() == b'synthetic-live-frame'

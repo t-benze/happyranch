@@ -84,9 +84,9 @@ class InviteOperationAPI(Protocol):
     Each method performs anchored generation CAS and returns its committed
     generation. Existing OperationAPI implementations remain valid without it.
     """
-    def reserve_invite(self, generation: int, digest: str, expires_at: int) -> int: ...
-    def invalidate_invite(self, generation: int) -> int: ...
-    def revoke_all(self, generation: int) -> int: ...
+    def reserve_invite(self, generation: int, digest: str, expires_at: int, *, deadline: float) -> int: ...
+    def invalidate_invite(self, generation: int, *, deadline: float) -> int: ...
+    def revoke_all(self, generation: int, *, deadline: float) -> int: ...
 
 
 def _invite_request(request: dict) -> tuple[int, float]:
@@ -259,11 +259,12 @@ class ControlHandler:
                     # before the actual operation's anchored CAS admission.
                     _invite_request(request)
                     if method == 'invite-reserve@1':
-                        committed = self.operations.reserve_invite(generation, request['digest'], request['expires_at'])
+                        committed = self.operations.reserve_invite(
+                            generation, request['digest'], request['expires_at'], deadline=deadline)
                     elif method == 'invite-invalidate@1':
-                        committed = self.operations.invalidate_invite(generation)
+                        committed = self.operations.invalidate_invite(generation, deadline=deadline)
                     else:
-                        committed = self.operations.revoke_all(generation)
+                        committed = self.operations.revoke_all(generation, deadline=deadline)
                     if type(committed) is not int or committed <= generation:
                         raise Refused('unavailable')
                     # Needed for subsequent invalidate/revoke CAS continuity;

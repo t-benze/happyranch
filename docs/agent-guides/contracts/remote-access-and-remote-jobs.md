@@ -2573,7 +2573,10 @@ matching the existing pairing TTL). No other keys or duplicate keys are accepted
 Under the serving manager mutation lock, the connector checks ownership and
 generation, sends exactly `{"result":"ready"}`, and requires exactly
 `{"commit":true}` after root's live-caller/deadline revalidation hook. It rechecks
-snapshot/time bounds before the actual anchored CAS transaction. Success is
+snapshot/time bounds before the actual anchored CAS transaction. The original
+authorization deadline is carried into every mutation and checked again after
+acquiring each exclusive trust transaction, before new effects; reserve also
+rechecks invite expiry there. Success is
 exactly `{"result":"ok","generation":N}`: the committed generation enables the
 next invalidate/revoke CAS without assuming a generation increment. Refusals use
 only the existing `{"error":category}` vocabulary. Lost final replies remain
@@ -2584,9 +2587,13 @@ uncertain, including when the reserve already committed.
 `unavailable`. The inert `invite_control.InviteControl` accepts the existing
 serving manager, constructing no owner/store/listener. Revoke-all burns the
 ceremony, then uses existing per-device durable-deny/attributed-stream closure,
-with generation CAS at every transaction. Cleanup failure on one device does
-not prevent revoking the rest and yields `unavailable`; a racing writer refuses
-`changed`, preserving any prior denies. Supervisor and issuer wiring remain
+with generation CAS at every transaction. It also fences and acknowledges
+removed owners through the registry's existing removed-device cleanup, outside
+the trust flock. Cleanup failure on any owner does not prevent revoking the rest
+and yields `unavailable`; a racing writer refuses `changed`, preserving any prior
+denies. Expiry refuses `expired` before new writes, while necessary cleanup of
+committed work completes; bulk refusal can follow partial durable effects and
+never claims rollback. Supervisor and issuer wiring remain
 serial integration work.
 
 Why no founder: fixed operations on existing root-only private IPC.

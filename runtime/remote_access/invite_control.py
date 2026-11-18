@@ -3,8 +3,11 @@
 Serial integration supplies this capability from supervisor._HelperOperations;
 this module constructs no manager/store/listener and performs no root minting.
 The caller holds that owner's mutation_lock across control ready/commit. Each
-manager method independently checks CAS inside the actual file transaction.
+manager method independently checks CAS and the original authorization deadline
+inside the actual file transaction, after any wait for readers.
 """
+from __future__ import annotations
+
 from datetime import datetime, timezone
 from typing import Callable
 
@@ -23,18 +26,20 @@ class InviteControl:
         try:
             return operation()
         except PairingError as error:
-            raise Refused('changed' if str(error) == 'trust_changed' else 'unavailable') from None
+            category = {'trust_changed': 'changed', 'authorization_expired': 'expired'}.get(str(error), 'unavailable')
+            raise Refused(category) from None
         except (StateStoreError, RevocationIncomplete, OSError, ValueError, OverflowError):
             # Publication/cleanup failure may follow a durable effect. Never
             # expose raw exceptions or interpret unavailable as no change.
             raise Refused('unavailable') from None
 
-    def reserve_invite(self, generation: int, digest: str, expires_at: int) -> int:
+    def reserve_invite(self, generation: int, digest: str, expires_at: int, *, deadline: float | None = None) -> int:
         return self._invoke(lambda: self._pairing.issue_invite_record(
-            digest, datetime.fromtimestamp(expires_at, timezone.utc), expected_generation=generation))
+            digest, datetime.fromtimestamp(expires_at, timezone.utc),
+            expected_generation=generation, deadline=deadline))
 
-    def invalidate_invite(self, generation: int) -> int:
-        return self._invoke(lambda: self._pairing.invalidate_invite(expected_generation=generation))
+    def invalidate_invite(self, generation: int, *, deadline: float | None = None) -> int:
+        return self._invoke(lambda: self._pairing.invalidate_invite(expected_generation=generation, deadline=deadline))
 
-    def revoke_all(self, generation: int) -> int:
-        return self._invoke(lambda: self._pairing.revoke_all(expected_generation=generation))
+    def revoke_all(self, generation: int, *, deadline: float | None = None) -> int:
+        return self._invoke(lambda: self._pairing.revoke_all(expected_generation=generation, deadline=deadline))
