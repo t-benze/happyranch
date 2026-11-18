@@ -163,7 +163,7 @@ Standalone invocation against an already-built/staged prefix (no daemon start):
 
 ```sh
 /usr/bin/python3 -I /absolute/prefix/share/happyranch/desktop/connection_window.py --prefix /absolute/prefix --locale en
-# --locale zh-CN exercises the Chinese view and unavailable notice.
+# --locale zh-CN localizes native chrome; use Language for the web view.
 /usr/bin/python3 -B packaging/linux/desktop/test_connection.py
 /usr/bin/python3 -B packaging/linux/test_build_deb.py DebPackageTests -v
 python -m py_compile packaging/linux/desktop/connection_contract.py packaging/linux/desktop/connection_window.py packaging/linux/desktop/happyranch_window.py
