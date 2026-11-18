@@ -317,6 +317,18 @@ class ClientTests(unittest.TestCase):
         with self.assertRaises(client.ClientError): self.session.complete()
         self.assertEqual(self.session._bearer, "")
 
+    def test_native_response_framing_refusals(self) -> None:
+        self.paired()
+        for headers in (b"Content-Length: 0\r\nContent-Length: 0",
+                        b"Content-Length: 0\r\nContent-Length: 1",
+                        b"Transfer-Encoding: chunked\r\nTransfer-Encoding: chunked",
+                        b"Content-Length: 0\r\nTransfer-Encoding: chunked",
+                        b"Connection: close\r\nConnection: keep-alive",
+                        b"Upgrade: websocket\r\nUpgrade: other"):
+            (self.prefix / "reply").write_bytes(b"HTTP/1.1 200 OK\r\n" + headers + b"\r\n\r\n0\r\n\r\n")
+            with self.subTest(headers=headers), self.assertRaisesRegex(client.ClientError, "^protocol$"):
+                self.session.health()
+
     def test_bootstrap_headers_http_and_upload(self) -> None:
         self.paired()
         response = self.browser(b"GET /api/v1/auth/bootstrap HTTP/1.1\r\nHost: HOST\r\n\r\n")

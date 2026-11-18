@@ -221,6 +221,18 @@ class RuntimeProxy:
                          "x-happyranch-device-credential": self._credential()})
             if upgrade:
                 kept["upgrade"] = "websocket"
+            if "expect" in headers:
+                if headers["expect"].lower() != "100-continue":
+                    raise ClientError("protocol")
+                incoming.send(b"HTTP/1.1 100 Continue\r\n\r\n")
+            body = None
+            if "transfer-encoding" in headers:
+                # The connector reads Content-Length only. Validate/dechunk the
+                # bounded body before sending any request to that parser.
+                body = bytearray()
+                incoming.body(headers, body.extend, 64 * 1024 * 1024, raw_chunks=False)
+                kept.pop("transfer-encoding", None)
+                kept["content-length"] = str(len(body))
             remote = self._dial(incoming.deadline)
             with self._lock:
                 if self._closed.is_set():
@@ -228,11 +240,10 @@ class RuntimeProxy:
                 self._streams.add(remote)
             outgoing = Wire(remote, incoming.deadline)
             outgoing.send((line + "\r\n" + "".join(f"{k}: {v}\r\n" for k, v in kept.items()) + "\r\n").encode("ascii"))
-            if "expect" in headers:
-                if headers["expect"].lower() != "100-continue":
-                    raise ClientError("protocol")
-                incoming.send(b"HTTP/1.1 100 Continue\r\n\r\n")
-            incoming.body(headers, outgoing.send, 64 * 1024 * 1024)
+            if body is None:
+                incoming.body(headers, outgoing.send, 64 * 1024 * 1024)
+            else:
+                outgoing.send(body)
             # Headers are bounded even for indefinite SSE/upgrade streams.
             response, response_headers = outgoing.head(repeated=True)
             if not re.fullmatch(r"HTTP/1\.[01] [1-5][0-9]{2}( [ -~]*)?", response):

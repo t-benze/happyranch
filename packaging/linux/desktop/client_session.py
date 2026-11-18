@@ -218,7 +218,7 @@ class ClientSession:
                 header += f"X-HappyRanch-Device-Credential: {self._credential()}\r\n"
             wire = Wire(stream, deadline)
             wire.send((header + "\r\n" + body).encode("ascii"))
-            line, headers = wire.head()
+            line, headers = wire.head(repeated=True)
             if not re.fullmatch(r"HTTP/1\.[01] [1-5][0-9]{2}( [ -~]*)?", line):
                 raise ClientError("protocol")
             result = bytearray()

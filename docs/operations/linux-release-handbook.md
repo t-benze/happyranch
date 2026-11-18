@@ -373,6 +373,8 @@ because helper scratch removal cannot be confirmed.
 ```sh
 # Focused session/runtime behavior; stdlib only, no GTK or installs:
 /usr/bin/python3 -B packaging/linux/desktop/test_client.py -v
+# Shipping connector parser/forwarder compatibility (existing project Python dependencies):
+python -B packaging/linux/desktop/test_client_connector.py -v
 # Focused Go helper tests with the already-cached toolchain/modules:
 (cd app/mac/tsnet-bridge && GOPROXY=off GOTOOLCHAIN=local go test -run '^TestHomeSession' -count=1 .)
 ```
