@@ -2738,6 +2738,49 @@ runtime availability, invite phase/deadline, address state, policy state and
 cleanup state, each supporting unknown/stale and observation age. With connector
 stopped report runtime unavailable, never infer Off. Bridge/CLI consumers switch
 together in the consuming PR; secret/public-output restrictions apply.
+
+The inert pure model is `runtime/remote_access/status_v2.py`; helper/D-Bus wiring
+and bridge/CLI integration are deferred. Its frozen `StatusV2` has exactly
+`setup`, `runtime`, `invite`, `address`, `policy`, `cleanup`; wire JSON additionally
+has integer `version: 2`. Each dimension has exactly `state` and `age_seconds`;
+invite additionally has `deadline_utc_seconds`. All vocabularies include
+`unknown` and `stale`, plus only:
+
+- setup: `ready`, `off`, `in_progress`, `failed`, `uncertain`, `partial_cleanup`;
+- runtime: `available`, `unavailable` (never `off`);
+- invite: `none`, `minting`, `encoding`, `pairing`, `issued`, `pending_approval`,
+  `consumed`, `cancelled`, `recovered`, `expired`, `refused`, `uncertain`;
+- address: `current`, `changed`, `refreshing`, `identity_changed`, `failed`, `uncertain`;
+- policy: `current`, `renewing`, `expired`, `renewal_failed`, `uncertain`;
+- cleanup: `not_needed`, `in_progress`, `complete`, `pending`, `partial_cleanup`,
+  `failed`, `uncertain`.
+
+B15 supplied no freshness threshold: use a conservative fixed **30 seconds**.
+Supplied observation ages are monotonic-clock-derived integer seconds in
+`0..2147483647`; missing observations are `unknown` with null age. Older than
+30 seconds becomes `stale` with the actual bounded age; fresh states have ages
+at most 30, stale ages are greater than 30, and only unknown has null age.
+Out-of-range ages refuse rather than clamp. Connector builder input has closed
+`running`, `stopped`, `unreachable`, `unknown`, `stale` states with the same age
+rules; it is not another wire dimension. Fresh stopped/unreachable overrides
+runtime to unavailable without changing setup. Missing/old connector evidence
+makes runtime unknown/stale; running requires a separate runtime observation,
+using the older dependency age. No observation alone fabricates setup Off.
+
+Invite deadlines are integer Unix UTC seconds in `0..9223372036854775807`,
+required only for `issued`/`pending_approval`, null otherwise. They are the
+supplied effective invite expiry, never a monotonic authorization deadline.
+At or past expiry the pure builder reports `expired` with null deadline;
+unknown/stale observations carry no countdown. This display does not extend
+lifetime, consume authority, recover or perform any effects. Callers still
+validate the existing effective five-minute invite lifetime before supplying it.
+The canonical encoder uses sorted compact UTF-8 JSON and one final newline;
+the inclusive **16384-byte** cap refuses oversize rather than truncating. The
+strict decoder enforces the cap before parsing, exact keys/types/vocabularies,
+no duplicate keys at any depth, bounded integers and no nonfinite numbers.
+Ordinary JSON whitespace and an optional final newline are accepted. No strings
+beyond fixed keys/enums, arrays, labels, IDs, digests, keys, bearers or invite text
+are admitted. This model adds no status mutation, polkit action or v1 change.
 Why no founder: supplies the existing screens without changing user-visible UX.
 
 **B16 — Protected retained audit.**
