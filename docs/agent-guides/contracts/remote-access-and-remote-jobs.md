@@ -2385,6 +2385,60 @@ Each transition uses an exclusive pending write, fsync and descriptor-relative
 rename under literal no-follow parents (the existing A5 publication discipline),
 never an in-place edit or pending adoption. Only B6 owns deletion; v1 install
 records are neither reused nor extended.
+
+G2-A fixes the exact closed top-level keys of `home-invite-config@1` to
+`format, release_uid, home_id, control_plane_id, connector_id,
+activation_generation, ca_der_sha256, dial_ip, control_url, home_endpoint`;
+`format` is the literal version above. The exact closed top-level keys of
+`home-activation@1` are `format, release_uid, home_id, control_plane_id,
+connector_id, activation_generation, operation_id, ca_der_sha256, dial_ip,
+member_digests, local_node_stable_id, home_endpoint, phase, ownership`.
+`release_uid` uses the existing non-root release UID range, IDs use the v2
+invite identity grammar, `activation_generation` is a nonnegative integer
+(never Boolean), `operation_id` uses the existing 32 lowercase-hex operation
+ID, and `ca_der_sha256` is 64 lowercase hex. `control_url` stores exactly
+`https://control.happyranch.invalid:8443`; endpoints use the existing v2
+ASCII authority validator and dial IP uses its canonical RFC1918 IPv4 predicate.
+Both observation keys are present as JSON null before join; they are populated
+together with a valid StableID and endpoint by observation, and required at
+`ready`. A joined record may await observation. `failed_uncertain` may retain
+an already-observed pair, but a failure from prepared/activating cannot invent
+one. Ordinary phase updates preserve release/installation IDs, generation,
+operation ID, CA and dial IP, and any already-populated observation. Generation
+rollover/recovery remains coordinator-owned; the linear publisher never resets
+a terminal record. B4 fixes only the `home-activation-txn@1` format here;
+G2-C owns its closed fields and per-effect intent publication.
+
+`member_digests` is a closed object with exactly these six literal keys, each
+a 64 lowercase-hex SHA-256 of the full file bytes, required in **every** phase
+and recorded by the coordinator before prepared publication:
+`/etc/systemd/system/happyranch-headscale.service`,
+`/etc/happyranch/headscale/config.yaml`,
+`/etc/happyranch/headscale/derp.yaml`,
+`/etc/happyranch/headscale/policy.hujson`,
+`/etc/happyranch/control-ca.pem`, and
+`/etc/happyranch/invite-issuer.json`.
+Missing, extra or duplicate keys and noncanonical hex refuse. Secret material
+(`server.key`, `daemon.token`, `enrollment.key`, CA private key) is never
+digested; renewable `server.crt` is excluded because trust binds the CA DER
+fingerprint (B13); v1 `connector.json`, `sidecar.json`, `policy.json` retain
+their meanings with B4 live field cross-checks owned by G2-C; B6 live members
+and the B5 link are separate ownership inventory, not digests.
+
+`ownership` has exactly `members` and `links`: `members` is a
+duplicate-free array enumerating exactly the eight literal paths in B6's table
+(the five individual files, two sockets and empty directory), and `links`
+is the single-key object mapping the literal B5 link path to its exact literal
+target. No path selection or deletion authority follows from parsing it.
+The G2-A reader requires an externally expected generation, a ready receipt,
+equal release/installation IDs, CA, dial IP, generation and endpoint, and the
+full config-file digest from that receipt. It pins/revalidates both files and
+literal parents, refuses either pending entry, and never manufactures an
+endpoint. The distinct <=4096-byte issuance journal under
+`/var/lib/happyranch-remote-access/home-issuer/invite-issuer.json` and the
+existing DER-bearing in-memory `HomeInviteConfig` keep their meanings.
+The new receipt publisher/config reader remain uncalled; no mint, unit,
+service, activation admission or readiness proof is added by this slice.
 Why no founder: internal root-only layout, unchanged UX.
 
 **B2 — Authoritative endpoint observation.**
