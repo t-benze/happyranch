@@ -13,11 +13,15 @@ import sys
 import threading
 import time
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+from typing import TYPE_CHECKING, Callable, Iterator
 
 from gi.repository import Gio, GLib
+
+if TYPE_CHECKING:
+    from .helper_lifecycle import LifecycleCapture
 
 # The existing remote_access package initializer imports the connector stack.
 # Load ONLY this root-owned sibling, also when invoked by system Python -I.
@@ -77,7 +81,7 @@ class RemoteAccessHelper:
         self.last_activity = self.clock()
         self.lock = threading.RLock()
         self.cursors: dict[str, str] = {}
-        self.inflight: Capture | None = None
+        self.inflight: Capture | LifecycleCapture | None = None
         self.timer = 0
         self.cancelled = False
         self.authorization_terminal = False
@@ -97,13 +101,43 @@ class RemoteAccessHelper:
             self.close()
             raise Refused('unavailable')
 
+    def try_claim(self, capture: LifecycleCapture) -> bool:
+        """Inert lifecycle adapter to the existing global slot; never queues."""
+        if not self.lock.acquire(blocking=False):
+            return False
+        try:
+            if self.inflight is not None:
+                return False
+            self.inflight = capture
+            self.last_activity = self.clock()
+            return True
+        finally:
+            self.lock.release()
+
+    @contextmanager
+    def effect_guard(self, capture: LifecycleCapture) -> Iterator[None]:
+        if not self.lock.acquire(blocking=False):
+            raise Refused('busy')
+        try:
+            if self.inflight is not capture:
+                raise Refused('changed')
+            yield
+        finally:
+            self.lock.release()
+
+    def release(self, capture: LifecycleCapture) -> None:
+        with self.lock:
+            if self.inflight is capture:
+                self.inflight = None
+                self.last_activity = self.clock()
+
     def _idle(self, loop: GLib.MainLoop) -> bool:
         if self.inflight is None and self.clock() - self.last_activity >= IDLE_SECONDS:
             loop.quit()
         return True  # serve removes the source even on the idle-exit path
 
     def close(self) -> None:
-        if self.inflight is not None:
+        if isinstance(self.inflight, Capture):
             self._cancel('unavailable')
         self.connection.remove_filter(self.filter_id)
         self.connection.signal_unsubscribe(self.subscription)
@@ -174,6 +208,9 @@ class RemoteAccessHelper:
                 raise Refused('unknown-method')
             if not sender or not sender.startswith(':'):
                 raise Refused('invalid-request')
+            # Refuse before taking a lock held by an effect or doing bus/file I/O.
+            if method in MUTATIONS and (busy_on_arrival or self.inflight is not None):
+                raise Refused('busy')
             with self.lock:
                 uid = self._uid(sender)
                 owner = self._binding(uid)
@@ -213,7 +250,7 @@ class RemoteAccessHelper:
                 details, 1, capture.cancellation_id)), Gio.DBusCallFlags.NONE,
                 int(self.deadline * 1000) + 2000, None, self._authorized, capture)
         except Exception as error:
-            if self.inflight is not None and self.inflight.message == message:
+            if isinstance(self.inflight, Capture) and self.inflight.message == message:
                 self._cancel('unavailable')
             else:
                 self._error(message, error.category if isinstance(error, (Refused, OwnerRefused)) else 'unavailable')
@@ -297,7 +334,7 @@ class RemoteAccessHelper:
     def _cancel(self, category: str) -> None:
         with self.lock:
             capture = self.inflight
-            if capture is None or self.cancelled:
+            if not isinstance(capture, Capture) or self.cancelled:
                 return
             self.cancelled = True
             self._error(capture.message, category)
@@ -323,7 +360,7 @@ class RemoteAccessHelper:
         if name.startswith(':') and old and not new:
             with self.lock:
                 self.cursors.pop(name, None)
-                if self.inflight is not None and self.inflight.sender == name:
+                if isinstance(self.inflight, Capture) and self.inflight.sender == name:
                     self._cancel('disconnected')
 
 
