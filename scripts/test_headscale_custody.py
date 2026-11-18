@@ -318,9 +318,71 @@ def test_crash_after_useradd_becomes_unowned(fixture, monkeypatch, capsys) -> No
                    "run/systemd/generator.late", "lib/systemd/system")
       for kind in ("wants", "requires", "wants-foreign", "alias", "alias-dropin", "alias-cross-dropin")
       for account in ("absent", "unowned")
-      if kind != "alias-cross-dropin" or path != "etc/systemd/system"]])
+      if kind != "alias-cross-dropin" or path != "etc/systemd/system"],
+    *[f"activation:{path}:{kind}:{account}"
+      for path in ("etc/systemd/system.control", "run/systemd/system.control",
+                   "run/systemd/transient", "run/systemd/generator.early", "etc/systemd/system",
+                   "etc/systemd/system.attached", "run/systemd/system",
+                   "run/systemd/system.attached", "run/systemd/generator",
+                   "usr/local/lib/systemd/system", "usr/lib/systemd/system",
+                   "run/systemd/generator.late", "lib/systemd/system")
+      for kind in ("target", "dependency-dropin", "timer", "socket", "path", "automount", "mount",
+                   "mask", "stem-directory", "stem-fifo", "oversized", "unreadable", "unrelated")
+      for account in ("absent", "unowned", "owned")],
+    *[f"activation:{path}:{kind}:{account}"
+      for path in ("usr/share/dbus-1/system-services", "usr/local/share/dbus-1/system-services",
+                   "etc/dbus-1/system-services")
+      for kind in ("dbus", "dbus-no-suffix", "oversized", "unreadable", "unrelated")
+      for account in ("absent", "unowned", "owned")]])
 def test_foreign_custody_preserved(fixture, monkeypatch, capsys, entry) -> None:
-    if entry.startswith("prelink:"):
+    if entry.startswith("activation:"):
+        _, path, kind, account = entry.split(":")
+        if account == "owned":
+            assert fixture.prepare(monkeypatch, capsys)[0] == 0
+        elif account == "unowned":
+            fixture.present = fixture.group_present = True
+        parent = fixture.root / path
+        for directory in reversed((parent, *parent.parents)):
+            if directory.is_relative_to(fixture.root) and directory != fixture.root:
+                directory.mkdir(exist_ok=True, mode=0o755)
+        foreign = parent / "operator.target"
+        data = b"[Unit]\nWants=happyranch-headscale.service\n"
+        if kind == "dependency-dropin":
+            foreign = parent / "operator.service.d" / "override.conf"
+            foreign.parent.mkdir(mode=0o755)
+            data = b"[Unit]\nRequires=happyranch-headscale.service\n"
+        if kind in {"timer", "socket", "path", "automount", "mount"}:
+            foreign = parent / ("happyranch-headscale." + kind)
+            # Same-stem triggers need no explicit service name in their bytes.
+            data = {"timer": b"[Timer]\nOnBootSec=1s\n",
+                    "socket": b"[Socket]\nListenStream=12345\n",
+                    "path": b"[Path]\nPathExists=/synthetic-trigger\n",
+                    "automount": b"[Automount]\nWhere=/synthetic-trigger\n",
+                    "mount": b"[Mount]\nWhat=tmpfs\nWhere=/synthetic-trigger\nType=tmpfs\n"}[kind]
+        if kind in {"dbus", "dbus-no-suffix"}:
+            foreign = parent / ("operator.service" if kind == "dbus" else "operator-activation")
+            data = b"[D-BUS Service]\nName=org.example.Synthetic\nSystemdService=happyranch-headscale.service\n"
+        if kind == "oversized": data = b"#" * 65536 + data
+        if kind == "unrelated": data = b"[Unit]\nWants=operator-other.service\n"
+        if kind == "mask":
+            foreign = parent / "happyranch-headscale.timer"
+            foreign.symlink_to("/dev/null")
+        elif kind == "stem-directory":
+            (parent / "happyranch-headscale.socket.d").mkdir(mode=0o755)
+        elif kind == "stem-fifo":
+            os.mkfifo(parent / "happyranch-headscale.path", mode=0o600)
+        else:
+            foreign.write_bytes(data)
+            foreign.chmod(0o644)
+        if kind == "unreadable":
+            # Inject the actual no-follow open failure, independently of euid.
+            original_open = module.os.open
+            def unreadable(name, flags, *args, **kwargs):
+                if name == foreign.name and flags & os.O_NOFOLLOW and not flags & os.O_DIRECTORY:
+                    raise PermissionError("synthetic private diagnostic")
+                return original_open(name, flags, *args, **kwargs)
+            monkeypatch.setattr(module.os, "open", unreadable)
+    elif entry.startswith("prelink:"):
         _, path, kind, account = entry.split(":")
         if account == "unowned":
             fixture.present = fixture.group_present = True
@@ -384,16 +446,33 @@ def test_foreign_custody_preserved(fixture, monkeypatch, capsys, entry) -> None:
     if entry == "lib-foreign-link": (fixture.root / "lib").symlink_to("foreign-lib")
     identities = fixture.present, fixture.group_present, fixture.receipt().exists()
     def snapshot():
-        return {str(p.relative_to(fixture.root)): (p.lstat().st_mode,
+        return {str(p.relative_to(fixture.root)): (p.lstat().st_mode, p.lstat().st_uid,
+                    p.lstat().st_gid, p.lstat().st_ino, p.lstat().st_nlink,
                     os.readlink(p) if p.is_symlink() else p.read_bytes() if p.is_file() else None)
                 for p in fixture.root.rglob("*")}
     contents = snapshot()
     before = sorted(str(p.relative_to(fixture.root)) for p in fixture.root.rglob("*"))
     fixture.calls.clear()
     code, output = fixture.prepare(monkeypatch, capsys)
+    if entry.startswith("activation:") and kind == "unrelated":
+        assert code == 0, output
+        assert json.loads(output)["state"] == "inert"
+        after = snapshot()
+        # Successful preparation may add child directories (changing st_nlink).
+        assert all((after[name][:4], after[name][-1]) == (value[:4], value[-1])
+                   for name, value in contents.items())
+        assert after[str(foreign.relative_to(fixture.root))] == contents[str(foreign.relative_to(fixture.root))]
+        assert foreign.read_bytes() == data
+        assert fixture.present and fixture.group_present
+        assert fixture.receipt().exists() == (account != "unowned")
+        assert (fixture.root / "etc/systemd/system" / home.UNIT).read_bytes() == EXPECTED_UNIT.encode()
+        assert not any(args[0] == "systemctl" for args in fixture.calls)
+        return
     assert code == 1 and ("foreign-" in output or "custody-uncertain" in output)
     if entry.startswith(("load:", "prelink:")):
         assert "foreign-unit" in output
+    if entry.startswith("activation:"):
+        assert ("custody-uncertain" if kind in {"oversized", "unreadable"} else "foreign-unit") in output
     assert "synthetic private diagnostic" not in output
     assert snapshot() == contents
     assert sorted(str(p.relative_to(fixture.root)) for p in fixture.root.rglob("*")) == before

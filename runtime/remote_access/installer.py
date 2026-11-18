@@ -60,6 +60,10 @@ _HEADSCALE_UNIT_DIRS = (
     "run/systemd/generator", "usr/local/lib/systemd/system", "usr/lib/systemd/system",
     "run/systemd/generator.late",
 )
+_HEADSCALE_DBUS_DIRS = (
+    "usr/share/dbus-1/system-services", "usr/local/share/dbus-1/system-services",
+    "etc/dbus-1/system-services",
+)
 _ENROLLMENT = "etc/happyranch/enrollment.key"
 _CREDSTORE = "etc/credstore"
 _CREDENTIAL_NAME = "happyranch-tsnet-enrollment"
@@ -1238,9 +1242,9 @@ class ManagedInstaller:
                         raise headscale.HeadscaleServiceError("foreign-unit")
                 else:
                     paths.append("lib/systemd/system")
-        # Publishing the canonical fragment can make dangling enablement links
-        # and aliases (including their drop-ins) effective. We own no links.
-        self._headscale_cleanup_links(tuple(paths), category="foreign-unit")
+        # Publication must not complete existing dependencies or activation
+        # triggers, including implicit same-stem units and D-Bus policy.
+        self._headscale_cleanup_links((*paths, *_HEADSCALE_DBUS_DIRS), category="foreign-unit")
         for path in (*paths, *headscale.CUSTODY):
             try:
                 with self._directory(path) as parent:
@@ -1276,15 +1280,14 @@ class ManagedInstaller:
 
     def _headscale_cleanup_links(self, paths: tuple[str, ...] = (_UNIT_DIR, "run/systemd/system"),
                                  *, category: str = "cleanup-uncertain") -> None:
-        """Preparation and disable both require no foreign matching links.
+        """Preparation and disable require no foreign activation policy.
 
-        Inspect supplied unit trees without following links, including dangling
-        links to foreign same-named fragments. Exhaustion/unsafe inventory refuses.
-        This is an observation under the cooperative root-writer discipline.
+        Inspect supplied trees without following links; share entry/depth limits
+        across all roots. Generators and later root writers remain cooperative.
         """
         count = 0
 
-        def inspect(parent: int, depth: int) -> None:
+        def inspect(parent: int, depth: int, relative: str, dbus: bool) -> None:
             nonlocal count
             if depth > 32:
                 raise headscale.HeadscaleServiceError(category)
@@ -1294,6 +1297,10 @@ class ManagedInstaller:
                     if count > 65536:
                         raise headscale.HeadscaleServiceError(category)
                     info = os.stat(entry.name, dir_fd=parent, follow_symlinks=False)
+                    managed = relative == _UNIT_DIR and entry.name == headscale.UNIT
+                    if not dbus and entry.name.startswith("happyranch-headscale."):
+                        if not managed or self._read_unit(parent, entry.name) != render_headscale_unit().encode():
+                            raise headscale.HeadscaleServiceError(category)
                     if stat.S_ISLNK(info.st_mode):
                         target = os.readlink(entry.name, dir_fd=parent)
                         if entry.name == headscale.UNIT or Path(target).name == headscale.UNIT:
@@ -1302,16 +1309,42 @@ class ManagedInstaller:
                         child = os.open(entry.name, _DIR_FLAGS, dir_fd=parent)
                         try:
                             self._check_directory(child, "systemd config inventory", None)
-                            inspect(child, depth + 1)
+                            inspect(child, depth + 1, f"{relative}/{entry.name}", dbus)
                         finally:
                             os.close(child)
+                    elif stat.S_ISREG(info.st_mode) and not managed and (
+                            dbus or entry.name.endswith((".service", ".socket", ".target", ".device",
+                                ".mount", ".automount", ".swap", ".timer", ".path", ".slice", ".scope"))
+                            or (relative.endswith(".d") and entry.name.endswith(".conf"))):
+                        # Foreign files are observed, never adopted: do not
+                        # impose the managed provisioning reader's file modes.
+                        descriptor = os.open(entry.name, _FILE_FLAGS, dir_fd=parent)
+                        try:
+                            opened = os.fstat(descriptor)
+                            def signature(value: os.stat_result) -> tuple[int, ...]:
+                                return (value.st_dev, value.st_ino, value.st_uid, value.st_gid, value.st_mode,
+                                        value.st_nlink, value.st_size, value.st_mtime_ns, value.st_ctime_ns)
+                            if (not stat.S_ISREG(opened.st_mode) or opened.st_size > 65536
+                                    or signature(info) != signature(opened)):
+                                raise InstallerError("uncertain activation policy")
+                            with os.fdopen(descriptor, "rb", closefd=False) as stream:
+                                data = stream.read(65537)
+                            if (len(data) > 65536 or len(data) != opened.st_size
+                                    or signature(opened) != signature(os.fstat(descriptor))
+                                    or signature(opened) != signature(os.stat(
+                                        entry.name, dir_fd=parent, follow_symlinks=False))):
+                                raise InstallerError("uncertain activation policy")
+                            if b"happyranch-headscale" in data:
+                                raise headscale.HeadscaleServiceError(category)
+                        finally:
+                            os.close(descriptor)
 
         for path in paths:
             opened = False
             try:
                 with self._directory(path) as parent:
                     opened = True
-                    inspect(parent, 0)
+                    inspect(parent, 0, path, path in _HEADSCALE_DBUS_DIRS)
             except FileNotFoundError:
                 # Only an absent config root is empty; a disappearing entry
                 # during inspection must not clear deletion admission.

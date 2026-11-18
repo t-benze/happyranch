@@ -208,6 +208,31 @@ Typed secret-free `cleanup-uncertain`, exit1, preserves account, receipt, unit,
 custody and links. Unrelated links remain; no-follow inventory uncertainty or
 exhaustion refuses. A–E partial-cleanup/retry rules above remain unchanged.
 
+The same admission also refuses **any object** whose name starts with
+`happyranch-headscale.` anywhere under those unit roots, except the installer's
+exact owned `/etc/systemd/system/happyranch-headscale.service` fragment. This
+includes same-stem timer/socket/path/mount/automount triggers, masks and drop-in
+directories. Every regular unit file and drop-in `.conf` is read as bounded
+bytes: a literal `happyranch-headscale` reference refuses, regardless of directive
+(Wants/Requires/BindsTo/Upholds/PartOf/OnFailure/OnSuccess/Triggers/Unit/Also or
+otherwise). The installer's exact owned fragment is excluded from that content
+check. Every regular file under `/usr/share/dbus-1/system-services`,
+`/usr/local/share/dbus-1/system-services` and `/etc/dbus-1/system-services`, when
+present, receives the same literal-byte check with no link following. The
+bounded no-follow reader uses the existing 64 KiB per-file limit; read failure,
+unsafe or changing files, oversize, or shared 65,536-entry/depth-32 exhaustion
+refuses before any preparation effect. Foreign bytes/modes/links/identities stay
+unchanged. Cleanup uses this same admission before stop/disable; A–E identity,
+receipt authority, partial-cleanup uncertainty and explicit retry are unchanged.
+
+This is sampled admission in the fixed default roots under a **cooperative
+root-writer** assumption. Executables in `system-generators` directories and
+root writers acting after preparation are outside this inventory; they can
+create later activation policy. No generator execution/inspection or concurrent
+root-writer fence is implemented. Custom compiled/environment unit load paths
+and native whole-host acceptance remain existing limitations. Preparation never
+starts/enables/reloads a unit and grants no later activation authority.
+
 Managed Linux no longer takes a fixed `daemon_port`. The connector and sidecar
 exclusion lists remain sorted, equal and always include DEV 8765 plus operator
 exclusions. The ingress address is exactly `127.0.0.1:<managed.bind_port>`;
