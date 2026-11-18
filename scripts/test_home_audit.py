@@ -316,13 +316,60 @@ def test_append_only_and_durable_descriptors(venue: Any, monkeypatch: Any) -> No
     writer.append(record(intent_id='intent-2'))
     assert writer.path.read_bytes() == original + audit.encode(record(intent_id='intent-2'))
     assert writer.path.stat().st_ino == inode
-    assert [call[0] for call in calls if call[0] != 'open'] == ['write', 'sync-file']
+    assert [call[0] for call in calls if call[0] != 'open'] == ['write', 'sync-file', 'sync-dir']
     seed(writer.path, b'x' * (1024 * 1024))
     calls.clear()
     writer.append(record())
     assert [call[0] for call in calls if call[0] != 'open'] == [
         'rename', 'sync-dir', 'write', 'sync-file', 'sync-dir']
     assert (parent / 'home-audit.jsonl.1').stat().st_size == 1024 * 1024
+
+
+@pytest.mark.parametrize('rotated', [False, True], ids=['create', 'rotation'])
+@pytest.mark.parametrize('failure', ['file', 'directory'])
+def test_reopened_intent_syncs_directory_after_interrupted_create(
+        venue: Any, monkeypatch: Any, rotated: bool, failure: str) -> None:
+    writer, parent, _ = venue
+    backup = parent / 'home-audit.jsonl.1'
+    full = b'x' * (1024 * 1024)
+    if rotated:
+        seed(writer.path, full)
+    failed = False
+    successful_syncs: list[tuple[str, int]] = []
+
+    def synced(descriptor: int) -> None:
+        nonlocal failed
+        info = os.fstat(descriptor)
+        kind = 'directory' if stat.S_ISDIR(info.st_mode) else 'file'
+        # Rotation's rename sync precedes creation of the new current file.
+        # Interrupt that current file's first sync, leaving its entry behind.
+        if not failed and kind == failure and writer.path.exists():
+            failed = True
+            raise OSError('synthetic-sync-failure')
+        os.fsync(descriptor)
+        successful_syncs.append((kind, info.st_ino))
+
+    monkeypatch.setattr(audit.os, 'fsync', synced)
+    with pytest.raises(audit.AuditRefused, match='unavailable'):
+        writer.intent('refresh', intent_id='intent-1', operation_id='op-1')
+    assert failed and writer.path.exists()
+    prefix = writer.path.read_bytes()
+    assert rows(writer.path)[0]['intent_id'] == 'intent-1'
+    if rotated:
+        assert backup.read_bytes() == full
+    successful_syncs.clear()
+
+    fresh = audit.HomeAudit(writer.path)
+    intent = fresh.intent('refresh', intent_id='intent-2', operation_id='op-1')
+    # Returning an intent requires successful real syncs for its inode and name,
+    # even when this instance merely reopened an interrupted creation.
+    assert successful_syncs == [
+        ('file', writer.path.stat().st_ino), ('directory', parent.stat().st_ino)]
+    assert writer.path.read_bytes() == prefix + audit.encode(intent)
+    if rotated:
+        assert backup.read_bytes() == full
+    else:
+        assert not backup.exists()
 
 
 def test_intent_outcome_uncertain_sequence(venue: Any) -> None:

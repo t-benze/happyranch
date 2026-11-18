@@ -212,20 +212,18 @@ class HomeAudit:
                 or info.st_size > MAX_FILE_BYTES):
             raise AuditRefused('custody')
 
-    def _open(self, directory: int) -> tuple[int, bool]:
-        created = False
+    def _open(self, directory: int) -> int:
         try:
             descriptor = os.open(self.path.name, _FILE_FLAGS, dir_fd=directory)
         except FileNotFoundError:
             descriptor = os.open(self.path.name, _FILE_FLAGS | os.O_CREAT | os.O_EXCL,
                                  0o600, dir_fd=directory)
-            created = True
         try:
             self._file_info(os.fstat(descriptor))
         except BaseException:
             os.close(descriptor)
             raise
-        return descriptor, created
+        return descriptor
 
     def append(self, record: Record) -> None:
         """Persist one complete line; never rewrite existing bytes or auto-clean.
@@ -238,7 +236,7 @@ class HomeAudit:
         try:
             directory = self._directory()
             fcntl.flock(directory, fcntl.LOCK_EX)
-            descriptor, created = self._open(directory)
+            descriptor = self._open(directory)
             if os.fstat(descriptor).st_size + len(data) > MAX_FILE_BYTES:
                 backup = self.path.name + '.1'
                 try:
@@ -251,7 +249,7 @@ class HomeAudit:
                 os.fsync(directory)
                 os.close(descriptor)
                 descriptor = None
-                descriptor, created = self._open(directory)
+                descriptor = self._open(directory)
             remaining = memoryview(data)
             while remaining:
                 written = os.write(descriptor, remaining)
@@ -259,8 +257,9 @@ class HomeAudit:
                     raise AuditRefused('unavailable')
                 remaining = remaining[written:]
             os.fsync(descriptor)
-            if created:
-                os.fsync(directory)
+            # An existing entry may be left by an interrupted create/rotation.
+            # Establish its durability before every successful acknowledgement.
+            os.fsync(directory)
         except OSError:
             raise AuditRefused('unavailable') from None
         finally:

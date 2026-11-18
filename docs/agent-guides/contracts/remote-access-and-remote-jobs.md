@@ -2813,8 +2813,10 @@ inputs. The complete JSON line including newline must fit 1024 bytes or refuse
 before I/O. The existing parent must be owned by the expected UID/GID and not
 group/world writable; all literal parents are opened without following links.
 Cooperating appends/rotation lock that directory through file fsync and directory
-fsync after create/rename. An unsafe existing file or `.1` refuses without repair;
-only cap rotation replaces `.1`, never creating `.2` or cleaning other entries.
+fsync before every successful append acknowledgement, including a reopened file
+left by an interrupted create, and after rename. An unsafe existing file or `.1`
+refuses without repair; only cap rotation replaces `.1`, never creating `.2` or
+cleaning other entries.
 The API persists an intent before returning its reference; callers own effect
 ordering and settlement, and a reference confers no authorization/replay proof.
 An I/O failure may follow a partial append and must be treated as uncertain.
