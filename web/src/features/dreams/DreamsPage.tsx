@@ -42,6 +42,7 @@ import { Button } from '@/design-system/primitives/Button';
 import { CrescentMoonBadge } from '@/design-system/patterns/CrescentMoonBadge';
 import { EmptyState } from '@/design-system/patterns/EmptyState';
 import { cn } from '@/lib/utils';
+import { SUMMARY_CODE_TOKENS } from './summary-code';
 import { DreamDetailPane } from './DreamDetailPane';
 import { dreamStatusLabel } from './strings';
 import { isValidCount, formatCount, formatTotalCount } from './count-helpers';
@@ -164,6 +165,7 @@ function DreamCard({
           'text-sm italic border-l-2 border-accent-default pl-3 mb-2',
           'text-text-secondary line-clamp-2',
           SUMMARY_PREVIEW_PROSE,
+          SUMMARY_CODE_TOKENS,
         )}>
           <Markdown body={dream.summary} mermaidLoadingLabel={t('common.mermaidLoading')} />
         </div>
