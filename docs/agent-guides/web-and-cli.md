@@ -1,5 +1,10 @@
 # Web And CLI
 
+The separate, daemon-independent native connection shell is built with
+`cd web && npm run build:connection`; see [its boundary/import audit](../../web/connection/README.md).
+It emits `web/dist-connection/`, never the runtime SPA's `web/dist/`.
+Native loading/packaging and lifecycle/CLI delivery remain later slices.
+
 ## Older document-review transports removed — THR-336 msg157, P1a/P1b
 
 P1b removes POST `/workflows/reviews/human-receipts`, POST

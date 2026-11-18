@@ -110,13 +110,14 @@ const featureBoundariesPlugin = {
 
 export default tseslint.config(
   {
-    files: ["src/**/*.{ts,tsx}"],
+    files: ["src/**/*.{ts,tsx}", "connection/src/**/*.ts"],
     plugins: { 'owned-copy': ownedCopyPlugin },
     rules: { 'owned-copy/no-untranslated-copy': 'error' },
   },
   {
     ignores: [
       "dist",
+      "dist-connection",
       "node_modules",
       "scripts/**",
       "vite.config.ts",
@@ -141,7 +142,7 @@ export default tseslint.config(
   // project=tsconfig.json doubles the wall-clock and adds zero unique
   // findings on this codebase).
   {
-    files: ["src/**/*.{ts,tsx}"],
+    files: ["src/**/*.{ts,tsx}", "connection/src/**/*.ts"],
     extends: [
       ...tseslint.configs.recommended,
       react.configs.flat.recommended,
@@ -267,7 +268,7 @@ export default tseslint.config(
   // Keep the correctness rules below; disable only the incompatible ordering
   // rule until the plugin supports this setup.
   {
-    files: ["src/**/*.{ts,tsx}"],
+    files: ["src/**/*.{ts,tsx}", "connection/src/**/*.ts"],
     plugins: { tailwindcss: tailwind },
     rules: {
       "tailwindcss/no-contradicting-classname": "error",
