@@ -9,6 +9,7 @@ import tempfile
 import threading
 import time
 import unittest
+from types import SimpleNamespace
 
 import gi
 gi.require_version("Gtk", "3.0")
@@ -65,6 +66,14 @@ class GTKTests(unittest.TestCase):
         self.ui.prompt.response(Gtk.ResponseType.CANCEL)
         self.assertEqual(pasted, [None])
         self.assertEqual(entry.get_text(), "")
+        consent = []
+        self.ui.target(SimpleNamespace(home_id="synthetic-home", control_plane_id="control", home_endpoint="home:443", ca_der=b"synthetic-DER"),
+                       lambda *args: consent.append(args))
+        save = next(w for w in self.ui.prompt.get_content_area().get_children() if isinstance(w, Gtk.CheckButton))
+        self.assertFalse(save.get_active())
+        save.set_active(True)
+        self.ui.prompt.response(Gtk.ResponseType.OK)
+        self.assertEqual(consent, [(True, True)])
         results = []
         self.ui.confirm_stop("synthetic-host", results.append)
         self.ui.prompt.response(Gtk.ResponseType.CANCEL)
@@ -79,6 +88,7 @@ class GTKTests(unittest.TestCase):
         root = f"http://127.0.0.1:{server.server_port}/"
         model = self.ui.model
         model.stage = "opening"
+        model.save_intent = True
         token = model.token
         self.ui.open_runtime(root, token)
         self.assertEqual(model.stage, "opening")
@@ -86,6 +96,18 @@ class GTKTests(unittest.TestCase):
         notices = self.ui.runtime_window.get_child().get_children()
         self.assertIn("Access is not saved", notices[0].get_text())
         self.assertEqual(notices[0].get_accessible().get_name(), notices[0].get_text())
+        controls = []
+        self.ui.show_controls = lambda: controls.append(True)
+        self.ui.retry_save.clicked()
+        self.assertEqual(controls, [True])
+        model.saved_access = "saved"
+        self.ui.changed()
+        self.assertFalse(self.ui.notice.get_visible())
+        self.assertFalse(self.ui.retry_save.get_visible())
+        model.saved_access = "notSaved"
+        self.ui.changed()
+        self.assertTrue(self.ui.notice.get_visible())
+        self.assertTrue(self.ui.retry_save.get_visible())
         observed = []
         def checked(view, result, _data):
             observed.append(view.call_async_javascript_function_finish(result).to_boolean())
@@ -154,6 +176,7 @@ Promise.all([happyranchConnection.call('bridge.hello', '{"minVersion":1,"maxVers
             model = self.ui.model
             model.document, model.session = window.client_document, Session(None)
             model.stage = "opening"
+            model.save_intent = True
             self.ui.open_runtime(f"http://127.0.0.1:{server.server_port}/", model.token)
             self.pump(lambda: model.stage == "connected")
             runtime, session = self.ui.runtime_window, model.session
@@ -161,7 +184,9 @@ Promise.all([happyranchConnection.call('bridge.hello', '{"minVersion":1,"maxVers
             self.assertFalse(window.active)
             self.assertIsNone(self.ui.listener)
             self.assertEqual(model.stage, "connected")
-            replacement = ConnectionWindow(self.app, None, prefix, self.ui.tr, self.ui)
+            self.ui.retry_save.clicked()  # Closed controls reopen statically; runtime gets no bridge.
+            replacement = self.ui.show_controls.__self__
+            self.assertIsInstance(replacement, ConnectionWindow)
             self.addCleanup(replacement.close)
             self.pump(lambda: replacement.hello_seen)
             self.assertIsNot(replacement.client_document, window.client_document)

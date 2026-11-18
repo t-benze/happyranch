@@ -352,6 +352,7 @@ acceptance remains separate from temp-root verification.
 
 The payload also contains `bin/happyranch-app`,
 `share/happyranch/desktop/happyranch_window.py`,
+`share/happyranch/desktop/client_store.py`,
 `share/happyranch/desktop/client_session.py`,
 `share/happyranch/desktop/client_runtime.py`,
 `share/happyranch/desktop/client_model.py`,
@@ -372,8 +373,15 @@ reports Connected. A separate ephemeral runtime view has no control bridge and
 keeps a visible native session-only notice after the connection window closes.
 Closing controls cancels an unfinished attempt; closing the runtime asks for
 local disconnect. Cancel never promises Host revocation or membership removal.
-Saved access/reconnect and saved-item commands remain unavailable. They retain
-no saved access. The runtime proxy answers bootstrap with an unrelated session
+Native save consent enables same-node reconnect through GI Secret. Only the
+default login collection is accepted, with exact home/control/node/profile binding,
+verified readback and local absence after deletion. Locked/denied/unavailable or
+failed saving keeps the session usable with a persistent accessible native warning;
+its Retry save action opens the static controls even after that view closes.
+No plaintext, file or substitute credential store is used. One unreadable saved
+item does not hide readable peers. Remove is local-only and never claims Host
+revocation. Cancel during saving waits for write/readback before teardown, while
+fencing later connection/load callbacks. The runtime proxy answers bootstrap with an unrelated session
 token, strips browser authority headers, and injects the device bearer only
 on the private helper hop. Session stop seals admission and closes owned streams
 before bounded helper terminate/kill/reap; forced kill reports cleanup incomplete
@@ -383,8 +391,10 @@ because helper scratch removal cannot be confirmed.
 # Focused session/runtime behavior; stdlib only, no GTK or installs:
 /usr/bin/python3 -B packaging/linux/desktop/test_client.py -v
 /usr/bin/python3 -B packaging/linux/desktop/test_client_model.py -v
+/usr/bin/python3 -B packaging/linux/desktop/test_client_store.py CustodyTests -v
+/usr/bin/python3 -B packaging/linux/desktop/test_connection.py -v
 # GTK/WebKit smoke when the existing desktop session is available:
-/usr/bin/python3 -B packaging/linux/desktop/test_client_gtk.py -v
+PYTHONWARNINGS=ignore GSETTINGS_BACKEND=memory /usr/bin/python3 -B packaging/linux/desktop/test_client_gtk.py -v
 # Shipping connector parser/forwarder compatibility (existing project Python dependencies):
 python -B packaging/linux/desktop/test_client_connector.py -v
 # Focused Go helper tests with the already-cached toolchain/modules:
@@ -394,8 +404,16 @@ python -B packaging/linux/desktop/test_client_connector.py -v
 The window launcher resolves its payload prefix relative to `bin/`, then runs
 **`/usr/bin/python3 -I`** with system PyGObject, GTK 3.0 and WebKit2 **4.1**.
 The host needs `python3-gi`, `gir1.2-gtk-3.0`, and
-`gir1.2-webkit2-4.1`; they are apt-provided, never installed into the bundled
-CPython. These are package Depends. The window does
+`gir1.2-webkit2-4.1`, plus `gir1.2-secret-1` (libsecret GI 1 and its native
+`libsecret-1-0` dependency); they are apt-provided, never installed into the bundled
+CPython. These are package Depends. Saved access also requires a Secret Service
+provider on the user session D-Bus, with an unlocked default login collection;
+absence degrades to session-only. The app never installs/manages a provider or
+creates/unlocks a collection; the desktop manages Secret Service activation. Qualify real custody using `RealKeyringTests` in
+`test_client_store.py` only under an explicitly disposable `dbus-run-session`
+and gnome-keyring-daemon: set HOME and all XDG homes under task scratch and
+`HAPPYRANCH_DISPOSABLE_KEYRING` to that scratch root (HOME must be its `home`
+child). Never point that test at a user's login keyring. The window does
 not import HappyRanch. Its child uses the existing `bin/happyranch-daemon`,
 which continues to run bundled CPython 3.12.10.
 
@@ -834,6 +852,7 @@ updates/security and universe enabled) and Bookworm (12, with security updates):
 | `python3-gi` | System PyGObject binding | [Jammy](https://packages.ubuntu.com/jammy/python3-gi), [Bookworm](https://packages.debian.org/bookworm/python3-gi) |
 | `gir1.2-gtk-3.0` | GTK3 namespace and transitive shared libraries | [Jammy](https://packages.ubuntu.com/jammy/gir1.2-gtk-3.0), [Bookworm](https://packages.debian.org/bookworm/gir1.2-gtk-3.0) |
 | `gir1.2-webkit2-4.1` | WebKit2 4.1 namespace/engine and transitive libraries | [Jammy](https://packages.ubuntu.com/jammy/gir1.2-webkit2-4.1), [Bookworm](https://packages.debian.org/bookworm/gir1.2-webkit2-4.1) |
+| `gir1.2-secret-1` | Secret Service GI 1 and transitive libsecret runtime; a user-session provider is separately required | Package prerequisite declared for slice 8b; stock distro/package acceptance pending |
 | `git` | Runtime repository/worktree operations | [Jammy](https://packages.ubuntu.com/jammy/git), [Bookworm](https://packages.debian.org/bookworm/git) |
 | `ca-certificates` | HTTPS trust for runtime clients and git | [Jammy](https://packages.ubuntu.com/jammy/ca-certificates), [Bookworm](https://packages.debian.org/bookworm/ca-certificates) |
 | `libc6 (>= 2.35)` | Explicit supported Linux ABI floor (Jammy 2.35, Bookworm 2.36) | [Jammy](https://packages.ubuntu.com/jammy/libc6), [Bookworm](https://packages.debian.org/bookworm/libc6) |

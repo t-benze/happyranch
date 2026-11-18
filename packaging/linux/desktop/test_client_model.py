@@ -19,7 +19,7 @@ class UI:
         self.queue = queue.Queue()
         self.timers = []
         self.snapshots, self.errors = [], []
-        self.opened = None
+        self.opened = self.prompt = None
         self.model = owner.ClientModel(Path("/synthetic"), self)
 
     def idle(self, callback):
@@ -45,6 +45,13 @@ class UI:
 
     def target(self, invite, callback):
         self.consent = callback
+
+    def saved_target(self, record, remove, callback):
+        self.saved_consent = callback
+        self.removing = remove
+
+    def storage_wait(self):
+        self.storage_waiting = True
 
     def waiting(self, phrase, expiry, target):
         self.phrase = phrase
@@ -80,8 +87,17 @@ class Session:
     def call(self, name):
         self.calls.append((name, threading.current_thread().name))
 
-    def join(self, invite):
+    def join(self, invite, *, save_intent=False):
+        self.intent = save_intent
         self.call("join")
+
+    def saved_record(self):
+        from test_client_store import record
+        return record()
+
+    def restore(self, record):
+        self.restored = record
+        self.call("restore")
 
     def pair(self):
         self.call("pair")
@@ -285,6 +301,177 @@ class LifecycleTests(unittest.TestCase):
         self.assertIn("invalidInvite", self.ui.errors)
         self.assertEqual(self.session.calls, [])
         self.assertFalse(hasattr(self.ui, "consent"))
+
+
+class SavedLifecycleTests(unittest.TestCase):
+    start = LifecycleTests.start
+
+    def setUp(self):
+        LifecycleTests.setUp(self)
+        from test_client_store import FakeSecret
+        self.fake = FakeSecret()
+        gio = SimpleNamespace(Cancellable=lambda: SimpleNamespace(cancel=lambda: None),
+            DBusError=SimpleNamespace(get_remote_error=lambda exc: getattr(exc, "remote", None)))
+        patcher = patch.dict("sys.modules", {"gi": SimpleNamespace(require_version=lambda *_: None),
+            "gi.repository": SimpleNamespace(Secret=self.fake, Gio=gio)})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def save_start(self):
+        self.model.accept("document")
+        self.ui.pasted("synthetic-secret")
+        self.ui.pump(lambda: hasattr(self.ui, "consent"))
+        self.ui.consent(True, True)
+
+    def test_save_failure_retains_runtime_retry_and_secret_free_snapshots(self):
+        self.model.stage = "joining"
+        reads = []
+        self.model.discover(lambda *r: reads.append(r))
+        self.assertEqual(reads, [(None, "busy", "none")])
+        self.assertFalse(self.model.storage_busy)
+        self.model.stage = "idle"
+        self.fake.mode = "write-failed"
+        self.save_start()
+        self.ui.pump(lambda: self.ui.opened is not None)
+        self.assertTrue(self.session.intent)
+        self.assertEqual(self.model.saved_access, "notSaved")
+        self.assertEqual(self.model.stage, "opening")
+        self.model.loaded(self.model.token, True)
+        self.fake.mode = "ok"
+        replies = []
+        self.model.save(self.model.token, finish=lambda *r: replies.append(r))
+        self.ui.pump(lambda: bool(replies))
+        self.assertEqual((self.model.stage, self.model.saved_access), ("connected", "saved"))
+        self.assertEqual(replies[-1][0]["effect"], "confirmed")
+        for snapshot in self.ui.snapshots:
+            self.protocol.result("client.status", snapshot)
+            for secret in ("hrpin_", "machine-key", "synthetic-private", "synthetic-home", "synthetic-DER"):
+                self.assertNotIn(secret, json.dumps(snapshot))
+
+    def test_cancel_save_waits_safe_point_and_retains_observed_custody(self):
+        entered, release = threading.Event(), threading.Event()
+        self.addCleanup(release.set)
+        create = self.fake.Item.create_sync
+        def blocked(*args):
+            entered.set()
+            self.assertTrue(release.wait(2))
+            return create(*args)
+        self.fake.Item.create_sync = blocked
+        self.save_start()
+        self.ui.pump(entered.is_set)
+        old = self.model.token
+        replies = []
+        self.model.confirm_stop(lambda *r: replies.append(r))
+        self.ui.confirmed(True)
+        self.assertEqual(self.model.stage, "stopping")
+        self.assertTrue(self.ui.storage_waiting)
+        self.assertNotIn("stop", [name for name, _ in self.session.calls])
+        release.set()
+        self.ui.pump(lambda: bool(replies))
+        self.model.loaded(old, True)
+        self.assertEqual((self.model.stage, self.model.saved_access), ("idle", "saved"))
+        self.assertNotIn("open", [name for name, _ in self.session.calls])
+        self.assertEqual(replies[-1][0]["effect"], "confirmed")
+        self.assertEqual(len(self.fake.items), 1)
+
+    def test_retry_save_runtime_failure_waits_for_custody_then_stops(self):
+        for mode in ("ok", "write-failed"):
+            for hold in (False, True):
+                with self.subTest(mode=mode, hold=hold):
+                    self.ui = UI()
+                    self.model, self.session = self.ui.model, Session(None)
+                    self.fake.mode = "write-failed"
+                    self.save_start()
+                    self.ui.pump(lambda: self.ui.opened is not None)
+                    self.model.loaded(self.model.token, True)
+                    entered, release = threading.Event(), threading.Event()
+                    self.addCleanup(release.set)
+                    create = self.fake.create
+                    def blocked(*args):
+                        entered.set()
+                        self.assertTrue(release.wait(2))
+                        return create(*args)
+                    self.fake.Item.create_sync = blocked
+                    self.fake.mode = mode
+                    replies = []
+                    self.model.save(self.model.token, finish=lambda *r: replies.append(r))
+                    self.ui.pump(entered.is_set)
+                    token = self.model.token
+                    if hold:
+                        self.model.confirm_stop(lambda *_: None)
+                    self.model.loaded(token, False)  # WebKit load/process failure
+                    self.model.loaded(token, True)  # A later callback cannot heal it.
+                    self.assertNotIn("stop", [n for n, _ in self.session.calls])
+                    release.set()
+                    self.ui.pump(lambda: bool(replies))
+                    if hold:
+                        self.ui.confirmed(False)
+                    self.ui.pump(lambda: not self.model.workers and self.ui.queue.empty())
+                    self.assertEqual((self.model.stage, self.model.runtime), ("failed", "unknown"))
+                    self.assertEqual(self.model.saved_access, "saved" if mode == "ok" else "notSaved")
+                    self.assertIn("runtimeUnavailable", self.ui.errors)
+                    self.assertIsNone(self.model.session)
+                    self.fake.Item.create_sync = create
+
+    def test_save_completion_while_confirmation_open_holds_progress(self):
+        entered, release = threading.Event(), threading.Event()
+        self.addCleanup(release.set)
+        create = self.fake.Item.create_sync
+        def blocked(*args):
+            entered.set()
+            self.assertTrue(release.wait(2))
+            return create(*args)
+        self.fake.Item.create_sync = blocked
+        self.save_start()
+        self.ui.pump(entered.is_set)
+        self.model.confirm_stop(lambda *_: None)
+        release.set()
+        self.ui.pump(lambda: not self.model.saving)
+        self.assertEqual((self.model.stage, self.model.saved_access), ("saving", "saved"))
+        self.assertIsNone(self.ui.opened)
+        self.ui.confirmed(False)
+        self.ui.pump(lambda: self.ui.opened is not None)
+        self.assertEqual(self.model.stage, "opening")
+        self.model.loaded(self.model.token, True)
+        self.assertEqual(self.model.stage, "connected")
+
+    def test_saved_resume_document_load_fences_and_truthful_remove(self):
+        from test_client_store import record
+        self.model.store.save(record())
+        replies = []
+        self.model.discover(lambda *r: replies.append(r))
+        self.ui.pump(lambda: bool(replies))
+        self.protocol.result("client.savedComputers", replies[-1][0])
+        ref = replies[-1][0]["computers"][0]["computerRef"]
+        self.model.connect_saved(ref, "document", lambda *r: replies.append(r))
+        stale = self.ui.saved_consent
+        self.model.detach("document")
+        self.ui.pump(lambda: self.model.stage == "idle")
+        stale(True)
+        self.assertEqual(self.session.calls, [])
+        self.model.connect_saved(ref, "new-document", lambda *r: replies.append(r))
+        self.ui.saved_consent(True)
+        self.ui.pump(lambda: self.ui.opened is not None)
+        self.assertEqual([n for n, _ in self.session.calls], ["restore", "open"])
+        self.assertEqual(self.model.stage, "opening")
+        self.model.loaded(self.model.token, True)
+        self.assertEqual(self.model.stage, "connected")
+        self.model.stop()
+        self.ui.pump(lambda: self.model.stage == "idle")
+        self.assertEqual(len(self.fake.items), 1)
+        self.fake.mode = "delete-lies"
+        self.model.remove_saved(ref, "new-document", lambda *r: replies.append(r))
+        self.ui.saved_consent(True)
+        self.ui.pump(lambda: not self.model.storage_busy)
+        self.assertEqual(self.model.saved_access, "removalIncomplete")
+        self.assertEqual(replies[-1][1:], ("removalIncomplete", "unknown"))
+        self.fake.mode = "ok"
+        self.model.remove_saved(ref, "new-document", lambda *r: replies.append(r))
+        self.ui.saved_consent(True)
+        self.ui.pump(lambda: not self.model.storage_busy)
+        self.assertEqual((self.model.saved_access, self.fake.items), ("none", []))
+        self.assertEqual(replies[-1][0]["localCleanup"], "confirmed")
+        self.assertEqual(replies[-1][0]["hostDenial"], "unknown")
 
 
 class RequestTests(unittest.TestCase):

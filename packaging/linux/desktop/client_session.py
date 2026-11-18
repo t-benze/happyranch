@@ -87,7 +87,7 @@ _STATE_LIMIT = 64 * 1024
 
 
 class SavedRecord(_codec._Redacted):
-    """Native-only immutable binding; Secret Service custody belongs to slice 8b."""
+    """Native-only immutable binding; never project credentials or trust to web."""
 
     __slots__ = ("version", "bearer", "home_id", "control_plane_id", "stable_node_id",
                  "connector_id", "control_url", "ca_der", "fingerprint", "dial_ip",
@@ -145,6 +145,11 @@ class ClientSession:
     @classmethod
     def resume(cls, prefix: Path, record: SavedRecord) -> ClientSession:
         session = cls(prefix)
+        session.restore(record)
+        return session
+
+    def restore(self, record: SavedRecord) -> None:
+        """Use an already-owned session so stop also seals a partial launch."""
         try:
             if (type(record) is not SavedRecord or record.version != 1
                     or not re.fullmatch(r"hrpin_[1-9][0-9]{0,18}_[0-9a-f]{64}", record.bearer)
@@ -153,10 +158,9 @@ class ClientSession:
                     or record.fingerprint != hashlib.sha256(record.ca_der).hexdigest()):
                 raise ClientError("stateUnavailable")
             _network_state(record.network_state, record.control_plane_id, record.stable_node_id)
-            session._launch(record, True, record)
-            return session
+            self._launch(record, True, record)
         except (OSError, ValueError, ClientError) as error:
-            session.stop()
+            self.stop()
             category = "identityMismatch" if str(error) == "identityMismatch" else "resumeUnavailable"
             raise ClientError(category) from None
 

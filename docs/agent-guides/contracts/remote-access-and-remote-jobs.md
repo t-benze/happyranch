@@ -1317,8 +1317,8 @@ cross-platform `app/mac/tsnet-bridge` Go module. Its additive
 setuid bit or system service. The existing `--home-bridge-v2` profile/recovery
 path and Mac build behavior are unchanged; shared Go sources are used by both builds.
 The native session adapter supplies an in-memory saved-record/resume seam in
-slice 8a. Secret Service custody, GTK saved reconnect and real saved-access
-acceptance remain slice 8b; this transport alone establishes none of them.
+slice 8a. Slice 8b adds native Secret Service custody and GTK saved reconnect;
+transport readiness alone establishes neither custody nor loaded-runtime acceptance.
 
 Legacy launch uses the existing uint32 big-endian length (1..16384) plus closed JSON
 on private stdin: exactly `version` (2), `caDER`, `dialIP`, `homeID`,
@@ -1350,8 +1350,26 @@ product bearer and immutable redacted saved records remain in the native adapter
 No keyring, file-backed state, persistent credential cache, consumed marker or
 substitute credential store is opened by 8a. No secret enters argv/env or an IPC
 file. Founder THR-379 seq60 approved Q3: Linux saved access uses the system
-keyring/Secret Service. Slice 8b supplies exact-binding custody and its failure
-handling; unavailable saving continues session-only without plaintext fallback.
+keyring/Secret Service. The native 8b owner uses GI Secret and only the default
+login collection, schema ai.happyranch.LinuxClient.v1, exact hashed home/control/
+StableNodeID/profile attributes, and verified save/readback/delete. It stores only
+SavedRecord resume material; never invitations, pair secrets, handles or bootstrap
+tokens. Locked/denied custody needs native permission; unavailable/failed saving
+continues session-only with a persistent accessible native warning and static
+Retry save. No plaintext or substitute store. Readable saved computers remain
+visible if a peer item is unreadable. Inventory limits apply only to this schema;
+unrelated login items do not consume capacity. Save/removal isolate malformed peers
+with a provably different binding; unreadable or possibly matching identities
+retain uncertainty. Reconnect rereads native custody and uses
+same-node resume with the loaded-runtime gate; Disconnect retains actually saved
+access. Remove verifies exact local absence and reports partial cleanup honestly,
+without claiming Host revocation or network unenrollment. Cancellation during a
+write/readback invalidates the attempt and waits for that safe point before
+teardown, retaining the observed custody outcome. Runtime failure during Retry
+save also waits for this safe point and cannot restore Connected. Generated Linux
+saved-computer ordinals use the static view's current locale without remounting
+controls or changing opaque refs. Source and disposable-keyring
+tests do not replace packaged/live, cross-device or different-network acceptance.
 The native launcher must provide only its admitted environment, including
 `XDG_RUNTIME_DIR`; it must not inherit credential/debug/trust overrides.
 
