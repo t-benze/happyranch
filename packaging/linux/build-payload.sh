@@ -163,6 +163,9 @@ mkdir -p "$PAYLOAD/libexec/remote-access"
 (cd "$WORK/source/app/linux/tsnet-sidecar" && go build -buildvcs=false -mod=readonly -trimpath \
     -o "$PAYLOAD/libexec/remote-access/happyranch-home-ca" ./cmd/happyranch-home-ca)
 chmod 755 "$PAYLOAD/libexec/remote-access/happyranch-home-ca"
+(cd "$WORK/source/app/linux/tsnet-sidecar" && go build -buildvcs=false -mod=readonly -trimpath \
+    -o "$PAYLOAD/libexec/remote-access/happyranch-home-admin" ./cmd/happyranch-home-admin)
+chmod 755 "$PAYLOAD/libexec/remote-access/happyranch-home-admin"
 cat > "$PAYLOAD/bin/happyranch" <<'CLI'
 #!/bin/sh
 set -eu

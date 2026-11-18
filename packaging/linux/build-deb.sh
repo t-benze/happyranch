@@ -110,6 +110,7 @@ with tempfile.TemporaryDirectory(prefix='happyranch-deb-', dir='/tmp') as tempor
             parser.error('payload symlink escapes its prefix')
     for required in ('bin/happyranch', 'bin/happyranch-daemon', 'bin/happyranch-app',
                      'libexec/headscale/headscale', 'libexec/remote-access/happyranch-home-ca',
+                     'libexec/remote-access/happyranch-home-admin',
                      'licenses/headscale-LICENSE',
                      'licenses/headscale-modules.json', 'licenses/headscale-build-info.json',
                      'licenses/headscale/go-runtime/LICENSE',
@@ -129,9 +130,10 @@ with tempfile.TemporaryDirectory(prefix='happyranch-deb-', dir='/tmp') as tempor
     except (OSError, ValueError, UnicodeError):
         parser.error('invalid connection resource manifest or assets')
 
-    materializer = payload / 'libexec/remote-access/happyranch-home-ca'
-    if materializer.is_symlink() or not materializer.stat().st_mode & 0o111:
-        parser.error('unsafe home CA materializer payload')
+    for name in ('happyranch-home-ca', 'happyranch-home-admin'):
+        materializer = payload / 'libexec/remote-access' / name
+        if materializer.is_symlink() or not materializer.stat().st_mode & 0o111:
+            parser.error('unsafe home runner payload')
 
     # Inspect foreign-architecture payloads without executing them. Reject old
     # unsafe tarballs; build-payload repairs and tests the native interpreter.

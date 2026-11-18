@@ -1693,7 +1693,7 @@ custody environment override. The installed binary is outside PATH and
 | Admission and bounds | Literal descriptor-relative `O_NOFOLLOW` directory/leaf opens; leaves also use nonblocking opens before type checks. Inventory reads at most five names to refuse more than the four fixed leaves. Files use same-FD bounded reads and metadata rechecks. Unknown entries refuse and are preserved. A nonblocking directory flock serializes cooperating commands without adding a lock file; this is not a fence against a separate root writer. |
 | Publication / recovery | Generate and validate before publication. Each member uses its exclusive same-directory `.<name>.pending`, exact 0600 owner/mode, file fsync, descriptor-relative rename, directory fsync. Publish the key durably **before** the certificate, for both CA creation and leaf rotation. A crash can leave a key-only pair (`incomplete-state`), pending residue (`unexpected-entry`), or old certificate/new key (`invalid-key` for write verbs); each refuses without further writes or automatic recovery/deletion. A complete CA without a leaf pair may safely issue its first leaf. No newly published CA certificate becomes usable without its already-durable matching key. |
 | Test isolation | Only same-package `_test.go` calls supply a temporary root, current test UID/GID and clock/euid observations to the unexported command logic. The shipped entry supplies literal `/`, root:root, actual euid and current time; there is no production flag/environment redirection. Temp-root checks prove owner/mode as observable by the unprivileged test process, not installed root acceptance. |
-| 3b-2f handoff | 3b-2f-1 now supplies explicit inert account/receipt/custody preparation, restrictive ACL and separate unit rendering and owned inert cleanup with A–E receipt retry (see above). The 3b-2f-2 prefix now wires LAN selection, port preflight, rendered config/DERP publication, root-only path/digest receipt and owned cleanup. Its remainder now copies **only** the validated staged leaf cert/key into `/etc/happyranch/headscale` for locked `happyranch-headscale` service custody, plus protected CA-only `/etc/happyranch/control-ca.pem` and empty-directory publication/cleanup. Running-service renewal/reload coordination stays deferred to authenticated lifecycle operations. CA signing key stays root-only in `home-ca/`; this command performs no Headscale copy, configuration, user/unit creation, start, reload or cleanup. 3b-2g owns later helper invocation. |
+| 3b-2f handoff | 3b-2f-1 now supplies explicit inert account/receipt/custody preparation, restrictive ACL and separate unit rendering and owned inert cleanup with A–E receipt retry (see above). The 3b-2f-2 prefix now wires LAN selection, port preflight, rendered config/DERP publication, root-only path/digest receipt and owned cleanup. Its remainder now copies **only** the validated staged leaf cert/key into `/etc/happyranch/headscale` for locked `happyranch-headscale` service custody, plus protected CA-only `/etc/happyranch/control-ca.pem` and empty-directory publication/cleanup. Running-service renewal/reload coordination stays deferred to authenticated lifecycle operations. CA signing key stays root-only in `home-ca/`; this command performs no Headscale copy, configuration, user/unit creation, start, reload or cleanup. 3b-2g-1 now provides the inert fixed admin runner and durable minter store/lock below. Activation and helper invocation remain 3b-2g-2. |
 
 ### Pure home Headscale renderers and LAN selector (THR-327 slice 3b-2a)
 
@@ -2181,14 +2181,86 @@ temporary real pairing state and an abrupt child-process exit cover this core;
 real local minting, protected IPC/authentication and installed/native acceptance
 remain in the later serial 3c-2b slice.
 
+### Inert Linux home admin transport (THR-327 slice 3b-2g-1 prefix)
+
+This prefix delivers items 1 and 2: `home_admin.RootHeadscaleAdminOperations`,
+`DurableOperationRecordStore` and the uncalled `RootHomeInviteMinter` composition.
+Its fixed root runner is `/opt/happyranch-desktop/libexec/remote-access/happyranch-home-admin`.
+It reuses pinned `golang.org/x/net/http2` v0.27.0; no new module or credential.
+Only v0.25.1 Create/List/ExpirePreAuthKey over the literal local
+`/run/happyranch-headscale/headscale.sock` are supported. No CLI key operation.
+Root/service-owned literal parents are opened no-follow; service directory is
+0700, socket 0600/single-link with service UID/GID and matching SO_PEERCRED.
+The installed binary and its parents must be root-owned, without group/world
+write; the regular single-link binary is 0755. No endpoint/path/environment
+selector exists. Before reading any secret, runner command startup discards the
+standard logger's output. This suppresses x/net's separate frame logging even
+when inherited `GODEBUG=http2debug=1` or `=2` enabled flags during package init;
+clearing `VerboseLogs` alone cannot suppress those flags. No diagnostic sink is
+re-enabled, and the private binary response writer is separate.
+
+Requests/responses use bounded binary stdin/stdout pipes, never argv/env/logs;
+runner failure is only exit 2 (no RPC sent) or 3 (uncertain), with no diagnostic
+stream. Python drops stderr/native exceptions and raises fixed categories
+outside handlers. Complete unary uncompressed gRPC framing, HTTP 200 and exactly
+one successful grpc-status are required; other server codes remain uncertain.
+All response fields follow R1–R3 below, without JSON/protojson. Datetime projects
+valid nanos to microseconds by truncation, so expiration never extends.
+One original monotonic deadline, capped at five seconds, spans Python custody,
+request encoding, the remaining subprocess/socket/RPC/body budget, complete
+wire/record projection, per-row user/duplicate-ID validation and final success.
+Cooperative checks at bounded byte intervals, between records and after final projection
+raise sanitized uncertainty on expiry; no partial or late success is returned.
+Strict projection checks minimal varints directly without re-encoding each field,
+uses a compiled full-key check and retains a bounded cache of validated timestamp
+bytes only, never keys or records. Required fields, complete validation and
+duplicate-ID/user checks remain unchanged. The annual maximum-rate history
+(527,040 ordinary untagged rows) is exercised under the real five-second deadline;
+host sizing measurements must leave transport margin within that shared budget.
+The runner also checks its original context after the private response write,
+including any preceding durable fence settlement, before returning exit 0.
+Input and each projected record are capped at 4096 bytes, response at 128 MiB,
+inventory at 600,000 rows and tags at 128 per row. A single HTTP/2 ClientConn
+performs one RPC without Transport automatic retries.
+That byte cap fits 600,000 ordinary ~200-byte untagged rows, but unusually large
+history/tags may hit it first: complete-or-fail, never partial recovery. These
+are bounded lifecycle/work assumptions, not hard RSS or OS-I/O deadline proof.
+
+`/var/lib/happyranch-remote-access/home-minter/happyranch-invite` is root:root
+0700, reached using literal descriptor-relative no-follow traversal. A
+nonblocking directory flock spans the whole mint/recover, including cleanup,
+reserve, create and result validation. Cooperating invite writers use this
+composition. Reservations use exclusive 0600 files named by SHA256 of operation
+ID, containing only UTC creation/deadline timestamps; file and parent fsync
+precede success. Existing/partial slots are never overwritten, removed or reused.
+The runner independently serializes each user's RPCs using a protected 0600
+single-link `rpc.lock`. Before Create it writes/fsyncs an exclusive
+`fence.pending`, renames to `fence` and fsyncs the directory. A complete successful
+reply settles/removes that fence durably. Timeout, lost/invalid framing or failure
+leaves the requested expiration fence across invocations/restart. List and new
+Create refuse until that deadline passes; RPC cancellation is no settlement.
+A malformed/unsafe fence or any pending residue refuses indefinitely, preserving
+operator evidence. Expire may run, but cannot prove cleanup without complete List.
+No record/fence auto-cleanup or retention/reset operation is introduced.
+
+HomeInviteConfig reader deferred to 3b-2g-2: home_endpoint is the node's runtime tailnet endpoint, which exists only after activation joins the local node; it will come from a root receipt written at activation.
+No receipt implementation here. Issuer protected-state provisioning/owned cleanup
+(item 4) and the uncalled local-node mint function (item 5) are undelivered in
+this authorized prefix cut. The runner admits the fixed node user for later
+composition, but no node mint function or installer/helper caller is added.
+Both exact 3b-2 activation refusals, all unit bytes and home_transport=False
+remain unchanged; no enable/start/reload, control_tls write or new IPC occurs.
+Native root/Headscale/systemd and installed acceptance remain NOT RUN.
+
 ### Unwired home join-key adapter (THR-327 slice 3b-2c)
 
 `runtime.remote_access.home_minter.HeadscaleJoinKeyMinter` satisfies the existing
 `JoinKeyMinter` using injected `HeadscaleAdminOperations`, an invite user **NAME**,
 a UTC clock and `OperationRecordStore`. It does no I/O, builds no argv and imports
 no subprocess/socket/gRPC client or environment access. TASK-16780 owns the
-concrete protected local admin-socket transport, root invocation, user/ACL
-creation, helper wiring and any dependency that transport requires. Nothing
+concrete protected local admin-socket transport and root invocation, delivered
+in the inert 3b-2g-1 prefix above by home_admin and the fixed packaged Go runner;
+user/ACL creation and helper activation wiring remain later work. Nothing
 here installs, invokes or proves real Headscale behavior or native acceptance.
 
 Tagged v0.25.1 contracts relied on (verified read-only; not a CLI/JSON adapter):
@@ -2275,7 +2347,16 @@ UNPINNED -> restrictive choice:
   durable operation reservations and the issuer journal across maintenance;
   reconcile any uncertain operation explicitly, never retry its create.
 - Zero UTC offset and complete typed timestamps/Booleans/strings are required;
-  no JSON coercion, missing-field defaults, ACL tags or key-format fallback.
+  no JSON/protojson or string/int coercion, ACL tags or key-format fallback.
+  R1: omitted reusable/ephemeral/used decode as false and omitted acl_tags as
+  empty, exactly following the tagged proto3 implicit-presence schema, not an
+  application default. R2: id/key/user must be present and nonempty and pass
+  minter validation; expiration/created_at must be present with valid seconds
+  (-62135596800 through 253402300799), nanos (0 through 999999999) and UTC.
+  R3: malformed varints/lengths, wrong known-field wire types, truncation,
+  repeated singular fields and unknown field numbers in PreAuthKey or response
+  messages refuse. See [tagged schema](https://github.com/juanfont/headscale/blob/v0.25.1/proto/headscale/v1/preauthkey.proto)
+  and [protobuf field presence](https://protobuf.dev/programming-guides/field_presence/).
 - Expire all unused invite-user keys, including older operations, rather than
   relying on timestamps to attribute an uncertain creation.
 - Durable insert-only operation reservations prevent a second create for an ID;
