@@ -1906,6 +1906,19 @@ if sys.argv[1:] in ([], ['--bootstrap-startup']):
                         conn.execute('PRAGMA writable_schema=RESET')
                         conn.commit()
                         assert conn.execute('PRAGMA integrity_check').fetchone()[0] != 'ok', 'A4-M corrupt fixture remained healthy'
+                    actual_startup_run = bootstrap.BootstrapStartup.run
+                    hold = home/'backups/workflow-sequential'/hashlib.sha256(str(runtime.root).encode()).hexdigest()/'happyranch/hold.json'
+                    def unchanged_integrity_setup(owner, roots, settings):
+                        # Observe automatic setup before ordinary startup's native
+                        # publication writes, on both first and latched next boot.
+                        source_bytes = path.read_bytes()
+                        latch_bytes = hold.read_bytes() if hold.exists() else None
+                        actual_startup_run(owner, roots, settings)
+                        assert path.read_bytes() == source_bytes, 'A4-M integrity setup changed source DB'
+                        assert sorted(p.name for p in hold.parent.iterdir()) == ['hold.json'], 'A4-M integrity setup created an attempt or backup'
+                        if latch_bytes is not None:
+                            assert hold.read_bytes() == latch_bytes, 'A4-M integrity setup rewrote retained latch'
+                    stack.enter_context(patch.object(bootstrap.BootstrapStartup, 'run', unchanged_integrity_setup))
                 blocker = OrgAccessFence.acquire(path.parent) if fault == 'ex' else None
                 native_spawn = asyncio.create_subprocess_exec
                 runner = home/'fault-helper.py'
@@ -2014,7 +2027,7 @@ OrgState.close = uncertain_close
                         assert all((root/'happyranch.db').read_bytes() == before[slug] for slug, root in runtime.iter_org_roots()), 'A4-M second automatic setup wrote org DB'
                     state = entry._build_state(Settings())
                     try:
-                        fallback = fault in ('ex', 'history') or start == 'first' and fault == 'backup'
+                        fallback = fault in ('integrity', 'ex', 'history') or start == 'first' and fault == 'backup'
                         expected = set(slugs) if fault == 'success' or fallback else set() if fault == 'late_spawn' else {'family'}
                         assert set(state._all_orgs_snapshot()) == expected, ('A4-M startup lost attachment isolation or bypassed hold', fault, state.broken_orgs)
                         # Existing profile policy may hold other consumers when a
@@ -2073,6 +2086,10 @@ OrgState.close = uncertain_close
                                 assert path.read_bytes() == (original_bytes if start == 'first' else before['happyranch']), ('A4-M failed check changed source DB', fault)
                             if start == 'next':
                                 assert not state._workflow_bootstrap.workers, 'A4-M replayed a failed or uncertain attempt'
+                            elif fault == 'integrity':
+                                worker = next(worker for worker in state._workflow_bootstrap.workers if worker.discovery.root == path.parent)
+                                assert worker.reaped and worker.closed and not worker.permit_sent, 'A4-M integrity refusal lost original no-effect custody'
+                                assert (worker.result['state'], worker.result['attempt_id']) == ('not_started', None), 'A4-M integrity refusal allocated an attempt'
                             elif fault in ('backup', 'history_precommit', 'commit_uncertain', 'kill', 'close', 'late_spawn'):
                                 worker = next(worker for worker in state._workflow_bootstrap.workers if worker.discovery.root == path.parent)
                                 assert worker.reaped, 'A4-M lost original child reap'
@@ -2097,7 +2114,8 @@ OrgState.close = uncertain_close
                         for slug, org in state._all_orgs_snapshot().items():
                             if slug == 'happyranch' and fallback:
                                 assert not org.db._conn.execute("SELECT 1 FROM sqlite_schema WHERE name GLOB 'workflow_seq_*'").fetchone(), 'A4-M fallback installed sequential storage'
-                                assert tuple(org.db._conn.execute('SELECT id,v FROM a4_mount_sentinel WHERE id=37').fetchone()) == (37, b'original\0typed'), 'A4-M fallback changed retained typed cells'
+                                retained = b'\x01\x02' if fault == 'integrity' else b'original\0typed'
+                                assert tuple(org.db._conn.execute('SELECT id,v FROM a4_mount_sentinel WHERE id=37').fetchone()) == (37, retained), 'A4-M fallback changed retained typed cells'
                                 task_status = 'completed'
                                 assert [tuple(row) for row in org.db._conn.execute('SELECT id,status FROM tasks')] == [('TASK-mounted',task_status)], 'A4-M fallback changed native tasks'
                                 continue
