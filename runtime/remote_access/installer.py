@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import ctypes
 import errno
+import fcntl
 import grp
 import hashlib
 import json
@@ -73,6 +74,8 @@ _STATE_DIRS = ("var/lib/happyranch-connector", "var/lib/happyranch-tsnet-sidecar
 _DEB_PREFIX = "opt/happyranch-desktop"
 _DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 _FILE_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
+HOME_ISSUER = headscale.INSTALLER_STATE + "/home-issuer"
+_ISSUER_RECEIPT = "home-issuer-publication.json"
 _QUARANTINE_CONFIGS = ("connector.json", "sidecar.json", "policy.json")
 _QUARANTINE_PHASES = ("replacement-quarantine-connector", "replacement-quarantine-sidecar",
                       "replacement-quarantine-policy", "replacement-quarantined")
@@ -1649,6 +1652,207 @@ class ManagedInstaller:
                     or self._headscale_owner[0] in map(int, fields)):
                 raise headscale.HeadscaleServiceError("cleanup-uncertain")
 
+    def _issuer_receipt(self) -> dict | None:
+        try:
+            with self._directory(headscale.INSTALLER_STATE) as parent:
+                self._headscale_no_pending(parent, "home-issuer")
+                self._headscale_no_pending(parent, _ISSUER_RECEIPT)
+                data = self._read_file(parent, _ISSUER_RECEIPT, owner=self.root_owner, mode=0o600)
+        except FileNotFoundError:
+            return None
+        record = self._json(data)
+        if (record.keys() != {"version", "directory", "uid", "gid", "device", "inode"}
+                or type(record["version"]) is not int or record["version"] != 1
+                or record["directory"] != "/" + HOME_ISSUER
+                or any(type(record[k]) is not int or record[k] < 0 for k in ("uid", "gid", "device", "inode"))
+                or (record["uid"], record["gid"]) != self.root_owner):
+            raise InstallerError("issuer receipt")
+        return record
+
+    @staticmethod
+    def _issuer_signature(info: os.stat_result) -> tuple[int, ...]:
+        return (info.st_dev, info.st_ino, info.st_uid, info.st_gid, info.st_mode,
+                info.st_nlink, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+
+    def _issuer_members(self, directory: int) -> dict[str, tuple[tuple[int, ...], bytes]]:
+        names = set()
+        with os.scandir(directory) as entries:
+            for entry in entries:
+                names.add(entry.name)
+                if len(names) > 2 or entry.name not in {"invite-issuer.json", "invite-issuer.lock"}:
+                    raise InstallerError("issuer residue")
+        if names and names != {"invite-issuer.json", "invite-issuer.lock"}:
+            raise InstallerError("issuer residue")
+        members = {}
+        for name in sorted(names):
+            before = os.stat(name, dir_fd=directory, follow_symlinks=False)
+            if name == "invite-issuer.lock":
+                fd = os.open(name, _FILE_FLAGS, dir_fd=directory)
+                try:
+                    info = os.fstat(fd)
+                    if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size != 0
+                            or (info.st_uid, info.st_gid) != self.root_owner
+                            or stat.S_IMODE(info.st_mode) != 0o600
+                            or self._issuer_signature(info) != self._issuer_signature(before)):
+                        raise InstallerError("issuer lock")
+                finally:
+                    os.close(fd)
+                data = b""
+            else:
+                data = self._read_file(directory, name, owner=self.root_owner, mode=0o600)
+                record = self._json(data)
+                if (len(data) > 4096
+                        or record.keys() != {"operation_id", "binding_digest", "not_before", "expires_at", "outcome"}
+                        or any(type(record[k]) is not str or re.fullmatch(pattern, record[k]) is None
+                               for k, pattern in (("operation_id", "[0-9a-f]{32}"), ("binding_digest", "[0-9a-f]{64}")))
+                        or type(record["outcome"]) is not str
+                        or record["outcome"] not in {"issued", "refused", "expired", "encoding", "pairing", "recovered"}
+                        or any(type(record[k]) not in (int, float) or not math.isfinite(record[k])
+                               or not 0 <= record[k] < 253402300300 for k in ("not_before", "expires_at"))
+                        or json.dumps(record, sort_keys=True, separators=(",", ":"), allow_nan=False).encode() != data):
+                    raise InstallerError("issuer journal")
+            if self._issuer_signature(os.stat(name, dir_fd=directory, follow_symlinks=False)) != self._issuer_signature(before):
+                raise InstallerError("issuer changed")
+            members[name] = self._issuer_signature(before), data
+        return members
+
+    def _issuer_inventory(self, *, cleanup: bool = False) -> tuple[dict | None, bool]:
+        receipt = self._issuer_receipt()
+        present = False
+        try:
+            with self._directory(headscale.INSTALLER_STATE) as parent:
+                os.stat("home-issuer", dir_fd=parent, follow_symlinks=False)
+                present = True
+        except FileNotFoundError:
+            pass
+        if not present:
+            # Retained cleanup receipts never license recreating an old directory.
+            if receipt is not None and not cleanup:
+                raise InstallerError("issuer directory missing") from None
+            return receipt, False
+        with self._directory(HOME_ISSUER) as directory:
+            info = os.fstat(directory)
+            if info.st_nlink != 2:
+                raise InstallerError("issuer directory")
+            members = self._issuer_members(directory)
+            if "invite-issuer.lock" in members:
+                lock = os.open("invite-issuer.lock", _FILE_FLAGS, dir_fd=directory)
+                try:
+                    if self._issuer_signature(os.fstat(lock)) != members["invite-issuer.lock"][0]:
+                        raise InstallerError("issuer lock changed")
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                finally:
+                    os.close(lock)
+        if receipt is None:
+            if cleanup or members:
+                raise InstallerError("issuer directory unreceipted")
+        elif (receipt["device"], receipt["inode"]) != (info.st_dev, info.st_ino):
+            raise InstallerError("issuer directory changed")
+        return receipt, True
+
+    def _prepare_issuer(self) -> None:
+        receipt, present = self._issuer_inventory()
+        if not present:
+            with self._publication_parent(headscale.INSTALLER_STATE) as (parent, revalidate):
+                self._refuse_provision_entry(parent, "home-issuer")
+                os.mkdir(".home-issuer.pending", mode=0o700, dir_fd=parent)
+                fd = os.open(".home-issuer.pending", _DIR_FLAGS, dir_fd=parent)
+                try:
+                    os.fchown(fd, *self.root_owner)
+                    os.fchmod(fd, 0o700)
+                    os.fsync(fd)
+                    info = os.fstat(fd)
+                    self._check_directory(fd, HOME_ISSUER, (0o700, self.root_owner))
+                    if (os.stat(".home-issuer.pending", dir_fd=parent, follow_symlinks=False) != info
+                            or info.st_nlink != 2 or os.listdir(fd)):
+                        raise InstallerError("issuer pending changed")
+                    revalidate()
+                    self._rename_provision_entry(parent, ".home-issuer.pending", "home-issuer")
+                    os.fsync(parent)
+                finally:
+                    os.close(fd)
+        with self._publication_parent(HOME_ISSUER) as (directory, revalidate):
+            info = os.fstat(directory)
+            record = dict(version=1, directory="/" + HOME_ISSUER, uid=self.root_owner[0],
+                          gid=self.root_owner[1], device=info.st_dev, inode=info.st_ino)
+            self._issuer_members(directory)
+            revalidate()
+            if receipt is None:
+                self._write_provision_file(_ISSUER_RECEIPT, json.dumps(record, sort_keys=True).encode(),
+                                           self.root_owner, 0o600, relative=headscale.INSTALLER_STATE)
+            elif receipt != record:
+                raise InstallerError("issuer receipt changed")
+            revalidate()
+            self._issuer_inventory()
+
+    def _cleanup_issuer(self) -> None:
+        partial = False
+        lock = None
+        try:
+            receipt, present = self._issuer_inventory(cleanup=True)
+            if not present:
+                return
+            with self._publication_parent(HOME_ISSUER) as (directory, revalidate):
+                info = os.fstat(directory)
+                if receipt is None or (receipt["device"], receipt["inode"]) != (info.st_dev, info.st_ino):
+                    raise InstallerError("issuer directory changed")
+                members = self._issuer_members(directory)
+                if "invite-issuer.lock" in members:
+                    lock = os.open("invite-issuer.lock", _FILE_FLAGS, dir_fd=directory)
+                    if self._issuer_signature(os.fstat(lock)) != members["invite-issuer.lock"][0]:
+                        raise InstallerError("issuer lock changed")
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                if self._issuer_receipt() != receipt or self._issuer_members(directory) != members:
+                    raise InstallerError("issuer changed")
+                with self._publication_parent(headscale.INSTALLER_STATE) as (parent, parent_revalidate):
+                    revalidate()
+                    parent_revalidate()
+                    # A partial unlink must not make the next call mistake a
+                    # surviving lock/empty directory for a complete operation.
+                    marker = "invite-issuer.cleanup.pending"
+                    fd = os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+                                 0o600, dir_fd=directory)
+                    partial = True
+                    try:
+                        os.fchown(fd, *self.root_owner)
+                        os.fchmod(fd, 0o600)
+                        if os.write(fd, b"cleanup\n") != 8:
+                            raise InstallerError("issuer cleanup marker")
+                        os.fsync(fd)
+                        marker_info = os.fstat(fd)
+                        if ((marker_info.st_uid, marker_info.st_gid, marker_info.st_mode, marker_info.st_nlink)
+                                != (*self.root_owner, stat.S_IFREG | 0o600, 1)):
+                            raise InstallerError("issuer cleanup marker changed")
+                    finally:
+                        os.close(fd)
+                    os.fsync(directory)
+                    for name, (before, data) in members.items():
+                        revalidate()
+                        parent_revalidate()
+                        if (self._issuer_signature(os.stat(name, dir_fd=directory, follow_symlinks=False)) != before
+                                or (name.endswith(".json") and self._read_file(directory, name,
+                                    owner=self.root_owner, mode=0o600) != data)):
+                            raise InstallerError("issuer changed")
+                        os.unlink(name, dir_fd=directory)
+                        os.fsync(directory)
+                    revalidate()
+                    parent_revalidate()
+                    if (os.listdir(directory) != [marker]
+                            or self._issuer_signature(os.stat(marker, dir_fd=directory, follow_symlinks=False))
+                            != self._issuer_signature(marker_info)):
+                        raise InstallerError("issuer cleanup changed")
+                    os.unlink(marker, dir_fd=directory)
+                    os.fsync(directory)
+                    os.rmdir("home-issuer", dir_fd=parent)
+                    os.fsync(parent)
+            return
+        except (OSError, InstallerError, ValueError, UnicodeError, headscale.HeadscaleServiceError):
+            pass
+        finally:
+            if lock is not None:
+                os.close(lock)
+        raise headscale.HeadscaleServiceError("issuer-partial-cleanup-uncertain" if partial else "issuer-cleanup-uncertain")
+
     def cleanup_headscale(self) -> dict[str, str]:
         """Disable/remove only the inert installation this installer can prove.
 
@@ -1660,10 +1864,18 @@ class ManagedInstaller:
         self._headscale_preparing = True
         partial = False
         try:
+            issuer_uncertain = False
+            try:
+                self._issuer_inventory(cleanup=True)
+            except (OSError, InstallerError, ValueError, UnicodeError, headscale.HeadscaleServiceError):
+                issuer_uncertain = True
+            if issuer_uncertain:
+                raise headscale.HeadscaleServiceError("issuer-cleanup-uncertain")
             receipt = self._headscale_receipt()
             user, group = self._headscale_cleanup_identity(receipt)
             self._headscale_inventory()
             self._headscale_cleanup_links()
+            self._cleanup_issuer()
             present = unit_present = False
             for path in (*headscale.CUSTODY, f"{_UNIT_DIR}/{headscale.UNIT}"):
                 try:
@@ -1800,8 +2012,10 @@ class ManagedInstaller:
             return {"state": "removed" if receipt else "preserved",
                     "account": "removed" if receipt else "preserved: not created by HappyRanch",
                     **({"home_ca": "preserved"} if publication else {})}
-        except (OSError, InstallerError, UnicodeError, ValueError, ServiceManagerError,
-                headscale.HeadscaleServiceError):
+        except headscale.HeadscaleServiceError as error:
+            if error.category.startswith("issuer-"):
+                raise
+        except (OSError, InstallerError, UnicodeError, ValueError, ServiceManagerError):
             pass
         finally:
             self._headscale_preparing = False
@@ -1863,6 +2077,10 @@ class ManagedInstaller:
         self._headscale_preparing = True
         category = None
         try:
+            try:
+                self._issuer_inventory()
+            except (OSError, InstallerError, ValueError, UnicodeError, headscale.HeadscaleServiceError):
+                raise headscale.HeadscaleServiceError("issuer-state-uncertain") from None
             self._headscale_owner = self._headscale_shape()
             receipt = self._headscale_receipt()
             if receipt and self._headscale_owner != (receipt["uid"], receipt["gid"]):
@@ -1966,6 +2184,10 @@ class ManagedInstaller:
                 self._write_provision_file(headscale.PUBLICATION, json.dumps(record, sort_keys=True).encode(),
                                            self.root_owner, 0o600, relative=headscale.INSTALLER_STATE)
             self._headscale_inventory()
+            try:
+                self._prepare_issuer()
+            except (OSError, InstallerError, ValueError, UnicodeError, headscale.HeadscaleServiceError):
+                raise headscale.HeadscaleServiceError("issuer-state-uncertain") from None
             return {"state": "inert", "account": outcome,
                     "preservation": "preserved: not created by HappyRanch" if outcome == "unowned" else "receipt-recorded"}
         except headscale.HeadscaleServiceError as error:
@@ -1995,6 +2217,7 @@ class ManagedInstaller:
                 layout[path] = (0o755, self.root_owner)
             layout[headscale.INSTALLER_STATE] = (0o700, self.root_owner)
             layout[headscale.HOME_CA] = (0o700, self.root_owner)
+            layout[HOME_ISSUER] = (0o700, self.root_owner)
             layout[headscale.EMPTY_CA] = (0o755, self.root_owner)
             for path in headscale.CUSTODY:
                 layout[path] = (0o700, self._headscale_owner)
@@ -2388,7 +2611,7 @@ class ManagedInstaller:
         if relative != "etc/happyranch":
             metadata = {
                 headscale.INSTALLER_STATE: {name: (self.root_owner, 0o600)
-                                            for name in (headscale.RECEIPT, headscale.PUBLICATION)},
+                                            for name in (headscale.RECEIPT, headscale.PUBLICATION, _ISSUER_RECEIPT)},
                 headscale.CUSTODY[0]: {name: (self._headscale_owner, 0o600)
                                        for name in ("policy.hujson", *headscale.CONFIG_FILES, *headscale.LEAF_FILES)},
                 _UNIT_DIR: {headscale.UNIT: (self.root_owner, 0o644)},

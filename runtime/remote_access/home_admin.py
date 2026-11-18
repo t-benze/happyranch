@@ -12,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from typing import Iterator
 
-from runtime.remote_access.headscale_service import INVITE_USER
+from runtime.remote_access.headscale_service import INVITE_USER, NODE_USER
 from runtime.remote_access.home_minter import (
     AdminRefused, CreationWindow, HeadscaleJoinKeyMinter, MintUncertain, PreAuthKey,
 )
@@ -267,15 +267,15 @@ class RootHeadscaleAdminOperations:
             raise MintUncertain() from None
 
 
-def _directory() -> int:
-    if os.geteuid() != 0:
+def _directory(user: str = INVITE_USER) -> int:
+    if os.geteuid() != 0 or user not in (INVITE_USER, NODE_USER):
         raise ValueError('custody')
     fd = os.open('/', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
     try:
         st = os.fstat(fd)
         if st.st_uid != 0 or st.st_gid != 0 or st.st_mode & 0o022:
             raise ValueError('custody')
-        for i, part in enumerate((_STATE + '/' + INVITE_USER).strip('/').split('/')):
+        for i, part in enumerate((_STATE + '/' + user).strip('/').split('/')):
             if i >= 2:
                 try:
                     os.mkdir(part, 0o700, dir_fd=fd)
@@ -324,11 +324,11 @@ class DurableOperationRecordStore:
 
 
 @contextmanager
-def _locked() -> Iterator[HeadscaleJoinKeyMinter]:
-    fd = _directory()
+def _locked(user: str = INVITE_USER) -> Iterator[HeadscaleJoinKeyMinter]:
+    fd = _directory() if user == INVITE_USER else _directory(user)
     try:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        yield HeadscaleJoinKeyMinter(admin=RootHeadscaleAdminOperations(), invite_user=INVITE_USER,
+        yield HeadscaleJoinKeyMinter(admin=RootHeadscaleAdminOperations(), invite_user=user,
                                     now_fn=lambda: datetime.now(timezone.utc),
                                     records=DurableOperationRecordStore(fd))
     finally:
@@ -361,3 +361,22 @@ class RootHomeInviteMinter:
                 return minter.recover(operation_id)
         except BaseException:
             return False
+
+
+def mint_local_node(operation_id: str, expires_at: datetime) -> MintedKey:
+    """Uncalled fixed-node composition; private in-memory result, never activation."""
+    refused, entered = False, False
+    try:
+        with _locked(NODE_USER) as minter:
+            entered = True
+            return minter.mint(operation_id, expires_at)
+    except MintRefused:
+        refused = True
+    except MintUncertain:
+        pass
+    except BaseException:
+        refused = not entered
+    del operation_id, expires_at
+    if refused:
+        raise MintRefused('refused') from None
+    raise MintUncertain() from None

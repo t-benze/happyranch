@@ -27,6 +27,8 @@ MATERIALIZER = "/opt/happyranch-desktop/libexec/remote-access/happyranch-home-ca
 EMPTY_CA = "etc/happyranch/empty-ca-directory"
 CONTROL_CA = "etc/happyranch/control-ca.pem"
 PUBLISHED = (*CONFIG_FILES, *LEAF_FILES, "control-ca.pem", PUBLICATION)
+ISSUER = "var/lib/happyranch-remote-access/home-issuer"
+ISSUER_RECEIPT = "home-issuer-publication.json"
 
 EXPECTED_POLICY = b'''{
   "acls": [
@@ -293,6 +295,228 @@ def fixture(tmp_path: Path, monkeypatch) -> Fixture:
     monkeypatch.setattr(home.socket, "socket", lambda *args: KernelDump(value, args))
     monkeypatch.setattr(home, "preflight_ports", value.preflights.append)
     return value
+
+
+def foreign_metadata(monkeypatch, path: Path) -> None:
+    original = os.fstat
+    identity = path.stat().st_dev, path.stat().st_ino
+    def observe(fd):
+        info = original(fd)
+        if (info.st_dev, info.st_ino) != identity: return info
+        value = SimpleNamespace(**{k: getattr(info, k) for k in dir(info) if k.startswith("st_")})
+        value.st_uid += 1
+        return value
+    monkeypatch.setattr(module.os, "fstat", observe)
+
+
+def issuer_journal(path: Path, outcome: str = "issued") -> None:
+    (path / "invite-issuer.lock").touch(mode=0o600)
+    (path / "invite-issuer.json").write_text(json.dumps(dict(
+        operation_id="a" * 32, binding_digest="b" * 64, not_before=123,
+        expires_at=456, outcome=outcome), sort_keys=True, separators=(",", ":")))
+    (path / "invite-issuer.json").chmod(0o600)
+
+
+@pytest.mark.parametrize("existing", [False, True])
+def test_issuer_prepare_receipts_exact_directory(fixture, monkeypatch, capsys, existing) -> None:
+    path = fixture.root / ISSUER
+    if existing:
+        path.parent.mkdir(parents=True, mode=0o700)
+        path.mkdir(mode=0o700)
+        (fixture.root / "var").chmod(0o755)
+        (fixture.root / "var/lib").chmod(0o755)
+    code, output = fixture.prepare(monkeypatch, capsys)
+    assert code == 0, output
+    assert path.is_dir(), "prepare must publish the protected issuer directory"
+    info = path.stat()
+    assert (info.st_uid, info.st_gid, info.st_mode & 0o777) == (fixture.uid, fixture.gid, 0o700)
+    receipt = path.parent / ISSUER_RECEIPT
+    assert json.loads(receipt.read_bytes()) == dict(version=1, directory="/" + ISSUER,
+        uid=fixture.uid, gid=fixture.gid, device=info.st_dev, inode=info.st_ino)
+    assert receipt.stat().st_mode & 0o777 == 0o600
+    before = receipt.read_bytes()
+    assert fixture.prepare(monkeypatch, capsys)[0] == 0
+    assert receipt.read_bytes() == before
+    assert not any(call[:2] in (["systemctl", "start"], ["systemctl", "enable"],
+                                ["systemctl", "daemon-reload"]) for call in fixture.calls)
+
+
+@pytest.mark.parametrize("entry", ["symlink", "fifo", "file", "mode", "owner", "parent-link", "pending", "foreign"])
+def test_issuer_prepare_refuses_unsafe_without_repair(fixture, monkeypatch, capsys, entry) -> None:
+    path = fixture.root / ISSUER
+    path.parent.mkdir(parents=True, mode=0o700)
+    (fixture.root / "var").chmod(0o755)
+    (fixture.root / "var/lib").chmod(0o755)
+    if entry == "symlink":
+        target = fixture.root / "foreign-issuer"
+        target.mkdir(mode=0o700)
+        path.symlink_to(target)
+    elif entry == "fifo": os.mkfifo(path, 0o600)
+    elif entry == "file": path.write_bytes(b"foreign")
+    else:
+        path.mkdir(mode=0o755 if entry == "mode" else 0o700)
+        if entry == "owner":
+            foreign_metadata(monkeypatch, path)
+        if entry == "parent-link":
+            target = path.parent.with_name("redirected-state")
+            path.parent.rename(target)
+            path.parent.symlink_to(target)
+        if entry == "pending": (path.parent / ".home-issuer.pending").mkdir(mode=0o700)
+        if entry == "foreign": (path / "foreign").write_bytes(b"keep")
+    mode = path.lstat().st_mode
+    code, output = fixture.prepare(monkeypatch, capsys)
+    assert code == 1 and "issuer-state-uncertain" in output
+    assert path.lstat().st_mode == mode
+    assert not (path.parent / ISSUER_RECEIPT).exists()
+    assert fixture.calls == []
+
+
+@pytest.mark.parametrize("name", [".home-issuer.pending", ".home-issuer-publication.json.pending",
+    "home-issuer/invite-issuer.pending", "home-issuer/invite-issuer.cleanup.pending"])
+@pytest.mark.parametrize("kind", ["file", "directory", "symlink", "hardlink", "fifo"])
+def test_issuer_pending_residue_is_never_repaired(fixture, monkeypatch, capsys, name, kind) -> None:
+    assert fixture.prepare(monkeypatch, capsys)[0] == 0
+    path = fixture.root / home.INSTALLER_STATE / name
+    if kind == "directory": path.mkdir(mode=0o700)
+    elif kind == "symlink": path.symlink_to(path.with_name("absent-target"))
+    elif kind == "fifo": os.mkfifo(path, 0o600)
+    elif kind == "hardlink": path.hardlink_to(fixture.receipt())
+    else: path.write_bytes(b"synthetic pending")
+    before = path.lstat()
+    fixture.calls.clear()
+    assert fixture.prepare(monkeypatch, capsys)[0] == 1
+    assert fixture.cleanup(monkeypatch, capsys)[0] == 1
+    assert path.lstat() == before and fixture.calls == []
+
+
+@pytest.mark.parametrize("outcome", [None, "issued", "refused", "expired", "encoding", "pairing", "recovered"])
+def test_issuer_owned_cleanup_preserves_siblings_and_receipts(fixture, monkeypatch, capsys, outcome) -> None:
+    assert fixture.prepare(monkeypatch, capsys)[0] == 0
+    path = fixture.root / ISSUER
+    if outcome: issuer_journal(path, outcome)
+    minter = path.parent / "home-minter"
+    minter.mkdir(mode=0o700)
+    (minter / "keep").write_bytes(b"operation fence")
+    receipt = path.parent / ISSUER_RECEIPT
+    before = receipt.read_bytes()
+    code, output = fixture.cleanup(monkeypatch, capsys)
+    assert code == 0, output
+    assert not path.exists()
+    assert receipt.read_bytes() == before
+    assert (minter / "keep").read_bytes() == b"operation fence"
+    assert (path.parent / "home-ca/ca.key").read_bytes() == b"synthetic CA private key"
+    fixture.calls.clear()
+    code, output = fixture.prepare(monkeypatch, capsys)
+    assert code == 1 and "issuer-state-uncertain" in output
+    assert not path.exists() and fixture.calls == []
+
+
+@pytest.mark.parametrize("tamper", ["minting", "uncertain", "pending", "foreign", "edited", "mode", "owner",
+    "hardlink", "symlink", "fifo", "lock-content", "lock-missing", "journal-missing", "busy", "receipt", "receipt-pending",
+    "receipt-hardlink", "receipt-symlink", "receipt-mode", "receipt-fifo", "receipt-owner", "receipt-missing",
+    "lock-symlink", "lock-hardlink", "lock-mode", "lock-fifo", "lock-owner", "directory-swap"])
+def test_issuer_cleanup_preserves_whole_uncertain_directory(fixture, monkeypatch, capsys, tamper) -> None:
+    import fcntl
+    assert fixture.prepare(monkeypatch, capsys)[0] == 0
+    path = fixture.root / ISSUER
+    issuer_journal(path, tamper if tamper in {"minting", "uncertain"} else "issued")
+    journal = path / "invite-issuer.json"
+    receipt = path.parent / ISSUER_RECEIPT
+    if tamper in {"pending", "foreign"}: (path / ("invite-issuer.pending" if tamper == "pending" else "foreign")).write_bytes(b"keep")
+    if tamper == "edited": journal.write_bytes(b'{"outcome":"issued"}')
+    if tamper == "mode": journal.chmod(0o644)
+    if tamper in {"owner", "receipt-owner", "lock-owner"}:
+        foreign_metadata(monkeypatch, journal if tamper == "owner" else receipt if tamper == "receipt-owner"
+                         else path / "invite-issuer.lock")
+    if tamper == "hardlink": (fixture.root / "journal-alias").hardlink_to(journal)
+    if tamper in {"symlink", "fifo"}:
+        journal.unlink()
+        if tamper == "symlink": journal.symlink_to(receipt)
+        else: os.mkfifo(journal, 0o600)
+    if tamper == "lock-content": (path / "invite-issuer.lock").write_bytes(b"foreign")
+    if tamper == "lock-missing": (path / "invite-issuer.lock").unlink()
+    if tamper == "journal-missing": journal.unlink()
+    lock_path = path / "invite-issuer.lock"
+    if tamper == "lock-hardlink": (fixture.root / "lock-alias").hardlink_to(lock_path)
+    if tamper == "lock-mode": lock_path.chmod(0o644)
+    if tamper in {"lock-symlink", "lock-fifo"}:
+        lock_path.unlink()
+        if tamper == "lock-symlink": lock_path.symlink_to(receipt)
+        else: os.mkfifo(lock_path, 0o600)
+    if tamper == "receipt-missing": receipt.unlink()
+    if tamper == "receipt": receipt.write_bytes(b'{}')
+    if tamper == "receipt-pending": (receipt.parent / ("." + receipt.name + ".pending")).write_bytes(b"keep")
+    if tamper == "receipt-hardlink": (fixture.root / "receipt-alias").hardlink_to(receipt)
+    if tamper == "receipt-mode": receipt.chmod(0o644)
+    if tamper in {"receipt-symlink", "receipt-fifo"}:
+        receipt.unlink()
+        if tamper == "receipt-symlink": receipt.symlink_to(journal)
+        else: os.mkfifo(receipt, 0o600)
+    if tamper == "directory-swap":
+        path.rename(path.with_name("kept-issuer"))
+        path.mkdir(mode=0o700)
+        issuer_journal(path)
+    lock = os.open(path / "invite-issuer.lock", os.O_RDONLY) if tamper == "busy" else None
+    if lock is not None: fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    def snapshot():
+        return {p.name: (p.lstat().st_ino, p.lstat().st_mode, p.lstat().st_size,
+                         p.lstat().st_mtime_ns, p.lstat().st_ctime_ns) for p in path.iterdir()}
+    before = snapshot()
+    fixture.calls.clear()
+    try:
+        code, output = fixture.cleanup(monkeypatch, capsys)
+        assert code == 1 and "issuer-cleanup-uncertain" in output
+        with pytest.raises(home.HeadscaleServiceError) as caught:
+            fixture.installer.cleanup_headscale()
+        assert caught.value.__cause__ is None and caught.value.__context__ is None
+    finally:
+        if lock is not None: os.close(lock)
+    assert snapshot() == before
+    assert fixture.calls == []
+
+
+@pytest.mark.parametrize("boundary", ["directory-pending", "directory-published", "receipt-pending", "receipt-published"])
+def test_issuer_publication_crash_and_retry_preserves_residue(fixture, monkeypatch, capsys, boundary) -> None:
+    assert fixture.prepare(monkeypatch, capsys)[0] == 0
+    path = fixture.root / ISSUER
+    path.rmdir()
+    (path.parent / ISSUER_RECEIPT).unlink()
+    original = fixture.installer._rename_provision_entry
+    pid = os.fork()
+    if pid == 0:
+        def crash(parent, source, target, **kwargs):
+            selected = target == ("home-issuer" if boundary.startswith("directory") else ISSUER_RECEIPT)
+            if selected and boundary.endswith("pending"): os._exit(73)
+            original(parent, source, target, **kwargs)
+            if selected: os._exit(73)
+        fixture.installer._rename_provision_entry = crash
+        fixture.installer.prepare_headscale()
+        os._exit(74)
+    assert os.waitpid(pid, 0)[1] == 73 << 8
+    if boundary.endswith("pending"):
+        pending = ".home-issuer.pending" if boundary.startswith("directory") else "." + ISSUER_RECEIPT + ".pending"
+        before = (path.parent / pending).lstat()
+        assert fixture.prepare(monkeypatch, capsys)[0] == 1
+        assert (path.parent / pending).lstat().st_ino == before.st_ino
+    else:
+        assert path.is_dir()
+        assert fixture.prepare(monkeypatch, capsys)[0] == 0
+
+
+def test_issuer_partial_cleanup_preserves_pending_on_retry(fixture, monkeypatch, capsys) -> None:
+    assert fixture.prepare(monkeypatch, capsys)[0] == 0
+    path = fixture.root / ISSUER
+    issuer_journal(path)
+    original = os.unlink
+    def fail(name, **kwargs):
+        if name == "invite-issuer.lock": raise OSError("synthetic removal interruption")
+        return original(name, **kwargs)
+    with monkeypatch.context() as patch:
+        patch.setattr(module.os, "unlink", fail)
+        code, output = fixture.cleanup(monkeypatch, capsys)
+    assert code == 1 and "issuer-partial-cleanup-uncertain" in output
+    assert (path / "invite-issuer.cleanup.pending").exists()
+    assert fixture.cleanup(monkeypatch, capsys)[0] == 1
 
 
 def test_created_receipt_custody_and_inert_unit(fixture, monkeypatch, capsys) -> None:

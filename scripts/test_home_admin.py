@@ -280,6 +280,123 @@ def test_after_create_wrapper_failure_stays_uncertain(monkeypatch) -> None:
         h.RootHomeInviteMinter().mint('op', NOW)
 
 
+@pytest.mark.parametrize('failure', [None, 'refused', 'uncertain', 'reusable', 'ephemeral', 'tags', 'long-expiry'])
+def test_local_node_mint_fixed_user_policy_and_private_result(root, monkeypatch, failure) -> None:
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    deadline = now + timedelta(seconds=120)
+    calls = []
+    monkeypatch.setattr(h, '_runner_custody', lambda: None)
+    def run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        if argv[1] == 'list': return 0, b''
+        assert argv[1] == 'create'
+        if failure == 'refused': return 2, b''
+        if failure == 'uncertain': return 3, KEY
+        expiration = deadline + timedelta(seconds=1 if failure == 'long-expiry' else 0)
+        data = (h._bytes(1, b'happyranch-node') + h._bytes(2, b'node-id') + h._bytes(3, KEY)
+                + h._bytes(7, timestamp(int(expiration.timestamp())))
+                + h._bytes(8, timestamp(int(now.timestamp()))))
+        if failure == 'reusable': data += b'\x20\x01'
+        if failure == 'ephemeral': data += b'\x28\x01'
+        if failure == 'tags': data += h._bytes(9, b'tag:foreign')
+        return 0, h._bytes(1, data)
+    monkeypatch.setattr(h, '_default_run', run)
+    if failure is None:
+        result = h.mint_local_node('local-op', deadline)
+        assert type(result) is h.MintedKey and result.key == KEY.decode() and result.expires_at == deadline
+        assert repr(result) == 'MintedKey(<redacted>)'
+    else:
+        with pytest.raises(MintRefused if failure == 'refused' else MintUncertain) as caught:
+            h.mint_local_node('local-op', deadline)
+        assert caught.value.__cause__ is None and caught.value.__context__ is None
+        assert KEY.decode() not in str(caught.value)
+    assert [argv[1] for argv, _ in calls] == ['list', 'list', 'create']
+    assert all(h._bytes(1, b'happyranch-node') in kw['input_bytes'] for _, kw in calls)
+    create = list(h._fields(calls[-1][1]['input_bytes']))
+    assert [number for number, _, _ in create] == [1, 4]  # false flags/no tags on wire
+    assert KEY.decode() not in repr([argv for argv, _ in calls])
+    records = list(root.rglob('operation-*'))
+    assert len(records) == 1 and records[0].parent.name == 'happyranch-node'
+    assert KEY not in records[0].read_bytes()
+
+
+@pytest.mark.parametrize('seconds', [0, -1, 301])
+def test_local_node_invalid_expiry_makes_no_admin_calls(root, monkeypatch, seconds) -> None:
+    calls = []
+    monkeypatch.setattr(h, '_runner_custody', lambda: None)
+    monkeypatch.setattr(h, '_default_run', lambda *a, **kw: calls.append(a))
+    with pytest.raises(MintRefused):
+        h.mint_local_node('local-op', datetime.now(timezone.utc) + timedelta(seconds=seconds))
+    assert calls == []
+
+
+def test_local_node_serialization_and_retry_fence(root, monkeypatch) -> None:
+    from runtime.remote_access.home_minter import PreAuthKey
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    calls = []
+    monkeypatch.setattr(h.RootHeadscaleAdminOperations, 'list_pre_auth_keys', lambda *a, **kw: ())
+    def create(*args, **kwargs):
+        calls.append(kwargs)
+        return PreAuthKey(kwargs['user'], 'id', KEY.decode(), False, False, False,
+                          kwargs['expiration'], now, ())
+    monkeypatch.setattr(h.RootHeadscaleAdminOperations, 'create_pre_auth_key', create)
+    with h._locked('happyranch-node'):
+        with pytest.raises(MintRefused): h.mint_local_node('op', now + timedelta(seconds=120))
+    assert calls == []
+    h.mint_local_node('op', now + timedelta(seconds=120))
+    with pytest.raises(MintRefused): h.mint_local_node('op', now + timedelta(seconds=120))
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize('tamper', ['symlink', 'fifo', 'file', 'mode', 'owner', 'parent-link'])
+def test_local_node_custody_refuses_before_admin(root, monkeypatch, tamper) -> None:
+    fd = h._directory('happyranch-node')
+    os.close(fd)
+    path = root / h._STATE.lstrip('/') / 'happyranch-node'
+    if tamper in {'symlink', 'fifo', 'file'}:
+        path.rmdir()
+        if tamper == 'symlink': path.symlink_to(root / 'var/lib')
+        elif tamper == 'fifo': os.mkfifo(path, 0o600)
+        else: path.write_bytes(b'foreign')
+    if tamper == 'mode': path.chmod(0o755)
+    if tamper == 'owner':
+        original = os.fstat
+        def foreign(fd):
+            info = original(fd)
+            if os.stat(fd).st_ino == path.stat().st_ino:
+                return SimpleNamespace(st_uid=1, st_gid=0, st_mode=info.st_mode, st_nlink=info.st_nlink)
+            return info
+        monkeypatch.setattr(h.os, 'fstat', foreign)
+    if tamper == 'parent-link':
+        path.parent.rename(path.parent.with_name('kept-minter'))
+        path.parent.symlink_to(path.parent.with_name('kept-minter'))
+    calls = []
+    monkeypatch.setattr(h, '_runner_custody', lambda: None)
+    monkeypatch.setattr(h, '_default_run', lambda *a, **kw: calls.append(a))
+    with pytest.raises(MintRefused):
+        h.mint_local_node('op', datetime.now(timezone.utc) + timedelta(seconds=120))
+    assert calls == []
+
+
+@pytest.mark.parametrize('entry', ['foreign', 'symlink', 'hardlink', 'fifo', 'partial'])
+def test_local_node_existing_reservation_is_never_reused(root, monkeypatch, entry) -> None:
+    fd = h._directory('happyranch-node')
+    os.close(fd)
+    path = root / h._STATE.lstrip('/') / 'happyranch-node' / ('operation-' + hashlib.sha256(b'op').hexdigest())
+    if entry == 'symlink': path.symlink_to(root / 'absent')
+    elif entry == 'fifo': os.mkfifo(path, 0o600)
+    else:
+        path.write_bytes(b'' if entry == 'partial' else b'foreign')
+        if entry == 'hardlink': path.with_suffix('.alias').hardlink_to(path)
+    before = path.lstat()
+    calls = []
+    monkeypatch.setattr(h.RootHeadscaleAdminOperations, 'list_pre_auth_keys', lambda *a, **kw: ())
+    monkeypatch.setattr(h.RootHeadscaleAdminOperations, 'create_pre_auth_key', lambda *a, **kw: calls.append(kw))
+    with pytest.raises(MintRefused):
+        h.mint_local_node('op', datetime.now(timezone.utc) + timedelta(seconds=120))
+    assert calls == [] and path.lstat() == before
+
+
 @pytest.mark.parametrize('phase', ['wire', 'records', 'final'])
 def test_list_projection_deadline(monkeypatch, phase: str) -> None:
     # Unique, proto3-omitted history; synthetic time avoids a speed benchmark.
