@@ -214,8 +214,8 @@ class ClientUI:
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         # Native chrome remains visible even after the connection window closes.
         notice = Gtk.Label(label=self.tr(
-            "Session only · Access is not saved. Reopening requires a new invite and Host approval.",
-            "仅限当前会话 · 访问权限未保存。重新打开需要新邀请和主机批准。"))
+            "Session only · Access is not saved. Reopening may require a new invite and Host approval.",
+            "仅限当前会话 · 访问权限未保存。重新打开可能需要新邀请和主机批准。"))
         notice.set_line_wrap(True)
         notice.get_accessible().set_name(notice.get_text())
         notice.set_no_show_all(True)
