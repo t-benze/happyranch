@@ -2406,8 +2406,8 @@ an already-observed pair, but a failure from prepared/activating cannot invent
 one. Ordinary phase updates preserve release/installation IDs, generation,
 operation ID, CA and dial IP, and any already-populated observation. Generation
 rollover/recovery remains coordinator-owned; the linear publisher never resets
-a terminal record. B4 fixes only the `home-activation-txn@1` format here;
-G2-C owns its closed fields and per-effect intent publication.
+a terminal record. B4 defines the separate `home-activation-txn@1` fields and
+per-effect intent publication below.
 
 `member_digests` is a closed object with exactly these six literal keys, each
 a 64 lowercase-hex SHA-256 of the full file bytes, required in **every** phase
@@ -2512,6 +2512,56 @@ may add ControlURL/control_tls from validated `prepared` state; validators admit
 the live field set only alongside matching `home-activation@1`. After a crash,
 resume only a phase whose intent and on-disk members both verify; otherwise
 `failed_uncertain`, requiring Turn off/ReplaceFailed. Never adopt pending files.
+
+G2-C1 fixes `/var/lib/happyranch-remote-access/home-activation-txn.json` as
+root:root 0600, at most 16384 bytes inclusive, in the existing root:root 0700
+parent. Its exact closed keys are `format, release_uid, home_id,
+control_plane_id, connector_id, activation_generation, operation_id,
+ca_der_sha256, dial_ip, phase, effects`. Format is `home-activation-txn@1`;
+all binding fields use the B1 receipt predicates and must equal that receipt.
+Phase is `activating`, `joined` or terminal `failed_uncertain`. `effects` is a
+nonempty ordered prefix of exactly `preflight, headscale_start_verify,
+db_users, local_node_mint, credential_staging, home_config, managed_services,
+joined`. Each entry has exactly `name, state, member_digests`; state is
+`intent` or `done`. Only the last entry may be intent. Each intent is fsynced
+before its effect; done is fsynced only after independent verification.
+`member_digests` is empty except for done `home_config`, where its exact keys
+are `/etc/happyranch/connector.json` and `/etc/happyranch/sidecar.json`, each
+binding the complete nonsecret file bytes with 64 lowercase-hex SHA-256.
+Prepared B1 members remain bound by the receipt and cannot change. Credentials
+remain private transient material, independently custody/consumption-verified
+by the owner, never copied or hashed into either record (B1). Missing, duplicate,
+extra, arbitrary-path or out-of-order entries refuse. Appending the next intent,
+finishing the last intent, and closing all eight done effects as joined are the
+only forward updates. A terminal update preserves the exact effect prefix.
+Publication reuses A5, with no mkdir, in-place edit or pending adoption. A
+nonblocking directory lock spans both records and all effects.
+
+Source validation gates every forward publication (including phase advances or
+token-derived/live material) and service/admin effect. The durable effect boundary
+is this operation ID's first fsynced intent: failure before it returns a closed
+`token_source_invalid` refusal without changing either record or performing an
+effect, allowing a later retry from prepared. Failure at/after it stops all effects
+and publishes terminal `failed_uncertain` in txn and receipt. These nonsecret
+markers carry no token-derived bytes or live ControlURL/control_tls, admit only
+Turn off/ReplaceFailed, and are exempt from source validation while retaining full
+A5 discipline. If terminal publication fails, retain disk evidence and refuse;
+a fresh instance may only terminate an unverifiable intent, never resume forward.
+
+G2-C1 is an unmounted injected-owner composition ending at `joined`, with null
+observation fields. Start and every forward publication revalidate the recorded
+release UID and existing installer's same-FD source against the provisioned token.
+The coordinator checks receipt/file digests itself; the owner independently checks
+current policy/generation, custody and actual service/user/node/credential state.
+Preflight samples the existing four exclusive port binds after its durable intent,
+before any service/admin effect; an occupied port then terminates the transaction.
+Only preflight and joined intents are replayable after successful verification;
+an unfinished start/create/mint/staging/config/enroll effect is terminal. Completed
+effects are all reverified on fresh-instance resume. A mint completed without
+completed credential staging has lost its private result and is terminal too.
+The existing `mint_local_node` retains its durable operation fence: no second mint,
+new operation ID or automatic reconciliation. G2-D owns observation/ready; G2-E
+must wire production owners, protected live config admission and service integration.
 Why no founder: internal transaction with unchanged, fail-closed admission.
 
 **B5 — Home-only Headscale boot/stop dependency and inventory gates.**
