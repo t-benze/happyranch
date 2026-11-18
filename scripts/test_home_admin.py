@@ -492,7 +492,7 @@ def admin_user(identity: int = 1, name: str = 'happyranch-node') -> bytes:
 def test_fixed_admin_projection_and_pipes(monkeypatch, verb: str) -> None:
     row = admin_user()
     if verb == 'list-nodes':
-        row = b'\x08\x07' + h._bytes(7, row)
+        row = b'\x08\x07' + h._bytes(7, row) + h._bytes(3, b'a' * 64) + h._bytes(5, b'100.64.0.10')
     admin = transport(monkeypatch, h._bytes(1, row))
     calls = []
     monkeypatch.setattr(h, '_default_run', lambda argv, **kw: calls.append((argv, kw)) or (0, h._bytes(1, row)))
@@ -505,6 +505,7 @@ def test_fixed_admin_projection_and_pipes(monkeypatch, verb: str) -> None:
     else:
         got = admin.list_nodes(user='happyranch-node', timeout_s=1)
         assert [(n.id, n.user.id, n.user.name) for n in got] == [(7, 1, 'happyranch-node')]
+        assert (got[0].node_key_sha256, got[0].ip_addresses) == ('a' * 64, ('100.64.0.10',))
     assert len(calls) == 1
     argv, kw = calls[0]
     assert argv[:2] == [h._RUNNER, verb] and len(argv) == 3
@@ -577,7 +578,7 @@ def test_fixed_admin_late_transport(monkeypatch, verb: str) -> None:
 @pytest.mark.parametrize('scenario', ['512', '513', 'duplicate', 'wrong-user', 'unknown', 'missing-id', 'mismatched-user-id'])
 def test_fixed_admin_node_inventory(monkeypatch, scenario: str) -> None:
     def node(identity: int = 1, user: bytes = admin_user()) -> bytes:
-        return b'\x08' + h._varint(identity) + h._bytes(7, user)
+        return b'\x08' + h._varint(identity) + h._bytes(7, user) + h._bytes(3, b'a' * 64)
     body = h._bytes(1, node())
     if scenario in ('512', '513'):
         body = b''.join(h._bytes(1, node(i + 1)) for i in range(int(scenario)))
@@ -613,3 +614,17 @@ def test_fixed_admin_projection_deadline(monkeypatch) -> None:
     monkeypatch.setattr(h, '_user_identity', late)
     with pytest.raises(MintUncertain):
         admin.list_users(timeout_s=1)
+
+
+@pytest.mark.parametrize('digest,ips', [(b'A' * 64, []), (b'a' * 63, []), (b'a' * 64, [b'bad']),
+    (b'a' * 64, [b'100.064.0.10']), (b'a' * 64, [b'100.64.0.10'] * 2),
+    (b'a' * 64, [b'100.64.0.1', b'100.64.0.2', b'100.64.0.3'])])
+def test_node_observation_projection_refusal(monkeypatch, digest, ips) -> None:
+    """B3 closed canonical projection; regression = skip digest/IP validation.
+
+    Existing inventory tests lack these new fields; no production-only test seam.
+    """
+    row = b'\x08\x01' + h._bytes(7, admin_user()) + h._bytes(3, digest)
+    row += b''.join(h._bytes(5, ip) for ip in ips)
+    with pytest.raises(MintUncertain):
+        transport(monkeypatch, h._bytes(1, row)).list_nodes(user='happyranch-node', timeout_s=1)

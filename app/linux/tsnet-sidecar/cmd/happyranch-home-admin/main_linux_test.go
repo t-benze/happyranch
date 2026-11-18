@@ -328,6 +328,9 @@ func adminUser(id uint64, name string) []byte {
 func adminNode(id uint64, name string) []byte {
 	return append(binary.AppendUvarint([]byte{8}, id), fieldBytes(7, adminUser(1, name))...)
 }
+func projectedAdminNode(id uint64) []byte {
+	return append(adminNode(id, "happyranch-node"), fieldBytes(3, []byte("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"))...)
+}
 func TestFixedAdminLists(t *testing.T) {
 	for _, verb := range []string{"list-users", "list-nodes"} {
 		t.Run(verb, func(t *testing.T) {
@@ -337,6 +340,9 @@ func TestFixedAdminLists(t *testing.T) {
 				row, data, method = adminNode(7, "happyranch-node"), fieldBytes(1, []byte("happyranch-node")), "ListNodes"
 			}
 			want := fieldBytes(1, row)
+			if verb == "list-nodes" {
+				want = fieldBytes(1, append(append(append([]byte{}, row...), fieldBytes(3, []byte("af0bd11df7faee84e8e11d76915b9ab0c0d4dbea44a1b53ec399a900a5003cd5"))...), fieldBytes(5, []byte("100.64.0.10"))...))
+			}
 			calls := serve(t, s, func(w http.ResponseWriter, r *http.Request) {
 				b, _ := io.ReadAll(r.Body)
 				if r.URL.Path != "/headscale.v1.HeadscaleService/"+method || len(b) < 5 || !bytes.Equal(b[5:], data) {
@@ -351,7 +357,7 @@ func TestFixedAdminLists(t *testing.T) {
 					wire = fieldBytes(1, raw)
 				}
 				if verb == "list-nodes" {
-					wire = fieldBytes(1, append(append([]byte{}, row...), fieldBytes(3, []byte("synthetic-node-key-canary"))...))
+					wire = fieldBytes(1, append(append(append([]byte{}, row...), fieldBytes(3, []byte("synthetic-node-key-canary"))...), fieldBytes(5, []byte("100.64.0.10"))...))
 				}
 				reply(w, wire, "0")
 			})
@@ -537,7 +543,7 @@ func TestFixedAdminCreateReconciliation(t *testing.T) {
 }
 
 func TestFixedAdminNodeInventory(t *testing.T) {
-	for _, scenario := range []string{"512", "513", "duplicate-id", "foreign-user", "wrong-fixed-user", "mismatched-user-id", "unknown-field", "duplicate-field", "bad-bool", "row-size", "truncated", "compressed", "multi-frame"} {
+	for _, scenario := range []string{"512", "513", "duplicate-id", "foreign-user", "wrong-fixed-user", "mismatched-user-id", "unknown-field", "duplicate-field", "bad-bool", "row-size", "truncated", "compressed", "multi-frame", "bad-ip", "duplicate-ip", "three-ips"} {
 		t.Run(scenario, func(t *testing.T) {
 			s := fixture(t)
 			body := fieldBytes(1, adminNode(1, "happyranch-node"))
@@ -564,6 +570,19 @@ func TestFixedAdminNodeInventory(t *testing.T) {
 				body = fieldBytes(1, append(adminNode(1, "happyranch-node"), 0xb0, 1, 2))
 			case "row-size":
 				body = fieldBytes(1, append(adminNode(1, "happyranch-node"), fieldBytes(3, bytes.Repeat([]byte("x"), 4096))...))
+			case "bad-ip", "duplicate-ip", "three-ips":
+				ips := []string{"bad"}
+				if scenario == "duplicate-ip" {
+					ips = []string{"100.64.0.1", "100.64.0.1"}
+				}
+				if scenario == "three-ips" {
+					ips = []string{"100.64.0.1", "100.64.0.2", "100.64.0.3"}
+				}
+				row := adminNode(1, "happyranch-node")
+				for _, ip := range ips {
+					row = append(row, fieldBytes(5, []byte(ip))...)
+				}
+				body = fieldBytes(1, row)
 			}
 			serve(t, s, func(w http.ResponseWriter, r *http.Request) {
 				if scenario == "truncated" || scenario == "compressed" {
@@ -585,7 +604,11 @@ func TestFixedAdminNodeInventory(t *testing.T) {
 			var out bytes.Buffer
 			code := command([]string{"list-nodes", "1000"}, bytes.NewReader(fieldBytes(1, []byte("happyranch-node"))), &out, s)
 			if scenario == "512" {
-				if code != 0 || !bytes.Equal(out.Bytes(), body) {
+				var want []byte
+				for i := 1; i <= 512; i++ {
+					want = append(want, fieldBytes(1, projectedAdminNode(uint64(i)))...)
+				}
+				if code != 0 || !bytes.Equal(out.Bytes(), want) {
 					t.Fatal("maximum complete nodes refused")
 				}
 			} else if code != 3 || out.Len() != 0 {
@@ -675,7 +698,8 @@ func TestFixedAdminDiagnosticsStartup(t *testing.T) {
 			if child.Run() != nil {
 				t.Fatal("runner startup failed")
 			}
-			if diagnostics.Len() != 0 || !bytes.Equal(out.Bytes(), fieldBytes(1, adminNode(7, "happyranch-node"))) {
+			want := fieldBytes(1, append(adminNode(7, "happyranch-node"), fieldBytes(3, []byte("218d89138a765dcad6510e12bb9b0ab53f6dbb1f5ae911316d981bfe6e6d0951"))...))
+			if diagnostics.Len() != 0 || !bytes.Equal(out.Bytes(), want) {
 				t.Fatal("key material escaped projection/log suppression")
 			}
 		})

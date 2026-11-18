@@ -38,6 +38,7 @@ const ConnectorSocket = "/run/happyranch-connector/ingress.sock"
 const identityFrameLimit = 1024
 
 type Config struct {
+	HomeBinding                                         bindingConfig   `json:"home_binding,omitempty"`
 	ControlTLS                                          *HomeControlTLS `json:"control_tls,omitempty"`
 	Profile                                             string          `json:",omitempty"`
 	StateDir, CredentialFile, ControlURL, RoleIdentity  string
@@ -46,6 +47,11 @@ type Config struct {
 }
 
 func (c Config) Validate() error {
+	if len(c.HomeBinding) != 0 {
+		if _, err := parseHomeBinding(c.HomeBinding); err != nil || c.Profile != LinuxIdentityProfile || c.ControlTLS == nil || !c.ControlTLS.valid() || c.ControlURL != homeURL {
+			return ErrConfiguration
+		}
+	}
 	u, err := url.Parse(c.ControlURL)
 	if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil || strings.EqualFold(u.Hostname(), "controlplane.tailscale.com") {
 		return ErrConfiguration
@@ -103,22 +109,25 @@ type Dialer interface {
 }
 
 type Sidecar struct {
-	cfg             Config
-	engine          Engine
-	dialer          Dialer
-	mu              sync.Mutex
-	listener        net.Listener
-	active          map[net.Conn]struct{}
-	starting        bool
-	startDone       chan struct{}
-	stopping        bool
-	healthCancel    context.CancelFunc
-	stopOnce        sync.Once
-	engineCloseOnce sync.Once
-	acceptWG        sync.WaitGroup
-	proxyWG         sync.WaitGroup
-	stopErr         error
-	engineErr       error
+	cfg                Config
+	engine             Engine
+	dialer             Dialer
+	mu                 sync.Mutex
+	listener           net.Listener
+	observer           net.Listener
+	observationBinding *homeBinding
+	observerWG         sync.WaitGroup
+	active             map[net.Conn]struct{}
+	starting           bool
+	startDone          chan struct{}
+	stopping           bool
+	healthCancel       context.CancelFunc
+	stopOnce           sync.Once
+	engineCloseOnce    sync.Once
+	acceptWG           sync.WaitGroup
+	proxyWG            sync.WaitGroup
+	stopErr            error
+	engineErr          error
 }
 
 func New(cfg Config, engine Engine, dialer Dialer) *Sidecar {
@@ -135,6 +144,7 @@ func (s *Sidecar) Start(ctx context.Context) error {
 		return ErrListener
 	}
 	s.starting = true
+	s.observationBinding, _ = parseHomeBinding(s.cfg.HomeBinding)
 	s.startDone = make(chan struct{})
 	done := s.startDone
 	s.mu.Unlock()
@@ -185,6 +195,13 @@ func (s *Sidecar) Start(ctx context.Context) error {
 		return ErrListener
 	}
 	s.listener = l
+	if err := s.startObserver(ctx); err != nil {
+		s.listener = nil
+		s.mu.Unlock()
+		_ = l.Close()
+		s.closeEngine()
+		return ErrListener
+	}
 	if runtime.GOOS == "linux" {
 		s.startHealth(ctx)
 	}
@@ -498,6 +515,7 @@ func (s *Sidecar) shutdown(cause error, acceptCaller bool) {
 		}
 		s.mu.Lock()
 		l := s.listener
+		observer := s.observer
 		s.listener = nil
 		if s.healthCancel != nil {
 			s.healthCancel()
@@ -507,6 +525,10 @@ func (s *Sidecar) shutdown(cause error, acceptCaller bool) {
 		if l != nil {
 			teardownFailed = l.Close() != nil
 		}
+		if observer != nil {
+			_ = observer.Close()
+		}
+		s.observerWG.Wait()
 		s.mu.Lock()
 		for c := range s.active {
 			_ = c.Close()

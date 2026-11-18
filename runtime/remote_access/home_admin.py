@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import fcntl
 import hashlib
+import ipaddress
 import os
 import re
 import stat
@@ -305,13 +306,19 @@ class RootHeadscaleAdminOperations:
                 if len(row) > 4096:
                     raise ValueError('wire')
                 if verb == 'list-nodes':
-                    fields = _message(row, {1: 0, 7: 2}, deadline=deadline)
+                    fields = _message(row, {1: 0, 3: 2, 5: 2, 7: 2}, 5, deadline)
                     identity, user = fields[1], _user_identity(fields[7], deadline)
                     if (not 0 < identity < 1 << 64 or user.name != name
                             or (user_id is not None and user_id != user.id)):
                         raise ValueError('wire')
                     user_id = user.id
-                    item = HeadscaleNode(identity, user)
+                    digest = fields[3].decode('ascii')
+                    addresses = tuple(ip.decode('ascii') for ip in fields[5])
+                    if (re.fullmatch('[0-9a-f]{64}', digest) is None or len(addresses) > 2
+                            or len(set(addresses)) != len(addresses)
+                            or any(str(ipaddress.ip_address(ip)) != ip or '%' in ip for ip in addresses)):
+                        raise ValueError('wire')
+                    item = HeadscaleNode(identity, user, digest, addresses)
                 else:
                     item = _user_identity(row, deadline)
                     identity = item.id
@@ -353,6 +360,8 @@ class HeadscaleNode:
 
     id: int
     user: HeadscaleUser
+    node_key_sha256: str
+    ip_addresses: tuple[str, ...]
 
     def __repr__(self) -> str:
         return 'HeadscaleNode(<redacted>)'

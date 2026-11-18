@@ -1,4 +1,4 @@
-"""Unmounted G2-C1 forward composition; stops at joined, never publishes ready.
+"""Unmounted forward composition and explicit B2 joined-to-ready publication.
 
 Owners supply fixed service/admin/config operations and independent verification.
 No CLI, helper, installer, supervisor or application calls this module.
@@ -19,6 +19,7 @@ from runtime.remote_access.home_activation_txn import (
     CONFIG_MEMBERS, EFFECTS, Effect, HomeActivationTransaction, HomeActivationTransactionStore,
 )
 from runtime.remote_access.invite_issuer import MintedKey
+from runtime.remote_access.home_observer import HomeObserver
 
 
 class ActivationRefused(ValueError):
@@ -116,6 +117,56 @@ class HomeActivationCoordinator:
             if receipt.local_node_stable_id is not None or receipt.home_endpoint is not None:
                 raise ActivationRefused()
             self._receipts.publish(replace(receipt, phase="failed_uncertain"), expected=receipt)
+
+    def _observed_pair(self, expected: HomeActivationReceipt, generation: int,
+                       phase: str) -> HomeActivationTransaction:
+        receipt = self._receipts.read(expected_generation=generation)
+        transaction = self._transactions.read_optional()
+        if (type(expected) is not HomeActivationReceipt or receipt != expected or receipt.phase != phase
+                or transaction is None or transaction.phase != "joined" or not transaction.matches(receipt)
+                or len(transaction.effects) != len(EFFECTS)
+                or any(effect.state != "done" for effect in transaction.effects)
+                or (phase == "joined" and (receipt.local_node_stable_id is not None
+                                           or receipt.home_endpoint is not None))):
+            raise ActivationRefused()
+        self._members(receipt, transaction)
+        self._source(receipt)
+        return transaction
+
+    def publish_ready(self, *, observer: HomeObserver, expected: HomeActivationReceipt,
+                      expected_generation: int) -> HomeActivationReceipt:
+        """Ruling 8: one receipt write from the completed joined pair only.
+
+        Explicit entry, same-run or fresh instance; failures never call _fail or
+        change either joined record. No activation owner or mint effect occurs.
+        """
+        try:
+            with self._transactions.locked():
+                transaction = self._observed_pair(expected, expected_generation, "joined")
+                observed = observer.observe(expected, expected_generation=expected_generation)
+                if self._observed_pair(expected, expected_generation, "joined") != transaction:
+                    raise ActivationRefused()
+                ready = replace(expected, phase="ready", local_node_stable_id=observed.stable_id,
+                                home_endpoint=observed.home_endpoint)
+                self._publish_receipt(ready, expected)
+                return ready
+        except Exception:
+            raise ActivationRefused() from None
+
+    def verify_ready(self, *, observer: HomeObserver, expected: HomeActivationReceipt,
+                     expected_generation: int) -> HomeActivationReceipt:
+        """Read-only fresh B2 verification for later restart admission (G2-E)."""
+        try:
+            with self._transactions.locked():
+                transaction = self._observed_pair(expected, expected_generation, "ready")
+                observed = observer.observe(expected, expected_generation=expected_generation)
+                if (observed.stable_id != expected.local_node_stable_id
+                        or observed.home_endpoint != expected.home_endpoint
+                        or self._observed_pair(expected, expected_generation, "ready") != transaction):
+                    raise ActivationRefused()
+                return expected
+        except Exception:
+            raise ActivationRefused() from None
 
     def run(self, prepared: HomeActivationReceipt) -> HomeActivationReceipt:
         """Externally selected prepared binding; never generate/reuse another ID.

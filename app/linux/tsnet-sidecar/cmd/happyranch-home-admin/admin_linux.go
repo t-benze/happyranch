@@ -3,9 +3,12 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/binary"
+	"fmt"
 	"io"
 	"net/http"
+	"net/netip"
 	"os"
 	"strconv"
 	"syscall"
@@ -207,6 +210,24 @@ func projectNodes(data []byte, name string) ([]byte, int, bool) {
 			}
 		}
 		row := append(binary.AppendUvarint([]byte{8}, id), wireBytes(7, u.wire)...)
+		// v0.25.1 NodeKey.String() is the stored text, including nodekey:.
+		var keyText []byte
+		if len(node[3]) == 1 {
+			keyText = node[3][0].data
+		}
+		row = append(row, wireBytes(3, []byte(fmt.Sprintf("%x", sha256.Sum256(keyText))))...)
+		if len(node[5]) > 2 {
+			return nil, 0, false
+		}
+		seen := map[string]bool{}
+		for _, field := range node[5] {
+			ip, err := netip.ParseAddr(string(field.data))
+			if err != nil || ip.Zone() != "" || seen[ip.String()] {
+				return nil, 0, false
+			}
+			seen[ip.String()] = true
+			row = append(row, wireBytes(5, []byte(ip.String()))...)
+		}
 		out = append(out, wireBytes(1, row)...)
 	}
 	return out, len(rows), true

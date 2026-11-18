@@ -2469,6 +2469,44 @@ generation, and alone publishes the canonical endpoint into B1. Health, metrics,
 hostname, CLI stdout, environment and JS input never supply endpoint authority.
 Why no founder: private IPC between existing processes, unchanged user/network UX.
 
+**Manager Ruling 8 (G2-D1, B2/B4):** `publish_ready` is a separate explicit,
+unmounted entry, admitted only from the consistent completed pair: txn `joined`
+with all eight effects done, receipt `joined` with the same binding, generation
+and operation and a null observation pair. Same-run and fresh-instance calls are
+admitted. It performs only B2 observation, the read-only B3 cross-check below and
+one A5 receipt publication, with source-token validation before publication.
+Failure/mismatch publishes nothing and preserves both joined records byte-exactly.
+Every other pair refuses this entry; the original activation entry retains
+Ruling 7's terminal-only path. `verify_ready` compares a fresh observation to a
+ready receipt's StableID, endpoint and bindings without publication, mint or rekey.
+
+**Manager Ruling 10 (G2-D1, B2):** home Headscale allocates IPv4 only. Require
+exactly one tailnet address: IPv4 inside `100.64.0.0/10`, either a host address or
+an exactly `/32` prefix normalized to that host. Zero/multiple, IPv6, non-/32 and
+out-of-range addresses refuse. `home_endpoint` is canonical dotted decimal plus
+`:443`, additionally admitted by `invite_v2._endpoint_valid`. Never select by
+ordering or use MagicDNS/hostname authority.
+
+**Manager Ruling 11 (G2-D1, B2/B3):** SO_PEERCRED UID and PID must match the
+fresh UID/MainPID of the exact owned sidecar unit, supplied by an injected owner.
+Production systemd owner/admission wiring and the protected config writer remain
+G2-E. Config gains one optional closed `home_binding` object, exactly `home_id`,
+`control_plane_id`, `connector_id`, `activation_generation`, using B1 grammars.
+It is admitted only with LinuxIdentityProfile, valid nonnil ControlTLS and exact
+homeURL; refused elsewhere, absent from inert/legacy bytes. The sidecar snapshots
+the loaded binding at process start. The closed reply has exactly `format`,
+`stable_id`, `tailnet_addresses`, `control_url`, `node_key_sha256`, `binding`;
+format is `observe-self@1`, and extra/missing/duplicate keys refuse. The request
+is exactly ASCII `observe-self@1\n`, then write EOF; one response ends at EOF.
+Root compares control URL and all binding members with the protected B1 receipt
+and externally expected generation. This detects stale loaded config, but is not
+independent node proof. Through only the fixed B3 adapter, root lists
+`happyranch-node`: exactly one node must match the observed digest, and that same
+node must contain the selected IPv4. Otherwise refuse. If the receipt StableID
+is null, publish the observed StableID and endpoint together in joined→ready;
+an already populated StableID must match exactly. No other observation publishes.
+All new composition stays unmounted; no runtime/CLI/app/D-Bus caller is added.
+
 **B3 — Fixed Headscale DB-user/node administration.**
 Extend only the existing root runner/adapter with `ListUsers`, `CreateUser`
 (names only `happyranch-node` and `happyranch-invite`), `ListNodes` filtered to
@@ -2487,8 +2525,12 @@ G2-B keeps these operations uncalled. `list-users` takes an empty request;
 never argv. Each ListNodes call requests one of the two users and verifies every
 returned row belongs to that user. Closed tagged v0.25.1 schemas reject unknown
 fields (including pagination), duplicate identities/singular fields and torn
-records. Output projects only user ID/name and node ID/user; raw node/machine/
-disco/pre-auth keys and optional metadata are discarded before stdout.
+records. Output projects user ID/name and node ID/user, plus Ruling 11's additive
+`node_key_sha256` (64 lowercase-hex SHA-256 of stored node-key text, including its
+prefix) and `ip_addresses` (at most two unique canonical host addresses, v4/v6).
+The private projected protobuf uses node fields 3 for the digest and 5 for IPs;
+it never carries a raw key. Raw node/machine/disco/pre-auth keys and other optional
+metadata are discarded before stdout. The old verbs, limits and redaction remain.
 
 CreateUser serializes on the existing per-user `rpc.lock` and honors the existing
 pre-auth-key fence. Before its sole create, it fsyncs an insert-only root:root
@@ -2562,6 +2604,9 @@ instance repeats this terminal-only path. Already-terminal records stay terminal
 Same-run forward progression is unchanged. B7 explicit fresh-auth Enable recovery
 is the sole route back to ready for that failed operation; Turn off/ReplaceFailed
 may retire it. G2-C2 owns that recovery and is not implemented in G2-C1.
+
+Ruling 8 above adds only the explicit completed joined-pair observation entry;
+it does not permit replaying any activation effect or change `run`'s Ruling 7 path.
 
 G2-C1 is an unmounted injected-owner composition ending at `joined`, with null
 observation fields. Start and every forward publication revalidate the recorded

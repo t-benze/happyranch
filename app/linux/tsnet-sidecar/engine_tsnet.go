@@ -26,6 +26,7 @@ type whoIsClient interface {
 type TSNetEngine struct {
 	server         *tsnet.Server
 	identityClient whoIsClient
+	selfClient     selfClient
 	home           *homeForwarder
 	admissionMu    sync.Mutex
 	closed         bool
@@ -81,6 +82,7 @@ func (e *TSNetEngine) Start(ctx context.Context, c EngineConfig, credential []by
 			return RedemptionReceipt{}, ErrEngine
 		}
 		e.identityClient = client
+		e.selfClient = client
 	}
 	return RedemptionReceipt{Redeemed: true, Durable: true, ExpectedPeerVisible: expectedPeerVisible(c, status)}, nil
 }
