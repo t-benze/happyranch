@@ -295,6 +295,14 @@ class DebPackageTests(unittest.TestCase):
             'python/lib/module.py': '# fixture source',
             'python/lib/__pycache__/module.cpython-312.pyc': 'generated cache',
             'share/happyranch/desktop/happyranch_window.py': '# fixture',
+            'share/happyranch/desktop/connection_window.py': '# inert fixture',
+            'share/happyranch/desktop/connection_contract.py': '# inert fixture',
+            'share/happyranch/desktop/native-connection-bridge.v1.json': '{}',
+            'share/happyranch/desktop/connection/index.html': '<html>connection fixture</html>',
+            'share/happyranch/desktop/connection/resource-manifest.json': json.dumps({
+                'version': 1, 'entry': 'index.html', 'resources': [{
+                    'path': 'index.html', 'bytes': len(b'<html>connection fixture</html>'),
+                    'sha256': hashlib.sha256(b'<html>connection fixture</html>').hexdigest()}]}),
             'licenses/HappyRanch-LICENSE': 'original license fixture',
             'licenses/nested/NOTICE': 'original dependency notice',
             'licenses/headscale-LICENSE': BUILDER.with_name('headscale-LICENSE').read_text(),
@@ -530,6 +538,28 @@ class DebPackageTests(unittest.TestCase):
                 result = self.build(archive)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn('incomplete desktop payload: ' + missing, result.stderr)
+                self.assertFalse(list((self.work / 'dist').glob('*.deb')))
+
+    def test_invalid_connection_payload_is_refused(self) -> None:
+        for index, case in enumerate(('missing', 'size', 'digest', 'extra')):
+            with self.subTest(case=case):
+                archive = self.payload(version=f'0.4.{index}')
+                root = self.work / f'happyranch-0.4.{index}-linux-x86_64'
+                connection = root / 'share/happyranch/desktop/connection'
+                entry = connection / 'index.html'
+                if case == 'missing':
+                    entry.unlink()
+                elif case == 'size':
+                    entry.write_text('truncated')
+                elif case == 'digest':
+                    entry.write_bytes(b'X' * entry.stat().st_size)
+                else:
+                    (connection / 'unlisted.js').write_text('unlisted')
+                with tarfile.open(archive, 'w:gz') as stream:
+                    stream.add(root, arcname=root.name)
+                result = self.build(archive)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('invalid connection resource manifest or assets', result.stderr)
                 self.assertFalse(list((self.work / 'dist').glob('*.deb')))
 
     def test_version_mapping(self) -> None:

@@ -150,7 +150,7 @@ PYCOPY
 # Repair after copying all interpreter/dependency ELFs, before payload execution.
 "$MANAGED_PYTHON" -I "$WORK/source/packaging/linux/python-elf-stack.py" \
     "$PAYLOAD/python" --fix --mdwe
-(cd "$WORK/source/web" && npm ci --cache "$WORK/npm-cache" && npm run build)
+(cd "$WORK/source/web" && npm ci --cache "$WORK/npm-cache" && npm run build && npm run build:connection)
 cp -a "$WORK/source/web/dist" "$PAYLOAD/web/dist"
 # Keep the private module cache removable by the EXIT trap. Go otherwise makes
 # downloaded module directories read-only, causing a completed build to fail.
@@ -189,6 +189,16 @@ chmod 755 "$PAYLOAD/bin/happyranch" "$PAYLOAD/bin/happyranch-daemon"
 install -m 755 "$WORK/source/packaging/linux/bin/happyranch-app" "$PAYLOAD/bin/happyranch-app"
 mkdir -p "$PAYLOAD/share/happyranch/desktop" "$PAYLOAD/share/applications"
 cp "$WORK/source/packaging/linux/desktop/happyranch_window.py" "$PAYLOAD/share/happyranch/desktop/"
+cp "$WORK/source/packaging/linux/desktop/connection_contract.py" \
+    "$WORK/source/packaging/linux/desktop/connection_window.py" "$PAYLOAD/share/happyranch/desktop/"
+cp "$WORK/source/protocol/native-connection-bridge.v1.json" "$PAYLOAD/share/happyranch/desktop/"
+cp -a "$WORK/source/web/dist-connection" "$PAYLOAD/share/happyranch/desktop/connection"
+"$MANAGED_PYTHON" -I - "$WORK/source/packaging/linux/desktop/connection_contract.py" \
+    "$PAYLOAD/share/happyranch/desktop/connection" <<'CONNECTION'
+import runpy, sys
+from pathlib import Path
+runpy.run_path(sys.argv[1])['Assets'](Path(sys.argv[2]))
+CONNECTION
 cp "$WORK/source/packaging/linux/desktop/happyranch.desktop.in" "$PAYLOAD/share/applications/"
 # Reuse the existing clay brand artwork; no generated/new icon design.
 for size in 16 32 64 128 256 512 1024; do

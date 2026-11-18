@@ -1,4 +1,4 @@
-# Packaged connection shell (slice 1a)
+# Packaged connection shell (slices 1a / 1b-LINUX)
 
 From `web/`, use existing dependencies only:
 
@@ -10,9 +10,9 @@ npm run typecheck
 ```
 
 This independent TypeScript entry emits only `dist-connection/`. The runtime
-SPA, daemon routes, native loaders and packaging are unchanged. No connection
-lifecycle controls ship here. Native integration and custom-scheme admission
-are slice 1b; lifecycle screens are slice 4. This shell reads status only.
+SPA and daemon routes are unchanged. No connection lifecycle controls ship here.
+Linux native integration and packaging are slice 1b-LINUX below; Mac integration
+is pending. Lifecycle screens are slice 4. This shell reads status only.
 
 `resource-manifest.json` is a literal version-1 object with `entry: "index.html"`
 and a `resources` array of exact relative `path`, UTF-8/file `bytes` and SHA-256
@@ -96,8 +96,83 @@ transition, including attempted navigation that JS cannot observe.
 
 The internal request/reply/event codecs are module exports for later relay use,
 not extra window APIs. They preserve fixed protocol/version, closed shapes,
-request/result correlation and JSON-string delivery. No native handler, platform
-transport or authorization is implemented by this web-only slice.
+request/result correlation and JSON-string delivery. The web entry supplies no native authorization; Linux owns the separate
+transport and admission described below.
+
+## Linux native loader (slice 1b-LINUX)
+
+The native titlebar **Connection / 连接** button opens `connection_window.py`
+independently of daemon startup, failure or runtime-page loading. The existing
+remote-access card remains during development. No handler or user script is
+added to the daemon-served runtime view.
+
+`build-payload.sh` runs the existing connection build and copies its output,
+manifest, protocol and native modules beside the desktop window. Payload and
+Debian validation use the packager's trusted `connection_contract.py`, never
+code from an input tarball. Both reject missing/extra files, wrong sizes/digests,
+symlinks and nonregular assets. Runtime reads repeat no-follow descriptor walks
+and byte/hash checks. Only manifest-listed literal URLs at
+`happyranch-shell://connection/` are served; the manifest itself is not served.
+The loader never reads `HAPPYRANCH_WEB_DIST`, a daemon URL or a caller asset path.
+
+Each connection view owns an ephemeral WebContext, UserContentManager,
+asset-only scheme, exact §2 CSP response header and manifest-only network filter.
+Resource MIME types are set in both WebKit metadata and Content-Type headers,
+so nosniff admits the packaged stylesheet without content sniffing.
+Navigation, popups, reloads, redirects, load failure and process loss invalidate
+the generation, unregister the handler and disconnect its dedicated bus caller.
+Opening Connection again creates a fresh view; no automatic re-admission/replay.
+
+Runtime admission checks API availability, the exact entry/origin, an empty frame
+tree, named-world channel presence, page-world channel absence and structured
+execution before constructing a fresh view with TOP_FRAME scripts. Isolation is
+constructed by the CSP (including frame-src none and no inline/eval scripts),
+manifest-only filter and native refusal of every subsequent navigation, including
+subframes, about:blank and srcdoc. Each refused attempt tears down the bridge.
+The isolated relay also observes embedded-frame insertion (including a frame
+removed in the same task) and frame CSP violations: CSP may refuse a load before
+native decide-policy runs. It stops relaying and sends rejected non-string input
+on the existing channel, which can only revoke the current native generation;
+it adds no command or frame/origin authorization claim.
+The probe does not create its own forbidden frames or mistake a parent-window
+read for child execution. TOP_FRAME and the top-level URI alone are insufficient.
+Native message admission also requires the current manager, active generation
+and pinned view URI; frame admission depends on this complete construction.
+
+WebKitGTK 2.52.6 can enable the read-only bridge with this construction. Native
+qualification must separately exercise child/parent access and non-pinned
+navigation against the loaded view. Missing APIs or failed admission still
+disable the **whole** bridge and show a bilingual native notice, explicitly
+saying the connection CLI is not available yet. No dependency-floor increase,
+file URL or network-command fallback is used. This slice does not establish
+minimum-engine, CLI or full lifecycle acceptance.
+
+Only an admitted fresh view receives the two-function facade and named-world
+relay. Native independently validates duplicate-free JSON, closed command/args
+schemas, 4 KiB requests, 32 KiB inbound replies, UTF-8 and depth limits. Hello
+advertises Linux host and client roles, only `host.status` available, all mutations
+unavailable, and limited observations. Status calls the existing helper `Status`
+with zero inputs, no interactive authorization, on a dedicated D-Bus connection.
+Only bounded public label/phrase fields are projected; fingerprints are omitted.
+After HTML decoding, Linux host labels within 256 UTF-8 bytes are unchanged;
+longer labels keep the longest whole-code-point prefix within 253 bytes plus `…`
+(3 bytes), for devices, pending and selected. Only the public display projection
+is truncated; stored labels and native identity are unchanged.
+Linux `client.status` returns a closed unavailable error (slice 3a is pending).
+No status event source exists in this helper seam, so this slice emits no events;
+`on` accepts the two fixed names and returns an idempotent unsubscribe. No invite,
+credential, selection or mutation call is implemented.
+
+Standalone invocation against an already-built/staged prefix (no daemon start):
+
+```sh
+/usr/bin/python3 -I /absolute/prefix/share/happyranch/desktop/connection_window.py --prefix /absolute/prefix --locale en
+# --locale zh-CN localizes native chrome; use Language for the web view.
+/usr/bin/python3 -B packaging/linux/desktop/test_connection.py
+/usr/bin/python3 -B packaging/linux/test_build_deb.py DebPackageTests -v
+python -m py_compile packaging/linux/desktop/connection_contract.py packaging/linux/desktop/connection_window.py packaging/linux/desktop/happyranch_window.py
+bash -n packaging/linux/build-payload.sh packaging/linux/build-deb.sh
+```
 
 ## Verification boundaries
 
