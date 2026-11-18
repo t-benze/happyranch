@@ -20,6 +20,18 @@ The existing `WORKFLOW_SCHEMA_PYTHON=3.14 bash scripts/test-workflow-schema-load
 selections) retains mounted startup coverage. These are focused scripts, outside
 retired Python units, skipped general integration and scheduled Product E2E.
 
+## Focused repository refresh (THR-381)
+
+`uv run --frozen pytest --import-mode=importlib scripts/test_repo_refresh.py scripts/test_preparation_startup.py -v --tb=short`
+uses standalone synthetic orgs, scratch local Git origins and the owned native
+process-group supervisor. It checks the three-call identity, SHA-1/SHA-256 and
+slash branches, unusable controls, real refresh call/row budgets, equal-target
+early return, final config/branch/HEAD windows and legacy transport changes.
+Each native case runs in a fresh process, preserving loaded/source agreement.
+It starts no serving daemon or executor and is outside retired units, skipped
+general integration and scheduled Product E2E. These Linux observations do not
+establish macOS or systemd backend acceptance.
+
 ## Focused repository preparation startup settlement (THR-357 Fix 2)
 
 `uv run --frozen python -B -m unittest scripts.test_preparation_startup -v`
