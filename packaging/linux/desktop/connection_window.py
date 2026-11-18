@@ -73,8 +73,26 @@ RELAY = r"""(() => {
   if (window !== top || location.href !== 'happyranch-shell://connection/index.html'
       || location.origin !== 'happyranch-shell://connection') return;
   const native = window.webkit.messageHandlers.connection;
+  let active = true;
+  const revoke = () => {
+    if (!active) return;
+    active = false;
+    // Non-string input is always rejected. This notification can only revoke
+    // the current document, never authorize a command or supply frame identity.
+    native.postMessage(null).catch(() => {});
+  };
+  const embedded = node => node.nodeType === 1 &&
+    (node.matches('iframe,frame,object,embed') || node.querySelector('iframe,frame,object,embed'));
+  const observer = new MutationObserver(records => {
+    if (records.some(record => Array.from(record.addedNodes).some(embedded))) revoke();
+  });
+  observer.observe(document, {childList:true, subtree:true});
+  addEventListener('securitypolicyviolation', event => {
+    if (['frame-src','child-src'].includes(event.effectiveDirective)) revoke();
+  });
+  addEventListener('pagehide', () => { active = false; observer.disconnect(); }, {once:true});
   addEventListener('message', async event => {
-    if (event.source !== window || event.origin !== 'happyranch-shell://connection') return;
+    if (!active || event.source !== window || event.origin !== 'happyranch-shell://connection') return;
     const item = event.data;
     if (!item || item.channel !== 'hr-connection-call' || typeof item.data !== 'string'
         || typeof item.command !== 'string' || !/^r[0-9]{1,16}$/.test(item.id)) return;
@@ -90,32 +108,17 @@ RELAY = r"""(() => {
   });
 })();"""
 
-# Admission runs in the named world without the facade. Page-world builtins
-# cannot forge this probe. A child able to access a parent function
-# could call the future parent facade, defeating a source===window relay check.
-# Test this reachability, not a JS-supplied isTop field. A failed probe never
-# enables even read-only calls. This deliberately includes initial about:blank.
+# Admission runs in the named world before adding the facade. The CSP, content
+# filter and native policy construct a frame-free document; TOP_FRAME injection
+# alone is insufficient. Do not create frames here: their refused navigation
+# correctly invalidates admission. Nor does frame.contentWindow.parent test a
+# child's execution context: from this caller it simply returns this window.
+# Real child/navigation refusal is exercised separately against the loaded view.
 FRAME_PROBE = r"""() => {
-  if (window !== top || location.origin !== 'happyranch-shell://connection'
-      || location.href !== 'happyranch-shell://connection/index.html'
-      || typeof window.webkit?.messageHandlers?.connection?.postMessage !== 'function'
-      || window.frames.length !== 0) return false;
-  const marker = () => true;
-  Object.defineProperty(window, '__hrFrameProbe', {value:marker, configurable:true});
-  let isolated = true;
-  for (const src of [null, 'about:blank', 'happyranch-shell://connection/index.html']) {
-    const frame = document.createElement('iframe');
-    if (src !== null) frame.src = src;
-    document.body.append(frame);
-    try { if (frame.contentWindow?.parent.__hrFrameProbe() === true) isolated = false; }
-    catch { /* An inaccessible child is safe for this case. */ }
-    frame.remove();
-  }
-  const frame = document.createElement('iframe'); frame.srcdoc = '<p>probe</p>';
-  document.body.append(frame);
-  try { if (frame.contentWindow?.parent.__hrFrameProbe() === true) isolated = false; } catch {}
-  frame.remove(); delete window.__hrFrameProbe;
-  return isolated && window.frames.length === 0;
+  return window === top && location.origin === 'happyranch-shell://connection'
+      && location.href === 'happyranch-shell://connection/index.html'
+      && typeof window.webkit?.messageHandlers?.connection?.postMessage === 'function'
+      && window.frames.length === 0;
 }"""
 
 
@@ -216,8 +219,10 @@ class ConnectionWindow:
             response = self.W.URISchemeResponse.new(
                 self.Gio.MemoryInputStream.new_from_bytes(self.GLib.Bytes.new(data)), len(data))
             response.set_status(200, "OK")
-            response.set_content_type(mimetypes.guess_type(request.get_uri())[0] or "application/octet-stream")
+            content_type = mimetypes.guess_type(request.get_uri())[0] or "application/octet-stream"
+            response.set_content_type(content_type)
             headers = self.Soup.MessageHeaders.new(self.Soup.MessageHeadersType.RESPONSE)
+            headers.append("Content-Type", content_type)
             headers.append("Content-Security-Policy", CSP)
             headers.append("X-Content-Type-Options", "nosniff")
             headers.append("Cache-Control", "no-store")
@@ -282,8 +287,9 @@ class ConnectionWindow:
             # Its result alone never supplies frame/origin admission authority.
             view.call_async_javascript_function(
                 "return window === top && location.origin === 'happyranch-shell://connection'"
-                " && typeof window.webkit?.messageHandlers?.connection === 'undefined'"
-                " && typeof window.__hrFrameProbe === 'undefined';",
+                " && location.href === 'happyranch-shell://connection/index.html'"
+                " && window.frames.length === 0"
+                " && typeof window.webkit?.messageHandlers?.connection === 'undefined';",
                 -1, None, None, ENTRY, self.cancellable, self.world_probed, None)
         except Exception:
             self.unavailable("frame/origin isolation")
@@ -340,6 +346,11 @@ class ConnectionWindow:
     def message(self, _manager: object, value: object, reply: object) -> bool:
         generation = self.generation
         try:
+            # The isolated relay uses rejected non-string input only to revoke
+            # a document after frame insertion/CSP refusal (which may precede
+            # decide-policy). It grants no request or frame/origin authority.
+            if _manager == self.manager and self.active and not value.is_string():
+                self.unavailable("document integrity")
             if (_manager != self.manager or not self.active or self.closed
                     or self.unavailable_reason or not value.is_string()
                     or self.view.get_uri() != ENTRY):

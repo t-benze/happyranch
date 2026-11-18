@@ -117,18 +117,35 @@ The loader never reads `HAPPYRANCH_WEB_DIST`, a daemon URL or a caller asset pat
 
 Each connection view owns an ephemeral WebContext, UserContentManager,
 asset-only scheme, exact §2 CSP response header and manifest-only network filter.
+Resource MIME types are set in both WebKit metadata and Content-Type headers,
+so nosniff admits the packaged stylesheet without content sniffing.
 Navigation, popups, reloads, redirects, load failure and process loss invalidate
 the generation, unregister the handler and disconnect its dedicated bus caller.
 Opening Connection again creates a fresh view; no automatic re-admission/replay.
 
-Runtime admission checks API availability and probes custom-origin serialization,
-page versus named-world separation, structured execution and child-frame parent
-function reachability (initial/about:blank, same-origin and srcdoc frames).
-TOP_FRAME alone is not a native frame check. An unsafe or unproven engine disables
-the **whole** bridge and shows a bilingual native notice. No dependency-floor
-increase, file URL or network-command fallback is used; the notice explicitly
-says the connection CLI is not available yet. This fail-closed outcome does not
-qualify GTK isolation or CLI parity.
+Runtime admission checks API availability, the exact entry/origin, an empty frame
+tree, named-world channel presence, page-world channel absence and structured
+execution before constructing a fresh view with TOP_FRAME scripts. Isolation is
+constructed by the CSP (including frame-src none and no inline/eval scripts),
+manifest-only filter and native refusal of every subsequent navigation, including
+subframes, about:blank and srcdoc. Each refused attempt tears down the bridge.
+The isolated relay also observes embedded-frame insertion (including a frame
+removed in the same task) and frame CSP violations: CSP may refuse a load before
+native decide-policy runs. It stops relaying and sends rejected non-string input
+on the existing channel, which can only revoke the current native generation;
+it adds no command or frame/origin authorization claim.
+The probe does not create its own forbidden frames or mistake a parent-window
+read for child execution. TOP_FRAME and the top-level URI alone are insufficient.
+Native message admission also requires the current manager, active generation
+and pinned view URI; frame admission depends on this complete construction.
+
+WebKitGTK 2.52.6 can enable the read-only bridge with this construction. Native
+qualification must separately exercise child/parent access and non-pinned
+navigation against the loaded view. Missing APIs or failed admission still
+disable the **whole** bridge and show a bilingual native notice, explicitly
+saying the connection CLI is not available yet. No dependency-floor increase,
+file URL or network-command fallback is used. This slice does not establish
+minimum-engine, CLI or full lifecycle acceptance.
 
 Only an admitted fresh view receives the two-function facade and named-world
 relay. Native independently validates duplicate-free JSON, closed command/args
@@ -146,7 +163,7 @@ Standalone invocation against an already-built/staged prefix (no daemon start):
 
 ```sh
 /usr/bin/python3 -I /absolute/prefix/share/happyranch/desktop/connection_window.py --prefix /absolute/prefix --locale en
-# --locale zh-CN exercises the Chinese native unavailable notice.
+# --locale zh-CN exercises the Chinese view and unavailable notice.
 /usr/bin/python3 -B packaging/linux/desktop/test_connection.py
 /usr/bin/python3 -B packaging/linux/test_build_deb.py DebPackageTests -v
 python -m py_compile packaging/linux/desktop/connection_contract.py packaging/linux/desktop/connection_window.py packaging/linux/desktop/happyranch_window.py
