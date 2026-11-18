@@ -1670,6 +1670,8 @@ export const zhCN: Record<MessageKey, MessageValue> = {
   'tasks.rail.assignee': '负责人',
   'tasks.rail.thread': '会话',
   'tasks.rail.job': '作业',
+  'tasks.rail.jobsRunning': '运行中（{count}）',
+  'tasks.rail.jobsFinished': '已结束（{count}）',
   'tasks.rail.created': '创建时间',
   'tasks.exec.heading': '执行状态',
   'tasks.exec.state': '状态',

@@ -1753,6 +1753,8 @@ export const en = {
   'tasks.rail.assignee': 'Assignee',
   'tasks.rail.thread': 'Thread',
   'tasks.rail.job': 'Job',
+  'tasks.rail.jobsRunning': 'Running ({count})',
+  'tasks.rail.jobsFinished': 'Finished ({count})',
   'tasks.rail.created': 'Created',
   'tasks.exec.heading': 'Execution status',
   'tasks.exec.state': 'State',

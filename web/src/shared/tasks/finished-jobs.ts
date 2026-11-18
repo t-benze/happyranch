@@ -6,6 +6,24 @@ export type BlockedJobEntry = { job_id: string; status: string };
 
 const TERMINAL_JOB_STATUSES = new Set(['completed', 'failed', 'rejected']);
 
+/** Terminal = completed / failed / rejected. Any other (incl. unknown) status is still live. */
+export function isTerminalJobStatus(status: string): boolean {
+  return TERMINAL_JOB_STATUSES.has(status);
+}
+
+/**
+ * Split a task's jobs into live (non-terminal, incl. unknown statuses) and
+ * finished (terminal) lists, each keeping the input order.
+ */
+export function partitionJobsByLifecycle<J extends { status: string }>(
+  jobs: readonly J[],
+): { running: J[]; finished: J[] } {
+  const running: J[] = [];
+  const finished: J[] = [];
+  for (const job of jobs) (isTerminalJobStatus(job.status) ? finished : running).push(job);
+  return { running, finished };
+}
+
 /**
  * A job-parked task whose blocking jobs are ALL terminal is no longer waiting on
  * jobs: it is waiting to be resumed. When an effective root Pause holds it, say
