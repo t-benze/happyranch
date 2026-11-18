@@ -1288,6 +1288,8 @@ def _run_step_owned(orch: "Orchestrator", task_id: str, metadata: dict | None = 
     if classify_task(orch._db, task_id, org_slug=orch._slug).kind != "legacy":
         route_owned_task(orch, task_id)
         return
+    if _progress_passive_chain_owner(orch, task):
+        return
     invocation = TaskInvocation(orch, task, task.assigned_agent or _default_agent_for_root(orch, task),
         orch._build_session_id(),
         owner="v2" if isinstance(metadata, dict) and "authority_v2_generation" in metadata else "ordinary",
@@ -1438,6 +1440,9 @@ def _run_step_body(orch: "Orchestrator", task_id: str, metadata: dict | None = N
     # so we don't enter the in_progress transition.
     if task.cancelled_at is not None:
         logger.debug("run_step %s: cancelled, skipping", task_id)
+        return
+
+    if _progress_passive_chain_owner(orch, task):
         return
 
     # ---- 1. Verify entry state ----
@@ -5393,7 +5398,9 @@ def _advance_chain_for_completed_child(
     return "advance"
 
 
-from runtime.orchestrator.task_terminal_readers import _is_carrier
+from runtime.orchestrator.task_terminal_readers import (
+    _is_carrier, _passive_parent_wake_handled, _progress_passive_chain_owner,
+)
 
 
 def _carrier_fail_on_verdict_mismatch(
@@ -5525,10 +5532,11 @@ def _carrier_complete_on_chain_complete(
     if not _is_carrier(orch, parent):
         return False
     # Complete the carrier directly — it has no session of its own.
-    _complete(orch, parent.id,
-              note="carrier chain complete")
+    with orch._db._lock:
+        completed = _complete(orch, parent.id, note="carrier chain complete")
     # Feed carrier completion into the fan-out parent's barrier.
-    _enqueue_parent_if_waiting(orch, parent.id)
+    if completed:
+        _enqueue_parent_if_waiting(orch, parent.id)
     return True
 
 
@@ -5770,6 +5778,8 @@ def _enqueue_parent_if_waiting(
     def enqueue_parent_once() -> None:
         """Keep a restart-reconstructed wake from duplicating a live tail."""
         if current_owner is not None and not current_owner():
+            return
+        if _passive_parent_wake_handled(orch, parent):
             return
         selected_queue = queue if queue is not None else getattr(orch, "_queue", None)
         if selected_queue is None:

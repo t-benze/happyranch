@@ -4329,7 +4329,18 @@ the unchanged PR1 pre-launch check refuses invalidated choices with
 `saved model no longer valid for this agent` before executor construction.
 See [THR-356](../specs/2026-11-13-task-model-reasoning-overrides.md).
 
-A manager can declare a multi-leg workflow in one `delegate` decision using `NextStep.then` and optional per-leg `expect_verdict` gates. The orchestrator auto-advances to the next leg when a child terminates completed with a matching verdict. Since THR-211, auto-advance may also fire from a child whose completion report has durably landed while its task row still reads `in_progress` (the completion-status-lag window) — the recognition is session-safe and at-most-once, and the chain gate consumes the exact authenticated `(task_id, assigned_agent, current_session_id)` report so a newer unrelated row can never advance or clear the chain; see `tests/test_thr211_completion_status_lag.py` for the session-bound regression cases.
+A manager can declare a multi-leg workflow in one `delegate` decision using `NextStep.then` and optional per-leg `expect_verdict` gates. The orchestrator auto-advances to the next leg when a child terminates completed with a matching verdict. Since THR-211, auto-advance may also fire from a child whose completion report has durably landed while its task row still reads `in_progress` (the completion-status-lag window) — the recognition is session-safe and at-most-once, and the chain gate consumes the exact authenticated `(task_id, assigned_agent, current_session_id)` report so a newer unrelated row can never advance or clear the chain.
+
+A parked chain owner is never admitted for its own session mid-chain, including
+when the current leg's report has landed but its session has not finalized.
+Rediscovery and final session admission share this exclusion. A dequeued owner
+leaves a landed-but-live leg to finalization; a terminal newest child uses the
+existing chain progression, carrier completion/failure, or manager final-leg /
+mismatch wake path. Older-leg callbacks cannot wake an owner with an active
+chain. Pipeline carriers never run their own sessions in any admission path:
+after their children finish they complete or fail passively and feed the outer
+fan-out barrier once. Plain fan-out workers still run their initial session.
+Already-terminal owners with stranded chain metadata remain inert.
 
 Next-leg admission atomically requires the parent to remain `in_progress`
 with `block_kind=delegated`, no `cancelled_at`, and the exact chain JSON read
@@ -4457,7 +4468,10 @@ Mechanical contract (THR-028/THR-078; not a rule to select linked retries):
 4. **Chain-leg failure.** A failed workflow chain leg clears the active chain
    and returns its decision owner to bounded wake. A passive fan-out pipeline
    carrier instead fails closed and preserves its causal leaf for the outer
-   fan-out barrier; a fanout-dispatched `task` manager remains its local owner.
+   fan-out barrier and never runs its own session; a fanout-dispatched `task`
+   manager remains its local owner and cannot run mid-chain.
+   A cancelled or superseded newest leg also clears the current chain and uses
+   carrier failure or manager wake after sibling evaluation.
 
 5. **Happy path unchanged.** All subtasks COMPLETED → parent enqueued for
    next decision step. REVISE-verdict auto-advance in chains is unchanged.
