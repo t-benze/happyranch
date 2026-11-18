@@ -93,7 +93,8 @@ class ConnectionBoundaryTests(unittest.TestCase):
         hello = self.protocol.hello()
         self.assertEqual(hello["roles"], ["host", "client"])
         self.assertEqual([c["command"] for c in hello["capabilities"] if c["availability"] == "available"],
-                         ["host.status"])
+                         ["host.status", "client.status", "client.acceptInvite", "client.disconnect",
+                          "client.cancelAttempt", "client.retry", "client.health"])
         device = {"label": "Computer &amp; desk", "fingerprint": "a" * 24,
                   "comparison_phrase": "synthetic phrase"}
         raw = {"phase": "ready", "ready": False, "devices": [device], "pending": None, "selected": device}

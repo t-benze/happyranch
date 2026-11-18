@@ -353,7 +353,9 @@ acceptance remains separate from temp-root verification.
 The payload also contains `bin/happyranch-app`,
 `share/happyranch/desktop/happyranch_window.py`,
 `share/happyranch/desktop/client_session.py`,
-`share/happyranch/desktop/client_runtime.py`, the verbatim shared pure codec
+`share/happyranch/desktop/client_runtime.py`,
+`share/happyranch/desktop/client_model.py`,
+`share/happyranch/desktop/client_ui.py`, the verbatim shared pure codec
 `share/happyranch/desktop/invite_v2.py`,
 `share/applications/happyranch.desktop.in`, and the existing clay brand artwork
 under `share/icons/hicolor/` (16, 32, 64, 128, 256, 512, 1024 PNG and scalable
@@ -362,8 +364,15 @@ The desktop entry is a template: the deb builder replaces `@APP_EXEC@`
 with `/usr/bin/happyranch-app` and installs the menu entry/icons. Building the
 payload alone does not install files into `/opt` or `/usr/share`.
 
-The new client siblings are native-only session/runtime building blocks; public
-client capabilities remain unavailable until GTK integration (3a.2). They retain
+The packaged connection window now exposes session-only client status, invite,
+cancel, disconnect, retry (fresh invite) and health controls. Native GTK dialogs
+own invite paste, exact Host consent and comparison phrases; worker threads own
+blocking session calls. Only the expected runtime root's successful WebKit load
+reports Connected. A separate ephemeral runtime view has no control bridge and
+keeps a visible native session-only notice after the connection window closes.
+Closing controls cancels an unfinished attempt; closing the runtime asks for
+local disconnect. Cancel never promises Host revocation or membership removal.
+Saved access/reconnect and saved-item commands remain unavailable. They retain
 no saved access. The runtime proxy answers bootstrap with an unrelated session
 token, strips browser authority headers, and injects the device bearer only
 on the private helper hop. Session stop seals admission and closes owned streams
@@ -373,6 +382,9 @@ because helper scratch removal cannot be confirmed.
 ```sh
 # Focused session/runtime behavior; stdlib only, no GTK or installs:
 /usr/bin/python3 -B packaging/linux/desktop/test_client.py -v
+/usr/bin/python3 -B packaging/linux/desktop/test_client_model.py -v
+# GTK/WebKit smoke when the existing desktop session is available:
+/usr/bin/python3 -B packaging/linux/desktop/test_client_gtk.py -v
 # Shipping connector parser/forwarder compatibility (existing project Python dependencies):
 python -B packaging/linux/desktop/test_client_connector.py -v
 # Focused Go helper tests with the already-cached toolchain/modules:

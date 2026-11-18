@@ -925,8 +925,15 @@ def run_gui(prefix: Path, home: Path) -> int:
     controls = None
     remote = None
     connection_windows = []
+    client_ui = None
 
     def open_connection(_button: object) -> None:
+        nonlocal client_ui
+        connection_windows[:] = [existing for existing in connection_windows if not existing.closed]
+        for existing in connection_windows:
+            if not existing.closed:
+                existing.window.present()
+                return
         # Keep the installed module local to this native control. The daemon's
         # WebView below receives no content manager, user scripts or forwarding.
         import importlib.util
@@ -934,7 +941,9 @@ def run_gui(prefix: Path, home: Path) -> int:
         spec = importlib.util.spec_from_file_location("connection_window", path)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
-        connection_windows.append(module.ConnectionWindow(app, window, prefix, tr))
+        if client_ui is None:
+            client_ui = module.ClientUI(app, window, prefix, tr)
+        connection_windows.append(module.ConnectionWindow(app, window, prefix, tr, client_ui))
 
     def attach_remote(box: object) -> None:
         nonlocal remote
@@ -1220,6 +1229,8 @@ def run_gui(prefix: Path, home: Path) -> int:
     finally:
         for connection_window in connection_windows:
             connection_window.close()
+        if client_ui is not None:
+            client_ui.shutdown()
         if remote is not None:
             remote.close()
         cancel.set()
