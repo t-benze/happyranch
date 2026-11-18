@@ -2601,6 +2601,35 @@ valid receipt. Without it the inert no-link rule remains; every other matching
 link still refuses, including manually created links. Cleanup disables this
 one owned link then re-verifies absence. All other foreign-unit/drop-in,
 literal-reference and bounded no-follow inventory checks remain mandatory.
+
+**Manager Ruling 9 (G2-D2, B5):** a valid current-generation receipt means the
+protected receipt parses as closed `home-activation@1` through the existing A5
+no-follow reader, with release UID and all three installation IDs equal to the
+caller-supplied expected values, and `activation_generation` equal to the
+externally expected generation. **Every phase**, including `failed_uncertain`,
+qualifies: member digests and ownership are mandatory in every phase, and
+cleanup must still see the owned link. Pending entries, unsafe files, parse
+failures and other generations grant no exception: only the inert rendering
+and no matching link are admitted. Home bytes must equal the B5 rendering and
+their full SHA-256 must equal
+`member_digests['/etc/systemd/system/happyranch-headscale.service']`. Only the
+literal B5 link/target pair in `ownership.links` qualifies; relative targets,
+other load-root copies, aliases, extra links and manual links without that
+receipt refuse. Inert fragment bytes remain admissible without a receipt.
+
+G2-D2 exposes only unmounted `HomeUnitGate.inspect()` and
+`disable_owned_link(disable)`. The latter inventories before the injected
+synchronous disable operation and freshly inventories with the owned link
+required absent afterwards; a persistent/replaced link or changed receipt
+refuses. Its owner must serialize cooperative root/systemd writers and supply
+an authorized operation that removes **only** this exact link, with lifecycle
+quiescence established separately. There is no systemctl call, service stop or
+receipt deletion in this primitive. Missing links need no disable operation.
+The gate retains the inert scanner's load roots, literal-reference checks,
+65536-entry shared bound, 32-depth bound and 65536-byte foreign-policy bound,
+using literal no-follow parents/readers and revalidating sampled metadata.
+Existing installer/supervisor inventory and drift admission remain untouched;
+G2-E owns wiring. No production installation caller selects the home rendering.
 Why no founder: boot persistence for an already-approved service, unchanged UX.
 
 **B6 — Live-state ownership and per-type deletion.**
