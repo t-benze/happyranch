@@ -31,7 +31,12 @@ enum ConnectionScripts {
       if (!size(item.raw) || size(item.raw) > 32768) throw 0;
       const reply = JSON.parse(item.raw);
       if (reply.protocol !== 'happyranch.connection' || reply.version !== 1
-          || reply.requestId !== item.id || typeof reply.ok !== 'boolean') throw 0;
+          || typeof reply.ok !== 'boolean') throw 0;
+      // Native cannot recover correlation from malformed/oversized envelopes.
+      // Its fixed early-refusal ID is still a proven effect:none validation
+      // result for this transport callback, rather than an uncertain dispatch.
+      if (reply.requestId !== item.id && !(reply.requestId === 'r0' && !reply.ok
+          && reply.error?.code === 'invalidRequest' && reply.error.effect === 'none')) throw 0;
       if (reply.ok) callback.resolve(JSON.stringify(reply.result));
       else callback.reject(JSON.stringify(reply.error));
     } catch { callback.reject(fail('outcomeUnknown', 'unknown', 'explicitRetry')); }
