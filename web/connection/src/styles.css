@@ -1,0 +1,25 @@
+@font-face {
+  font-family: 'Hanken Grotesk';
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url('../../public/fonts/HankenGrotesk-wght.ttf') format('truetype');
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--color-surface-canvas); color: var(--color-text-primary); font-family: 'Hanken Grotesk', system-ui, sans-serif; line-height: 1.6; }
+main { max-width: 760px; margin: 48px auto; padding: 32px; }
+[hidden] { display: none; }
+header { display: flex; align-items: center; justify-content: space-between; gap: 24px; flex-wrap: wrap; }
+.brand { color: var(--color-accent-text); font-weight: 700; letter-spacing: .03em; }
+.locale { display: flex; align-items: center; gap: 12px; }
+h1 { font-size: 32px; line-height: 1.25; margin-top: 36px; }
+h2 { font-size: 20px; line-height: 1.4; }
+p { color: var(--color-text-secondary); overflow-wrap: anywhere; }
+.roles { display: flex; gap: 12px; margin-top: 28px; }
+button, select { font: inherit; color: var(--color-text-primary); background: var(--color-surface-raised); border: 1px solid var(--color-border-strong); border-radius: 8px; padding: 10px 18px; min-height: 44px; }
+button { cursor: pointer; }
+button[aria-pressed='true'] { color: var(--color-accent-text); border-color: var(--color-accent-default); font-weight: 600; }
+:focus-visible { outline: 2px solid var(--color-accent-default); outline-offset: 4px; }
+.panel { background: var(--color-surface-raised); border: 1px solid var(--color-border-default); border-radius: 16px; margin-top: 32px; padding: 24px; }
+code { white-space: pre-wrap; overflow-wrap: anywhere; }
+@media (max-width: 480px) { main { margin: 12px auto; padding: 24px; } h1 { font-size: 28px; } }

@@ -27,5 +27,5 @@
       "@happyranch/feature-flags": ["config/features.production.json"]
     }
   },
-  "include": ["src", "vite.config.ts"]
+  "include": ["src", "vite.config.ts", "connection/src", "connection/vite.config.ts"]
 }

@@ -9,10 +9,11 @@
     "build": "tsc -b && vite build",
     "build:local": "tsc -b && node scripts/build-local.mjs",
     "preview": "vite preview",
-    "lint": "eslint src",
+    "lint": "eslint src connection/src",
     "typecheck": "tsc -b --noEmit",
     "storybook": "STORYBOOK_DISABLE_TELEMETRY=1 storybook dev -p 6006",
-    "build-storybook": "CI=1 STORYBOOK_DISABLE_TELEMETRY=1 storybook build --output-dir storybook-static"
+    "build-storybook": "CI=1 STORYBOOK_DISABLE_TELEMETRY=1 storybook build --output-dir storybook-static",
+    "build:connection": "tsc -p connection/tsconfig.json && vite build --config connection/vite.config.ts"
   },
   "dependencies": {
     "@microsoft/fetch-event-source": "^2.0.1",

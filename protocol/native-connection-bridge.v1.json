@@ -1,0 +1,1368 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "happyranch.connection.v1",
+  "description": "Closed v1 bridge schema. maxUtf8Bytes is a mandatory UTF-8 byte-length assertion; format utc is a canonical real UTC timestamp. See connection README.",
+  "anyOf": [
+    {
+      "$ref": "#/$defs/request"
+    },
+    {
+      "$ref": "#/$defs/reply"
+    },
+    {
+      "$ref": "#/$defs/event"
+    }
+  ],
+  "$defs": {
+    "runtime": {
+      "enum": [
+        "available",
+        "offline",
+        "restarting",
+        "unknown"
+      ]
+    },
+    "observation": {
+      "enum": [
+        "known",
+        "stale",
+        "unavailable"
+      ]
+    },
+    "savedAccess": {
+      "enum": [
+        "none",
+        "saved",
+        "notSaved",
+        "needsPermission",
+        "removalIncomplete",
+        "unknown"
+      ]
+    },
+    "route": {
+      "enum": [
+        "direct",
+        "relay",
+        "unknown"
+      ]
+    },
+    "effect": {
+      "enum": [
+        "none",
+        "confirmed",
+        "unknown"
+      ]
+    },
+    "cleanup": {
+      "enum": [
+        "confirmed",
+        "incomplete",
+        "unknown",
+        "notApplicable"
+      ]
+    },
+    "inviteState": {
+      "enum": [
+        "none",
+        "issued",
+        "expired",
+        "used",
+        "unknown"
+      ]
+    },
+    "timestamp": {
+      "type": "string",
+      "maxUtf8Bytes": 30,
+      "format": "utc"
+    },
+    "computerRef": {
+      "type": "string",
+      "minLength": 1,
+      "maxUtf8Bytes": 64,
+      "pattern": "^[A-Za-z0-9_-]+$"
+    },
+    "device": {
+      "type": "object",
+      "properties": {
+        "label": {
+          "type": "string",
+          "maxUtf8Bytes": 256,
+          "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f\\u202a-\\u202e\\u2066-\\u2069]*$"
+        },
+        "comparisonPhrase": {
+          "anyOf": [
+            {
+              "type": "string",
+              "maxUtf8Bytes": 256,
+              "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f\\u202a-\\u202e\\u2066-\\u2069]*$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "label",
+        "comparisonPhrase"
+      ],
+      "additionalProperties": false
+    },
+    "computer": {
+      "type": "object",
+      "properties": {
+        "computerRef": {
+          "$ref": "#/$defs/computerRef"
+        },
+        "label": {
+          "type": "string",
+          "maxUtf8Bytes": 256,
+          "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f\\u202a-\\u202e\\u2066-\\u2069]*$"
+        }
+      },
+      "required": [
+        "computerRef",
+        "label"
+      ],
+      "additionalProperties": false
+    },
+    "host": {
+      "type": "object",
+      "properties": {
+        "setup": {
+          "enum": [
+            "off",
+            "pending",
+            "ready",
+            "paused",
+            "failed",
+            "unknown"
+          ]
+        },
+        "runtime": {
+          "$ref": "#/$defs/runtime"
+        },
+        "observation": {
+          "$ref": "#/$defs/observation"
+        },
+        "devices": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/device"
+              },
+              "maxItems": 32
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "pending": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/device"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "selected": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/device"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "inviteState": {
+          "$ref": "#/$defs/inviteState"
+        },
+        "expiresAt": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "setup",
+        "runtime",
+        "observation",
+        "devices",
+        "pending",
+        "selected",
+        "inviteState",
+        "expiresAt"
+      ],
+      "additionalProperties": false
+    },
+    "client": {
+      "type": "object",
+      "properties": {
+        "stage": {
+          "enum": [
+            "idle",
+            "validating",
+            "joining",
+            "pairing",
+            "waitingApproval",
+            "saving",
+            "opening",
+            "connected",
+            "stopping",
+            "failed"
+          ]
+        },
+        "runtime": {
+          "$ref": "#/$defs/runtime"
+        },
+        "savedAccess": {
+          "$ref": "#/$defs/savedAccess"
+        },
+        "route": {
+          "$ref": "#/$defs/route"
+        },
+        "observedAt": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "observation": {
+          "$ref": "#/$defs/observation"
+        },
+        "computers": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/computer"
+              },
+              "maxItems": 32
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "activeComputerRef": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/computerRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "expiresAt": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "comparisonPhrase": {
+          "anyOf": [
+            {
+              "type": "string",
+              "maxUtf8Bytes": 256,
+              "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f\\u202a-\\u202e\\u2066-\\u2069]*$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "stage",
+        "runtime",
+        "savedAccess",
+        "route",
+        "observedAt",
+        "observation",
+        "computers",
+        "activeComputerRef",
+        "expiresAt",
+        "comparisonPhrase"
+      ],
+      "additionalProperties": false
+    },
+    "action": {
+      "type": "object",
+      "properties": {
+        "effect": {
+          "$ref": "#/$defs/effect"
+        },
+        "hostDenial": {
+          "$ref": "#/$defs/cleanup"
+        },
+        "hostCleanup": {
+          "$ref": "#/$defs/cleanup"
+        },
+        "localCleanup": {
+          "$ref": "#/$defs/cleanup"
+        },
+        "networkCleanup": {
+          "$ref": "#/$defs/cleanup"
+        },
+        "inviteState": {
+          "$ref": "#/$defs/inviteState"
+        },
+        "expiresAt": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "host": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/host"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "client": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/client"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "effect",
+        "hostDenial",
+        "hostCleanup",
+        "localCleanup",
+        "networkCleanup",
+        "inviteState",
+        "expiresAt",
+        "host",
+        "client"
+      ],
+      "additionalProperties": false
+    },
+    "health": {
+      "type": "object",
+      "properties": {
+        "access": {
+          "enum": [
+            "allowed",
+            "accessDenied",
+            "revokedConfirmed",
+            "unknown"
+          ]
+        },
+        "runtime": {
+          "$ref": "#/$defs/runtime"
+        },
+        "route": {
+          "$ref": "#/$defs/route"
+        },
+        "observedAt": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "observation": {
+          "$ref": "#/$defs/observation"
+        }
+      },
+      "required": [
+        "access",
+        "runtime",
+        "route",
+        "observedAt",
+        "observation"
+      ],
+      "additionalProperties": false
+    },
+    "savedComputers": {
+      "type": "object",
+      "properties": {
+        "computers": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/computer"
+              },
+              "maxItems": 32
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "savedAccess": {
+          "$ref": "#/$defs/savedAccess"
+        },
+        "observation": {
+          "$ref": "#/$defs/observation"
+        }
+      },
+      "required": [
+        "computers",
+        "savedAccess",
+        "observation"
+      ],
+      "additionalProperties": false
+    },
+    "error": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "enum": [
+            "invalidRequest",
+            "unsupportedVersion",
+            "unsupportedCommand",
+            "notLocalShell",
+            "documentChanged",
+            "busy",
+            "permissionDenied",
+            "stateChanged",
+            "expired",
+            "unavailable",
+            "outcomeUnknown",
+            "invalidInvite",
+            "newInviteRequired",
+            "networkUnavailable",
+            "trustMismatch",
+            "identityChanged",
+            "runtimeUnavailable",
+            "accessDenied",
+            "revokedConfirmed",
+            "keychainLocked",
+            "keychainDenied",
+            "saveFailed",
+            "removalIncomplete"
+          ]
+        },
+        "effect": {
+          "$ref": "#/$defs/effect"
+        },
+        "recovery": {
+          "enum": [
+            "refresh",
+            "explicitRetry",
+            "newInviteOnHost",
+            "nativePermission",
+            "nativeRecovery",
+            "operatorRecovery",
+            "none"
+          ]
+        }
+      },
+      "required": [
+        "code",
+        "effect",
+        "recovery"
+      ],
+      "additionalProperties": false
+    },
+    "hello": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "const": 1
+        },
+        "platform": {
+          "enum": [
+            "mac",
+            "linux"
+          ]
+        },
+        "roles": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "host",
+              "client"
+            ]
+          },
+          "maxItems": 2,
+          "uniqueItems": true
+        },
+        "capabilities": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "command": {
+                "enum": [
+                  "host.status",
+                  "host.enable",
+                  "host.turnOff",
+                  "host.createInvite",
+                  "host.approveDevice",
+                  "host.rejectDevice",
+                  "host.nextDevice",
+                  "host.revokeDevice",
+                  "client.status",
+                  "client.acceptInvite",
+                  "client.savedComputers",
+                  "client.connectSaved",
+                  "client.removeSaved",
+                  "client.disconnect",
+                  "client.cancelAttempt",
+                  "client.retry",
+                  "client.retrySave",
+                  "client.health"
+                ]
+              },
+              "availability": {
+                "enum": [
+                  "available",
+                  "unavailable",
+                  "unsupportedVersion"
+                ]
+              }
+            },
+            "required": [
+              "command",
+              "availability"
+            ],
+            "additionalProperties": false
+          },
+          "maxItems": 18,
+          "uniqueItems": true
+        },
+        "observationLimits": {
+          "type": "object",
+          "properties": {
+            "host": {
+              "type": "array",
+              "items": {
+                "enum": [
+                  "setup",
+                  "runtime",
+                  "observation",
+                  "devices",
+                  "pending",
+                  "selected",
+                  "inviteState",
+                  "expiresAt"
+                ]
+              },
+              "maxItems": 8,
+              "uniqueItems": true
+            },
+            "client": {
+              "type": "array",
+              "items": {
+                "enum": [
+                  "stage",
+                  "runtime",
+                  "savedAccess",
+                  "route",
+                  "observedAt",
+                  "observation",
+                  "computers",
+                  "activeComputerRef",
+                  "expiresAt",
+                  "comparisonPhrase"
+                ]
+              },
+              "maxItems": 10,
+              "uniqueItems": true
+            }
+          },
+          "required": [
+            "host",
+            "client"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "version",
+        "platform",
+        "roles",
+        "capabilities",
+        "observationLimits"
+      ],
+      "additionalProperties": false
+    },
+    "hostEvent": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "const": 1
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "observedAt": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "snapshot": {
+          "$ref": "#/$defs/host"
+        }
+      },
+      "required": [
+        "version",
+        "sequence",
+        "observedAt",
+        "snapshot"
+      ],
+      "additionalProperties": false
+    },
+    "clientEvent": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "const": 1
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "observedAt": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "snapshot": {
+          "$ref": "#/$defs/client"
+        }
+      },
+      "required": [
+        "version",
+        "sequence",
+        "observedAt",
+        "snapshot"
+      ],
+      "additionalProperties": false
+    },
+    "request": {
+      "type": "object",
+      "properties": {
+        "protocol": {
+          "const": "happyranch.connection"
+        },
+        "version": {
+          "const": 1
+        },
+        "requestId": {
+          "type": "string",
+          "minLength": 1,
+          "maxUtf8Bytes": 64,
+          "pattern": "^[A-Za-z0-9_-]+$"
+        },
+        "command": {
+          "enum": [
+            "bridge.hello",
+            "host.status",
+            "host.enable",
+            "host.turnOff",
+            "host.createInvite",
+            "host.approveDevice",
+            "host.rejectDevice",
+            "host.nextDevice",
+            "host.revokeDevice",
+            "client.status",
+            "client.acceptInvite",
+            "client.savedComputers",
+            "client.connectSaved",
+            "client.removeSaved",
+            "client.disconnect",
+            "client.cancelAttempt",
+            "client.retry",
+            "client.retrySave",
+            "client.health"
+          ]
+        },
+        "args": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "protocol",
+        "version",
+        "requestId",
+        "command",
+        "args"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "anyOf": [
+            {
+              "properties": {
+                "command": {
+                  "const": "bridge.hello"
+                },
+                "args": {
+                  "type": "object",
+                  "properties": {
+                    "minVersion": {
+                      "const": 1
+                    },
+                    "maxVersion": {
+                      "const": 1
+                    }
+                  },
+                  "required": [
+                    "minVersion",
+                    "maxVersion"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            {
+              "properties": {
+                "command": {
+                  "const": "host.status"
+                },
+                "args": {
+                  "type": "object",
+                  "properties": {},
+                  "required": [],
+                  "additionalProperties": false
+                }
+              }
+            },
+            {
+              "properties": {
+                "command": {
+                  "const": "host.enable"
+                },
+                "args": {
+                  "type": "object",
+                  "properties": {},
+                  "required": [],
+                  "additionalProperties": false
+                }
+              }
+            },
+            {
+              "properties": {
+                "command": {
+                  "const": "host.turnOff"
+                },
+                "args": {
+                  "type": "object",
+                  "properties": {},
+                  "required": [],
+                  "additionalProperties": false
+                }
+              }
+            },
+            {
+              "properties": {
+                "command": {
+                  "const": "host.createInvite"
+                },
+                "args": {
+                  "type": "object",
+                  "properties": {},
+                  "required": [],
+                  "additionalProperties": false
+                }
+              }
+            },
+            {
+              "properties": {
+                "command": {
+                  "const": "host.approveDevice"
+                },
+                "args": {
+                  "type": "object",
+                  "properties": {},
+                  "required": [],
+                  "additionalProperties": false
+                }
+              }
+            },
+            {
+              "properties": {
+                "command": {
+                  "const": "host.rejectDevice"
+                },
+                "args": {
+                  "type": "object",
+                  "properties": {},
+                  "required": [],
+                  "additionalProperties": false
+                }
+              }
+            },
+            {
+              "properties": {
+                "command": {
+                  "const": "host.nextDevice"
+                },
+                "args": {
+                  "type": "object",
+                  "properties": {},
+                  "required": [],
+                  "additionalProperties": false
+                }
+              }
+            },
+            {
+              "properties": {
+                "command": {
+                  "const": "host.revokeDevice"
+                },
+                "args": {
+                  "type": "object",
+                  "properties": {},
+                  "required": [],
+                  "additionalProperties": false
+                }
+              }
+            },
+            {
+              "properties": {
+                "command": {
+                  "const": "client.status"
+                },
+                "args": {
+                  "type": "object",
+                  "properties": {},
+                  "required": [],
+                  "additionalProperties": false
+                }
+              }
+            },
+            {
+              "properties": {
+                "command": {
+                  "const": "client.acceptInvite"
+                },
+                "args": {
+                  "type": "object",
+                  "properties": {},
+                  "required": [],
+                  "additionalProperties": false
+                }
+              }
+            },
+            {
+              "properties": {
+                "command": {
+                  "const": "client.savedComputers"
+                },
+                "args": {
+                  "type": "object",
+                  "properties": {},
+                  "required": [],
+                  "additionalProperties": false
+                }
+              }
+            },
+            {
+              "properties": {
+                "command": {
+                  "const": "client.connectSaved"
+                },
+                "args": {
+                  "type": "object",
+                  "properties": {
+                    "computerRef": {
+                      "$ref": "#/$defs/computerRef"
+                    }
+                  },
+                  "required": [
+                    "computerRef"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            {
+              "properties": {
+                "command": {
+                  "const": "client.removeSaved"
+                },
+                "args": {
+                  "type": "object",
+                  "properties": {
+                    "computerRef": {
+                      "$ref": "#/$defs/computerRef"
+                    }
+                  },
+                  "required": [
+                    "computerRef"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            {
+              "properties": {
+                "command": {
+                  "const": "client.disconnect"
+                },
+                "args": {
+                  "type": "object",
+                  "properties": {},
+                  "required": [],
+                  "additionalProperties": false
+                }
+              }
+            },
+            {
+              "properties": {
+                "command": {
+                  "const": "client.cancelAttempt"
+                },
+                "args": {
+                  "type": "object",
+                  "properties": {},
+                  "required": [],
+                  "additionalProperties": false
+                }
+              }
+            },
+            {
+              "properties": {
+                "command": {
+                  "const": "client.retry"
+                },
+                "args": {
+                  "type": "object",
+                  "properties": {},
+                  "required": [],
+                  "additionalProperties": false
+                }
+              }
+            },
+            {
+              "properties": {
+                "command": {
+                  "const": "client.retrySave"
+                },
+                "args": {
+                  "type": "object",
+                  "properties": {},
+                  "required": [],
+                  "additionalProperties": false
+                }
+              }
+            },
+            {
+              "properties": {
+                "command": {
+                  "const": "client.health"
+                },
+                "args": {
+                  "type": "object",
+                  "properties": {},
+                  "required": [],
+                  "additionalProperties": false
+                }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "reply": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "protocol": {
+              "const": "happyranch.connection"
+            },
+            "version": {
+              "const": 1
+            },
+            "requestId": {
+              "type": "string",
+              "minLength": 1,
+              "maxUtf8Bytes": 64,
+              "pattern": "^[A-Za-z0-9_-]+$"
+            },
+            "ok": {
+              "const": true
+            },
+            "result": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/hello"
+                },
+                {
+                  "$ref": "#/$defs/host"
+                },
+                {
+                  "$ref": "#/$defs/client"
+                },
+                {
+                  "$ref": "#/$defs/action"
+                },
+                {
+                  "$ref": "#/$defs/health"
+                },
+                {
+                  "$ref": "#/$defs/savedComputers"
+                }
+              ]
+            }
+          },
+          "required": [
+            "protocol",
+            "version",
+            "requestId",
+            "ok",
+            "result"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "protocol": {
+              "const": "happyranch.connection"
+            },
+            "version": {
+              "const": 1
+            },
+            "requestId": {
+              "type": "string",
+              "minLength": 1,
+              "maxUtf8Bytes": 64,
+              "pattern": "^[A-Za-z0-9_-]+$"
+            },
+            "ok": {
+              "const": false
+            },
+            "error": {
+              "$ref": "#/$defs/error"
+            }
+          },
+          "required": [
+            "protocol",
+            "version",
+            "requestId",
+            "ok",
+            "error"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "event": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "protocol": {
+              "const": "happyranch.connection"
+            },
+            "event": {
+              "const": "host.stateChanged"
+            },
+            "data": {
+              "$ref": "#/$defs/hostEvent"
+            }
+          },
+          "required": [
+            "protocol",
+            "event",
+            "data"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "protocol": {
+              "const": "happyranch.connection"
+            },
+            "event": {
+              "const": "client.stateChanged"
+            },
+            "data": {
+              "$ref": "#/$defs/clientEvent"
+            }
+          },
+          "required": [
+            "protocol",
+            "event",
+            "data"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    }
+  },
+  "commands": {
+    "bridge.hello": {
+      "args": {
+        "type": "object",
+        "properties": {
+          "minVersion": {
+            "const": 1
+          },
+          "maxVersion": {
+            "const": 1
+          }
+        },
+        "required": [
+          "minVersion",
+          "maxVersion"
+        ],
+        "additionalProperties": false
+      },
+      "result": {
+        "$ref": "#/$defs/hello"
+      }
+    },
+    "host.status": {
+      "args": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "result": {
+        "$ref": "#/$defs/host"
+      }
+    },
+    "host.enable": {
+      "args": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "result": {
+        "$ref": "#/$defs/action"
+      }
+    },
+    "host.turnOff": {
+      "args": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "result": {
+        "$ref": "#/$defs/action"
+      }
+    },
+    "host.createInvite": {
+      "args": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "result": {
+        "$ref": "#/$defs/action"
+      }
+    },
+    "host.approveDevice": {
+      "args": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "result": {
+        "$ref": "#/$defs/action"
+      }
+    },
+    "host.rejectDevice": {
+      "args": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "result": {
+        "$ref": "#/$defs/action"
+      }
+    },
+    "host.nextDevice": {
+      "args": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "result": {
+        "$ref": "#/$defs/host"
+      }
+    },
+    "host.revokeDevice": {
+      "args": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "result": {
+        "$ref": "#/$defs/action"
+      }
+    },
+    "client.status": {
+      "args": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "result": {
+        "$ref": "#/$defs/client"
+      }
+    },
+    "client.acceptInvite": {
+      "args": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "result": {
+        "$ref": "#/$defs/action"
+      }
+    },
+    "client.savedComputers": {
+      "args": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "result": {
+        "$ref": "#/$defs/savedComputers"
+      }
+    },
+    "client.connectSaved": {
+      "args": {
+        "type": "object",
+        "properties": {
+          "computerRef": {
+            "$ref": "#/$defs/computerRef"
+          }
+        },
+        "required": [
+          "computerRef"
+        ],
+        "additionalProperties": false
+      },
+      "result": {
+        "$ref": "#/$defs/action"
+      }
+    },
+    "client.removeSaved": {
+      "args": {
+        "type": "object",
+        "properties": {
+          "computerRef": {
+            "$ref": "#/$defs/computerRef"
+          }
+        },
+        "required": [
+          "computerRef"
+        ],
+        "additionalProperties": false
+      },
+      "result": {
+        "$ref": "#/$defs/action"
+      }
+    },
+    "client.disconnect": {
+      "args": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "result": {
+        "$ref": "#/$defs/action"
+      }
+    },
+    "client.cancelAttempt": {
+      "args": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "result": {
+        "$ref": "#/$defs/action"
+      }
+    },
+    "client.retry": {
+      "args": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "result": {
+        "$ref": "#/$defs/action"
+      }
+    },
+    "client.retrySave": {
+      "args": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "result": {
+        "$ref": "#/$defs/action"
+      }
+    },
+    "client.health": {
+      "args": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "result": {
+        "$ref": "#/$defs/health"
+      }
+    }
+  },
+  "events": {
+    "host.stateChanged": {
+      "$ref": "#/$defs/hostEvent"
+    },
+    "client.stateChanged": {
+      "$ref": "#/$defs/clientEvent"
+    }
+  }
+}

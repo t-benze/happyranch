@@ -6,7 +6,7 @@
 
 Move connection presentation into shared web components while retaining native custody, permission prompts and exact-device approval. Use the selected in-process script-message bridge in a **separate, locally packaged connection web view**. Never attach this bridge to the runtime SPA web view, including the Mac's loopback proxy of a remote runtime. The connection view can work before connection and during daemon failure. It reuses the web build/design system; it is not fetched from the computer being connected to.
 
-This PR updates this document only. It does not change authentication, helper methods, permissions, dependencies, existing screens, TASK-16779, installations or deployments. Engineering/security review and product review precede an implementation brief. Source inspection is not native or cross-device acceptance.
+The original spec PR #1643 updated this document only. Slice 1a now adds the web-only shell/build and closed v1 schema (§7), under its separate implementation brief. Authentication, native helper methods, permissions, dependencies, existing native screens, TASK-16779, installations and deployments remain unchanged. Source inspection and synthetic facade evidence are not native or cross-device acceptance.
 
 Source facts below remain pinned to **`87e4bea4220525712ffab7e751867feecfecd975`**. Source `file:line` references throughout refer to that tree. The original UX design merged as #1565; [2026-11-16-one-click-remote-access.md](2026-11-16-one-click-remote-access.md), especially §§6–8, retains its trust/R2 requirements. **Current Product authority is handoff v2.1, TASK-17171 (THR-379 seq30)**, in Product's `output/TASK-17171/`: **`00-claude-design-prompt-v2.1.md`**, SHA-256 **`5522966ffab941cd6412df5859c69c1ab94cb417c4ad035575c13a5a768a2c95`**, and **`01-state-acceptance-appendix-v2.1.md`**, SHA-256 **`69410101c8b1b364f50527c13aed8d90859e812b5fcd435568c58823da8598ae`**. It supersedes v2.0's opening, roles, A20/four-pair first-delivery and old-owner wording while retaining all 51 H/C/X inputs and A01–A20 with active/required-gap/deferred annotations.
 
@@ -24,7 +24,7 @@ Source facts below remain pinned to **`87e4bea4220525712ffab7e751867feecfecd975`
 - **Settled:** host invite display/copy, client invite paste/accept and device approval remain native, preferably small dialogs. Genuine OS permission UI shows the captured approval identity. Linux uses fresh polkit per mutation. Mac host authorization is deferred (§5); Mac client keeps its existing native consent and Keychain protections.
 - **Settled:** web screens replace the existing native connection screens. Those screens stay during development, then are removed when the web replacement ships (§10); they are not fallback screens. An unsupported/unsafe bridge is disabled and the **new** `happyranch connection` CLI supplies the same role actions (§9). No dependency-floor increase, web-process-extension substitution or loopback command API.
 - **Assumption A1:** source at the pin above, not unmerged TASK-16779 work, defines what exists. R2's approved future methods are not assumed implemented. Missing methods remain unavailable until their authorized owner delivers them.
-- **Assumption A2:** reuse existing React/TypeScript/Vite dependencies and design tokens, with a separate entry/build output; do not import authenticated runtime providers. Proposed paths/build commands below do not exist yet.
+- **Assumption A2:** reuse existing React/TypeScript/Vite dependencies and design tokens, with a separate entry/build output; do not import authenticated runtime providers. Slice 1a defines the web entry/build below; native loaders and packaging remain pending.
 - **Assumption A3:** native OS, installed executable/bundle and protected backend are trusted. Web documents (including XSS in packaged content), network replies and labels are adversarial. Compromised administrators or arbitrary same-user native-code execution are outside the web-isolation claim.
 - **Assumption A4:** supported native test venues and TASK-16779 backend/package deliverables will be available for implementation. Source inspection proves neither installed WebKit versions nor native/cross-device acceptance. No install, privileged registration or production change is authorized here.
 - **Assumption A5 / founder decision pending:** Linux client works without saved access until THR-379 seq20 Q3 is answered. Credentials stay in native memory for the current session; after quit/process loss or a disconnected session requiring a fresh credential, reconnect requires a new invite and Host approval. No saved bearer, automatic saved reconnect, plaintext file or substitute credential store is introduced. Saved-access persistence is a separate late slice (§10) that must not start before the founder answers. This provisional Engineering staging is not a Founder-approved omission: Linux saved access remains an active Product requirement, with storage mechanism and availability unresolved. Unsigned Mac client reconnect remains required without a privileged-helper/signing dependency.
@@ -62,11 +62,11 @@ These are source findings, not runtime verification. In addition to the cited de
 
 Neither app has the proposed JS bridge or separate static connection app (F9). Mac host inventory is retained source history, not an in-scope B deliverable or proof of the managed Host ceremony. **Inventory surprise versus a simple platform rename:** Mac already has legacy host behavior, while managed Mac host and Linux client need substantial new work. No source finding contradicts the brief's expected Linux-helper or Mac-client inventory. Existing strings such as “Awaiting Linux approval” (`HomeInviteModel.swift:19`) expose the old platform assumption; the later role-adapter/web slices must replace them with host terminology, without editing that code in this PR.
 
-### Static app build and packaging boundary (proposed, not shipped)
+### Static app build and packaging boundary (web build in slice 1a; native integration pending)
 
 | Boundary | Concrete target and existing packaging seam |
 | --- | --- |
-| Shared source/build | Put the independent entry, facade and screens under **`web/connection/`**, with `index.html`, `src/` and `vite.config.ts`; define future **`npm run build:connection`** in the existing `web/package.json`. Use existing React/TypeScript/Vite (`web/package.json:8–11`), the existing lockfile and self-contained local fonts/styles. Emit **`web/dist-connection/`** plus a literal resource manifest; never merge it into `web/dist/`, import `web/src/App`/auth bootstrap/router, or register its entry with the daemon. Shared pure components/tokens are permitted; audited imports must not drag in runtime network providers. No top-level dependency addition. |
+| Shared source/build | Slice 1a puts the independent entry, facade adapter and shell under **`web/connection/`**, with `index.html`, `src/` and `vite.config.ts`, and defines **`npm run build:connection`** in the existing `web/package.json`. Lifecycle screens remain slice 4. Use existing React/TypeScript/Vite (`web/package.json:8–11`), the existing lockfile and self-contained local fonts/styles. Emit **`web/dist-connection/`** plus a literal resource manifest; never merge it into `web/dist/`, import `web/src/App`/auth bootstrap/router, or register its entry with the daemon. Shared pure components/tokens are permitted; audited imports must not drag in runtime network providers. No top-level dependency addition. |
 | Mac bundle | Extend **`app/mac/scripts/build-app.sh`** to build this target in its existing isolated packaging producer and copy `dist-connection/` to **`HappyRanch.app/Contents/Resources/Connection/`** before sealing/signing. Current seams build web at `:306`, create Resources at `:317`, and copy daemon web assets at `:340`; those daemon assets remain separate. `Package.swift:50–54` currently defines the app target without connection resources. Native resolves the Connection directory from the app bundle, not a daemon URL or user preference. |
 | Linux package | Extend **`packaging/linux/build-payload.sh`** to build/copy the same output to **`share/happyranch/desktop/connection/`** beside `happyranch_window.py` (existing desktop-copy seam `:190–192`; daemon-web copy `:154`). `packaging/linux/build-deb.sh:116–118,131–148` validates/stages that payload under **`/opt/happyranch-desktop/`**; add connection-manifest validation to that future seam. The desktop loader resolves its installed package prefix, independent of `HAPPYRANCH_WEB_DIST`/daemon state. No package floor change (`build-deb.sh:201–202`). |
 | Native loading / isolation | Both native apps register a dedicated asset-only scheme, proposed **`happyranch-shell://connection/index.html`**, on their separate connection view: WKURLSchemeHandler / WebKitGTK URI-scheme handler. Pin the exact native-owned view, canonical origin and manifest entry, with bounded literal resource lookup; reject traversal, unknown paths, symlinks escaping the bundle and all network origins. Do not use `file://` with broad file access. If a target cannot establish the custom origin and frame rules, disable the bridge and use §9. Scheme URLs never carry commands/secrets. |
@@ -149,7 +149,28 @@ No request/response bodies, invite fragments, bearer values, raw native exceptio
 
 ## 7. Shared typed protocol v1
 
-One language-neutral closed schema, proposed under `protocol/native-connection-bridge.v1.json`, should define TS, Swift and Python projections/adapters without adding a top-level dependency. This path and generated artifacts are future scope, not files in this PR. Keep transport code separate from commands and model projections. Validate at runtime in native code even when TS types pass.
+The language-neutral closed schema at `protocol/native-connection-bridge.v1.json` defines v1 payloads for TS and future Swift/Python adapters without a new dependency. Slice 1a supplies the web validator and TS projections; native implementations remain pending. Keep transport code separate from commands and model projections. Native code must validate independently even when TS types pass.
+
+### Slice 1a schema/build implementation
+
+The web-only first delivery defines `protocol/native-connection-bridge.v1.json`
+and `web/connection/` (see its [import/build audit](../../web/connection/README.md)).
+`npm run build:connection` emits only `web/dist-connection/` and its literal
+`resource-manifest.json` (version, entry, exact path/bytes/SHA-256 resources).
+Native loaders, asset admission and app packaging remain slice 1b; this is not
+shipped lifecycle, CLI or engine-isolation acceptance.
+
+Concrete v1 hello representation: `capabilities` is a list of
+`{command,availability}` with unique command IDs (omitted means unavailable);
+`observationLimits` is `{host:[HostSnapshot field names],client:[ClientSnapshot
+field names]}` listing limited/unsupported observations. Roles are unique;
+available commands require their advertised role, and Mac advertises no host
+role/command. Payloads reject duplicate keys and depth over 16. Labels/phrases
+are bounded to 256 UTF-8 bytes without controls/bidi overrides; opaque refs and
+request IDs are 1–64 ASCII letters/numbers/underscores/hyphens. UTC timestamps
+use real `YYYY-MM-DDTHH:mm:ss[.sss]Z` values. These are first-schema details for
+future native consumers, not a change to an existing native wire contract.
+Native must independently enforce all schema/budget/authority rules.
 
 ### JS-facing API (founder THR-379 seq2)
 
@@ -255,7 +276,7 @@ Map helper `invalid-request/unknown-method` to the corresponding schema errors, 
 
 ## 8. UX state coverage, acceptance and current signal gaps
 
-**The v2.1 state and acceptance appendix (TASK-17171; §1 filenames/digests) is current Product authority**, carrying founder seq23's B scope. Legacy L01–L20 → H01–H20; M01–M23 → C01–C23; X IDs are unchanged. The table below retains all 51 inherited states. Host rows apply to Linux in B; Client rows apply to Mac and Linux, with saved-access states on Linux explicitly gated and unresolved, not omitted. Mac host rows remain deferred requirements, not an implied implementation. “Existing”/“Adapter” identifies source-backed Linux host or Mac client behavior in §2; every replacement screen/bridge remains unimplemented and unexecuted. The design cannot manufacture unsupported readiness, expiry, early rejection or cleanup signals. V2.0 remains the earlier mapping artifact; v2.1 controls current presentation/acceptance, while the one-click spec's trust/R2 and action-preservation invariants remain.
+**The v2.1 state and acceptance appendix (TASK-17171; §1 filenames/digests) is current Product authority**, carrying founder seq23's B scope. Legacy L01–L20 → H01–H20; M01–M23 → C01–C23; X IDs are unchanged. The table below retains all 51 inherited states. Host rows apply to Linux in B; Client rows apply to Mac and Linux, with saved-access states on Linux explicitly gated and unresolved, not omitted. Mac host rows remain deferred requirements, not an implied implementation. “Existing”/“Adapter” identifies source-backed Linux host or Mac client behavior in §2; replacement lifecycle screens and native adapters remain unimplemented and unexecuted; slice 1a supplies only the web shell/schema. The design cannot manufacture unsupported readiness, expiry, early rejection or cleanup signals. V2.0 remains the earlier mapping artifact; v2.1 controls current presentation/acceptance, while the one-click spec's trust/R2 and action-preservation invariants remain.
 
 | UX ID | Bridge projection / action | Gap or preservation requirement |
 | --- | --- | --- |
@@ -378,7 +399,7 @@ Invite commands open the required small native display/copy or paste/accept dial
 
 ## 10. Ordered B delivery, removal and effort
 
-**The v2.1 appendix and §8's A01–A20/four-pair matrix govern acceptance; founder seq23 limits B to Linux HOST plus Linux CLIENT and Mac CLIENT.** Account-first sequencing (THR-327 seq547 / THR-378) remains controlling for allocation. Estimates are engineering days, not calendar commitments. They assume A1–A5, existing locked build tools and separately delivered TASK-16779 backend interfaces. No code, tests, dependencies, CI triggers or installations are added by this docs-only PR. Future implementation verification uses supported native/standalone venues and lint/static lanes, with no retired unit suite, ad hoc Product E2E or live host installation.
+**The v2.1 appendix and §8's A01–A20/four-pair matrix govern acceptance; founder seq23 limits B to Linux HOST plus Linux CLIENT and Mac CLIENT.** Account-first sequencing (THR-327 seq547 / THR-378) remains controlling for allocation. Estimates are engineering days, not calendar commitments. They assume A1–A5, existing locked build tools and separately delivered TASK-16779 backend interfaces. The original spec PR added no implementation. Slice 1a adds only the web shell/schema/build; native packaging, admission and lifecycle remain pending. No dependency, CI trigger or installation is added. Future implementation verification uses supported native/standalone venues and lint/static lanes, with no retired unit suite, ad hoc Product E2E or live host installation.
 
 | Order | B slice | Days | Exit evidence / dependency |
 | --- | --- | --- | --- |
