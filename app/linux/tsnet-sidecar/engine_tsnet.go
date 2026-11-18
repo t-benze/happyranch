@@ -3,6 +3,7 @@ package sidecar
 import (
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -26,6 +27,7 @@ type whoIsClient interface {
 type TSNetEngine struct {
 	server         *tsnet.Server
 	identityClient whoIsClient
+	observer       io.Closer
 	home           *homeForwarder
 	admissionMu    sync.Mutex
 	closed         bool
@@ -46,6 +48,9 @@ func (e *TSNetEngine) Start(ctx context.Context, c EngineConfig, credential []by
 			}
 			return RedemptionReceipt{}, fmt.Errorf("sidecar: unset %s; ambient tsnet authentication is forbidden", name)
 		}
+	}
+	if c.HomeBinding != nil && (c.ControlTLS == nil || !c.ControlTLS.valid() || c.ControlURL != homeURL || c.Profile != LinuxIdentityProfile || !c.HomeBinding.valid()) {
+		return RedemptionReceipt{}, ErrConfiguration
 	}
 	var err error
 	e.home, err = prepareHomeTransport(c)
@@ -81,6 +86,10 @@ func (e *TSNetEngine) Start(ctx context.Context, c EngineConfig, credential []by
 			return RedemptionReceipt{}, ErrEngine
 		}
 		e.identityClient = client
+	}
+	if err := e.startHomeObserver(c); err != nil {
+		_ = e.Close()
+		return RedemptionReceipt{}, ErrEngine
 	}
 	return RedemptionReceipt{Redeemed: true, Durable: true, ExpectedPeerVisible: expectedPeerVisible(c, status)}, nil
 }
@@ -191,6 +200,9 @@ func (e *TSNetEngine) Close() error {
 		e.admissionMu.Lock()
 		defer e.admissionMu.Unlock()
 		e.closed = true
+		if e.observer != nil {
+			_ = e.observer.Close()
+		}
 		if e.home != nil {
 			_ = e.home.Close()
 		}

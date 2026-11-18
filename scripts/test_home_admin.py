@@ -492,7 +492,7 @@ def admin_user(identity: int = 1, name: str = 'happyranch-node') -> bytes:
 def test_fixed_admin_projection_and_pipes(monkeypatch, verb: str) -> None:
     row = admin_user()
     if verb == 'list-nodes':
-        row = b'\x08\x07' + h._bytes(7, row)
+        row = b'\x08\x07' + h._bytes(7, row) + h._bytes(3, b'c' * 64) + h._bytes(5, b'100.64.0.10')
     admin = transport(monkeypatch, h._bytes(1, row))
     calls = []
     monkeypatch.setattr(h, '_default_run', lambda argv, **kw: calls.append((argv, kw)) or (0, h._bytes(1, row)))
@@ -504,7 +504,7 @@ def test_fixed_admin_projection_and_pipes(monkeypatch, verb: str) -> None:
         assert (got.id, got.name) == (1, 'happyranch-node')
     else:
         got = admin.list_nodes(user='happyranch-node', timeout_s=1)
-        assert [(n.id, n.user.id, n.user.name) for n in got] == [(7, 1, 'happyranch-node')]
+        assert [(n.id, n.user.id, n.user.name, n.node_key_sha256, n.ip_addresses) for n in got] == [(7, 1, 'happyranch-node', 'c' * 64, ('100.64.0.10',))]
     assert len(calls) == 1
     argv, kw = calls[0]
     assert argv[:2] == [h._RUNNER, verb] and len(argv) == 3
@@ -559,7 +559,7 @@ def test_fixed_admin_complete_projection_or_refuse(monkeypatch, bad: bytes) -> N
 def test_fixed_admin_late_transport(monkeypatch, verb: str) -> None:
     row = admin_user()
     if verb == 'list-nodes':
-        row = b'\x08\x07' + h._bytes(7, row)
+        row = b'\x08\x07' + h._bytes(7, row) + h._bytes(3, b'c' * 64) + h._bytes(5, b'100.64.0.10')
     response = h._bytes(1, row)
     admin = transport(monkeypatch, response)
     clock = [0.0]
@@ -577,13 +577,13 @@ def test_fixed_admin_late_transport(monkeypatch, verb: str) -> None:
 @pytest.mark.parametrize('scenario', ['512', '513', 'duplicate', 'wrong-user', 'unknown', 'missing-id', 'mismatched-user-id'])
 def test_fixed_admin_node_inventory(monkeypatch, scenario: str) -> None:
     def node(identity: int = 1, user: bytes = admin_user()) -> bytes:
-        return b'\x08' + h._varint(identity) + h._bytes(7, user)
+        return b'\x08' + h._varint(identity) + h._bytes(7, user) + h._bytes(3, b'c' * 64)
     body = h._bytes(1, node())
     if scenario in ('512', '513'):
         body = b''.join(h._bytes(1, node(i + 1)) for i in range(int(scenario)))
     elif scenario == 'duplicate': body *= 2
     elif scenario == 'wrong-user': body = h._bytes(1, node(user=admin_user(name=USER)))
-    elif scenario == 'unknown': body = h._bytes(1, node() + h._bytes(3, KEY))
+    elif scenario == 'unknown': body = h._bytes(1, node() + h._bytes(4, KEY))
     elif scenario == 'missing-id': body = h._bytes(1, h._bytes(7, admin_user()))
     elif scenario == 'mismatched-user-id': body += h._bytes(1, node(2, admin_user(2)))
     admin = transport(monkeypatch, body)
@@ -613,3 +613,22 @@ def test_fixed_admin_projection_deadline(monkeypatch) -> None:
     monkeypatch.setattr(h, '_user_identity', late)
     with pytest.raises(MintUncertain):
         admin.list_users(timeout_s=1)
+
+
+@pytest.mark.parametrize('case', ['valid', 'bad-digest', 'bad-ip', 'noncanonical', 'duplicate-ip', 'too-many'])
+def test_node_observation_fields(monkeypatch, case):
+    digest, ips = b'c' * 64, [b'100.64.0.10']
+    if case == 'bad-digest': digest = b'nodekey:synthetic'
+    if case == 'bad-ip': ips = [b'home.invalid']
+    if case == 'noncanonical': ips = [b'2001:0db8::1']
+    if case == 'duplicate-ip': ips *= 2
+    if case == 'too-many': ips = [f'100.64.0.{i}'.encode() for i in range(1, 18)]
+    row = b'\x08\x01' + h._bytes(7, admin_user()) + h._bytes(3, digest)
+    row += b''.join(h._bytes(5, ip) for ip in ips)
+    admin = transport(monkeypatch, h._bytes(1, row))
+    if case == 'valid':
+        node, = admin.list_nodes(user='happyranch-node', timeout_s=1)
+        assert (node.node_key_sha256, node.ip_addresses) == ('c' * 64, ('100.64.0.10',))
+        assert 'c' * 64 not in repr(node)
+    else:
+        with pytest.raises(MintUncertain): admin.list_nodes(user='happyranch-node', timeout_s=1)

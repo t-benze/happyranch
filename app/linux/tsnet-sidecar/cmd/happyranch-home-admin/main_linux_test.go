@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
 	"io"
 	"log"
 	"net"
@@ -326,7 +327,12 @@ func adminUser(id uint64, name string) []byte {
 	return append(binary.AppendUvarint([]byte{8}, id), fieldBytes(2, []byte(name))...)
 }
 func adminNode(id uint64, name string) []byte {
-	return append(binary.AppendUvarint([]byte{8}, id), fieldBytes(7, adminUser(1, name))...)
+	row := append(binary.AppendUvarint([]byte{8}, id), fieldBytes(7, adminUser(1, name))...)
+	return append(row, fieldBytes(3, []byte("synthetic-node-key-canary"))...)
+}
+func projectedNode(id uint64, name string) []byte {
+	row := append(binary.AppendUvarint([]byte{8}, id), fieldBytes(7, adminUser(1, name))...)
+	return append(row, fieldBytes(3, []byte("af0bd11df7faee84e8e11d76915b9ab0c0d4dbea44a1b53ec399a900a5003cd5"))...)
 }
 func TestFixedAdminLists(t *testing.T) {
 	for _, verb := range []string{"list-users", "list-nodes"} {
@@ -337,12 +343,15 @@ func TestFixedAdminLists(t *testing.T) {
 				row, data, method = adminNode(7, "happyranch-node"), fieldBytes(1, []byte("happyranch-node")), "ListNodes"
 			}
 			want := fieldBytes(1, row)
+			if verb == "list-nodes" {
+				want = fieldBytes(1, projectedNode(7, "happyranch-node"))
+			}
 			calls := serve(t, s, func(w http.ResponseWriter, r *http.Request) {
 				b, _ := io.ReadAll(r.Body)
 				if r.URL.Path != "/headscale.v1.HeadscaleService/"+method || len(b) < 5 || !bytes.Equal(b[5:], data) {
 					t.Error("fixed request")
 				}
-				wire := want
+				wire := fieldBytes(1, row)
 				if verb == "list-users" {
 					raw := append(append([]byte{}, row...), fieldBytes(3, []byte{8, 1})...)
 					for _, n := range []byte{4, 5, 6, 7, 8} {
@@ -351,7 +360,7 @@ func TestFixedAdminLists(t *testing.T) {
 					wire = fieldBytes(1, raw)
 				}
 				if verb == "list-nodes" {
-					wire = fieldBytes(1, append(append([]byte{}, row...), fieldBytes(3, []byte("synthetic-node-key-canary"))...))
+					wire = fieldBytes(1, append(append([]byte{}, row...), fieldBytes(2, []byte("synthetic-machine-key-canary"))...))
 				}
 				reply(w, wire, "0")
 			})
@@ -585,7 +594,11 @@ func TestFixedAdminNodeInventory(t *testing.T) {
 			var out bytes.Buffer
 			code := command([]string{"list-nodes", "1000"}, bytes.NewReader(fieldBytes(1, []byte("happyranch-node"))), &out, s)
 			if scenario == "512" {
-				if code != 0 || !bytes.Equal(out.Bytes(), body) {
+				expected := []byte{}
+				for i := uint64(1); i <= 512; i++ {
+					expected = append(expected, fieldBytes(1, projectedNode(i, "happyranch-node"))...)
+				}
+				if code != 0 || !bytes.Equal(out.Bytes(), expected) {
 					t.Fatal("maximum complete nodes refused")
 				}
 			} else if code != 3 || out.Len() != 0 {
@@ -651,7 +664,7 @@ func TestFixedAdminDiagnosticsStartup(t *testing.T) {
 		serve(t, s, func(w http.ResponseWriter, r *http.Request) {
 			_, _ = io.Copy(io.Discard, r.Body)
 			row := adminNode(7, "happyranch-node")
-			for _, field := range []byte{2, 3, 4} {
+			for _, field := range []byte{2, 4} {
 				row = append(row, fieldBytes(field, []byte("synthetic-key-canary"))...)
 			}
 			row = append(row, fieldBytes(11, fieldBytes(3, []byte("synthetic-key-canary")))...)
@@ -675,8 +688,51 @@ func TestFixedAdminDiagnosticsStartup(t *testing.T) {
 			if child.Run() != nil {
 				t.Fatal("runner startup failed")
 			}
-			if diagnostics.Len() != 0 || !bytes.Equal(out.Bytes(), fieldBytes(1, adminNode(7, "happyranch-node"))) {
+			if diagnostics.Len() != 0 || !bytes.Equal(out.Bytes(), fieldBytes(1, projectedNode(7, "happyranch-node"))) {
 				t.Fatal("key material escaped projection/log suppression")
+			}
+		})
+	}
+}
+
+// Independent golden digest; existing inventory tests own row/verb/transport limits.
+func TestNodeObservationProjection(t *testing.T) {
+	for _, scenario := range []string{"valid", "canonical", "invalid-ip", "duplicate-ip", "too-many", "missing-key"} {
+		t.Run(scenario, func(t *testing.T) {
+			row := adminNode(7, "happyranch-node")
+			ip := "100.64.0.10"
+			switch scenario {
+			case "canonical":
+				ip = "2001:0db8::1"
+			case "too-many":
+				ip = "100.64.0.254"
+			case "invalid-ip":
+				ip = "hostname.invalid"
+			case "missing-key":
+				row = append([]byte{8, 7}, fieldBytes(7, adminUser(1, "happyranch-node"))...)
+			}
+			row = append(row, fieldBytes(5, []byte(ip))...)
+			if scenario == "duplicate-ip" {
+				row = append(row, fieldBytes(5, []byte(ip))...)
+			}
+			if scenario == "too-many" {
+				for i := 1; i < 17; i++ {
+					row = append(row, fieldBytes(5, []byte(fmt.Sprintf("100.64.0.%d", i)))...)
+				}
+			}
+			out, count, ok := projectNodes(fieldBytes(1, row), "happyranch-node")
+			if scenario != "valid" && scenario != "canonical" {
+				if ok || len(out) != 0 {
+					t.Fatal("unsafe node fields admitted")
+				}
+				return
+			}
+			if scenario == "canonical" {
+				ip = "2001:db8::1"
+			}
+			want := fieldBytes(1, append(projectedNode(7, "happyranch-node"), fieldBytes(5, []byte(ip))...))
+			if !ok || count != 1 || !bytes.Equal(out, want) || bytes.Contains(out, []byte("synthetic-node-key-canary")) {
+				t.Fatal("observation projection/redaction")
 			}
 		})
 	}

@@ -1,4 +1,4 @@
-"""Unmounted G2-C1 forward composition; stops at joined, never publishes ready.
+"""Unmounted B4 forward composition and explicit B2 joined-to-ready publication.
 
 Owners supply fixed service/admin/config operations and independent verification.
 No CLI, helper, installer, supervisor or application calls this module.
@@ -19,6 +19,7 @@ from runtime.remote_access.home_activation_txn import (
     CONFIG_MEMBERS, EFFECTS, Effect, HomeActivationTransaction, HomeActivationTransactionStore,
 )
 from runtime.remote_access.invite_issuer import MintedKey
+from runtime.remote_access.home_observer import HomeObserver
 
 
 class ActivationRefused(ValueError):
@@ -116,6 +117,54 @@ class HomeActivationCoordinator:
             if receipt.local_node_stable_id is not None or receipt.home_endpoint is not None:
                 raise ActivationRefused()
             self._receipts.publish(replace(receipt, phase="failed_uncertain"), expected=receipt)
+
+    def publish_ready(self, *, expected_generation: int, observer: HomeObserver) -> HomeActivationReceipt:
+        """Ruling 8: read-only observation then one A5 receipt write; no failure markers."""
+        try:
+            with self._transactions.locked():
+                receipt = self._receipts.read(expected_generation=expected_generation)
+                transaction = self._transactions.read_optional()
+                if (receipt.phase != "joined" or receipt.local_node_stable_id is not None
+                        or receipt.home_endpoint is not None or transaction is None
+                        or transaction.phase != "joined" or not transaction.matches(receipt)
+                        or tuple(e.name for e in transaction.effects) != EFFECTS
+                        or any(e.state != "done" for e in transaction.effects)):
+                    raise ActivationRefused()
+                self._members(receipt, transaction)
+                observed = observer.observe(receipt, expected_generation=expected_generation)
+                # Recheck the original pair and its members before source-gated publication.
+                if (self._transactions.read_optional() != transaction
+                        or self._receipts.read(expected_generation=expected_generation) != receipt):
+                    raise ActivationRefused()
+                self._members(receipt, transaction)
+                ready = replace(receipt, phase="ready", local_node_stable_id=observed.stable_id,
+                                home_endpoint=observed.home_endpoint)
+                self._publish_receipt(ready, receipt)
+                return ready
+        except Exception:
+            raise ActivationRefused() from None
+
+    def verify_ready(self, *, expected_generation: int, observer: HomeObserver) -> HomeActivationReceipt:
+        """Fresh read-only restart admission evidence; never mint/rekey or publish."""
+        try:
+            with self._transactions.locked():
+                receipt = self._receipts.read(expected_generation=expected_generation)
+                if receipt.phase != "ready":
+                    raise ActivationRefused()
+                transaction = self._transactions.read_optional()
+                if transaction is None or transaction.phase != "joined" or not transaction.matches(receipt):
+                    raise ActivationRefused()
+                self._members(receipt, transaction)
+                observed = observer.observe(receipt, expected_generation=expected_generation)
+                if (observed.stable_id != receipt.local_node_stable_id
+                        or observed.home_endpoint != receipt.home_endpoint
+                        or self._transactions.read_optional() != transaction
+                        or self._receipts.read(expected_generation=expected_generation) != receipt):
+                    raise ActivationRefused()
+                self._members(receipt, transaction)
+                return receipt
+        except Exception:
+            raise ActivationRefused() from None
 
     def run(self, prepared: HomeActivationReceipt) -> HomeActivationReceipt:
         """Externally selected prepared binding; never generate/reuse another ID.
