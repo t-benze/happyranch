@@ -2731,6 +2731,47 @@ fresh-auth retry. Turn off removes these owned units. Mid-upgrade artifact
 digest mismatch refuses until the next tick, never renews changed policy.
 Why no founder: pins the names/cadence of the already R2-approved mechanism.
 
+The inert B14 renderer/decision module is `runtime/remote_access/policy_renew_units.py`;
+`scripts/test_policy_renew_units.py` fixes the exact UTF-8 unit bytes and renewal
+boundaries. The zero-argument renderers have no environment, credentials, URL,
+path or command-argument selectors and perform no installation or activation.
+The root oneshot uses the existing `happyranch` group to preserve root:hr policy
+ownership with empty capability sets. It preserves compatible helper/owned-unit
+hardening, including strict filesystem protection, hidden homes, private tmp/dev,
+kernel/control-group protections and bounded resources. Its only writable
+exceptions are `/etc/happyranch` (atomic policy replacement) and
+`/var/lib/happyranch-remote-access` (installation lock); no network is required.
+The 30-second start timeout bounds a stuck future writer; failure never extends
+the installed expiry. Both units are part of `happyranch-managed.target`; only
+the timer has an Install section, for that target.
+
+**Pinned assumptions for serial integration:** no renewal entry exists yet.
+`RENEW_EXECUTABLE` reserves the fixed absolute
+`/opt/happyranch-desktop/bin/happyranch-remote-access-policy-renew`, following
+the packaged helper's `bin/` convention, with no arguments. Packaging this entry
+is deferred. Artifact equality uses the existing `policy.canonical_json`
+SHA-256 convention on the envelope's embedded artifact, excluding envelope
+timestamps/revision and JSON formatting. `renewal_candidate` accepts decoded,
+protected installed/package evidence supplied under the installation lock;
+`None` represents missing/withdrawn evidence. It imports `PolicyEnvelope`,
+`RoutePolicyConsumer` and the canonical serializer; it does not duplicate the
+policy validator. A structurally valid, active, nonempty, identical shipped
+policy with the existing 3600-second envelope yields a deep-copied candidate
+issued at the supplied aware time, with revision incremented by one. All other
+fields stay unchanged. Automatic renewal refuses at or after existing expiry,
+and on backwards time, matching the spec's before-max-age rule; it cannot revive
+expired policy. Missing/withdrawn evidence, invalid policy/state, future
+issuance or artifact mismatch returns no candidate and leaves expiry unchanged.
+The next tick must obtain new evidence; no remembered digest permits renewal.
+
+Deferred to serial integration: installing/enabling these owned units; the
+actual fixed executable that holds the installation lock across protected reads,
+revalidation and atomic publication through the installer (including existing
+provisioning/activation digest bookkeeping); Turn-off removal of both units;
+entry and units in the `.deb`; and fresh-auth `RetryPolicyRenewal()` D-Bus
+wiring/readiness checks. No production caller, executable or helper method is
+added by this slice. Nothing is installed, enabled or reachable.
+
 **B15 — Compatible versioned status.**
 Keep `Status()` v1 byte-compatible. Add zero-input, read-only `StatusV2()`, no
 polkit action: closed JSON at most 16384 bytes, with separate setup phase,
