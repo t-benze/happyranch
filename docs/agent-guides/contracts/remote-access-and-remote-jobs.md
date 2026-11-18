@@ -2703,6 +2703,45 @@ effect until B6 restoration/Turn off/ReplaceFailed; E1 adds no restoration path.
 Why no founder: implements settled B4 using an existing protected record with
 stricter cross-checks, without schema, dependency, user, UX or check relaxation.
 
+**G2-E1b delivered boundary (B4/Rulings 13/13a):**
+`home_live_config.py` supplies the unmounted `HomeLiveConfigOwner` required by
+`HomeActivationOwner(config_owner=...)`. Its exported pure
+`render_home_live_configs` is the shared E2 renderer. Connector bytes stay exactly
+unchanged: the existing Python loader already carries the needed identity fields,
+and no additional connector field is needed or invented. Sidecar rendering inserts
+only the three authorized fields before the final object brace, retaining every
+prepared byte, including whitespace. `home_binding` is part of these protected
+root:service-group 0640 sidecar bytes, not a separate file or caller argument.
+
+Assumptions: the future authenticated composition supplies expected G/O and holds
+the coordinator's original lock. A valid protected receipt supplies all live
+values. Existing installer readers/validators establish versioned provenance and
+staged identity custody; the exact connector/sidecar inputs are captured once,
+then re-hashed and their no-follow leaf/parent observations revalidated before
+render/publication. A5 publication uses new exclusive pending inodes, file and
+directory fsync and rename; it creates no directory, adopts no pending entry and
+adds no rollback/retry. Source verification gates each config publication.
+The two renames are separate effects within the one home_config intent: partial
+publication remains Ruling 7 failed_uncertain, never an atomic-pair claim.
+
+The coordinator's existing order independently verifies exact renderer bytes
+before recording done digests. During that same original intent only, the owner
+uses its captured renderer result; after done, verification additionally requires
+both transaction member digests. A fresh/B7 verifier derives prepared bytes by
+removing only the exact authorized insertion, reuses the same staged validator
+and renderer, and binds the complete live bytes through the transaction digests.
+It never uses provision.json as live/recovery authority. No prepared config or
+secret digest is added to B1/B4. The standalone temp-root/fake-native composition
+reaches home_config done; installed acceptance remains unverified.
+
+Accepted fail-closed consequences: after home_config done, existing installer
+validation reports provisioned-config drift/refuses the live profile until E2.
+A G+1 rollover with already-live configs refuses the prepared precondition without
+config effects until B6 restoration/Turn off/ReplaceFailed. E1b grants no
+restoration or public Enable path. Installer/supervisor admission, provenance,
+drift, unit publication and home_transport selection remain E2; no CLI, helper,
+D-Bus, app or other production caller is mounted.
+
 **Manager Ruling 14 (G2-E1a, retained local-node key history):**
 The owner verifier validates the complete happyranch-node pre-auth-key inventory:
 an exact tuple of at most `_MAX_INVENTORY_KEYS`, every row through the existing
@@ -2738,10 +2777,9 @@ readers remain their original owners; certificate checks invoke status only.
 The roughly 1500-line E1 limit is handled by the authorized E1a/E1b split. E1a
 REQUIRES an explicitly supplied config owner with no default: its preflight must
 implement 13a prepared binding (or txn-bound live verification after publication),
-and its home_config perform/verify must implement Ruling 13. **E1b's concrete
-config owner, exported renderer, protected home_binding writer and corresponding
-13a refusal proofs remain undelivered.** E1a cannot instantiate a complete
-production activation composition without that owner. Assumptions: a future
+and its home_config perform/verify must implement Ruling 13. E1b now supplies
+that explicit dependency as `HomeLiveConfigOwner` above; no default owner or
+production caller is selected. Assumptions: a future
 authenticated caller supplies expected G/O under the original coordinator lock;
 E2 owns complete live admission and unit publication/selection. Exact home unit
 renderings here are comparisons only. No caller, CLI/D-Bus/helper entry, public
