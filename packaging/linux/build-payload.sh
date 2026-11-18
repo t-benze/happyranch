@@ -157,6 +157,11 @@ cp -a "$WORK/source/web/dist" "$PAYLOAD/web/dist"
 export CGO_ENABLED=0 GOOS=linux GOARCH="$GO_ARCH" GOFLAGS=-modcacherw
 (cd "$WORK/source/app/linux/tsnet-sidecar" && go build -buildvcs=false -mod=readonly -trimpath \
     -o "$PAYLOAD/bin/happyranch-tsnet-sidecar" ./cmd/happyranch-tsnet-sidecar)
+# Session-only client transport runs as the desktop user, with no service or
+# privileged registration. This shared Go module's C ABI requires cgo.
+(cd "$WORK/source/app/mac/tsnet-bridge" && CGO_ENABLED=1 go build -buildvcs=false -mod=readonly -trimpath \
+    -o "$PAYLOAD/bin/happyranch-home-bridge" .)
+chmod 755 "$PAYLOAD/bin/happyranch-home-bridge"
 # Root-only invocation is enforced by this inert command itself. Its fixed
 # libexec path is deliberately outside bin/ and HAPPYRANCH_BUNDLED_BIN.
 mkdir -p "$PAYLOAD/libexec/remote-access"
