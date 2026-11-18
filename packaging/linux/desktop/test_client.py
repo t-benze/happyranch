@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import signal
 import socket
 import struct
 import subprocess
@@ -115,9 +116,19 @@ def accept():
         except OSError: return
         threading.Thread(target=serve, args=(conn,), daemon=True).start()
 threading.Thread(target=accept, daemon=True).start()
+signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
 if mode != "hang-ready":
-    for byte in (b"0 node-synthetic\n" if mode != "bad-ready" else b"0 bad node\n"):
+    ready = b"-22\n" if mode == "identity-refused" else b"0 replacement-node\n" if mode == "identity-changed" else b"0 node-synthetic\n" if mode != "bad-ready" else b"0 bad node\n"
+    for byte in ready:
         os.write(1, bytes([byte]))
+if cfg.get("saveIntent"):
+    def state(changed=False):
+        body = json.dumps({"version": 1, "controlPlaneID": cfg["controlPlaneID"], "stableNodeID": "node-synthetic",
+                           "store": {"auxiliary": "Y2hhbmdlZA==" if changed else "U1RBVEUtQ0FOQVJZ"}}).encode()
+        if mode == "bad-state": body = b"{}"
+        os.write(1, struct.pack("!I", 65537 if mode == "oversize-state" else len(body)) + body)
+    state()
+    signal.signal(signal.SIGUSR1, lambda *_: state(True))
 if mode == "ignore-stop":
     signal.signal(signal.SIGTERM, signal.SIG_IGN)
     (root / "ignoring").touch()
@@ -206,6 +217,78 @@ class ClientTests(unittest.TestCase):
         with self.assertRaises(client.ClientError):
             self.session.dial(time.monotonic() + 2)
         self.assertEqual(list(self.runtime.iterdir()), [])
+
+    def test_saved_record_resume_custody_and_updates(self) -> None:
+        self.session.join(self.invite, save_intent=True)
+        with self.assertRaises(client.ClientError):
+            self.session.saved_record()
+        self.session.pair()
+        self.assertFalse(self.session.complete())
+        self.assertTrue(self.session.complete())
+        record = self.session.saved_record()
+        self.assertEqual(repr(record), "SavedRecord(<redacted>)")
+        self.assertEqual(record.bearer, BEARER)
+        self.assertEqual(record.home_id, "test-home")
+        self.assertEqual(record.control_plane_id, "test-control")
+        self.assertEqual(record.stable_node_id, "node-synthetic")
+        self.assertEqual(record.connector_id, "test-connector")
+        self.assertEqual(record.ca_der, self.invite.ca_der)
+        self.assertFalse(hasattr(record, "__dict__"))
+        self.assertEqual(set(record.__slots__), {"version", "bearer", "home_id", "control_plane_id", "stable_node_id",
+                         "connector_id", "control_url", "ca_der", "fingerprint", "dial_ip", "home_endpoint",
+                         "profile_id", "hostname", "network_state"})
+        with self.assertRaises(client._codec.InviteError):
+            record.bearer = "replacement"
+        os.kill(self.session._process.pid, signal.SIGUSR1)
+        deadline = time.monotonic() + 2
+        while self.session.saved_record().network_state == record.network_state and time.monotonic() < deadline:
+            time.sleep(0.01)
+        updated = self.session.saved_record()
+        self.assertNotEqual(updated.network_state, record.network_state)
+        self.session.stop()
+        with self.assertRaises(client.ClientError):
+            self.session.saved_record()
+        before = len(self.requests())
+        resumed = client.ClientSession.resume(self.prefix, updated)
+        self.addCleanup(resumed.stop)
+        launch = json.loads((self.prefix / "launch").read_text())["cfg"]
+        self.assertEqual(launch["version"], 3)
+        self.assertEqual(launch["stableNodeID"], record.stable_node_id)
+        self.assertEqual(launch["hostname"], record.hostname)
+        self.assertEqual(base64.b64decode(launch["networkState"]), updated.network_state)
+        self.assertNotIn("joinKey", launch)
+        self.assertEqual(resumed._pair_secret, "")
+        self.assertEqual(resumed._handle, "")
+        self.assertTrue(resumed.open_runtime().startswith("http://127.0.0.1:"))
+        self.assertTrue(all(item["head"].startswith("GET /api/v1/health ") for item in self.requests()[before:]))
+        (self.prefix / "reply").write_bytes(b'HTTP/1.1 403 Refused\r\nContent-Length: 30\r\n\r\n{"error": "revocation_denied"}')
+        with self.assertRaisesRegex(client.ClientError, "^revoked$"):
+            resumed.health()
+
+    def test_saved_state_refusals_and_identity(self) -> None:
+        self.session.join(self.invite, save_intent=True)
+        self.session.pair()
+        self.session.complete()
+        self.session.complete()
+        record = self.session.saved_record()
+        self.session.stop()
+        values = {name: getattr(record, name) for name in record.__slots__}
+        for data in (b"{}", b"x" * 65537, record.network_state.replace(b'"version": 1', b'"version": 2'),
+                     record.network_state.replace(b'"test-control"', b'"another-control"'),
+                     record.network_state.replace(b'"node-synthetic"', b'"another-node"'),
+                     b'{"version":1,"version":1}'):
+            with self.subTest(data_size=len(data)):
+                (self.prefix / "launch").unlink(missing_ok=True)
+                with self.assertRaisesRegex(client.ClientError, "^resumeUnavailable$"):
+                    client.ClientSession.resume(self.prefix, client.SavedRecord(**(values | {"network_state": data})))
+                self.assertFalse((self.prefix / "launch").exists())
+        for mode in ("identity-refused", "identity-changed", "bad-state", "oversize-state"):
+            with self.subTest(mode=mode):
+                (self.prefix / "mode").write_text(mode)
+                expected = "identityMismatch" if mode.startswith("identity-") else "resumeUnavailable"
+                with self.assertRaisesRegex(client.ClientError, "^" + expected + "$"):
+                    client.ClientSession.resume(self.prefix, record)
+                self.assertEqual(list(self.runtime.iterdir()), [])
 
     def test_runtime_directory_refusals(self) -> None:
         alias = self.root / "alias"

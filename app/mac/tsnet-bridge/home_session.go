@@ -21,32 +21,38 @@ import (
 	"tailscale.com/tsnet"
 )
 
-// The session mode accepts the v2 trust tuple, but no saved profile or recovery.
+// Session mode accepts legacy v2 joins or the closed v3 memory-state variant.
 // Add the internal absolute placeholder only AFTER checking forbidden keys;
 // the existing exact parser and validator still own every trust field.
-func readHomeSessionLaunch(in io.Reader) (homeLaunch, error) {
+func readHomeSessionLaunch(in io.Reader) (homeSessionLaunch, error) {
 	var size uint32
-	if binary.Read(in, binary.BigEndian, &size) != nil || size == 0 || size > 16384 {
-		return homeLaunch{}, errHomeTrust
+	if binary.Read(in, binary.BigEndian, &size) != nil || size == 0 || size > homeSessionLaunchLimit {
+		return homeSessionLaunch{}, errHomeTrust
 	}
 	data := make([]byte, size)
 	defer clear(data)
 	if _, err := io.ReadFull(in, data); err != nil {
-		return homeLaunch{}, errHomeTrust
+		return homeSessionLaunch{}, errHomeTrust
+	}
+	if fields, err := sessionObject(data); err == nil && bytes.Equal(fields["version"], []byte("3")) {
+		return readSavedSessionLaunch(data, fields)
+	}
+	if size > 16384 {
+		return homeSessionLaunch{}, errHomeTrust
 	}
 	dec := json.NewDecoder(bytes.NewReader(data))
 	if token, err := dec.Token(); err != nil || token != json.Delim('{') {
-		return homeLaunch{}, errHomeTrust
+		return homeSessionLaunch{}, errHomeTrust
 	}
 	for dec.More() {
 		token, err := dec.Token()
 		name, ok := token.(string)
 		if err != nil || !ok || strings.EqualFold(name, "stateDirectory") || strings.EqualFold(name, "recovery") {
-			return homeLaunch{}, errHomeTrust
+			return homeSessionLaunch{}, errHomeTrust
 		}
 		var value json.RawMessage
 		if dec.Decode(&value) != nil {
-			return homeLaunch{}, errHomeTrust
+			return homeSessionLaunch{}, errHomeTrust
 		}
 	}
 	// exactHomeObject rejects duplicates, aliases, nulls, missing/extra fields
@@ -55,16 +61,16 @@ func readHomeSessionLaunch(in io.Reader) (homeLaunch, error) {
 	normalized := append([]byte(`{"stateDirectory":"/",`), data[1:]...)
 	defer clear(normalized)
 	if !exactHomeObject(normalized, false) {
-		return homeLaunch{}, errHomeTrust
+		return homeSessionLaunch{}, errHomeTrust
 	}
 	var cfg homeLaunch
 	if json.Unmarshal(normalized, &cfg) != nil || cfg.JoinKey == "" {
-		return homeLaunch{}, errHomeTrust
+		return homeSessionLaunch{}, errHomeTrust
 	}
 	if _, err := validateHomeLaunch(cfg); err != nil {
-		return homeLaunch{}, errHomeTrust
+		return homeSessionLaunch{}, errHomeTrust
 	}
-	return cfg, nil
+	return homeSessionLaunch{homeLaunch: cfg}, nil
 }
 
 // XDG_RUNTIME_DIR must be literal, current-user-owned and exactly 0700.
@@ -103,17 +109,31 @@ func homeSessionScratch() (string, error) {
 }
 
 type homeSession struct {
-	engine *managedEngine
-	dir    string
+	engine   *managedEngine
+	dir      string
+	state    *homeSessionStore
+	expected string
+	control  string
 }
 
 // This owner never opens managedProfile, writes a marker or restarts from disk.
-func newHomeSession(cfg homeLaunch) (*homeSession, error) {
-	if cfg.Recovery != nil || cfg.JoinKey == "" {
+func newHomeSession(cfg homeSessionLaunch) (*homeSession, error) {
+	if cfg.Recovery != nil || (cfg.JoinKey == "" && len(cfg.NetworkState) == 0) {
 		return nil, errHomeTrust
 	}
-	if _, err := validateHomeLaunch(cfg); err != nil {
+	if _, err := validateHomeLaunch(cfg.homeLaunch); err != nil {
 		return nil, errHomeTrust
+	}
+	var state *homeSessionStore
+	if cfg.SaveIntent {
+		state = &homeSessionStore{values: make(map[string][]byte), changed: make(chan struct{}, 1)}
+		if len(cfg.NetworkState) != 0 {
+			var err error
+			state.values, err = restoreHomeState(cfg.NetworkState, cfg.ControlPlaneID, cfg.StableNodeID)
+			if err != nil {
+				return nil, err
+			}
+		}
 	}
 	opMu.Lock()
 	defer opMu.Unlock()
@@ -133,12 +153,15 @@ func newHomeSession(cfg homeLaunch) (*homeSession, error) {
 	m.server = &tsnet.Server{Store: new(mem.Store), Ephemeral: true, Dir: dir,
 		AuthKey: cfg.JoinKey, ControlURL: cfg.ControlURL, Hostname: cfg.Hostname,
 		Logf: func(string, ...any) {}, UserLogf: func(string, ...any) {}}
+	if state != nil {
+		m.server.Store, m.server.Ephemeral = state, false
+	}
 	srvMu.Lock()
 	engineGeneration++
 	m.generation = engineGeneration
 	managed, srv, dialCtx, dialCxl = m, m.server, ctx, cancel
 	srvMu.Unlock()
-	return &homeSession{engine: m, dir: dir}, nil
+	return &homeSession{engine: m, dir: dir, state: state, expected: cfg.StableNodeID, control: cfg.ControlPlaneID}, nil
 }
 
 func (s *homeSession) up() int {
@@ -157,6 +180,9 @@ func (s *homeSession) up() int {
 	st, err := m.server.Up(ctx)
 	if err != nil || st == nil || st.BackendState != "Running" || len(st.TailscaleIPs) == 0 || st.Self == nil || st.Self.ID == "" {
 		return contextResult(ctx, managedBackend)
+	}
+	if s.expected != "" && string(st.Self.ID) != s.expected {
+		return homeSessionIdentityMismatch
 	}
 	sys := m.server.Sys()
 	eng, ok := sys.Engine.GetOK()
@@ -207,15 +233,23 @@ func homeSessionMain(in io.ReadCloser, out io.Writer) {
 
 func runHomeSession(ctx context.Context, in io.Reader, out io.Writer) (code int) {
 	cfg, err := readHomeSessionLaunch(in)
+	if err == errHomeSessionIdentity {
+		return homeSessionIdentityMismatch
+	}
 	if err != nil {
 		return homeTrustRefused
 	}
 	session, err := newHomeSession(cfg)
 	cfg.JoinKey = ""
+	clear(cfg.NetworkState)
+	cfg.NetworkState = nil
+	if err == errHomeSessionIdentity {
+		return homeSessionIdentityMismatch
+	}
 	if err != nil {
 		return homeTrustRefused
 	}
-	transport, err := prepareHomeProcess(cfg)
+	transport, err := prepareHomeProcess(cfg.homeLaunch)
 	if err != nil {
 		_ = session.Close()
 		return homeTrustRefused
@@ -223,18 +257,43 @@ func runHomeSession(ctx context.Context, in io.Reader, out io.Writer) (code int)
 	return session.serve(ctx, in, out, transport, cfg)
 }
 
-func (session *homeSession) serve(ctx context.Context, in io.Reader, out io.Writer, transport *homeTransport, cfg homeLaunch) (code int) {
+func (session *homeSession) serve(ctx context.Context, in io.Reader, out io.Writer, transport *homeTransport, cfg homeSessionLaunch) (code int) {
+	// Keep control transport alive until tsnet has drained its workers. Closing
+	// it first can start a health-report Noise dial shared with a cancelled
+	// updater; tsnet then waits for that dial's independent timeout in Close.
+	defer transport.Close()
 	defer func() {
 		if session.Close() != nil {
 			code = managedStateError
 		}
 	}()
-	defer transport.Close()
-	cancel := context.AfterFunc(ctx, func() { cancelManaged(); transport.Close() })
+	if pipe, ok := out.(*os.File); ok {
+		// Inherited stdout is blocking and cannot accept Go deadlines. Use a
+		// nonblocking duplicate registered with the runtime poller instead.
+		fd, err := unix.Dup(int(pipe.Fd()))
+		if err != nil {
+			return managedStateError
+		}
+		if unix.SetNonblock(fd, true) != nil {
+			unix.Close(fd)
+			return managedStateError
+		}
+		output := os.NewFile(uintptr(fd), "home-session-output")
+		defer output.Close()
+		if output.SetWriteDeadline(time.Time{}) != nil {
+			return managedStateError
+		}
+		interruptOutput := context.AfterFunc(session.engine.ctx, func() {
+			_ = output.SetWriteDeadline(time.Now())
+		})
+		defer interruptOutput()
+		out = output
+	}
+	cancel := context.AfterFunc(ctx, cancelManaged)
 	defer cancel()
 	// EOF closes admission during Up as well as while relaying. Never read
 	// another launch object or accept a replacement credential in this process.
-	go func() { _, _ = io.Copy(io.Discard, in); cancelManaged(); transport.Close() }()
+	go func() { _, _ = io.Copy(io.Discard, in); cancelManaged() }()
 	if code = session.up(); code != 0 {
 		return code
 	}
@@ -244,9 +303,39 @@ func (session *homeSession) serve(ctx context.Context, in io.Reader, out io.Writ
 	}
 	defer listener.Close()
 	if writeHomeReady(out, session.engine.selfNodeID) != nil {
+		if session.engine.ctx.Err() != nil {
+			return 0
+		}
 		return managedStateError
 	}
+	if session.state != nil {
+		if session.exportState(out) != nil {
+			if session.engine.ctx.Err() != nil {
+				return 0
+			}
+			return managedStateError
+		}
+		// Only this goroutine writes after the synchronous ready/snapshot pair.
+		// Notifications coalesce; each frame contains the entire current store.
+		exportCtx, finish := context.WithCancel(session.engine.ctx)
+		done := make(chan struct{})
+		defer func() { finish(); cancelManaged(); <-done }()
+		go func() {
+			defer close(done)
+			for {
+				select {
+				case <-exportCtx.Done():
+					return
+				case <-session.state.changed:
+					if session.exportState(out) != nil {
+						cancelManaged()
+						return
+					}
+				}
+			}
+		}()
+	}
 	host, _, _ := net.SplitHostPort(cfg.Target)
-	serveHomeRuntime(transport.ctx, listener, host)
+	serveHomeRuntime(session.engine.ctx, listener, host)
 	return 0
 }

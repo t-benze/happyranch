@@ -1309,35 +1309,49 @@ lifecycle/MDWE, generated Headscale maps, packet-wide public/DNS egress exclusio
 and native Darwin remain NOT RUN. See the [sidecar README](../../../app/linux/tsnet-sidecar/README.md) and
 [Round-7 specification](../../specs/2026-11-16-one-click-remote-access.md#6-invite-selected-bootstrap-and-secret-handling).
 
-### Linux client memory-only session transport (THR-379 slice 3a-T)
+### Linux client memory-only session transport (THR-379 slices 3a-T/8a)
 
 The Linux payload builds `bin/happyranch-home-bridge` from the existing
 cross-platform `app/mac/tsnet-bridge` Go module. Its additive
 `--home-session-v1` mode runs as the desktop user, with no sudo, polkit,
 setuid bit or system service. The existing `--home-bridge-v2` profile/recovery
 path and Mac build behavior are unchanged; shared Go sources are used by both builds.
-The GTK pairing/connection adapter is separate slice 3a and is not delivered
-by this transport. Linux client capability remains unavailable until that
-adapter ships. No saved-access or reconnect claim follows.
+The native session adapter supplies an in-memory saved-record/resume seam in
+slice 8a. Secret Service custody, GTK saved reconnect and real saved-access
+acceptance remain slice 8b; this transport alone establishes none of them.
 
-Launch uses the existing uint32 big-endian length (1..16384) plus closed JSON
+Legacy launch uses the existing uint32 big-endian length (1..16384) plus closed JSON
 on private stdin: exactly `version` (2), `caDER`, `dialIP`, `homeID`,
 `controlPlaneID`, `fingerprint`, `controlURL`, `hostname`, `joinKey`,
 `socketPath`, `target`. The mode name versions the session interface; the
 trust tuple retains v2. `stateDirectory` and `recovery` are forbidden, as are
 unknown, duplicate, case-aliased, missing/null, malformed and trailing fields.
-The join key must be nonempty; there is no saved membership path. Existing
+The legacy join key must be nonempty. Slice 8a adds closed v3 launch frames
+(up to 128 KiB), with required `saveIntent` and `stableNodeID`, and exactly one
+of `joinKey` or `networkState`. Save-intent sessions import/export complete
+versioned memory state (up to 64 KiB/32 entries) over the private parent pipe.
+Resume validates the saved control-plane/node binding before startup and the
+authenticated live StableNodeID before readiness; mismatch refuses as -22.
+See [spec section 10](../../specs/2026-11-17-web-native-bridge.md#10-ordered-b-delivery-removal-and-effort)
+for the exact tuple and bounds. Existing
 `validateHomeLaunch` and the pinned home-only control/DERP proxy, private
 issuer/roots/resolver, peer-only dial/pin/revalidation, bounded socket relay and
 private `0 <Self-StableID>` readiness line remain the transport boundary.
 Readiness proves membership only, never pairing approval or loaded runtime UI.
+On EOF or a catchable shutdown signal, engine cancellation interrupts private
+output and stops runtime admission. The control transport stays available while
+tsnet drains its workers, then closes before scratch cleanup is reported complete.
 
-The server uses the pinned tsnet v1.78.0 `mem.Store` with `Ephemeral:true`.
+The server uses pinned tsnet v1.78.0 with memory-only state: ordinary joins use
+`mem.Store` with `Ephemeral:true`; save-intent sessions use the bounded store
+with `Ephemeral:false` to preserve membership for later same-node resume.
 Join keys and generated machine/node/private keys remain in process memory;
-product bearer bytes remain with the future native adapter and its stream
-traffic. No profile, keyring, file-backed state, persistent credential cache, consumed
-marker or substitute credential store is opened. No secret enters argv/env or
-an IPC file. Linux saved credential persistence remains founder-reserved Q3.
+product bearer and immutable redacted saved records remain in the native adapter.
+No keyring, file-backed state, persistent credential cache, consumed marker or
+substitute credential store is opened by 8a. No secret enters argv/env or an IPC
+file. Founder THR-379 seq60 approved Q3: Linux saved access uses the system
+keyring/Secret Service. Slice 8b supplies exact-binding custody and its failure
+handling; unavailable saving continues session-only without plaintext fallback.
 The native launcher must provide only its admitted environment, including
 `XDG_RUNTIME_DIR`; it must not inherit credential/debug/trust overrides.
 
