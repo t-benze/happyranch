@@ -24,6 +24,12 @@ struct HappyRanchApp: App {
                 }
             }
 
+            CommandMenu(Locale.preferredLanguages.first?.hasPrefix("zh") == true ? "连接" : "Connection") {
+                Button(Locale.preferredLanguages.first?.hasPrefix("zh") == true ? "打开连接视图…" : "Open Connection View…") {
+                    appDelegate.showConnection()
+                }
+            }
+
             CommandMenu("Daemon") {
                 Button("Start Daemon") {
                     appDelegate.startDaemon()
