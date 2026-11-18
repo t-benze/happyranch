@@ -414,8 +414,10 @@ def test_issuer_owned_cleanup_preserves_siblings_and_receipts(fixture, monkeypat
 @pytest.mark.parametrize("tamper", ["minting", "uncertain", "pending", "foreign", "edited", "mode", "owner",
     "hardlink", "symlink", "fifo", "lock-content", "lock-missing", "journal-missing", "busy", "receipt", "receipt-pending",
     "receipt-hardlink", "receipt-symlink", "receipt-mode", "receipt-fifo", "receipt-owner", "receipt-missing",
-    "lock-symlink", "lock-hardlink", "lock-mode", "lock-fifo", "lock-owner", "directory-swap"])
-def test_issuer_cleanup_preserves_whole_uncertain_directory(fixture, monkeypatch, capsys, tamper) -> None:
+    "lock-symlink", "lock-hardlink", "lock-mode", "lock-fifo", "lock-owner", "directory-swap",
+    "oversized-not-before", "oversized-expires-at", "negative-oversized-not-before", "negative-oversized-expires-at"])
+@pytest.mark.parametrize("command", ["prepare-headscale", "disable-headscale"])
+def test_issuer_cleanup_preserves_whole_uncertain_directory(fixture, monkeypatch, capsys, tamper, command) -> None:
     import fcntl
     assert fixture.prepare(monkeypatch, capsys)[0] == 0
     path = fixture.root / ISSUER
@@ -423,6 +425,11 @@ def test_issuer_cleanup_preserves_whole_uncertain_directory(fixture, monkeypatch
     journal = path / "invite-issuer.json"
     receipt = path.parent / ISSUER_RECEIPT
     if tamper in {"pending", "foreign"}: (path / ("invite-issuer.pending" if tamper == "pending" else "foreign")).write_bytes(b"keep")
+    if "oversized" in tamper:
+        record = json.loads(journal.read_bytes())
+        field = "not_before" if tamper.endswith("not-before") else "expires_at"
+        record[field] = -(10 ** 400) if tamper.startswith("negative-") else 10 ** 400
+        journal.write_text(json.dumps(record, sort_keys=True, separators=(",", ":")))
     if tamper == "edited": journal.write_bytes(b'{"outcome":"issued"}')
     if tamper == "mode": journal.chmod(0o644)
     if tamper in {"owner", "receipt-owner", "lock-owner"}:
@@ -462,16 +469,23 @@ def test_issuer_cleanup_preserves_whole_uncertain_directory(fixture, monkeypatch
         return {p.name: (p.lstat().st_ino, p.lstat().st_mode, p.lstat().st_size,
                          p.lstat().st_mtime_ns, p.lstat().st_ctime_ns) for p in path.iterdir()}
     before = snapshot()
+    contents = {p.name: p.read_bytes() for p in path.iterdir()} if "oversized" in tamper else None
     fixture.calls.clear()
     try:
-        code, output = fixture.cleanup(monkeypatch, capsys)
-        assert code == 1 and "issuer-cleanup-uncertain" in output
+        code, output = fixture.cleanup(monkeypatch, capsys, command)
+        category = "issuer-state-uncertain" if command == "prepare-headscale" else "issuer-cleanup-uncertain"
+        assert code == 1 and category in output
+        assert "Traceback" not in output and "OverflowError" not in output
+        assert str(10 ** 400) not in output
         with pytest.raises(home.HeadscaleServiceError) as caught:
-            fixture.installer.cleanup_headscale()
+            if command == "prepare-headscale": fixture.installer.prepare_headscale()
+            else: fixture.installer.cleanup_headscale()
+        assert str(caught.value) == category
         assert caught.value.__cause__ is None and caught.value.__context__ is None
     finally:
         if lock is not None: os.close(lock)
     assert snapshot() == before
+    if contents is not None: assert {p.name: p.read_bytes() for p in path.iterdir()} == contents
     assert fixture.calls == []
 
 

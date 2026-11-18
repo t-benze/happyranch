@@ -1707,8 +1707,8 @@ class ManagedInstaller:
                                for k, pattern in (("operation_id", "[0-9a-f]{32}"), ("binding_digest", "[0-9a-f]{64}")))
                         or type(record["outcome"]) is not str
                         or record["outcome"] not in {"issued", "refused", "expired", "encoding", "pairing", "recovered"}
-                        or any(type(record[k]) not in (int, float) or not math.isfinite(record[k])
-                               or not 0 <= record[k] < 253402300300 for k in ("not_before", "expires_at"))
+                        or any(type(record[k]) not in (int, float) or not 0 <= record[k] < 253402300300
+                               or not math.isfinite(record[k]) for k in ("not_before", "expires_at"))
                         or json.dumps(record, sort_keys=True, separators=(",", ":"), allow_nan=False).encode() != data):
                     raise InstallerError("issuer journal")
             if self._issuer_signature(os.stat(name, dir_fd=directory, follow_symlinks=False)) != self._issuer_signature(before):
