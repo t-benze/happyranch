@@ -36,6 +36,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, SPUU
     @Published var stateText: String = DaemonState.notConfigured.description
     @Published var showDiagnostics = false
     @Published var showRemoteAccess = false
+    private var connectionWindow: ConnectionWindow?
+
+    func showConnection() {
+        connectionWindow?.invalidate(showNotice: false)
+        connectionWindow?.close()
+        let fresh = ConnectionWindow(app: self)
+        connectionWindow = fresh
+        fresh.showWindow(nil)
+        NSApplication.shared.activate(ignoringOtherApps: true)
+    }
 
     // MARK: - A2 Remote connection state
 
@@ -45,6 +55,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, SPUU
     /// this preference takes priority over supervisor-state heuristics.
     @Published var connectionRolePreference: ConnectionRolePreference? {
         didSet {
+            if oldValue != connectionRolePreference { connectionWindow?.invalidate() }
             if let pref = connectionRolePreference {
                 UserDefaults.standard.set(pref.rawValue, forKey: "connectionRolePreference")
             } else {
@@ -73,7 +84,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, SPUU
     var clientBridge: ClientBridge?
     let managedJoin = ManagedJoinModel()
     let homeInvite = HomeInviteModel()
-    @Published var clientLane: ClientBridge.Lane = .managed
+    @Published var clientLane: ClientBridge.Lane = .managed {
+        didSet { if oldValue != clientLane { connectionWindow?.invalidate() } }
+    }
     private var remoteHealthTask: Task<Void, Never>?
     private var managedJoinObservation: AnyCancellable?
     private var homeInviteObservations: Set<AnyCancellable> = []
@@ -1339,6 +1352,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, SPUU
     /// Internal so tests can verify menu-command enable/disable derivation
     /// across all supervisor states.
     func refreshDerivedState() {
+        connectionWindow?.invalidateIfRoleChanged(connectionRole)
         stateText = supervisor.state.description
         let s = supervisor.state
         canStart = (s == .stopped || s == .crashed || s == .stalePid || s == .failed)

@@ -1,4 +1,4 @@
-# Packaged connection shell (slices 1a / 1b-LINUX)
+# Packaged connection shell (slices 1a / 1b-LINUX / 1b-MAC)
 
 From `web/`, use existing dependencies only:
 
@@ -11,8 +11,8 @@ npm run typecheck
 
 This independent TypeScript entry emits only `dist-connection/`. The runtime
 SPA and daemon routes are unchanged. No connection lifecycle controls ship here.
-Linux native integration and packaging are slice 1b-LINUX below; Mac integration
-is pending. Lifecycle screens are slice 4. This shell reads status only.
+Linux native integration and packaging are slice 1b-LINUX below; Mac client-only
+integration and bundle assembly are slice 1b-MAC below. Lifecycle screens are slice 4. This shell reads status only.
 
 `resource-manifest.json` is a literal version-1 object with `entry: "index.html"`
 and a `resources` array of exact relative `path`, UTF-8/file `bytes` and SHA-256
@@ -173,6 +173,65 @@ Standalone invocation against an already-built/staged prefix (no daemon start):
 python -m py_compile packaging/linux/desktop/connection_contract.py packaging/linux/desktop/connection_window.py packaging/linux/desktop/happyranch_window.py
 bash -n packaging/linux/build-payload.sh packaging/linux/build-deb.sh
 ```
+
+## Mac native loader (slice 1b-MAC)
+
+The native **Connection / 连接** menu opens a fresh separate `ConnectionWindow`
+while the runtime is loaded, starting, disconnected or failed. Existing native
+connection screens stay unchanged during development. The runtime WKWebView
+receives no handler, facade, forwarder or reference to this view.
+
+`app/mac/scripts/build-app.sh` runs `npm run build:connection` in its existing
+isolated producer, stages the complete output outside the exported web source
+census, and copies that output to
+`HappyRanch.app/Contents/Resources/Connection/` before sealing. It reuses the
+trusted source-side Linux `Assets` validator for exact inventory, sizes, hashes
+and no-symlink checks. Manifest-listed files, including the font/license, are
+preserved; `Resources/web/dist` stays separate. SwiftPM resources are unnecessary.
+The native scheme handler repeats no-follow reads and SHA-256 checks and serves
+only literal manifest URLs, with correct MIME and the exact §2 CSP header.
+
+The view has its own WKWebViewConfiguration, non-persistent WKWebsiteDataStore
+and WKUserContentController. Only the named `happyranch.connection.v1` world has
+a WithReply handler; main-frame document-start scripts expose exactly call/on in
+the page world. Every native request checks view/controller identity, main frame,
+frame request, exact canonical security origin and generation. Initial hello
+probes structured execution, exact JS origin/entry, an empty frame tree and page
+world channel absence before capabilities dispatch. Native validates the closed
+v1 command/args envelope independently, including duplicates, Unicode, depth 16,
+4 KiB requests and 32 KiB replies. No data is interpolated into native JS source.
+
+Only hello and client.status are implemented. Hello advertises Mac client only,
+with no host role/command. Status hand-projects existing in-memory client phases;
+it performs no discovery, Keychain read, health/network request or native action.
+Only HomeInviteModel's verified UI-load phase yields connected/available; older
+join/health signals stay opening/unknown. Saved access, route, observation time,
+computers/ref, deadline and comparison phrase remain unknown/null and are listed
+in observationLimits. No credential, trust record, invite, fingerprint, comparison
+phrase or raw exception is serialized. All other schema commands are unavailable.
+There is no clean unified model-event source in this slice: no events are wired
+or advertised; on accepts the fixed names and returns idempotent unsubscribe.
+Future event delivery requires structured callAsyncJavaScript arguments in the
+admitted main frame/named world with a generation recheck.
+
+Native navigation, redirects, popups, load failures, process loss, role/lane
+changes and window close revoke admission and unregister the handler. Reopening
+creates a fresh view. Failed prerequisites show bilingual native unavailable
+copy with no action controls, explicitly saying the planned connection CLI is
+not available yet. No file URL, remote origin or network-command fallback exists.
+
+Focused native contract tests use the existing Swift venue on macOS:
+
+```sh
+swift test --package-path app/mac --filter ConnectionContractTests
+```
+
+Linux cannot compile AppKit/WebKit. The existing unsigned build-mac-app workflow
+may supply compile/package evidence only under a slice-specific dispatch budget;
+it does not execute these tests or GUI checks. Native custom-origin/CSP, frame
+and popup refusal, daemon-state entry, process teardown and bilingual Mac
+screenshots remain NOT RUN until exercised. Lifecycle/CLI/cutover and Mac client
+qualification remain pending; no acceptance claim follows from source delivery.
 
 ## Verification boundaries
 
