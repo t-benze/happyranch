@@ -32,9 +32,13 @@ export function Heartbeat({ data, nowIdx }: HeartbeatProps): JSX.Element {
     Math.max(b.steps, b.failed ?? 0);
   const maxSignal = Math.max(...data.map(heightSignal), 1);
   const H = 36;
+  // 24 bars at 6px + 4px gaps need 236px, wider than the narrow lg rail card
+  // (1024-1279px viewports, ~180-265px of content). There the gaps collapse and
+  // the bars spread evenly across the card instead (THR-376 D4: no Home card
+  // overflow at 1100).
   return (
     <div
-      className="flex h-9 items-end gap-1"
+      className="flex h-9 items-end gap-1 lg:max-xl:justify-between lg:max-xl:gap-0"
       aria-label={t('dashboard.heartbeat.label')}
     >
       {data.map((b, i) => {
