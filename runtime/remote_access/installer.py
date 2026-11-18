@@ -1501,11 +1501,14 @@ class ManagedInstaller:
                 pass
 
     def _headscale_cleanup_links(self, paths: tuple[str, ...] = (_UNIT_DIR, "run/systemd/system"),
-                                 *, category: str = "cleanup-uncertain") -> None:
+                                 *, category: str = "cleanup-uncertain",
+                                 _home_unit: bytes | None = None, _home_link: bool = False) -> None:
         """Preparation and disable require no foreign activation policy.
 
         Inspect supplied trees without following links; share entry/depth limits
         across all roots. Generators and later root writers remain cooperative.
+        Only the unmounted B5 gate supplies receipt-verified home allowances.
+        Existing inventory/cleanup callers retain the inert defaults.
         """
         count = 0
 
@@ -1520,8 +1523,15 @@ class ManagedInstaller:
                         raise headscale.HeadscaleServiceError(category)
                     info = os.stat(entry.name, dir_fd=parent, follow_symlinks=False)
                     managed = relative == _UNIT_DIR and entry.name == headscale.UNIT
+                    if (_home_link and not dbus
+                            and relative == _UNIT_DIR + "/happyranch-managed.target.wants"
+                            and entry.name == headscale.UNIT and stat.S_ISLNK(info.st_mode)
+                            and (info.st_uid, info.st_gid) == self.root_owner and info.st_nlink == 1
+                            and os.readlink(entry.name, dir_fd=parent) == "/" + _UNIT_DIR + "/" + headscale.UNIT):
+                        continue
                     if not dbus and entry.name.startswith("happyranch-headscale."):
-                        if not managed or self._read_unit(parent, entry.name) != render_headscale_unit().encode():
+                        expected = render_headscale_unit().encode() if _home_unit is None else _home_unit
+                        if not managed or self._read_unit(parent, entry.name) != expected:
                             raise headscale.HeadscaleServiceError(category)
                     if stat.S_ISLNK(info.st_mode):
                         target = os.readlink(entry.name, dir_fd=parent)

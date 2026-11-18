@@ -2601,6 +2601,35 @@ valid receipt. Without it the inert no-link rule remains; every other matching
 link still refuses, including manually created links. Cleanup disables this
 one owned link then re-verifies absence. All other foreign-unit/drop-in,
 literal-reference and bounded no-follow inventory checks remain mandatory.
+
+**Manager Ruling 9 (G2-D2, B5):** a valid current-generation receipt is a
+protected record that parses as closed `home-activation@1` through G2-A's
+existing no-follow A5 reader, with release UID and all three installation IDs
+equal to independently caller-supplied expected values and
+`activation_generation` equal to the externally expected generation. **Any**
+phase qualifies, including `prepared`, `activating`, `joined`, `ready` and
+`failed_uncertain`: member digests and ownership are required in every phase,
+and cleanup must still see the owned link. Pending entries, unsafe files,
+other generations, mismatched identities and parse failures supply no valid
+receipt; only inert bytes without a matching link are then admitted.
+
+G2-D2 adds the unmounted `HomeUnitGate`. With a valid receipt, a present owned
+fragment must be the exact home rendering and its full SHA-256 must equal
+`member_digests['/etc/systemd/system/happyranch-headscale.service']`; a receipt
+cannot excuse changed bytes or an inert reversion. Its sole link exception
+requires the exact absolute path/target recorded in `ownership.links`
+(`home_activation.OWNED_LINK`), root ownership and one link. There is no
+creator inference: a manual link without that valid ownership record refuses.
+The receipt is read again after inventory and must be unchanged. The cleanup
+primitive injects a synchronous disable operation for only that exact link,
+then repeats the complete inventory with no link exception and rechecks the
+receipt. A persistent link or changed receipt refuses. The future lifecycle
+owner must establish quiescence and supply the disable operation; this slice
+runs no systemctl and grants no deletion, activation or readiness authority.
+The renderer's `home_transport` flag defaults to false, and all existing
+installer/supervisor inventory, cleanup and drift consumers retain their
+inert defaults. No production caller selects the variant or invokes the gate;
+G2-E owns that wiring. The legacy foreign-inventory cases remain applicable.
 Why no founder: boot persistence for an already-approved service, unchanged UX.
 
 **B6 — Live-state ownership and per-type deletion.**
