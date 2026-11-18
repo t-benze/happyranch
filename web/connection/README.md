@@ -10,9 +10,11 @@ npm run typecheck
 ```
 
 This independent TypeScript entry emits only `dist-connection/`. The runtime
-SPA and daemon routes are unchanged. No connection lifecycle controls ship here.
+SPA and daemon routes are unchanged. Client lifecycle controls only request
+closed native commands; native owns every effect.
 Linux native integration and packaging are slice 1b-LINUX below; Mac client-only
-integration and bundle assembly are slice 1b-MAC below. Lifecycle screens are slice 4. This shell reads status only.
+integration and bundle assembly are slice 1b-MAC below. Client lifecycle screens are
+slice 4a (below); Linux host screens remain slice 4b, so the host role reads status only.
 
 `resource-manifest.json` is a literal version-1 object with `entry: "index.html"`
 and a `resources` array of exact relative `path`, UTF-8/file `bytes` and SHA-256
@@ -25,13 +27,13 @@ absolute daemon paths, a preload network shim and embedded asset data.
 
 ## Import audit
 
-`index.html` → `src/main.ts` → `bridge.ts`, `protocol.ts`, `strings.ts`, CSS.
+`index.html` → `src/main.ts` → `bridge.ts`, `client.ts`, `protocol.ts`, `strings.ts`, CSS.
 `protocol.ts` imports only `protocol/native-connection-bridge.v1.json`.
 There are no runtime imports from `web/src/`, React, App, router, auth/bootstrap,
 API/data providers, analytics or the runtime feature-flag resolver. No network,
 clipboard, credential, storage, navigation or generic execution API is used.
 
-Build-only reuse: `vite.config.ts` reads eight semantic declarations from
+Build-only reuse: `vite.config.ts` reads seventeen literal semantic declarations from
 `src/design-system/tokens/tokens.css` into an external CSS asset. It does not
 import that stylesheet's Tailwind graph or other runtime UI. The local Hanken
 Grotesk font comes from `public/fonts/`; the OFL is copied alongside the assets.
@@ -77,8 +79,8 @@ unavailable or limited runtime/freshness observations show unavailable status,
 and an unknown runtime stays unknown. Freshness is native-owned; the web adds
 no timestamp-based expiry rule.
 Mac may advertise only client roles/commands. Available commands require their
-advertised role; no role or capability inferred from platform alone. Native
-withholds Linux saved-access capabilities until the Founder Q3/persistence slice.
+advertised role; no role or capability inferred from platform alone. Linux
+saved-access capabilities come from the slice 8b Secret Service owner.
 
 `Connection` validates all facade strings, bounds reads to eight, serializes
 ordinary calls that can change state (including NextDevice), and leaves the
@@ -98,6 +100,51 @@ The internal request/reply/event codecs are module exports for later relay use,
 not extra window APIs. They preserve fixed protocol/version, closed shapes,
 request/result correlation and JSON-string delivery. The web entry supplies no native authorization; Linux owns the separate
 transport and admission described below.
+
+## Client screens (slice 4a)
+
+`client.ts` renders the client role for Linux and Mac from closed native
+projections only: `client.status`/`client.stateChanged` snapshots, action
+results, closed errors and `client.health`. It shows idle/no saved, the saved
+list (per-record Connect / Remove local access), validating, joining, pairing,
+waiting for approval, saving, opening, connected, stopping and failed, with a
+reachable Cancel in every in-flight stage. Connected is shown only when the
+native snapshot says `connected`. After every action the view rereads
+`client.savedComputers` and `client.status` independently; it never edits lists
+optimistically. Discovery `busy` during an active attempt is expected, not a
+failure; any other reread failure is shown beside the original action outcome
+(same command, record and effect), never instead of it. Every async status/health
+read and role load is bound to the role selection and a monotonic
+native-observation revision: a reply overtaken by a native event, a newer read,
+a completed action or a role change is ignored, so the newest native state wins. Native confirmations own Connect, Remove, Disconnect and Cancel;
+dismissing one returns `effect:none` and the view says nothing changed.
+Unknown effects (including transport loss after dispatch) show “couldn’t
+confirm” with Check again, never “nothing changed”. A recovery `explicitRetry` or
+`nativePermission` retries the same command with the same `computerRef`, only
+while that record is still listed.
+
+The view never renders invite bytes, fingerprints, bearers or the snapshot's
+`comparisonPhrase`; the comparison stays in native windows. Health fields that
+are `unknown`, unavailable or listed in `observationLimits.client` show Unknown;
+an unreadable or limited saved list is shown as unreadable, not empty. The
+“Secure access” step is done only for native `savedAccess: saved`; otherwise it
+reads skipped (`none`), not saved (`notSaved`/`needsPermission`) or not
+confirmed. Once `notSaved`, `needsPermission` or `unknown` is observed at opening
+or connected, the save warning stays visible through saving/opening/connected
+transitions until `saved` is observed, with Retry save while connected; the
+persistent native-chrome banner remains native. Invite deadlines
+show an absolute local time only in validating..waitingApproval, with no
+countdown or expiry announcements. Commands whose capability is absent are
+hidden, with one “update the app” note. A pending ordinary action marks other
+actions `aria-disabled` (focus stays put); Cancel stays enabled.
+
+Accessibility: one polite live region announces stage and action outcomes —
+confirmed, failed or unknown — keyed by native ref and operation/outcome
+identity (not every snapshot and not language switches). App-generated saved
+names in retained outcomes/recovery re-render in the current locale; focus is restored to
+the same control after a native re-render, or moved to the card heading when the
+stage changes and focus was lost. Visible focus uses the shared outline. The
+connection shell has no dark theme; light only.
 
 ## Linux native loader (slice 1b-LINUX)
 

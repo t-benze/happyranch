@@ -1,6 +1,7 @@
 import 'connection-tokens.css';
 import './styles.css';
 import { Connection } from './bridge';
+import { ClientView } from './client';
 import { catalogs } from './strings';
 import type { Copy, Locale } from './strings';
 import type { HostSnapshot, ClientSnapshot, SnapshotEvent, Runtime } from './types';
@@ -32,6 +33,7 @@ function translate(): void {
   localized.forEach(({ node, key, ordinal }) => { node.textContent = text(key, ordinal); });
   language.setAttribute('aria-label', copy().language);
   updateStatus();
+  if (role === 'client') clientView.translate();
 }
 const language = document.createElement('select');
 language.id = 'language';
@@ -53,7 +55,7 @@ function observe(snapshot: HostSnapshot | ClientSnapshot): void {
     runtime = snapshot.observation === 'known' ? snapshot.runtime : 'unknown';
   }
   reading = false; updateStatus();
-  if (role === 'client') renderSaved(snapshot as ClientSnapshot);
+  if (role === 'client') clientView.update(snapshot as ClientSnapshot);
 }
 function hide(): void {
   generation++; ended = true; stopRole?.(); connection?.dispose(); container.replaceChildren(); container.hidden = true;
@@ -65,6 +67,12 @@ async function loadRole(next: 'host' | 'client'): Promise<void> {
   roleButtons.forEach((button, value) => { button.setAttribute('aria-pressed', String(value === role)); });
   roleDescription.textContent = copy()[role === 'host' ? 'hostDescription' : 'clientDescription'];
   descriptionEntry.key = role === 'host' ? 'hostDescription' : 'clientDescription';
+  // Client presentation owns its own card/live region; host keeps the shell.
+  status.hidden = next === 'client'; hostPanel.hidden = next === 'client';
+  clientView.root.hidden = true; clientView.region.textContent = '';
+  // Completions from an earlier selection (or overtaken by newer native state) are ignored.
+  clientView.reset();
+  const selected = (): boolean => generation === selectedGeneration && !ended;
   if (!connection?.has(`${role}.status`)) { showUnsupported(); return; }
   try {
     stopRole = connection.on(`${role}.stateChanged`, (raw) => {
@@ -72,86 +80,30 @@ async function loadRole(next: 'host' | 'client'): Promise<void> {
       observedEvent = true;
       observe((JSON.parse(raw) as SnapshotEvent<HostSnapshot | ClientSnapshot>).snapshot);
     });
+    const first = clientView.fence();
     const raw = await connection.call(`${role}.status`, '{}');
-    if (generation === selectedGeneration && !observedEvent) observe(JSON.parse(raw) as HostSnapshot | ClientSnapshot);
-    if (next === 'client') await refreshSaved(selectedGeneration);
-    savedPanel.hidden = next !== 'client' || !connection.has('client.savedComputers');
-  } catch { if (generation === selectedGeneration && !ended) showUnsupported(); }
-}
-const savedPanel = element('section');
-savedPanel.className = 'panel'; savedPanel.hidden = true;
-const savedWarning = element('p', 'savedNotice');
-const savedUnknown = element('p', 'savedUnknown');
-const savedEmpty = element('p', 'savedEmpty');
-const savedError = element('p', 'savedError'); savedError.hidden = true;
-savedError.setAttribute('role', 'status');
-const savedList = element('ul');
-let savedKey = '';
-let clientState: ClientSnapshot | null = null;
-const clientButtons: { node: HTMLButtonElement; command: string }[] = [];
-async function clientAction(command: string, args = '{}'): Promise<void> {
-  if (!connection) return;
-  const current = generation;
-  savedError.hidden = true;
-  try { await connection.call(command, args); }
-  catch { if (current === generation) savedError.hidden = false; }
-  if (current === generation && !ended) await refreshSaved(current);
-}
-function actionButton(command: string, key: keyof Copy, args = '{}'): HTMLButtonElement {
-  const button = element('button', key); button.type = 'button';
-  button.addEventListener('click', () => { void clientAction(command, args); });
-  clientButtons.push({ node: button, command });
-  return button;
-}
-savedPanel.append(element('h2', 'savedTitle'), savedWarning, savedUnknown, savedEmpty, savedError,
-  actionButton('client.acceptInvite', 'acceptInvite'),
-  actionButton('client.savedComputers', 'refreshSaved'),
-  actionButton('client.retrySave', 'retrySave'),
-  actionButton('client.cancelAttempt', 'cancelAttempt'),
-  actionButton('client.disconnect', 'disconnect'), savedList);
-async function refreshSaved(current: number): Promise<void> {
-  if (!connection?.has('client.savedComputers')) return;
-  try {
-    await connection.call('client.savedComputers', '{}');
-    const raw = await connection.call('client.status', '{}');
-    if (current === generation && !ended) observe(JSON.parse(raw) as ClientSnapshot);
-  } catch { if (current === generation) savedError.hidden = false; }
-}
-function renderSaved(snapshot: ClientSnapshot): void {
-  clientState = snapshot;
-  savedWarning.hidden = snapshot.savedAccess === 'saved' || snapshot.stage !== 'connected';
-  savedUnknown.hidden = snapshot.computers !== null && snapshot.savedAccess !== 'unknown';
-  savedEmpty.hidden = snapshot.computers?.length !== 0;
-  const key = JSON.stringify(snapshot.computers);
-  if (savedKey !== key) {
-    savedKey = key;
-    for (let i = localized.length - 1; i >= 0; i--) {
-      if (savedList.contains(localized[i].node)) localized.splice(i, 1);
+    if (!selected()) return;
+    if (!observedEvent && (next !== 'client' || clientView.latest(first))) observe(JSON.parse(raw) as HostSnapshot | ClientSnapshot);
+    clientView.root.hidden = next !== 'client';
+    // Saved discovery failure is a client-screen state, not an unsupported bridge;
+    // status is reread independently of discovery.
+    if (next === 'client' && connection.has('client.savedComputers')) {
+      try { await connection.call('client.savedComputers', '{}'); } catch { /* computers/savedAccess stay as native reports them. */ }
+      if (!selected()) return;
+      const token = clientView.fence();
+      try {
+        const fresh = await connection.call('client.status', '{}');
+        if (selected() && clientView.latest(token)) observe(JSON.parse(fresh) as ClientSnapshot);
+      } catch { /* The last native snapshot stays; Check again remains available after actions. */ }
     }
-    for (let i = clientButtons.length - 1; i >= 0; i--) {
-      if (savedList.contains(clientButtons[i].node)) clientButtons.splice(i, 1);
-    }
-    savedList.replaceChildren();
-    for (const computer of snapshot.computers ?? []) {
-      const row = element('li');
-      const generated = connection?.hello.platform === 'linux' ? /^Saved computer ([1-9][0-9]*)$/.exec(computer.label) : null;
-      const ordinal = generated ? Number(generated[1]) : undefined;
-      const label = ordinal !== undefined && Number.isSafeInteger(ordinal) ? element('span', 'savedComputer', ordinal) : element('span');
-      if (!generated || ordinal === undefined || !Number.isSafeInteger(ordinal)) label.textContent = computer.label;
-      row.append(label, actionButton('client.connectSaved', 'connectSaved', JSON.stringify({ computerRef: computer.computerRef })),
-        actionButton('client.removeSaved', 'removeSaved', JSON.stringify({ computerRef: computer.computerRef })));
-      savedList.append(row);
-    }
-  }
-  for (const { node, command } of clientButtons) {
-    node.hidden = !connection?.has(command);
-    const idle = ['idle', 'failed'].includes(clientState.stage);
-    node.disabled = command === 'client.retrySave' ? clientState.stage !== 'connected' || !['notSaved', 'needsPermission', 'unknown'].includes(clientState.savedAccess)
-      : command === 'client.cancelAttempt' ? !['validating', 'joining', 'pairing', 'waitingApproval', 'saving', 'opening'].includes(clientState.stage)
-      : command === 'client.disconnect' ? clientState.stage !== 'connected'
-      : command === 'client.savedComputers' ? false : !idle;
-  }
+  } catch { if (selected()) showUnsupported(); }
 }
+const clientView = new ClientView({
+  connection: () => connection, locale: () => locale,
+  current: () => !ended && role === 'client' && connection !== null,
+});
+clientView.root.hidden = true;
+const hostPanel = element('section');
 const roleButtons = new Map<'host' | 'client', HTMLButtonElement>();
 const roleDescription = element('p');
 const descriptionEntry = { node: roleDescription, key: 'hostDescription' as keyof Copy };
@@ -177,9 +129,10 @@ function mount(): void {
     button.addEventListener('click', () => { void loadRole(availableRole); });
     roleButtons.set(availableRole, button); roles.append(button);
   }
-  const panel = element('section'); panel.className = 'panel';
-  panel.append(element('h2', 'shellTitle'), element('p', 'shellDescription'), element('p', 'native'));
-  container.append(header, element('h1', 'title'), element('p', 'intro'), roles, roleDescription, status, savedPanel, panel);
+  hostPanel.className = 'panel';
+  hostPanel.append(element('h2', 'shellTitle'), element('p', 'shellDescription'), element('p', 'native'));
+  container.append(header, element('h1', 'title'), element('p', 'intro'), roles, roleDescription, status,
+    clientView.region, clientView.root, hostPanel);
   translate(); container.hidden = false;
 }
 window.addEventListener('pagehide', hide, { once: true });
