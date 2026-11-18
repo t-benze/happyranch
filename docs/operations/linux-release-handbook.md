@@ -34,6 +34,9 @@ an exact uv-managed CPython 3.12.10, `uv sync --frozen --no-dev
 --no-default-groups` with binary-only runtime dependencies, then installs the
 HappyRanch wheel as real `.py` files. It builds production `web/dist` with
 `npm ci && npm run build` and the native Go sidecar with `CGO_ENABLED=0`.
+The user-run `bin/happyranch-home-bridge` is built from `app/mac/tsnet-bridge`
+with `CGO_ENABLED=1`; a working native C compiler and C development headers
+are prerequisites for that helper. It runs unprivileged, with no system service.
 Its private Go module cache uses `-modcacherw` so build cleanup can remove it.
 Existing version/architecture outputs are refused; use a fresh destination.
 
@@ -346,10 +349,26 @@ acceptance remains separate from temp-root verification.
 ## Desktop window (system Python)
 
 The payload also contains `bin/happyranch-app`,
+`bin/happyranch-home-bridge`,
 `share/happyranch/desktop/happyranch_window.py`,
+`share/happyranch/desktop/connection_window.py`,
+`share/happyranch/desktop/connection_contract.py`,
+`share/happyranch/desktop/client_session.py`,
+`share/happyranch/desktop/client_runtime.py`, and
+`share/happyranch/desktop/invite_v2.py` (the shared strict codec copied verbatim),
 `share/applications/happyranch.desktop.in`, and the existing clay brand artwork
 under `share/icons/hicolor/` (16, 32, 64, 128, 256, 512, 1024 PNG and scalable
 SVG). The builder copies the existing Mac PNGs and Web SVG without changing them.
+The 3a.1 client modules are an unmounted native session/runtime seam; public
+Linux client capabilities remain unavailable until 3a.2. They use only native
+process memory for invite/pending/device authority, a private helper socket
+under an admitted owner-only `XDG_RUNTIME_DIR`, and a literal loopback runtime
+listener. Bootstrap returns a disposable local session token; native forwarding
+strips browser authorization and injects the device credential only toward the
+pinned helper. No saved access, reconnect or credential file is provided.
+Standalone behavior verification without GI or installs:
+`python packaging/linux/desktop/test_client_session.py`.
+
 The desktop entry is a template: the deb builder replaces `@APP_EXEC@`
 with `/usr/bin/happyranch-app` and installs the menu entry/icons. Building the
 payload alone does not install files into `/opt` or `/usr/share`.

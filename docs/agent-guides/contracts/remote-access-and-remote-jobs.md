@@ -1316,9 +1316,23 @@ cross-platform `app/mac/tsnet-bridge` Go module. Its additive
 `--home-session-v1` mode runs as the desktop user, with no sudo, polkit,
 setuid bit or system service. The existing `--home-bridge-v2` profile/recovery
 path and Mac build behavior are unchanged; shared Go sources are used by both builds.
-The GTK pairing/connection adapter is separate slice 3a and is not delivered
-by this transport. Linux client capability remains unavailable until that
-adapter ships. No saved-access or reconnect claim follows.
+The GTK pairing/connection adapter is separate slice 3a.2 and is not delivered
+by this transport. Slice 3a.1 supplies unmounted `client_session.py` and
+`client_runtime.py` desktop siblings: private helper/stream ownership, strict
+pair/complete/health and native-memory bearer custody, local bootstrap and
+HTTP/SSE/upgrade forwarding. The payload copies the unchanged pure invite codec
+as `desktop/invite_v2.py` for isolated system Python; no runtime package import
+or dependency install is needed. Native workers call these owners; the GTK
+attempt/document model and actual loaded-UI gate remain 3a.2. Closing seals
+admission, shuts streams, closes stdin, terminates/kills and reaps within two
+2-second process waits, then removes only the owned socket/directory; failed
+cleanup stays explicit. Runtime forwarding bounds 16 local clients and 32
+helper streams, 16 KiB headers, 32 MiB request bodies and a 30-second request
+deadline. SSE/accepted upgrades live until closure; no second HTTP request
+bypasses header custody on a keepalive stream. Native bootstrap answers both
+bootstrap aliases with a disposable local session token, never the device
+bearer. Standalone behavior: `python packaging/linux/desktop/test_client_session.py`.
+Linux client capability remains unavailable until that adapter ships. No saved-access or reconnect claim follows.
 
 Launch uses the existing uint32 big-endian length (1..16384) plus closed JSON
 on private stdin: exactly `version` (2), `caDER`, `dialIP`, `homeID`,
