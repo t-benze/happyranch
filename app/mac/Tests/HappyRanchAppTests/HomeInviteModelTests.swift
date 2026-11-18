@@ -520,6 +520,81 @@ struct HomeInviteModelTests {
         }
     }
 
+    @Test("Bridge projection returns every valid computer at 32 and null at 33 without capping custody", arguments: [32, 33])
+    func bridgeProjectionBound(_ count: Int) async throws {
+        let store = HomeStoreFixture(), session = HomeSessionFixture()
+        let trust = try RemoteInvite.parse(invite()).trust
+        let ids = (0..<count).map { _ in UUID() }.sorted { $0.uuidString < $1.uuidString }
+        for (number, id) in ids.enumerated().reversed() {
+            try await store.save(SavedDeviceCredential(binding: SavedDeviceBinding(homeID: trust.homeID,
+                controlPlaneID: trust.controlPlaneID, stableNodeID: "synthetic-node-\(number)"), trust: trust,
+                deliveredBearer: Data("SYNTHETIC-BRIDGE-CANARY".utf8), networkProfileID: id))
+        }
+        let model = HomeInviteModel(store: store, makeSession: { session })
+        model.prepare()
+        #expect(await eventually { !model.busy })
+        #expect(model.savedHomes.count == count)
+        let catalog = ConnectionComputerCatalog()
+        let saved = ConnectionClientProjection.savedComputers(model, catalog: catalog)
+        let first = ConnectionClientProjection.snapshot(model: model, catalog: catalog)
+        if count == 32 {
+            let rows = try #require(saved["computers"] as? [[String: String]])
+            #expect(rows.count == 32)
+            #expect(rows.compactMap { catalog.resolve($0["computerRef"]!, in: model) } == ids)
+            #expect(!ConnectionClientProjection.observationLimits(first).contains("computers"))
+            let second = ConnectionClientProjection.snapshot(model: model, catalog: catalog)
+            #expect(first["computers"] as? [[String: String]] == second["computers"] as? [[String: String]])
+        } else {
+            #expect(saved["computers"] is NSNull && first["computers"] is NSNull)
+            #expect(ConnectionClientProjection.observationLimits(first).contains("computers"))
+        }
+        model.selectedHomeID = ids[0]; model.reconnect()
+        #expect(await eventually { model.webURL != nil })
+        let snapshot = ConnectionClientProjection.snapshot(model: model, catalog: catalog)
+        let active = try #require(snapshot["activeComputerRef"] as? String)
+        #expect(catalog.resolve(active, in: model) == ids[0])
+        let health = ConnectionClientProjection.health(model, now: Date())
+        #expect(health["access"] as? String == "allowed")
+        #expect(health["runtime"] as? String == "unknown") // open is not a loaded RELEASE UI
+        let later = ConnectionClientProjection.health(model, now: Date().addingTimeInterval(11))
+        #expect(later["access"] as? String == "unknown" && later["observation"] as? String == "stale")
+        let wire = ConnectionRequest.reply(id: "r1", result: snapshot)
+        #expect(!wire.contains("SYNTHETIC-") && !wire.contains(trust.homeEndpoint) && !wire.contains(trust.controlURL))
+        #expect(catalog.resolve("unknown", in: model) == nil)
+        model.cancel()
+        #expect(await eventually { !model.busy })
+        model.selectedHomeID = ids[0]; model.removeSavedComputer()
+        #expect(await eventually { !model.busy })
+        #expect(catalog.resolve(active, in: model) == nil) // stale native target, even before catalog refresh
+        #expect(model.savedHomes.count == count - 1)
+    }
+
+    @Test("Bridge Retry save awaits custody settlement and respects Cancel's safe point", arguments: [false, true])
+    func bridgeSaveSettlement(_ cancel: Bool) async throws {
+        let gate = HomeAwaitGate(), store = HomeStoreFixture(gate: gate), session = HomeSessionFixture()
+        await store.configure(saveFails: true)
+        let model = HomeInviteModel(store: store, makeSession: { session })
+        model.accept(try invite()); await session.approve()
+        #expect(await eventually { model.webURL != nil })
+        let url = try #require(model.webURL)
+        model.webLoaded(url: url, lifetime: model.lifetime)
+        #expect(await eventually { model.bridgeCanRetrySave })
+        await store.configure(saveFails: false); await gate.arm("save")
+        let retry = Task { await model.bridgeRetrySave() }
+        #expect(await gate.waitFor("save"))
+        #expect(model.phase == .saving && model.saveFailure != nil)
+        if cancel { model.cancel(); #expect(model.phase == .stopping) }
+        await gate.release()
+        let result = await retry.value
+        #expect(result == (cancel ? .changed : .saved))
+        #expect(await eventually { !model.busy })
+        #expect(model.savedHomes.count == 1 && model.saveFailure == nil)
+        #expect(model.phase == (cancel ? .idle : .connected))
+        #expect(await store.saves == 2)
+        #expect(await model.bridgeRetrySave() == .refused)
+        if !cancel { model.cancel(); #expect(await eventually { !model.busy }) }
+    }
+
     @Test("Revoked unsaved B cannot erase the selected saved computer A")
     func revocationTargetsActiveCredential() async throws {
         let store = HomeStoreFixture(), session = HomeSessionFixture()

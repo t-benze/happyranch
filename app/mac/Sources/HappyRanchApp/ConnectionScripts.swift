@@ -6,13 +6,23 @@ enum ConnectionScripts {
   'use strict';
   if (window !== top || location.href !== 'happyranch-shell://connection/index.html'
       || location.origin !== 'happyranch-shell://connection') return;
-  const fail = code => JSON.stringify({code, effect:'none', recovery:'refresh'});
+  const fail = (code, effect = 'none', recovery = 'refresh') => JSON.stringify({code, effect, recovery});
   const pending = new Map(), listeners = new Map();
   let sequence = 0, active = true;
   const size = text => typeof text === 'string' && new TextEncoder().encode(text).length;
   addEventListener('message', event => {
     if (!active || event.source !== window || event.origin !== location.origin) return;
     const item = event.data;
+    if (item?.channel === 'hr-connection-event' && item.name === 'client.stateChanged') {
+      if (!size(item.raw) || size(item.raw) > 32768) return;
+      try {
+        const data = JSON.parse(item.raw);
+        if (data.version !== 1 || !Number.isSafeInteger(data.sequence) || data.sequence < 1
+            || typeof data.observedAt !== 'string' || !data.snapshot) return;
+        listeners.get(item.name)?.forEach(handler => { try { handler(item.raw); } catch {} });
+      } catch {}
+      return;
+    }
     if (!item || item.channel !== 'hr-connection-reply' || typeof item.id !== 'string') return;
     const callback = pending.get(item.id);
     if (!callback) return;
@@ -24,7 +34,7 @@ enum ConnectionScripts {
           || reply.requestId !== item.id || typeof reply.ok !== 'boolean') throw 0;
       if (reply.ok) callback.resolve(JSON.stringify(reply.result));
       else callback.reject(JSON.stringify(reply.error));
-    } catch { callback.reject(fail('invalidRequest')); }
+    } catch { callback.reject(fail('outcomeUnknown', 'unknown', 'explicitRetry')); }
   });
   const call = (command, data) => new Promise((resolve, reject) => {
     if (!active) return reject(fail('documentChanged'));
@@ -41,11 +51,18 @@ enum ConnectionScripts {
     if (!active) throw fail('documentChanged');
     if (!listeners.has(name)) listeners.set(name, new Set());
     const group = listeners.get(name); group.add(handler);
-    return () => group.delete(handler);
+    window.postMessage({channel:'hr-connection-subscription', active:true}, location.origin);
+    let attached = true;
+    return () => {
+      if (!attached) return;
+      attached = false; group.delete(handler);
+      if (![...listeners.values()].some(value => value.size))
+        window.postMessage({channel:'hr-connection-subscription', active:false}, location.origin);
+    };
   };
   addEventListener('pagehide', () => {
     active = false; listeners.clear();
-    pending.forEach(item => item.reject(fail('documentChanged'))); pending.clear();
+    pending.forEach(item => item.reject(fail('documentChanged', 'unknown', 'explicitRetry'))); pending.clear();
   }, {once:true});
   Object.defineProperty(window, 'happyranchConnection', {value:Object.freeze({call,on})});
 })();
@@ -57,10 +74,14 @@ enum ConnectionScripts {
       || location.origin !== 'happyranch-shell://connection') return;
   const native = window.webkit.messageHandlers.connection;
   let active = true;
+  Object.defineProperty(globalThis, '__hrConnectionEvent', {value: data => {
+    if (active && typeof data === 'string')
+      window.postMessage({channel:'hr-connection-event',name:'client.stateChanged',raw:data}, location.origin);
+  }});
   const revoke = () => {
     if (!active) return;
     active = false;
-    // Non-string input is always rejected. This notification can only revoke
+    // Null input is always rejected. This notification can only revoke
     // the current document, never authorize a command or supply frame identity.
     native.postMessage(null).catch(() => {});
   };
@@ -77,6 +98,10 @@ enum ConnectionScripts {
   addEventListener('message', async event => {
     if (!active || event.source !== window || event.origin !== 'happyranch-shell://connection') return;
     const item = event.data;
+    if (item?.channel === 'hr-connection-subscription' && typeof item.active === 'boolean') {
+      native.postMessage(item.active).catch(() => {});
+      return;
+    }
     if (!item || item.channel !== 'hr-connection-call' || typeof item.data !== 'string'
         || typeof item.command !== 'string' || !/^r[0-9]{1,16}$/.test(item.id)) return;
     // Keep args text intact: native must see duplicate keys and bad JSON too.
@@ -85,11 +110,16 @@ enum ConnectionScripts {
     let reply;
     try { reply = await native.postMessage(raw); }
     catch { reply = JSON.stringify({protocol:'happyranch.connection',version:1,
-      requestId:item.id,ok:false,error:{code:'unavailable',effect:'none',recovery:'refresh'}}); }
+      requestId:item.id,ok:false,error:{code:'outcomeUnknown',effect:'unknown',recovery:'explicitRetry'}}); }
     if (typeof reply === 'string' && new TextEncoder().encode(reply).length <= 32768)
       window.postMessage({channel:'hr-connection-reply',id:item.id,raw:reply}, location.origin);
   });
 })();
+"""#
+    static let event = #"""
+if (window === top && location.origin === 'happyranch-shell://connection'
+    && location.href === 'happyranch-shell://connection/index.html' && window.frames.length === 0)
+  globalThis.__hrConnectionEvent(data);
 """#
     static let probe = #"""
 return window === top && location.origin === 'happyranch-shell://connection'

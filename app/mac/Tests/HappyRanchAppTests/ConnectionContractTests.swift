@@ -1,21 +1,29 @@
 import Foundation
 import Testing
+import HappyRanchSupervisor
 @testable import HappyRanchApp
 
 @Suite("Packaged Mac connection contract")
 struct ConnectionContractTests {
-    private func request(_ command: String = "client.status", args: String = "{}") -> String {
-        "{\"protocol\":\"happyranch.connection\",\"version\":1,\"requestId\":\"r1\",\"command\":\"\(command)\",\"args\":\(args)}"
+    private func request(_ command: String = "client.status", args: String = "{}", id: String = "r1") -> String {
+        "{\"protocol\":\"happyranch.connection\",\"version\":1,\"requestId\":\"\(id)\",\"command\":\"\(command)\",\"args\":\(args)}"
     }
 
     @Test("Wire rejects duplicate/extra keys, unknown commands, bad Unicode and bounds")
     func closedWire() throws {
         #expect(try ConnectionRequest(request()).command == "client.status")
         #expect(try ConnectionRequest(request("bridge.hello", args: "{\"minVersion\":1,\"maxVersion\":1}")).id == "r1")
+        let target = try ConnectionRequest(request("client.connectSaved", args: "{\"computerRef\":\"c1\"}"))
+        #expect(target.args == ["computerRef": .string("c1")])
+        let same = try ConnectionRequest(request("client.connectSaved", args: "{\"computerRef\":\"c1\"}"))
+        let changed = try ConnectionRequest(request("client.connectSaved", args: "{\"computerRef\":\"c2\"}"))
+        #expect(target.hasSameBody(as: same))
+        #expect(!target.hasSameBody(as: changed))
         let malformed = [
             request().replacingOccurrences(of: "\"version\":1", with: "\"version\":1,\"version\":1"),
             request(args: "{\"x\":1,\"x\":2}"), request(args: "{\"unexpected\":true}"),
-            request("arbitrary.execute"), request("client.connectSaved", args: "{\"computerRef\":\"../secret\"}"),
+            request("arbitrary.execute"), request("client.retrySave", args: "{\"replacing\":true}"),
+            request("client.cancelAttempt", args: "{\"attempt\":\"old\"}"), request("client.connectSaved", args: "{\"computerRef\":\"../secret\"}"),
             request().replacingOccurrences(of: "\"version\":1", with: "\"version\":true"),
             request().replacingOccurrences(of: "\"version\":1", with: "\"version\":1.0"),
             request().replacingOccurrences(of: "\"r1\"", with: "\"\\ud800\""),
@@ -116,4 +124,102 @@ struct ConnectionContractTests {
         #expect(ConnectionClientProjection.snapshot(app: app)["stage"] as? String == "idle")
     }
 
+    private func error(_ admission: ConnectionMutationLedger.Admission) throws -> [String: ConnectionJSON]? {
+        if case .replay(let outcome) = admission {
+            return try ConnectionJSON.parse(outcome.reply(id: "r1"), limit: 32768).object?["error"]?.object
+        }
+        return nil
+    }
+
+    @Test("Mutation bodies replay the observed outcome and conflict before another effect")
+    func mutationReplayAndConflict() throws {
+        var ledger = ConnectionMutationLedger()
+        let original = try ConnectionRequest(request("client.connectSaved", args: "{\"computerRef\":\"c1\"}"))
+        guard case .start = ledger.begin(original) else { Issue.record("first mutation refused"); return }
+        ledger.markDispatched(original.id)
+        ledger.finish(original.id, outcome: .failure(.init(.permissionDenied, recovery: .nativePermission)))
+        #expect(try error(ledger.begin(original))?["code"] == .string("permissionDenied"))
+        let changed = try ConnectionRequest(request("client.connectSaved", args: "{\"computerRef\":\"c2\"}"))
+        #expect(try error(ledger.begin(changed))?["code"] == .string("invalidRequest"))
+        #expect(try error(ledger.begin(ConnectionRequest(request("client.disconnect"))))?["code"] == .string("invalidRequest"))
+        #expect(ledger.count == 1 && ledger.mutationID == nil)
+    }
+
+    @Test("64 retained IDs never evict; attempt cancellation has its own repeat-safe record")
+    func ledgerBoundsAndCancellation() throws {
+        var ledger = ConnectionMutationLedger()
+        for number in 0..<64 {
+            let item = try ConnectionRequest(request("client.retrySave", id: "m\(number)"))
+            guard case .start = ledger.begin(item) else { Issue.record("early saturation"); return }
+            ledger.finish(item.id, outcome: .failure(.init(.saveFailed, effect: .unknown, recovery: .explicitRetry)))
+        }
+        #expect(ledger.count == 64)
+        #expect(try error(ledger.begin(ConnectionRequest(request("client.retrySave", id: "overflow"))))?["code"] == .string("busy"))
+        #expect(try error(ledger.begin(ConnectionRequest(request("client.retrySave", id: "m0"))))?["code"] == .string("saveFailed"))
+        let cancel = try ConnectionRequest(request("client.cancelAttempt", id: "cancel"))
+        let attempt = UUID()
+        guard case .start = ledger.begin(cancel, cancelling: attempt) else { Issue.record("Cancel blocked by saturation"); return }
+        #expect(ledger.reservePrompt(for: cancel.id))
+        #expect(!ledger.reservePrompt(for: cancel.id))
+        ledger.markDispatched(cancel.id)
+        ledger.finish(cancel.id, outcome: .failure(.init(.outcomeUnknown, effect: .unknown, recovery: .nativeRecovery)))
+        let repeated = try ConnectionRequest(request("client.cancelAttempt", id: "cancel2"))
+        #expect(try error(ledger.begin(repeated, cancelling: attempt))?["effect"] == .string("unknown"))
+        #expect(try error(ledger.begin(cancel, cancelling: UUID()))?["code"] == .string("outcomeUnknown"))
+        #expect(try error(ledger.begin(ConnectionRequest(request("client.retrySave", id: "cancel"))))?["code"] == .string("invalidRequest"))
+        #expect(ledger.count == 64)
+    }
+
+    @Test("Timeout retains the native prompt and original action; Cancel bypasses only the mutation slot")
+    func ledgerBusyPromptAndTimeout() throws {
+        var ledger = ConnectionMutationLedger()
+        let save = try ConnectionRequest(request("client.retrySave"))
+        guard case .start = ledger.begin(save) else { Issue.record("save refused"); return }
+        #expect(ledger.reservePrompt(for: save.id))
+        #expect(try error(ledger.begin(ConnectionRequest(request("client.retrySave", id: "r2"))))?["code"] == .string("busy"))
+        ledger.markDispatched(save.id); ledger.timedOut(save.id)
+        #expect(try error(ledger.begin(save))?["effect"] == .string("unknown"))
+        #expect(ledger.mutationID == save.id && ledger.promptID == save.id)
+        let cancel = try ConnectionRequest(request("client.cancelAttempt", id: "cancel"))
+        guard case .start = ledger.begin(cancel, cancelling: UUID()) else { Issue.record("Cancel busy"); return }
+        #expect(!ledger.reservePrompt(for: cancel.id))
+        #expect(ledger.originatingAction == "client.retrySave")
+        ledger.finish(save.id, outcome: .failure(.init(.saveFailed, effect: .unknown)))
+        #expect(ledger.mutationID == nil && ledger.promptID == nil)
+        #expect(ledger.originatingAction == "client.retrySave")
+    }
+
+    @Test("Hello omits consent-dependent actions and every host capability")
+    @MainActor
+    func backedCapabilities() throws {
+        let previous = UserDefaults.standard.object(forKey: "connectionRolePreference")
+        defer {
+            if let previous { UserDefaults.standard.set(previous, forKey: "connectionRolePreference") }
+            else { UserDefaults.standard.removeObject(forKey: "connectionRolePreference") }
+        }
+        let app = AppDelegate(); app.connectionRolePreference = .client; app.clientLane = .managed
+        let hello = ConnectionClientProjection.hello(app: app, catalog: ConnectionComputerCatalog())
+        let commands = Set((hello["capabilities"] as? [[String: String]] ?? []).compactMap { $0["command"] })
+        #expect(commands == ["client.status", "client.savedComputers", "client.health", "client.retrySave"])
+        #expect(hello["roles"] as? [String] == ["client"])
+        #expect(!commands.contains { $0.hasPrefix("host.") })
+        #expect(try ConnectionJSON.parse(ConnectionRequest.reply(id: "r1")).object?["error"]?.object ==
+            ["code": .string("unavailable"), "effect": .string("none"), "recovery": .string("refresh")])
+        // Fresh reads and hello do not launch discovery, health or a connection.
+        #expect(app.homeInvite.phase == .idle && !app.homeInvite.busy && !app.homeInvite.discoveryComplete)
+    }
+
+    @Test("Health and recovery use closed observations without declaring a loaded UI")
+    @MainActor
+    func healthAndRecovery() {
+        let model = HomeInviteModel()
+        let health = ConnectionClientProjection.health(model, now: Date())
+        #expect(health["access"] as? String == "unknown")
+        #expect(health["runtime"] as? String == "unknown")
+        #expect(health["observedAt"] is NSNull)
+        #expect(ConnectionClientProjection.saveError(.locked) == .init(.keychainLocked, recovery: .nativePermission))
+        #expect(ConnectionClientProjection.saveError(.identityChanged) == .init(.identityChanged, effect: .unknown, recovery: .nativeRecovery))
+        #expect(ConnectionClientProjection.saveError(.saveFailed).effect == .unknown)
+        #expect(model.phase == .idle && !model.busy)
+    }
 }
