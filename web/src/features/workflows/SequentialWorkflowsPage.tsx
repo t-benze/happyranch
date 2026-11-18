@@ -4,6 +4,7 @@
  * start, retry, reassign or merge control, and only Setup edits configuration
  * (current default agents; never admission or repositories).
  */
+import type { ReactNode } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { ContentWrap } from '@/design-system/layouts/ContentWrap/ContentWrap';
 import { PageTitle } from '@/design-system/patterns/PageTitle';
@@ -22,7 +23,8 @@ export function SequentialWorkflowsPage({ view }: { view: 'definitions' | 'setup
   const { t } = useTranslation();
   const navigate = useNavigate();
   const base = `/orgs/${slug}/workflows`;
-  // THR-376 r2 W1: breadcrumb + page title come first; the setup status card follows them.
+  // THR-376 r2 W1: on every Workflows route the breadcrumb + page h1 come first and the
+  // setup status card follows; detail views place the card directly after their own h1.
   return <ContentWrap>
     <nav aria-label={t('seqwf.breadcrumb')} className="text-text-muted mb-3 flex flex-wrap items-center gap-1 text-xs">
       <Link className="hover:underline" to={base}>{t('seqwf.title')}</Link>
@@ -45,9 +47,9 @@ export function SequentialWorkflowsPage({ view }: { view: 'definitions' | 'setup
         ]} />
       <div className="mt-4">{view === 'definitions' ? <DefinitionsList key={slug} base={base} />
         : view === 'setup' ? <SequentialSetup key={slug} slug={slug} /> : <RunsList key={slug} slug={slug} />}</div>
-    </> : <><WorkflowSetupStatusCard key={slug} />{view === 'definition'
-      ? <DefinitionOverview key={JSON.stringify([slug, definitionId])} id={definitionId} />
-      : <SequentialRunDetail key={JSON.stringify([slug, runId])} slug={slug} runId={runId} />}</>}
+    </> : view === 'definition'
+      ? <DefinitionOverview key={JSON.stringify([slug, definitionId])} id={definitionId} setupCard={<WorkflowSetupStatusCard key={slug} />} />
+      : <SequentialRunDetail key={JSON.stringify([slug, runId])} slug={slug} runId={runId} setupCard={<WorkflowSetupStatusCard key={slug} />} />}
   </ContentWrap>;
 }
 
@@ -113,22 +115,28 @@ export function useEdgeText(): (outcome: string, edge: DefEdge) => string {
         : t('seqwf.edge.terminal', { outcome, condition: e.condition });
 }
 
-function DefinitionOverview({ id }: { id: string }): JSX.Element {
+/** The setup card keeps one tree slot in every read state (loading, error, loaded) so it never remounts. */
+function DefinitionOverview({ id, setupCard }: { id: string; setupCard: ReactNode }): JSX.Element {
   const { t } = useTranslation();
   const q = useSequentialDefinition(id);
-  return <ReadState q={q}>{() => {
-    const d = q.data!;
-    const parsed = parseDefinition(d.definition_json);
-    return <>
-      <h1 className="font-display text-h1 text-text-primary wrap-anywhere">{t('seqwf.versionLink', { identity: d.pin.identity, version: d.pin.version })}</h1>
-      <ReadOnlyNote />
-      <dl className="text-text-muted mt-3 grid grid-cols-1 gap-x-4 gap-y-1 text-xs sm:grid-cols-2">
-        <div><dt className="inline">{t('seqwf.definitionDigest')} </dt><dd className="inline font-mono break-all">{d.pin.definition_digest}</dd></div>
-        <div><dt className="inline">{t('seqwf.sourceDigest')} </dt><dd className="inline font-mono break-all">{d.pin.source_digest}</dd></div>
-      </dl>
-      {parsed ? <DefinitionBody def={parsed} /> : <section className="mt-4"><p>{t('seqwf.defUnparsed')}</p><pre className="mt-2 text-xs whitespace-pre-wrap break-all">{d.definition_json}</pre></section>}
-    </>;
-  }}</ReadState>;
+  return <>
+    <ReadState q={q}>{() => <h1 className="font-display text-h1 text-text-primary wrap-anywhere">{t('seqwf.versionLink', { identity: q.data!.pin.identity, version: q.data!.pin.version })}</h1>}</ReadState>
+    {setupCard}
+    {!q.isError && q.data && <DefinitionLoaded d={q.data} />}
+  </>;
+}
+
+function DefinitionLoaded({ d }: { d: NonNullable<ReturnType<typeof useSequentialDefinition>['data']> }): JSX.Element {
+  const { t } = useTranslation();
+  const parsed = parseDefinition(d.definition_json);
+  return <>
+    <ReadOnlyNote />
+    <dl className="text-text-muted mt-3 grid grid-cols-1 gap-x-4 gap-y-1 text-xs sm:grid-cols-2">
+      <div><dt className="inline">{t('seqwf.definitionDigest')} </dt><dd className="inline font-mono break-all">{d.pin.definition_digest}</dd></div>
+      <div><dt className="inline">{t('seqwf.sourceDigest')} </dt><dd className="inline font-mono break-all">{d.pin.source_digest}</dd></div>
+    </dl>
+    {parsed ? <DefinitionBody def={parsed} /> : <section className="mt-4"><p>{t('seqwf.defUnparsed')}</p><pre className="mt-2 text-xs whitespace-pre-wrap break-all">{d.definition_json}</pre></section>}
+  </>;
 }
 
 function DefinitionBody({ def }: { def: DefView }): JSX.Element {

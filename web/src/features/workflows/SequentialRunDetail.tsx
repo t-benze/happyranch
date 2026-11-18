@@ -4,6 +4,7 @@
  * task links, "Task not created yet" for nodes without a visit, and no
  * successor claim unless its visit exists. Read-only.
  */
+import type { ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import { Button } from '@/design-system/primitives/Button';
 import { useTranslation } from '@/hooks/i18n';
@@ -17,9 +18,17 @@ import { reviewDiagnostic } from './strings';
 const ASSESSMENT_TYPES = new Set(['independent-code-review@1', 'code-qa@1', 'document-review@1']);
 const REVIEW_TYPES = new Set(['independent-code-review@1', 'document-review@1']);
 
-export function SequentialRunDetail({ slug, runId }: { slug: string; runId: string }): JSX.Element {
+/** THR-376 r2 W1: the setup card follows the run h1 and keeps one tree slot in every read state. */
+export function SequentialRunDetail({ slug, runId, setupCard }: { slug: string; runId: string; setupCard: ReactNode }): JSX.Element {
   const q = useSequentialRun(runId);
-  return <ReadState q={q}>{() => <Loaded slug={slug} detail={q.data!} />}</ReadState>;
+  return <>
+    <ReadState q={q}>{() => <div className="flex flex-wrap items-center gap-2">
+      <h1 className="font-display text-h1 text-text-primary font-mono wrap-anywhere">{q.data!.run.id}</h1>
+      <RunStateBadge state={q.data!.run.state} />
+    </div>}</ReadState>
+    {setupCard}
+    {!q.isError && q.data && <Loaded slug={slug} detail={q.data} />}
+  </>;
 }
 
 function Loaded({ slug, detail }: { slug: string; detail: Detail }): JSX.Element {
@@ -33,10 +42,6 @@ function Loaded({ slug, detail }: { slug: string; detail: Detail }): JSX.Element
   const roleOf = (node: string) => def?.nodes.find(n => n.id === node)?.role ?? node;
   const token = useRecordedToken();
   return <>
-    <div className="flex flex-wrap items-center gap-2">
-      <h1 className="font-display text-h1 text-text-primary font-mono wrap-anywhere">{run.id}</h1>
-      <RunStateBadge state={run.state} />
-    </div>
     <div className="text-text-muted mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs">
       <Link className="text-accent-default hover:underline" to={`${base}/workflows/definitions/${encodeURIComponent(run.definition_id)}`}>{t('seqwf.admittedVersion', { identity: run.definition.identity, version: run.definition.version })}</Link>
       <span>{t('seqwf.settingsGeneration', { generation: run.settings.generation })}</span>
