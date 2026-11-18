@@ -399,7 +399,7 @@ reconnect behavior and bounded 30-second polling; availability is never a global
 gate for established ID operations. Editor drafts are scoped by org/kind/ID and
 survive locale changes and identity refetches.
 
-Real thread compose/follow-up/invite/forward and task read-filter pickers search
+Real thread compose/follow-up/invite and task read-filter pickers search
 current names and permanent IDs. Selected values stay IDs across renames. Thread-detail
 composer @mention hints offer only eligible participant agents, including their
 current Name · ID labels and permanent-ID matching; human Founder is never

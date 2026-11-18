@@ -86,7 +86,6 @@ const raw = (path, symbol, slot, literal, reason) => ({ path: `src/${path}`, sym
 export const COPY_EXCEPTIONS = [
   raw('design-system/layouts/AppShell/Sidebar.tsx', 'Sidebar', 'children', 'Happy', 'Brand wordmark bytes'),
   raw('design-system/layouts/AppShell/Sidebar.tsx', 'Sidebar', 'children', 'Ranch', 'Brand wordmark bytes'),
-  raw('design-system/patterns/CommandPalette.tsx', 'CommandPalette', 'children', 'esc', 'Keyboard key name'),
   raw('design-system/primitives/Dialog.tsx', 'DialogContent', 'default:closeLabel', 'Close', 'Standalone default compatibility; direct mounted callers supply closeLabel'),
   raw('design-system/patterns/Markdown.tsx', 'Markdown', 'default:mermaidLoadingLabel', 'Rendering diagram…', 'Standalone default compatibility; mounted callers supply mermaidLoadingLabel'),
   raw('design-system/patterns/TaskCard.tsx', 'TaskCard', 'children', 'supersedes', 'Standalone default compatibility; mounted caller supplies labels'),

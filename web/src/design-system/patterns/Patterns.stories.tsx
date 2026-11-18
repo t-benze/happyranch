@@ -3,7 +3,6 @@ import type { Meta, StoryObj } from '@storybook/react';
 import { Button } from '../primitives/Button';
 import { AgentChip } from './AgentChip';
 import { AuditRow } from './AuditRow';
-import { CommandPalette } from './CommandPalette';
 import { Composer } from './Composer';
 import { CrescentMoonBadge } from './CrescentMoonBadge';
 import { EmptyState } from './EmptyState';
@@ -64,7 +63,6 @@ const trace: TaskRecallNode = {
 
 export const AgentChipRoles: Story = { render: () => <div className="flex flex-wrap gap-3"><AgentChip name="founder" role="founder" /><AgentChip name="engineering_manager" role="manager" /><AgentChip name="frontend_engineer" role="worker" /></div> };
 export const AuditRowDensity: Story = { parameters: { docs: { description: { story: 'A complete local AuditEntry fixture in both catalogue density variants; expand either row to inspect its payload and links.' } } }, render: () => <ul className="max-w-4xl"><AuditRow entry={auditEntry} density="comfortable" taskHref="#task" agentHref="#agent" /><AuditRow entry={{ ...auditEntry, id: 6531, action: 'job_run_completed', payload: { script_request_id: 'JOB-042', exit_code: 0, duration_ms: 842 } }} density="compact" jobsBasePath="/orgs/storybook/jobs" /></ul> };
-export const CommandPalettePopulated: Story = { render: () => <CommandPalette open onClose={() => undefined} onSelect={() => undefined} sections={[{ label: 'Tasks', items: [{ key: 'task:1', primary: 'Replace catalogue with Storybook', secondary: 'TASK-6530', href: '#' }] }]} /> };
 export const ComposerStates: Story = { render: () => <div className="grid max-w-2xl gap-8"><Composer agents={agents} threadId="THR-STORY" orgSlug="storybook" onSend={() => undefined} helper="Write a local draft…" abortReplies={{ active: true, isPending: false, onAbort: () => undefined }} /><Composer agents={agents} threadId="THR-ERROR" orgSlug="storybook" onSend={() => undefined} errorMessage="Message could not be sent; your draft is preserved." /></div> };
 export const CrescentMoonBadgeState: Story = { render: () => <CrescentMoonBadge /> };
 export const EmptyStateWithAction: Story = { render: () => <div className="h-64 max-w-xl"><EmptyState title="No threads" body="Start a focused conversation with your team." cta={{ label: 'New thread', onClick: () => undefined }} /></div> };

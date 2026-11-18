@@ -7,7 +7,8 @@
 > `2026-05-14-web-ui-design.md` (historical text preserved with a supersession
 > annotation).
 > Notes: W1 shipped the foundation; **W2a** translated the mounted shell
-> (AppBar/Sidebar/root/not-found/ErrorBoundary/AddOrgDialog/help/palette);
+> (AppBar/Sidebar/root/not-found/ErrorBoundary/AddOrgDialog/help/palette; the
+> dead command palette was later removed under THR-372);
 > **W2b** translated the onboarding route (`/onboarding` plus the shared
 > ConnectFlow it mounts); **W2c** translated Settings and built the
 > Preferences language selector (production-gated until W3b-2);
@@ -518,7 +519,11 @@ fallback is never mistaken for coverage. The `settings` namespace includes the
 `EligibilityEditorDialog` it lists is owned by Work Hours and is translated by
 W4b. The `system-assistant` namespace records both
 `AssistantDockHost` and its mounted `ConversationSwitcher`; the help/palette hosts moved to the
-`help-and-palette` namespace.
+`help-and-palette` namespace. THR-372 later removed the unreachable command
+palette (`CommandPaletteHost`, the `CommandPalette` pattern and its `palette.*`
+catalog keys); the `help-and-palette` namespace, whose only surface was that
+host, was removed from the coverage manifest with it, so the translated count
+above is one lower today.
 
 ## 7. Formatting contract
 
@@ -677,6 +682,15 @@ retired and is asserted not to open it); the palette is exercised through the
 pattern-level probe, and its host/section localization is covered by focused
 Vitest.
 
+**THR-372 update (command palette removed).** The command palette had no
+reachable entry point after the keyboard-shortcut removal and was deleted as
+dead code. The test-only consumer no longer mounts a palette probe, and the
+harness no longer runs the palette scenarios S9, S13, S18 and S19 or the
+palette-specific helpers. The palette statements in the W2a paragraph above,
+and the S13/S18 entries in the evidence table below, describe that historical
+receipt only. The remaining shell, help, AddOrg and ErrorBoundary scenarios are
+unchanged.
+
 **W2b onboarding browser evidence.** `web/scripts/w2b-onboarding-browser-evidence.mjs`
 drives the ORDINARY `web/dist` bundle (no evidence-only Vite injection, so the
 proof runs against the shipping bytes) served next to a synthetic `/api/v1`
@@ -741,8 +755,8 @@ formatters beyond the translated shell, onboarding and the W3a Dashboard/Threads
 W3b-1 Tasks, W3b-2 Jobs, W4a-1 Health/Dreams, W4b Todos/Work Hours/Audit, W4c Agents/Skills W4d-1 KB/Artifacts, W4d-2 Usage route families and mounted Assistant presentation. Existing query/data/auth
 bootstrap
 semantics are preserved; locale switching issues no `PUT /settings/org` and no
-`POST /api/v1/orgs`, and the command palette's cache-only switch issues no
-`/api/` request in the measured window. Onboarding preserves user-entered
+`POST /api/v1/orgs` (the former command palette's cache-only switch window was
+retired with the palette under THR-372). Onboarding preserves user-entered
 slugs, the slug regex, registered tool names/paths, broken-org raw errors and
 machine/executable fields, raw identifiers, routes, tokens, commands and authored
 values in the generated CLI prompt verbatim. App-owned custom capability/update

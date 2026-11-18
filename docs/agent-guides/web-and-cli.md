@@ -1631,9 +1631,10 @@ English message with English plural grammar, never a raw key.
 **W2a** translated the mounted shell — AppBar page titles and controls, Sidebar
 navigation/aria/org-switcher/account copy, the root loading and NotFound
 fallback, the ErrorBoundary fallback copy, the AddOrgDialog, and the shared
-help/palette presentation — and added CJK-capable SYSTEM font fallbacks to
+help/palette presentation (THR-372 later deleted the unreachable command
+palette) — and added CJK-capable SYSTEM font fallbacks to
 `web/src/design-system/tokens/tokens.css` (no webfont download or dependency).
-AddOrgDialog, help and palette also localize the built-in dialog close control:
+AddOrgDialog and help also localize the built-in dialog close control:
 `DialogContent` gained a backward-compatible optional `closeLabel` prop
 (defaulting to the legacy English `Close`) that callers pass from the catalog,
 and the pattern/primitive layers remain prop-driven with no locale hook import.
@@ -1743,7 +1744,7 @@ W5a finite mounted coverage is accepted with PR993. W5b replaces the historical
 preview default/disclosure with bilingual availability and full browser-language
 resolution. Native preference persistence remains deferred to N0/N1.
 `web/src/lib/i18n/coverage.ts` marks exactly the W2a/W2b/W2c/W3a/W3b-1/W3b-2/W4a-1/W4b/W4c/W4d-1/W4d-2-migrated namespaces
-(`root-shell`, `not-found`, `app-shell`, `help-and-palette`, `onboarding`,
+(`root-shell`, `not-found`, `app-shell`, `onboarding`,
 `settings`, `dashboard`, `threads`, `tasks`, `jobs`, `health`, `dreams`, `todos`, `work-hours`, `audit`, `agents`, `skills`, `kb`, `artifacts`, `usage`) `translated` and every other mounted route namespace `english-only` (copy-free
 redirects `not-applicable`), listing the actual mounted dialogs, so English
 fallback is never mistaken for coverage. Foundation browser evidence (isolated
@@ -1756,20 +1757,17 @@ read-back, retains a causal negative control (`I18N_W2A_EVIDENCE=negative`:
 wrong first shell, later corrected, must be rejected by the same predicate), and
 covers both locales across the observed 1440x900/390x844 light/dark
 combinations for root loading/no-org/NotFound/AddOrg
-(S12/S17)/error/dormant-palette. In both switch directions it records the actual
+(S12/S17)/error. In both switch directions it records the actual
 `document.activeElement`, retained DOM node identity, open state and
 selection/value for the AddOrg typed slug +
-mapped error (S12 wide-light; S17 zh-narrow-light/en-narrow-dark/zh-wide-dark)
-and the palette query + non-default selected row (S13 wide-light; S18
-zh-narrow-light/en-narrow-dark/zh-wide-dark), and asserts each switch window
-issues no `PUT /settings/org` and no `POST /api/v1/orgs` (the palette windows
-also assert zero `/api/` requests, cache-only, per direction). It exercises the
-palette's localized X close control (S19) with native Enter/Space/Escape in both
-locales with populated and empty results (closes once, zero selection, unchanged
-pathname) while the search-input and non-default-row Enter still select once, and
-adds CJK-font and viewport-containment checks. Positive receipt: 375/375
-assertions, 30 PNGs (recorded before THR-372 removed the help-drawer
-S6/S11/S16 cases and the S13/S18 dormant-⌘K assertions). W2b onboarding evidence runs via
+mapped error (S12 wide-light; S17 zh-narrow-light/en-narrow-dark/zh-wide-dark),
+and asserts each switch window issues no `PUT /settings/org` and no
+`POST /api/v1/orgs`. It adds CJK-font and viewport-containment checks.
+Positive receipt: 375/375 assertions, 30 PNGs. That receipt was recorded before
+THR-372 removed the help-drawer S6/S11/S16 cases and then the dead command
+palette. The palette removal took out the test-only palette probe, the S9/S13/S18/S19
+palette scenarios and the `help-and-palette` coverage namespace, so the
+current harness produces fewer assertions and PNGs. W2b onboarding evidence runs via
 `web/scripts/w2b-onboarding-browser-evidence.mjs` against the ORDINARY
 `web/dist` bundle and a synthetic `/api/v1` stub, driving the real `/onboarding`
 route with NO evidence-only bundle instrumentation: locale switches go through
@@ -3278,7 +3276,7 @@ Founder Request changes/Sign off/operator observations remain acceptance gates.
 
 The Web inbox reads one active Open, Archived or All stream in 50-row pages. Header/bucket/dream counts come from server totals, remain unknown before the first successful read, and show recorded values with updating/stale state during refresh/failure. All uses one global order. Search retains the literal case-insensitive subject-or-ID predicate; whitespace-only disables it, while every other filter serially exhausts the stream even when early matches fill the viewport. The ContentWrap sentinel and accessible Load more share one request latch. A failed continuation leaves rows navigable and pauses automatic demand until Retry.
 
-Refresh restarts at a null cursor, privately stages a prefix to prior depth and commits it together. Org/bucket/generation ownership and abort signals reject late results. Inbox reconnect/events, focus and local thread mutations reconcile rows and totals. Pin freezes paging, snapshots actual legacy/infinite/detail caches, reorders loaded Open rows only, conditionally rolls back owned writes and restarts authoritatively. Scoped scroll offset/anchor/depth survives detail/back; restoration waits for enough content or termination and retains its target through errors. User movement cancels pending restoration. Command palette reads only committed active-org caches without fetching. CLI calls retain the existing omitted-pagination contract.
+Refresh restarts at a null cursor, privately stages a prefix to prior depth and commits it together. Org/bucket/generation ownership and abort signals reject late results. Inbox reconnect/events, focus and local thread mutations reconcile rows and totals. Pin freezes paging, snapshots actual legacy/infinite/detail caches, reorders loaded Open rows only, conditionally rolls back owned writes and restarts authoritatively. Scoped scroll offset/anchor/depth survives detail/back; restoration waits for enough content or termination and retains its target through errors. User movement cancels pending restoration. CLI calls retain the existing omitted-pagination contract.
 
 ### Retired manual local-CI receipt lane
 
@@ -3311,7 +3309,7 @@ reconnect behavior and bounded 30-second polling; availability is never a global
 gate for established ID operations. Editor drafts are scoped by org/kind/ID and
 survive locale changes and identity refetches.
 
-Real thread compose/follow-up/invite/forward and task read-filter pickers search
+Real thread compose/follow-up/invite and task read-filter pickers search
 current names and permanent IDs. Selected values stay IDs across renames. Thread-detail
 composer @mention hints offer only eligible participant agents, including their
 current Name · ID labels and permanent-ID matching; human Founder is never

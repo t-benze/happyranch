@@ -22,7 +22,6 @@
  */
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useI18n } from '@/hooks/i18n';
-import { CommandPalette } from '@/design-system/patterns/CommandPalette';
 
 declare global {
   interface Window {
@@ -40,23 +39,6 @@ declare global {
       source: 'committed-dom';
       capturedAt: number;
     };
-    /**
-     * Test-only palette observation log driven by the REAL prop callbacks the
-     * probe passes into the pattern: `'close'` on every `onClose` and
-     * `'select:<href>'` on every `onSelect`. The probe's callbacks are
-     * functional (they close the palette / record the selection) rather than
-     * no-ops, so the harness can prove actual closure and the absence of
-     * selection without any shipping change.
-     */
-    __hrPaletteEvents?: string[];
-    /** Test-only count of probe `onClose` invocations. */
-    __hrPaletteCloseCount?: number;
-    /** Test-only count of probe `onSelect` invocations. */
-    __hrPaletteSelectCount?: number;
-    /** Test-only: initial empty-result mode for the probe. */
-    __hrPaletteEmpty?: boolean;
-    /** Test-only: switch the probe to an empty/enabled result set. */
-    __hrPaletteSetEmpty?: (value: boolean) => void;
   }
 }
 
@@ -109,7 +91,6 @@ function readNavigator(): { navigatorLanguage: string | null; navigatorLanguages
 /** First-commit shell record + test-only controls. */
 export function ShellEvidenceConsumer(): JSX.Element {
   const { locale, setLocale } = useI18n();
-  const [paletteOpen, setPaletteOpen] = useState(false);
   // Always read the provider's live locale at capture time without re-running
   // the observation effect (which must never overwrite the frozen record).
   const localeRef = useRef(locale);
@@ -158,11 +139,6 @@ export function ShellEvidenceConsumer(): JSX.Element {
       <button data-testid="w2a-set-zh" type="button" onClick={() => setLocale('zh-CN')}>
         zh
       </button>
-      <PaletteProbe
-        open={paletteOpen}
-        onOpen={() => setPaletteOpen(true)}
-        onClose={() => setPaletteOpen(false)}
-      />
     </div>
   );
 }
@@ -198,83 +174,4 @@ export function ShellEvidenceCorrection(): null {
     setLocale('zh-CN');
   }, [setLocale]);
   return null;
-}
-
-function PaletteProbe({
-  open,
-  onOpen,
-  onClose,
-}: {
-  open: boolean;
-  onOpen: () => void;
-  onClose: () => void;
-}): JSX.Element {
-  const { t } = useI18n();
-  const [empty, setEmpty] = useState(() => {
-    try {
-      return typeof window !== 'undefined' && Boolean(window.__hrPaletteEmpty);
-    } catch {
-      return false;
-    }
-  });
-
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    window.__hrPaletteEvents = window.__hrPaletteEvents ?? [];
-    window.__hrPaletteCloseCount = window.__hrPaletteCloseCount ?? 0;
-    window.__hrPaletteSelectCount = window.__hrPaletteSelectCount ?? 0;
-    window.__hrPaletteSetEmpty = (value: boolean) => setEmpty(Boolean(value));
-    return () => {
-      delete window.__hrPaletteSetEmpty;
-    };
-  }, []);
-
-  const record = (event: string) => {
-    const log = (window.__hrPaletteEvents = window.__hrPaletteEvents ?? []);
-    log.push(event);
-  };
-
-  return (
-    <>
-      <button data-testid="w2a-open-palette" type="button" onClick={onOpen}>
-        palette
-      </button>
-      <CommandPalette
-        open={open}
-        onClose={() => {
-          window.__hrPaletteCloseCount = (window.__hrPaletteCloseCount ?? 0) + 1;
-          record('close');
-          onClose();
-        }}
-        onSelect={(href) => {
-          window.__hrPaletteSelectCount = (window.__hrPaletteSelectCount ?? 0) + 1;
-          record(`select:${href}`);
-        }}
-        sections={
-          empty
-            ? []
-            : [
-                {
-                  label: t('palette.section.tasks'),
-                  items: [
-                    { key: 'task:1', primary: 'TASK-1 · 刷新酒店列表', href: '/tasks/1' },
-                    { key: 'task:2', primary: 'TASK-2 · 更新签证规则', href: '/tasks/2' },
-                  ],
-                },
-              ]
-        }
-        title={t('palette.title')}
-        description={t('palette.description')}
-        searchPlaceholder={t('palette.searchPlaceholder')}
-        searchLabel={t('palette.searchLabel')}
-        resultsLabel={t('palette.resultsLabel')}
-        noMatches={t('palette.noMatches')}
-        nothingLoaded={t('palette.nothingLoaded')}
-        navigateLabel={t('palette.footer.navigate')}
-        openLabel={t('palette.footer.open')}
-        closeLabel={t('palette.footer.close')}
-        closeAriaLabel={t('common.close')}
-      />
-    </>
-  );
 }

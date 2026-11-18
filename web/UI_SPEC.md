@@ -277,7 +277,7 @@ All dialogs use the `dialog` component token (elevation 3, 32rem max width, scri
 
 ### 4.1 NewThreadDialog
 
-**Title:** "New thread" or "Forward thread" (if prefilled with `forwarded_from_id`).
+**Title:** "New thread". (The web Forward-thread prefill was removed under THR-372; forwarding remains available through the CLI `happyranch threads forward`.)
 
 **Fields:**
 - `Subject` — single-line input, `autoFocus`, required.

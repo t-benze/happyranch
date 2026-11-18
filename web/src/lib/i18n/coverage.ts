@@ -4,10 +4,10 @@
  *
  * W1 shipped the translation *foundation*, not a translation campaign. W2a
  * (THR-118) migrated the mounted shell: the root loading/not-found copy,
- * the AppShell chrome (AppBar/Sidebar/ErrorBoundary/AddOrgDialog) and the
- * shared help/palette presentation. W2b (THR-118) migrates the onboarding
- * route (`/onboarding`: OnboardingPage, ConnectRuntimeStep and the shared
- * ConnectFlow). W2c (THR-118) migrates the Settings surface (page chrome and
+ * the AppShell chrome (AppBar/Sidebar/ErrorBoundary/AddOrgDialog); its shared
+ * command-palette presentation was later removed as dead code (THR-372).
+ * W2b (THR-118) migrates the onboarding route (`/onboarding`: OnboardingPage,
+ * ConnectRuntimeStep and the shared ConnectFlow). W2c (THR-118) migrates the Settings surface (page chrome and
  * the Assistant/Organization/Executors/Daemon-Capacity sections) and adds the
  * `preferences` route (`PreferencesSection`), production-gated until W3b-2.
  * The shared
@@ -307,12 +307,6 @@ export const COVERAGE_MANIFEST: readonly NamespaceCoverage[] = [
     surfaces: ['AppShell', 'AppBar', 'Sidebar', 'ErrorBoundary', 'AddOrgDialog'],
   },
   {
-    namespace: 'help-and-palette',
-    routeTokens: [],
-    status: 'translated',
-    surfaces: ['CommandPaletteHost'],
-  },
-  {
     namespace: 'prototypes',
     routeTokens: ['/__prototypes', 'threads-v2', 'threads-v2/:thread_id'],
     status: 'not-applicable',
@@ -420,7 +414,6 @@ function consumerNamespace(path: string, symbol: string): string | undefined {
   const domain = /^src\/features\/([^/]+)\//.exec(path)?.[1];
   if (domain) return domain === 'work-hours-config' ? 'work-hours' : domain;
   if (path.startsWith('src/design-system/layouts/AppShell/') || path === 'src/routes.tsx' && symbol === 'AppShell') return 'app-shell';
-  if (path.startsWith('src/host/')) return 'help-and-palette';
   return undefined;
 }
 

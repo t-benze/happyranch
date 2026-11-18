@@ -13,7 +13,7 @@
  * It asserts, in both locales:
  *   - first-commit shell copy (`html.lang` + AppBar title + Sidebar nav labels);
  *   - the mounted shell DOM (nav/aria/org switcher/account/not-found/loading);
- *   - stable switching with typed slug / typed palette query;
+ *   - stable switching with a typed slug;
  *   - localized ErrorBoundary fallback with the raw stack preserved;
  *   - generated PNG screenshots at 1440x900 and 390x844, light and dark.
  *
@@ -711,27 +711,6 @@ async function main() {
       );
     }
 
-    /** Snapshot the palette's query, selection and input DOM identity. */
-    async function paletteState(sessionId) {
-      return evaluate(
-        sessionId,
-        `(() => {
-          const input = document.querySelector('input[role="combobox"]');
-          const options = [...document.querySelectorAll('[role="option"]')];
-          const selected = options.find((o) => o.getAttribute('aria-selected') === 'true') || null;
-          return {
-            query: input ? input.value : null,
-            ariaActive: input ? input.getAttribute('aria-activedescendant') : null,
-            selectedText: selected ? selected.textContent.trim() : null,
-            selectedId: selected ? selected.id : null,
-            selectedIdentity: selected && selected.dataset ? (selected.dataset.hrIdentity || null) : null,
-            optionCount: options.length,
-            inputIdentity: input && input.dataset ? (input.dataset.hrIdentity || null) : null,
-          };
-        })()`,
-      );
-    }
-
     async function setViewport(sessionId, width, height) {
       await cdp.send(
         'Emulation.setDeviceMetricsOverride',
@@ -766,49 +745,6 @@ async function main() {
       assertions.push({ name, actual, expected, ok });
       console.log(`${ok ? 'PASS' : 'FAIL'} ${name}${ok ? '' : ` — actual=${JSON.stringify(actual)} expected=${JSON.stringify(expected)}`}`);
       return ok;
-    }
-
-    // --- Palette/keyboard/network evidence helpers (S15-S20) ----------------
-    async function paletteEvents(sessionId) {
-      return evaluate(sessionId, 'window.__hrPaletteEvents || []');
-    }
-
-    async function resetPaletteEvents(sessionId) {
-      return evaluate(
-        sessionId,
-        `(() => { window.__hrPaletteEvents = []; window.__hrPaletteCloseCount = 0; window.__hrPaletteSelectCount = 0; return true; })()`,
-      );
-    }
-
-    async function setPaletteEmpty(sessionId, value) {
-      return evaluate(
-        sessionId,
-        `window.__hrPaletteSetEmpty ? window.__hrPaletteSetEmpty(${value ? 'true' : 'false'}) : null`,
-      );
-    }
-
-    async function focusPaletteClose(sessionId, label) {
-      return evaluate(
-        sessionId,
-        `(() => {
-          const input = document.querySelector('input[role="combobox"]');
-          const d = input ? input.closest('[role="dialog"]') : null;
-          const b = d ? [...d.querySelectorAll('button')].find((x) => x.getAttribute('aria-label') === ${JSON.stringify(label)}) : null;
-          if (!b) return null;
-          b.focus();
-          return document.activeElement && document.activeElement.getAttribute('aria-label');
-        })()`,
-      );
-    }
-
-    /** Native CDP keyboard dispatch (reviewer reference pattern). */
-    async function nativeKey(sessionId, key) {
-      const code = key === ' ' ? 'Space' : key;
-      const vk = key === ' ' ? 32 : key === 'Enter' ? 13 : key === 'ArrowDown' ? 40 : 27;
-      const down = { type: 'keyDown', key, code, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk };
-      if (key === 'Enter') down.text = '\r';
-      await cdp.send('Input.dispatchKeyEvent', down, sessionId);
-      await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key, code, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk }, sessionId);
     }
 
     /**
@@ -1083,29 +1019,6 @@ async function main() {
       await closePage(page);
     }
 
-    // --- S9: palette probe typed query preserved across switch ---------------
-    {
-      const page = await openApp({
-        url: `${appUrl}orgs/demo-org/dashboard`,
-        env: DEV_ENVIRONMENTS.en,
-        initScript: `${seedLocale('zh-CN')}\n${seedTheme('light')}`,
-      });
-      await waitForValue(page.sessionId, `!!document.querySelector('[data-testid="w2a-open-palette"]')`, { label: 'palette control' });
-      await clickSelector(page.sessionId, '[data-testid="w2a-open-palette"]');
-      await waitForValue(page.sessionId, `!!document.querySelector('input[role="combobox"]')`, { label: 'palette input' });
-      const placeholderBefore = await evaluate(page.sessionId, `document.querySelector('input[role="combobox"]').getAttribute('placeholder')`);
-      check('S9 palette zh placeholder', placeholderBefore, '搜索会话、任务、智能体、组织、知识库…');
-      await setInputValue(page.sessionId, 'input[role="combobox"]', '更新');
-      await evaluate(page.sessionId, `document.querySelector('[data-testid="w2a-set-en"]').click()`);
-      await sleep(300);
-      const queryAfter = await evaluate(page.sessionId, `document.querySelector('input[role="combobox"]') ? document.querySelector('input[role="combobox"]').value : null`);
-      check('S9 typed palette query preserved across switch', queryAfter, '更新');
-      const placeholderAfter = await evaluate(page.sessionId, `document.querySelector('input[role="combobox"]').getAttribute('placeholder')`);
-      check('S9 palette en placeholder after switch', placeholderAfter, 'Search threads, tasks, agents, orgs, KB…');
-      await capture(page, 'en-palette-probe-1440-light');
-      await closePage(page);
-    }
-
     // --- S10: shell viewport + theme matrix (en and zh) ---------------------
     {
       // Saved en under a Chinese navigator: narrow light, then dark, then wide dark.
@@ -1195,59 +1108,6 @@ async function main() {
       await capture(page, 'en-add-org-error-after-switch-1440-light');
       await closePage(page);
       syntheticCreateOrgError = null;
-    }
-
-    // --- S13: palette selection/query/identity, BOTH ways -------------------
-    {
-      const page = await openApp({
-        url: `${appUrl}orgs/demo-org/dashboard`,
-        env: DEV_ENVIRONMENTS.en,
-        initScript: `${seedLocale('zh-CN')}\n${seedTheme('light')}`,
-      });
-      await waitForValue(page.sessionId, `!!document.querySelector('[data-testid="w2a-open-palette"]')`, { label: 'palette control' });
-      await clickSelector(page.sessionId, '[data-testid="w2a-open-palette"]');
-      await waitForValue(page.sessionId, `!!document.querySelector('input[role="combobox"]')`, { label: 'palette input' });
-      await setInputValue(page.sessionId, 'input[role="combobox"]', 'TASK');
-      await evaluate(page.sessionId, `(() => { const i=document.querySelector('input[role="combobox"]'); i.focus(); i.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })); return true; })()`);
-      await sleep(150);
-      const inputIdentity = await tagIdentity(page.sessionId, 'input[role="combobox"]', 'palinput');
-      await evaluate(page.sessionId, `(() => { const s=[...document.querySelectorAll('[role="option"]')].find(o=>o.getAttribute('aria-selected')==='true'); if (s && !s.dataset.hrIdentity) s.dataset.hrIdentity='palopt-'+Math.random().toString(36).slice(2); return true; })()`);
-      const before = await paletteState(page.sessionId);
-      check('S13 palette query matches multiple rows', before.optionCount, 2);
-      check('S13 palette nondefault row selected', before.selectedText, 'TASK-2 · 更新签证规则');
-      check('S13 palette actual active element is the tagged input before switch', (await activeElementInfo(page.sessionId))?.identity, before.inputIdentity);
-      await capture(page, 'zh-palette-selected-1440-light');
-
-      const beforeOther = networkRequests.length;
-      await switchLocaleViaStorage(page.sessionId, 'en');
-      await waitForValue(page.sessionId, `document.querySelector('input[role="combobox"]').getAttribute('placeholder')==='Search threads, tasks, agents, orgs, KB…'`, { label: 'palette en placeholder' });
-      const other = await paletteState(page.sessionId);
-      const otherWindow = switchRequestWindow(beforeOther);
-      check('S13 palette query survives locale switch', other.query, 'TASK');
-      check('S13 palette selected row identity survives locale switch', other.selectedIdentity, before.selectedIdentity);
-      check('S13 palette selected row value survives locale switch', other.selectedText, before.selectedText);
-      check('S13 palette input identity survives locale switch', other.inputIdentity, inputIdentity);
-      check('S13 palette actual active element survives locale switch', (await activeElementInfo(page.sessionId))?.identity, inputIdentity);
-      check('S13 palette dialog open after locale switch', await dialogOpen(page.sessionId), true);
-      check('S13 no PUT /settings/org in switch window', otherWindow.settingsPut, 0);
-      check('S13 no org create in switch window', otherWindow.orgCreate, 0);
-      check('S13 no /api/ requests in switch window', otherWindow.anyApi, 0);
-
-      const beforeBack = networkRequests.length;
-      await switchLocaleViaStorage(page.sessionId, 'zh-CN');
-      await waitForValue(page.sessionId, `document.querySelector('input[role="combobox"]').getAttribute('placeholder')==='搜索会话、任务、智能体、组织、知识库…'`, { label: 'palette zh placeholder again' });
-      const back = await paletteState(page.sessionId);
-      const backWindow = switchRequestWindow(beforeBack);
-      check('S13 palette query survives reverse switch', back.query, 'TASK');
-      check('S13 palette selected row identity survives reverse switch', back.selectedIdentity, before.selectedIdentity);
-      check('S13 palette selected row value survives reverse switch', back.selectedText, before.selectedText);
-      check('S13 palette input identity survives reverse switch', back.inputIdentity, inputIdentity);
-      check('S13 palette actual active element survives reverse switch', (await activeElementInfo(page.sessionId))?.identity, inputIdentity);
-      check('S13 palette dialog open after reverse switch', await dialogOpen(page.sessionId), true);
-      check('S13 no PUT /settings/org in reverse window', backWindow.settingsPut, 0);
-      check('S13 no org create in reverse window', backWindow.orgCreate, 0);
-      check('S13 no /api/ requests in reverse window', backWindow.anyApi, 0);
-      await closePage(page);
     }
 
     // --- S14: localized Retry recovers the captured error -------------------
@@ -1366,163 +1226,6 @@ async function main() {
         await runAddOrgCombo({ ...combo, screenshot: `add-org-error-${combo.label}-before` });
       }
       syntheticCreateOrgError = null;
-    }
-
-    // --- S18: palette query/non-default selection viewport/theme matrix -----
-    {
-      const combos = [
-        { label: 'zh-narrow-light', env: DEV_ENVIRONMENTS.zh, locale: 'zh-CN', theme: 'light', width: 390, height: 844, other: 'en', otherPlaceholder: 'Search threads, tasks, agents, orgs, KB…', backPlaceholder: '搜索会话、任务、智能体、组织、知识库…' },
-        { label: 'en-narrow-dark', env: DEV_ENVIRONMENTS.en, locale: 'en', theme: 'dark', width: 390, height: 844, other: 'zh-CN', otherPlaceholder: '搜索会话、任务、智能体、组织、知识库…', backPlaceholder: 'Search threads, tasks, agents, orgs, KB…' },
-        { label: 'zh-wide-dark', env: DEV_ENVIRONMENTS.zh, locale: 'zh-CN', theme: 'dark', width: 1440, height: 900, other: 'en', otherPlaceholder: 'Search threads, tasks, agents, orgs, KB…', backPlaceholder: '搜索会话、任务、智能体、组织、知识库…' },
-      ];
-      for (const combo of combos) {
-        const { label } = combo;
-        const page = await openApp({
-          url: `${appUrl}orgs/demo-org/dashboard`,
-          env: combo.env,
-          initScript: `${seedLocale(combo.locale)}\n${seedTheme(combo.theme)}`,
-          width: combo.width,
-          height: combo.height,
-        });
-        await waitForValue(page.sessionId, `!!document.querySelector('[data-testid="w2a-open-palette"]')`, { label: `S18 ${label} palette control` });
-        await clickSelector(page.sessionId, '[data-testid="w2a-open-palette"]');
-        await waitForValue(page.sessionId, `!!document.querySelector('input[role="combobox"]')`, { label: `S18 ${label} palette input` });
-        await setInputValue(page.sessionId, 'input[role="combobox"]', 'TASK');
-        await evaluate(page.sessionId, `(() => { const i=document.querySelector('input[role="combobox"]'); i.focus(); i.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })); return true; })()`);
-        await sleep(150);
-        const inputIdentity = await tagIdentity(page.sessionId, 'input[role="combobox"]', 'palinput');
-        await evaluate(page.sessionId, `(() => { const s=[...document.querySelectorAll('[role="option"]')].find(o=>o.getAttribute('aria-selected')==='true'); if (s && !s.dataset.hrIdentity) s.dataset.hrIdentity='palopt-'+Math.random().toString(36).slice(2); return true; })()`);
-        const before = await paletteState(page.sessionId);
-        check(`S18 ${label} option count`, before.optionCount, 2);
-        check(`S18 ${label} non-default selection`, before.selectedText, 'TASK-2 · 更新签证规则');
-        check(`S18 ${label} combobox focused`, (await activeElementInfo(page.sessionId))?.role, 'combobox');
-        await capture(page, `palette-nondefault-${label}`);
-
-        const beforeOther = networkRequests.length;
-        await switchLocaleViaStorage(page.sessionId, combo.other);
-        await waitForValue(page.sessionId, `document.querySelector('input[role="combobox"]').getAttribute('placeholder')===${JSON.stringify(combo.otherPlaceholder)}`, { label: `S18 ${label} other-locale placeholder` });
-        const other = await paletteState(page.sessionId);
-        const otherWindow = switchRequestWindow(beforeOther);
-        check(`S18 ${label} query survives switch`, other.query, 'TASK');
-        check(`S18 ${label} selected identity survives switch`, other.selectedIdentity, before.selectedIdentity);
-        check(`S18 ${label} selected text survives switch`, other.selectedText, before.selectedText);
-        check(`S18 ${label} input identity survives switch`, other.inputIdentity, inputIdentity);
-        check(`S18 ${label} combobox focused after switch`, (await activeElementInfo(page.sessionId))?.role, 'combobox');
-        check(`S18 ${label} dialog open after switch`, await dialogOpen(page.sessionId), true);
-        check(`S18 ${label} no PUT /settings/org in switch`, otherWindow.settingsPut, 0);
-        check(`S18 ${label} no org create in switch`, otherWindow.orgCreate, 0);
-        check(`S18 ${label} no /api/ requests in switch`, otherWindow.anyApi, 0);
-
-        const beforeBack = networkRequests.length;
-        await switchLocaleViaStorage(page.sessionId, combo.locale);
-        await waitForValue(page.sessionId, `document.querySelector('input[role="combobox"]').getAttribute('placeholder')===${JSON.stringify(combo.backPlaceholder)}`, { label: `S18 ${label} first-locale placeholder again` });
-        const back = await paletteState(page.sessionId);
-        const backWindow = switchRequestWindow(beforeBack);
-        check(`S18 ${label} query survives reverse switch`, back.query, 'TASK');
-        check(`S18 ${label} selected identity survives reverse switch`, back.selectedIdentity, before.selectedIdentity);
-        check(`S18 ${label} selected text survives reverse switch`, back.selectedText, before.selectedText);
-        check(`S18 ${label} input identity survives reverse switch`, back.inputIdentity, inputIdentity);
-        check(`S18 ${label} combobox focused after reverse switch`, (await activeElementInfo(page.sessionId))?.role, 'combobox');
-        check(`S18 ${label} dialog open after reverse switch`, await dialogOpen(page.sessionId), true);
-        check(`S18 ${label} no PUT /settings/org in reverse switch`, backWindow.settingsPut, 0);
-        check(`S18 ${label} no org create in reverse switch`, backWindow.orgCreate, 0);
-        check(`S18 ${label} no /api/ requests in reverse switch`, backWindow.anyApi, 0);
-        await closePage(page);
-      }
-    }
-
-    // --- S19: palette close-control keyboard, both locales, populated/empty -
-    {
-      const NOTHING_LOADED = { en: 'Nothing loaded yet — visit a page first.', 'zh-CN': '尚未加载任何内容——请先访问某个页面。' };
-      const CLOSE_LABEL = { en: 'Close', 'zh-CN': '关闭' };
-      for (const locale of ['en', 'zh-CN']) {
-        for (const empty of [false, true]) {
-          const stateLabel = `${locale}-${empty ? 'empty' : 'populated'}`;
-          const env = locale === 'zh-CN' ? DEV_ENVIRONMENTS.zh : DEV_ENVIRONMENTS.en;
-          const closeLabel = CLOSE_LABEL[locale];
-          const page = await openApp({
-            url: `${appUrl}orgs/demo-org/dashboard`,
-            env,
-            initScript: `${seedLocale(locale)}\n${seedTheme('light')}`,
-            width: 1440,
-            height: 900,
-          });
-          await waitForValue(page.sessionId, `!!document.querySelector('[data-testid="w2a-open-palette"]')`, { label: `S19 ${stateLabel} palette control` });
-          await waitForValue(page.sessionId, `typeof window.__hrPaletteSetEmpty === 'function'`, { label: `S19 ${stateLabel} palette setter` });
-          await resetPaletteEvents(page.sessionId);
-          await setPaletteEmpty(page.sessionId, empty);
-          await clickSelector(page.sessionId, '[data-testid="w2a-open-palette"]');
-          await waitForValue(page.sessionId, `!!document.querySelector('input[role="combobox"]')`, { label: `S19 ${stateLabel} palette input` });
-          await waitForValue(page.sessionId, `document.activeElement?.getAttribute('role')==='combobox'`, { label: `S19 ${stateLabel} settled combobox focus` });
-          check(`S19 ${stateLabel} combobox focused`, (await activeElementInfo(page.sessionId))?.role, 'combobox');
-          const state = await paletteState(page.sessionId);
-          if (empty) {
-            check(`S19 ${stateLabel} option count`, state.optionCount, 0);
-            const dialogText = await evaluate(page.sessionId, `(() => { const i=document.querySelector('input[role="combobox"]'); const d=i ? i.closest('[role="dialog"]') : null; return d ? d.textContent : ''; })()`);
-            checkIncludes(`S19 ${stateLabel} empty-state copy`, dialogText, NOTHING_LOADED[locale]);
-          } else {
-            check(`S19 ${stateLabel} option count`, state.optionCount, 2);
-          }
-
-          const pathBefore = await evaluate(page.sessionId, 'location.pathname');
-          check(`S19 ${stateLabel} X close focused`, await focusPaletteClose(page.sessionId, closeLabel), closeLabel);
-          if (locale === 'en' && !empty) {
-            await capture(page, 'en-palette-close-enter-1440-light');
-            // `capture` hides the evidence controls; restore them so the later
-            // reopen clicks in this same page still land.
-            await evaluate(page.sessionId, `(() => { const el=document.querySelector('[data-testid="w2a-evidence-controls"]'); if (el) el.style.display=''; return true; })()`);
-          }
-          await nativeKey(page.sessionId, 'Enter');
-          await sleep(200);
-          check(`S19 ${stateLabel} Enter events`, await paletteEvents(page.sessionId), ['close']);
-          check(`S19 ${stateLabel} Enter closeCount`, await evaluate(page.sessionId, 'window.__hrPaletteCloseCount || 0'), 1);
-          check(`S19 ${stateLabel} Enter selectCount`, await evaluate(page.sessionId, 'window.__hrPaletteSelectCount || 0'), 0);
-          check(`S19 ${stateLabel} Enter dialog closed`, await dialogOpen(page.sessionId), false);
-          check(`S19 ${stateLabel} Enter pathname unchanged`, await evaluate(page.sessionId, 'location.pathname'), pathBefore);
-
-          await resetPaletteEvents(page.sessionId);
-          await clickSelector(page.sessionId, '[data-testid="w2a-open-palette"]');
-          await waitForValue(page.sessionId, `!!document.querySelector('input[role="combobox"]')`, { label: `S19 ${stateLabel} palette reopen Space` });
-          check(`S19 ${stateLabel} Space X focused`, await focusPaletteClose(page.sessionId, closeLabel), closeLabel);
-          await nativeKey(page.sessionId, ' ');
-          await sleep(200);
-          check(`S19 ${stateLabel} Space events`, await paletteEvents(page.sessionId), ['close']);
-          check(`S19 ${stateLabel} Space closeCount`, await evaluate(page.sessionId, 'window.__hrPaletteCloseCount || 0'), 1);
-          check(`S19 ${stateLabel} Space selectCount`, await evaluate(page.sessionId, 'window.__hrPaletteSelectCount || 0'), 0);
-          check(`S19 ${stateLabel} Space dialog closed`, await dialogOpen(page.sessionId), false);
-          check(`S19 ${stateLabel} Space pathname unchanged`, await evaluate(page.sessionId, 'location.pathname'), pathBefore);
-
-          await resetPaletteEvents(page.sessionId);
-          await clickSelector(page.sessionId, '[data-testid="w2a-open-palette"]');
-          await waitForValue(page.sessionId, `!!document.querySelector('input[role="combobox"]')`, { label: `S19 ${stateLabel} palette reopen Escape` });
-          await waitForValue(page.sessionId, `document.activeElement?.getAttribute('role')==='combobox'`, { label: `S19 ${stateLabel} Escape combobox focus` });
-          check(`S19 ${stateLabel} Escape actual X focus`, await focusPaletteClose(page.sessionId, closeLabel), closeLabel);
-          await nativeKey(page.sessionId, 'Escape');
-          await sleep(200);
-          check(`S19 ${stateLabel} Escape events`, await paletteEvents(page.sessionId), ['close']);
-          check(`S19 ${stateLabel} Escape closeCount`, await evaluate(page.sessionId, 'window.__hrPaletteCloseCount || 0'), 1);
-          check(`S19 ${stateLabel} Escape selectCount`, await evaluate(page.sessionId, 'window.__hrPaletteSelectCount || 0'), 0);
-          check(`S19 ${stateLabel} Escape dialog closed`, await dialogOpen(page.sessionId), false);
-          check(`S19 ${stateLabel} Escape pathname unchanged`, await evaluate(page.sessionId, 'location.pathname'), pathBefore);
-
-          if (!empty) {
-            await resetPaletteEvents(page.sessionId);
-            await clickSelector(page.sessionId, '[data-testid="w2a-open-palette"]');
-            await waitForValue(page.sessionId, `!!document.querySelector('input[role="combobox"]')`, { label: `S19 ${stateLabel} palette reopen select` });
-            await setInputValue(page.sessionId, 'input[role="combobox"]', 'TASK');
-            await evaluate(page.sessionId, `document.querySelector('input[role="combobox"]').focus()`);
-            await nativeKey(page.sessionId, 'ArrowDown');
-            await nativeKey(page.sessionId, 'Enter');
-            await sleep(200);
-            check(`S19 ${stateLabel} ArrowDown Enter events`, await paletteEvents(page.sessionId), ['select:/tasks/2']);
-            check(`S19 ${stateLabel} ArrowDown Enter selectCount`, await evaluate(page.sessionId, 'window.__hrPaletteSelectCount || 0'), 1);
-            check(`S19 ${stateLabel} ArrowDown Enter closeCount`, await evaluate(page.sessionId, 'window.__hrPaletteCloseCount || 0'), 0);
-            check(`S19 ${stateLabel} ArrowDown Enter dialog open`, await dialogOpen(page.sessionId), true);
-            check(`S19 ${stateLabel} ArrowDown Enter pathname unchanged`, await evaluate(page.sessionId, 'location.pathname'), pathBefore);
-          }
-          await closePage(page);
-        }
-      }
     }
 
     // --- S20: representative narrow/dark ErrorBoundary capture --------------

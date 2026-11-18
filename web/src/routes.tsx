@@ -20,7 +20,6 @@ import { ArtifactsPage } from '@/features/artifacts/ArtifactsPage';
 import { SequentialWorkflowsPage } from '@/features/workflows/SequentialWorkflowsPage';
 import { JobsPage } from '@/features/jobs/JobsPage';
 import { JobDetailPage } from '@/features/jobs/JobDetailPage';
-import { CommandPaletteHost } from '@/host/CommandPaletteHost';
 import { AuditPage } from '@/features/audit/AuditPage';
 import { SkillsPage } from '@/features/skills/SkillsPage';
 import { SkillValidationPage } from '@/features/skills/SkillValidationPage';
@@ -104,7 +103,6 @@ function AppShell(): JSX.Element {
           </AppShellErrorBoundary>
         </main>
       </div>
-      <CommandPaletteHost />
     </div>
   );
 }

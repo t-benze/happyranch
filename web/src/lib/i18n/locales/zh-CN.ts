@@ -640,23 +640,6 @@ export const zhCN: Record<MessageKey, MessageValue> = {
   'org.add.error.invalidSlug': '标识符必须匹配 ^[a-z0-9-]{1,40}$。',
   'org.add.error.generic': '无法创建组织。',
 
-  // --- W2a: 命令面板（共享呈现） ---------------------------------------------
-  'palette.title': '命令面板',
-  'palette.description': '输入以筛选。使用上下方向键移动。按 Enter 打开。按 Escape 关闭。',
-  'palette.searchPlaceholder': '搜索会话、任务、智能体、组织、知识库…',
-  'palette.searchLabel': '命令面板搜索',
-  'palette.resultsLabel': '结果',
-  'palette.noMatches': '无匹配项。',
-  'palette.nothingLoaded': '尚未加载任何内容——请先访问某个页面。',
-  'palette.footer.navigate': '导航',
-  'palette.footer.open': '打开',
-  'palette.footer.close': '关闭',
-  'palette.section.orgs': '组织',
-  'palette.section.threads': '会话',
-  'palette.section.tasks': '任务',
-  'palette.section.agents': '智能体',
-  'palette.section.kb': '知识库',
-
   // --- W2b：引导页（/onboarding） ------------------------------------------
   'onboarding.welcome.eyebrow.firstRun': '全新开始',
   'onboarding.welcome.eyebrow.returning': '新工作区',
@@ -1460,7 +1443,6 @@ export const zhCN: Record<MessageKey, MessageValue> = {
   'threads.dialog.remove.confirm': '移除',
   'threads.dialog.remove.pending': '正在移除…',
   'threads.newThread.title': '新建会话',
-  'threads.newThread.forwardTitle': '转发会话',
   'threads.newThread.description': '撰写包含主题、收件人和正文的新会话。',
   'threads.newThread.subjectLabel': '主题',
   'threads.newThread.recipientsLabel': '收件人（以逗号分隔的智能体名称）',

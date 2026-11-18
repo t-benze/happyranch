@@ -645,24 +645,6 @@ export const en = {
   'org.add.error.invalidSlug': 'Slug must match ^[a-z0-9-]{1,40}$.',
   'org.add.error.generic': 'Could not create org.',
 
-  // --- W2a: command palette (shared presentation) ----------------------------
-  'palette.title': 'Command palette',
-  'palette.description':
-    'Type to filter. Use up and down arrows to move. Press Enter to open. Press Escape to close.',
-  'palette.searchPlaceholder': 'Search threads, tasks, agents, orgs, KB…',
-  'palette.searchLabel': 'Command palette search',
-  'palette.resultsLabel': 'Results',
-  'palette.noMatches': 'No matches.',
-  'palette.nothingLoaded': 'Nothing loaded yet — visit a page first.',
-  'palette.footer.navigate': 'navigate',
-  'palette.footer.open': 'open',
-  'palette.footer.close': 'close',
-  'palette.section.orgs': 'Orgs',
-  'palette.section.threads': 'Threads',
-  'palette.section.tasks': 'Tasks',
-  'palette.section.agents': 'Agents',
-  'palette.section.kb': 'KB',
-
   // --- W2b: onboarding (/onboarding) ----------------------------------------
   // First-run vs returning welcome.
   'onboarding.welcome.eyebrow.firstRun': 'Fresh start',
@@ -1537,7 +1519,6 @@ export const en = {
   'threads.dialog.remove.confirm': 'Remove',
   'threads.dialog.remove.pending': 'Removing…',
   'threads.newThread.title': 'New thread',
-  'threads.newThread.forwardTitle': 'Forward thread',
   'threads.newThread.description': 'Compose a new thread with subject, recipients, and body.',
   'threads.newThread.subjectLabel': 'Subject',
   'threads.newThread.recipientsLabel': 'Recipients (comma-separated agent names)',
