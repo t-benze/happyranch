@@ -1,0 +1,5 @@
+[D-BUS Service]
+Name=ai.happyranch.RemoteAccess1
+Exec=/opt/happyranch-desktop/bin/happyranch-remote-access-helper
+User=root
+SystemdService=happyranch-remote-access-helper.service

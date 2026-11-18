@@ -6,7 +6,11 @@ import hashlib
 import io
 import json
 import os
+import pwd
 from pathlib import Path
+from contextlib import contextmanager
+from types import SimpleNamespace
+from typing import Any, Iterator
 import runpy
 import shutil
 import struct
@@ -19,6 +23,140 @@ from unittest.mock import patch
 
 BUILDER = Path(__file__).with_name('build-deb.sh')
 UNIT = BUILDER.parent / 'systemd/happyranch-daemon.service'
+
+
+class OwnerBootstrapTests(unittest.TestCase):
+    @contextmanager
+    def fixture(self) -> Iterator[SimpleNamespace]:
+        # Simulate root ownership and the trusted physical prefix of this
+        # injected filesystem. Fixture modes, no-follow opens, inode/link checks
+        # and reads still execute against real temporary files.
+        with tempfile.TemporaryDirectory(prefix='helper-owner-', dir='/tmp') as temporary:
+            root = Path(temporary)
+            row = pwd.struct_passwd(('owner', 'x', 1000, 1000, '', '/home/owner', '/bin/sh'))
+            candidate = root / 'home/owner/.local/share/happyranch'
+            candidate.mkdir(parents=True)
+            record = root / 'etc/happyranch/release-daemon.json'
+            record.parent.mkdir(parents=True)
+            for directory in root.rglob('*'):
+                if directory.is_dir():
+                    directory.chmod(0o755)
+            prefix_inodes = {parent.stat().st_ino for parent in root.parents}
+            owned = {candidate.stat().st_ino}
+            fixture = SimpleNamespace(root=root, row=row, rows=[row], candidate=candidate,
+                                      record=record, owned=owned)
+            fixture.passwd = SimpleNamespace(getpwall=lambda: fixture.rows)
+            actual_fstat = os.fstat
+            def metadata(fd: int) -> SimpleNamespace:
+                info = actual_fstat(fd)
+                values = {key: getattr(info, key) for key in dir(info) if key.startswith('st_')}
+                values['st_uid'] = 1000 if info.st_ino in owned else 0
+                # The physical test prefix is outside the injected filesystem.
+                if info.st_ino in prefix_inodes:
+                    values['st_mode'] &= ~0o022
+                return SimpleNamespace(**values)
+            with patch('os.fstat', side_effect=metadata), patch('pwd.getpwuid', return_value=row):
+                yield fixture
+
+    @staticmethod
+    def owner_module() -> dict[str, Any]:
+        return runpy.run_path(str(BUILDER.parents[2] / 'runtime/remote_access/helper_owner.py'))
+
+    def resolve(self, fixture: SimpleNamespace, uid: int = 1000) -> Any:
+        return self.module['bootstrap_owner'](uid, passwd=fixture.passwd, fs_root=fixture.root)
+
+    def setUp(self) -> None:
+        self.module = self.owner_module()
+
+    @staticmethod
+    def write_record(fixture: SimpleNamespace, **changes: Any) -> None:
+        record = dict(user='owner', uid=1000, data_home='/home/owner/.local/share/happyranch',
+                      unit='happyranch-daemon.service',
+                      fragment_path='/usr/lib/systemd/user/happyranch-daemon.service')
+        record.update(changes)
+        fixture.record.write_text(json.dumps(record))
+        fixture.record.chmod(0o644)
+
+    def refused(self, fixture: SimpleNamespace, code: str, uid: int = 1000) -> None:
+        with self.assertRaises(self.module['OwnerRefused']) as raised:
+            self.resolve(fixture, uid)
+        self.assertEqual(str(raised.exception), code)
+        self.assertEqual(raised.exception.category, code)
+
+    def test_bootstrap_passwd_and_uid_refusals(self) -> None:
+        for case, count, uid, code in (
+            ('unknown', 0, 1000, 'owner_unknown'),
+            ('ambiguous', 2, 1000, 'owner_ambiguous'),
+            ('root', 1, 0, 'owner_unsupported'),
+            ('system', 1, 999, 'owner_unsupported'),
+        ):
+            with self.subTest(case=case), self.fixture() as fixture:
+                fixture.rows = [fixture.row] * count
+                self.refused(fixture, code, uid)
+
+    def test_bootstrap_default_and_record_owner(self) -> None:
+        for use_record in (False, True):
+            with self.subTest(record=use_record), self.fixture() as fixture:
+                expected = Path('/home/owner/.local/share/happyranch')
+                if use_record:
+                    expected = Path('/home/owner/release-data')
+                    custom = fixture.root / expected.relative_to('/')
+                    custom.mkdir(mode=0o700)
+                    fixture.owned.add(custom.stat().st_ino)
+                    self.write_record(fixture, data_home=str(expected))
+                with patch.dict(os.environ, XDG_DATA_HOME='/untrusted', HOME='/untrusted'):
+                    owner = self.resolve(fixture)
+                self.assertEqual((owner.uid, owner.data_home), (1000, expected))
+                self.assertEqual(fixture.record.exists(), use_record, 'bootstrap must never write a record')
+
+    def test_bootstrap_record_owner_mismatch(self) -> None:
+        for changes in (dict(uid=1001), dict(user='another')):
+            with self.subTest(changes=changes), self.fixture() as fixture:
+                self.write_record(fixture, **changes)
+                self.refused(fixture, 'owner_mismatch')
+
+    def test_bootstrap_invalid_evidence(self) -> None:
+        for case in ('missing', 'home_symlink', 'directory_symlink', 'group_writable',
+                     'world_writable', 'foreign_owner', 'dev_home', 'root_home',
+                     'etc_home', 'var_home', 'record_symlink', 'record_hardlink',
+                     'record_writable', 'record_extra_key', 'record_parent_writable',
+                     'record_parent_symlink'):
+            with self.subTest(case=case), self.fixture() as fixture:
+                if case == 'missing':
+                    fixture.candidate.rmdir()
+                elif case == 'home_symlink':
+                    home = fixture.root / 'home/owner'
+                    home.rename(home.with_name('target'))
+                    home.symlink_to('target', target_is_directory=True)
+                elif case == 'directory_symlink':
+                    fixture.candidate.rename(fixture.candidate.with_name('target'))
+                    fixture.candidate.symlink_to('target', target_is_directory=True)
+                elif case in ('group_writable', 'world_writable'):
+                    fixture.candidate.chmod(0o770 if case == 'group_writable' else 0o707)
+                elif case == 'foreign_owner':
+                    fixture.owned.clear()
+                else:
+                    self.write_record(fixture)
+                    if case in ('dev_home', 'root_home', 'etc_home', 'var_home'):
+                        self.write_record(fixture, data_home={
+                            'dev_home': '/home/owner/.happyranch/release', 'root_home': '/',
+                            'etc_home': '/etc/release', 'var_home': '/var/release'}[case])
+                    elif case == 'record_symlink':
+                        fixture.record.rename(fixture.record.with_name('target'))
+                        fixture.record.symlink_to('target')
+                    elif case == 'record_hardlink':
+                        os.link(fixture.record, fixture.record.with_name('alias'))
+                    elif case == 'record_writable':
+                        fixture.record.chmod(0o666)
+                    elif case == 'record_extra_key':
+                        self.write_record(fixture, untrusted='not allowed')
+                    elif case == 'record_parent_writable':
+                        fixture.record.parent.chmod(0o777)
+                    elif case == 'record_parent_symlink':
+                        parent = fixture.record.parent
+                        parent.rename(parent.with_name('target'))
+                        parent.symlink_to('target', target_is_directory=True)
+                self.refused(fixture, 'release_home_invalid')
 
 
 class HeadscalePayloadTests(unittest.TestCase):
@@ -313,7 +451,11 @@ class DebPackageTests(unittest.TestCase):
             'libexec/headscale/headscale': 'fixture Headscale',
             'libexec/remote-access/happyranch-home-ca': 'fixture home CA materializer',
             'libexec/remote-access/happyranch-home-admin': 'fixture home admin runner',
+            'bin/happyranch-remote-access-helper': (BUILDER.parent / 'bin/happyranch-remote-access-helper').read_text(),
         }
+        for name in ('remote_access_helper', 'helper_owner', 'helper_control', 'release_verifier'):
+            files['libexec/remote-access/' + name + '.py'] = (
+                BUILDER.parents[2] / 'runtime/remote_access' / (name + '.py')).read_text()
         for launcher in ('happyranch', 'happyranch-daemon', 'happyranch-app'):
             files['bin/' + launcher] = '#!/bin/sh\nexit 0\n'
         for size in (16, 32, 64, 128, 256, 512, 1024):
@@ -325,7 +467,7 @@ class DebPackageTests(unittest.TestCase):
             path = payload / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(text)
-            path.chmod(0o755 if name.startswith(('bin/', 'libexec/')) or name in (
+            path.chmod(0o755 if name.startswith('bin/') or (name.startswith('libexec/') and not name.endswith('.py')) or name in (
                 'python/lib/libpython3.12.so.1.0', 'licenses/nested/NOTICE') else 0o644)
         for name in ('python/bin/python3.12', 'python/lib/libpython3.12.so.1.0'):
             (payload / name).write_bytes(self.elf(arch))
@@ -344,6 +486,27 @@ class DebPackageTests(unittest.TestCase):
         # A restrictive caller umask must not make the installed package private.
         return subprocess.run(['bash', BUILDER, archive, '--dist-dir', self.work / 'dist'],
                               text=True, capture_output=True, umask=0o077)
+
+    def test_packaged_helper_directives(self) -> None:
+        self.assertEqual((BUILDER.parent / 'dbus/ai.happyranch.RemoteAccess1.service').read_text().splitlines(), [
+            '[D-BUS Service]', 'Name=ai.happyranch.RemoteAccess1',
+            'Exec=/opt/happyranch-desktop/bin/happyranch-remote-access-helper',
+            'User=root', 'SystemdService=happyranch-remote-access-helper.service',
+        ])
+        self.assertEqual((BUILDER.parent / 'systemd/happyranch-remote-access-helper.service').read_text().splitlines(), [
+            '[Unit]', 'Description=HappyRanch remote access helper', '', '[Service]',
+            'Type=dbus', 'BusName=ai.happyranch.RemoteAccess1', 'User=root',
+            'ExecStart=/usr/bin/python3 -I /opt/happyranch-desktop/bin/happyranch-remote-access-helper',
+            'NoNewPrivileges=yes', 'ProtectSystem=strict', 'ProtectHome=read-only', 'PrivateTmp=yes',
+            'ReadWritePaths=/etc', 'ReadWritePaths=/var/lib/happyranch-remote-access',
+            'ReadWritePaths=-/var/lib/happyranch-headscale',
+            'ReadWritePaths=-/var/lib/happyranch-connector',
+            'ReadWritePaths=-/var/lib/happyranch-tsnet-sidecar',
+            'ReadWritePaths=-/run/happyranch-headscale',
+            'ReadWritePaths=-/run/happyranch-connector',
+            'ReadWritePaths=-/run/happyranch-tsnet-sidecar',
+            'ReadWritePaths=-/opt/happyranch',
+        ])
 
     def test_packaged_user_unit_directives(self) -> None:
         self.assertEqual(UNIT.read_text().splitlines(), [
@@ -443,6 +606,9 @@ class DebPackageTests(unittest.TestCase):
                               'Description:', 'python3 (>= 3.10)', 'python3-gi', 'gir1.2-gtk-3.0',
                               'gir1.2-webkit2-4.1', 'git, ca-certificates', 'libc6 (>= 2.35)', 'libgcc-s1'):
                     self.assertIn(field, fields)
+                self.assertEqual(subprocess.check_output(['dpkg-deb', '-f', deb, 'Depends'], text=True).strip(),
+                                 'python3 (>= 3.10), python3-gi, gir1.2-gtk-3.0, gir1.2-webkit2-4.1, '
+                                 'git, ca-certificates, libc6 (>= 2.35), libgcc-s1')
                 listing = subprocess.check_output(['dpkg-deb', '-c', deb], text=True)
                 self.assertTrue(all(' root/root ' in line for line in listing.splitlines()))
                 installed = self.work / ('installed-' + debarch)
@@ -464,6 +630,29 @@ class DebPackageTests(unittest.TestCase):
                     self.assertEqual((unit.uname, unit.gname, unit.uid, unit.gid), ('root', 'root', 0, 0))
                     self.assertEqual(unit.mode, 0o644)
                     self.assertEqual(archive.extractfile(unit).read(), UNIT.read_bytes())
+                    for source, destination in (
+                        ('dbus/ai.happyranch.RemoteAccess1.conf', 'usr/share/dbus-1/system.d/ai.happyranch.RemoteAccess1.conf'),
+                        ('dbus/ai.happyranch.RemoteAccess1.service', 'usr/share/dbus-1/system-services/ai.happyranch.RemoteAccess1.service'),
+                        ('polkit/ai.happyranch.remote-access.policy', 'usr/share/polkit-1/actions/ai.happyranch.remote-access.policy'),
+                        ('systemd/happyranch-remote-access-helper.service', 'usr/lib/systemd/system/happyranch-remote-access-helper.service'),
+                        ('bin/happyranch-remote-access-helper', 'opt/happyranch-desktop/bin/happyranch-remote-access-helper'),
+                    ):
+                        self.assertIn('./' + destination, archive.getnames())
+                        member = archive.getmember('./' + destination)
+                        self.assertTrue(member.isfile())
+                        self.assertEqual((member.uid, member.gid, member.mode),
+                                         (0, 0, 0o755 if source.startswith('bin/') else 0o644))
+                        self.assertEqual(archive.extractfile(member).read(), (BUILDER.parent / source).read_bytes())
+                    state = archive.getmember('./var/lib/happyranch-remote-access')
+                    self.assertTrue(state.isdir())
+                    self.assertEqual((state.uid, state.gid, state.mode), (0, 0, 0o700))
+                    self.assertEqual(list((installed / 'var/lib/happyranch-remote-access').iterdir()), [])
+                    self.assertFalse((installed / 'etc/systemd/system').exists(), 'no enablement links')
+                    for name in ('remote_access_helper', 'helper_owner', 'helper_control', 'release_verifier'):
+                        source = BUILDER.parents[2] / 'runtime/remote_access' / (name + '.py')
+                        shipped = installed / 'opt/happyranch-desktop/libexec/remote-access' / (name + '.py')
+                        self.assertEqual(shipped.read_bytes(), source.read_bytes())
+                        self.assertEqual(shipped.stat().st_mode & 0o777, 0o644)
                     materializers = [m for m in archive.getmembers() if m.name.removeprefix('./') ==
                                      'opt/happyranch-desktop/libexec/remote-access/happyranch-home-ca']
                     self.assertEqual(len(materializers), 1)
@@ -523,6 +712,8 @@ class DebPackageTests(unittest.TestCase):
                 self.assertIn('Description: desktop and command-line workspace', fields)
                 self.assertEqual(os.readlink(prefix / 'python/bin/python3'), 'python3.12')
                 for path in installed.rglob('*'):
+                    if path == installed / 'var/lib/happyranch-remote-access':
+                        continue  # asserted exactly 0700 above
                     if not path.is_symlink():
                         self.assertEqual(path.stat().st_mode & 0o055, 0o055 if path.is_dir()
                                          or path.stat().st_mode & 0o111 else 0o044, str(path))
