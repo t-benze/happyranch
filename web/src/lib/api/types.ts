@@ -338,18 +338,25 @@ export interface TaskRecallNode {
   status: TaskStatus;
   output_summary?: string | null;
   revisit_of_task_id?: string | null;
+  /** THR-358 read-only waiting observation (existing task fields). */
+  block_kind?: 'delegated' | 'blocked_on_job' | null;
+  blocked_on_job_ids?: string[] | null;
   /** THR-358 display-only fan-out pipeline carrier projection. Null/absent
-   * for every other task. `planned_agents` (first leg, then each `then` leg)
-   * and the 0-based `step_index` are null after the chain ended, because the
-   * runtime clears the carrier's active_chain then. */
+   * for every other task. */
   track?: TaskRecallTrack | null;
   children: TaskRecallNode[];
   [extra: string]: unknown;
 }
 
 export interface TaskRecallTrack {
+  /** First leg agent, then each `then` leg; null when no persisted source
+   * proves the plan (never guessed). */
   planned_agents: string[] | null;
+  /** Live chain's 0-based leg index; null once the chain ended. */
   step_index: number | null;
+  /** Where the plan was read: the carrier's live chain, the parent's live
+   * fan-out state, or the parent's persisted fan-out launch history. */
+  plan_source?: 'active_chain' | 'fanout' | 'launch_history' | null;
 }
 
 // ---------------------------------------------------------------------------

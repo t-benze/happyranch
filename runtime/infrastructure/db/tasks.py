@@ -516,6 +516,19 @@ def _decode_task_result_row(row: sqlite3.Row | dict[str, Any]) -> dict:
     return decoded
 
 
+def _recall_job_ids(raw: str | None) -> list[str] | None:
+    """THR-358 read-only projection of ``tasks.blocked_on_job_ids``."""
+    if not raw:
+        return None
+    try:
+        ids = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    if isinstance(ids, list) and ids and all(isinstance(j, str) and j for j in ids):
+        return ids
+    return None
+
+
 class TasksMixin:
     def repository_preparation_history_uncommitted(self, scope: str) -> list[dict]:
         """Bounded whole scoped stream; sentinel/invalid bytes refuse, never truncate."""
@@ -1671,6 +1684,8 @@ class TasksMixin:
             "output_summary": task.note,
             "output_dir": task.final_output_dir,
             "verdict": verdict,
+            "block_kind": str(task.block_kind) if task.block_kind else None,
+            "blocked_on_job_ids": _recall_job_ids(task.blocked_on_job_ids),
             "children": children,
             "track": self._recall_track(task, children, has_result=latest is not None),
         }
@@ -1683,11 +1698,17 @@ class TasksMixin:
         Read-only: it reads existing rows and never writes, repairs or
         reinterprets chain state.  A carrier is a ``subtask`` that never ran a
         session (no ``task_results`` row) and whose earliest child is its first
-        leg (same brief and agent, inserted with the carrier).  ``planned_agents``
-        is the step list (first leg agent, then each ``then`` leg agent) while
-        the runtime still holds ``active_chain``; it is ``None`` after the chain
-        ended, because the runtime clears ``active_chain`` then.  ``step_index``
-        is the chain's current 0-based leg index, or ``None`` likewise.
+        leg (same brief and agent, inserted with the carrier).
+
+        ``planned_agents`` is the step list (first leg agent, then each
+        ``then`` leg agent).  ``plan_source`` names where it was read from, in
+        this order: ``active_chain`` (the carrier's live chain), ``fanout``
+        (the parent's live ``active_fanout`` entry for this child) or
+        ``launch_history`` (the parent's persisted fan-out decision, mapped to
+        the carrier through the ``fanout_spawned`` audit ``children_ids``).
+        When none of these proves the plan, both are ``None`` (unavailable);
+        the plan is never guessed.  ``step_index`` is the live chain's 0-based
+        leg index, else ``None``.
         """
         if task.task_type != "subtask" or not children or has_result:
             return None
@@ -1703,6 +1724,7 @@ class TasksMixin:
             return None
         planned_agents: list[str] | None = None
         step_index: int | None = None
+        plan_source: str | None = None
         if task.active_chain:
             try:
                 chain = json.loads(task.active_chain)
@@ -1715,9 +1737,179 @@ class TasksMixin:
                     and 0 <= index < len(agents)
                 ):
                     planned_agents, step_index = agents, index
+                    plan_source = "active_chain"
             except (TypeError, ValueError, AttributeError):
                 planned_agents, step_index = None, None
-        return {"planned_agents": planned_agents, "step_index": step_index}
+        if planned_agents is None:
+            planned_agents, plan_source = self._recall_track_recorded_plan(task)
+        if planned_agents is not None and not self._recall_plan_fits_legs(
+            task, children, planned_agents,
+        ):
+            planned_agents, step_index, plan_source = None, None, None
+        return {
+            "planned_agents": planned_agents,
+            "step_index": step_index,
+            "plan_source": plan_source,
+        }
+
+    # Read bounds for the THR-358 plan recovery (per carrier, by parent id).
+    _RECALL_PLAN_AUDIT_LIMIT = 64
+    _RECALL_PLAN_RESULT_LIMIT = 64
+
+    @staticmethod
+    def _recall_child_plan(child: object, agent: str | None) -> list[str] | None:
+        """Plan of one fan-out child dict: its agent, then each ``then`` leg."""
+        if not isinstance(child, dict) or not isinstance(agent, str) or not agent:
+            return None
+        then = child.get("then") or []
+        if not isinstance(then, list):
+            return None
+        agents = [agent] + [
+            leg.get("agent") if isinstance(leg, dict) else None for leg in then
+        ]
+        if not all(isinstance(a, str) and a for a in agents):
+            return None
+        return agents
+
+    def _recall_fanout_children_match(
+        self, ids: list[str], details: object, briefs: dict[str, tuple],
+    ) -> bool:
+        """Every child dict maps 1:1, in order, onto the spawned task rows."""
+        if not isinstance(details, list) or len(details) != len(ids):
+            return False
+        for cid, child in zip(ids, details):
+            row = briefs.get(cid)
+            if row is None or not isinstance(child, dict):
+                return False
+            if child.get("agent") != row[1] or (child.get("prompt") or "") != (row[0] or ""):
+                return False
+        return True
+
+    def _recall_track_recorded_plan(
+        self, task: TaskRecord,
+    ) -> tuple[list[str] | None, str | None]:
+        """Recover an ended carrier's plan from already-persisted rows only.
+
+        Bounded lookups keyed by the parent task id.  Any ambiguity, missing
+        provenance or malformed JSON returns ``(None, None)``.
+        """
+        parent_id = task.parent_task_id
+        if not parent_id:
+            return None, None
+        parent = self._conn.execute(
+            "SELECT active_fanout FROM tasks WHERE id = ?", (parent_id,),
+        ).fetchone()
+        if parent is None:
+            return None, None
+        # 1. The parent's live fan-out state (until its join clears it).
+        if parent["active_fanout"]:
+            try:
+                fanout = json.loads(parent["active_fanout"])
+                ids = list(fanout["children_ids"])
+                details = fanout.get("children_details")
+                if (
+                    isinstance(details, list)
+                    and len(details) == len(ids)
+                    and ids.count(task.id) == 1
+                ):
+                    i = ids.index(task.id)
+                    child = details[i]
+                    if (
+                        isinstance(child, dict)
+                        and child.get("agent") == task.assigned_agent
+                        and (child.get("prompt") or "") == (task.brief or "")
+                    ):
+                        plan = self._recall_child_plan(child, task.assigned_agent)
+                        if plan is not None:
+                            return plan, "fanout"
+            except (TypeError, ValueError, KeyError, AttributeError):
+                pass
+        # 2. Launch history: the unique fanout_spawned audit naming this
+        #    carrier fixes the children_ids order; a persisted fan-out decision
+        #    of the parent must map onto those rows exactly (agent + prompt
+        #    for every child) and all such decisions must agree on the plan.
+        spawned = self._conn.execute(
+            "SELECT payload FROM audit_log WHERE task_id = ? AND action = 'fanout_spawned' "
+            "ORDER BY id DESC LIMIT ?",
+            (parent_id, self._RECALL_PLAN_AUDIT_LIMIT),
+        ).fetchall()
+        matches: list[list[str]] = []
+        for row in spawned:
+            try:
+                ids = json.loads(row["payload"]).get("children_ids")
+            except (TypeError, ValueError, AttributeError):
+                continue
+            if isinstance(ids, list) and task.id in ids:
+                matches.append(ids)
+        if len(matches) != 1:
+            return None, None
+        ids = matches[0]
+        if ids.count(task.id) != 1 or not all(isinstance(c, str) for c in ids):
+            return None, None
+        index = ids.index(task.id)
+        marks = ",".join("?" for _ in ids)
+        briefs = {
+            r["id"]: (r["brief"], r["assigned_agent"])
+            for r in self._conn.execute(
+                f"SELECT id, brief, assigned_agent FROM tasks WHERE id IN ({marks})",
+                ids,
+            ).fetchall()
+        }
+        decisions: list[object] = []
+        for r in self._conn.execute(
+            "SELECT payload FROM audit_log WHERE task_id = ? AND action = 'orchestration_step' "
+            "ORDER BY id DESC LIMIT ?",
+            (parent_id, self._RECALL_PLAN_AUDIT_LIMIT),
+        ).fetchall():
+            try:
+                decisions.append(json.loads(r["payload"]).get("decision"))
+            except (TypeError, ValueError, AttributeError):
+                continue
+        for r in self._conn.execute(
+            "SELECT decision_json FROM task_results WHERE task_id = ? AND decision_json IS NOT NULL "
+            "ORDER BY id DESC LIMIT ?",
+            (parent_id, self._RECALL_PLAN_RESULT_LIMIT),
+        ).fetchall():
+            try:
+                decisions.append(json.loads(r["decision_json"]))
+            except (TypeError, ValueError):
+                continue
+        plans: list[list[str]] = []
+        for decision in decisions:
+            if not isinstance(decision, dict) or decision.get("action") not in ("fanout", "parallel"):
+                continue
+            details = decision.get("children")
+            if not self._recall_fanout_children_match(ids, details, briefs):
+                continue
+            plan = self._recall_child_plan(details[index], task.assigned_agent)
+            if plan is None:
+                return None, None
+            plans.append(plan)
+        if not plans or any(p != plans[0] for p in plans):
+            return None, None
+        return plans[0], "launch_history"
+
+    def _recall_plan_fits_legs(
+        self, task: TaskRecord, children: list[str], plan: list[str],
+    ) -> bool:
+        """The created legs (retries replace their leg) must be a plan prefix."""
+        marks = ",".join("?" for _ in children)
+        rows = self._conn.execute(
+            f"SELECT id, assigned_agent, revisit_of_task_id FROM tasks WHERE id IN ({marks})",
+            children,
+        ).fetchall()
+        by_id = {r["id"]: r for r in rows}
+        legs: list[str] = []
+        for cid in children:
+            r = by_id.get(cid)
+            if r is None:
+                return False
+            if r["revisit_of_task_id"] in legs:
+                continue
+            legs.append(cid)
+        if len(legs) > len(plan):
+            return False
+        return all(by_id[c]["assigned_agent"] == plan[i] for i, c in enumerate(legs))
 
     @_synchronized
     def list_agent_tasks(self, agent: str, limit: int = 50) -> list[TaskRecord]:

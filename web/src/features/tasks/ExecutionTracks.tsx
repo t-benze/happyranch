@@ -25,12 +25,18 @@ type Translate = (key: MessageKey, params?: MessageParams) => string;
  * Derivation (pure)
  * ================================================================ */
 
-export type StepState = 'done' | 'run' | 'fail' | 'pend' | 'cancel' | 'none';
+export type StepState = 'done' | 'run' | 'wait' | 'fail' | 'pend' | 'cancel' | 'none';
 
 export interface TrackStep {
   agent: string | null;
   node: TaskRecallNode | null;
   state: StepState;
+  /** First job a waiting step is blocked on (state `wait`). */
+  job: string | null;
+  /** The carrier ended (failed) at this step while the step itself
+   * completed, e.g. a verdict mismatch: the row keeps the child's real
+   * status and shows its verdict. */
+  endedHere: boolean;
 }
 
 export interface TrackHeaderStatus {
@@ -40,12 +46,25 @@ export interface TrackHeaderStatus {
   endedAt: number | null;
 }
 
+/** Carrier lifecycle that ends a track even when every created step completed. */
+function carrierEnd(status: TaskStatus): 'fail' | 'cancel' | null {
+  if (status === 'failed') return 'fail';
+  if (status === 'cancelled' || status === 'superseded') return 'cancel';
+  return null;
+}
+
+/** True when the carrier ended and its remaining-step plan is not recorded. */
+export function planUnavailable(node: TaskRecallNode): boolean {
+  return node.status !== 'completed' && (node.track?.planned_agents ?? null) == null;
+}
+
 export function isTrackNode(node: TaskRecallNode): boolean {
   return node.track != null && typeof node.track === 'object';
 }
 
-function stepState(status: TaskStatus): StepState {
-  switch (status) {
+function stepState(node: TaskRecallNode): StepState {
+  if (node.status === 'in_progress' && node.block_kind === 'blocked_on_job') return 'wait';
+  switch (node.status) {
     case 'completed':
       return 'done';
     case 'failed':
@@ -76,12 +95,27 @@ export function trackSteps(node: TaskRecallNode): TrackStep[] {
   const steps: TrackStep[] = created.map((c) => ({
     agent: c.assigned_agent ?? null,
     node: c,
-    state: stepState(c.status),
+    state: stepState(c),
+    job: c.blocked_on_job_ids?.[0] ?? null,
+    endedHere: false,
   }));
+  // A failed/cancelled carrier wins over its steps' lifecycle: a completed
+  // reviewer with REQUEST_CHANGES (verdict mismatch) or a failed next-leg
+  // admission ends the track at the last created step.
+  const end = carrierEnd(node.status);
+  const last = steps[steps.length - 1];
+  if (end && last && !steps.some((s) => s.state === 'fail' || s.state === 'cancel')) {
+    if (end === 'fail') {
+      last.state = 'fail';
+      last.endedHere = last.node?.status === 'completed';
+    } else if (last.state !== 'done') {
+      last.state = 'cancel';
+    }
+  }
   const planned = node.track?.planned_agents ?? null;
   if (planned) {
     for (let i = steps.length; i < planned.length; i += 1) {
-      steps.push({ agent: planned[i] ?? null, node: null, state: 'none' });
+      steps.push({ agent: planned[i] ?? null, node: null, state: 'none', job: null, endedHere: false });
     }
   }
   return steps;
@@ -89,21 +123,39 @@ export function trackSteps(node: TaskRecallNode): TrackStep[] {
 
 /**
  * Header status: any failed step → failed · at Step N; else any cancelled →
- * cancelled · at Step N; else all done → completed · N/N steps; else the last
- * created step decides (queued → pending · Step K queued, otherwise
- * in_progress · Step K of N).
+ * cancelled · at Step N; else a failed/cancelled carrier → that status · at
+ * its last created step; else all done → completed · N/N steps; else the last
+ * created step decides (waiting → in_progress · Step K waiting on JOB-…,
+ * queued → pending · Step K queued, otherwise in_progress · Step K of N).
  */
-export function trackHeaderStatus(steps: TrackStep[], t: Translate): TrackHeaderStatus {
+export function trackHeaderStatus(
+  steps: TrackStep[],
+  t: Translate,
+  carrierStatus?: TaskStatus,
+): TrackHeaderStatus {
   const n = steps.length;
   const fi = steps.findIndex((s) => s.state === 'fail');
   if (fi >= 0) return { status: 'failed', qualifier: t('tasks.detail.tracks.atStep', { k: fi + 1 }), endedAt: fi + 1 };
   const ci = steps.findIndex((s) => s.state === 'cancel');
   if (ci >= 0) return { status: 'cancelled', qualifier: t('tasks.detail.tracks.atStep', { k: ci + 1 }), endedAt: ci + 1 };
+  const createdCount = steps.filter((s) => s.state !== 'none').length;
+  const end = carrierStatus ? carrierEnd(carrierStatus) : null;
+  if (end) {
+    const k = Math.max(createdCount, 1);
+    return {
+      status: end === 'fail' ? 'failed' : 'cancelled',
+      qualifier: t('tasks.detail.tracks.atStep', { k }),
+      endedAt: k,
+    };
+  }
   if (n > 0 && steps.every((s) => s.state === 'done')) {
     return { status: 'completed', qualifier: t('tasks.detail.tracks.allDone', { n }), endedAt: null };
   }
   const k = steps.filter((s) => s.state !== 'none').length;
   const cur = steps[k - 1];
+  if (cur?.state === 'wait' && cur.job) {
+    return { status: 'in_progress', qualifier: t('tasks.detail.tracks.waitingOn', { k, job: cur.job }), endedAt: null };
+  }
   if (cur?.state === 'pend') {
     return { status: 'pending', qualifier: t('tasks.detail.tracks.queued', { k }), endedAt: null };
   }
@@ -155,6 +207,13 @@ function StepIcon({ state }: { state: StepState }): JSX.Element {
         <svg {...common}>
           <circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" strokeWidth={1.6} opacity={0.45} />
           <circle cx="8" cy="8" r="3.4" fill="currentColor" />
+        </svg>
+      );
+    case 'wait':
+      return (
+        <svg {...common} fill="none" stroke="currentColor" strokeWidth={1.7} strokeLinecap="round">
+          <circle cx="8" cy="8" r="6" />
+          <path d="M8 4.8V8l2.2 1.6" />
         </svg>
       );
     case 'fail':
@@ -230,6 +289,7 @@ function Chevron({ open }: { open: boolean }): JSX.Element {
 const CHIP_CLASS: Record<StepState, string> = {
   done: 'text-accent-text bg-accent-soft border-accent-soft',
   run: 'text-info bg-info-soft border-info-soft font-semibold',
+  wait: 'text-info bg-info-soft border-info-soft font-semibold',
   fail: 'text-danger bg-danger-soft border-danger-soft font-semibold',
   pend: 'text-text-secondary bg-surface-raised border-border-strong',
   cancel: 'text-text-secondary bg-surface-sunken border-border-default',
@@ -239,6 +299,7 @@ const CHIP_CLASS: Record<StepState, string> = {
 const STATE_WORD: Record<StepState, MessageKey> = {
   done: 'tasks.detail.tracks.state.done',
   run: 'tasks.detail.tracks.state.run',
+  wait: 'tasks.detail.tracks.state.wait',
   fail: 'tasks.detail.tracks.state.fail',
   pend: 'tasks.detail.tracks.state.pend',
   cancel: 'tasks.detail.tracks.state.cancel',
@@ -251,7 +312,7 @@ function roleLabel(agent: string | null, t: Translate): ReactNode {
   return key ? t(key) : <IdentityName canonicalId={agent} />;
 }
 
-function StepStrip({ steps }: { steps: TrackStep[] }): JSX.Element {
+function StepStrip({ steps, unavailable }: { steps: TrackStep[]; unavailable: boolean }): JSX.Element {
   const { t } = useTranslation();
   return (
     <ol className="mt-1.5 flex flex-wrap items-center gap-1" aria-label={t('tasks.detail.tracks.stepsAria')}>
@@ -269,7 +330,7 @@ function StepStrip({ steps }: { steps: TrackStep[] }): JSX.Element {
               <StepIcon state={s.state} />
               <span className={s.state === 'cancel' ? 'line-through' : undefined}>{roleLabel(s.agent, t)}</span>
             </span>
-            {i < steps.length - 1 && (
+            {(i < steps.length - 1 || unavailable) && (
               <span className="text-text-muted text-overline font-normal" aria-hidden>
                 →
               </span>
@@ -277,6 +338,18 @@ function StepStrip({ steps }: { steps: TrackStep[] }): JSX.Element {
           </li>
         );
       })}
+      {unavailable && (
+        <li className="contents">
+          <span
+            className={`text-caption inline-flex items-center gap-1 whitespace-nowrap rounded-full border py-px pr-2 pl-1 ${CHIP_CLASS.none}`}
+            aria-label={t('tasks.detail.tracks.unavailable')}
+            title={t('tasks.detail.tracks.unavailable')}
+          >
+            <StepIcon state="none" />
+            <span>?</span>
+          </span>
+        </li>
+      )}
     </ol>
   );
 }
@@ -284,6 +357,7 @@ function StepStrip({ steps }: { steps: TrackStep[] }): JSX.Element {
 const NODE_CLASS: Record<StepState, string> = {
   done: 'bg-accent-default h-2 w-2',
   run: 'bg-info ring-info-soft h-2 w-2 ring-3',
+  wait: 'bg-surface-raised border-info ring-info-soft h-2.5 w-2.5 border-2 ring-3',
   fail: 'bg-danger h-2 w-2',
   pend: 'bg-border-strong h-2 w-2',
   cancel: 'border-text-muted h-2.5 w-2.5 border-2',
@@ -339,13 +413,37 @@ function StepRow({
         {node ? (
           <>
             <IdBadge kind="task" id={node.task_id} to={routes.detail(node.task_id)} />
-            <StatusBadge status={node.status} />
+            {step.state === 'fail' && typeof node.verdict === 'string' && node.verdict && (
+              <span className="text-overline text-danger border-danger-soft inline-flex items-center rounded-full border px-2.5 py-0.5 font-mono">
+                {t('tasks.detail.tracks.verdict', { verdict: node.verdict })}
+              </span>
+            )}
+            {step.state === 'wait' && step.job ? (
+              <HeaderBadge status={node.status} qualifier={t('tasks.detail.tracks.waitShort', { job: step.job })} />
+            ) : (
+              <StatusBadge status={node.status} />
+            )}
           </>
         ) : (
           <span className="text-overline text-text-secondary inline-flex items-center rounded-full border border-dashed border-border-strong px-2.5 py-0.5">
             {t('tasks.detail.tracks.notCreated')}
           </span>
         )}
+      </span>
+    </div>
+  );
+}
+
+function UnavailableRow(): JSX.Element {
+  const { t } = useTranslation();
+  return (
+    <div className="border-border-default flex flex-wrap items-center gap-x-3 gap-y-1.5 border-b px-1.5 py-2 last:border-b-0 sm:flex-nowrap">
+      <span className="flex w-4 shrink-0 justify-center" aria-hidden>
+        <span className={`inline-block rounded-full ${NODE_CLASS.none}`} />
+      </span>
+      <span className="min-w-0 flex-1">
+        <p className="text-body-sm text-text-secondary truncate font-semibold">{t('tasks.detail.tracks.unavailable')}</p>
+        <p className="text-caption text-text-secondary mt-px truncate">{t('tasks.detail.tracks.unavailableWhy')}</p>
       </span>
     </div>
   );
@@ -385,7 +483,8 @@ function TrackGroup({
   const routes = useTasksRoutes();
   const { t } = useTranslation();
   const steps = trackSteps(node);
-  const header = trackHeaderStatus(steps, t);
+  const header = trackHeaderStatus(steps, t, node.status);
+  const unavailable = planUnavailable(node);
   const title = firstLine(node.brief);
   const name = prefix && title.startsWith(prefix) ? title.slice(prefix.length) : title;
   const stepsId = `track-steps-${node.task_id}`;
@@ -412,7 +511,7 @@ function TrackGroup({
             </span>
           </button>
           <div className="ml-5">
-            <StepStrip steps={steps} />
+            <StepStrip steps={steps} unavailable={unavailable} />
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-2.5 pt-px max-sm:ml-5 sm:shrink-0 sm:justify-end">
@@ -435,6 +534,7 @@ function TrackGroup({
         {steps.map((s, i) => (
           <StepRow key={s.node?.task_id ?? `planned-${i}`} step={s} index={i} endedAt={header.endedAt} />
         ))}
+        {unavailable && <UnavailableRow />}
       </div>
     </div>
   );
@@ -462,7 +562,7 @@ export function ExecutionTrackList({
       new Set(
         many
           ? tracks
-              .filter((n) => trackHeaderStatus(trackSteps(n), t).status === 'completed')
+              .filter((n) => trackHeaderStatus(trackSteps(n), t, n.status).status === 'completed')
               .map((n) => n.task_id)
           : [],
       ),
