@@ -12,8 +12,16 @@ does not acquire the participating lock. No clean-shutdown receipt is used.
 
 On the next startup each of happyranch, danze and family is treated conditionally:
 installed storage takes ordinary complete validation without another backup or
-installer; absent storage installs only if every gate passes. Otherwise the org
-HOLDs with a closed reason and no fallback writable load. Unavailable/lost EX
+installer; absent storage installs only if every gate passes. A refusal classified
+`not_installed` (absent/held discovery, no worker or closed worker without permit)
+loads the current layout under fresh SH after positive original custody closure.
+It stays out of `broken_orgs`; workflow-setup status and the daemon log expose the
+reason. A validated prior `not_installed` hold falls back on later boots without
+retry or latch modification. Unknown effects/close, in-flight workers, sent permit
+and registration mismatch remain broken. Normal loader validation still applies.
+Only the existing historical UNKNOWN empty-scope `disk_sweep` exemption is applied
+with an empty live-owner set under startup EX. Other history gates and the
+8192-row/64MiB caps remain unchanged pending THR-380 Part 3. Unavailable/lost EX
 selects `writer_exclusion_unproven`; missing predecessor proof does not. No live
 DB observation is needed to state this policy. Existing profile dependency
 uncertainty may also hold other consumers.
@@ -146,9 +154,11 @@ mounted A4:2 contract above. Discovery owns SH selection, positive SH close and
 fresh EX selection under one original startup/admission ledger. Budget expiry
 holds absent storage without an install attempt; installed selection stays
 ordinary. A contended EX may reacquire SH to observe current storage, but absent
-storage HOLDs with `writer_exclusion_unproven` and never falls back to legacy
-writable loading. Failed acquisition/closure quarantines. Only installed
-selection transfers its original SH into the normal loader. The same
+storage HOLDs with `writer_exclusion_unproven`. Under the current contract above,
+a proven no-effect refusal closes original custody and acquires fresh SH for
+ordinary loading; it never transfers a held selection directly. Failed
+acquisition/unknown closure quarantines. Installed selection can transfer its
+original SH into the normal loader. The same
 120s/org, 180s-total, 60s admission, 20s reserve and cumulative0.5s waiting limits
 remain; these clocks are not a hard bound on filesystem I/O. Native supervision,
 registration and startup are mounted; whole-listener acceptance is separate.

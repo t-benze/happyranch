@@ -1,5 +1,18 @@
 # Local CI
 
+## Focused A4 no-effect refusal and historical writers
+
+`uv run --frozen pytest scripts/test_workflow_bootstrap.py -v --tb=short`
+uses the existing standalone synthetic-org venue to drive the real bootstrap
+worker and ordinary startup loader without a serving daemon. It checks first and
+latched second boot, fresh SH attachment, persisted refusal reason/unchanged
+latch, unknown holds, and exact historical disk-sweep exemption boundaries with
+unchanged audit history and a real later current-domain refusal.
+The existing `WORKFLOW_SCHEMA_PYTHON=3.14 bash scripts/test-workflow-schema-load.sh --bootstrap-startup=history`
+(and `ex`, `backup`, `history_precommit`, `commit_uncertain`, and discovery-close
+selections) retains mounted startup coverage. These are focused scripts, outside
+retired Python units, skipped general integration and scheduled Product E2E.
+
 ## Focused repository preparation startup settlement (THR-357 Fix 2)
 
 `uv run --frozen python -B -m unittest scripts.test_preparation_startup -v`

@@ -22,8 +22,17 @@ after known COMMIT. The never-served registrar uses a duplicate of the same EX;
 positive original close and the empty-task/daemon runtime registration audit
 precede final registered publication. Only then does normal SH attachment start.
 
-A failed check holds the org without fallback writable loading. Pre-intent holds
-may publish private external latches; existing phases are never overwritten.
+A refused setup with proven no source effect is `not_installed`: discovery is
+absent/held and the worker is absent or positively closed without a COMMIT permit.
+Positive original discovery/descriptor closure permits ordinary current-layout
+loading under a fresh SH fence, without entering `broken_orgs`. The existing
+workflow-setup status and daemon log report the refusal reason. A validated prior
+`not_installed` hold selects held and falls back without retrying or rewriting the
+latch. Unknown effects/close, in-flight workers, permit sent and registration
+mismatch remain broken. Pre-intent holds may publish private external latches;
+existing phases are never overwritten. The writer predicate reuses only the
+historical UNKNOWN empty-scope disk-sweep exemption with an empty live-owner set
+under startup EX; all other predicates and acquisition caps remain unchanged.
 A last pre_commit remains unknown/commit_uncertain; committed/verified without
 registered remains installed_unverified. Failed/unknown records never replay or
 auto-restore. Parent EOF/cancellation withdraws permission before bounded cleanup,
