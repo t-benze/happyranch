@@ -18,6 +18,10 @@ _spec.loader.exec_module(_contract)
 Assets, Protocol = _contract.Assets, _contract.Protocol
 ORIGIN, ENTRY, CSP = _contract.ORIGIN, _contract.ENTRY, _contract.CSP
 WORLD, CHANNEL = "happyranch.connection.v1", "connection"
+_spec = importlib.util.spec_from_file_location("client_ui", Path(__file__).with_name("client_ui.py"))
+_client = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_client)
+ClientUI = _client.ClientUI
 
 # Fixed code only. Native data returns through JSC strings or GVariant arguments.
 PAGE = r"""(() => {
@@ -31,6 +35,12 @@ PAGE = r"""(() => {
   addEventListener('message', event => {
     if (!active || event.source !== window || event.origin !== location.origin) return;
     const item = event.data;
+    if (item?.channel === 'hr-connection-event' && item.name === 'client.stateChanged'
+        && typeof item.raw === 'string' && size(item.raw) <= 32768) {
+      const group = listeners.get(item.name);
+      if (group) group.forEach(handler => handler(item.raw));
+      return;
+    }
     if (!item || item.channel !== 'hr-connection-reply' || typeof item.id !== 'string') return;
     const callback = pending.get(item.id);
     if (!callback) return;
@@ -59,7 +69,12 @@ PAGE = r"""(() => {
     if (!active) throw fail('documentChanged');
     if (!listeners.has(name)) listeners.set(name, new Set());
     const group = listeners.get(name); group.add(handler);
-    return () => group.delete(handler);
+    window.postMessage({channel:'hr-connection-subscribe',name,enabled:true}, location.origin);
+    let subscribed = true;
+    return () => {
+      if (!subscribed) return; subscribed = false; group.delete(handler);
+      if (!group.size) window.postMessage({channel:'hr-connection-subscribe',name,enabled:false}, location.origin);
+    };
   };
   addEventListener('pagehide', () => {
     active = false; listeners.clear();
@@ -94,6 +109,12 @@ RELAY = r"""(() => {
   addEventListener('message', async event => {
     if (!active || event.source !== window || event.origin !== 'happyranch-shell://connection') return;
     const item = event.data;
+    if (item?.channel === 'hr-connection-subscribe' && item.name === 'client.stateChanged'
+        && typeof item.enabled === 'boolean') {
+      native.postMessage(JSON.stringify({protocol:'happyranch.connection',version:1,
+        subscription:item.name,enabled:item.enabled})).catch(() => {});
+      return;
+    }
     if (!item || item.channel !== 'hr-connection-call' || typeof item.data !== 'string'
         || typeof item.command !== 'string' || !/^r[0-9]{1,16}$/.test(item.id)) return;
     // Keep args text intact: native must see duplicate keys and bad JSON too.
@@ -124,7 +145,7 @@ FRAME_PROBE = r"""() => {
 
 class ConnectionWindow:
     def __init__(self, app: object, parent: object, prefix: Path,
-                 tr: Callable[[str, str], str]) -> None:
+                 tr: Callable[[str, str], str], client: object = None) -> None:
         import gi
         gi.require_version("Gtk", "3.0")
         gi.require_version("WebKit2", "4.1")
@@ -133,6 +154,11 @@ class ConnectionWindow:
         from gi.repository import Gio, GLib, Gtk, JavaScriptCore, Soup, WebKit2
         self.Gio, self.GLib, self.Gtk, self.JSC, self.Soup, self.W = Gio, GLib, Gtk, JavaScriptCore, Soup, WebKit2
         self.tr, self.prefix = tr, prefix
+        self.owns_client = client is None
+        self.client = client or ClientUI(app, parent, prefix, tr)
+        self.client_document = object()
+        self.requests = _contract.Requests()
+        self.subscribed, self.event_pending, self.event_sequence = False, False, 0
         self.window = Gtk.ApplicationWindow(application=app, title=tr("Connection", "连接"))
         if parent is not None:
             self.window.set_transient_for(parent)
@@ -146,7 +172,7 @@ class ConnectionWindow:
         self.unavailable_reason = None
         self.initial_navigation = True
         self.initial_load = True
-        self.seen = set()
+        self.hello_seen = False
         try:
             self.assets = Assets(prefix / "share/happyranch/desktop/connection")
             self.protocol = Protocol(prefix / "share/happyranch/desktop/native-connection-bridge.v1.json")
@@ -193,7 +219,7 @@ class ConnectionWindow:
         self.window.show_all()
 
     def admission_timeout(self) -> bool:
-        if not self.closed and (self.probing or not self.seen):
+        if not self.closed and (self.probing or not self.hello_seen):
             self.unavailable("admission timeout")
         return False
 
@@ -355,37 +381,113 @@ class ConnectionWindow:
                     or self.unavailable_reason or not value.is_string()
                     or self.view.get_uri() != ENTRY):
                 raise ValueError("document unavailable")
-            request = self.protocol.request(value.to_string(), origin=ORIGIN, main_frame=True)
-            if len(self.seen) >= 4096 or request["requestId"] in self.seen:
-                raise ValueError("request lifetime bound")
-            self.seen.add(request["requestId"])
+            raw = value.to_string()
+            subscription = _contract.parse_json(raw, 4096)
+            if type(subscription) is dict and "subscription" in subscription:
+                if (set(subscription) != {"protocol", "version", "subscription", "enabled"}
+                        or subscription["protocol"] != "happyranch.connection"
+                        or type(subscription["version"]) is not int or subscription["version"] != 1
+                        or subscription["subscription"] != "client.stateChanged"
+                        or type(subscription["enabled"]) is not bool):
+                    raise ValueError("subscription")
+                self.subscribed = subscription["enabled"]
+                self.client.listener = self.queue_event if self.subscribed else None
+                if self.subscribed:
+                    self.queue_event()
+                reply.return_value(self.JSC.Value.new_string(value.get_context(), "{}"))
+                return True
+            request = self.protocol.request(raw, origin=ORIGIN, main_frame=True)
         except Exception:
             reply.return_error_message('{"code":"invalidRequest","effect":"none","recovery":"refresh"}')
             return True
 
-        def finish(result: dict | None = None, code: str | None = None) -> None:
+        def finish(result: dict | None = None, code: str | None = None, effect: str = "none") -> None:
             if not self.active or self.closed or self.generation != generation or self.view.get_uri() != ENTRY:
                 return
             envelope = {"protocol": "happyranch.connection", "version": 1,
                         "requestId": request["requestId"], "ok": code is None}
-            envelope.update({"error": {"code": code, "effect": "none", "recovery": "refresh"}}
-                            if code else {"result": result})
+            try:
+                if code:
+                    error = {"code": code, "effect": effect,
+                             "recovery": "nativeRecovery" if effect == "unknown" else "refresh"}
+                    self.protocol.validate(error, self.protocol.schema["$defs"]["error"])
+                    envelope["error"] = error
+                else:
+                    envelope["result"] = self.protocol.result(request["command"], result)
+            except (ValueError, UnicodeError):
+                envelope["ok"] = False
+                envelope["error"] = {"code": "unavailable", "effect": "unknown", "recovery": "nativeRecovery"}
             raw = json.dumps(envelope, ensure_ascii=False)
             if len(raw.encode("utf-8")) > 32768:
-                finish(code="unavailable")
+                reply.return_error_message('{"code":"unavailable","effect":"unknown","recovery":"nativeRecovery"}')
                 return
             reply.return_value(self.JSC.Value.new_string(value.get_context(), raw))
 
-        if request["command"] == "bridge.hello":
+        finish = self.requests.admit(request, self.client.model.token, finish)
+        if finish is None:
+            return True
+        command = request["command"]
+        if command == "bridge.hello":
+            self.hello_seen = True
             finish(self.protocol.hello())
-        elif request["command"] == "host.status":
+        elif command == "host.status":
             if self.busy:
-                finish(code="busy")
+                finish(None, "busy")
             else:
                 self.status(finish)
+        elif command in _contract.CLIENT_COMMANDS:
+            model = self.client.model
+            if command == "client.status":
+                finish(model.snapshot())
+            elif command == "client.health":
+                model.health(finish)
+            elif command in ("client.acceptInvite", "client.retry"):
+                if model.cleanup == "incomplete":
+                    finish(None, "outcomeUnknown", "unknown")
+                elif self.client.prompt or model.session or model.stage not in ("idle", "failed"):
+                    finish(None, "busy")
+                else:
+                    model.accept(self.client_document)
+                    finish(model.action())
+            elif ((command == "client.disconnect" and model.stage == "connected")
+                  or (command == "client.cancelAttempt" and model.stage in
+                      ("validating", "joining", "pairing", "waitingApproval", "opening"))):
+                model.confirm_stop(finish, self.client_document)
+            else:
+                finish(None, "stateChanged")
         else:
-            finish(code="unavailable" if request["command"] == "client.status" else "unsupportedCommand")
+            finish(None, "unavailable")
         return True
+
+    def queue_event(self) -> None:
+        if not self.event_pending and self.active and self.subscribed:
+            self.event_pending = True
+            self.GLib.idle_add(self.send_event, self.generation)
+
+    def send_event(self, generation: int) -> bool:
+        self.event_pending = False
+        if not self.active or not self.subscribed or self.generation != generation or self.view.get_uri() != ENTRY:
+            return False
+        self.event_sequence += 1
+        data = dict(version=1, sequence=self.event_sequence, observedAt=_client._model.timestamp(),
+                    snapshot=self.client.model.snapshot())
+        self.protocol.validate(data, self.protocol.events["client.stateChanged"])
+        raw = json.dumps(data, ensure_ascii=False)
+        if len(raw.encode("utf-8")) > 32768:
+            self.unavailable("event bound")
+            return False
+        arguments = self.GLib.Variant("a{sv}", {"raw": self.GLib.Variant("s", raw)})
+        self.view.call_async_javascript_function(
+            "window.postMessage({channel:'hr-connection-event',name:'client.stateChanged',raw}, location.origin);",
+            -1, arguments, WORLD, ENTRY, self.cancellable, self.event_delivered, generation)
+        return False
+
+    def event_delivered(self, view: object, result: object, generation: int) -> None:
+        try:
+            view.call_async_javascript_function_finish(result)
+        except Exception:
+            if self.active and self.generation == generation:
+                self.unavailable("event delivery")
 
     def status(self, finish: Callable) -> None:
         self.busy = True
@@ -396,7 +498,7 @@ class ConnectionWindow:
                 raw, = connection.call_finish(result).unpack()
                 finish(self.protocol.host(raw))
             except Exception:
-                finish(code="unavailable")
+                finish(None, "unavailable")
 
         def call() -> None:
             self.connection.call("ai.happyranch.RemoteAccess1", "/ai/happyranch/RemoteAccess1",
@@ -414,7 +516,7 @@ class ConnectionWindow:
                 call()
             except Exception:
                 self.busy = False
-                finish(code="unavailable")
+                finish(None, "unavailable")
 
         try:
             if self.connection is not None and not self.connection.is_closed():
@@ -426,11 +528,15 @@ class ConnectionWindow:
                     None, self.cancellable, connected, None)
         except Exception:
             self.busy = False
-            finish(code="unavailable")
+            finish(None, "unavailable")
 
     def detach(self) -> None:
         self.active = False
         self.generation += 1
+        self.subscribed = False
+        if self.client.listener == self.queue_event:
+            self.client.listener = None
+        self.client.model.detach(self.client_document)
         self.cancellable.cancel()
         if self.manager is not None:
             if self.registered:
@@ -469,6 +575,9 @@ class ConnectionWindow:
             self.view.destroy()
         if self.filter_dir is not None:
             self.filter_dir.cleanup()
+        if self.owns_client:
+            self.client.shutdown()
+        self.window.destroy()
 
 
 def main() -> int:

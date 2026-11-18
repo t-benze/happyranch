@@ -16,6 +16,69 @@ CSP = ("default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self';
        "font-src 'self'; connect-src 'none'; frame-src 'none'; object-src 'none'; "
        "base-uri 'none'; form-action 'none'")
 MAX_ASSET = 16 * 1024 * 1024
+CLIENT_COMMANDS = {"client.status", "client.acceptInvite", "client.cancelAttempt",
+                   "client.disconnect", "client.retry", "client.health"}
+
+
+class Requests:
+    """Per-document bounded outcomes; cancellation has its own attempt record."""
+    def __init__(self) -> None:
+        self.mutations = {}
+        self.cancel = None
+        self.reads = 0
+        self.mutating = False
+
+    def admit(self, request: dict, attempt: int, finish: object) -> object:
+        command, key = request["command"], request["requestId"]
+        read = command in ("bridge.hello", "host.status", "client.status", "client.health")
+        body = json.dumps(request, sort_keys=True)
+        record = self.mutations.get(key)
+        if record is None and self.cancel and self.cancel["key"] == key:
+            record = self.cancel
+        if record:
+            if record["body"] != body:
+                finish(None, "invalidRequest")
+            elif record["outcome"] is not None:
+                finish(*record["outcome"])
+            elif len(record["waiters"]) < 8:
+                record["waiters"].append(finish)
+            else:
+                finish(None, "busy")
+            return None
+        if read:
+            if self.reads >= 8:
+                finish(None, "busy")
+                return None
+            self.reads += 1
+            def done(*args: object) -> None:
+                self.reads -= 1
+                finish(*args)
+            return done
+        cancel = command == "client.cancelAttempt"
+        if cancel and self.cancel and self.cancel["attempt"] == attempt:
+            outcome = self.cancel["outcome"]
+            finish(*(outcome if outcome is not None else (None, "busy")))
+            return None
+        if not cancel and (self.mutating or len(self.mutations) >= 64):
+            finish(None, "busy")
+            return None
+        record = dict(key=key, body=body, attempt=attempt, outcome=None, waiters=[])
+        if cancel:
+            self.cancel = record
+        else:
+            self.mutations[key] = record
+            self.mutating = True
+        def done(*args: object) -> None:
+            if record["outcome"] is not None:
+                return
+            record["outcome"] = args
+            if not cancel:
+                self.mutating = False
+            finish(*args)
+            for waiter in record["waiters"]:
+                waiter(*args)
+            record["waiters"].clear()
+        return done
 
 
 def parse_json(raw: str, limit: int) -> Any:
@@ -225,10 +288,10 @@ class Protocol:
         return self.result("bridge.hello", {
             "version": 1, "platform": "linux", "roles": ["host", "client"],
             "capabilities": [{"command": name, "availability": (
-                "available" if name == "host.status" else "unavailable")}
+                "available" if name in CLIENT_COMMANDS | {"host.status"} else "unavailable")}
                 for name in self.commands if name != "bridge.hello"],
             "observationLimits": {"host": ["inviteState", "expiresAt"],
-                                  "client": list(self.schema["$defs"]["client"]["properties"])}})
+                                  "client": ["route", "computers", "activeComputerRef", "comparisonPhrase"]}})
 
     def host(self, raw: str) -> dict:
         value = parse_json(raw, 32768)
