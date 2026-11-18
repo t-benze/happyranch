@@ -562,7 +562,7 @@ struct HomeInviteModelTests {
         await gate.arm(point)
         if point == "discovery" || point == "load" { model.prepare() }
         else { model.accept(try invite(dialIP: ["recover", "refresh"].contains(point) ? "192.168.1.41" : "192.168.1.40")) }
-        #require(await gate.waitFor(point))
+        try #require(await gate.waitFor(point))
         let old = model.lifetime
         var afterCancel: [HomeInviteModel.Phase] = []
         if replaceDocument { model.documentDidChange() } else { model.cancel() }
@@ -598,7 +598,7 @@ struct HomeInviteModelTests {
         await store.configure(saveFails: fails)
         await gate.arm("save")
         if retry { model.retrySave() } else { model.accept(try invite()) }
-        #require(await gate.waitFor("save"))
+        try #require(await gate.waitFor("save"))
         #expect(model.phase == .saving && model.busy)
         let old = model.lifetime
         if replaceDocument { model.documentDidChange() } else { model.cancel() }
@@ -627,7 +627,7 @@ struct HomeInviteModelTests {
         await gate.arm("stop")
         let model = HomeInviteModel(store: store, makeSession: { session })
         model.accept(try invite())
-        #require(await gate.waitFor("stop"))
+        try #require(await gate.waitFor("stop"))
         if replaceDocument { model.documentDidChange() } else { model.cancel() }
         var phases: [HomeInviteModel.Phase] = []
         let observation = model.$phase.sink { phases.append($0) }
@@ -647,7 +647,7 @@ struct HomeInviteModelTests {
         #expect(await eventually { model.webURL != nil })
         await gate.arm("stop")
         model.cancel(endingAt: .failed(.homeUnavailable))
-        #require(await gate.waitFor("stop"))
+        try #require(await gate.waitFor("stop"))
         model.documentDidChange()
         var phases: [HomeInviteModel.Phase] = []
         let observation = model.$phase.sink { phases.append($0) }
@@ -667,7 +667,7 @@ struct HomeInviteModelTests {
         #expect(await eventually { model.webURL != nil })
         await gate.arm(point)
         model.removeSavedComputer()
-        #require(await gate.waitFor(point))
+        try #require(await gate.waitFor(point))
         model.cancel()
         await gate.release()
         #expect(await eventually { !model.busy })
