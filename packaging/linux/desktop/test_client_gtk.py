@@ -17,6 +17,7 @@ from gi.repository import GLib, Gtk
 
 from client_ui import ClientUI
 from connection_window import ConnectionWindow
+from test_client_model import Session
 
 
 class Runtime(BaseHTTPRequestHandler):
@@ -144,9 +145,41 @@ Promise.all([happyranchConnection.call('bridge.hello', '{"minVersion":1,"maxVers
             sequence = window.event_sequence
             self.ui.model.changed("joining")
             self.assertEqual(window.event_sequence, sequence)
+            server = ThreadingHTTPServer(("127.0.0.1", 0), Runtime)
+            worker = threading.Thread(target=server.serve_forever, daemon=True)
+            worker.start()
+            self.addCleanup(worker.join, 2)
+            self.addCleanup(server.server_close)
+            self.addCleanup(server.shutdown)
+            model = self.ui.model
+            model.document, model.session = window.client_document, Session(None)
+            model.stage = "opening"
+            self.ui.open_runtime(f"http://127.0.0.1:{server.server_port}/", model.token)
+            self.pump(lambda: model.stage == "connected")
+            runtime, session = self.ui.runtime_window, model.session
             window.close()
             self.assertFalse(window.active)
             self.assertIsNone(self.ui.listener)
+            self.assertEqual(model.stage, "connected")
+            replacement = ConnectionWindow(self.app, None, prefix, self.ui.tr, self.ui)
+            self.addCleanup(replacement.close)
+            self.pump(lambda: replacement.hello_seen)
+            self.assertIsNot(replacement.client_document, window.client_document)
+            replacement.view.call_async_javascript_function(
+                "happyranchConnection.call('client.disconnect','{}');return null;",
+                -1, None, None, None, None, None, None)
+            self.pump(lambda: self.ui.prompt is not None)
+            prompt = self.ui.prompt
+            replacement.close()
+            prompt.response(Gtk.ResponseType.OK)
+            self.pump(lambda: not model.workers)
+            context = GLib.MainContext.default()
+            while context.pending():
+                context.iteration(False)
+            self.assertIsNone(self.ui.prompt)
+            self.assertEqual(model.stage, "connected")
+            self.assertIs(self.ui.runtime_window, runtime)
+            self.assertNotIn("stop", [name for name, _ in session.calls])
 
 
 if __name__ == "__main__":

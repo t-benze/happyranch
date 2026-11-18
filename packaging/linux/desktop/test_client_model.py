@@ -182,6 +182,7 @@ class LifecycleTests(unittest.TestCase):
             self.ui.queue.get_nowait()()
         self.model.loaded(token, True)
         self.assertEqual(self.model.stage, "opening")
+        next(callback for ms, callback in self.ui.timers if ms == 30000)()
         self.ui.confirmed(False)
         self.assertEqual(self.model.stage, "connected")
         self.assertEqual(health[-1][0]["access"], "allowed")
@@ -222,6 +223,46 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(replies[-1][0]["runtime"], "unknown")
         self.assertIsNone(self.ui.opened)
         self.assertIsNone(self.model.session)
+
+    def test_completion_and_hold_expire_at_original_deadline(self):
+        for boundary in ("completion", "resume", "timer"):
+            with self.subTest(boundary=boundary):
+                self.ui = UI()
+                self.model = self.ui.model
+                self.session = Session(None)
+                release = self.session.release = threading.Event()
+                self.addCleanup(release.set)
+                self.start()
+                self.ui.pump(lambda: self.session.entered.is_set())
+                if boundary != "completion":
+                    self.model.confirm_stop(lambda *_: None)
+                if boundary == "resume":
+                    release.set()
+                    self.ui.pump(lambda: not self.model.workers)
+                    while not self.ui.queue.empty():
+                        self.ui.queue.get_nowait()()
+                    self.assertEqual(self.model.stage, "waitingApproval")
+                self.model.deadline = time.monotonic() - 1
+                cutoff_stage = None
+                if boundary == "timer":
+                    for _ms, callback in list(self.ui.timers):
+                        callback()
+                    self.ui.pump(lambda: self.model.stage != "stopping")
+                    cutoff_stage = self.model.stage
+                release.set()
+                if boundary == "resume":
+                    self.ui.confirmed(False)
+                for _ in range(3):
+                    self.ui.pump(lambda: not self.model.workers)
+                    while not self.ui.queue.empty():
+                        self.ui.queue.get_nowait()()
+                self.assertNotIn("open", [name for name, _ in self.session.calls])
+                if boundary == "timer":
+                    self.assertEqual(cutoff_stage, "failed")
+                self.assertEqual(self.model.stage, "failed")
+                self.assertIn("expired", self.ui.errors)
+                self.assertIsNone(self.ui.opened)
+                self.assertIsNone(self.model.session)
 
     def test_load_failure_and_timeout_stop(self):
         for timeout in (False, True):

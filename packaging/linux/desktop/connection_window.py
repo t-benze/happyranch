@@ -452,7 +452,7 @@ class ConnectionWindow:
             elif ((command == "client.disconnect" and model.stage == "connected")
                   or (command == "client.cancelAttempt" and model.stage in
                       ("validating", "joining", "pairing", "waitingApproval", "opening"))):
-                model.confirm_stop(finish)
+                model.confirm_stop(finish, self.client_document)
             else:
                 finish(None, "stateChanged")
         else:

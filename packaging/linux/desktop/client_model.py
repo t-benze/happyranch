@@ -43,6 +43,8 @@ class ClientModel:
         self.reading = False
         self.health_finish = None
         self.confirmation = 0
+        self.confirmation_document = None
+        self.load_succeeded = False
         self.workers = set()
         self.worker_lock = threading.Lock()
 
@@ -97,6 +99,7 @@ class ClientModel:
         self.token += 1
         token = self.token
         self.document = document
+        self.load_succeeded = False
         self.expiry, self.cleanup = None, "notApplicable"
         self.observation = "known"
         self.changed("validating")
@@ -126,8 +129,8 @@ class ClientModel:
         if not consent:
             self.stop()
             return
-        if time.time() >= self.expiry or time.monotonic() >= self.deadline:
-            self.fail("expired")
+        self.approval_timeout(token)
+        if not self.valid(token):
             return
         self.session = _native.ClientSession(self.prefix)
         session = self.session
@@ -157,20 +160,37 @@ class ClientModel:
             self.fail("newInviteRequired")
             return
         self.changed("waitingApproval")
+        self.approval_timeout(token)
         self.poll(token)
 
-    def poll(self, token: int) -> bool:
+    def approval_expired(self, token: int) -> bool:
         if not self.valid(token):
+            return True
+        if (self.expiry is not None and self.stage in ("validating", "joining", "pairing", "waitingApproval")
+                and (time.time() >= self.expiry or time.monotonic() >= self.deadline)):
+            self.fail("expired")
+            return True
+        return False
+
+    def approval_timeout(self, token: int) -> bool:
+        if (not self.approval_expired(token)
+                and self.stage in ("validating", "joining", "pairing", "waitingApproval")):
+            remaining = min(self.expiry - time.time(), self.deadline - time.monotonic())
+            self.ui.later(max(1, int(remaining * 1000) + 1), lambda: self.approval_timeout(token))
+        return False
+
+    def poll(self, token: int) -> bool:
+        if self.approval_expired(token):
             return False
         if self.hold:
             self.defer(lambda: self.poll(token))
-        elif time.time() >= self.expiry or time.monotonic() >= self.deadline:
-            self.fail("expired")
         else:
             self.work(token, self.session.complete, lambda result, e: self.completed(token, result, e))
         return False
 
     def completed(self, token: int, result: object, error: str | None) -> None:
+        if self.approval_expired(token):
+            return
         if error:
             self.fail("newInviteRequired")
         elif not result:
@@ -189,13 +209,15 @@ class ClientModel:
         self.ui.later(30000, lambda: self.load_timeout(token))
 
     def load_timeout(self, token: int) -> bool:
-        if self.valid(token) and self.stage == "opening":
+        if self.valid(token) and self.stage == "opening" and not self.load_succeeded:
             self.loaded(token, False)
         return False
 
     def loaded(self, token: int, success: bool) -> None:
         if not self.valid(token) or self.stage not in ("opening", "connected"):
             return
+        if success:
+            self.load_succeeded = True
         if self.hold:
             self.defer(lambda: self.loaded(token, success))
         elif not success:
@@ -204,8 +226,9 @@ class ClientModel:
             self.runtime, self.access = "available", "allowed"
             self.changed("connected")
 
-    def confirm_stop(self, finish: object) -> None:
+    def confirm_stop(self, finish: object, document: object = None) -> None:
         token = self.token
+        self.confirmation_document = self.document if document is None else document
         self.confirmation += 1
         confirmation = self.confirmation
         self.hold = True
@@ -213,6 +236,10 @@ class ClientModel:
             if not self.valid(token) or confirmation != self.confirmation:
                 finish(None, "stateChanged", "none")
                 return
+            if self.approval_expired(token):
+                finish(None, "stateChanged", "none")
+                return
+            self.confirmation_document = None
             self.hold = False
             if yes:
                 self.deferred = []
@@ -236,6 +263,7 @@ class ClientModel:
             self.health_finish(None, "stateChanged", "none")
             self.health_finish = None
         self.hold, self.deferred, self.reading = False, [], False
+        self.confirmation_document = None
         self.expiry, self.target = None, ""
         self.runtime, self.access = "unknown", "unknown"
         self.ui.dismiss()
@@ -252,8 +280,11 @@ class ClientModel:
         self.work(token, session.stop if session else lambda: None, stopped)
 
     def detach(self, document: object) -> None:
-        if self.document == document:
+        if self.document == document or (self.hold and self.confirmation_document == document):
+            if self.document == document:
+                self.document = None
             self.confirmation += 1
+            self.confirmation_document = None
             if self.stage not in ("connected", "idle", "failed", "stopping"):
                 self.stop()
             elif self.hold:
