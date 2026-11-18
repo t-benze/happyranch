@@ -337,8 +337,19 @@ export interface TaskRecallNode {
   brief: string;
   status: TaskStatus;
   output_summary?: string | null;
+  revisit_of_task_id?: string | null;
+  /** THR-358 display-only fan-out pipeline carrier projection. Null/absent
+   * for every other task. `planned_agents` (first leg, then each `then` leg)
+   * and the 0-based `step_index` are null after the chain ended, because the
+   * runtime clears the carrier's active_chain then. */
+  track?: TaskRecallTrack | null;
   children: TaskRecallNode[];
   [extra: string]: unknown;
+}
+
+export interface TaskRecallTrack {
+  planned_agents: string[] | null;
+  step_index: number | null;
 }
 
 // ---------------------------------------------------------------------------

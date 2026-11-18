@@ -1658,6 +1658,7 @@ class TasksMixin:
         ).fetchone()
         if latest is not None:
             verdict = latest["verdict"] if "verdict" in latest.keys() else None
+        children = self.get_children(task.id)
         return {
             "task_id": task.id,
             "parent_task_id": task.parent_task_id,
@@ -1670,8 +1671,53 @@ class TasksMixin:
             "output_summary": task.note,
             "output_dir": task.final_output_dir,
             "verdict": verdict,
-            "children": self.get_children(task.id),
+            "children": children,
+            "track": self._recall_track(task, children, has_result=latest is not None),
         }
+
+    def _recall_track(
+        self, task: TaskRecord, children: list[str], *, has_result: bool,
+    ) -> dict | None:
+        """THR-358 display-only projection of a fan-out pipeline carrier.
+
+        Read-only: it reads existing rows and never writes, repairs or
+        reinterprets chain state.  A carrier is a ``subtask`` that never ran a
+        session (no ``task_results`` row) and whose earliest child is its first
+        leg (same brief and agent, inserted with the carrier).  ``planned_agents``
+        is the step list (first leg agent, then each ``then`` leg agent) while
+        the runtime still holds ``active_chain``; it is ``None`` after the chain
+        ended, because the runtime clears ``active_chain`` then.  ``step_index``
+        is the chain's current 0-based leg index, or ``None`` likewise.
+        """
+        if task.task_type != "subtask" or not children or has_result:
+            return None
+        first = self._conn.execute(
+            "SELECT brief, assigned_agent FROM tasks WHERE id = ?",
+            (children[0],),
+        ).fetchone()
+        if (
+            first is None
+            or first["brief"] != task.brief
+            or first["assigned_agent"] != task.assigned_agent
+        ):
+            return None
+        planned_agents: list[str] | None = None
+        step_index: int | None = None
+        if task.active_chain:
+            try:
+                chain = json.loads(task.active_chain)
+                legs = chain.get("legs") or []
+                agents = [task.assigned_agent] + [leg.get("agent") for leg in legs]
+                index = chain.get("step_index")
+                if (
+                    all(isinstance(a, str) and a for a in agents)
+                    and type(index) is int
+                    and 0 <= index < len(agents)
+                ):
+                    planned_agents, step_index = agents, index
+            except (TypeError, ValueError, AttributeError):
+                planned_agents, step_index = None, None
+        return {"planned_agents": planned_agents, "step_index": step_index}
 
     @_synchronized
     def list_agent_tasks(self, agent: str, limit: int = 50) -> list[TaskRecord]:

@@ -66,7 +66,7 @@ const BADGE_CLASS =
 // (THR-376, Pasture): open/in_progress = info blue, escalated (and its legacy
 // `blocked` alias) and pending = attention amber, completed = positive green,
 // failed = danger red, archived/cancelled/superseded = neutral grey.
-const STATUS_TONE: Record<ThreadStatus | TaskStatus, Tone> = {
+export const STATUS_TONE: Record<ThreadStatus | TaskStatus, Tone> = {
   open: 'info',
   archived: 'neutral',
   pending: 'attention',
