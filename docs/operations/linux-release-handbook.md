@@ -1022,9 +1022,9 @@ fence survive helper restart. Preserve every reservation and uncertain/pending
 fence; do not remove them to retry issuance. Complete list/expiry settlement is
 required. No cleanup or live maintenance command is added.
 
-This is the authorized items 1+2 prefix: issuer state provisioning/owned cleanup
-and local-node mint composition remain undelivered. HomeInviteConfig reader
-moves to 3b-2g-2 because the runtime tailnet endpoint exists only after node
+Items 4 and 5 now deliver inert issuer-directory provisioning/owned cleanup
+and the uncalled local-node mint composition. Activation remains absent.
+HomeInviteConfig reader moves to 3b-2g-2 because the runtime tailnet endpoint exists only after node
 activation and will require a root activation receipt. Both activation refusals,
 unit bytes and home_transport=False remain unchanged. No host install, root,
 real Headscale or systemd acceptance is claimed. See the remote-access contract's
