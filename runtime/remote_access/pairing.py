@@ -545,7 +545,8 @@ class PinnedPairingManager:
         state.invite_record = state.pending_approval = state.delivery = None
         self._delivery.clear()
 
-    def issue_invite_record(self, invite_secret_digest: str, expires_at: datetime) -> int:
+    def issue_invite_record(self, invite_secret_digest: str, expires_at: datetime,
+                            *, expected_generation: int | None = None) -> int:
         """Replace the active ceremony; only the received digest is persisted."""
         from runtime.remote_access.authorization import InviteRecord
         from runtime.remote_access.state_store import _digest
@@ -554,11 +555,51 @@ class PinnedPairingManager:
         if not isinstance(expires_at, datetime) or expires_at.tzinfo is None or not now < expires_at <= now + timedelta(minutes=5):
             raise PairingError("invite_denied")
         with self._lock, self._store.transaction() as tx:
+            self._expect_generation(tx.generation, expected_generation)
             self._burn(tx.state)
             tx.state.invite_record = InviteRecord(invite_secret_digest, expires_at, tx.generation)
             tx.commit()
             self._burned_invite = None
             return tx.generation
+
+    def invalidate_invite(self, *, expected_generation: int) -> int:
+        """Consume the current ceremony, including any undelivered grant."""
+        with self._lock, self._store.transaction() as tx:
+            self._expect_generation(tx.generation, expected_generation)
+            self._burn(tx.state)
+            tx.commit()
+            return tx.generation
+
+    def revoke_all(self, *, expected_generation: int) -> int:
+        """Burn ceremony, then use the existing durable deny/close transaction.
+
+        Each transaction compares the preceding committed generation. A racing
+        external writer refuses rather than inheriting snapshot authority; prior
+        denies are never rolled back. Cleanup failure on one device must not
+        prevent denial and closure of the remaining devices.
+        """
+        if getattr(self._in_revoke, "active", False):
+            raise RuntimeError("re-entrant revocation transaction rejected")
+        with self._lock:
+            with self._store.transaction() as tx:
+                self._expect_generation(tx.generation, expected_generation)
+                devices = tuple(tx.state.devices)
+                self._burn(tx.state)
+                tx.commit()
+                generation = tx.generation
+            failures: list[str] = []
+            epoch = 0
+            for device_id in devices:
+                try:
+                    result = self.revoke_device(device_id, expected_generation=generation)
+                    epoch = result.epoch
+                except RevocationIncomplete as error:
+                    epoch = error.applied_epoch
+                    failures.extend(error.stream_ids)
+                generation += 1
+            if failures:
+                raise RevocationIncomplete(epoch, failures)
+            return generation
 
     def redeem(
         self, invite_secret: str, stable_node_id: str, control_plane_id: str, now: datetime,
