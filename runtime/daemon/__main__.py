@@ -1186,7 +1186,11 @@ def main(argv: list[str] | None = None) -> int:
         _install_signal_handlers(state)
 
         logger.info("HappyRanch daemon listening on %s:%d", settings.daemon_bind_host, port)
-        config = uvicorn.Config(app, log_level="info", lifespan="on")
+        # Bound HTTP/SSE draining before lifespan can send job TERM. Within
+        # the wrappers' 60s, reserve 30s job grace plus finalizers/other drains.
+        config = uvicorn.Config(
+            app, log_level="info", lifespan="on", timeout_graceful_shutdown=5,
+        )
         server = _DiagnosticServer(config, app, startup_origin=startup_origin)
         # Hand the bound socket to uvicorn so we don't race the port number.
         server.run(sockets=[sock])
