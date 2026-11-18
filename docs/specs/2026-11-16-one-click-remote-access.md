@@ -107,16 +107,23 @@ is unchanged; outside-home key delivery remains an open founder/security gate (Â
 | Exact method / polkit action suffix | Effect |
 | --- | --- |
 | `Status()` / none | Bounded redacted phase, readiness, device summaries and selected device; no secrets or mutation. |
+| `StatusV2()` / none | Additive bounded read-only status with separate setup/runtime/invite/address/policy/cleanup observations; Status v1 stays byte-compatible. |
 | `Enable()` / `enable` | Default home-network mode: derive LAN address, install/configure local Headscale/private DERP, locally mint Linux join key, enroll and verify exact system units/READY. Already-ready is inspect-only. |
 | `RefreshHomeAddress()` / `refresh-home-address` | Re-derive LAN address from kernel inventory, renew the leaf/SAN/config with the same private CA, verify readiness; no supplied address or new CA accepted. |
 | `ReplaceFailed()` / `replace-failed` | Replace only a recognized failed/partial installation, with the explicit loss-of-pairings warning and transaction below. |
 | `Disable()` / `disable` | Stop admission, revoke devices, stop/remove owned remote units/config/state/credentials; never stop/delete the release daemon or package. |
 | `IssueInvite()` / `issue-invite` | Home mode: locally mint one-use join key and pairing secret after fresh auth; invalidate old invite, deliver once. |
+| `CancelInvite()` / `cancel-invite` | Fresh auth invalidates the current protected invite in the connector, then expires its key; report network cleanup separately. |
+| `RecoverInvite()` / `recover-invite` | Fresh auth proves no usable key remains and consumes the old ceremony; only a later IssueInvite creates fresh authority. |
 | `RetryPolicyRenewal()` / `retry-policy-renewal` **R2-approved** | Fresh auth retries only the fixed shipped-policy renewal; all readiness gates must pass before access resumes. |
 | `ApprovePending()` / `approve-pending` | Approve the sole redeemed pending identity captured before authentication, then atomically pin and issue its credential. |
 | `RejectPending()` / `reject-pending` | Permanently reject that captured pending identity and consume its invite. |
 | `NextDevice()` / none | Cycle a helper-owned per-bus-caller cursor over the protected device list; select nothing supplied by the caller. |
 | `RevokeSelected()` / `revoke-selected` | Revoke only the selected protected record captured before authentication; close that device's live streams. |
+
+The remaining engineering details are recorded in the contract's
+[Home-network engineering settlements B1â€“B18](../agent-guides/contracts/remote-access-and-remote-jobs.md#home-network-engineering-settlements-b1-b18-thr-327-seq577);
+these settlements preserve the approved behavior and UX and do not claim activation delivery.
 
 Action IDs are exactly `ai.happyranch.remote-access.<suffix>` for authenticated methods. Defaults:
 `allow_any=no`, `allow_inactive=no`, `allow_active=auth_admin`; never `_keep`, wildcard rules,
@@ -678,7 +685,8 @@ FAILED/partial manual installs under `/etc/happyranch`, `/opt/happyranch` and th
 state paths, `ReplaceFailed()` offers one truthful destructive replacement prompt. Recognize only
 bounded known prior unit/config shapes + safe ownership or valid provisioning provenance; never
 execute old config/argv. Stop target, both services and verifier; prove quiescence before changing
-files. Journal intentions and fsync before each fixed-path rename/removal; retain root-only
+replacement files, except that PR1632's validated own-journal pending discard may precede a later
+stop failure. Journal intentions and fsync before each fixed-path rename/removal; retain root-only
 quarantined old configs briefly for diagnosis, never reuse keys, trust or old control settings.
 Generate fresh IDs/config/enrollment and require re-pairing. Never recursively remove `/opt`, the
 dpkg prefix, foreign files, custom units or unknown drop-ins. Unsafe/unrecognized residue produces
