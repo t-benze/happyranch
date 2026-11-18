@@ -42,6 +42,7 @@ import type {
 import { TaskRecallTree } from './TaskRecallTree';
 import { TaskEventsLog } from './TaskEventsLog';
 import { FanoutBand, type FanoutMode } from './FanoutBand';
+import { ExecutionTrackList, isTrackNode } from './ExecutionTracks';
 import {
   parseActiveFanout,
   latestFanoutJoin,
@@ -354,6 +355,11 @@ function SubtaskRow({ node, depth = 0 }: SubtaskRowProps): JSX.Element {
 function ExecutionSubtasks({ recall }: { recall: TaskRecallNode }): JSX.Element {
   const { t } = useTranslation();
   const hasSubtasks = recall.children && recall.children.length > 0;
+  // THR-358: fan-out pipeline carriers render as grouped tracks; ordinary
+  // children keep SubtaskRow unchanged. Without carriers the view is as before.
+  if (hasSubtasks && recall.children.some(isTrackNode)) {
+    return <ExecutionTrackList nodes={recall.children} renderPlain={(c) => <SubtaskRow node={c} />} />;
+  }
   return (
     <section className="mt-6">
       <h3 className="text-text-secondary mb-2 text-xs font-semibold tracking-wider uppercase">
