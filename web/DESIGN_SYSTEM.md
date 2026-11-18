@@ -160,7 +160,8 @@ Feature compositions keep using the stable `@/design-system/...` import paths.
   only) and an optional right-aligned `actions` slot that stacks below the
   text under `sm`. Eyebrow, title and lede are 4px apart (`mt-1`). The page
   keeps its own outer wrapper (border, padding, margin below). Render one
-  `PageTitle` per page so there is one `<h1>`. The Home greeting is not a
+  `PageTitle` per page so there is one `<h1>` (exception: Usage keeps an
+  `sr-only` h1 instead; see Topbar slots below). The Home greeting is not a
   `PageTitle`: it keeps its own `text-display` h1. Do not pass the h1 classes
   through `cn()`: tailwind-merge reads `text-page-title` as a text colour and
   drops it next to `text-text-primary`. The old `PageHeader` (h2, Hanken
@@ -286,6 +287,17 @@ Feature compositions keep using the stable `@/design-system/...` import paths.
   custom skill (solid primary), Export (secondary) and New task in
   `TopbarActions`; Health "Live · polling 15s" and the Usage window label +
   Compare switch in `TopbarStatus`.
+  Narrow screens (PR-S1 R1): from `lg` (1024px) up, status and actions sit
+  inline in the single 56px row; the slot group fills the space between the
+  title and the language/theme controls. Below `lg` the `AppBar` wraps: row 1
+  keeps the title and the language/theme controls at the 56px height, and the
+  slot group moves to a full-width second row (status on the left and allowed
+  to wrap, actions pushed right). The row is hidden while every slot is
+  empty, so pages without slot content keep the plain 56px bar. Do not add
+  per-page breakpoints for slot content; the `AppBar` owns this layout.
+  PageTitle exception: Usage renders no visible `PageTitle`. The `AppBar`
+  title already names the page and its window label + Compare live in
+  `TopbarStatus`, so it keeps a single `sr-only` `<h1>` for assistive tech.
 - The `Sidebar` active nav row follows Pasture `[data-dir="a"]
   .nav-item.active`: `bg-accent-soft text-accent-text font-semibold`, with no
   left bar or border. Nav rows use `text-nav` (13.5px) at weight 500, and the
