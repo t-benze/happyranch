@@ -247,7 +247,11 @@ class Protocol:
                 raise ValueError("invalid helper device")
             # Helper text is HTML-escaped. Decode into bounded plain text only.
             import html
-            return {"label": html.unescape(item["label"]),
+            label = html.unescape(item["label"])
+            encoded_label = label.encode("utf-8")
+            if len(encoded_label) > 256:
+                label = encoded_label[:253].decode("utf-8", errors="ignore") + "…"
+            return {"label": label,
                     "comparisonPhrase": html.unescape(item["comparison_phrase"]) or None}
 
         devices = [device(item) for item in value["devices"]]

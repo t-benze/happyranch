@@ -172,6 +172,12 @@ use real `YYYY-MM-DDTHH:mm:ss[.sss]Z` values. These are first-schema details for
 future native consumers, not a change to an existing native wire contract.
 Native must independently enforce all schema/budget/authority rules.
 
+Linux host display labels are HTML-decoded before bounding: labels within 256
+UTF-8 bytes are unchanged; longer labels keep the longest whole-code-point prefix
+within 253 bytes and append `…` (3 bytes). This applies to devices, pending and
+selected in the public bridge projection only; stored labels and native identity
+are unchanged, and one oversized label does not invalidate host status.
+
 ### JS-facing API (founder THR-379 seq2)
 
 A native-injected object exposes exactly these two functions as the **only page-visible bridge surface**, in the admitted control document's page world only (§4). Its native transport/relay lives in the named isolated world; no facade is injected into runtime, browser, remote, child-frame or replacement documents. The object name is an implementation choice.

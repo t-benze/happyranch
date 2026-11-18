@@ -103,6 +103,24 @@ class ConnectionBoundaryTests(unittest.TestCase):
         self.assertEqual(snapshot["devices"], [{"label": "Computer & desk", "comparisonPhrase": "synthetic phrase"}])
         self.assertNotIn("fingerprint", json.dumps(snapshot))
         self.assertEqual((snapshot["inviteState"], snapshot["expiresAt"]), ("unknown", None))
+        for case, label, expected in (
+                ("86 CJK characters", "界" * 86, "界" * 84 + "…"),
+                ("exactly 256 bytes", "界" * 85 + "a", "界" * 85 + "a"),
+                ("one byte over", "界" * 85 + "ab", "界" * 84 + "…"),
+                ("four-byte split", "😀" * 64 + "a", "😀" * 63 + "…"),
+                ("marker fills bound", "界" * 84 + "ab界", "界" * 84 + "a…"),
+                ("bound after HTML decoding", "界" * 85 + "&amp;", "界" * 85 + "&")):
+            with self.subTest(case=case):
+                labelled = {**device, "label": label}
+                snapshot = self.protocol.host(json.dumps(
+                    {**raw, "devices": [device, labelled], "pending": labelled, "selected": labelled}))
+                projected = {"label": expected, "comparisonPhrase": "synthetic phrase"}
+                self.assertEqual(snapshot["devices"], [
+                    {"label": "Computer & desk", "comparisonPhrase": "synthetic phrase"}, projected])
+                self.assertEqual(snapshot["pending"], projected)
+                self.assertEqual(snapshot["selected"], projected)
+                self.assertEqual((snapshot["runtime"], snapshot["observation"]), ("offline", "known"))
+                self.assertLessEqual(len(snapshot["selected"]["label"].encode("utf-8")), 256)
         raw["devices"][0]["label"] = "\u202ebidi"
         with self.assertRaises(ValueError):
             self.protocol.host(json.dumps(raw))

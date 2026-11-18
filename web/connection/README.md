@@ -154,6 +154,10 @@ advertises Linux host and client roles, only `host.status` available, all mutati
 unavailable, and limited observations. Status calls the existing helper `Status`
 with zero inputs, no interactive authorization, on a dedicated D-Bus connection.
 Only bounded public label/phrase fields are projected; fingerprints are omitted.
+After HTML decoding, Linux host labels within 256 UTF-8 bytes are unchanged;
+longer labels keep the longest whole-code-point prefix within 253 bytes plus `…`
+(3 bytes), for devices, pending and selected. Only the public display projection
+is truncated; stored labels and native identity are unchanged.
 Linux `client.status` returns a closed unavailable error (slice 3a is pending).
 No status event source exists in this helper seam, so this slice emits no events;
 `on` accepts the two fixed names and returns an idempotent unsubscribe. No invite,
