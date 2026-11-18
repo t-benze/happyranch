@@ -179,10 +179,18 @@ is reported as an active invite only when native reports `issued`. Recovery
 (`explicitRetry`/`nativePermission`) retries the same command only while the
 same pending request or selected device is still current; otherwise it says the
 record changed. After every action the view rereads `host.status`; it never edits
-lists optimistically. NextDevice's returned snapshot is applied under the same
-fence. Status reads and role loads use the same role-selection and
-native-observation revision fence as the client view, so stale replies never
-override newer native state. Missing capabilities hide their control with one
+lists optimistically. NextDevice's returned snapshot is applied only if no
+observation or read arrived while it was pending (the revision captured at
+dispatch); an overtaken reply is discarded and does not count as an observation.
+Status reads and role loads use the same role-selection and native-observation
+revision fence as the client view, so stale replies never override newer native
+state. Every accepted host snapshot (events, role loads, Check again/after-action
+rereads and NextDevice) goes through the shell's single observation owner, so the
+runtime status line and its polite announcement always match the card. If an
+action's effect is unknown and the reread fails, the retained snapshot is shown
+as not confirmed (Not confirmed badge/title, lifecycle and device controls
+hidden, the original outcome kept, Check again offered) until a later
+authoritative observation arrives; the native snapshot itself is not altered. Missing capabilities hide their control with one
 update note; a plain browser still hides the feature. en/zh-CN, keyboard order,
 focus restoration, `aria-disabled` while an action is pending and one polite live
 region (keyed by phase, record and outcome identity, silent on language change)

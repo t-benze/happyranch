@@ -109,6 +109,7 @@ clientView.root.hidden = true;
 const hostView = new HostView({
   connection: () => connection, locale: () => locale,
   current: () => !ended && role === 'host' && connection !== null,
+  observe: (snapshot) => { observe(snapshot); },
 });
 hostView.root.hidden = true;
 const roleButtons = new Map<'host' | 'client', HTMLButtonElement>();

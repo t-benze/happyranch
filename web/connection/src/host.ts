@@ -17,7 +17,9 @@ type Command = 'host.enable' | 'host.turnOff' | 'host.createInvite' | 'host.appr
 type Confirmable = 'host.turnOff' | 'host.revokeDevice';
 // raw is the native device label captured when the action was requested.
 interface Outcome { command: Command; raw: string | null; result?: ActionResult; error?: Failure; read?: Failure }
-interface Context { connection: () => Connection | null; locale: () => Locale; current: () => boolean }
+// observe is the shell's single observation owner: it updates the runtime line
+// and then calls update(), so card and shell never disagree.
+interface Context { connection: () => Connection | null; locale: () => Locale; current: () => boolean; observe: (snapshot: HostSnapshot) => void }
 
 const actionName: Record<Command, Key> = {
   'host.enable': 'hTurnOn', 'host.turnOff': 'hTurnOff', 'host.createInvite': 'hAddDevice',
@@ -51,6 +53,9 @@ export class HostView {
   // completed mutation and role (re)load bumps the revision; the newest wins.
   private revision = 0;
   private selection = 0;
+  // Set when an action's effect is uncertain and the reread failed: the retained
+  // snapshot no longer proves the current state. Only a later observation clears it.
+  private unconfirmed = false;
 
   constructor(private readonly context: Context) {
     this.root.className = 'card host';
@@ -63,7 +68,7 @@ export class HostView {
 
   fence(): number { return ++this.revision; }
   latest(token: number): boolean { return token === this.revision; }
-  reset(): void { this.selection++; this.revision++; this.confirm = null; this.outcome = null; }
+  reset(): void { this.selection++; this.revision++; this.confirm = null; this.outcome = null; this.unconfirmed = false; }
 
   private copy(): Copy { return catalogs[this.context.locale()]; }
   private t(key: Key, values: Record<string, string> = {}): string {
@@ -85,6 +90,7 @@ export class HostView {
   update(snapshot: HostSnapshot): void {
     this.revision++;
     this.snapshot = snapshot;
+    this.unconfirmed = false;
     // A confirmation is bound to the record/state it was opened for.
     const phase = this.phase();
     if (this.confirm?.command === 'host.revokeDevice' && (this.selectedLabel() !== this.confirm.raw || phase !== 'ready' && phase !== 'paused')) this.confirm = null;
@@ -105,14 +111,17 @@ export class HostView {
     try {
       const raw = await connection.call('host.status', '{}');
       if (!live()) return;
-      this.update(JSON.parse(raw) as HostSnapshot);
+      if (origin) origin.read = undefined;
+      this.context.observe(JSON.parse(raw) as HostSnapshot);
     } catch (error) {
       if (!live()) return;
       failure = parseFailure(error);
     }
     if (failure) {
-      if (origin && this.outcome === origin) { origin.read = failure; this.serial++; }
-      else if (!origin) this.setOutcome({ command: 'host.status', raw: null, error: failure });
+      if (origin && this.outcome === origin) {
+        origin.read = failure; this.serial++;
+        if (origin.result?.effect === 'unknown' || origin.error?.effect === 'unknown') this.unconfirmed = true;
+      } else if (!origin) this.setOutcome({ command: 'host.status', raw: null, error: failure });
     }
     this.render();
   }
@@ -121,8 +130,16 @@ export class HostView {
     const connection = this.context.connection();
     if (!connection) return;
     this.confirm = null;
-    if (command === 'host.status') { this.outcome = null; this.render(); await this.refresh(null); return; }
+    if (command === 'host.status') {
+      // While unconfirmed, Check again keeps the uncertain outcome it is resolving.
+      const origin = this.unconfirmed ? this.outcome : null;
+      if (!origin) this.outcome = null;
+      this.render(); await this.refresh(origin); return;
+    }
     const selection = this.selection;
+    // Observation revision at dispatch: a NextDevice reply overtaken by a newer
+    // observation or read is discarded and is not counted as an observation.
+    const before = this.revision;
     this.pending = command;
     this.outcome = null;
     this.render();
@@ -135,9 +152,12 @@ export class HostView {
     } catch (error) { outcome = { command, raw, error: parseFailure(error) }; }
     this.pending = null;
     if (!this.context.current() || this.selection !== selection) return;
+    if (selected) {
+      if (this.latest(before)) this.context.observe(selected); else this.render();
+      return;
+    }
     // A completed mutation supersedes every read started before it.
     this.fence();
-    if (selected) { this.update(selected); return; }
     this.setOutcome(outcome);
     this.render();
     // Reread native state after every mutation; never edit lists optimistically.
@@ -344,14 +364,17 @@ export class HostView {
       failed: 'hTitleFailed', unknown: 'hTitleUnknown' }[phase] as Key;
     let lead: Key = { off: 'hLeadOff', pending: 'hLeadPending', ready: 'hLeadReady', paused: 'hLeadPaused',
       failed: 'hLeadFailed', unknown: 'hLeadUnknown' }[phase] as Key;
-    if (pending !== null) { badge = ['hBadgeApproval', 'attention']; titleKey = 'hTitleRequest'; lead = 'hLeadRequest'; }
+    if (this.unconfirmed) lead = 'hLeadUnconfirmed';
+    else if (pending !== null) { badge = ['hBadgeApproval', 'attention']; titleKey = 'hTitleRequest'; lead = 'hLeadRequest'; }
     else if (phase === 'ready' && (runtime === 'offline' || runtime === 'restarting')) {
       badge = [runtime === 'offline' ? 'hBadgeOffline' : 'hBadgeRestarting', 'attention'];
       titleKey = runtime === 'offline' ? 'hTitleOffline' : 'hTitleRestarting'; lead = 'hLeadOffline';
     } else if (phase === 'ready' && issued) { badge = ['hBadgeInvite', 'progress']; titleKey = 'hInviteActive'; lead = 'hInviteNative'; }
     nodes.push(this.text('p', this.t(lead)));
     if (snapshot.observation === 'stale' && !this.limited('observation')) nodes.push(this.notice(this.t('hStale'), 'attention'));
-    nodes.push(...this.outcomeNodes());
+    const outcomeNodes = this.outcomeNodes();
+    nodes.push(...outcomeNodes);
+    const outcomeCheck = outcomeNodes.some((node) => node.querySelector('[data-focus-key="outcome:check"]'));
     const confirming = this.confirm !== null;
     nodes.push(...this.confirmation());
     const buttons: (HTMLButtonElement | null)[] = [];
@@ -363,7 +386,7 @@ export class HostView {
     }
     if (phase === 'ready') nodes.push(...this.invite());
     if (phase === 'ready' && pending === null && !issued && !confirming) buttons.push(this.gate('host.createInvite', () => this.button('host.createInvite', 'hAddDevice', { primary: true })));
-    if (phase === 'pending' || phase === 'failed' || phase === 'unknown' || phase === 'paused') buttons.push(this.has('host.status') ? this.button('host.status', 'checkAgain') : null);
+    if ((phase === 'pending' || phase === 'failed' || phase === 'unknown' || phase === 'paused') && !(this.unconfirmed && outcomeCheck)) buttons.push(this.has('host.status') ? this.button('host.status', 'checkAgain') : null);
     nodes.push(...this.actions(buttons));
     if (buttons.some((node) => node && node.dataset.focusKey !== 'host.status:checkAgain')) nodes.push(this.text('p', this.t('systemAsks'), 'hint'));
     if (phase === 'pending') nodes.push(this.text('p', this.t('hCancelNative'), 'hint'));
@@ -380,7 +403,9 @@ export class HostView {
 
   render(): void {
     if (!this.snapshot) return;
-    const phase = this.phase();
+    // Unconfirmed presents as not confirmed (no lifecycle controls) without
+    // changing the retained native snapshot.
+    const phase: Phase = this.unconfirmed ? 'unknown' : this.phase();
     const focused = document.activeElement instanceof HTMLElement && this.root.contains(document.activeElement)
       ? document.activeElement.dataset.focusKey ?? (document.activeElement.id === 'host-title' ? 'title' : null) : null;
     this.gated = false;
@@ -399,10 +424,11 @@ export class HostView {
     // One polite announcement per phase/record/outcome identity; language switches are silent.
     const outcomeText = nodes.flatMap((node) => [node, ...node.querySelectorAll<HTMLElement>('.notice')])
       .filter((node) => node.dataset.outcome === 'true').map((node) => node.textContent).join(' ');
-    const selected = this.selectedLabel();
+    // An unconfirmed snapshot's records are not announced as current.
+    const selected = this.unconfirmed ? null : this.selectedLabel();
     const outcome = this.outcome;
     const identity = outcome && outcomeText ? `${this.serial}:${outcome.command}:${outcome.result?.effect ?? outcome.error?.code ?? ''}:${outcome.read?.code ?? ''}` : '';
-    const key = `${phase}|${badge[0]}|${this.pendingLabel() ?? ''}|${selected ?? ''}|${this.confirm?.command ?? ''}|${identity}`;
+    const key = `${phase}|${badge[0]}|${this.unconfirmed ? '' : this.pendingLabel() ?? ''}|${selected ?? ''}|${this.confirm?.command ?? ''}|${identity}`;
     if (key !== this.announced) {
       this.announced = key;
       const confirmText = this.confirm ? nodes.find((node) => node.classList.contains('confirm'))?.querySelector('strong')?.textContent : null;
