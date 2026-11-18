@@ -35,7 +35,7 @@ root = pathlib.Path(__file__).parent.parent
 raw = sys.stdin.buffer.read(4)
 size = struct.unpack('!I', raw)[0]
 launch = json.loads(sys.stdin.buffer.read(size))
-(root / 'launch.json').write_text(json.dumps(dict(launch=launch, env=dict(os.environ), argv=sys.argv[1:])))
+(root / 'launch.json').write_text(json.dumps(dict(launch=launch, env=sorted(os.environ), argv=sys.argv[1:])))
 config = json.loads((root / 'config.json').read_text())
 if config.get('stubborn'):
     signal.signal(signal.SIGTERM, signal.SIG_IGN)
@@ -271,7 +271,8 @@ class ClientTests(unittest.TestCase):
         def late(sock: socket.socket) -> None:
             arrived.set()
             self.release.wait(3)
-            sock.sendall(b'HTTP/1.1 200 OK\r\nContent-Length: 88\r\n\r\n' + json.dumps(dict(credential=BEARER)).encode())
+            payload = json.dumps(dict(credential=BEARER)).encode()
+            sock.sendall(f'HTTP/1.1 200 OK\r\nContent-Length: {len(payload)}\r\n\r\n'.encode() + payload)
         self.responses[b'/pair/complete'] = late
         errors = []
         def complete() -> None:
