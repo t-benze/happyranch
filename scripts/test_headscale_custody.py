@@ -5,9 +5,11 @@ Run: uv run --frozen --python /usr/bin/python3 pytest scripts/test_headscale_cus
 from __future__ import annotations
 
 import errno
+import hashlib
 import json
 import os
 import socket
+import struct
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -16,6 +18,9 @@ import pytest
 from runtime.remote_access import headscale_service as home
 from runtime.remote_access import installer as module
 from runtime.remote_access import systemd_unit
+
+PUBLICATION = "headscale-publication.json"
+CONFIG_FILES = ("config.yaml", "derp.yaml")
 
 EXPECTED_POLICY = b'''{
   "acls": [
@@ -83,6 +88,9 @@ class Fixture:
         self.present = False
         self.group_present = False
         self.calls: list[list[str]] = []
+        self.dial_ip = "192.168.1.40"
+        self.preflights: list[str] = []
+        self.kernel_case = "single"
         self.uid, self.gid = os.getuid(), os.getgid()
         self.user = SimpleNamespace(pw_name=home.ACCOUNT, pw_uid=self.uid, pw_gid=self.gid,
                                     pw_dir="/nonexistent", pw_shell="/usr/sbin/nologin")
@@ -185,9 +193,65 @@ class Fixture:
         return self.root / "var/lib/happyranch-remote-access/headscale-account.json"
 
 
+def nla(kind: int, data: bytes) -> bytes:
+    length = len(data) + 4
+    return struct.pack("=HH", length, kind) + data + bytes((-length) % 4)
+
+
+class KernelDump:
+    """Synthetic Linux UAPI frames, never source-selection/publication logic."""
+
+    def __init__(self, fixture: Fixture, args: tuple) -> None:
+        assert args == (socket.AF_NETLINK, socket.SOCK_RAW, socket.NETLINK_ROUTE)
+        self.fixture = fixture
+
+    def __enter__(self): return self
+    def __exit__(self, *args): pass
+    def bind(self, address): assert address == (0, 0)
+    def settimeout(self, timeout): assert 0 < timeout <= 6
+
+    def sendto(self, packet, address):
+        assert address == (0, 0)
+        _, request, _, self.sequence, _ = struct.unpack_from("=IHHII", packet)
+        self.response = {18: 16, 22: 20, 26: 24}[request]
+        return len(packet)
+
+    def recvmsg(self, limit):
+        value, case = self.fixture, self.fixture.kernel_case
+        address = socket.inet_pton(socket.AF_INET, value.dial_ip)
+        link = struct.pack("=BBHiII", 0, 0, 1, 2, 0 if case == "down" else 9 if case == "loopback" else 1, 0)
+        addr = struct.pack("=BBBBI", socket.AF_INET, 24, 0, 0, 2) + nla(2, address)
+        route = struct.pack("=BBBBBBBBI", socket.AF_INET, 0, 0, 0, 254, 4, 0, 1, 0)
+        source = b"" if case == "unresolved" else nla(7, address)
+        route += source
+        if case == "ecmp":
+            route += nla(9, struct.pack("=HBBi", 8, 0, 0, 2) * 2)
+        else:
+            route += nla(4, struct.pack("=I", 99 if case == "unknown-interface" else 2))
+        bodies = {16: [link], 20: [addr], 24: [] if case == "no-route" else [route]}
+        if case == "duplicate-interface": bodies[16].append(link)
+        if case == "unresolved-second":
+            bodies[24].append(struct.pack("=BBBBBBBBI", socket.AF_INET, 0, 0, 0, 254, 4, 0, 1, 0)
+                              + nla(4, struct.pack("=I", 2)))
+        if case == "ipv6":
+            ipv6 = socket.inet_pton(socket.AF_INET6, "2001:db8::2")
+            bodies[20].append(struct.pack("=BBBBI", socket.AF_INET6, 64, 0, 0, 2) + nla(1, ipv6))
+            bodies[24].append(struct.pack("=BBBBBBBBI", socket.AF_INET6, 0, 0, 0, 254, 4, 0, 1, 0)
+                              + nla(4, struct.pack("=I", 2)) + nla(7, ipv6))
+        def message(kind, body, flags=2):
+            return struct.pack("=IHHII", 16 + len(body), kind, flags, self.sequence, 0) + body
+        frames = b"".join(message(self.response, body) for body in bodies[self.response])
+        frames += message(3, struct.pack("=i", 0), 0x10 if case == "interrupted" else 2)
+        if case == "error": frames = message(2, struct.pack("=i", -1))
+        return frames, [], socket.MSG_TRUNC if case == "truncated" else 0, (0, 0)
+
+
 @pytest.fixture
-def fixture(tmp_path: Path) -> Fixture:
-    return Fixture(tmp_path)
+def fixture(tmp_path: Path, monkeypatch) -> Fixture:
+    value = Fixture(tmp_path)
+    monkeypatch.setattr(home.socket, "socket", lambda *args: KernelDump(value, args))
+    monkeypatch.setattr(home, "preflight_ports", value.preflights.append)
+    return value
 
 
 def test_created_receipt_custody_and_inert_unit(fixture, monkeypatch, capsys) -> None:
@@ -209,8 +273,9 @@ def test_created_receipt_custody_and_inert_unit(fixture, monkeypatch, capsys) ->
     assert unit.read_bytes() == EXPECTED_UNIT.encode()
     assert unit.stat().st_mode & 0o777 == 0o644
     assert [args[0] for args in fixture.calls].count("useradd") == 1
-    assert set(args[0] for args in fixture.calls) == {"useradd", "getent", "passwd"}
-    assert sorted(p.name for p in policy.parent.iterdir()) == ["policy.hujson"]
+    assert set(args[0] for args in fixture.calls) == {"useradd", "getent", "passwd", "systemctl", "ps"}
+    assert all(args[0] != "systemctl" or args[1] == "show" for args in fixture.calls)
+    assert sorted(p.name for p in policy.parent.iterdir()) == ["config.yaml", "derp.yaml", "policy.hujson"]
     assert not list((fixture.root / "var/lib/happyranch-headscale").iterdir())
     assert fixture.prepare(monkeypatch, capsys)[0] == 0
     assert [args[0] for args in fixture.calls].count("useradd") == 1
@@ -223,10 +288,11 @@ def test_expected_account_without_receipt_is_unowned(fixture, monkeypatch, capsy
     assert json.loads(output)["account"] == "unowned"
     assert json.loads(output)["preservation"] == "preserved: not created by HappyRanch"
     assert not fixture.receipt().exists()
-    assert all(args[0] in {"getent", "passwd"} for args in fixture.calls)
+    assert all(args[0] in {"getent", "passwd", "systemctl", "ps"} for args in fixture.calls)
+    assert all(args[0] != "systemctl" or args[1] == "show" for args in fixture.calls)
     code, output = fixture.cleanup(monkeypatch, capsys)
     assert code == 0 and json.loads(output) == {
-        "state": "preserved", "account": "preserved: not created by HappyRanch"}
+        "state": "preserved", "account": "preserved: not created by HappyRanch", "home_ca": "preserved"}
     assert fixture.present and fixture.group_present and not fixture.receipt().exists()
     assert not any(args[0] in {"userdel", "groupdel", "useradd"} for args in fixture.calls)
 
@@ -291,7 +357,8 @@ def test_crash_after_useradd_becomes_unowned(fixture, monkeypatch, capsys) -> No
     code, output = fixture.prepare(monkeypatch, capsys)
     assert code == 0 and json.loads(output)["account"] == "unowned"
     assert not fixture.receipt().exists()
-    assert all(args[0] in {"getent", "passwd"} for args in fixture.calls)
+    assert all(args[0] in {"getent", "passwd", "systemctl", "ps"} for args in fixture.calls)
+    assert all(args[0] != "systemctl" or args[1] == "show" for args in fixture.calls)
     code, output = fixture.cleanup(monkeypatch, capsys)
     assert code == 0 and json.loads(output)["account"] == "preserved: not created by HappyRanch"
     assert fixture.present and fixture.group_present and not fixture.receipt().exists()
@@ -466,7 +533,7 @@ def test_foreign_custody_preserved(fixture, monkeypatch, capsys, entry) -> None:
         assert fixture.present and fixture.group_present
         assert fixture.receipt().exists() == (account != "unowned")
         assert (fixture.root / "etc/systemd/system" / home.UNIT).read_bytes() == EXPECTED_UNIT.encode()
-        assert not any(args[0] == "systemctl" for args in fixture.calls)
+        assert all(args[0] != "systemctl" or args[1] == "show" for args in fixture.calls)
         return
     assert code == 1 and ("foreign-" in output or "custody-uncertain" in output)
     if entry.startswith(("load:", "prelink:")):
@@ -578,7 +645,9 @@ def test_cleanup_receipted_transitions(fixture, monkeypatch, capsys, command, ca
     if case in {"objects-absent", "unit-absent"}:
         (fixture.root / "etc/systemd/system" / home.UNIT).unlink()
     if case == "objects-absent":
-        (fixture.root / home.CUSTODY[0] / "policy.hujson").unlink()
+        for name in ("policy.hujson", *CONFIG_FILES):
+            (fixture.root / home.CUSTODY[0] / name).unlink()
+        (fixture.receipt().parent / PUBLICATION).unlink()
         for path in home.CUSTODY: (fixture.root / path).rmdir()
     if case == "retry-group-member": fixture.group.gr_mem = ["other"]
     if case == "retry-gid-changed": fixture.group.gr_gid += 1
@@ -627,7 +696,8 @@ def test_cleanup_receipted_transitions(fixture, monkeypatch, capsys, command, ca
     if case in {"created", "both-absent", "objects-absent", "unit-absent", "unrelated-links",
                 "merged-usr-relative", "merged-usr-absolute"}:
         assert code == 0 and output.strip(), output
-        assert json.loads(output) == {"state": "removed", "account": "removed"}
+        assert json.loads(output) == {"state": "removed", "account": "removed",
+                                      **({"home_ca": "preserved"} if case != "objects-absent" else {})}
         assert deletion == ([] if case in {"both-absent", "objects-absent"} else ["userdel", "groupdel"])
     else:
         assert code == 1 and "cleanup-uncertain" in output
@@ -660,3 +730,219 @@ def test_cleanup_receipted_transitions(fixture, monkeypatch, capsys, command, ca
     if case in {"merged-usr-relative", "merged-usr-absolute"}:
         assert os.readlink(fixture.root / "lib") == ("usr/lib" if case.endswith("relative") else "/usr/lib")
     assert not any(args[0] == "systemctl" and args[1] in {"start", "enable", "restart"} for args in fixture.calls)
+
+
+@pytest.mark.parametrize("case,category", [
+    ("ecmp", "multiple_addresses"), ("ipv6", "dial_ip"),
+    ("unresolved", "inventory"), ("unresolved-second", "inventory"), ("unknown-interface", "inventory"),
+    ("down", "no_address"), ("loopback", "no_address"),
+    ("duplicate-interface", "inventory"), ("interrupted", "inventory"),
+    ("error", "inventory"), ("truncated", "inventory"), ("no-route", "no_address"),
+])
+def test_kernel_inventory_refuses_before_publication(fixture, monkeypatch, capsys, case, category) -> None:
+    fixture.kernel_case = case
+    code, output = fixture.prepare(monkeypatch, capsys)
+    assert code == 1 and category in output
+    assert not fixture.preflights
+    assert not fixture.receipt().exists()
+    assert not (fixture.root / "etc/happyranch").exists()
+    assert fixture.calls == []
+
+
+def test_config_publication_idempotency_and_address_change(fixture, monkeypatch, capsys) -> None:
+    assert fixture.prepare(monkeypatch, capsys)[0] == 0
+    root = fixture.root / home.CUSTODY[0]
+    config, derp = root / "config.yaml", root / "derp.yaml"
+    assert config.is_file() and derp.is_file()
+    assert b"listen_addr: 192.168.1.40:8443\n" in config.read_bytes()
+    assert b"ipv4: 192.168.1.40\n" in derp.read_bytes()
+    receipt = fixture.receipt().parent / PUBLICATION
+    record = json.loads(receipt.read_bytes())
+    assert record == {"version": 1, "uid": fixture.uid, "gid": fixture.gid, "dial_ip": "192.168.1.40",
+                      "files": {f"/{home.CUSTODY[0]}/{p.name}": hashlib.sha256(p.read_bytes()).hexdigest()
+                                for p in (config, derp)}}
+    paths = (config, derp, receipt)
+    before = [(p.read_bytes(), p.stat()) for p in paths]
+    assert all((p.stat().st_uid, p.stat().st_gid, p.stat().st_mode & 0o7777, p.stat().st_nlink)
+               == (fixture.uid, fixture.gid, 0o600, 1) for p in paths)
+    assert fixture.prepare(monkeypatch, capsys)[0] == 0
+    assert [(p.read_bytes(), p.stat()) for p in paths] == before
+    fixture.dial_ip = "192.168.1.41"
+    code, output = fixture.prepare(monkeypatch, capsys)
+    assert code == 1 and "address-changed" in output
+    assert [(p.read_bytes(), p.stat()) for p in paths] == before
+    assert fixture.preflights == ["192.168.1.40", "192.168.1.40"]
+    assert all(args[0] != "systemctl" or args[1] == "show" for args in fixture.calls)
+    assert (fixture.root / "etc/systemd/system" / home.UNIT).read_bytes() == EXPECTED_UNIT.encode()
+    assert not (root / "server.key").exists()
+    assert not (fixture.root / "etc/happyranch/control-ca.pem").exists()
+
+
+@pytest.mark.parametrize("name", ["config.yaml", "derp.yaml", PUBLICATION])
+@pytest.mark.parametrize("tamper", ["bytes", "mode", "link", "hardlink", "pending", "missing"])
+def test_publication_tamper_is_preserved(fixture, monkeypatch, capsys, name, tamper) -> None:
+    assert fixture.prepare(monkeypatch, capsys)[0] == 0
+    parent = fixture.receipt().parent if name == PUBLICATION else fixture.root / home.CUSTODY[0]
+    path = parent / name
+    assert path.is_file()
+    if tamper == "bytes": path.write_bytes(b"synthetic foreign bytes")
+    if tamper == "mode": path.chmod(0o640)
+    if tamper == "link":
+        path.rename(parent / "foreign")
+        path.symlink_to("foreign")
+    if tamper == "hardlink": os.link(path, parent / "foreign")
+    if tamper == "pending": (parent / ("." + name + ".pending")).write_bytes(b"synthetic pending")
+    if tamper == "missing": path.unlink()
+    def snapshot():
+        return {str(p.relative_to(fixture.root)): (p.lstat().st_mode, p.lstat().st_ino,
+                os.readlink(p) if p.is_symlink() else p.read_bytes() if p.is_file() else None)
+                for p in fixture.root.rglob("*")}
+    before = snapshot()
+    fixture.calls.clear()
+    code, output = fixture.prepare(monkeypatch, capsys)
+    assert code == 1 and "synthetic" not in output
+    assert snapshot() == before
+    code, output = fixture.cleanup(monkeypatch, capsys)
+    assert code == 1 and "cleanup-uncertain" in output
+    assert snapshot() == before
+    assert not any(args[0] in {"useradd", "userdel", "groupdel", "systemctl"} for args in fixture.calls)
+
+
+@pytest.mark.parametrize("crash", ["config.yaml", "derp.yaml", PUBLICATION])
+def test_interrupted_publication_is_never_adopted(fixture, monkeypatch, capsys, crash) -> None:
+    original = fixture.installer._write_provision_file
+    def interrupted(name, *args, **kwargs):
+        original(name, *args, **kwargs)
+        if name == crash: raise OSError("synthetic crash")
+    with monkeypatch.context() as patch:
+        patch.setattr(fixture.installer, "_write_provision_file", interrupted)
+        assert fixture.prepare(monkeypatch, capsys)[0] == 1
+    # A durable final receipt is the commit point; lost success is idempotent.
+    code, output = fixture.prepare(monkeypatch, capsys)
+    assert code == (0 if crash == PUBLICATION else 1)
+    if crash != PUBLICATION:
+        fixture.calls.clear()
+        code, output = fixture.cleanup(monkeypatch, capsys)
+        assert code == 1 and "cleanup-uncertain" in output
+        assert not any(args[0] in {"userdel", "groupdel", "systemctl"} for args in fixture.calls)
+
+
+def test_publication_cleanup_preserves_ca_staging(fixture, monkeypatch, capsys) -> None:
+    assert fixture.prepare(monkeypatch, capsys)[0] == 0
+    staging = fixture.receipt().parent / "home-ca"
+    staging.mkdir(mode=0o700)
+    key = staging / "ca.key"
+    key.write_bytes(b"synthetic private staging")
+    key.chmod(0o600)
+    before = key.read_bytes(), key.stat()
+    code, output = fixture.cleanup(monkeypatch, capsys)
+    assert code == 0 and json.loads(output)["home_ca"] == "preserved"
+    assert (key.read_bytes(), key.stat()) == before
+    assert not (fixture.root / home.CUSTODY[0]).exists()
+    assert not (fixture.receipt().parent / PUBLICATION).exists()
+
+
+def test_port_preflight_precedes_all_publication(fixture, monkeypatch, capsys) -> None:
+    def occupied(address):
+        assert address == "192.168.1.40"
+        assert not fixture.receipt().exists()
+        assert not (fixture.root / "etc/happyranch").exists()
+        raise home.HeadscaleServiceError("occupied-port")
+    monkeypatch.setattr(home, "preflight_ports", occupied)
+    code, output = fixture.prepare(monkeypatch, capsys)
+    assert code == 1 and "occupied-port" in output
+    assert not fixture.receipt().exists()
+    assert fixture.calls == []
+
+
+@pytest.mark.parametrize("name", ["config.yaml", "derp.yaml", PUBLICATION])
+def test_publication_never_replaces_late_foreign_inode(fixture, monkeypatch, capsys, name) -> None:
+    rename = fixture.installer._rename_provision_entry
+    def arrive(parent, source, target, **kwargs):
+        if target == name:
+            fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=parent)
+            with os.fdopen(fd, "wb") as stream: stream.write(b"synthetic late foreign")
+        rename(parent, source, target, **kwargs)
+    monkeypatch.setattr(fixture.installer, "_rename_provision_entry", arrive)
+    code, output = fixture.prepare(monkeypatch, capsys)
+    assert code == 1 and "synthetic" not in output
+    parent = fixture.receipt().parent if name == PUBLICATION else fixture.root / home.CUSTODY[0]
+    assert (parent / name).read_bytes() == b"synthetic late foreign"
+
+
+@pytest.mark.parametrize("parent", [home.CUSTODY[0], home.INSTALLER_STATE])
+@pytest.mark.parametrize("tamper", ["mode", "link"])
+def test_publication_parent_custody_is_preserved(fixture, monkeypatch, capsys, parent, tamper) -> None:
+    assert fixture.prepare(monkeypatch, capsys)[0] == 0
+    path = fixture.root / parent
+    if tamper == "mode": path.chmod(0o755)
+    else:
+        path.rename(path.with_name(path.name + "-foreign"))
+        path.symlink_to(path.name + "-foreign", target_is_directory=True)
+    before = path.lstat()
+    fixture.calls.clear()
+    assert fixture.prepare(monkeypatch, capsys)[0] == 1
+    code, output = fixture.cleanup(monkeypatch, capsys)
+    assert code == 1 and "cleanup-uncertain" in output
+    after = path.lstat()
+    assert (before.st_ino, before.st_mode) == (after.st_ino, after.st_mode)
+    assert not any(args[0] in {"userdel", "groupdel", "systemctl"} for args in fixture.calls)
+
+
+@pytest.mark.parametrize("name", ["config.yaml", "derp.yaml"])
+def test_cleanup_interruption_keeps_receipt_and_refuses_retry(fixture, monkeypatch, capsys, name) -> None:
+    assert fixture.prepare(monkeypatch, capsys)[0] == 0
+    receipt = fixture.receipt().parent / PUBLICATION
+    assert receipt.is_file()
+    original = receipt.read_bytes()
+    unlink = os.unlink
+    def interrupted(path, *args, **kwargs):
+        unlink(path, *args, **kwargs)
+        if path == name: raise OSError("synthetic lost cleanup")
+    with monkeypatch.context() as patch:
+        patch.setattr(module.os, "unlink", interrupted)
+        code, output = fixture.cleanup(monkeypatch, capsys)
+    assert code == 1 and "partial-cleanup-uncertain" in output
+    assert receipt.read_bytes() == original
+    assert fixture.present and fixture.group_present
+    fixture.calls.clear()
+    code, output = fixture.cleanup(monkeypatch, capsys)
+    assert code == 1 and "cleanup-uncertain" in output
+    assert receipt.read_bytes() == original
+    assert not any(args[0] in {"userdel", "groupdel", "systemctl"} for args in fixture.calls)
+
+
+@pytest.mark.parametrize("busy", ["uid", "unit"])
+def test_preparation_never_adopts_running_service(fixture, monkeypatch, capsys, busy) -> None:
+    fixture.present = fixture.group_present = True
+    fixture.busy, fixture.unit_busy = busy == "uid", busy == "unit"
+    code, output = fixture.prepare(monkeypatch, capsys)
+    assert code == 1 and "cleanup-uncertain" in output
+    assert not fixture.receipt().exists()
+    assert not (fixture.root / "etc/happyranch").exists()
+    assert all(args[0] != "systemctl" or args[1] == "show" for args in fixture.calls)
+
+
+@pytest.mark.parametrize("tamper", ["uid", "gid", "bool-id", "version", "path", "digest", "address", "extra"])
+def test_publication_receipt_binds_exact_identity_and_files(fixture, monkeypatch, capsys, tamper) -> None:
+    assert fixture.prepare(monkeypatch, capsys)[0] == 0
+    receipt = fixture.receipt().parent / PUBLICATION
+    assert receipt.is_file()
+    record = json.loads(receipt.read_bytes())
+    if tamper in {"uid", "gid"}: record[tamper] += 1
+    if tamper == "bool-id": record["uid"] = True
+    if tamper == "version": record["version"] = True
+    if tamper == "path": record["files"]["/foreign/config.yaml"] = record["files"].pop("/etc/happyranch/headscale/config.yaml")
+    if tamper == "digest": record["files"]["/etc/happyranch/headscale/config.yaml"] = "0" * 64
+    if tamper == "address": record["dial_ip"] = "192.168.1.41"
+    if tamper == "extra": record["extra"] = "synthetic private diagnostic"
+    receipt.write_text(json.dumps(record))
+    before = receipt.read_bytes(), receipt.stat()
+    fixture.calls.clear()
+    code, output = fixture.prepare(monkeypatch, capsys)
+    assert code == 1 and "synthetic" not in output
+    code, output = fixture.cleanup(monkeypatch, capsys)
+    assert code == 1 and "cleanup-uncertain" in output
+    assert (receipt.read_bytes(), receipt.stat()) == before
+    assert fixture.present and fixture.group_present
+    assert not any(args[0] in {"userdel", "groupdel", "systemctl"} for args in fixture.calls)
