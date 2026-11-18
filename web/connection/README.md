@@ -110,8 +110,13 @@ list (per-record Connect / Remove local access), validating, joining, pairing,
 waiting for approval, saving, opening, connected, stopping and failed, with a
 reachable Cancel in every in-flight stage. Connected is shown only when the
 native snapshot says `connected`. After every action the view rereads
-`client.savedComputers` and `client.status`; it never edits lists
-optimistically. Native confirmations own Connect, Remove, Disconnect and Cancel;
+`client.savedComputers` and `client.status` independently; it never edits lists
+optimistically. Discovery `busy` during an active attempt is expected, not a
+failure; any other reread failure is shown beside the original action outcome
+(same command, record and effect), never instead of it. Every async status/health
+read and role load is bound to the role selection and a monotonic
+native-observation revision: a reply overtaken by a native event, a newer read,
+a completed action or a role change is ignored, so the newest native state wins. Native confirmations own Connect, Remove, Disconnect and Cancel;
 dismissing one returns `effect:none` and the view says nothing changed.
 Unknown effects (including transport loss after dispatch) show “couldn’t
 confirm” with Check again, never “nothing changed”. A recovery `explicitRetry` or
@@ -121,17 +126,22 @@ while that record is still listed.
 The view never renders invite bytes, fingerprints, bearers or the snapshot's
 `comparisonPhrase`; the comparison stays in native windows. Health fields that
 are `unknown`, unavailable or listed in `observationLimits.client` show Unknown;
-an unreadable or limited saved list is shown as unreadable, not empty. While
-connected with `savedAccess` `notSaved`, `needsPermission` or `unknown`, the
-save warning and Retry save stay visible across refreshes, outcomes and other
-actions; the persistent native-chrome banner remains native. Invite deadlines
+an unreadable or limited saved list is shown as unreadable, not empty. The
+“Secure access” step is done only for native `savedAccess: saved`; otherwise it
+reads skipped (`none`), not saved (`notSaved`/`needsPermission`) or not
+confirmed. Once `notSaved`, `needsPermission` or `unknown` is observed at opening
+or connected, the save warning stays visible through saving/opening/connected
+transitions until `saved` is observed, with Retry save while connected; the
+persistent native-chrome banner remains native. Invite deadlines
 show an absolute local time only in validating..waitingApproval, with no
 countdown or expiry announcements. Commands whose capability is absent are
 hidden, with one “update the app” note. A pending ordinary action marks other
 actions `aria-disabled` (focus stays put); Cancel stays enabled.
 
-Accessibility: one polite live region announces stage and confirmed/failed
-outcomes (not every snapshot and not language switches); focus is restored to
+Accessibility: one polite live region announces stage and action outcomes —
+confirmed, failed or unknown — keyed by native ref and operation/outcome
+identity (not every snapshot and not language switches). App-generated saved
+names in retained outcomes/recovery re-render in the current locale; focus is restored to
 the same control after a native re-render, or moved to the card heading when the
 stage changes and focus was lost. Visible focus uses the shared outline. The
 connection shell has no dark theme; light only.

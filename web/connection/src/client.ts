@@ -12,11 +12,16 @@ type Tone = 'neutral' | 'progress' | 'attention' | 'danger' | 'ok';
 type Command = 'client.acceptInvite' | 'client.connectSaved' | 'client.removeSaved' | 'client.disconnect' |
   'client.cancelAttempt' | 'client.retry' | 'client.retrySave' | 'client.health' | 'client.status';
 interface Failure { code: string; effect: string; recovery: string }
-interface Outcome { command: Command; args: string; label: string | null; result?: ActionResult; error?: Failure }
+// raw is the native record label as observed at the action; it is localized
+// only at render time so locale switches never re-run or re-target an action.
+interface Outcome { command: Command; args: string; raw: string | null; result?: ActionResult; error?: Failure; read?: Failure }
 interface Context { connection: () => Connection | null; locale: () => Locale; current: () => boolean }
 
 const attempt: Stage[] = ['validating', 'joining', 'pairing', 'waitingApproval', 'saving', 'opening'];
 const steps: Key[] = ['stepJoin', 'stepRequest', 'stepWait', 'stepSecure', 'stepOpen'];
+const secureStep = 3;
+const unsavedAccess = ['notSaved', 'needsPermission', 'unknown'];
+const active: Stage[] = [...attempt, 'stopping'];
 const stepOf: Partial<Record<Stage, number>> = { joining: 0, pairing: 1, waitingApproval: 2, saving: 3, opening: 4 };
 const badge: Record<Stage, [Key, Tone]> = {
   idle: ['badgeNotConnected', 'neutral'], validating: ['badgeChecking', 'progress'],
@@ -61,6 +66,15 @@ export class ClientView {
   private lastStage: Stage | null = null;
   private serial = 0;
   private gated = false;
+  // Monotonic native-observation/request revision: bumped by every native
+  // observation, read start, mutation completion and role (re)load. An async
+  // read applies only while it is still the newest; the newest native state wins.
+  private revision = 0;
+  private selection = 0;
+  private healthSerial = 0;
+  // Sticky nonsecret save warning: observed unsaved after the storage step,
+  // kept through saving/opening/connected transitions until saved is observed.
+  private unsaved = false;
 
   constructor(private readonly context: Context) {
     this.root.className = 'card client';
@@ -81,18 +95,34 @@ export class ClientView {
   }
   private label(ref: string | null): string | null {
     const computer = this.snapshot?.computers?.find((item) => item.computerRef === ref);
-    if (!computer) return null;
+    return computer ? this.display(computer.label) : null;
+  }
+  /** Current-locale name for a raw native label; app-generated Linux names are re-localized. */
+  private display(raw: string): string {
     const generated = this.context.connection()?.hello.platform === 'linux'
-      ? /^Saved computer ([1-9][0-9]*)$/.exec(computer.label) : null;
+      ? /^Saved computer ([1-9][0-9]*)$/.exec(raw) : null;
     const ordinal = generated ? Number(generated[1]) : NaN;
     return Number.isSafeInteger(ordinal)
       ? `${this.copy().savedComputer} ${new Intl.NumberFormat(this.context.locale()).format(ordinal)}`
-      : computer.label;
+      : raw;
   }
+
+  /** Starts (or invalidates before) an async native read; returns its revision. */
+  fence(): number { return ++this.revision; }
+  /** True while no newer observation, read, mutation completion or role load superseded the token. */
+  latest(token: number): boolean { return token === this.revision; }
+  /** Role (re)selection: completions from an earlier selection are ignored. */
+  reset(): void { this.selection++; this.revision++; }
+
+  private setOutcome(outcome: Outcome | null): void { this.outcome = outcome; if (outcome) this.serial++; }
 
   update(snapshot: ClientSnapshot): void {
     const previous = this.snapshot?.stage;
+    this.revision++;
     this.snapshot = snapshot;
+    const limited = this.limited('savedAccess');
+    if (snapshot.savedAccess === 'saved' || ['idle', 'failed', 'validating'].includes(snapshot.stage)) this.unsaved = false;
+    else if (!limited && unsavedAccess.includes(snapshot.savedAccess) && (snapshot.stage === 'opening' || snapshot.stage === 'connected')) this.unsaved = true;
     if (snapshot.stage !== 'connected') { this.health = null; this.healthFor = ''; }
     // Connected only from native; fetch health once per connected entry.
     if (snapshot.stage === 'connected' && previous !== 'connected' && this.has('client.health')) void this.readHealth();
@@ -102,52 +132,77 @@ export class ClientView {
   private async readHealth(): Promise<void> {
     const connection = this.context.connection();
     if (!connection) return;
-    const marker = `${Date.now()}`;
+    const selection = this.selection;
+    const marker = `${++this.healthSerial}`;
     this.healthFor = marker;
+    const live = (): boolean => this.context.current() && this.selection === selection && this.healthFor === marker;
     try {
       const health = JSON.parse(await connection.call('client.health', '{}')) as Health;
-      if (this.context.current() && this.healthFor === marker && this.snapshot?.stage === 'connected') this.health = health;
+      if (live() && this.snapshot?.stage === 'connected') this.health = health;
     } catch (error) {
-      if (this.context.current()) this.outcome = { command: 'client.health', args: '{}', label: null, error: parseFailure(error) };
+      if (live()) this.setOutcome({ command: 'client.health', args: '{}', raw: null, error: parseFailure(error) });
     }
-    if (this.context.current()) this.render();
+    if (live()) this.render();
   }
 
-  private async refresh(): Promise<void> {
+  /**
+   * Rereads native state. Saved discovery and status are read independently:
+   * a discovery failure never skips status. Read failures attach to the
+   * originating action outcome (which keeps its command/args/record/effect);
+   * without one they become the Check again outcome.
+   */
+  private async refresh(origin: Outcome | null): Promise<void> {
     const connection = this.context.connection();
     if (!connection) return;
-    try {
-      if (connection.has('client.savedComputers')) await connection.call('client.savedComputers', '{}');
-      const raw = await connection.call('client.status', '{}');
-      if (this.context.current()) this.update(JSON.parse(raw) as ClientSnapshot);
-    } catch (error) {
-      if (this.context.current()) { this.outcome = { command: 'client.status', args: '{}', label: null, error: parseFailure(error) }; this.render(); }
+    const selection = this.selection;
+    let failure: Failure | null = null;
+    if (connection.has('client.savedComputers')) {
+      try { await connection.call('client.savedComputers', '{}'); } catch (error) { failure = parseFailure(error); }
     }
+    const token = this.fence();
+    const live = (): boolean => this.context.current() && this.selection === selection && this.latest(token);
+    try {
+      const raw = await connection.call('client.status', '{}');
+      if (!live()) return;
+      this.update(JSON.parse(raw) as ClientSnapshot);
+      // Native discovery is expectedly busy while an attempt is active; not a failure.
+      if (failure?.code === 'busy' && this.snapshot && active.includes(this.snapshot.stage)) failure = null;
+    } catch (error) {
+      if (!live()) return;
+      failure = parseFailure(error);
+    }
+    if (failure && this.selection === selection) {
+      if (origin && this.outcome === origin) { origin.read = failure; this.serial++; }
+      else if (!origin) this.setOutcome({ command: 'client.status', args: '{}', raw: null, error: failure });
+    }
+    if (this.context.current() && this.selection === selection) this.render();
   }
 
-  private async run(command: Command, args = '{}', label: string | null = null): Promise<void> {
+  private async run(command: Command, args = '{}', raw: string | null = null): Promise<void> {
     const connection = this.context.connection();
     if (!connection) return;
     if (command === 'client.health') { this.outcome = null; await this.readHealth(); return; }
-    if (command === 'client.status') { this.outcome = null; this.render(); await this.refresh(); return; }
+    if (command === 'client.status') { this.outcome = null; this.render(); await this.refresh(null); return; }
+    const selection = this.selection;
     const cancellation = command === 'client.cancelAttempt';
     if (!cancellation) this.pending = command;
     this.outcome = null;
     this.render();
     let outcome: Outcome;
     try {
-      outcome = { command, args, label, result: JSON.parse(await connection.call(command, args)) as ActionResult };
-    } catch (error) { outcome = { command, args, label, error: parseFailure(error) }; }
+      outcome = { command, args, raw, result: JSON.parse(await connection.call(command, args)) as ActionResult };
+    } catch (error) { outcome = { command, args, raw, error: parseFailure(error) }; }
     if (!cancellation) this.pending = null;
-    if (!this.context.current()) return;
-    this.outcome = outcome;
-    this.serial++;
+    if (!this.context.current() || this.selection !== selection) return;
+    // A completed mutation supersedes every read started before it.
+    this.fence();
+    this.setOutcome(outcome);
+    this.render();
     // Reread native state after every mutation; never edit lists optimistically.
-    await this.refresh();
-    if (this.context.current()) this.render();
+    await this.refresh(outcome);
   }
 
-  private button(command: Command, key: Key, options: { primary?: boolean; danger?: boolean; args?: string; label?: string | null; id?: string } = {}): HTMLButtonElement {
+  private button(command: Command, key: Key, options: { primary?: boolean; danger?: boolean; args?: string; raw?: string | null; id?: string } = {}): HTMLButtonElement {
     const node = document.createElement('button');
     node.type = 'button';
     node.textContent = this.t(key);
@@ -160,7 +215,7 @@ export class ClientView {
     if (this.pending === command) node.setAttribute('aria-busy', 'true');
     node.addEventListener('click', () => {
       if (mutation && this.pending !== null) return;
-      void this.run(command, options.args, options.label ?? null);
+      void this.run(command, options.args, options.raw ?? null);
     });
     return node;
   }
@@ -172,8 +227,14 @@ export class ClientView {
     return node;
   }
 
-  private notice(content: string, tone: Tone, className = 'notice'): HTMLElement {
+  private notice(content: string, tone: Tone, className = 'notice', outcome = false): HTMLElement {
     if (className === 'hint') return this.text('p', content, 'hint');
+    if (outcome) {
+      // Action outcomes (any tone) are announced; snapshot notices are not.
+      const node = this.notice(content, tone, className);
+      node.dataset.outcome = 'true';
+      return node;
+    }
     return this.text('p', content, className === 'notice' ? `notice tone-${tone}` : `notice ${className} tone-${tone}`);
   }
 
@@ -195,10 +256,17 @@ export class ClientView {
     const current = stepOf[stage] ?? -1;
     steps.forEach((key, index) => {
       const item = document.createElement('li');
-      const state = index < current ? 'done' : index === current ? 'current' : 'todo';
+      let state = index < current ? 'done' : index === current ? 'current' : 'todo';
+      let label: Key = state === 'done' ? 'stepDone' : 'stepCurrent';
+      // Storage is done only when native positively reports saved access.
+      if (state === 'done' && index === secureStep && (this.limited('savedAccess') || this.snapshot?.savedAccess !== 'saved')) {
+        const access = this.limited('savedAccess') ? 'unknown' : this.snapshot?.savedAccess;
+        state = 'unsaved';
+        label = access === 'none' ? 'stepSkipped' : access === 'notSaved' || access === 'needsPermission' ? 'stepNotSaved' : 'stepUnconfirmed';
+      }
       item.className = state;
       item.append(this.text('span', this.t(key)));
-      if (state !== 'todo') item.append(this.text('span', ` · ${this.t(state === 'done' ? 'stepDone' : 'stepCurrent')}`, 'step-state'));
+      if (state !== 'todo') item.append(this.text('span', ` · ${this.t(label)}`, 'step-state'));
       if (state === 'current') item.setAttribute('aria-current', 'step');
       list.append(item);
     });
@@ -225,8 +293,8 @@ export class ClientView {
         buttons.className = 'row-actions';
         const idle = stage === 'idle' || stage === 'failed';
         if (idle) {
-          const connect = this.gate('client.connectSaved', () => this.button('client.connectSaved', 'connectSaved', { args, label: name }));
-          const remove = this.gate('client.removeSaved', () => this.button('client.removeSaved', 'removeSaved', { args, label: name, danger: true }));
+          const connect = this.gate('client.connectSaved', () => this.button('client.connectSaved', 'connectSaved', { args, raw: computer.label }));
+          const remove = this.gate('client.removeSaved', () => this.button('client.removeSaved', 'removeSaved', { args, raw: computer.label, danger: true }));
           missing ||= connect.missing || remove.missing;
           [connect.node, remove.node].forEach((node) => {
             if (node) { node.setAttribute('aria-label', `${node.textContent ?? ''}: ${name}`); buttons.append(node); }
@@ -283,11 +351,25 @@ export class ClientView {
     const outcome = this.outcome;
     if (!outcome) return [];
     const nodes: HTMLElement[] = [];
-    const name = outcome.label ?? '';
+    const name = outcome.raw === null ? '' : this.display(outcome.raw);
     const action = this.t(actionName[outcome.command]);
+    nodes.push(...this.actionNodes(outcome, name, action));
+    // A failed follow-up reread is reported beside, never instead of, the action outcome.
+    const read = outcome.read;
+    if (read) {
+      nodes.push(this.notice(`${this.t('failedAction', { action: this.t('checkAgain') })} ${this.t(errorKey[read.code] ?? 'errUnavailable')}`,
+        read.effect === 'unknown' ? 'attention' : 'danger', 'notice', true));
+      const offered = nodes.some((node) => node.querySelector('[data-focus-key^="client.status:"]'));
+      if (read.recovery === 'refresh' && this.has('client.status') && !offered) nodes.push(...this.actions([this.button('client.status', 'checkAgain')], false));
+    }
+    return nodes;
+  }
+
+  private actionNodes(outcome: Outcome, name: string, action: string): HTMLElement[] {
+    const nodes: HTMLElement[] = [];
     if (outcome.result) {
       const { effect, localCleanup } = outcome.result;
-      if (effect === 'unknown') nodes.push(this.notice(this.t('resultUnknown', { action }), 'attention'));
+      if (effect === 'unknown') nodes.push(this.notice(this.t('resultUnknown', { action }), 'attention', 'notice', true));
       else if (effect === 'confirmed') {
         const key: Partial<Record<Command, Key>> = {
           'client.cancelAttempt': 'cancelledConfirmed', 'client.disconnect': this.snapshot?.savedAccess === 'saved' ? 'disconnectedSaved' : 'disconnectedUnsaved',
@@ -295,9 +377,9 @@ export class ClientView {
           'client.retrySave': 'savedConfirmed',
         };
         const message = key[outcome.command];
-        if (message) nodes.push(this.notice(this.t(message, { name }), message === 'errRemovalIncomplete' ? 'attention' : 'ok'));
+        if (message) nodes.push(this.notice(this.t(message, { name }), message === 'errRemovalIncomplete' ? 'attention' : 'ok', 'notice', true));
       } else if (['client.cancelAttempt', 'client.disconnect', 'client.removeSaved'].includes(outcome.command)) {
-        nodes.push(this.notice(this.t('nothingChanged', { action }), 'neutral'));
+        nodes.push(this.notice(this.t('nothingChanged', { action }), 'neutral', 'notice', true));
       }
       if (effect === 'unknown' && this.has('client.status')) nodes.push(...this.actions([this.button('client.status', 'checkAgain')], false));
       return nodes;
@@ -307,7 +389,7 @@ export class ClientView {
     const message = errorKey[error.code] ?? 'errUnavailable';
     const text = `${this.t('failedAction', { action })} ${this.t(message, { name })}` +
       (error.effect === 'unknown' && error.code !== 'outcomeUnknown' ? ` ${this.t('effectUnknown')}` : '');
-    nodes.push(this.notice(text, error.effect === 'unknown' ? 'attention' : 'danger'));
+    nodes.push(this.notice(text, error.effect === 'unknown' ? 'attention' : 'danger', 'notice', true));
     const recovery: (HTMLButtonElement | null)[] = [];
     if (error.recovery === 'refresh') recovery.push(this.button('client.status', 'checkAgain'));
     // Recovery keeps the originating action and its exact record.
@@ -317,7 +399,7 @@ export class ClientView {
       // The persistent save warning already offers Retry save while it applies.
       const covered = outcome.command === 'client.retrySave' && this.snapshot?.stage === 'connected';
       if (stillListed && this.has(outcome.command) && !covered) {
-        const again = this.button(outcome.command, 'tryAgainAction', { args: outcome.args, label: outcome.label, id: `retry:${outcome.command}:${outcome.args}` });
+        const again = this.button(outcome.command, 'tryAgainAction', { args: outcome.args, raw: outcome.raw, id: `retry:${outcome.command}:${outcome.args}` });
         again.textContent = this.t('tryAgainAction', { action });
         if (name) again.setAttribute('aria-label', `${again.textContent}: ${name}`);
         recovery.push(again);
@@ -361,17 +443,21 @@ export class ClientView {
       nodes.push(this.notice(this.t('inviteExpiresAt', { time }), 'attention', 'deadline'));
     }
     if (inFlight || stage === 'idle' || stage === 'failed') nodes.push(this.notice(this.t('nativeDialogs'), 'neutral', 'native-note'));
-    if (stage === 'connected') {
-      if (['notSaved', 'needsPermission', 'unknown'].includes(snapshot.savedAccess) && !this.limited('savedAccess')) {
-        const key: Key = snapshot.savedAccess === 'needsPermission' ? 'saveLocked' : snapshot.savedAccess === 'unknown' ? 'saveUnknown' : 'saveFailedWarning';
-        const warning = document.createElement('div');
-        warning.className = 'warning tone-attention';
-        warning.append(this.text('strong', this.t('saveWarningTitle')), this.text('p', this.t(key)));
+    // The nonsecret save warning persists across saving/opening/connected until saved is observed.
+    if (this.unsaved && ['saving', 'opening', 'connected'].includes(stage)) {
+      const key: Key = snapshot.savedAccess === 'needsPermission' ? 'saveLocked' : snapshot.savedAccess === 'notSaved' ? 'saveFailedWarning' : 'saveUnknown';
+      const warning = document.createElement('div');
+      warning.className = 'warning tone-attention';
+      warning.append(this.text('strong', this.t('saveWarningTitle')), this.text('p', this.t(key)));
+      // Retry save is offered where native accepts it: while connected.
+      if (stage === 'connected') {
         const retry = this.gate('client.retrySave', () => this.button('client.retrySave', 'retrySave', { primary: true }));
         warning.append(...this.actions([retry.node], retry.missing));
         if (retry.node) warning.append(this.text('p', this.t('systemAsks'), 'hint'));
-        nodes.push(warning);
       }
+      nodes.push(warning);
+    }
+    if (stage === 'connected') {
       nodes.push(this.text('h2', this.t('healthTitle'), 'section-title'), this.healthFacts());
       if (this.health?.observation === 'stale') nodes.push(this.notice(this.t('healthStale'), 'attention', 'hint'));
       if (this.health?.access === 'accessDenied') nodes.push(this.notice(this.t('errAccessDenied'), 'danger'));
@@ -416,11 +502,16 @@ export class ClientView {
     this.root.setAttribute('aria-busy', String(this.pending !== null));
     this.root.replaceChildren(header, content);
     // Announce only stage/outcome changes, not every snapshot or language switch.
-    const outcomeText = nodes.filter((node) => node.classList.contains('notice') && node.classList.contains('tone-ok') ||
-      node.classList.contains('tone-danger')).map((node) => node.textContent).join(' ');
+    // Action outcomes of every tone (confirmed, failed, unknown) are announced.
+    const outcomeText = nodes.flatMap((node) => [node, ...node.querySelectorAll<HTMLElement>('.notice')])
+      .filter((node) => node.dataset.outcome === 'true' || node.classList.contains('tone-danger'))
+      .map((node) => node.textContent).join(' ');
     const announcement = `${this.t(badgeKey)}. ${title}${outcomeText ? `. ${outcomeText}` : ''}`;
-    // Language-independent key: switching language never re-announces.
-    const key = `${stage}|${name ?? ''}|${outcomeText ? this.serial : ''}`;
+    // Language-independent key (native ref + operation/outcome identity): switching language never re-announces.
+    const outcome = this.outcome;
+    const identity = outcome && outcomeText
+      ? `${this.serial}:${outcome.command}:${outcome.result?.effect ?? outcome.error?.code ?? ''}:${outcome.read?.code ?? ''}` : '';
+    const key = `${stage}|${this.snapshot.activeComputerRef ?? ''}|${identity}`;
     if (key !== this.announced) { this.announced = key; this.live.textContent = announcement; }
     if (focused) {
       const target = focused === 'title' ? heading : this.root.querySelector<HTMLElement>(`[data-focus-key="${CSS.escape(focused)}"]`);

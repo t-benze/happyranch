@@ -46,6 +46,8 @@ code { white-space: pre-wrap; overflow-wrap: anywhere; }
 .steps li.done::before { background: var(--color-accent-default); border-color: var(--color-accent-default); }
 .steps li.current { color: var(--color-info); font-weight: 600; }
 .steps li.current::before { border-color: var(--color-info); }
+.steps li.unsaved { color: var(--color-attention-text); }
+.steps li.unsaved::before { border-color: var(--color-attention-text); }
 .step-state { font-weight: 400; }
 .notice { border-radius: 10px; padding: 10px 14px; margin: 12px 0; color: var(--color-text-primary); background: var(--color-surface-sunken); }
 .notice.tone-attention, .deadline { background: var(--color-attention-soft); color: var(--color-attention-text); }

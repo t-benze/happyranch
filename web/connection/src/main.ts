@@ -70,6 +70,9 @@ async function loadRole(next: 'host' | 'client'): Promise<void> {
   // Client presentation owns its own card/live region; host keeps the shell.
   status.hidden = next === 'client'; hostPanel.hidden = next === 'client';
   clientView.root.hidden = true; clientView.region.textContent = '';
+  // Completions from an earlier selection (or overtaken by newer native state) are ignored.
+  clientView.reset();
+  const selected = (): boolean => generation === selectedGeneration && !ended;
   if (!connection?.has(`${role}.status`)) { showUnsupported(); return; }
   try {
     stopRole = connection.on(`${role}.stateChanged`, (raw) => {
@@ -77,18 +80,23 @@ async function loadRole(next: 'host' | 'client'): Promise<void> {
       observedEvent = true;
       observe((JSON.parse(raw) as SnapshotEvent<HostSnapshot | ClientSnapshot>).snapshot);
     });
+    const first = clientView.fence();
     const raw = await connection.call(`${role}.status`, '{}');
-    if (generation === selectedGeneration && !observedEvent) observe(JSON.parse(raw) as HostSnapshot | ClientSnapshot);
+    if (!selected()) return;
+    if (!observedEvent && (next !== 'client' || clientView.latest(first))) observe(JSON.parse(raw) as HostSnapshot | ClientSnapshot);
     clientView.root.hidden = next !== 'client';
-    // Saved discovery failure is a client-screen state, not an unsupported bridge.
+    // Saved discovery failure is a client-screen state, not an unsupported bridge;
+    // status is reread independently of discovery.
     if (next === 'client' && connection.has('client.savedComputers')) {
+      try { await connection.call('client.savedComputers', '{}'); } catch { /* computers/savedAccess stay as native reports them. */ }
+      if (!selected()) return;
+      const token = clientView.fence();
       try {
-        await connection.call('client.savedComputers', '{}');
         const fresh = await connection.call('client.status', '{}');
-        if (generation === selectedGeneration && !ended) observe(JSON.parse(fresh) as ClientSnapshot);
-      } catch { /* The snapshot keeps computers/savedAccess unknown or as native reported. */ }
+        if (selected() && clientView.latest(token)) observe(JSON.parse(fresh) as ClientSnapshot);
+      } catch { /* The last native snapshot stays; Check again remains available after actions. */ }
     }
-  } catch { if (generation === selectedGeneration && !ended) showUnsupported(); }
+  } catch { if (selected()) showUnsupported(); }
 }
 const clientView = new ClientView({
   connection: () => connection, locale: () => locale,
