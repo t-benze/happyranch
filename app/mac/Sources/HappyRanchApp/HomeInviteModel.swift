@@ -68,6 +68,7 @@ final class HomeInviteModel: ObservableObject {
     private var unsaved: SavedDeviceCredential?
     private var activeCredential: SavedDeviceCredential?
     private var pendingRemoval: SavedDeviceCredential?
+    private var pendingRemovalErased = false
     private var prepared = false
     private var needsNewInvite = false
     private var rePairHomeIDs: Set<UUID> = []
@@ -392,7 +393,8 @@ final class HomeInviteModel: ObservableObject {
         navigationDeadline?.cancel()
         navigationDeadline = Task {
             do { try await Task.sleep(for: .seconds(10)) } catch { return }
-            guard lifetime == token, phase == .opening else { return }
+            guard lifetime == token, loadedURL == nil,
+                  phase == .opening || saving == token else { return }
             cancel(endingAt: .failed(.homeUnavailable))
         }
     }
@@ -400,10 +402,13 @@ final class HomeInviteModel: ObservableObject {
     /// Called only for the expected main-frame 2xx navigation, after connector
     /// authorization and release-verifier admission. Health alone cannot call it.
     func webLoaded(url: URL, lifetime context: Lifetime) {
-        guard lifetime == context, phase == .opening, webURL == url else { return }
+        guard lifetime == context, webURL == url,
+              phase == .opening || (phase == .saving && saving == context) else { return }
         navigationDeadline?.cancel(); navigationDeadline = nil
         loadedURL = url
-        guard confirmation == nil else { return }
+        // Retry save does not navigate again. Retain this native observation
+        // through its storage settlement, then release the same load gate.
+        guard phase == .opening, confirmation == nil else { return }
         phase = .connected
         monitor?.cancel()
         let token = context
@@ -503,6 +508,10 @@ final class HomeInviteModel: ObservableObject {
         expiryTask?.cancel(); monitor?.cancel(); navigationDeadline?.cancel()
         expiresAt = nil; comparisonPhrase = nil; webURL = nil; unsaved = nil
         if finalPhase == .failed(.revoked) { saveFailure = nil }
+        if let pendingRemoval {
+            target = pendingRemoval.trust
+            removalFailures = ["Local removal was interrupted; Retry removal for this computer"]
+        }
         phase = .stopping
         operation = Task {
             await old?.value
@@ -513,7 +522,10 @@ final class HomeInviteModel: ObservableObject {
                 guard lifetime == token else { return }
                 session = nil
                 if finalPhase != .failed(.revoked) { activeCredential = nil }
-                phase = finalPhase
+                if pendingRemovalErased, let pendingRemoval {
+                    finishRemoval(pendingRemoval)
+                }
+                phase = pendingRemoval == nil ? finalPhase : .failed(.cleanupIncomplete)
             }
             catch {
                 guard lifetime == token else { return }
@@ -546,6 +558,7 @@ final class HomeInviteModel: ObservableObject {
         guard let credential = pendingRemoval ?? (afterRevocation ? activeCredential : selected),
               let id = credential.networkProfileID else { return }
         pendingRemoval = credential
+        pendingRemovalErased = false
         attemptID = UUID(); let token = lifetime
         confirmation = nil; loadedURL = nil
         monitor?.cancel(); navigationDeadline?.cancel(); expiryTask?.cancel()
@@ -572,17 +585,30 @@ final class HomeInviteModel: ObservableObject {
             }
             do {
                 try await store.delete(binding: credential.binding)
+                // Retain only an observed result for this captured target.
+                // A newer cancellation owner reconciles it after awaiting us;
+                // this stale operation still cannot publish state or reconnect.
+                if pendingRemoval?.binding == credential.binding,
+                   pendingRemoval?.networkProfileID == id { pendingRemovalErased = true }
                 try check(token)
             } catch {
                 guard lifetime == token else { return }
                 removalFailures = ["Login Keychain bearer and trust could not be erased"]; phase = .keychain(.deletionFailed); return
             }
-            records.removeValue(forKey: id); savedHomes.removeAll { $0.id == id }
-            if selectedHomeID == id { selectedHomeID = savedHomes.first?.id }
-            if activeCredential?.binding == credential.binding { activeCredential = nil }
-            pendingRemoval = nil; target = nil; saveFailure = nil
+            finishRemoval(credential)
             phase = afterRevocation ? .failed(.revoked) : .idle
             if afterRevocation { needsNewInvite = true }
         }
+    }
+
+    private func finishRemoval(_ credential: SavedDeviceCredential) {
+        guard let id = credential.networkProfileID,
+              pendingRemoval?.binding == credential.binding,
+              pendingRemoval?.networkProfileID == id else { return }
+        records.removeValue(forKey: id); savedHomes.removeAll { $0.id == id }
+        if selectedHomeID == id { selectedHomeID = savedHomes.first?.id }
+        if activeCredential?.binding == credential.binding { activeCredential = nil }
+        pendingRemoval = nil; pendingRemovalErased = false
+        removalFailures = []; target = nil; saveFailure = nil
     }
 }
