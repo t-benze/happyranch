@@ -1309,6 +1309,61 @@ lifecycle/MDWE, generated Headscale maps, packet-wide public/DNS egress exclusio
 and native Darwin remain NOT RUN. See the [sidecar README](../../../app/linux/tsnet-sidecar/README.md) and
 [Round-7 specification](../../specs/2026-11-16-one-click-remote-access.md#6-invite-selected-bootstrap-and-secret-handling).
 
+### Linux client memory-only session transport (THR-379 slice 3a-T)
+
+The Linux payload builds `bin/happyranch-home-bridge` from the existing
+cross-platform `app/mac/tsnet-bridge` Go module. Its additive
+`--home-session-v1` mode runs as the desktop user, with no sudo, polkit,
+setuid bit or system service. The existing `--home-bridge-v2` profile/recovery
+path and Mac build behavior are unchanged; shared Go sources are used by both builds.
+The GTK pairing/connection adapter is separate slice 3a and is not delivered
+by this transport. Linux client capability remains unavailable until that
+adapter ships. No saved-access or reconnect claim follows.
+
+Launch uses the existing uint32 big-endian length (1..16384) plus closed JSON
+on private stdin: exactly `version` (2), `caDER`, `dialIP`, `homeID`,
+`controlPlaneID`, `fingerprint`, `controlURL`, `hostname`, `joinKey`,
+`socketPath`, `target`. The mode name versions the session interface; the
+trust tuple retains v2. `stateDirectory` and `recovery` are forbidden, as are
+unknown, duplicate, case-aliased, missing/null, malformed and trailing fields.
+The join key must be nonempty; there is no saved membership path. Existing
+`validateHomeLaunch` and the pinned home-only control/DERP proxy, private
+issuer/roots/resolver, peer-only dial/pin/revalidation, bounded socket relay and
+private `0 <Self-StableID>` readiness line remain the transport boundary.
+Readiness proves membership only, never pairing approval or loaded runtime UI.
+
+The server uses the pinned tsnet v1.78.0 `mem.Store` with `Ephemeral:true`.
+Join keys and generated machine/node/private keys remain in process memory;
+product bearer bytes remain with the future native adapter and its stream
+traffic. No profile, keyring, file-backed state, persistent credential cache, consumed
+marker or substitute credential store is opened. No secret enters argv/env or
+an IPC file. Linux saved credential persistence remains founder-reserved Q3.
+The native launcher must provide only its admitted environment, including
+`XDG_RUNTIME_DIR`; it must not inherit credential/debug/trust overrides.
+
+`XDG_RUNTIME_DIR` must be set to a literal absolute, current-user-owned 0700
+directory with no symlink components; unset/unsafe locations refuse without
+falling back to HOME, TMPDIR or a profile. Each session creates its own 0700
+child there. Only tsnet's non-credential `tailscaled.log.conf` and filch log
+spool are allowed scratch, never private state or bearer storage. Log upload
+and upstream diagnostic destinations are disabled. EOF cancels enrollment and
+relays; cancellation, catchable HUP/INT/TERM/QUIT and error paths close the
+engine and remove that session's scratch. SIGKILL, power loss or OS failure
+cannot execute cleanup; any surviving scratch is non-credential, not saved
+access. No restart/replay of the join key occurs.
+
+Headscale's current minter requests **non-ephemeral** keys. Consequently each
+session-only join registers a **persistent node** on Headscale, which goes
+offline after quit; a fresh session/invite creates another node until host
+revocation/cleanup. `Ephemeral:true` controls the client's memory-store
+compatibility and does not override that server-side key policy. This is a
+known limitation, not a dependency for slice 3a and not authority to change
+minting or host cleanup.
+
+Go tests use a synthetic TLS/Noise control plane and actual tsnet memory state,
+with its production logger enabled, to inspect scratch and teardown; they do
+not establish live Headscale, packaged GTK, cross-device or native Mac acceptance.
+
 ### Pure home CA and server leaf core (THR-327 slice 3b-2b)
 
 `app/linux/tsnet-sidecar/homeca` is a Go-stdlib-only generation
