@@ -2,7 +2,7 @@
 #
 # CI gate for the web design system. Runs typecheck + lint + tests +
 # deterministic Storybook static build + complete production-source colour scan
-# + unknown-token utility scan.
+# + unknown-token utility scan + Pasture parity check.
 #
 # Exit codes:
 #   0 — clean
@@ -12,9 +12,13 @@
 #   5 — tokens.css re-maps a numeric --spacing-N off Tailwind's linear scale
 #   6 — a non-semantic (alias) --color-* in tokens.css is not a var() alias of
 #       a semantic token
+#   7 — tokens.css or an owning component drifts from web/design/pasture-ds.css
+#       Direction A on a pinned Pasture surface (topbar, page title, card,
+#       nav row/active, ID)
 #
 # Modes: `--scan-hex` (colour baseline only), `--scan-tokens` (tokens.css
-# spacing/alias checks, then unknown-token utilities).
+# spacing/alias checks, then unknown-token utilities), `--scan-pasture`
+# (Pasture parity only).
 #
 # Run locally before pushing: `bash scripts/verify-design-system.sh`
 set -euo pipefail
@@ -506,6 +510,419 @@ if hits:
 PY
 }
 
+# Pasture parity check (THR-376 PR12). web/design/pasture-ds.css Direction A is
+# the visual authority. For a fixed set of Pasture surfaces this mode resolves
+# what tokens.css (light @theme values, dark `:root[data-theme="dark"]`
+# overrides, var() aliases followed) and the owning component's class list
+# produce, and fails (exit 7) when it differs from the ds.css Direction A value
+# in either theme. There is no allowlist or exemption: when ds.css changes,
+# update tokens.css / the component so they agree again. Only unconditional
+# rules are read: `@media` blocks (the <860px mobile topbar) and Direction B are
+# ignored. Component classes are read at the desktop rail: an `md:` utility
+# overrides the unprefixed one for the same property.
+scan_pasture() {
+  local source_root=${DESIGN_SYSTEM_SOURCE_ROOT:-src}
+  local tokens=${DESIGN_SYSTEM_TOKENS:-$source_root/design-system/tokens/tokens.css}
+  local reference=${DESIGN_SYSTEM_PASTURE_REFERENCE:-design/pasture-ds.css}
+  local default_theme=${DESIGN_SYSTEM_TAILWIND_THEME:-node_modules/tailwindcss/theme.css}
+
+  python3 - "$source_root" "$tokens" "$reference" "$default_theme" <<'PY'
+from __future__ import annotations
+
+from pathlib import Path
+import re
+import sys
+
+source_root, tokens_path, reference_path, default_theme_path = (Path(argument) for argument in sys.argv[1:5])
+components = {
+    "AppBar": source_root / "design-system/layouts/AppShell/AppBar.tsx",
+    "PageTitle": source_root / "design-system/patterns/PageTitle.tsx",
+    "Card": source_root / "design-system/primitives/Card.tsx",
+    "Sidebar": source_root / "design-system/layouts/AppShell/Sidebar.tsx",
+    "IdBadge": source_root / "design-system/patterns/IdBadge.tsx",
+}
+for required in (tokens_path, reference_path, default_theme_path, *components.values()):
+    if not required.is_file():
+        print(f"FAIL: Pasture parity input missing: {required} (run npm ci for the Tailwind default theme)", file=sys.stderr)
+        sys.exit(1)
+
+
+class Unresolved(Exception):
+    pass
+
+
+def without_comments(text: str) -> str:
+    return re.sub(r"/\*.*?\*/", "", text, flags=re.S)
+
+
+def without_at_blocks(text: str) -> str:
+    """Drop conditional (@media/@supports/@container) blocks with their bodies."""
+    out, index = [], 0
+    for match in re.finditer(r"@(?:media|supports|container)\b[^{;]*\{", text):
+        if match.start() < index:
+            continue
+        depth, end = 0, match.end() - 1
+        while end < len(text):
+            if text[end] == "{":
+                depth += 1
+            elif text[end] == "}":
+                depth -= 1
+                if depth == 0:
+                    break
+            end += 1
+        out.append(text[index:match.start()])
+        index = end + 1
+    out.append(text[index:])
+    return "".join(out)
+
+
+def declarations(body: str) -> dict[str, str]:
+    found: dict[str, str] = {}
+    for part in body.split(";"):
+        if ":" in part:
+            name, value = part.split(":", 1)
+            if name.strip():
+                found[name.strip()] = " ".join(value.split())
+    return found
+
+
+def css_rules(text: str) -> list[tuple[list[str], dict[str, str]]]:
+    text = without_at_blocks(without_comments(text))
+    rules = []
+    for match in re.finditer(r"([^{}]+)\{([^{}]*)\}", text):
+        selectors = [" ".join(selector.split()) for selector in match.group(1).split(",")]
+        rules.append((selectors, declarations(match.group(2))))
+    return rules
+
+
+reference_rules = css_rules(reference_path.read_text(encoding="utf-8"))
+
+
+def reference_rule(selector: str) -> dict[str, str]:
+    merged: dict[str, str] = {}
+    for selectors, decls in reference_rules:
+        if selector in selectors:
+            merged.update(decls)
+    return merged
+
+
+def reference_has(selector: str) -> bool:
+    return any(selector in selectors for selectors, _decls in reference_rules)
+
+
+themes = ("light", "dark")
+reference_vars = {
+    theme: {name: value for name, value in {**reference_rule('[data-dir="a"]'),
+                                             **reference_rule(f'[data-dir="a"][data-theme="{theme}"]')}.items()
+            if name.startswith("--")}
+    for theme in themes
+}
+
+
+def resolve(value: str, variables: dict[str, str], depth: int = 0) -> str:
+    if depth > 12:
+        raise Unresolved(f"var() cycle in {value}")
+    def substitute(match: re.Match[str]) -> str:
+        name = match.group(1)
+        if name not in variables:
+            raise Unresolved(f"undefined {name}")
+        return resolve(variables[name], variables, depth + 1)
+    return re.sub(r"var\((--[a-z0-9-]+)\)", substitute, value)
+
+
+def reference_value(selector: str, prop: str, theme: str) -> str:
+    """Direction-A cascade: `[data-dir="a"] <selector>` overrides `<selector>`."""
+    value = {**reference_rule(selector), **reference_rule(f'[data-dir="a"] {selector}')}.get(prop)
+    if value is None:
+        raise Unresolved(f"ds.css sets no {prop} on {selector}")
+    return resolve(value, reference_vars[theme])
+
+
+def theme_blocks(text: str, opener: str) -> dict[str, str]:
+    text = without_comments(text)
+    found: dict[str, str] = {}
+    for match in re.finditer(opener, text):
+        depth, end = 0, match.end() - 1
+        while end < len(text):
+            if text[end] == "{":
+                depth += 1
+            elif text[end] == "}":
+                depth -= 1
+                if depth == 0:
+                    break
+            end += 1
+        found.update({name: value for name, value in declarations(text[match.end():end]).items() if name.startswith("--")})
+    return found
+
+
+tokens_text = tokens_path.read_text(encoding="utf-8")
+light_tokens = {**theme_blocks(tokens_text, r"@theme\b[^{;]*\{"), **theme_blocks(tokens_text, r"(?m)^:root\s*\{")}
+reset_namespaces = {name[2:-2] for name, value in light_tokens.items() if name.endswith("-*") and value == "initial"}
+default_tokens = {
+    name: value for name, value in theme_blocks(default_theme_path.read_text(encoding="utf-8"), r"@theme\b[^{;]*\{").items()
+    if not any(name == f"--{namespace}" or name.startswith(f"--{namespace}-") for namespace in reset_namespaces)
+}
+token_vars = {
+    "light": {**default_tokens, **light_tokens},
+    "dark": {**default_tokens, **light_tokens, **theme_blocks(tokens_text, r':root\[data-theme="dark"\]\s*\{')},
+}
+
+
+def token(name: str, theme: str) -> str:
+    if name not in token_vars[theme]:
+        raise Unresolved(f"tokens.css defines no {name}")
+    return resolve(token_vars[theme][name], token_vars[theme])
+
+
+number = re.compile(r"-?(?:\d+\.?\d*|\.\d+)")
+
+
+def normal(value: str) -> str:
+    value = " ".join(value.lower().replace(", ", ",").replace("( ", "(").replace(" )", ")").split())
+    value = re.sub(r"\s*,\s*", ",", value)
+    value = re.sub(r"([\d.]+)rem\b", lambda match: f"{float(match.group(1)) * 16:g}px", value)
+    value = number.sub(lambda match: f"{float(match.group()):g}", value)
+    return value
+
+
+def px(value: str) -> str:
+    return normal(value if value != "0" else "0px")
+
+
+# ---- component class lists -------------------------------------------------
+def source(name: str) -> str:
+    text = components[name].read_text(encoding="utf-8")
+    return "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("//"))
+
+
+def extract(name: str, pattern: str, what: str, group: int = 1) -> list[str]:
+    match = re.search(pattern, source(name), flags=re.S)
+    if not match:
+        raise Unresolved(f"{components[name]}: cannot locate {what}")
+    return match.group(group).split()
+
+
+def layers(classes: list[str]) -> list[list[str]]:
+    """Unprefixed utilities, then `md:` utilities (desktop rail); other variants are state-only."""
+    return [[c for c in classes if ":" not in c], [c[3:] for c in classes if c.startswith("md:") and c.count(":") == 1]]
+
+
+def spacing(step: str, theme: str = "light") -> str:
+    if f"--spacing-{step}" in token_vars[theme]:
+        return px(token(f"--spacing-{step}", theme))
+    if re.fullmatch(r"\d+(?:\.\d+)?", step):
+        base = float(normal(token("--spacing", theme)).removesuffix("px"))
+        return px(f"{float(step) * base:g}px")
+    raise Unresolved(f"no spacing token {step}")
+
+
+def box(classes: list[str], prefix: str) -> str:
+    """Resolved `top right bottom left` padding: p-, then px/py-, then side utilities, per layer."""
+    sides = {"top": "0px", "right": "0px", "bottom": "0px", "left": "0px"}
+    targets = {"": ("top", "right", "bottom", "left"), "x": ("left", "right"), "y": ("top", "bottom"),
+               "t": ("top",), "r": ("right",), "b": ("bottom",), "l": ("left",)}
+    for layer in layers(classes):
+        for axis in ("", "x", "y", "t", "r", "b", "l"):
+            for utility in layer:
+                match = re.fullmatch(rf"{prefix}{axis}-(.+)", utility)
+                if match:
+                    for side in targets[axis]:
+                        sides[side] = spacing(match.group(1))
+    return " ".join(sides[side] for side in ("top", "right", "bottom", "left"))
+
+
+def last(classes: list[str], pattern: str) -> str | None:
+    found = None
+    for layer in layers(classes):
+        for utility in layer:
+            if re.fullmatch(pattern, utility):
+                found = utility
+    return found
+
+
+def colour(classes: list[str], prefix: str, theme: str) -> str:
+    for utility in reversed(layers(classes)[0]):
+        match = re.fullmatch(rf"{prefix}-([a-z0-9-]+)(?:/(\d+))?", utility)
+        if match and f"--color-{match.group(1)}" in token_vars[theme]:
+            value = token(f"--color-{match.group(1)}", theme)
+            if match.group(2):
+                return normal(f"color-mix(in oklab, {value} {match.group(2)}%, transparent)")
+            return normal(value)
+    raise Unresolved(f"no {prefix}-<colour token> class")
+
+
+def text_size(classes: list[str]) -> str:
+    """The last `text-<name>` utility whose name is a --text-* size token (not a colour)."""
+    found = None
+    for layer in layers(classes):
+        for utility in layer:
+            if utility.startswith("text-") and f"--{utility}" in token_vars["light"]:
+                found = utility[5:]
+    if found is None:
+        raise Unresolved("no text-<size token> class")
+    return found
+
+
+def font_size(classes: list[str]) -> str:
+    return px(token(f"--text-{text_size(classes)}", "light"))
+
+
+def font_weight(classes: list[str]) -> str:
+    utility = last(classes, r"font-(?:thin|extralight|light|normal|medium|semibold|bold|extrabold|black)")
+    if utility:
+        return normal(token(f"--{utility.replace('font-', 'font-weight-', 1)}", "light"))
+    name = f"--text-{text_size(classes)}--font-weight"
+    return normal(token(name, "light")) if name in token_vars["light"] else "400"
+
+
+def tracking(classes: list[str]) -> str:
+    utility = last(classes, r"tracking-(?:\[[^\]]+\]|[a-z]+)")
+    if utility:
+        arbitrary = re.fullmatch(r"tracking-\[([^\]]+)\]", utility)
+        return em_px(arbitrary.group(1) if arbitrary else token(f"--{utility}", "light"), classes)
+    name = f"--text-{text_size(classes)}--letter-spacing"
+    return em_px(token(name, "light"), classes) if name in token_vars["light"] else "0px"
+
+
+def em_px(value: str, classes: list[str]) -> str:
+    """Letter-spacing in px; an em value is scaled by the element's resolved font size."""
+    em = re.fullmatch(r"\s*(-?[\d.]+)em\s*", value)
+    if em:
+        return px(f"{float(em.group(1)) * float(font_size(classes).removesuffix('px')):g}px")
+    return px(value)
+
+
+def family(classes: list[str]) -> str:
+    utility = last(classes, r"font-(?:display|mono|sans|serif)")
+    if not utility:
+        raise Unresolved("no font-<family> class")
+    return token(f"--{utility}", "light").split(",")[0].strip().strip("'\"").lower()
+
+
+def reference_family(selector: str) -> str:
+    return reference_value(selector, "font-family", "light").split(",")[0].strip().strip("'\"").lower()
+
+
+def expand_box(value: str) -> str:
+    parts = [px(part) for part in value.split()]
+    top = parts[0]
+    right = parts[1] if len(parts) > 1 else top
+    bottom = parts[2] if len(parts) > 2 else top
+    left = parts[3] if len(parts) > 3 else right
+    return f"{top} {right} {bottom} {left}"
+
+
+checked = 0
+drift: list[str] = []
+
+
+def check(surface: str, prop: str, expected, actual) -> None:
+    """expected/actual are zero-argument callables so a failure is reported, never raised."""
+    global checked
+    checked += 1
+    try:
+        want = expected()
+    except Unresolved as error:
+        drift.append(f"{surface} {prop}: ds.css reference unresolved ({error})")
+        return
+    try:
+        got = actual()
+    except Unresolved as error:
+        drift.append(f"{surface} {prop}: implementation unresolved ({error}); ds.css wants {want}")
+        return
+    if want != got:
+        drift.append(f"{surface} {prop}: ds.css {want} != implementation {got}")
+
+
+def safe(function):
+    try:
+        return function()
+    except Unresolved as error:
+        drift.append(str(error))
+        return []
+
+
+appbar_root = safe(lambda: extract("AppBar", r"export function AppBar\b.*?className=\"([^\"]+)\"", "the AppBar root className"))
+appbar_title = safe(lambda: extract("AppBar", r"<span className=\"([^\"]+)\">\{title\}</span>", "the AppBar title <span>"))
+page_title = safe(lambda: extract("PageTitle", r"<h1\s+className=\{`([^`$]+)", "the PageTitle <h1> className"))
+card_base = safe(lambda: extract("Card", r"cva\(\s*'([^']+)'", "the Card cva base classes"))
+card_container = safe(lambda: extract("Card", r"container:\s*'([^']+)'", "the Card container variant"))
+card_padding = safe(lambda: extract("Card", r"padding:\s*\{\s*default:\s*'([^']+)'", "the Card default padding"))
+card = card_base + card_container + card_padding
+nav_pattern = r"export function SidebarNavItem\b.*?<NavLink\b.*?`([^`$]*)\$\{\s*isActive\s*\?\s*'([^']*)'"
+nav_row = safe(lambda: extract("Sidebar", nav_pattern, "the SidebarNavItem NavLink class template"))
+nav_active = nav_row + safe(lambda: extract("Sidebar", nav_pattern, "the SidebarNavItem active branch", 2))
+nav_disabled = safe(lambda: extract("Sidebar", r"export function SidebarNavItem\b.*?<span\s+className=\"([^\"]*cursor-not-allowed[^\"]*)\"",
+                                    "the disabled SidebarNavItem row"))
+id_span = safe(lambda: extract("IdBadge", r"<span className=\{`([^`$]*)\$\{TEXT_COLOR", "the IdBadge <span> className"))
+id_kinds = dict(re.findall(r"(\w+):\s*'([^']+)'", (re.search(r"const TEXT_COLOR\b[^{]*=\s*\{(.*?)\};", source("IdBadge"), re.S) or [None, ""])[1]))
+if not id_kinds:
+    drift.append(f"{components['IdBadge']}: cannot locate the TEXT_COLOR kind map")
+
+for theme in themes:
+    # Topbar (.topbar)
+    check("topbar", f"background [{theme}]", lambda: normal(reference_value(".topbar", "background", theme)),
+          lambda: colour(appbar_root, "bg", theme))
+    check("topbar", f"border-bottom colour [{theme}]", lambda: normal(reference_value(".topbar", "border-bottom", theme).split(" ", 2)[2]),
+          lambda: colour(appbar_root, "border", theme))
+    # Card (.card)
+    check("card", f"surface [{theme}]", lambda: normal(reference_value(".card", "background", theme)), lambda: colour(card, "bg", theme))
+    check("card", f"border colour [{theme}]", lambda: normal(reference_value(".card", "border", theme).split(" ", 2)[2]),
+          lambda: colour(card, "border", theme))
+    # Nav active ([data-dir="a"] .nav-item.active)
+    check("nav-active", f"background [{theme}]", lambda: normal(reference_value(".nav-item.active", "background", theme)),
+          lambda: colour(nav_active, "bg", theme))
+    check("nav-active", f"text colour [{theme}]", lambda: normal(reference_value(".nav-item.active", "color", theme)),
+          lambda: colour(nav_active, "text", theme))
+    # ID (.id): every IdBadge kind resolves to --info
+    for kind, utility in sorted(id_kinds.items()):
+        check("id", f"colour {kind} [{theme}]", lambda: normal(reference_value(".id", "color", theme)),
+              lambda: colour(id_span + [utility], "text", theme))
+
+check("topbar", "height", lambda: px(reference_value(".topbar", "height", "light")),
+      lambda: spacing(re.fullmatch(r"h-(.+)", last(appbar_root, r"h-.+") or "h-?").group(1)))
+check("topbar", "padding", lambda: expand_box(reference_value(".topbar", "padding", "light")), lambda: box(appbar_root, "p"))
+check("topbar", "gap", lambda: px(reference_value(".topbar", "gap", "light")),
+      lambda: spacing((last(appbar_root, r"gap-.+") or "gap-?")[4:]))
+check("topbar", "border width", lambda: px(reference_value(".topbar", "border-bottom", "light").split()[0]),
+      lambda: "1px" if last(appbar_root, r"border-b") else "0px")
+check("page title", "font family", lambda: reference_family(".h1"), lambda: family(page_title))
+check("page title", "font size", lambda: px(reference_value(".h1", "font-size", "light")), lambda: font_size(page_title))
+check("page title", "font weight", lambda: normal(reference_value(".h1", "font-weight", "light")), lambda: font_weight(page_title))
+check("page title", "letter-spacing", lambda: px(reference_value(".h1", "letter-spacing", "light")), lambda: tracking(page_title))
+check("appbar title", "font family", lambda: reference_family(".page-title"), lambda: family(appbar_title))
+check("appbar title", "font size", lambda: px(reference_value(".page-title", "font-size", "light")), lambda: font_size(appbar_title))
+check("appbar title", "font weight", lambda: normal(reference_value(".page-title", "font-weight", "light")), lambda: font_weight(appbar_title))
+check("appbar title", "letter-spacing", lambda: px(reference_value(".page-title", "letter-spacing", "light")), lambda: tracking(appbar_title))
+check("card", "radius", lambda: px(reference_value(".card", "border-radius", "light")),
+      lambda: px(token(f"--radius-{(last(card, r'rounded-[a-z0-9-]+') or 'rounded-?')[8:]}", "light")))
+check("card", "padding", lambda: expand_box(reference_value(".card-pad", "padding", "light")), lambda: box(card, "p"))
+check("card", "border width", lambda: px(reference_value(".card", "border", "light").split()[0]),
+      lambda: "1px" if last(card, r"border") else "0px")
+check("card", "shadow", lambda: normal(reference_value(".card", "box-shadow", "light")),
+      lambda: normal(token(f"--shadow-{(last(card, r'shadow-[a-z0-9-]+') or 'shadow-?')[7:]}", "light")))
+check("nav-active", "font weight", lambda: normal(reference_value(".nav-item.active", "font-weight", "light")),
+      lambda: font_weight(nav_active))
+check("nav-active", "box-shadow", lambda: normal(reference_value(".nav-item.active", "box-shadow", "light")),
+      lambda: "none" if not any(re.fullmatch(r"(?:[a-z-]+:)*!?shadow-.+", c) and not c.startswith("focus") for c in nav_active) else "a shadow-* class")
+check("nav-active", "left bar", lambda: "present" if reference_has('[data-dir="a"] .nav-item.active::before') or reference_has(".nav-item.active::before") else "none",
+      lambda: "present" if any(c.split(":")[-1].startswith(("border-l", "border-s")) or c.startswith(("before:", "after:")) for c in nav_active) else "none")
+for label, row in (("nav row", nav_row), ("nav row (disabled)", nav_disabled)):
+    check(label, "padding", lambda: expand_box(reference_value(".nav-item", "padding", "light")), lambda: box(row, "p"))
+    check(label, "gap", lambda: px(reference_value(".nav-item", "gap", "light")), lambda: spacing((last(row, r"gap-.+") or "gap-?")[4:]))
+check("id", "font family", lambda: reference_family(".id"), lambda: family(id_span))
+check("id", "font size", lambda: px(reference_value(".id", "font-size", "light")), lambda: font_size(id_span))
+check("id", "font weight", lambda: normal(reference_value(".id", "font-weight", "light")), lambda: font_weight(id_span))
+
+print(f"Pasture parity receipt: reference={reference_path}; tokens={tokens_path}; checks={checked}; drift={len(drift)}")
+if drift:
+    print("FAIL: tokens.css / owning components drift from web/design/pasture-ds.css Direction A (THR-376 PR12):", file=sys.stderr)
+    for line in drift:
+        print(f"  pasture drift: {line}", file=sys.stderr)
+    sys.exit(7)
+PY
+}
+
 if [ "${1:-}" = "--scan-hex" ]; then
   scan_colours
   exit $?
@@ -513,6 +930,11 @@ fi
 
 if [ "${1:-}" = "--scan-tokens" ]; then
   scan_tokens
+  exit $?
+fi
+
+if [ "${1:-}" = "--scan-pasture" ]; then
+  scan_pasture
   exit $?
 fi
 
@@ -530,5 +952,8 @@ scan_colours
 
 echo "==> Unknown-token utilities"
 scan_tokens
+
+echo "==> Pasture parity"
+scan_pasture
 
 echo "All design-system checks passed."

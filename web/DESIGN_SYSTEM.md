@@ -234,7 +234,8 @@ Feature compositions keep using the stable `@/design-system/...` import paths.
   per-page presentation. The positive tone is Pasture `--accent-text` on
   `--accent-soft`. Entity IDs follow Pasture `.id`: `--color-id-task` and
   `--color-id-thread` alias `--color-info`, and `IdBadge` also renders `job`,
-  `schedule` and `run` IDs in `--color-info`.
+  `schedule` and `run` IDs in `--color-info`, all at weight 500
+  (`font-mono text-xs font-medium`, THR-376 PR12).
   Feature vocabularies use the same badge (THR-376 PR9): pass `tone` (a
   `semanticTone` tone), `label` (the feature's own localized word) and
   optionally `dot` (the `.tag` led) and a decorative `icon`. The Todos
@@ -264,14 +265,18 @@ Feature compositions keep using the stable `@/design-system/...` import paths.
 - `AppBar` renders the Pasture `.topbar` on every page: 56px tall, 26px
   inline padding, a 1px `--border` bottom rule and a translucent `bg-surface-canvas/80`
   background (ds.css `color-mix(in oklab, var(--bg) 80%, transparent)`), with
-  the page title in Newsreader 18/500. It has no `presentation` prop and no
+  the page title in Newsreader 18/500 with -0.2px tracking (ds.css
+  `.page-title`, THR-376 PR12). It has no `presentation` prop and no
   page-local `.tasks-appbar` class. Optional `status` (rendered after the
   title) and `actions` (rendered before the language/theme controls) slots
   take a `ReactNode`; pages supply them instead of adding a per-page header.
 - The `Sidebar` active nav row follows Pasture `[data-dir="a"]
   .nav-item.active`: `bg-accent-soft text-accent-text font-semibold`, with no
   left bar or border. Nav rows use `text-nav` (13.5px) at weight 500, and the
-  brand mark is 30px.
+  brand mark is 30px. From `md` up, rows follow ds.css `.nav-item` padding
+  8px 10px and gap 11px (`md:py-2 md:px-2.5 md:gap-2.75`, THR-376 PR12);
+  below `md` the 56px icon rail keeps its base `py-1.5 px-2 gap-2.5` rows
+  unchanged.
 - Colour contrast (THR-376 seq9, WCAG AA). `web/design/pasture-ds.css` is
   the visual authority for Direction A light/dark colour values; it is a
   reference copy only and is not imported by the app build. `tokens.css`
@@ -286,12 +291,14 @@ Feature compositions keep using the stable `@/design-system/...` import paths.
   | `--accent` | `accent-default` (`primary`), `agent-founder` | `oklch(0.52 0.11 152)` | `oklch(0.70 0.13 152)` |
   | `--accent-press` | `accent-hover` | `oklch(0.46 0.11 152)` | `oklch(0.76 0.13 152)` |
   | `--positive` | `positive`, `tier-green`, `status-open`, `feedback-success` | `oklch(0.52 0.11 152)` | `oklch(0.72 0.12 152)` |
-  | `--info` | `info` (`id-task`, `id-thread`), `feedback-info` | `oklch(0.53 0.10 248)` | `oklch(0.72 0.11 245)` |
+  | `--info` | `info` (`id-task`, `id-thread`), `feedback-info` | `oklch(0.53 0.10 248)` | `oklch(0.72 0.10 245)` |
 
   Measured WCAG 2.x ratios: light ink-3 4.52:1 on `--bg` and 4.86:1 on the
   raised surface, ink-2 6.94:1, white on accent/positive 5.23:1, info 4.88:1;
   dark ink-3 5.32:1 on `--bg` and 4.82:1 raised, ink-2 8.34:1, dark
-  `text-inverse` on accent 7.40:1 and on positive 7.93:1, info 7.30:1. The
+  `text-inverse` on accent 7.40:1 and on positive 7.93:1, info 7.30:1 (dark
+  info chroma is ds.css 0.10 since THR-376 PR12; it was an unratified 0.11,
+  which had the same 7.30:1). The
   primary Button's hover and press states use the opaque `accent-hover`
   token (Pasture `.btn-primary:hover` → `--accent-press`), not a translucent
   `primary/90`: label on hover/press is 6.57:1 light and 9.19:1 dark. Keep
@@ -464,7 +471,44 @@ visibility through titles, docs, controls, and representative renders.
 ## Deterministic verification and acceptance
 
 `scripts/verify-design-system.sh` runs typecheck, lint, unit coverage, the static
-Storybook build, and full-tree raw-colour enforcement. `scripts/local_ci.sh web|all` and the
+Storybook build, full-tree raw-colour enforcement, the unknown-token scan and
+the Pasture parity check.
+
+### Pasture parity check (THR-376 PR12)
+
+`bash scripts/verify-design-system.sh --scan-pasture` (exit 7 on drift) pins
+`tokens.css` and the owning components to `web/design/pasture-ds.css`
+Direction A, in light and dark. For each surface it resolves the ds.css value
+(following `var()` and the `[data-dir="a"]` overrides) and what the code
+produces: the token value in `@theme` (light) or `:root[data-theme="dark"]`
+(dark), with `var()` aliases followed, reached through the component's own
+class list. It pins:
+
+| Surface | Owner | Pinned against ds.css |
+| --- | --- | --- |
+| Topbar | `AppBar` root | `.topbar` height, padding, gap, 80% `--bg` background, 1px `--border` bottom rule |
+| Page title | `PageTitle` `<h1>`; `AppBar` title | `.h1` and `.page-title` family, size, weight, letter-spacing |
+| Card | `Card` base + `container` + default padding | `.card` surface, 1px `--border`, `--radius-lg`, `--shadow-sm`; `.card-pad` padding |
+| Nav row / active | `SidebarNavItem` (enabled and disabled rows) | `.nav-item` padding and gap; `.nav-item.active` fill, text colour, weight 600, no shadow, no left bar |
+| ID | `IdBadge` (every `kind`) | `.id` colour (`--info`, both themes), mono family, 12px, weight 500 |
+
+Only unconditional ds.css rules count: `@media` blocks (the under-860px
+topbar) and Direction B are ignored. Component classes are read at the
+desktop rail: an `md:` utility overrides the unprefixed one; state variants
+(`hover:`, `focus-visible:`) are ignored. There is no allowlist or exemption.
+A source the check cannot locate is drift, not a pass.
+
+When ds.css changes, the check goes red on the affected surface: change the
+token in `tokens.css` (both themes where they differ) or the owning component's
+class list until it agrees, and update the tables above. Do not edit ds.css
+to match the code; it is the founder-attached authority. If an owner is
+renamed or restructured, update the extraction pattern in `scan_pasture` and
+add the matching case to `scripts/test-design-system-pasture-parity.sh`. That
+suite runs the check on a trimmed fixture
+(`scripts/fixtures/design-system-pasture-parity/`) and mutates one token,
+class or reference value per case. `scripts/verify-design-system-colour-gate.sh`
+runs the suite and the real-tree scan inside the existing Web Lint
+"Design-system colour gate" step. `scripts/local_ci.sh web|all` and the
 GitHub Web gate explicitly run SPA and Storybook builds once each. Storybook is
 not a product prebuild hook, preventing duplicate builds.
 

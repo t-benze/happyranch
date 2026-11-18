@@ -1,0 +1,53 @@
+/* Trimmed Pasture reference for the parity fixture. */
+[data-dir="a"] {
+  --font-display: "Newsreader", Georgia, serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+  --radius: 12px;
+  --radius-lg: 18px;
+  --shadow-sm: 0 1px 2px rgba(40,30,20,.05);
+}
+[data-dir="a"][data-theme="light"] {
+  --bg: oklch(0.975 0.007 80);
+  --surface: oklch(1 0 0);
+  --border: oklch(0.915 0.008 75);
+  --accent-soft: oklch(0.93 0.045 152);
+  --accent-text: oklch(0.46 0.10 152);
+  --info: oklch(0.53 0.10 248);
+}
+[data-dir="a"][data-theme="dark"] {
+  --bg: oklch(0.205 0.011 70);
+  --surface: oklch(0.245 0.012 70);
+  --border: oklch(0.32 0.012 72);
+  --accent-soft: oklch(0.32 0.06 152);
+  --accent-text: oklch(0.80 0.12 152);
+  --info: oklch(0.72 0.10 245);
+}
+[data-dir="b"][data-theme="dark"] { --info: oklch(0.72 0.11 240); }
+
+.nav-item {
+  display: flex; align-items: center; gap: 11px;
+  padding: 8px 10px; border-radius: var(--radius-sm);
+}
+.nav-item.active { background: var(--surface); font-weight: 600; box-shadow: var(--shadow-sm); }
+[data-dir="a"] .nav-item.active { background: var(--accent-soft); color: var(--accent-text); box-shadow: none; }
+[data-dir="b"] .nav-item.active::before { content: ""; width: 2px; }
+.topbar {
+  height: 56px; gap: 14px;
+  padding: 0 26px; border-bottom: 1px solid var(--border);
+  background: color-mix(in oklab, var(--bg) 80%, transparent);
+}
+.page-title { font-size: 16px; font-weight: 600; letter-spacing: -0.2px; }
+[data-dir="a"] .page-title { font-family: var(--font-display); font-weight: 500; font-size: 18px; }
+.card {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius-lg); box-shadow: var(--shadow-sm);
+}
+[data-dir="b"] .card { border-radius: var(--radius); }
+.card-pad { padding: 20px; }
+.h1 { font-size: 26px; font-weight: 600; letter-spacing: -0.5px; margin: 0; }
+[data-dir="a"] .h1 { font-family: var(--font-display); font-weight: 500; letter-spacing: -0.3px; }
+.id { font-family: var(--font-mono); font-size: 12px; color: var(--info); font-weight: 500; }
+[data-dir="b"] .id { color: var(--accent-text); }
+@media (max-width: 860px) {
+  .topbar { padding: 0 16px; gap: 10px; }
+}
