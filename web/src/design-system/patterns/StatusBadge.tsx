@@ -59,7 +59,7 @@ interface ToneStatusBadgeProps {
 type StatusBadgeProps = LifecycleStatusBadgeProps | ToneStatusBadgeProps;
 
 const BADGE_CLASS =
-  'font-sans text-overline inline-flex max-w-full items-center gap-1.5 rounded-full px-2.5 py-0.5 font-semibold tabular-nums';
+  'font-sans text-overline inline-flex max-w-full items-center gap-1.5 rounded-full px-2.5 py-0.5 font-semibold whitespace-nowrap tabular-nums';
 
 // Every status resolves through the shared semantic tone vocabulary
 // (semanticTone.TONE_CLASS) so the badge reads the same on every surface
@@ -121,7 +121,7 @@ export function StatusBadge(props: StatusBadgeProps): JSX.Element {
       {showDot && <Led />}
       {label(status)}
       {qualifier && (
-        <span className="min-w-0 break-words font-normal opacity-70">{qualifier}</span>
+        <span className="min-w-0 truncate font-normal opacity-70" title={qualifier}>{qualifier}</span>
       )}
     </span>
   );

@@ -199,7 +199,12 @@ export function TodoDetailPage({
 
       <div className="mb-8 flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
         <div>
-          <h1 className="text-display font-display text-text-primary leading-tight">
+          {/* THR-376 r2 To2: clamp the brief to two lines; the full text stays
+              in the DOM (screen readers) and in the hover title. */}
+          <h1
+            className="text-display font-display text-text-primary line-clamp-2 leading-tight break-words"
+            title={schedule.normalized_brief}
+          >
             {schedule.normalized_brief}
           </h1>
           <div className="text-text-secondary mt-3 flex flex-wrap items-center gap-3 text-sm">
