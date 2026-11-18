@@ -13,10 +13,19 @@ no test-only production seam, export or flag):
 * test_forward_order_and_fence: contract = intent durable before effect, done only
   after independent verification, one mint, no public ready; regression = mark done
   before verify or mint twice. B1/admin tests stop before coordinator composition.
-* test_crash_boundaries, test_lost_effect, test_failed_terminal_publication,
-  test_reverify_and_reuse: contract = fresh instance verifies or terminates without
-  duplicate effects; regression = replay an unfinished start/mint/enroll or fail to
-  persist terminal state. Existing minter tests lack cross-record crash boundaries.
+* test_crash_boundaries (all 19 publications), test_failed_terminal_publication
+  (both destinations, healed/still-failing markers, lost-start/invalid-source,
+  all three reviewer boundaries and every completed effect prefix), and
+  test_existing_checkpoint_refusal (all five drift/reuse cases): contract = ruling 7
+  permits only terminal markers after any durable intent on a fresh run, with no
+  new owner/mint/port/config effect or forward publication. Regression = restore
+  fresh-instance resume at replayable/completed checkpoints. The old failed-terminal
+  cases stopped at an unfinished service intent and kept the source invalid; minter
+  tests lack cross-record crash boundaries. The forward-order test separately owns
+  successful same-run ordering; its second invocation must now refuse terminally.
+* test_lost_effect: contract = lost start/create/mint/enroll results persist terminal
+  state without duplicate effects; regression = fail to persist terminal state.
+  Existing minter tests lack cross-record crash boundaries.
 * test_source_boundaries: contract = ruling-6 byte-identical
   pre-intent refusal/retry, terminal post-intent refusal, actual same-FD/UID checks;
   regression = skip source validation or gate failure markers on it. Installer token
@@ -299,7 +308,10 @@ def test_forward_order_and_fence(venue: Venue, monkeypatch: pytest.MonkeyPatch) 
     assert venue.port_checks == ["192.168.1.40"] and venue.mints == ["b" * 32]
     assert venue.transactions.read_optional().effects[5].member_digests == {
         name: hashlib.sha256(b'{"synthetic":"live"}').hexdigest() for name in CONFIGS}
-    assert venue.coordinator().run(venue.prepared) == result
+    # Only the original run may progress; even a joined checkpoint cannot resume.
+    monkeypatch.setattr(HomeActivationStore, "_publish_record", publish)
+    with pytest.raises(ActivationRefused): venue.coordinator().run(venue.prepared)
+    venue.terminal()
     assert len(venue.mints) == 1 and len(venue.owner.calls) == 5
 
 
@@ -315,14 +327,10 @@ def test_crash_boundaries(venue: Venue, monkeypatch: pytest.MonkeyPatch, boundar
     with monkeypatch.context() as patch:
         patch.setattr(HomeActivationStore, "_publish_record", crash)
         with pytest.raises(Crash): venue.coordinator().run(venue.prepared)
-    prior_mints, prior_calls = len(venue.mints), len(venue.owner.calls)
-    if boundary in (4, 6, 8, 9, 10, 12, 14):
-        with pytest.raises(ActivationRefused): venue.coordinator().run(venue.prepared)
-        venue.terminal()
-        assert len(venue.mints) == prior_mints and len(venue.owner.calls) == prior_calls
-    else:
-        assert venue.coordinator().run(venue.prepared).phase == "joined"
-        assert len(venue.mints) == 1
+    prior = list(venue.mints), list(venue.owner.calls), list(venue.port_checks)
+    with pytest.raises(ActivationRefused): venue.coordinator().run(venue.prepared)
+    venue.terminal()
+    assert (venue.mints, venue.owner.calls, venue.port_checks) == prior
 
 
 @pytest.mark.parametrize("lost", ["headscale_start_verify", "db_users", "local_node_mint", "credential_staging", "managed_services"])
@@ -337,10 +345,14 @@ def test_lost_effect(venue: Venue, lost: str) -> None:
 
 
 @pytest.mark.parametrize("destination", ["txn", "receipt"])
-@pytest.mark.parametrize("failure", ["lost-start", "invalid-source"])
+@pytest.mark.parametrize("markers_still_fail", [False, True], ids=["healed-markers", "failed-markers"])
+@pytest.mark.parametrize("failure", ["lost-start", "invalid-source", "before-activating",
+                                     "before-home-config-intent", "before-joined",
+                                     *("done-" + name for name in ORDER)])
 def test_failed_terminal_publication(venue: Venue, monkeypatch: pytest.MonkeyPatch,
-                                     destination: str, failure: str) -> None:
+                                     destination: str, failure: str, markers_still_fail: bool) -> None:
     venue.owner.lost = "headscale_start_verify" if failure == "lost-start" else None
+    coordinator = venue.coordinator()
     store_type = HomeActivationTransactionStore if destination == "txn" else HomeActivationStore
     publish = store_type.publish
     def fail(store: HomeActivationStore, value: object, **kwargs: object) -> None:
@@ -354,13 +366,73 @@ def test_failed_terminal_publication(venue: Venue, monkeypatch: pytest.MonkeyPat
                 try: perform(*args)
                 finally: venue.source.chmod(0o644)
             patch.setattr(venue.owner, "perform", invalid)
+        if failure in ("before-activating", "before-joined"):
+            publish_receipt = coordinator._publish_receipt
+            def reject_receipt(value: HomeActivationReceipt, previous: HomeActivationReceipt) -> None:
+                if value.phase == failure.removeprefix("before-"):
+                    venue.source.chmod(0o644)
+                publish_receipt(value, previous)
+            patch.setattr(coordinator, "_publish_receipt", reject_receipt)
+        if failure == "before-home-config-intent" or failure.startswith("done-"):
+            publish_txn = coordinator._publish_transaction
+            def reject_txn(value: HomeActivationTransaction, receipt: HomeActivationReceipt,
+                           previous: HomeActivationTransaction | None) -> None:
+                last = value.effects[-1]
+                if failure == "before-home-config-intent":
+                    if last.name == "home_config" and last.state == "intent":
+                        venue.source.chmod(0o644)
+                    publish_txn(value, receipt, previous)
+                else:
+                    publish_txn(value, receipt, previous)
+                    if last.name == failure.removeprefix("done-") and last.state == "done":
+                        # The next source-gated publication/effect must fail after this done prefix.
+                        venue.source.chmod(0o644)
+            patch.setattr(coordinator, "_publish_transaction", reject_txn)
+        with pytest.raises(ActivationRefused): coordinator.run(venue.prepared)
+    transaction = venue.transactions.read_optional()
+    assert transaction.phase == ("activating" if destination == "txn" else "failed_uncertain") or (
+        destination == "txn" and failure == "before-joined" and transaction.phase == "joined")
+    if failure.startswith("done-"):
+        assert transaction.effects[-1].name == failure.removeprefix("done-")
+        assert transaction.effects[-1].state == "done"
+    if failure == "before-activating":
+        assert transaction.effects == (Effect("preflight", "intent", {}),)
+    if failure == "before-home-config-intent":
+        assert transaction.effects[-1] == Effect("credential_staging", "done", {})
+    assert venue.receipts.read(expected_generation=7).phase == (
+        "prepared" if failure == "before-activating" else "activating")
+    before = venue.records()
+    effects = list(venue.owner.calls), list(venue.mints), list(venue.port_checks)
+    configs = [venue.path(name).read_bytes() if venue.path(name).exists() else None for name in CONFIGS]
+    # Heal BEFORE the fresh instance: source invalidity must not mask a resume bug.
+    venue.source.chmod(0o600)
+    publications: list[tuple[str, str]] = []
+    publish_record = HomeActivationStore._publish_record
+    def observe(store: HomeActivationStore, path: str, data: bytes, **kwargs: object) -> None:
+        phase = json.loads(data)["phase"]
+        publications.append((path, phase))
+        assert phase == "failed_uncertain", "fresh instance attempted forward publication"
+        publish_record(store, path, data, **kwargs)
+    with monkeypatch.context() as patch:
+        patch.setattr(HomeActivationStore, "_publish_record", observe)
+        if markers_still_fail: patch.setattr(store_type, "publish", fail)
         with pytest.raises(ActivationRefused): venue.coordinator().run(venue.prepared)
-    assert venue.transactions.read_optional().effects[-1] == Effect("headscale_start_verify", "intent", {})
-    assert venue.transactions.read_optional().phase == ("activating" if destination == "txn" else "failed_uncertain")
-    assert venue.receipts.read(expected_generation=7).phase == "activating"
-    with pytest.raises(ActivationRefused): venue.coordinator().run(venue.prepared)
-    venue.terminal()
-    assert venue.owner.calls == ["headscale_start_verify"] and venue.mints == []
+    assert (venue.owner.calls, venue.mints, venue.port_checks) == effects
+    assert [venue.path(name).read_bytes() if venue.path(name).exists() else None for name in CONFIGS] == configs
+    if markers_still_fail:
+        assert venue.records() == before and publications == []
+    else:
+        venue.terminal()
+        assert publications == ([(TRANSACTION_PATH, "failed_uncertain")] if destination == "txn" else []) + [
+            (ACTIVATION_PATH, "failed_uncertain")]
+    # Repeated fresh attempts retain terminality or refuse with unchanged bytes.
+    stable = venue.records()
+    with monkeypatch.context() as patch:
+        patch.setattr(HomeActivationStore, "_publish_record", observe)
+        if markers_still_fail: patch.setattr(store_type, "publish", fail)
+        with pytest.raises(ActivationRefused): venue.coordinator().run(venue.prepared)
+    assert venue.records() == stable
+    assert (venue.owner.calls, venue.mints, venue.port_checks) == effects
 
 
 def invalidate_source(venue: Venue, patch: pytest.MonkeyPatch, kind: str) -> None:
@@ -430,7 +502,7 @@ def test_source_boundaries(venue: Venue, monkeypatch: pytest.MonkeyPatch, when: 
 
 
 @pytest.mark.parametrize("case", ["member", "live-config", "policy", "operation-reuse", "generation"])
-def test_reverify_and_reuse(venue: Venue, case: str) -> None:
+def test_existing_checkpoint_refusal(venue: Venue, case: str) -> None:
     venue.coordinator().run(venue.prepared)
     mints, effects = list(venue.mints), list(venue.owner.calls)
     if case == "member": venue.path(MEMBER_PATHS[3]).write_bytes(b"tampered")

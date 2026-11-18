@@ -2544,9 +2544,21 @@ is this operation ID's first fsynced intent: failure before it returns a closed
 effect, allowing a later retry from prepared. Failure at/after it stops all effects
 and publishes terminal `failed_uncertain` in txn and receipt. These nonsecret
 markers carry no token-derived bytes or live ControlURL/control_tls, admit only
-Turn off/ReplaceFailed, and are exempt from source validation while retaining full
-A5 discipline. If terminal publication fails, retain disk evidence and refuse;
-a fresh instance may only terminate an unverifiable intent, never resume forward.
+Turn off/ReplaceFailed or the explicit B7 fresh-auth Enable recovery, and are
+exempt from source validation while retaining full A5 discipline (Ruling 6).
+
+**Manager Ruling 7 (G2-C1, B4/B7):** failed terminal publication is durably
+indistinguishable from a crash. B4's "resume only" is a permission, tightened in
+this slice: a fresh coordinator may start normally only with a prepared receipt
+and no transaction intent. Any existing transaction, in any phase or intent/done
+prefix (including preflight and joined checkpoints), permits no forward effect
+or forward publication. Attempt nonsecret `failed_uncertain` markers in txn-first,
+receipt-second order without requiring source verification. If marker publication
+still fails, refuse and retain the unchanged remaining bytes; every later fresh
+instance repeats this terminal-only path. Already-terminal records stay terminal.
+Same-run forward progression is unchanged. B7 explicit fresh-auth Enable recovery
+is the sole route back to ready for that failed operation; Turn off/ReplaceFailed
+may retire it. G2-C2 owns that recovery and is not implemented in G2-C1.
 
 G2-C1 is an unmounted injected-owner composition ending at `joined`, with null
 observation fields. Start and every forward publication revalidate the recorded
@@ -2555,10 +2567,10 @@ The coordinator checks receipt/file digests itself; the owner independently chec
 current policy/generation, custody and actual service/user/node/credential state.
 Preflight samples the existing four exclusive port binds after its durable intent,
 before any service/admin effect; an occupied port then terminates the transaction.
-Only preflight and joined intents are replayable after successful verification;
-an unfinished start/create/mint/staging/config/enroll effect is terminal. Completed
-effects are all reverified on fresh-instance resume. A mint completed without
-completed credential staging has lost its private result and is terminal too.
+No intent or completed prefix is replayable by a fresh instance under Ruling 7.
+The original run independently verifies each effect before recording done;
+interrupted start/create/mint/staging/config/enroll and lost private mint results
+remain terminal, with no automatic forward recovery.
 The existing `mint_local_node` retains its durable operation fence: no second mint,
 new operation ID or automatic reconciliation. G2-D owns observation/ready; G2-E
 must wire production owners, protected live config admission and service integration.

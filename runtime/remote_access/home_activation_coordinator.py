@@ -120,9 +120,9 @@ class HomeActivationCoordinator:
     def run(self, prepared: HomeActivationReceipt) -> HomeActivationReceipt:
         """Externally selected prepared binding; never generate/reuse another ID.
 
-        A fresh instance always reopens the literal records and verifies completed
-        effects. An interrupted non-idempotent intent or lost private mint result
-        can only terminate; G2-C2 owns explicit reconciliation/new generations.
+        Ruling 7: an existing transaction can only terminate, even at a verified
+        completed prefix or joined checkpoint. Failed terminal publication cannot
+        be distinguished from a crash. G2-C2 owns explicit B7 recovery.
         """
         if type(prepared) is not HomeActivationReceipt or prepared.phase != "prepared":
             raise ActivationRefused()
@@ -149,32 +149,17 @@ class HomeActivationCoordinator:
                 or receipt.phase not in ("prepared", "activating", "joined")):
             raise ActivationRefused()
         transaction = self._transactions.read_optional()
-        if transaction is not None and (not transaction.matches(receipt) or transaction.phase == "failed_uncertain"):
+        if transaction is not None:
+            # Every valid txn contains the first durable intent. A new run has no
+            # authority to resume it; run's failure path publishes txn then receipt.
             raise ActivationRefused("failed_uncertain")
-        if transaction is not None and (
-                (receipt.phase == "prepared" and transaction.effects != (Effect("preflight", "intent", {}),))
-                or (receipt.phase == "joined" and transaction.phase != "joined")):
-            raise ActivationRefused()
         self._source(receipt)
         self._members(receipt, transaction)
         self._verify("preflight", receipt)
-        if transaction is None:
-            if receipt.phase != "prepared":
-                raise ActivationRefused()
-            transaction = HomeActivationTransaction.begin(receipt)
-            self._publish_transaction(transaction, receipt, None)
-        else:
-            # Never replay even an apparently successful start/mint/enroll intent.
-            if (transaction.effects[-1].state == "intent"
-                    and transaction.effects[-1].name not in ("preflight", "joined")):
-                raise ActivationRefused("failed_uncertain")
-            names = {effect.name for effect in transaction.effects if effect.state == "done"}
-            if "local_node_mint" in names and "credential_staging" not in names:
-                raise ActivationRefused("failed_uncertain")
-            for effect in transaction.effects:
-                if effect.state == "done":
-                    self._source(receipt)
-                    self._verify(effect.name, receipt)
+        if receipt.phase != "prepared":
+            raise ActivationRefused()
+        transaction = HomeActivationTransaction.begin(receipt)
+        self._publish_transaction(transaction, receipt, None)
         if receipt.phase == "prepared":
             updated = replace(receipt, phase="activating")
             self._publish_receipt(updated, receipt)
