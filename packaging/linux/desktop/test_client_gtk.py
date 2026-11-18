@@ -14,7 +14,7 @@ from types import SimpleNamespace
 import gi
 gi.require_version("Gtk", "3.0")
 gi.require_version("WebKit2", "4.1")
-from gi.repository import GLib, Gtk
+from gi.repository import Gio, GLib, Gtk
 
 from client_ui import ClientUI
 from connection_window import ConnectionWindow
@@ -32,6 +32,44 @@ class Runtime(BaseHTTPRequestHandler):
 
     def log_message(self, *_args):
         pass
+
+
+class HostBus:
+    """Test-side system-bus stub; production keeps its fixed system address."""
+    def __init__(self):
+        device = {"label": "Synthetic &amp; device", "fingerprint": "a" * 24,
+                  "comparison_phrase": "synthetic comparison"}
+        self.snapshot = dict(phase="ready", ready=True, devices=[device], pending=device, selected=device)
+        self.calls, self.held = [], []
+        self.error = self.status_error = None
+        self.hold = False
+        self.closed = False
+
+    def is_closed(self):
+        return self.closed
+
+    def close(self, *_args):
+        self.closed = True
+
+    def call(self, name, path, interface, method, args, result_type, flags, timeout, cancel, callback, data):
+        self.calls.append((name, path, interface, method, args, result_type.dup_string(), flags, timeout))
+        error = self.status_error if method == "Status" else self.error
+        result = Gio.DBusError.new_for_dbus_error(error, "synthetic-secret-canary") if error else None
+        raw = json.dumps(self.snapshot) if method in ("Status", "NextDevice") else '"ok"'
+        if method not in ("Status", "NextDevice") and not error:
+            # Only a later Status may communicate this state to the web.
+            self.snapshot = {**self.snapshot, "phase": "paused", "ready": False}
+        deliver = lambda: (callback(self, (raw, result), data), False)[1]
+        if self.hold:
+            self.held.append(deliver)
+        else:
+            GLib.idle_add(deliver)
+
+    def call_finish(self, result):
+        raw, error = result
+        if error:
+            raise error
+        return GLib.Variant("(s)", (raw,))
 
 
 class GTKTests(unittest.TestCase):
@@ -122,6 +160,151 @@ class GTKTests(unittest.TestCase):
         self.ui.open_runtime(root, token)
         self.pump(lambda: model.stage == "failed")
         self.assertIsNone(self.ui.runtime_view)
+
+    def test_host_facade_dispatch_outcomes_events_and_fencing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            prefix = Path(directory)
+            root = prefix / "share/happyranch/desktop/connection"
+            root.mkdir(parents=True)
+            (root.parent / "native-connection-bridge.v1.json").write_bytes(
+                (Path(__file__).parents[3] / "protocol/native-connection-bridge.v1.json").read_bytes())
+            resources = {"index.html": b'<!doctype html><script src="host.js"></script>',
+                         "host.js": b"happyranchConnection.call('bridge.hello','{\"minVersion\":1,\"maxVersion\":1}');"}
+            for name, data in resources.items():
+                (root / name).write_bytes(data)
+            (root / "resource-manifest.json").write_text(json.dumps(dict(version=1, entry="index.html",
+                resources=[dict(path=name, bytes=len(data), sha256=hashlib.sha256(data).hexdigest())
+                           for name, data in resources.items()])))
+            window = ConnectionWindow(self.app, None, prefix, self.ui.tr, self.ui)
+            self.addCleanup(window.close)
+            self.pump(lambda: window.hello_seen or window.unavailable_reason is not None)
+            self.assertIsNone(window.unavailable_reason)
+            bus = HostBus()
+            window.connection = bus
+
+            def evaluate(source, world=None):
+                values = []
+                def done(view, result, _data):
+                    values.append(view.call_async_javascript_function_finish(result).to_json(0))
+                window.view.call_async_javascript_function(source, -1, None, world, None, None, done, None)
+                self.pump(lambda: bool(values))
+                return json.loads(values[0])
+
+            def start(command, args="{}"):
+                return evaluate("window.hostReply=null;window.hostError=null;happyranchConnection.call(" +
+                                json.dumps(command) + "," + json.dumps(args) +
+                                ").then(v=>window.hostReply=JSON.parse(v),e=>window.hostError=JSON.parse(e));return null;")
+
+            def outcome(command, args="{}"):
+                start(command, args)
+                self.pump(lambda: evaluate("return window.hostReply!==null || window.hostError!==null;"))
+                return evaluate("return [window.hostReply,window.hostError];")
+
+            methods = {"host.status": "Status", "host.nextDevice": "NextDevice",
+                       "host.approveDevice": "ApprovePending", "host.rejectDevice": "RejectPending",
+                       "host.revokeDevice": "RevokeSelected"}
+            for command, method in methods.items():
+                with self.subTest(command=command):
+                    bus.calls.clear()
+                    bus.snapshot.update(phase="ready", ready=True)
+                    result, error = outcome(command)
+                    self.assertIsNone(error)
+                    self.assertEqual([c[3] for c in bus.calls],
+                                     [method] if method in ("Status", "NextDevice") else [method, "Status"])
+                    for call in bus.calls:
+                        mutation = call[3] not in ("Status", "NextDevice")
+                        self.assertEqual(call[:3], ("ai.happyranch.RemoteAccess1", "/ai/happyranch/RemoteAccess1",
+                                                    "ai.happyranch.RemoteAccess1"))
+                        self.assertIsNone(call[4])
+                        self.assertEqual(call[5], "(s)")
+                        self.assertEqual(call[6], Gio.DBusCallFlags.ALLOW_INTERACTIVE_AUTHORIZATION
+                                         if mutation else Gio.DBusCallFlags.NONE)
+                        self.assertEqual(call[7], 122000 if mutation else 3000)
+                    snapshot = result if method in ("Status", "NextDevice") else result["host"]
+                    self.assertEqual(snapshot["setup"], "ready" if method in ("Status", "NextDevice") else "paused")
+                    self.assertEqual(snapshot["selected"], {"label": "Synthetic & device",
+                                                          "comparisonPhrase": "synthetic comparison"})
+                    self.assertNotIn("fingerprint", json.dumps(result))
+                    self.assertNotIn("a" * 24, json.dumps(result))
+                    if method not in ("Status", "NextDevice"):
+                        self.assertEqual(result["effect"], "confirmed")
+                        self.assertEqual(result["hostDenial"], "confirmed" if method != "ApprovePending" else "notApplicable")
+                        self.assertEqual(result["networkCleanup"], "unknown" if method == "RevokeSelected" else "notApplicable")
+            bus.calls.clear()
+            raw = json.dumps(dict(protocol="happyranch.connection", version=1, requestId="badAuthority",
+                                  command="host.revokeDevice", args={"fingerprint": "synthetic"}))
+            error = evaluate("try {await window.webkit.messageHandlers.connection.postMessage(" + json.dumps(raw) +
+                             ");return null;} catch(e) {return String(e);}", "happyranch.connection.v1")
+            self.assertIn('"code":"invalidRequest"', error)
+            self.assertEqual(bus.calls, [])
+            for command in ("host.enable", "host.turnOff", "host.createInvite"):
+                self.assertEqual(outcome(command)[1]["code"], "unavailable")
+            for remote, code, effect in (
+                    ("ai.happyranch.RemoteAccess1.Error.denied", "permissionDenied", "none"),
+                    ("org.freedesktop.DBus.Error.AccessDenied", "permissionDenied", "none"),
+                    ("ai.happyranch.RemoteAccess1.Error.changed", "stateChanged", "none"),
+                    ("ai.happyranch.RemoteAccess1.Error.expired", "expired", "none"),
+                    ("ai.happyranch.RemoteAccess1.Error.busy", "busy", "none"),
+                    ("ai.happyranch.RemoteAccess1.Error.unavailable", "outcomeUnknown", "unknown"),
+                    ("org.freedesktop.DBus.Error.NoReply", "outcomeUnknown", "unknown"),
+                    ("org.freedesktop.DBus.Error.ServiceUnknown", "unavailable", "none"),
+                    ("org.freedesktop.DBus.Error.NameHasNoOwner", "unavailable", "none")):
+                with self.subTest(remote=remote):
+                    bus.error = remote
+                    bus.calls.clear()
+                    result, error = outcome("host.approveDevice")
+                    self.assertIsNone(result)
+                    self.assertEqual((error["code"], error["effect"]), (code, effect))
+                    self.assertNotIn("synthetic-secret-canary", json.dumps(error))
+                    self.assertEqual(error["recovery"], "nativeRecovery" if effect == "unknown" else
+                                     "nativePermission" if code == "permissionDenied" else "refresh")
+                    self.assertEqual([c[3] for c in bus.calls], ["ApprovePending"])
+            bus.error = None
+            bus.status_error = "org.freedesktop.DBus.Error.ServiceUnknown"
+            result, error = outcome("host.status")
+            self.assertIsNone(error)
+            self.assertEqual((result["setup"], result["observation"], result["devices"]), ("off", "unavailable", None))
+            # The acknowledgement is confirmed even if its subsequent observation fails.
+            result, error = outcome("host.revokeDevice")
+            self.assertIsNone(error)
+            self.assertEqual((result["effect"], result["host"]["observation"]), ("confirmed", "unavailable"))
+            bus.status_error = None
+            evaluate("window.hostEvents=[];window.stopHost=happyranchConnection.on('host.stateChanged',v=>hostEvents.push(JSON.parse(v)));return null;")
+            self.pump(lambda: evaluate("return window.hostEvents.length>0;"))
+            first = evaluate("return window.hostEvents.at(-1);")
+            self.assertEqual(first["snapshot"]["setup"], "paused")
+            self.assertNotIn("fingerprint", json.dumps(first))
+            self.assertNotIn("a" * 24, json.dumps(first))
+            # Observe an external helper change through the real subscription timer.
+            bus.snapshot.update(phase="ready", ready=True)
+            self.pump(lambda: evaluate("return window.hostEvents.at(-1).snapshot.setup;") == "ready")
+            outcome("host.nextDevice")
+            self.pump(lambda: evaluate("return window.hostEvents.at(-1).sequence;") > first["sequence"])
+            evaluate("stopHost();stopHost();return null;")
+            # Let native unsubscribe arrive before checking that later observations do not emit.
+            self.pump(lambda: not window.host_subscribed)
+            self.assertIsNone(window.host_timer)
+            count = evaluate("return window.hostEvents.length;")
+            outcome("host.status")
+            self.assertEqual(evaluate("return window.hostEvents.length;"), count)
+            # Duplicate native IDs share one dispatch and the recorded outcome.
+            bus.calls.clear()
+            raw = json.dumps(dict(protocol="happyranch.connection", version=1, requestId="hostOnce",
+                                  command="host.rejectDevice", args={}))
+            evaluate("window.dupes=[];const raw=" + json.dumps(raw) + ";"
+                     "for(let n=0;n<2;n++)window.webkit.messageHandlers.connection.postMessage(raw).then(v=>dupes.push(v));return null;",
+                     "happyranch.connection.v1")
+            self.pump(lambda: evaluate("return window.dupes.length;", "happyranch.connection.v1") == 2)
+            self.assertEqual([c[3] for c in bus.calls], ["RejectPending", "Status"])
+            bus.hold = True
+            bus.calls.clear()
+            start("host.approveDevice")
+            self.pump(lambda: len(bus.held) == 1)
+            window.detach()
+            bus.held.pop()()
+            self.assertEqual([c[3] for c in bus.calls], ["ApprovePending"])
+            self.assertIsNone(evaluate("return window.hostReply;"))
+            self.assertEqual(evaluate("return window.hostEvents.length;"), count)
 
     def test_packaged_facade_events_unsubscribe_and_teardown(self):
         with tempfile.TemporaryDirectory() as directory:

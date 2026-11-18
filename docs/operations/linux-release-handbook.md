@@ -365,6 +365,22 @@ The desktop entry is a template: the deb builder replaces `@APP_EXEC@`
 with `/usr/bin/happyranch-app` and installs the menu entry/icons. Building the
 payload alone does not install files into `/opt` or `/usr/share`.
 
+The packaged connection bridge also wires Linux Host Status, NextDevice,
+ApprovePending, RejectPending and RevokeSelected on one private system-bus
+connection. All calls have zero inputs; the three mutations use genuine polkit
+authorization with a 122-second transport timeout. A mutation acknowledgement
+is followed by Status; device lists are never predicted. Host event subscribers
+receive full nonsecret observations with a three-second visible-window poll;
+unsubscribe and document teardown stop delivery. Fingerprints stay native;
+bounded comparison metadata follows the closed v1 projection. A lost mutation
+reply has unknown effect, permission denial has no effect, and missing helper
+service reports not set up/unavailable with an unreadable device list. Revoke
+confirms host denial separately from unknown network cleanup. Enable, Turn off
+and Create invite remain unavailable pending TASK-16779/slice 2b, together with
+failed-install replacement, address refresh and policy renewal. The existing
+native RemoteAccessPanel remains until slice 6; source wiring is not native
+helper/polkit or end-to-end acceptance.
+
 The packaged connection window now exposes session-only client status, invite,
 cancel, disconnect, retry (fresh invite) and health controls. Native GTK dialogs
 own invite paste, exact Host consent and comparison phrases; worker threads own
