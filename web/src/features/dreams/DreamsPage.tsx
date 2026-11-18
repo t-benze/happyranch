@@ -159,11 +159,15 @@ function DreamCard({
       </button>
 
       {/* Quote / summary — Dr1: rendered markdown (shared Markdown pattern),
-          kept to the card's existing italic secondary 14px two-line preview. */}
+          kept to the card's existing italic secondary 14px two-line preview.
+          -webkit-line-clamp only counts lines inside one inline flow; block
+          children (pre, headings, lists) escape it, so max-h-10 (two 20px
+          text-sm lines) is the hard bound and the clamp's overflow-hidden
+          clips the rest. The drawer renders the full summary. */}
       {dream.summary && (
         <div className={cn(
           'text-sm italic border-l-2 border-accent-default pl-3 mb-2',
-          'text-text-secondary line-clamp-2',
+          'text-text-secondary line-clamp-2 max-h-10',
           SUMMARY_PREVIEW_PROSE,
           SUMMARY_CODE_TOKENS,
         )}>
