@@ -818,8 +818,19 @@ tracking contents supply no U provenance. Merge uses literal full U with explici
 `--ff-only`, retaining inherited merge settings and pull.autostash true/false
 precedence; absent pull override uses rebase.autostash when resolved rebase is
 on, otherwise inherits merge behavior. Git owns stash/apply/conflicts.
+If U equals the admitted HEAD L, the refresh instead confirms the complete
+identity once more, then the exact branch/HEAD and original deadline/cancellation,
+and returns the settled fetch success through the ordinary preparation closure.
+There is no ancestry, merge, submodule update or post-merge work on this path.
+The final identity covers changes during advertisement/target validation; the
+branch/HEAD probes cover those fields changing during that identity's later
+config/transport reads. The usual last-window/ABA limitations remain.
+If L is strictly ahead of U, both ancestry probes, the pre-merge identity check
+and the literal-U merge still run; the expected HEAD remains exactly L.
 After successful merge, effective submodule.recurse requires one supervised
-`submodule update --recursive --checkout`, also for equal/local-ahead no-ops.
+`submodule update --recursive --checkout`, also for local-ahead merge no-ops.
+The changed-target path confirms identity after merge and again after optional
+submodule work, before the final exact branch/HEAD checks.
 No init/force/remote/rebase workaround or completion after failed merge.
 True requires all required children and final exact original-branch/HEAD oracle
 AFTER completion: behind ends U; equal stays L=U; local-ahead preserves EXACT L;
