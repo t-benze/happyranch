@@ -38,6 +38,7 @@ const ConnectorSocket = "/run/happyranch-connector/ingress.sock"
 const identityFrameLimit = 1024
 
 type Config struct {
+	HomeBinding                                         *HomeBinding    `json:"home_binding,omitempty"`
 	ControlTLS                                          *HomeControlTLS `json:"control_tls,omitempty"`
 	Profile                                             string          `json:",omitempty"`
 	StateDir, CredentialFile, ControlURL, RoleIdentity  string
@@ -54,6 +55,9 @@ func (c Config) Validate() error {
 		return ErrConfiguration
 	}
 	if c.ControlTLS != nil && (c.Profile != LinuxIdentityProfile || c.ControlURL != homeURL || !c.ControlTLS.valid()) || strings.EqualFold(u.Hostname(), homeName) && c.ControlTLS == nil {
+		return ErrConfiguration
+	}
+	if c.HomeBinding != nil && (c.ControlTLS == nil || c.Profile != LinuxIdentityProfile || c.ControlURL != homeURL || !c.ControlTLS.valid() || !c.HomeBinding.valid()) {
 		return ErrConfiguration
 	}
 	if !strings.HasPrefix(c.RoleIdentity, "home-sidecar-") || len(c.RoleIdentity) <= len("home-sidecar-") || (c.Profile == "" && strings.TrimSpace(c.ExpectedPeer) == "") {
@@ -89,6 +93,7 @@ func (c Config) Validate() error {
 }
 
 type EngineConfig struct {
+	HomeBinding                                               *HomeBinding
 	StateDir, ControlURL, RoleIdentity, ExpectedPeer, Profile string
 	ControlTLS                                                *HomeControlTLS
 }
@@ -148,7 +153,7 @@ func (s *Sidecar) Start(ctx context.Context) error {
 	if err != nil {
 		return ErrCredential
 	}
-	receipt, err := s.engine.Start(ctx, EngineConfig{s.cfg.StateDir, s.cfg.ControlURL, s.cfg.RoleIdentity, s.cfg.ExpectedPeer, s.cfg.Profile, s.cfg.ControlTLS}, credential)
+	receipt, err := s.engine.Start(ctx, EngineConfig{HomeBinding: s.cfg.HomeBinding, StateDir: s.cfg.StateDir, ControlURL: s.cfg.ControlURL, RoleIdentity: s.cfg.RoleIdentity, ExpectedPeer: s.cfg.ExpectedPeer, Profile: s.cfg.Profile, ControlTLS: s.cfg.ControlTLS}, credential)
 	for i := range credential {
 		credential[i] = 0
 	}

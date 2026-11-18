@@ -176,6 +176,14 @@ func runHomeTSNetLifecycle(t *testing.T, scenario string) {
 	if err != nil || status == nil || status.BackendState != "Running" {
 		t.Fatalf("real tsnet did not reach Running: %v", err)
 	}
+	client, clientErr := e.server.LocalClient()
+	if clientErr != nil {
+		t.Fatal(clientErr)
+	}
+	observed, observeErr := observeSelf(ctx, client, &HomeBinding{"home", "control", "connector", "7"})
+	if observeErr != nil || !bytes.Contains(observed, []byte(`"stable_id":"synthetic-stable-node"`)) || bytes.Contains(observed, []byte("nodekey:")) {
+		t.Fatal("real LocalAPI Self observation failed", observeErr)
+	}
 	running := time.Now()
 	l, err := e.Listen(":443")
 	if err != nil {

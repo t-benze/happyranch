@@ -3,9 +3,12 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 	"io"
 	"net/http"
+	"net/netip"
 	"os"
 	"strconv"
 	"syscall"
@@ -206,7 +209,21 @@ func projectNodes(data []byte, name string) ([]byte, int, bool) {
 				}
 			}
 		}
+		if len(node[3]) != 1 || len(node[3][0].data) == 0 || len(node[5]) > 16 {
+			return nil, 0, false
+		}
+		digest := sha256.Sum256(node[3][0].data)
 		row := append(binary.AppendUvarint([]byte{8}, id), wireBytes(7, u.wire)...)
+		row = append(row, wireBytes(3, []byte(hex.EncodeToString(digest[:])))...)
+		seen := map[string]bool{}
+		for _, value := range node[5] {
+			ip, err := netip.ParseAddr(string(value.data))
+			if err != nil || ip.Zone() != "" || ip.Is4In6() || seen[ip.String()] {
+				return nil, 0, false
+			}
+			seen[ip.String()] = true
+			row = append(row, wireBytes(5, []byte(ip.String()))...)
+		}
 		out = append(out, wireBytes(1, row)...)
 	}
 	return out, len(rows), true
