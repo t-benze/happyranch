@@ -303,9 +303,14 @@ class HomeActivationStore:
                 raise HomeActivationError("transition")
         else:
             validate_transition(expected, receipt)
+        self._publish_record(ACTIVATION_PATH, data, expected=expected, parse=HomeActivationReceipt.parse)
+
+    def _publish_record(self, path: str, data: bytes, *, expected: object | None,
+                        parse: Callable[[bytes], object]) -> None:
+        """Shared A5 writer; each closed store owns paths and transition checks."""
         try:
-            with self._parent(ACTIVATION_PATH) as (parent, revalidate):
-                name = Path(ACTIVATION_PATH).name
+            with self._parent(path) as (parent, revalidate):
+                name = Path(path).name
                 self._io._headscale_no_pending(parent, name)
                 previous = None
                 before = None
@@ -314,7 +319,7 @@ class HomeActivationStore:
                 else:
                     before = _signature(os.stat(name, dir_fd=parent, follow_symlinks=False))
                     previous = self._read_at(parent, name)
-                    if (HomeActivationReceipt.parse(previous) != expected
+                    if (parse(previous) != expected
                             or _signature(os.stat(name, dir_fd=parent, follow_symlinks=False)) != before):
                         raise HomeActivationError("transition")
                 pending = "." + name + ".pending"
