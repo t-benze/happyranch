@@ -36,6 +36,7 @@ import {
   useDismissCandidate,
 } from '@/hooks/dreams';
 import { CrescentMoonBadge } from '@/design-system/patterns/CrescentMoonBadge';
+import { Markdown } from '@/design-system/patterns/Markdown';
 import {
   classifyDreamError,
   dreamStatusLabel,
@@ -295,7 +296,8 @@ export function DreamDetailPane({
               {/* Quote / summary */}
               {dream.summary && (
                 <blockquote className="border-accent-default text-text-secondary border-l-2 pl-4 text-sm italic">
-                  &ldquo;{dream.summary}&rdquo;
+                  {/* Dr1 (THR-376 r2): render the summary markdown, not raw text */}
+                  <Markdown body={dream.summary} mermaidLoadingLabel={t('common.mermaidLoading')} />
                 </blockquote>
               )}
 

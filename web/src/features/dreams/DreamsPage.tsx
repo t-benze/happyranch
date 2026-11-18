@@ -36,7 +36,8 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useDreamsList } from '@/hooks/dreams';
 import { ContentWrap } from '@/design-system/layouts/ContentWrap/ContentWrap';
 import { PageTitle } from '@/design-system/patterns/PageTitle';
-import { List, Row, RowAction } from '@/design-system/patterns/List';
+import { List, Row } from '@/design-system/patterns/List';
+import { Markdown } from '@/design-system/patterns/Markdown';
 import { Button } from '@/design-system/primitives/Button';
 import { CrescentMoonBadge } from '@/design-system/patterns/CrescentMoonBadge';
 import { EmptyState } from '@/design-system/patterns/EmptyState';
@@ -79,6 +80,21 @@ function relativeAge(iso: string, t: Translate): string {
   return t('dreams.age.days', { count: d });
 }
 
+/**
+ * Card-preview overrides for the shared Markdown pattern. `.gl-prose`
+ * (MarkdownTokens.css) is unlayered, so it beats Tailwind utilities; these
+ * `!` overrides keep the preview at the card's existing italic secondary
+ * 14px type with no block margins (headings included), so the two-line clamp
+ * shows text, not heading chrome. Code blocks and tables are overflow-hidden so a
+ * clipped code block or table is never a keyboard-focusable scroller hidden
+ * under the clamp. Links stay clickable above the row's toggle overlay.
+ */
+const SUMMARY_PREVIEW_PROSE = cn(
+  '[&_.gl-prose]:text-text-secondary! [&_.gl-prose]:text-sm!',
+  '[&_.gl-prose_*]:my-0! [&_.gl-prose_:is(pre,code,table)]:overflow-hidden! [&_.gl-prose_:is(h1,h2,h3,h4,h5,h6)]:text-sm!',
+  '[&_a]:relative [&_a]:z-10',
+);
+
 /* ------------------------------------------------------------------ */
 /*  Dream card — Pasture card pattern                                  */
 /* ------------------------------------------------------------------ */
@@ -104,80 +120,97 @@ function DreamCard({
     isValidCount(dream.new_learnings_count) &&
     dream.new_learnings_count > 0;
 
+  // Dr2 (THR-376 r2): the row is a plain <li>, never a <button> wrapping
+  // links. The header is the one toggle button; its ::after overlay stretches
+  // over the whole row so a click anywhere still opens/closes the drawer, and
+  // the focus-visible ring is drawn on that overlay so it outlines the row.
+  // Real links (summary markdown links, the thread link) sit above the
+  // overlay (relative z-10) and stay independently clickable and focusable.
   return (
-    <Row padding="none">
-      <RowAction
+    <Row
+      padding="none"
+      className={cn(
+        'relative px-5 py-4 transition-colors hover:bg-surface-hover',
+        active && 'ring-2 ring-inset ring-accent-soft',
+      )}
+    >
+      {/* Header row — dream ID + agent + status pill; the row's toggle */}
+      <button
+        type="button"
         onClick={onClick}
-        className={cn(active && 'ring-2 ring-inset ring-accent-soft')}
+        aria-pressed={active}
+        className={cn(
+          'mb-1.5 flex w-full items-center gap-2 text-left',
+          'after:absolute after:inset-0',
+          'focus-visible:outline-none focus-visible:after:ring-2 focus-visible:after:ring-inset focus-visible:after:ring-accent-default',
+        )}
       >
-        {/* Header row — dream ID + agent + status pill */}
-        <div className="mb-1.5 flex items-center gap-2">
-          <CrescentMoonBadge className="h-3.5 w-3.5" label={t('dreams.badge')} />
-          <span className="text-text-primary font-mono text-xs font-medium tabular-nums">{dream.dream_id}</span>
-          <span className="text-text-muted text-xs">·</span>
-          <span className="text-text-secondary text-xs"><IdentityName canonicalId={dream.agent_name} /></span>
-          <span className={[
-            'ml-auto text-overline px-1.5 py-0.5 rounded-full font-medium uppercase tracking-wide',
-            statusPill(dream.status),
-          ].join(' ')}>
-            {dreamStatusLabel(dream.status, t)}
+        <CrescentMoonBadge className="h-3.5 w-3.5" label={t('dreams.badge')} />
+        <span className="text-text-primary font-mono text-xs font-medium tabular-nums">{dream.dream_id}</span>
+        <span className="text-text-muted text-xs">·</span>
+        <span className="text-text-secondary text-xs"><IdentityName canonicalId={dream.agent_name} /></span>
+        <span className={[
+          'ml-auto text-overline px-1.5 py-0.5 rounded-full font-medium uppercase tracking-wide',
+          statusPill(dream.status),
+        ].join(' ')}>
+          {dreamStatusLabel(dream.status, t)}
+        </span>
+      </button>
+
+      {/* Quote / summary — Dr1: rendered markdown (shared Markdown pattern),
+          kept to the card's existing italic secondary 14px two-line preview. */}
+      {dream.summary && (
+        <div className={cn(
+          'text-sm italic border-l-2 border-accent-default pl-3 mb-2',
+          'text-text-secondary line-clamp-2',
+          SUMMARY_PREVIEW_PROSE,
+        )}>
+          <Markdown body={dream.summary} mermaidLoadingLabel={t('common.mermaidLoading')} />
+        </div>
+      )}
+
+      {/* Quiet-dream state — positive first-class */}
+      {isQuiet && (
+        <p className="text-text-muted mb-2 text-xs italic">
+          {t('dreams.quiet.title')}
+        </p>
+      )}
+
+      {/* Stat strip — font-mono tabular-nums for counts */}
+      <div className="text-text-muted flex items-center gap-3 font-mono text-xs tabular-nums">
+        <span>{dream.local_date}</span>
+        <span>·</span>
+        <span>{formatCount(dream.new_learnings_count, t, 'dreams.count.learnings', 'dreams.count.learningsUnavailable')}</span>
+        <span>·</span>
+        <span>{formatCount(dream.kb_candidate_count, t, 'dreams.count.candidates', 'dreams.count.candidatesUnavailable')}</span>
+        {dream.ended_at && (
+          <>
+            <span>·</span>
+            <span>{relativeAge(dream.ended_at, t)}</span>
+          </>
+        )}
+      </div>
+
+      {/* Error indicator */}
+      {dream.error && (
+        <p className="text-feedback-danger mt-1 truncate font-mono text-xs">{dream.error}</p>
+      )}
+
+      {/* Open reflection thread link — a sibling of the toggle, above its overlay */}
+      <div className="mt-2">
+        {dream.founder_thread_id ? (
+          <Link
+            to={`/orgs/${slug}/threads/${dream.founder_thread_id}`}
+            className="text-accent-default relative z-10 inline-block text-xs hover:underline"
+          >
+            {t('dreams.thread.open')} &rarr;
+          </Link>
+        ) : (
+          <span className="text-text-muted text-xs italic">
+            {t('dreams.thread.none')}
           </span>
-        </div>
-
-        {/* Quote / summary — italic with accent left border */}
-        {dream.summary && (
-          <p className={cn(
-            'text-sm italic border-l-2 border-accent-default pl-3 mb-2',
-            'text-text-secondary line-clamp-2',
-          )}>
-            {dream.summary}
-          </p>
         )}
-
-        {/* Quiet-dream state — positive first-class */}
-        {isQuiet && (
-          <p className="text-text-muted mb-2 text-xs italic">
-            {t('dreams.quiet.title')}
-          </p>
-        )}
-
-        {/* Stat strip — font-mono tabular-nums for counts */}
-        <div className="text-text-muted flex items-center gap-3 font-mono text-xs tabular-nums">
-          <span>{dream.local_date}</span>
-          <span>·</span>
-          <span>{formatCount(dream.new_learnings_count, t, 'dreams.count.learnings', 'dreams.count.learningsUnavailable')}</span>
-          <span>·</span>
-          <span>{formatCount(dream.kb_candidate_count, t, 'dreams.count.candidates', 'dreams.count.candidatesUnavailable')}</span>
-          {dream.ended_at && (
-            <>
-              <span>·</span>
-              <span>{relativeAge(dream.ended_at, t)}</span>
-            </>
-          )}
-        </div>
-
-        {/* Error indicator */}
-        {dream.error && (
-          <p className="text-feedback-danger mt-1 truncate font-mono text-xs">{dream.error}</p>
-        )}
-
-        {/* Open reflection thread link */}
-        <div className="mt-2">
-          {dream.founder_thread_id ? (
-            <Link
-              to={`/orgs/${slug}/threads/${dream.founder_thread_id}`}
-              className="text-accent-default inline-block text-xs hover:underline"
-              onClick={(e) => e.stopPropagation()}
-            >
-              {t('dreams.thread.open')} &rarr;
-            </Link>
-          ) : (
-            <span className="text-text-muted text-xs italic">
-              {t('dreams.thread.none')}
-            </span>
-          )}
-        </div>
-      </RowAction>
+      </div>
     </Row>
   );
 }
