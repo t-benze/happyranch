@@ -142,7 +142,7 @@ final class ConnectionWindow: NSWindowController, NSWindowDelegate, WKNavigation
     func webView(_ webView: WKWebView, stop task: any WKURLSchemeTask) { /* delivery is synchronous */ }
 
     func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction,
-                 decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+                 decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void) {
         guard live, webView === view, initialAction, action.targetFrame?.isMainFrame == true,
               action.request.url?.absoluteString == ConnectionAssets.entry, action.request.httpMethod == "GET",
               action.navigationType == .other else {
@@ -152,7 +152,7 @@ final class ConnectionWindow: NSWindowController, NSWindowDelegate, WKNavigation
         decisionHandler(.allow)
     }
     func webView(_ webView: WKWebView, decidePolicyFor response: WKNavigationResponse,
-                 decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void) {
+                 decisionHandler: @escaping @MainActor @Sendable (WKNavigationResponsePolicy) -> Void) {
         guard live, webView === view, initialResponse, response.isForMainFrame,
               response.response.url?.absoluteString == ConnectionAssets.entry,
               let http = response.response as? HTTPURLResponse, http.statusCode == 200,
