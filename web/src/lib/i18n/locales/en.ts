@@ -48,6 +48,7 @@ export const en = {
   "seqwf.breadcrumb": "Breadcrumb",
   "seqwf.tab.definitions": "Definitions",
   "seqwf.tab.runs": "Runs",
+  "seqwf.tabsAria": "Workflows views",
   "seqwf.readOnly": "View only. Agents start workflow runs from their own tasks. This page has no start, retry, reassign, merge or configuration control.",
   "seqwf.loading": "Loading workflow information…",
   "seqwf.error": "Workflow information could not be loaded.",
@@ -2125,6 +2126,7 @@ export const en = {
   'todos.filter.all': 'All',
   'todos.filter.allAgents': 'All agents',
   'todos.filter.agentLabel': 'Filter by agent',
+  'todos.filter.statusLabel': 'Filter by status',
   'todos.group.active': 'Active',
   'todos.group.paused': 'Paused',
   'todos.group.needsAttention': 'Needs attention',
@@ -2278,6 +2280,7 @@ export const en = {
   'workHours.header.description':
     'Configure when agents wake and what they dispatch — org → team → agent, leaf by leaf.',
   'workHours.header.wakeHistory': 'View wake history',
+  'workHours.tabs.aria': 'Work Hours views',
   'workHours.tabs.overview': 'Overview',
   'workHours.tabs.wakes': 'Wakes',
   'workHours.statusBar.label': 'Work hours',

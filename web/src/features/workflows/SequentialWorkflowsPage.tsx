@@ -4,10 +4,10 @@
  * start, retry, reassign or merge control, and only Setup edits configuration
  * (current default agents; never admission or repositories).
  */
-import { Link, useParams } from 'react-router-dom';
+import { Link, useNavigate, useParams } from 'react-router-dom';
 import { ContentWrap } from '@/design-system/layouts/ContentWrap/ContentWrap';
 import { PageTitle } from '@/design-system/patterns/PageTitle';
-import { SubTabBar } from '@/design-system/primitives/SubTabBar';
+import { SegmentedControl } from '@/design-system/primitives/SegmentedControl';
 import { useTranslation } from '@/hooks/i18n';
 import { useSequentialDefinition, useSequentialDefinitions, useSequentialRuns } from '@/hooks/workflows';
 import { parseDefinition, taskLinks, type DefEdge, type DefView } from '@/lib/workflowSequentialView';
@@ -20,9 +20,10 @@ import { ReadOnlyNote, ReadState, TaskRef } from './SequentialCommon';
 export function SequentialWorkflowsPage({ view }: { view: 'definitions' | 'setup' | 'runs' | 'definition' | 'run' }): JSX.Element {
   const { slug = '', definitionId = '', runId = '' } = useParams();
   const { t } = useTranslation();
+  const navigate = useNavigate();
   const base = `/orgs/${slug}/workflows`;
+  // THR-376 r2 W1: breadcrumb + page title come first; the setup status card follows them.
   return <ContentWrap>
-    <WorkflowSetupStatusCard key={slug} />
     <nav aria-label={t('seqwf.breadcrumb')} className="text-text-muted mb-3 flex flex-wrap items-center gap-1 text-xs">
       <Link className="hover:underline" to={base}>{t('seqwf.title')}</Link>
       {view !== 'definitions' && <><span aria-hidden="true">›</span>
@@ -32,17 +33,21 @@ export function SequentialWorkflowsPage({ view }: { view: 'definitions' | 'setup
     </nav>
     {view === 'definitions' || view === 'runs' || view === 'setup' ? <>
       <PageTitle title={t('seqwf.title')} />
+      <WorkflowSetupStatusCard key={slug} />
       {view === 'setup' ? <p className="bg-info-soft text-text-primary mt-3 rounded-md px-3 py-2 text-sm">{t('seqwf.setup.note')}</p> : <ReadOnlyNote />}
-      <SubTabBar className="mt-4" active={view} tabs={[
-        { value: 'definitions', label: t('seqwf.tab.definitions'), to: base },
-        { value: 'setup', label: t('seqwf.tab.setup'), to: `${base}/setup` },
-        { value: 'runs', label: t('seqwf.tab.runs'), to: `${base}/runs` },
-      ]} />
+      {/* THR-376 r2 W2: shared accent-soft SegmentedControl pill; picking a view navigates. */}
+      <SegmentedControl className="mt-4" aria-label={t('seqwf.tabsAria')} value={view}
+        onValueChange={(next) => { if (next !== view) navigate(next === 'definitions' ? base : `${base}/${next}`); }}
+        options={[
+          { value: 'definitions', label: t('seqwf.tab.definitions') },
+          { value: 'setup', label: t('seqwf.tab.setup') },
+          { value: 'runs', label: t('seqwf.tab.runs') },
+        ]} />
       <div className="mt-4">{view === 'definitions' ? <DefinitionsList key={slug} base={base} />
         : view === 'setup' ? <SequentialSetup key={slug} slug={slug} /> : <RunsList key={slug} slug={slug} />}</div>
-    </> : view === 'definition'
+    </> : <><WorkflowSetupStatusCard key={slug} />{view === 'definition'
       ? <DefinitionOverview key={JSON.stringify([slug, definitionId])} id={definitionId} />
-      : <SequentialRunDetail key={JSON.stringify([slug, runId])} slug={slug} runId={runId} />}
+      : <SequentialRunDetail key={JSON.stringify([slug, runId])} slug={slug} runId={runId} />}</>}
   </ContentWrap>;
 }
 
