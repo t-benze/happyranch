@@ -3721,6 +3721,19 @@ reparse idempotency, fail-safe observation and additive legacy upgrades without
 providers, daemon lifespan or live data. This venue is outside retired Python
 units, general integration and Product E2E and adds no required CI check.
 
+## Focused execution-track recall checks
+
+```sh
+uv run --frozen python -B -m unittest scripts.test_recall_tracks -v
+```
+
+These standalone backend unit checks use temporary SQLite databases and the
+production recall payload boundary. They cover fan-out carriers with their own
+session/result, existing no-result carriers, proven delegate-then chains,
+ordinary subtasks, mismatched legs, launch provenance and the 64-row bound.
+This uses the existing standalone unittest venue outside the retired Python
+suite, general integration and Product E2E, and adds no required CI check.
+
 ## History
 
 Citations removed from the body, with the section they supported:
