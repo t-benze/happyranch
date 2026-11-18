@@ -369,7 +369,9 @@ class ClientModel:
         return False
 
     def loaded(self, token: int, success: bool) -> None:
-        if not self.valid(token) or self.stage not in ("opening", "connected"):
+        if not self.valid(token) or self.stage not in ("opening", "connected", "saving"):
+            return
+        if self.stage == "saving" and success:
             return
         if success:
             self.load_succeeded = True

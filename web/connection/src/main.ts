@@ -16,17 +16,20 @@ let connection: Connection | null = null;
 let stopRole: (() => void) | undefined;
 let generation = 0;
 let ended = false;
-const localized: { node: HTMLElement; key: keyof Copy }[] = [];
+const localized: { node: HTMLElement; key: keyof Copy; ordinal?: number }[] = [];
 const copy = (): Copy => catalogs[locale];
-function element<K extends keyof HTMLElementTagNameMap>(tag: K, key?: keyof Copy): HTMLElementTagNameMap[K] {
+function text(key: keyof Copy, ordinal?: number): string {
+  return copy()[key] + (ordinal === undefined ? '' : ` ${new Intl.NumberFormat(locale).format(ordinal)}`);
+}
+function element<K extends keyof HTMLElementTagNameMap>(tag: K, key?: keyof Copy, ordinal?: number): HTMLElementTagNameMap[K] {
   const node = document.createElement(tag);
-  if (key) { localized.push({ node, key }); node.textContent = copy()[key]; }
+  if (key) { localized.push({ node, key, ordinal }); node.textContent = text(key, ordinal); }
   return node;
 }
 function translate(): void {
   document.documentElement.lang = locale;
   document.title = copy().title;
-  localized.forEach(({ node, key }) => { node.textContent = copy()[key]; });
+  localized.forEach(({ node, key, ordinal }) => { node.textContent = text(key, ordinal); });
   language.setAttribute('aria-label', copy().language);
   updateStatus();
 }
@@ -131,7 +134,10 @@ function renderSaved(snapshot: ClientSnapshot): void {
     savedList.replaceChildren();
     for (const computer of snapshot.computers ?? []) {
       const row = element('li');
-      const label = element('span'); label.textContent = computer.label;
+      const generated = connection?.hello.platform === 'linux' ? /^Saved computer ([1-9][0-9]*)$/.exec(computer.label) : null;
+      const ordinal = generated ? Number(generated[1]) : undefined;
+      const label = ordinal !== undefined && Number.isSafeInteger(ordinal) ? element('span', 'savedComputer', ordinal) : element('span');
+      if (!generated || ordinal === undefined || !Number.isSafeInteger(ordinal)) label.textContent = computer.label;
       row.append(label, actionButton('client.connectSaved', 'connectSaved', JSON.stringify({ computerRef: computer.computerRef })),
         actionButton('client.removeSaved', 'removeSaved', JSON.stringify({ computerRef: computer.computerRef })));
       savedList.append(row);

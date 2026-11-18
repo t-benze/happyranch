@@ -130,7 +130,7 @@ class SecretStore:
         from gi.repository import Secret
         # refresh() is asynchronous; a fresh collection-scoped SearchItems reply
         # is required for discovery and particularly post-delete absence.
-        items = collection.search_sync(None, {}, Secret.SearchFlags.ALL, cancel)
+        items = collection.search_sync(None, {"xdg:schema": SCHEMA}, Secret.SearchFlags.ALL, cancel)
         if len(items) > 256:
             raise StoreError("unavailable")
         return items
@@ -143,6 +143,21 @@ class SecretStore:
                 or any(re.fullmatch("[0-9a-f]{64}", attrs[k]) is None for k in ATTRS)):
             raise StoreError("saveFailed")
         return {k: attrs[k] for k in ATTRS}
+
+    def _matches(self, item: object, target: dict) -> bool:
+        try:
+            return self._attributes(item) == target
+        except Exception:
+            # A malformed peer is unrelated only with a readable, different
+            # binding attribute. Missing/unreadable identity remains uncertain.
+            try:
+                attrs = item.get_attributes()
+                if any(type(attrs.get(k)) is str and re.fullmatch("[0-9a-f]{64}", attrs[k])
+                       and attrs[k] != value for k, value in target.items()):
+                    return False
+            except Exception:
+                pass
+            raise StoreError("saveFailed") from None
 
     def _read(self, item: object, cancel: object) -> object:
         attrs = self._attributes(item)
@@ -182,9 +197,9 @@ class SecretStore:
             attrs = binding(record)
             # Fail before write on a full inventory; never silently evict access.
             items = self._items(collection, cancel)
-            if len(items) >= 256 or sum(self._attributes(i) is not None for i in items) >= 32:
-                if not any(self._attributes(i) == attrs for i in items):
-                    raise StoreError("saveFailed")
+            matches = [i for i in items if self._matches(i, attrs)]
+            if len(items) >= 32 and not matches:
+                raise StoreError("saveFailed")
             item = secret.Item.create_sync(collection, schema, attrs, "HappyRanch saved computer",
                 secret.Value.new(raw, -1, "text/plain"), secret.ItemCreateFlags.REPLACE, cancel)
             if item is None or encode(self._read(item, cancel)) != raw:
@@ -217,10 +232,11 @@ class SecretStore:
     def delete(self, record: object) -> None:
         def remove(_s: object, collection: object, _schema: object, cancel: object) -> None:
             attrs = binding(record)
-            for item in self._items(collection, cancel):
-                if self._attributes(item) == attrs and not item.delete_sync(cancel):
+            matches = [i for i in self._items(collection, cancel) if self._matches(i, attrs)]
+            for item in matches:
+                if not item.delete_sync(cancel):
                     raise StoreError("removalIncomplete")
-            if any(self._attributes(i) == attrs for i in self._items(collection, cancel)):
+            if any(self._matches(i, attrs) for i in self._items(collection, cancel)):
                 raise StoreError("removalIncomplete")
         try:
             self._run(remove)

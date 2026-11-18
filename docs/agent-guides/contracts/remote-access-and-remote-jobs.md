@@ -1357,12 +1357,18 @@ SavedRecord resume material; never invitations, pair secrets, handles or bootstr
 tokens. Locked/denied custody needs native permission; unavailable/failed saving
 continues session-only with a persistent accessible native warning and static
 Retry save. No plaintext or substitute store. Readable saved computers remain
-visible if a peer item is unreadable. Reconnect rereads native custody and uses
+visible if a peer item is unreadable. Inventory limits apply only to this schema;
+unrelated login items do not consume capacity. Save/removal isolate malformed peers
+with a provably different binding; unreadable or possibly matching identities
+retain uncertainty. Reconnect rereads native custody and uses
 same-node resume with the loaded-runtime gate; Disconnect retains actually saved
 access. Remove verifies exact local absence and reports partial cleanup honestly,
 without claiming Host revocation or network unenrollment. Cancellation during a
 write/readback invalidates the attempt and waits for that safe point before
-teardown, retaining the observed custody outcome. Source and disposable-keyring
+teardown, retaining the observed custody outcome. Runtime failure during Retry
+save also waits for this safe point and cannot restore Connected. Generated Linux
+saved-computer ordinals use the static view's current locale without remounting
+controls or changing opaque refs. Source and disposable-keyring
 tests do not replace packaged/live, cross-device or different-network acceptance.
 The native launcher must provide only its admitted environment, including
 `XDG_RUNTIME_DIR`; it must not inherit credential/debug/trust overrides.

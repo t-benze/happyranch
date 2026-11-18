@@ -374,6 +374,45 @@ class SavedLifecycleTests(unittest.TestCase):
         self.assertEqual(replies[-1][0]["effect"], "confirmed")
         self.assertEqual(len(self.fake.items), 1)
 
+    def test_retry_save_runtime_failure_waits_for_custody_then_stops(self):
+        for mode in ("ok", "write-failed"):
+            for hold in (False, True):
+                with self.subTest(mode=mode, hold=hold):
+                    self.ui = UI()
+                    self.model, self.session = self.ui.model, Session(None)
+                    self.fake.mode = "write-failed"
+                    self.save_start()
+                    self.ui.pump(lambda: self.ui.opened is not None)
+                    self.model.loaded(self.model.token, True)
+                    entered, release = threading.Event(), threading.Event()
+                    self.addCleanup(release.set)
+                    create = self.fake.create
+                    def blocked(*args):
+                        entered.set()
+                        self.assertTrue(release.wait(2))
+                        return create(*args)
+                    self.fake.Item.create_sync = blocked
+                    self.fake.mode = mode
+                    replies = []
+                    self.model.save(self.model.token, finish=lambda *r: replies.append(r))
+                    self.ui.pump(entered.is_set)
+                    token = self.model.token
+                    if hold:
+                        self.model.confirm_stop(lambda *_: None)
+                    self.model.loaded(token, False)  # WebKit load/process failure
+                    self.model.loaded(token, True)  # A later callback cannot heal it.
+                    self.assertNotIn("stop", [n for n, _ in self.session.calls])
+                    release.set()
+                    self.ui.pump(lambda: bool(replies))
+                    if hold:
+                        self.ui.confirmed(False)
+                    self.ui.pump(lambda: not self.model.workers and self.ui.queue.empty())
+                    self.assertEqual((self.model.stage, self.model.runtime), ("failed", "unknown"))
+                    self.assertEqual(self.model.saved_access, "saved" if mode == "ok" else "notSaved")
+                    self.assertIn("runtimeUnavailable", self.ui.errors)
+                    self.assertIsNone(self.model.session)
+                    self.fake.Item.create_sync = create
+
     def test_save_completion_while_confirmation_open_holds_progress(self):
         entered, release = threading.Event(), threading.Event()
         self.addCleanup(release.set)

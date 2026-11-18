@@ -82,7 +82,7 @@ class FakeSecret:
         pass
 
     def search_sync(self, schema, attrs, flags, cancel):
-        return list(self.items)
+        return [i for i in self.items if all(i.attrs.get(k) == v for k, v in attrs.items())]
 
     def create(self, collection, schema, attrs, label, value, flags, cancel):
         if self.mode == "denied":
@@ -110,15 +110,18 @@ class CustodyTests(unittest.TestCase):
         self.record = record()
 
     def test_roundtrip_exact_binding_readback_and_local_absence(self):
+        foreign = [Item(self.fake, {"xdg:schema": "org.other.App", "index": str(i)}, "synthetic")
+                   for i in range(256)]
         self.custody.save(self.record)
+        self.fake.items[0:0] = foreign
         self.assertEqual(self.fake.writes[0][0], self.fake)
-        self.assertEqual(self.fake.items[0].attrs, {
+        self.assertEqual(self.fake.items[-1].attrs, {
             "xdg:schema": "ai.happyranch.LinuxClient.v1",
             "home": hashlib.sha256(b"synthetic-home").hexdigest(),
             "control": hashlib.sha256(b"synthetic-control").hexdigest(),
             "node": hashlib.sha256(b"node-one").hexdigest(),
             "profile": hashlib.sha256(b"a" * 32).hexdigest()})
-        self.assertEqual(set(json.loads(self.fake.items[0].raw)), {
+        self.assertEqual(set(json.loads(self.fake.items[-1].raw)), {
             "version", "bearer", "home_id", "control_plane_id", "stable_node_id", "connector_id",
             "control_url", "ca_der", "fingerprint", "dial_ip", "home_endpoint", "profile_id",
             "hostname", "network_state"})
@@ -129,8 +132,42 @@ class CustodyTests(unittest.TestCase):
         self.assertEqual(repr(restored), "SavedRecord(<redacted>)")
         self.custody.save(record("node-two"))
         self.custody.delete(self.record)
-        self.assertEqual(len(self.fake.items), 1)
+        self.assertEqual(len(self.fake.items), 257)
+        self.assertTrue(all(i in self.fake.items for i in foreign))
         self.assertEqual(self.custody.list()[0].keys(), {store.reference(record("node-two"))})
+
+    def test_malformed_peers_only_block_possibly_matching_targets(self):
+        schema = {"xdg:schema": store.SCHEMA}
+        target = store.binding(self.record)
+        for attrs in (schema | {"node": "0" * 64},
+                      schema | store.binding(record("other-node")) | {"extra": "malformed"}):
+            with self.subTest(attrs=attrs):
+                peer = Item(self.fake, attrs, "invalid-synthetic")
+                self.fake.items[:] = [peer]
+                self.custody.save(self.record)
+                self.assertEqual(self.custody.list()[1:], ("unknown", "unavailable"))
+                self.assertEqual(store.encode(self.custody.load(self.record)), store.encode(self.record))
+                self.custody.delete(self.record)
+                self.assertEqual(self.fake.items, [peer])
+                self.assertEqual(self.custody.list(), ({}, "unknown", "unavailable"))
+        for attrs, unreadable in ((schema, False), (schema | target | {"extra": "malformed"}, False),
+                                  (schema | target, True)):
+            with self.subTest(ambiguous=attrs, unreadable=unreadable):
+                self.fake.items[:] = []
+                self.custody.save(self.record)
+                peer = Item(self.fake, attrs, "invalid-synthetic")
+                if unreadable:
+                    def unavailable():
+                        raise RuntimeError("synthetic attribute failure")
+                    peer.get_attributes = unavailable
+                self.fake.items.insert(0, peer)
+                writes = len(self.fake.writes)
+                with self.assertRaisesRegex(store.StoreError, "saveFailed"):
+                    self.custody.save(self.record)
+                self.assertEqual(len(self.fake.writes), writes)
+                with self.assertRaisesRegex(store.StoreError, "removalIncomplete"):
+                    self.custody.delete(self.record)
+                self.assertEqual(len(self.fake.items), 2)
 
     def test_closed_failures_never_select_substitute_or_claim_saved(self):
         for mode, category in (("locked", "keychainLocked"), ("unavailable", "unavailable"),
@@ -168,6 +205,11 @@ class CustodyTests(unittest.TestCase):
         with self.assertRaisesRegex(store.StoreError, "removalIncomplete"):
             self.custody.delete(self.record)
         self.assertEqual(len(self.fake.items), 1)
+        self.fake.mode = "ok"
+        peer = Item(self.fake, {"xdg:schema": store.SCHEMA, "node": "0" * 64}, "invalid-synthetic")
+        self.fake.items.insert(0, peer)
+        self.custody.delete(self.record)
+        self.assertEqual(self.fake.items, [peer])
 
 
 class RealKeyringTests(unittest.TestCase):
@@ -177,17 +219,28 @@ class RealKeyringTests(unittest.TestCase):
             self.skipTest("requires an explicitly isolated dbus-run-session keyring")
         self.assertTrue(Path(root).is_absolute())
         self.assertEqual(Path(os.environ["HOME"]), Path(root) / "home")
-        self.assertIn("TASK-17514", root)
+        self.assertIn("task-tmp", Path(root).parts)
         self.assertTrue(os.environ.get("DBUS_SESSION_BUS_ADDRESS"))
         custody = store.SecretStore(owner._native)
         original = record()
         self.assertEqual(custody.list(), ({}, "none", "known"))
         custody.save(original)
+        def foreign_items(secret, collection, _schema, cancel):
+            foreign_schema = secret.Schema.new("org.other.App", secret.SchemaFlags.NONE,
+                                               {"index": secret.SchemaAttributeType.STRING})
+            for i in range(256):
+                secret.Item.create_sync(collection, foreign_schema, {"index": str(i)}, "Synthetic foreign item",
+                    secret.Value.new("synthetic", -1, "text/plain"), secret.ItemCreateFlags.REPLACE, cancel)
+        custody._run(foreign_items)
         records, state, observation = store.SecretStore(owner._native).list()
         self.assertEqual((len(records), state, observation), (1, "saved", "known"))
         self.assertEqual(store.encode(custody.load(next(iter(records.values())))), store.encode(original))
+        custody.save(original)
         custody.delete(original)
         self.assertEqual(custody.list(), ({}, "none", "known"))
+        def count_foreign(secret, collection, _schema, cancel):
+            return len(collection.search_sync(None, {"xdg:schema": "org.other.App"}, secret.SearchFlags.ALL, cancel))
+        self.assertEqual(custody._run(count_foreign), 256)
 
 
 if __name__ == "__main__":
