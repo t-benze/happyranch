@@ -16,7 +16,8 @@ Verify with `sha256sum -c happyranch-<version>-linux-<arch>.tar.gz.sha256`.
 The tarball is an intermediate build input; the installable product is the .deb.
 
 To build locally on Linux x86_64 or aarch64, use a clean committed checkout,
-uv, Node 24/npm, Go 1.23.12+, git, GNU tar, gzip, sha256sum and binutils
+uv, Node 24/npm, Go 1.23.12+, a C compiler and libc development headers (CGO),
+git, GNU tar, gzip, sha256sum and binutils
 (`readelf`). No host Python is required; the builder installs its private pinned CPython 3.12.10
 before running any Python helper, including project metadata reads.
 Network access to the pinned Python/dependency sources is required. Unset
@@ -34,6 +35,10 @@ an exact uv-managed CPython 3.12.10, `uv sync --frozen --no-dev
 --no-default-groups` with binary-only runtime dependencies, then installs the
 HappyRanch wheel as real `.py` files. It builds production `web/dist` with
 `npm ci && npm run build` and the native Go sidecar with `CGO_ENABLED=0`.
+The user-run client helper
+`bin/happyranch-home-bridge` uses `CGO_ENABLED=1`; it needs the C toolchain.
+It runs unprivileged with `--home-session-v1`, without service registration,
+saved credentials or a network-state profile.
 Its private Go module cache uses `-modcacherw` so build cleanup can remove it.
 Existing version/architecture outputs are refused; use a fresh destination.
 
@@ -347,12 +352,32 @@ acceptance remains separate from temp-root verification.
 
 The payload also contains `bin/happyranch-app`,
 `share/happyranch/desktop/happyranch_window.py`,
+`share/happyranch/desktop/client_session.py`,
+`share/happyranch/desktop/client_runtime.py`, the verbatim shared pure codec
+`share/happyranch/desktop/invite_v2.py`,
 `share/applications/happyranch.desktop.in`, and the existing clay brand artwork
 under `share/icons/hicolor/` (16, 32, 64, 128, 256, 512, 1024 PNG and scalable
 SVG). The builder copies the existing Mac PNGs and Web SVG without changing them.
 The desktop entry is a template: the deb builder replaces `@APP_EXEC@`
 with `/usr/bin/happyranch-app` and installs the menu entry/icons. Building the
 payload alone does not install files into `/opt` or `/usr/share`.
+
+The new client siblings are native-only session/runtime building blocks; public
+client capabilities remain unavailable until GTK integration (3a.2). They retain
+no saved access. The runtime proxy answers bootstrap with an unrelated session
+token, strips browser authority headers, and injects the device bearer only
+on the private helper hop. Session stop seals admission and closes owned streams
+before bounded helper terminate/kill/reap; forced kill reports cleanup incomplete
+because helper scratch removal cannot be confirmed.
+
+```sh
+# Focused session/runtime behavior; stdlib only, no GTK or installs:
+/usr/bin/python3 -B packaging/linux/desktop/test_client.py -v
+# Shipping connector parser/forwarder compatibility (existing project Python dependencies):
+python -B packaging/linux/desktop/test_client_connector.py -v
+# Focused Go helper tests with the already-cached toolchain/modules:
+(cd app/mac/tsnet-bridge && GOPROXY=off GOTOOLCHAIN=local go test -run '^TestHomeSession' -count=1 .)
+```
 
 The window launcher resolves its payload prefix relative to `bin/`, then runs
 **`/usr/bin/python3 -I`** with system PyGObject, GTK 3.0 and WebKit2 **4.1**.

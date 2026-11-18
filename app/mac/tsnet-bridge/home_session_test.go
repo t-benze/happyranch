@@ -98,7 +98,10 @@ func TestHomeSessionLaunchClosed(t *testing.T) {
 }
 
 func TestHomeSessionRuntimeDirectory(t *testing.T) {
-	root := t.TempDir()
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal("canonical runtime setup failed")
+	}
 	if os.Chmod(root, 0700) != nil {
 		t.Fatal("private runtime setup failed")
 	}
@@ -342,7 +345,10 @@ func TestHomeSessionScratchCustodyAndLifetime(t *testing.T) {
 	for _, mode := range []string{"custody", "eof", "signal", "error", "eof-enrolling", "signal-enrolling"} {
 		t.Run(mode, func(t *testing.T) {
 			holdEnrollment.Store(strings.HasSuffix(mode, "-enrolling"))
-			runtime := t.TempDir()
+			runtime, err := filepath.EvalSymlinks(t.TempDir())
+			if err != nil {
+				t.Fatal("canonical runtime setup failed")
+			}
 			os.Chmod(runtime, 0700)
 			// Short private socket path stays below the Unix socket length limit.
 			sockets, err := os.MkdirTemp("/tmp", "home-session-socket-")
