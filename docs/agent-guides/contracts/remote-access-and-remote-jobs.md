@@ -2173,7 +2173,10 @@ adds no issuance handler, helper operation, UI, service action or live 3c-2 flow
 protected state directory. It has no network, subprocess, Headscale adapter,
 helper/polkit method, installation or URL/key intake. The future helper
 supplies protected `HomeInviteConfig`, a pairing owner bound to the same home,
-and exactly one issuer directory per home. It must authenticate each new issue
+and exactly one issuer directory per home. Linux inert preparation now supplies
+`/var/lib/happyranch-remote-access/home-issuer` (root:root 0700), derived from
+the existing installer state root; no helper account is added. It must
+authenticate each new issue
 and explicit recovery separately under the existing helper contract. This core
 does not confer authentication or mint authority on any caller.
 
@@ -2299,10 +2302,37 @@ operator evidence. Expire may run, but cannot prove cleanup without complete Lis
 No record/fence auto-cleanup or retention/reset operation is introduced.
 
 HomeInviteConfig reader deferred to 3b-2g-2: home_endpoint is the node's runtime tailnet endpoint, which exists only after activation joins the local node; it will come from a root receipt written at activation.
-No receipt implementation here. Issuer protected-state provisioning/owned cleanup
-(item 4) and the uncalled local-node mint function (item 5) are undelivered in
-this authorized prefix cut. The runner admits the fixed node user for later
-composition, but no node mint function or installer/helper caller is added.
+The activation endpoint receipt remains undelivered. Items 4 and 5 now supply
+inert issuer-directory custody and the uncalled local-node mint composition.
+`prepare-headscale` publishes `home-issuer/` through the installer's literal
+no-follow, exclusive pending-directory/no-replace/fsync path and records its
+owner and directory identity in root:root 0600
+`home-issuer-publication.json` beside it. An existing exact safe empty directory
+can be receipted; matching complete custody is idempotent. Unsafe metadata,
+foreign contents, pending residue or a mismatched receipt refuses without repair.
+An interrupted pending publication is preserved; a complete safe empty directory
+without a receipt can be accepted by a later prepare. A retained receipt whose
+directory is missing never authorizes prepare to recreate it.
+
+The issuer portion of disable/uninstall removes only the receipted `home-issuer/`
+directory, after validating all contents and acquiring any existing issuer lock.
+Only the core's regular single-link root:root 0600 journal and empty lock are
+admitted; journal shape and canonical bytes must match the core's format, and
+`minting`/`uncertain` refuses regardless of expiry. Unknown/edited/unsafe entries,
+an orphan journal or lock, pending residue and lock contention preserve the
+whole directory with typed secret-free `issuer-cleanup-uncertain`. A removal
+interruption retains a cleanup pending marker and reports
+`issuer-partial-cleanup-uncertain`; retry preserves that residue. This issuer
+cleanup does not remove its parent, `home-ca/`, `home-minter/` or any receipts.
+It performs no mint/recovery or key-revocation operation.
+
+`home_admin.mint_local_node(operation_id, expires_at)` reuses the same root admin
+transport, minter policy and durable reservation store for fixed
+`happyranch-node`, with a separate root:root 0700
+`home-minter/happyranch-node` directory flock. It returns `MintedKey` only in
+memory, enforces at most five minutes, single-use/non-reusable, non-ephemeral and
+no ACL tags, and retains existing/partial reservations without reuse. No installer,
+enable or helper path calls it; activation remains 3b-2g-2.
 Both exact 3b-2 activation refusals, all unit bytes and home_transport=False
 remain unchanged; no enable/start/reload, control_tls write or new IPC occurs.
 Native root/Headscale/systemd and installed acceptance remain NOT RUN.
