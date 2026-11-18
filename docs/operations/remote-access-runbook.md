@@ -172,6 +172,66 @@ Use `uninstall --layout deb` (and optionally the existing `--purge`) to remove
 units/state. Configs, provisioning record, staged token, package, logs and account are retained.
 The release install record and verifier socket/service are removed.
 A missing package is not required for uninstall; unit safety checks still apply.
+The separately callable `disable-headscale --layout deb` root operator entry
+and legacy uninstall remove the proven inert Headscale unit/policy/empty custody,
+keeping package payload/notices. The staged-profile uninstall refusal remains;
+helper Turn off and activation-state cleanup remain later slices. Unknown
+config/DB/Noise/DERP/key/socket entries refuse and remain, because this slice never
+creates them. Only a valid creation receipt plus fresh identity/shape, unshared
+group, stopped unit and no process using its UID permits userdel then conditional
+groupdel. Unowned accounts remain visibly `preserved: not created by HappyRanch`.
+Before userdel succeeds, failures keep account/receipt. A later groupdel failure
+keeps receipt and remaining objects, never recreates the user, and returns typed
+secret-free `partial-cleanup-uncertain`, exit1. Explicit retry rechecks the valid
+receipt and all remaining objects, skips an absent user only when its UID is
+unused, refuses UID reuse/changed identity/shared or mismatched group, and deletes
+only a matching empty remaining group. Remove the receipt last after every owned
+object is confirmed absent; receipt-only retries converge. Other uncertainty is
+`cleanup-uncertain`, never success. No automatic repair/retry. See the
+[maintained A–E contract](../agent-guides/contracts/remote-access-and-remote-jobs.md#inert-linux-headscale-custody-prefix-thr-327-slice-3b-2f-1).
+
+Preparation first refuses competing fragments/drop-ins in the default systemd
+load paths with no-follow checks and zero effects (`foreign-unit`; unsafe
+parent/I/O `custody-uncertain`). The maintained contract lists the exact paths
+and literal merged-`/usr` alias exception. Preparation reuses cleanup's bounded
+no-follow link inventory over all those paths before any account, receipt,
+custody or unit effect. A symlink named for or whose literal target basename is
+the unit refuses even when dangling: wants/requires and aliases are foreign.
+Alias drop-ins across those paths cannot become applicable because the alias
+itself refuses, even without a drop-in. Preserve every foreign byte/mode/link;
+no adoption. Cleanup shares the all-load-path admission and retains its extra
+check before stop/disable for matching alias/enablement symlinks under
+`/etc/systemd/system` or
+`/run/systemd/system`: wants/requires links, foreign/dangling targets and manual
+links to the managed unit are all foreign because this installer creates none.
+Typed secret-free `cleanup-uncertain`, exit1, preserves account, receipt, unit,
+custody and links. Unrelated links remain; no-follow inventory uncertainty or
+exhaustion refuses. A–E partial-cleanup/retry rules above remain unchanged.
+
+The same admission also refuses **any object** whose name starts with
+`happyranch-headscale.` anywhere under those unit roots, except the installer's
+exact owned `/etc/systemd/system/happyranch-headscale.service` fragment. This
+includes same-stem timer/socket/path/mount/automount triggers, masks and drop-in
+directories. Every regular unit file and drop-in `.conf` is read as bounded
+bytes: a literal `happyranch-headscale` reference refuses, regardless of directive
+(Wants/Requires/BindsTo/Upholds/PartOf/OnFailure/OnSuccess/Triggers/Unit/Also or
+otherwise). The installer's exact owned fragment is excluded from that content
+check. Every regular file under `/usr/share/dbus-1/system-services`,
+`/usr/local/share/dbus-1/system-services` and `/etc/dbus-1/system-services`, when
+present, receives the same literal-byte check with no link following. The
+bounded no-follow reader uses the existing 64 KiB per-file limit; read failure,
+unsafe or changing files, oversize, or shared 65,536-entry/depth-32 exhaustion
+refuses before any preparation effect. Foreign bytes/modes/links/identities stay
+unchanged. Cleanup uses this same admission before stop/disable; A–E identity,
+receipt authority, partial-cleanup uncertainty and explicit retry are unchanged.
+
+This is sampled admission in the fixed default roots under a **cooperative
+root-writer** assumption. Executables in `system-generators` directories and
+root writers acting after preparation are outside this inventory; they can
+create later activation policy. No generator execution/inspection or concurrent
+root-writer fence is implemented. Custom compiled/environment unit load paths
+and native whole-host acceptance remain existing limitations. Preparation never
+starts/enables/reloads a unit and grants no later activation authority.
 
 Managed Linux no longer takes a fixed `daemon_port`. The connector and sidecar
 exclusion lists remain sorted, equal and always include DEV 8765 plus operator

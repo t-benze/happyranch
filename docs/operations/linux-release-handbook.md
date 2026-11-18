@@ -223,6 +223,97 @@ For a smoke run, unpack outside the repository, use a new scratch
 `<scratch-home>/daemon.port`, check `/api/v1/health` and `/`, and SIGTERM/wait that
 owned daemon process. Keep the live daemon and its home out of the test.
 
+## Inert Headscale custody prefix (3b-2f-1)
+
+The explicit root operator command `python -m runtime.remote_access.installer
+prepare-headscale --layout deb` prepares only the locked dedicated
+`happyranch-headscale` OS identity, fixed 0700 config/state/runtime directories,
+0600 TCP443 invite-to-node ACL and separate root-owned hardened system unit.
+It never enables, starts or reloads the unit, runs Headscale or writes server
+config/DERP/leaf material. The staged home connector activation guards and
+`home_transport=False` stay unchanged. Database names are `happyranch-node`
+and dedicated Mac-invite user `happyranch-invite`; actual user creation/minter
+injection remains future activation work.
+
+Account ownership is distinct from its shape. An exact-shape pre-existing
+account without the protected creation receipt is reusable but **unowned**;
+preparation visibly reports `preserved: not created by HappyRanch` and never
+modifies/adopts it. Only actual successful useradd plus looked-up UID/GID may
+publish root:root 0600 `headscale-account.json` under root:root 0700
+`/var/lib/happyranch-remote-access`. A crash before publication leaves the
+account unowned; there is no pre-creation intent. Shape mismatch, malformed or
+foreign/mismatched receipt, unsafe/foreign custody or differing unit refuses
+without repair or deletion.
+
+Before any preparation effect, no-follow checks refuse foreign fragments and
+applicable drop-ins across the default systemd load paths, including runtime,
+local-vendor, vendor and separate `/lib` paths. The maintained 3b-2f-1 contract
+lists every checked directory and the literal merged-`/usr` alias exception.
+The same bounded no-follow link inventory used by cleanup runs across every
+listed load path before preparation effects. Any symlink named for or whose
+literal target basename is `happyranch-headscale.service` refuses, including
+dangling wants/requires and aliases. Alias drop-ins in any of those paths cannot
+become applicable: the alias itself refuses, even without a drop-in. Foreign
+objects remain byte/mode/link-exact; refusal is typed secret-free `foreign-unit`
+(unsafe parent/I/O: `custody-uncertain`).
+
+The same admission also refuses **any object** whose name starts with
+`happyranch-headscale.` anywhere under those unit roots, except the installer's
+exact owned `/etc/systemd/system/happyranch-headscale.service` fragment. This
+includes same-stem timer/socket/path/mount/automount triggers, masks and drop-in
+directories. Every regular unit file and drop-in `.conf` is read as bounded
+bytes: a literal `happyranch-headscale` reference refuses, regardless of directive
+(Wants/Requires/BindsTo/Upholds/PartOf/OnFailure/OnSuccess/Triggers/Unit/Also or
+otherwise). The installer's exact owned fragment is excluded from that content
+check. Every regular file under `/usr/share/dbus-1/system-services`,
+`/usr/local/share/dbus-1/system-services` and `/etc/dbus-1/system-services`, when
+present, receives the same literal-byte check with no link following. The
+bounded no-follow reader uses the existing 64 KiB per-file limit; read failure,
+unsafe or changing files, oversize, or shared 65,536-entry/depth-32 exhaustion
+refuses before any preparation effect. Foreign bytes/modes/links/identities stay
+unchanged. Cleanup uses this same admission before stop/disable; A–E identity,
+receipt authority, partial-cleanup uncertainty and explicit retry are unchanged.
+
+This is sampled admission in the fixed default roots under a **cooperative
+root-writer** assumption. Executables in `system-generators` directories and
+root writers acting after preparation are outside this inventory; they can
+create later activation policy. No generator execution/inspection or concurrent
+root-writer fence is implemented. Custom compiled/environment unit load paths
+and native whole-host acceptance remain existing limitations. Preparation never
+starts/enables/reloads a unit and grants no later activation authority.
+
+**Owned cleanup:** `python -m runtime.remote_access.installer disable-headscale
+--layout deb` and legacy `uninstall --layout deb` stop/disable the exact owned
+Headscale unit and remove its canonical policy and empty fixed custody. The
+staged-profile uninstall refusal stays unchanged; helper Turn off remains later
+work. Unknown config/DB/Noise/DERP/key/socket entries are preserved and refused:
+this inert slice never creates them and cannot establish their ownership.
+Cleanup shares that all-load-path admission. Before stop/disable, the additional
+config-tree check for matching alias/enablement links anywhere below
+`/etc/systemd/system` or `/run/systemd/system` also refuses with typed secret-free
+`cleanup-uncertain`, preserving account, receipt, unit, custody and links without
+stop/disable. This includes wants/requires links, foreign/dangling targets and
+manual links to the managed unit: the inert installer creates no such links.
+No-follow inventory is bounded; uncertainty/exhaustion refuses. Unrelated links
+are preserved. A–E partial-cleanup and explicit retry semantics are unchanged.
+
+A valid creation receipt plus fresh matching identity/shape, unshared group,
+stopped unit and no process using the UID permits userdel, then conditional
+groupdel. An unowned account/group stays with visible typed
+`preserved: not created by HappyRanch`. Before userdel succeeds, failures keep
+account/receipt. After userdel succeeds, groupdel failure keeps receipt and all
+remaining objects, never recreates the user, and reports typed secret-free
+`partial-cleanup-uncertain`, exit1. Retry freshly refuses UID reuse/changed
+identity or shared/mismatched group; absent user skips userdel and a matching
+empty group gets groupdel only. Already absent objects converge by removing the
+receipt last, only after every owned object is confirmed absent. Other failures
+are typed `cleanup-uncertain`, never success. No automatic repair/retry.
+
+The inert payload/notices and all unrelated data stay. See the maintained
+remote-access contract's 3b-2f-1 subsection for rulings A–E, exact
+paths/bytes, ports, bounded startup and tests. Real root/systemd/NSS/bind
+acceptance remains separate from temp-root verification.
+
 ## Desktop window (system Python)
 
 The payload also contains `bin/happyranch-app`,
