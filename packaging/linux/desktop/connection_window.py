@@ -163,6 +163,7 @@ class ConnectionWindow:
         self.subscribed, self.event_pending, self.event_sequence = False, False, 0
         self.host_subscribed, self.host_event_pending, self.host_sequence = False, False, 0
         self.host_timer, self.host_snapshot = None, None
+        self.host_status_waiters = None
         self.window = Gtk.ApplicationWindow(application=app, title=tr("Connection", "连接"))
         if parent is not None:
             self.window.set_transient_for(parent)
@@ -552,10 +553,31 @@ class ConnectionWindow:
         return False
 
     def host_request(self, method: str, finish: Callable) -> None:
-        if self.busy or (method in _contract.HOST_MUTATIONS and self.client.prompt):
+        if self.busy:
+            # Only identical read-only Status operations share the original
+            # deadline. Mutations (including their follow-up read) never queue.
+            if (method == "Status" and self.host_status_waiters is not None
+                    and len(self.host_status_waiters) < 8):
+                self.host_status_waiters.append(finish)
+            else:
+                finish(None, "busy")
+            return
+        if method in _contract.HOST_MUTATIONS and self.client.prompt:
             finish(None, "busy")
             return
         self.busy = True
+        waiters = [] if method == "Status" else None
+        self.host_status_waiters = waiters
+
+        def complete(*outcome: object) -> None:
+            self.busy = False
+            self.host_status_waiters = None
+            finish(*outcome)
+            if waiters is not None:
+                for waiter in waiters:
+                    waiter(*outcome)
+                waiters.clear()
+
         generation = self.generation
         mutation = method in _contract.HOST_MUTATIONS
         acknowledged = False
@@ -567,16 +589,15 @@ class ConnectionWindow:
         def failed(error: Exception, dispatched: bool) -> None:
             if not current():
                 return
-            self.busy = False
             remote = self.Gio.DBusError.get_remote_error(error) if isinstance(error, self.GLib.Error) else None
             absent = remote in ("org.freedesktop.DBus.Error.ServiceUnknown",
                                 "org.freedesktop.DBus.Error.NameHasNoOwner")
             snapshot = self.protocol.host_unavailable("off" if absent else "unknown")
             self.observe_host(snapshot)
             if acknowledged:
-                finish(self.protocol.host_action(method, snapshot))
+                complete(self.protocol.host_action(method, snapshot))
             elif not mutation and absent and method == "Status":
-                finish(snapshot)
+                complete(snapshot)
             else:
                 closed = {"ai.happyranch.RemoteAccess1.Error.denied": "permissionDenied",
                           "org.freedesktop.DBus.Error.AccessDenied": "permissionDenied",
@@ -589,11 +610,11 @@ class ConnectionWindow:
                           "ai.happyranch.RemoteAccess1.Error.unknown_method": "unavailable"}
                 code = closed.get(remote)
                 if code:
-                    finish(None, code)
+                    complete(None, code)
                 elif mutation and dispatched and not absent:
-                    finish(None, "outcomeUnknown", "unknown")
+                    complete(None, "outcomeUnknown", "unknown")
                 else:
-                    finish(None, "unavailable")
+                    complete(None, "unavailable")
 
         def replied(connection: object, result: object, called: str) -> None:
             nonlocal acknowledged
@@ -610,9 +631,8 @@ class ConnectionWindow:
                     call("Status")
                     return
                 snapshot = self.protocol.host(raw)
-                self.busy = False
                 self.observe_host(snapshot)
-                finish(self.protocol.host_action(method, snapshot) if mutation else snapshot)
+                complete(self.protocol.host_action(method, snapshot) if mutation else snapshot)
             except Exception as error:
                 failed(error, True)
 
@@ -653,6 +673,9 @@ class ConnectionWindow:
     def detach(self) -> None:
         self.active = False
         self.generation += 1
+        if self.host_status_waiters is not None:
+            self.host_status_waiters.clear()
+            self.host_status_waiters = None
         self.subscribed = self.host_subscribed = False
         if self.host_timer is not None:
             self.GLib.source_remove(self.host_timer)

@@ -200,6 +200,76 @@ class GTKTests(unittest.TestCase):
                 self.pump(lambda: evaluate("return window.hostReply!==null || window.hostError!==null;"))
                 return evaluate("return [window.hostReply,window.hostError];")
 
+            # Match loadRole: subscribe, then immediately read before the
+            # subscription's asynchronous Status reply can arrive.
+            bus.hold = True
+            evaluate("""
+                window.hostEvents=[];window.hostReply=null;window.hostError=null;
+                const controls=document.createElement('button');
+                controls.id='host-controls';controls.hidden=true;controls.disabled=true;
+                document.body.append(controls);
+                window.stopHost=happyranchConnection.on('host.stateChanged',v=>hostEvents.push(JSON.parse(v)));
+                happyranchConnection.call('host.status','{}').then(raw=>{
+                    window.hostReply=JSON.parse(raw);
+                    controls.hidden=false;controls.disabled=false;
+                },raw=>{window.hostError=JSON.parse(raw);stopHost();controls.remove();});
+                return null;
+            """)
+            self.pump(lambda: len(bus.held) == 1 and window.requests.reads == 1
+                      or evaluate("return window.hostError!==null;"))
+            self.assertIsNone(evaluate("return window.hostError;"), "initial Status rejected during subscription priming")
+            self.assertIsNone(evaluate("return window.hostReply;"))
+            self.assertEqual([c[3] for c in bus.calls], ["Status"])
+            self.assertTrue(evaluate("return document.querySelector('#host-controls').hidden;"))
+            # Eight native reads remain the cap even when they share one call.
+            evaluate("""
+                window.joined=[];
+                for(let n=0;n<8;n++)window.webkit.messageHandlers.connection.postMessage(JSON.stringify({
+                    protocol:'happyranch.connection',version:1,requestId:'joined'+n,command:'host.status',args:{}
+                })).then(raw=>joined.push(JSON.parse(raw)));
+                return null;
+            """, "happyranch.connection.v1")
+            self.pump(lambda: evaluate("return window.joined.length;", "happyranch.connection.v1") == 1)
+            self.assertEqual(evaluate("return window.joined[0].error.code;", "happyranch.connection.v1"), "busy")
+            self.assertEqual(window.requests.reads, 8)
+            self.assertEqual([c[3] for c in bus.calls], ["Status"])
+            # A mutation cannot queue behind the priming read.
+            blocked = json.dumps(dict(protocol="happyranch.connection", version=1, requestId="blockedMutation",
+                                      command="host.approveDevice", args={}))
+            result = evaluate("return JSON.parse(await window.webkit.messageHandlers.connection.postMessage(" +
+                              json.dumps(blocked) + "));", "happyranch.connection.v1")
+            self.assertEqual(result["error"]["code"], "busy")
+            bus.hold = False
+            bus.held.pop()()
+            self.pump(lambda: evaluate("return window.hostReply!==null && window.hostEvents.length>0;"))
+            self.assertEqual(evaluate("return window.hostReply;"), evaluate("return window.hostEvents[0].snapshot;"))
+            self.assertEqual(evaluate("return window.hostReply.setup;"), "ready")
+            self.assertIsNone(evaluate("return window.hostError;"))
+            self.assertTrue(evaluate("const c=document.querySelector('#host-controls');return !!c && !c.hidden && !c.disabled;"))
+            evaluate("stopHost();return null;")
+            self.pump(lambda: not window.host_subscribed)
+            self.pump(lambda: evaluate("return window.joined.length;", "happyranch.connection.v1") == 8)
+            self.assertEqual(evaluate("return window.joined.filter(v=>v.ok).length;", "happyranch.connection.v1"), 7)
+            self.assertEqual(window.requests.reads, 0)
+            self.assertIsNone(window.host_status_waiters)
+            # Coalesced failures resolve every reader and release the slot.
+            bus.calls.clear()
+            bus.hold = True
+            bus.status_error = "org.freedesktop.DBus.Error.NoReply"
+            evaluate("""
+                window.readErrors=[];
+                for(let n=0;n<2;n++)happyranchConnection.call('host.status','{}').catch(raw=>readErrors.push(JSON.parse(raw)));
+                return null;
+            """)
+            self.pump(lambda: len(bus.held) == 1 and window.requests.reads == 2)
+            bus.hold = False
+            bus.held.pop()()
+            self.pump(lambda: evaluate("return window.readErrors.length;") == 2)
+            self.assertEqual(evaluate("return window.readErrors.map(e=>e.code);"), ["unavailable", "unavailable"])
+            self.assertEqual([c[3] for c in bus.calls], ["Status"])
+            self.assertEqual(window.requests.reads, 0)
+            bus.status_error = None
+
             methods = {"host.status": "Status", "host.nextDevice": "NextDevice",
                        "host.approveDevice": "ApprovePending", "host.rejectDevice": "RejectPending",
                        "host.revokeDevice": "RevokeSelected"}
@@ -300,11 +370,31 @@ class GTKTests(unittest.TestCase):
             bus.calls.clear()
             start("host.approveDevice")
             self.pump(lambda: len(bus.held) == 1)
+            self.assertEqual(outcome("host.status")[1]["code"], "busy")
             window.detach()
             bus.held.pop()()
             self.assertEqual([c[3] for c in bus.calls], ["ApprovePending"])
             self.assertIsNone(evaluate("return window.hostReply;"))
             self.assertEqual(evaluate("return window.hostEvents.length;"), count)
+            # Reopen with a fresh generation, then detach coalesced Status readers.
+            window = ConnectionWindow(self.app, None, prefix, self.ui.tr, self.ui)
+            self.addCleanup(window.close)
+            self.pump(lambda: window.hello_seen)
+            bus = HostBus()
+            window.connection = bus
+            bus.hold = True
+            evaluate("""
+                window.lateReplies=[];
+                for(let n=0;n<2;n++)happyranchConnection.call('host.status','{}').then(raw=>lateReplies.push(raw));
+                return null;
+            """)
+            self.pump(lambda: len(bus.held) == 1 and window.requests.reads == 2)
+            window.detach()
+            bus.held.pop()()
+            self.assertIsNone(window.host_status_waiters)
+            self.assertTrue(bus.closed)
+            self.assertEqual(evaluate("return window.lateReplies;"), [])
+            self.assertEqual([c[3] for c in bus.calls], ["Status"])
 
     def test_packaged_facade_events_unsubscribe_and_teardown(self):
         with tempfile.TemporaryDirectory() as directory:
