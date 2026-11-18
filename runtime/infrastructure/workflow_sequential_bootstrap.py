@@ -1190,6 +1190,7 @@ def require_bootstrap_idle_history(source: BootstrapSource, *, writer: sqlite3.C
     from runtime.infrastructure.producer_admission import NativeWriterStore, historical_disk_sweep
     from runtime.infrastructure.workflow_schema import _validate_submission_source_ownership
     from runtime.infrastructure.team_move_store import validate_team_move_schema
+    from runtime.orchestrator.run_step import TERMINAL_STATES
 
     if writer is None and source._history_started:
         raise BootstrapEvidenceError('workflow_setup_history_latched')
@@ -1240,12 +1241,23 @@ def require_bootstrap_idle_history(source: BootstrapSource, *, writer: sqlite3.C
         # pre-instrumentation legacy, not missing evidence to initialize/repair.
         # Do not change the shared offline _validate_coding_source_idle reader.
         _validate_submission_source_ownership(conn, source.layout.document)
+        # Native recovery receipts on ended tasks are preservation-only history
+        # (THR-380 R7). Missing/non-terminal tasks retain the startup veto. This
+        # grants no settlement or recovery authority to the sequential engine.
+        terminal = tuple(sorted(status.value for status in TERMINAL_STATES))
+        if conn.execute(
+            "SELECT 1 FROM task_completion_recoveries AS r "
+            "WHERE r.state NOT IN ('callback_consumed','expired','restart_settled','superseded') "
+            "AND NOT EXISTS (SELECT 1 FROM tasks AS t WHERE t.id=r.task_id AND t.status IN ("
+            + ','.join('?' for _ in terminal) + ')) LIMIT 1', terminal,
+        ).fetchone():
+            raise BootstrapEvidenceError('workflow_setup_history_not_idle')
+        check()
         for table, predicate in (
             ('workflow_authority_pointers', "state!='ready'"),
             ('workflow_dispatch_operations', "state NOT IN ('cancelled','completed')"),
             ('workflow_dispatch_outbox', "state NOT IN ('cancelled','completed')"),
             ('workflow_request_task_bridges', "state NOT IN ('cancelled','completed')"),
-            ('task_completion_recoveries', "state NOT IN ('callback_consumed','expired','restart_settled','superseded')"),
             ('workflow_draft_dispatch_intents', "state NOT IN ('cancelled','failed','completed')"),
             ('remote_job_attempts', "state!='terminal'"),
             ('remote_runner_workspaces', "active_attempt_id IS NOT NULL OR state IN ('leased','recreate_pending','uncertain')"),

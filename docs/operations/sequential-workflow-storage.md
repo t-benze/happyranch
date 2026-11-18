@@ -27,6 +27,15 @@ obligations and native coding source owners. Missing lifecycle is
 pre-instrumentation legacy at startup. Their rows and original readers retain
 custody; nothing is settled, initialized or repaired.
 
+EM R7/R8 includes unresolved native `task_completion_recoveries` as carried
+history only if its task is in existing `run_step.TERMINAL_STATES`. Non-terminal
+or missing tasks still refuse with `workflow_setup_history_not_idle`; recovery
+rows remain byte-identical and the shared offline validator stays strict.
+Private copies have no process holding their org fence. Source-daemon running
+rows are prior-boot evidence relative to the copy, owned by ordinary
+`OrgState.load` recovery as on fallback. Retain original A1 EX and existing
+native-writer/workflow owner predicates; no additional live reader is needed.
+
 Preservation-only reads remain mandatory: typed whole-DB inventory, complete
 schema/Pause validation, integrity and unchanged default load qualification.
 Ownership rowids/types/bytes are copied exactly. Installation creates no runs,

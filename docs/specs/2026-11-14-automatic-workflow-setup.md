@@ -73,6 +73,17 @@ A participating live owner holding SH still prevents EX; the original source
 observation also refuses concurrent changes. No new PID/timestamp heuristic is
 introduced and no absence observation settles an UNKNOWN record.
 
+EM R7/R8: native `task_completion_recoveries` is carried-forward history under
+R3, not a sequential source owner under R4. An unresolved receipt is permitted
+only when its native task belongs to the existing `run_step.TERMINAL_STATES`;
+non-terminal or missing tasks still refuse with `workflow_setup_history_not_idle`.
+Every recovery row remains byte-identical; no receipt is settled, expired or
+rewritten. The shared offline validator remains unchanged. A private DB copy has
+no process holding its org fence: source-daemon running rows are prior-boot
+evidence relative to the copy, handled by ordinary `OrgState.load` recovery as
+on old-layout fallback. Original A1 EX and existing native-writer/workflow owner
+predicates remain the live-owner proof; no new live reader is added.
+
 Preservation-only reads remain mandatory: full typed whole-DB inventory,
 complete schema/Pause validation, physical integrity and all existing source/
 backup/target/default-reader checks are unchanged. The install copies every

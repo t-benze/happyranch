@@ -9,6 +9,8 @@ latched second boot, fresh SH attachment, persisted refusal reason/unchanged
 latch, unknown holds, exact historical disk-sweep exemption boundaries, retained
 pending-source ownership without adoption, registration against 3600 native
 writer history rows under default budgets, and installed second-boot no-op.
+Unresolved native recovery receipts on terminal tasks install byte-identically;
+pending, in-progress and escalated tasks refuse with fallback on both boots.
 The live-producer negative holds a real mounted preparation and original SH
 while startup refuses EX and loads the old layout. No executor is launched.
 `--bootstrap-owners=CASE` also checks carried-forward native histories/legacy,

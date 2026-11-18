@@ -43,6 +43,16 @@ Original A1 EX/current source observations and native-writer/publication/profile
 dispatch/recovery/remote/team-move owner refusals remain. Cooperating live SH
 owners prevent EX; no new PID or timestamp inference replaces that exclusion.
 
+EM R7/R8 permits unresolved native `task_completion_recoveries` only when the
+referenced task is in existing `run_step.TERMINAL_STATES`. Non-terminal or missing
+tasks retain `workflow_setup_history_not_idle`; receipts are never settled,
+expired or rewritten. This is native-history carry-forward, not sequential
+source adoption, and the shared offline validator is unchanged. On private
+copies, source-daemon running rows are prior-boot evidence relative to that copy;
+the unchanged ordinary `OrgState.load` recovery owns them as on fallback.
+Original A1 EX and existing native-writer/workflow owner predicates remain the
+live-owner proof, without an added live reader.
+
 Full typed inventory, schema/Pause validation and integrity checks still run.
 The installer copies ownership rowids/types/bytes exactly, creates no runs and
 checks every retained table before COMMIT; registration adds definition only.

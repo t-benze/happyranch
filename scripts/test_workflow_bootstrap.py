@@ -192,6 +192,44 @@ def test_historical_sources_install_without_adoption_and_next_boot_noop(runtime:
             state.metrics_store.close()
 
 
+@pytest.mark.parametrize('task_status,installed', [
+    ('completed', True), ('failed', True), ('cancelled', True), ('superseded', True),
+    ('pending', False), ('in_progress', False), ('escalated', False),
+])
+def test_native_recovery_history_install_or_fallback(
+    runtime: RuntimeDir, task_status: str, installed: bool,
+) -> None:
+    root = runtime.orgs_dir / 'scratch'
+    with sqlite3.connect(root / 'happyranch.db') as conn:
+        conn.execute('UPDATE tasks SET status=? WHERE id=?', (task_status, 'TASK-retained'))
+        for recovery_state in ('claimed', 'callback_accepted'):
+            conn.execute('INSERT INTO task_completion_recoveries '
+                '(task_id,agent,origin_session_id,recovery_session_id,provider_session_id,claimed_at,expires_at,state) '
+                'VALUES (?,?,?,?,?,?,?,?)',
+                ('TASK-retained', 'synthetic-agent', 'origin-'+recovery_state, 'recovery-'+recovery_state,
+                 'synthetic-provider', '2026-09-01T00:00:00Z', '2026-09-01T00:02:00Z', recovery_state))
+        before = tuple(conn.execute('SELECT rowid,* FROM task_completion_recoveries ORDER BY id'))
+    for boot in range(2):
+        state = DaemonState.from_runtime(runtime, Settings(), automatic_workflow_setup=True)
+        try:
+            assert set(state.orgs) == {'scratch'} and not state.broken_orgs
+            conn = state.orgs['scratch'].db._conn
+            assert tuple(tuple(row) for row in conn.execute(
+                'SELECT rowid,* FROM task_completion_recoveries ORDER BY id')) == before
+            status = read_setup_status(runtime.root.parent, runtime.root, 'scratch')
+            expected = ('installed_verified', 'registered') if installed else ('not_installed', 'history_check_failed')
+            assert (status.state, status.reason) == expected
+            assert len(state._workflow_bootstrap.workers) == (1 if boot == 0 else 0)
+            if installed:
+                assert conn.execute('SELECT count(*) FROM workflow_seq_runs').fetchone()[0] == 0
+                assert conn.execute('SELECT count(*) FROM workflow_seq_settings').fetchone()[0] == 0
+            else:
+                assert not conn.execute("SELECT 1 FROM sqlite_schema WHERE name='workflow_seq_runs'").fetchone()
+        finally:
+            asyncio.run(state.close_all())
+            state.metrics_store.close()
+
+
 def test_live_producer_refuses_install_with_fallback(runtime: RuntimeDir) -> None:
     root = runtime.orgs_dir / 'scratch'
     (root / 'org/teams.yaml').write_text(
