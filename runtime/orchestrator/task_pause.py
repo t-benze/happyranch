@@ -54,9 +54,10 @@ def fingerprint(task: TaskRecord) -> dict:
 
 
 def eligible(orch: Any, task: TaskRecord) -> bool:
-    """The unchanged ordinary pending / satisfied parked-carrier predicate."""
+    """Ordinary session admission; chain owners and carriers stay passive."""
     from runtime.orchestrator.run_step import _child_has_landed_terminal_result, TERMINAL_STATES
-    if task.cancelled_at is not None:
+    from runtime.orchestrator.task_terminal_readers import _owns_passive_chain
+    if task.cancelled_at is not None or _owns_passive_chain(orch, task):
         return False
     if task.status == TaskStatus.PENDING:
         return True
@@ -299,10 +300,12 @@ class TaskInvocation:
             raise
 
     def _business_uncommitted(self, entry: dict) -> float | None:
+        from runtime.orchestrator.task_terminal_readers import _owns_passive_chain
         db = self.orch._db
         recovery_deadline = None
         current = db.get_task(self.task.id)
         if (current is None or fingerprint(current) != entry["fingerprint"]
+                or _owns_passive_chain(self.orch, current)
                 or (self.owner != "recovery" and not eligible(self.orch, current))):
             raise DeferredRootPause("preparation owner changed")
         if self.owner == "recovery":

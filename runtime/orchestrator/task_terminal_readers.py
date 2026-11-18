@@ -54,6 +54,73 @@ def _is_carrier(orch: "Orchestrator", parent: "TaskRecord") -> bool:
         return False
 
 
+def _owns_passive_chain(orch: "Orchestrator", task: "TaskRecord") -> bool:
+    """An unfinished chain or passive fan-out parent cannot run a session.
+
+    `_is_carrier` is a parent predicate: a plain fan-out worker also has the
+    same type/ancestry, but has no children and must run its first session.
+    Pipeline allocation atomically inserts the carrier and its first child.
+    """
+    return task.active_chain is not None or (
+        bool(orch._db.get_children(task.id)) and _is_carrier(orch, task)
+    )
+
+
+def _progress_passive_chain_owner(orch: "Orchestrator", task: "TaskRecord") -> bool:
+    """Handle a passive owner's dequeue without claiming an agent session.
+
+    Landed-but-live legs keep their finalization owner. Terminal newest legs
+    use the existing authenticated, at-most-once progression path. Historical
+    terminal/cancelled owners are never repaired or resurrected here.
+    """
+    if not _owns_passive_chain(orch, task):
+        return False
+    from runtime.models import BlockKind, TaskStatus
+    from runtime.orchestrator.run_step import TERMINAL_STATES, _enqueue_parent_if_waiting
+
+    if (task.cancelled_at is None and task.status == TaskStatus.IN_PROGRESS
+            and task.block_kind == BlockKind.DELEGATED):
+        children = orch._db.get_children(task.id)
+        newest = orch._db.get_task(children[-1]) if children else None
+        if newest is not None and newest.status in TERMINAL_STATES:
+            _enqueue_parent_if_waiting(orch, newest.id)
+    return True
+
+
+def _passive_parent_wake_handled(orch: "Orchestrator", parent: "TaskRecord") -> bool:
+    """After sibling evaluation, retain passive owners or handle terminal aborts.
+
+    Re-read after chain progression: its snapshot may still contain the chain
+    that just cleared. A stale older-leg callback cannot wake an active owner.
+    """
+    from runtime.models import BlockKind, TaskStatus
+    from runtime.orchestrator.run_step import (
+        TERMINAL_STATES, _carrier_fail_immediate,
+    )
+
+    current = orch._db.get_task(parent.id)
+    if (current is None or current.cancelled_at is not None
+            or current.status != TaskStatus.IN_PROGRESS
+            or current.block_kind != BlockKind.DELEGATED):
+        return True
+    if current.active_chain is not None:
+        children = orch._db.get_children(current.id)
+        newest = orch._db.get_task(children[-1]) if children else None
+        if (newest is None or newest.status not in TERMINAL_STATES
+                or newest.status == TaskStatus.COMPLETED):
+            return True
+        # Sibling evaluation has finished. A cancelled/superseded newest leg
+        # cannot finish successfully, but must still release its owner through
+        # the existing chain-clear and carrier-failure / manager-wake paths.
+        if not orch._db.try_clear_chain(current.id, current.active_chain):
+            return True
+        return _carrier_fail_immediate(orch, current, newest.id)
+    # NULL does not distinguish a matched final leg from an abort. The caller
+    # that won the chain-clear CAS owns that outcome through terminal commit;
+    # a concurrent dequeue must neither infer success nor run a carrier session.
+    return _is_carrier(orch, current)
+
+
 def _child_has_modern_fingerprint(child: "TaskRecord") -> bool:
     """True when ``child`` carries the modern ``(assigned_agent,
     current_session_id)`` fingerprint the historical completion contract
