@@ -10,7 +10,7 @@ if (!root) throw new Error('Missing connection root');
 const container = root;
 let locale: Locale = navigator.language.toLowerCase().startsWith('zh') ? 'zh-CN' : 'en';
 let role: 'host' | 'client';
-let runtime: Runtime = 'unknown';
+let runtime: Runtime | 'stale' | 'unavailable' = 'unknown';
 let reading = true;
 let connection: Connection | null = null;
 let stopRole: (() => void) | undefined;
@@ -41,8 +41,14 @@ const status = element('p');
 status.setAttribute('role', 'status'); status.setAttribute('aria-live', 'polite');
 function updateStatus(): void { status.textContent = copy()[reading ? 'loading' : runtime]; }
 function observe(snapshot: HostSnapshot | ClientSnapshot): void {
-  const value = snapshot.runtime;
-  if (value === 'available' || value === 'offline' || value === 'restarting' || value === 'unknown') runtime = value;
+  const limits = connection?.hello.observationLimits[role];
+  if (!limits || limits.includes('runtime') || limits.includes('observation') || snapshot.observation === 'unavailable') {
+    runtime = 'unavailable';
+  } else if (snapshot.observation === 'stale') {
+    runtime = 'stale';
+  } else {
+    runtime = snapshot.observation === 'known' ? snapshot.runtime : 'unknown';
+  }
   reading = false; updateStatus();
 }
 function hide(): void {

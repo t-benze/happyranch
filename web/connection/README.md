@@ -70,6 +70,12 @@ Hello is exactly `{version,platform,roles,capabilities,observationLimits}`:
 are unavailable. `observationLimits` is exactly `{host:[],client:[]}`, where
 arrays contain snapshot field names whose observation is limited/unsupported.
 Unknown/stale values still use the snapshot's explicit unknown/null semantics.
+For both status replies and events, the shell presents runtime availability only
+when the snapshot observation is `known` and that role's limits include neither
+`runtime` nor `observation`. Stale observations show explicit stale status;
+unavailable or limited runtime/freshness observations show unavailable status,
+and an unknown runtime stays unknown. Freshness is native-owned; the web adds
+no timestamp-based expiry rule.
 Mac may advertise only client roles/commands. Available commands require their
 advertised role; no role or capability inferred from platform alone. Native
 withholds Linux saved-access capabilities until the Founder Q3/persistence slice.
