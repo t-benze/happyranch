@@ -226,14 +226,31 @@ owned daemon process. Keep the live daemon and its home out of the test.
 ## Inert Headscale custody prefix (3b-2f-1)
 
 The explicit root operator command `python -m runtime.remote_access.installer
-prepare-headscale --layout deb` prepares only the locked dedicated
+prepare-headscale --layout deb` prepares the locked dedicated
 `happyranch-headscale` OS identity, fixed 0700 config/state/runtime directories,
 0600 TCP443 invite-to-node ACL and separate root-owned hardened system unit.
-It never enables, starts or reloads the unit, runs Headscale or writes server
-config/DERP/leaf material. The staged home connector activation guards and
+It also derives the LAN address and publishes receipted config/DERP YAML (the
+inert 3b-2f-2 prefix below). It never enables, starts or reloads the unit, runs
+Headscale or writes leaf/CA material. The staged home connector activation
+guards and
 `home_transport=False` stay unchanged. Database names are `happyranch-node`
 and dedicated Mac-invite user `happyranch-invite`; actual user creation/minter
 injection remains future activation work.
+
+The 3b-2f-2 config prefix uses bounded kernel `NETLINK_ROUTE` dumps, including
+IPv4/IPv6 defaults and every equal-cost next hop, without metrics ranking or
+supplied addresses. A missing kernel preferred source refuses as `inventory`;
+it never guesses from interface address order. The merged selector and exclusive
+four-port preflight run before any publication. The root-only
+`/var/lib/happyranch-remote-access/headscale-publication.json` receipt is written
+last and binds the exact two config paths/digests, service IDs and selected IP.
+Unchanged reruns are idempotent; changed addresses refuse `address-changed`.
+Unreceipted files, missing members, pending residue and unsafe metadata refuse
+without repair/deletion. Cleanup rechecks custody and digests before each unlink,
+then retires the publication receipt. Interrupted removal with a retained receipt
+refuses on retry. No leaf/CA copy or materializer call is wired in this prefix;
+that remainder and authenticated RefreshHomeAddress remain later work. See the
+[full publication/crash contract](../agent-guides/contracts/remote-access-and-remote-jobs.md#inert-linux-headscale-config-publication-3b-2f-2-prefix).
 
 Account ownership is distinct from its shape. An exact-shape pre-existing
 account without the protected creation receipt is reusable but **unowned**;
@@ -284,10 +301,11 @@ starts/enables/reloads a unit and grants no later activation authority.
 
 **Owned cleanup:** `python -m runtime.remote_access.installer disable-headscale
 --layout deb` and legacy `uninstall --layout deb` stop/disable the exact owned
-Headscale unit and remove its canonical policy and empty fixed custody. The
+Headscale unit and remove its canonical policy, receipted config/DERP and fixed
+custody. The
 staged-profile uninstall refusal stays unchanged; helper Turn off remains later
-work. Unknown config/DB/Noise/DERP/key/socket entries are preserved and refused:
-this inert slice never creates them and cannot establish their ownership.
+work. Unreceipted/edited config or DERP and all DB/Noise/key/socket entries are
+preserved and refused. The separate `home-ca/` staging tree is always preserved.
 Cleanup shares that all-load-path admission. Before stop/disable, the additional
 config-tree check for matching alias/enablement links anywhere below
 `/etc/systemd/system` or `/run/systemd/system` also refuses with typed secret-free

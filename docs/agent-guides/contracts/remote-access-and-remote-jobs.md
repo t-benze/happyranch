@@ -1370,8 +1370,9 @@ The separate root operator `disable-headscale --layout deb` entry and legacy
 disable only the exact owned Headscale unit, then remove the inert custody and
 receipted identity as below. The existing staged-profile uninstall refusal is
 unchanged; the explicit Headscale cleanup entry does not activate that profile.
-Helper Turn off, configuration/DB/Noise/DERP/leaf writers and their cleanup
-extension remain later slices. No live root/systemd acceptance is claimed.
+The inert 3b-2f-2 prefix below adds receipted config/DERP publication and cleanup.
+Helper Turn off, DB/Noise/leaf/CA writers remain later work.
+No live root/systemd acceptance is claimed.
 
 | Surface | Fixed contract |
 | --- | --- |
@@ -1379,12 +1380,12 @@ extension remain later slices. No live root/systemd acceptance is claimed.
 | Creation | Existing root-step command runner invokes `useradd --system --user-group --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin happyranch-headscale` only after fixed custody/receipt/unit preflight and proving the group is absent. A successful command must be followed by actual looked-up validated identity; only then publish the creation receipt. |
 | Creation receipt | `/var/lib/happyranch-remote-access/headscale-account.json`, root:root 0600 in root:root 0700 parent; exact object `{version:1, account:"happyranch-headscale", uid:integer, gid:integer, group_created_with_user:true}` (JSON keys quoted on disk). Uses the existing pinned no-follow publication parent, exclusive 0600 pending inode, file/directory fsync and atomic no-replace rename. No pre-useradd intent/adoption. A crash after useradd and before successful receipt publication leaves an **unowned** account. Pending/malformed/foreign/mismatched receipts refuse and are preserved. |
 | Existing account (ruling A) | Exact expected shape without a valid creation receipt may be reused, but is UNOWNED and never modified or deleted. Preparation visibly returns `account=unowned` and `preservation="preserved: not created by HappyRanch"`; this is a typed visible preservation outcome, not cleanup success or failure. Shape mismatch refuses. |
-| Custody | `/etc/happyranch/headscale`, `/var/lib/happyranch-headscale`, `/run/happyranch-headscale`: service UID:GID 0700; policy service UID:GID 0600. Existing directories are validated, never chmod/chown repaired. Empty custody or the exact canonical inert policy is reusable; config/DB/key/socket/pending/unknown entries refuse and are preserved, so preparation cannot adopt a running/unrelated Headscale installation. No payload/notices are changed. |
+| Custody | `/etc/happyranch/headscale`, `/var/lib/happyranch-headscale`, `/run/happyranch-headscale`: service UID:GID 0700; policy service UID:GID 0600. Existing directories are validated, never chmod/chown repaired. Empty custody, the exact canonical inert policy, or the final root-receipted config pair below is reusable; unreceipted config/DB/key/socket/pending/unknown entries refuse and are preserved, so preparation cannot adopt a running/unrelated Headscale installation. No payload/notices are changed. |
 | Policy/user layout | Fixed `/etc/happyranch/headscale/policy.hujson`, canonical JSON (valid HuJSON) with exactly one `acls` entry: `action=accept`, `proto=tcp`, `src=["happyranch-invite"]`, `dst=["happyranch-node:443"]`. All else denied by absence of a rule. No wildcard/autogroup/tag/SSH grant or invite-to-invite rule. Future node enrollment creates only the Linux-node user `happyranch-node`; future Mac minter receives dedicated user NAME `happyranch-invite`. These database users are not OS users, and are not created by this inert prefix. Port 443 is the spec's connector tailnet port, distinct from LAN control 8443. |
 | Unit | Separate exact-byte `render_headscale_unit`, `/etc/systemd/system/happyranch-headscale.service` root:root 0644. Fixed libexec binary and `/etc/happyranch/headscale/config.yaml`, service User/Group, empty capabilities and applicable existing system hardening. Only fixed state/runtime write paths, 0700 systemd directories, UMask 0077, restart limits, control-group kill and bounded start/stop. No Install section. No enable/start/reload during preparation. Exact old connector/sidecar unit bytes are unchanged. |
 | Bounded startup | Tagged v0.25.1 `serve` does not emit sd_notify. The rendered unit uses Type=exec and isolated bundled Python `headscale_service wait-ready` as ExecStartPost: fixed loopback `127.0.0.1:19090` `/metrics`, one-second socket timeouts, 30-second retry deadline inside TimeoutStartSec=40. Tagged Serve opens metrics after HTTPS. This is startup evidence only, not tailnet/connector readiness; the probe is not invoked here. Output is suppressed in the service unit. |
-| Port preflight | `headscale_service.preflight_ports(dial_ip)` validates the same canonical RFC1918 IPv4 contract as the renderer, then samples exclusive AF_INET binds at dial_ip TCP8443/UDP3478 and 127.0.0.1 TCP19090/TCP50443. No reuse option, all probes closed. `occupied-port` on EADDRINUSE; other failures `port-check-uncertain`; invalid input `dial-ip`, no raw exceptions. No selection/wiring or real bind is performed by preparation. A check is an observation, not a reservation against a later binder. |
-| Preparation output/refusals | Secret-free JSON with `state=inert`, `account=created/owned/unowned`, and `preservation=receipt-recorded` or the visible unowned statement. Closed refusal categories: `deb-layout-required`, `account-shape`, `account-create-uncertain`, `account-receipt-uncertain`, `foreign-unit`, `foreign-custody`, `custody-uncertain`. Native command text/output and underlying exception contexts are discarded. Partial objects are preserved for operator inspection; no automatic repair/deletion. |
+| Port preflight | `headscale_service.preflight_ports(dial_ip)` validates the same canonical RFC1918 IPv4 contract as the renderer, then samples exclusive AF_INET binds at dial_ip TCP8443/UDP3478 and 127.0.0.1 TCP19090/TCP50443. No reuse option, all probes closed. `occupied-port` on EADDRINUSE; other failures `port-check-uncertain`; invalid input `dial-ip`, no raw exceptions. The 3b-2f-2 prefix below now wires selection and this preflight into preparation; native binds remain NOT RUN in maker verification. A check is an observation, not a reservation against a later binder. |
+| Preparation output/refusals | Secret-free JSON with `state=inert`, `account=created/owned/unowned`, and `preservation=receipt-recorded` or the visible unowned statement. Closed refusal categories: `deb-layout-required`, `account-shape`, `account-create-uncertain`, `account-receipt-uncertain`, `foreign-unit`, `foreign-custody`, `custody-uncertain`; the config prefix adds `inventory`, `no_address`, `multiple_addresses`, `dial_ip`, `address-changed`, `publication-uncertain`, `occupied-port`, `port-check-uncertain` and `cleanup-uncertain` (quiescence refusal). Native command text/output and underlying exception contexts are discarded. Partial objects are preserved for operator inspection; no automatic repair/deletion. |
 
 **Foreign systemd inventory:** Before creating any account, receipt, custody or
 unit, preparation uses literal no-follow checks in these default system-unit
@@ -1512,14 +1513,92 @@ and [listener order](https://github.com/juanfont/headscale/blob/v0.25.1/hscontro
 System ranges: [Ubuntu useradd](https://manpages.ubuntu.com/manpages/resolute/en/man8/useradd.8.html).
 Standalone temp-root/fake-command checks: `uv run --frozen --python /usr/bin/python3
 pytest scripts/test_headscale_custody.py -v --tb=short`. They exercise preparation
-and cleanup, not root acceptance, real NSS/user creation, real systemd or live binds. No
-configuration/DERP/leaf/CA handoff/admin minter or activation is wired here.
+and cleanup, not root acceptance, real NSS/user creation, real systemd or live binds.
+The following prefix extends configuration/DERP wiring; leaf/CA handoff, admin
+minter and activation remain deferred.
+
+### Inert Linux Headscale config publication (3b-2f-2 prefix)
+
+This bounded prefix delivers LAN selection, port preflight, config/DERP
+publication and matching owned cleanup only. It does **not** invoke the
+materializer or publish leaf/key/CA/empty-CA-directory objects. Both exact
+activation refusals, `home_transport=False`, every connector/sidecar unit and
+the 3b-2f-1 Headscale unit bytes stay unchanged. No control_tls identity is
+written; no enable/start/reload or new activation policy is added. The complete
+foreign-systemd admission above still precedes preparation effects; no existing
+dependency/alias/trigger may become effective through this publication.
+
+**Inventory:** `collect_lan_inventory()` uses literal Linux `NETLINK_ROUTE`
+link/address/route dumps, not a shell, PATH, executable, environment or address
+input. Include all unicast IPv4/IPv6 default routes across tables and every
+ECMP member without metric/weight ranking. Complete interface IDs carry their
+up/loopback flags and local addresses. Retain a missing `RTA_PREFSRC` as an
+unresolved empty source; the merged selector refuses `inventory`, never guesses
+from a secondary/primary address. Source-specific defaults and unresolved
+nexthop objects also refuse `inventory`. This is a fail-closed limitation for
+kernels/routes without an explicit preferred source, not full network support.
+Malformed/error/interrupted/truncated dumps, missing identities, I/O, a six-second
+observation deadline or shared 4 MiB/65,536-message-per-dump exhaustion refuse
+secret-free. These are sampled dumps, not an atomic network-change fence.
+The unchanged selector supplies `inventory`, `no_address`, `multiple_addresses`
+and `dial_ip`; exclusive `preflight_ports(selected_ip)` runs before even account
+receipt publication. Before service custody publication, existing quiescence
+observations must show the exact inactive unit and no process using its UID;
+preparation never stops a running service to obtain admission.
+
+**Publication:** Reuse only the merged config/map renderers and the pinned
+no-follow exclusive-pending/file-fsync/atomic-no-replace/directory-fsync writer.
+`config.yaml` and `derp.yaml` are service UID:GID 0600 in the existing service
+0700 config directory. No new service key or signing key is generated/copied.
+The final root:root 0600 `headscale-publication.json` in the existing root:root
+0700 `/var/lib/happyranch-remote-access` has exactly `version:1`, integer `uid`
+and `gid`, selected `dial_ip`, and `files`, binding exactly the two literal
+absolute config paths to their lowercase SHA-256 digests. Receipt admission
+also reproduces the renderer bytes from the receipted address. Single-link,
+no-follow, exact owner/mode, bounded same-FD reads and metadata rechecks apply
+to both files and receipt; unknown/pending entries remain foreign. Matching
+bytes alone never prove ownership. Receipt IDs must match the validated account.
+An unchanged rerun retains bytes/inodes; a newly selected different address
+refuses typed `address-changed` before preflight/publication. No RefreshHomeAddress
+or leaf renewal/reload is authorized here.
+
+**Crash points:** Before the first config publication, the old inert prefix
+may remain and be reused. During either exclusive pending write, abrupt death
+may leave pending residue: refusal/preservation, no repair. After config.yaml
+but before derp.yaml, or after both files but before the final receipt, the
+unreceipted files are foreign and both prepare/cleanup refuse visibly. During
+receipt publication, pending residue also refuses. Once the final receipt and
+directory fsync are durable, lost success is an idempotent complete publication.
+No incomplete publication is automatically repaired, adopted or deleted.
+
+**Cleanup:** Fresh complete receipt, directory, owner/mode/link and exact digest
+checks precede service effects. After the existing owned-unit stop/disable and
+quiescence checks, repeat identity/quiescence/foreign-unit/full-remaining-inventory
+checks and pinned-parent digest reads before each config unlink/fsync. Only
+members deleted by this same invocation may be absent during its following
+checks. Retire the exact unchanged publication receipt last, then continue the
+existing policy/unit/account cleanup. If removal crashes after either member,
+the retained receipt and missing member cause typed cleanup uncertainty on
+retry; no adoption/automatic repair/deletion. A failure after receipt retirement
+continues under the existing A–E account rules. Edited/foreign/link/mode/pending
+objects stay byte/mode/link-exact and never yield success. The separate
+`home-ca/` tree (including CA key/staging) is never traversed/deleted; completed
+config cleanup reports `home_ca=preserved`. Package payload/notices remain.
+The CA readership contract has no discrepancy: spec section 4 explicitly
+states `root:hr` means `root:happyranch`; leaf/CA publication remains deferred.
+
+Focused synthetic temp-root/fake-kernel/fake-manager checks:
+`uv run --frozen pytest scripts/test_headscale_custody.py -v`.
+Root/systemd/NSS/netlink/port-bind/packaged acceptance remain NOT RUN. This
+prefix does not establish working TLS, Headscale readiness or remote access.
 
 ### Inert Linux home CA materializer (THR-327 slice 3b-2e)
 
 The root-run Go command reuses `homeca`; it adds no new cryptographic profile,
-trust store, CA replacement, network action or service. No installer, supervisor,
-helper, D-Bus, polkit or systemd entry calls it yet. The production entry accepts
+trust store, CA replacement, network action or service. The installer config
+prefix still does not call it; no supervisor, helper,
+D-Bus, polkit or systemd entry calls it yet. Leaf/CA handoff remains the
+3b-2f-2 remainder. The production entry accepts
 exactly one verb, with no path, name, address or settings arguments and no
 custody environment override. The installed binary is outside PATH and
 `HAPPYRANCH_BUNDLED_BIN`.
@@ -1538,7 +1617,7 @@ custody environment override. The installed binary is outside PATH and
 | Admission and bounds | Literal descriptor-relative `O_NOFOLLOW` directory/leaf opens; leaves also use nonblocking opens before type checks. Inventory reads at most five names to refuse more than the four fixed leaves. Files use same-FD bounded reads and metadata rechecks. Unknown entries refuse and are preserved. A nonblocking directory flock serializes cooperating commands without adding a lock file; this is not a fence against a separate root writer. |
 | Publication / recovery | Generate and validate before publication. Each member uses its exclusive same-directory `.<name>.pending`, exact 0600 owner/mode, file fsync, descriptor-relative rename, directory fsync. Publish the key durably **before** the certificate, for both CA creation and leaf rotation. A crash can leave a key-only pair (`incomplete-state`), pending residue (`unexpected-entry`), or old certificate/new key (`invalid-key` for write verbs); each refuses without further writes or automatic recovery/deletion. A complete CA without a leaf pair may safely issue its first leaf. No newly published CA certificate becomes usable without its already-durable matching key. |
 | Test isolation | Only same-package `_test.go` calls supply a temporary root, current test UID/GID and clock/euid observations to the unexported command logic. The shipped entry supplies literal `/`, root:root, actual euid and current time; there is no production flag/environment redirection. Temp-root checks prove owner/mode as observable by the unprivileged test process, not installed root acceptance. |
-| 3b-2f handoff | 3b-2f-1 now supplies explicit inert account/receipt/custody preparation, restrictive ACL and separate unit rendering and owned inert cleanup with A–E receipt retry (see above). 3b-2f-2 still owns validated copying of **only** the staged leaf cert/key into `/etc/happyranch/headscale` for locked `happyranch-headscale` service custody, plus protected CA-only `/etc/happyranch/control-ca.pem` publication. It must coordinate safe leaf handoff/reload and interrupted staging with authenticated lifecycle operations. CA signing key stays root-only in `home-ca/`; this command performs no Headscale copy, configuration, user/unit creation, start, reload or cleanup. 3b-2g owns later helper invocation. |
+| 3b-2f handoff | 3b-2f-1 now supplies explicit inert account/receipt/custody preparation, restrictive ACL and separate unit rendering and owned inert cleanup with A–E receipt retry (see above). The 3b-2f-2 prefix now wires LAN selection, port preflight, rendered config/DERP publication, root-only path/digest receipt and owned cleanup. Its deferred remainder still owns validated copying of **only** the staged leaf cert/key into `/etc/happyranch/headscale` for locked `happyranch-headscale` service custody, plus protected CA-only `/etc/happyranch/control-ca.pem` publication. It must coordinate safe leaf handoff/reload and interrupted staging with authenticated lifecycle operations. CA signing key stays root-only in `home-ca/`; this command performs no Headscale copy, configuration, user/unit creation, start, reload or cleanup. 3b-2g owns later helper invocation. |
 
 ### Pure home Headscale renderers and LAN selector (THR-327 slice 3b-2a)
 
@@ -1551,13 +1630,16 @@ licenses copy. No wrapper, symlink, service or start/enable is added by bundling
 TASK-16780 owns wiring this path into the home lifecycle; Turn off keeps the
 inert packaged binary and notices. See the [Linux release handbook](../../operations/linux-release-handbook.md#build-the-intermediate-payload).
 
-`runtime/remote_access/home_headscale.py` is an **unwired** pure source unit.
+`runtime/remote_access/home_headscale.py` is a pure source unit, now called by
+the inert installer config prefix.
 `render_headscale_config(dial_ip=..., policy_path=...)` and
 `render_private_derp_map(dial_ip=...)` return deterministic, sorted-key YAML
 text with a final newline. They perform no filesystem, process, network or
 clock operation. They do not install files, validate certificates, bind ports,
-author policy/users, or establish readiness. TASK-16780 owns those operations,
-kernel inventory collection and caller wiring; it must call these renderers.
+author policy/users, or establish readiness. The inert installer prefix above
+now owns kernel inventory, selector/preflight
+and renderer caller wiring. Certificate validation, leaf/CA publication and
+readiness remain later work; the renderers remain pure.
 
 `select_lan_dial_ip(interfaces, default_routes)` consumes immutable tuples of
 frozen `LANInterface(index, up, loopback, addresses)` and

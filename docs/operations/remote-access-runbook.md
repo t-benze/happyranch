@@ -173,12 +173,21 @@ units/state. Configs, provisioning record, staged token, package, logs and accou
 The release install record and verifier socket/service are removed.
 A missing package is not required for uninstall; unit safety checks still apply.
 The separately callable `disable-headscale --layout deb` root operator entry
-and legacy uninstall remove the proven inert Headscale unit/policy/empty custody,
+and legacy uninstall remove the proven inert Headscale unit/policy/custody and
+config/DERP files bound by the final root-only publication receipt,
 keeping package payload/notices. The staged-profile uninstall refusal remains;
 helper Turn off and activation-state cleanup remain later slices. Unknown
-config/DB/Noise/DERP/key/socket entries refuse and remain, because this slice never
-creates them. Only a valid creation receipt plus fresh identity/shape, unshared
-group, stopped unit and no process using its UID permits userdel then conditional
+or edited config/DERP and all DB/Noise/key/socket entries refuse and remain.
+The `home-ca/` signing/staging tree is preserved. The config prefix selects from
+complete kernel IPv4/IPv6 default-route inventory (including ECMP), refusing
+unresolved preferred sources as `inventory`; no address input is accepted.
+Port preflight precedes all publication. Unchanged address/config reruns are
+idempotent; a changed address refuses `address-changed` pending future
+RefreshHomeAddress. Publication is receipt-last; missing members or pending
+residue refuse without automatic repair. Cleanup rechecks each digest/custody
+before deletion; a crash with a partial pair and retained receipt also refuses.
+Leaf/CA handoff and materializer invocation remain unimplemented in this prefix.
+Only a valid creation receipt plus fresh identity/shape, unshared group, stopped unit and no process using its UID permits userdel then conditional
 groupdel. Unowned accounts remain visibly `preserved: not created by HappyRanch`.
 Before userdel succeeds, failures keep account/receipt. A later groupdel failure
 keeps receipt and remaining objects, never recreates the user, and returns typed

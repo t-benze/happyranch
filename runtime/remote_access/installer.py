@@ -30,6 +30,7 @@ from typing import Callable, Iterator
 from urllib.parse import urlsplit
 
 from runtime.remote_access import headscale_service as headscale
+from runtime.remote_access import home_headscale
 from runtime.remote_access.service_manager import ServiceManagerError, SystemdServiceManager
 from runtime.remote_access.systemd_unit import (
     VERIFIER_FILESYSTEM_HARDENING,
@@ -1224,12 +1225,64 @@ class ManagedInstaller:
             raise headscale.HeadscaleServiceError("account-receipt-uncertain")
         return value
 
-    def _headscale_inventory(self) -> None:
-        """Preparation admits empty custody or this exact inert policy only.
+    def _headscale_publication(self, removed: tuple[str, ...] = ()) -> dict | None:
+        """Only the final root receipt proves ownership; never adopt by bytes.
 
-        Config, database, key, socket, pending or unknown inventory refuses; this
-        prefix cannot establish ownership of an existing Headscale installation.
+        Missing members refuse, including after a crashed cleanup. ``removed``
+        names only members freshly deleted in this cleanup invocation.
         """
+        try:
+            with self._directory(headscale.INSTALLER_STATE) as parent:
+                try:
+                    os.stat(f".{headscale.PUBLICATION}.pending", dir_fd=parent, follow_symlinks=False)
+                except FileNotFoundError:
+                    pass
+                else:
+                    raise headscale.HeadscaleServiceError("publication-uncertain")
+                data = self._read_file(parent, headscale.PUBLICATION, owner=self.root_owner, mode=0o600)
+        except FileNotFoundError:
+            if removed:
+                raise headscale.HeadscaleServiceError("publication-uncertain") from None
+            return None
+        record = self._json(data)
+        if (set(record) != {"version", "uid", "gid", "dial_ip", "files"}
+                or type(record["version"]) is not int or record["version"] != 1
+                or type(record["uid"]) is not int or type(record["gid"]) is not int
+                or (record["uid"], record["gid"]) != self._headscale_owner
+                or type(record["files"]) is not dict):
+            raise headscale.HeadscaleServiceError("publication-uncertain")
+        expected = self._headscale_config(record["dial_ip"])
+        digests = {f"/{headscale.CUSTODY[0]}/{name}": hashlib.sha256(value).hexdigest()
+                   for name, value in expected.items()}
+        if record["files"] != digests or any(name not in expected for name in removed):
+            raise headscale.HeadscaleServiceError("publication-uncertain")
+        with self._directory(headscale.CUSTODY[0]) as parent:
+            for name, value in expected.items():
+                if name in removed:
+                    try:
+                        os.stat(name, dir_fd=parent, follow_symlinks=False)
+                    except FileNotFoundError:
+                        continue
+                    raise headscale.HeadscaleServiceError("publication-uncertain")
+                if self._read_file(parent, name, owner=self._headscale_owner, mode=0o600) != value:
+                    raise headscale.HeadscaleServiceError("publication-uncertain")
+        return record
+
+    @staticmethod
+    def _headscale_config(dial_ip: str) -> dict[str, bytes]:
+        return {
+            "config.yaml": home_headscale.render_headscale_config(
+                dial_ip=dial_ip, policy_path=headscale.POLICY_PATH).encode(),
+            "derp.yaml": home_headscale.render_private_derp_map(dial_ip=dial_ip).encode(),
+        }
+
+    def _headscale_inventory(self, removed: tuple[str, ...] = ()) -> None:
+        """Admit empty/policy custody or exactly the root-receipted config pair.
+
+        DB, key, socket, pending and unknown objects remain foreign. Nothing
+        permits adopting a running or unrelated installation.
+        """
+        publication = self._headscale_publication(removed)
         paths = list(_HEADSCALE_UNIT_DIRS)
         with self._directory() as root:
             try:
@@ -1270,7 +1323,10 @@ class ManagedInstaller:
                             raise headscale.HeadscaleServiceError("foreign-unit")
                     else:
                         entries = os.listdir(parent)
-                        if entries and (path != headscale.CUSTODY[0] or entries != ["policy.hujson"]):
+                        allowed = {"policy.hujson"}
+                        if publication:
+                            allowed.update(set(headscale.CONFIG_FILES) - set(removed))
+                        if entries and (path != headscale.CUSTODY[0] or set(entries) - allowed):
                             raise headscale.HeadscaleServiceError("foreign-custody")
                         if entries and self._read_file(parent, "policy.hujson", owner=self._headscale_owner,
                                                        mode=0o600) != headscale.render_policy():
@@ -1433,8 +1489,8 @@ class ManagedInstaller:
     def cleanup_headscale(self) -> dict[str, str]:
         """Disable/remove only the inert installation this installer can prove.
 
-        No config/DB/key/socket writer ships in this slice: those entries remain
-        foreign. Receipt retirement is last, including after a partial userdel.
+        Config/DERP need their final publication receipt. DB/key/socket entries
+        remain foreign. home-ca/ is preserved for authenticated later lifecycle.
         """
         if self.layout != "deb":
             raise headscale.HeadscaleServiceError("deb-layout-required")
@@ -1478,8 +1534,40 @@ class ManagedInstaller:
             self._headscale_stopped()
             user, group = self._headscale_cleanup_identity(receipt)
             self._headscale_inventory()
+            publication = self._headscale_publication()
+            if publication:
+                removed: tuple[str, ...] = ()
+                partial = True
+                for name in headscale.CONFIG_FILES:
+                    self._headscale_cleanup_identity(receipt)
+                    self._headscale_stopped()
+                    self._headscale_inventory(removed)
+                    if self._headscale_publication(removed) != publication:
+                        raise headscale.HeadscaleServiceError("cleanup-uncertain")
+                    with self._publication_parent(headscale.CUSTODY[0]) as (parent, revalidate):
+                        value = self._read_file(parent, name, owner=self._headscale_owner, mode=0o600)
+                        path = f"/{headscale.CUSTODY[0]}/{name}"
+                        if hashlib.sha256(value).hexdigest() != publication["files"][path]:
+                            raise headscale.HeadscaleServiceError("cleanup-uncertain")
+                        revalidate()
+                        os.unlink(name, dir_fd=parent)
+                        os.fsync(parent)
+                    removed += (name,)
+                self._headscale_cleanup_identity(receipt)
+                self._headscale_stopped()
+                self._headscale_inventory(removed)
+                if self._headscale_publication(removed) != publication:
+                    raise headscale.HeadscaleServiceError("cleanup-uncertain")
+                with self._publication_parent(headscale.INSTALLER_STATE) as (parent, revalidate):
+                    if self._json(self._read_file(parent, headscale.PUBLICATION,
+                                                  owner=self.root_owner, mode=0o600)) != publication:
+                        raise headscale.HeadscaleServiceError("cleanup-uncertain")
+                    revalidate()
+                    os.unlink(headscale.PUBLICATION, dir_fd=parent)
+                    os.fsync(parent)
+                self._headscale_inventory()
             if receipt:
-                partial = not user
+                partial = partial or not user
                 if user:
                     code, _ = self._run(["userdel", headscale.ACCOUNT], timeout=30.0)
                     if code:
@@ -1551,7 +1639,8 @@ class ManagedInstaller:
                     os.unlink(headscale.RECEIPT, dir_fd=parent)
                     os.fsync(parent)
             return {"state": "removed" if receipt else "preserved",
-                    "account": "removed" if receipt else "preserved: not created by HappyRanch"}
+                    "account": "removed" if receipt else "preserved: not created by HappyRanch",
+                    **({"home_ca": "preserved"} if publication else {})}
         except (OSError, InstallerError, UnicodeError, ValueError, ServiceManagerError,
                 headscale.HeadscaleServiceError):
             pass
@@ -1575,6 +1664,11 @@ class ManagedInstaller:
             if receipt and self._headscale_owner != (receipt["uid"], receipt["gid"]):
                 raise headscale.HeadscaleServiceError("account-receipt-uncertain")
             self._headscale_inventory()
+            dial_ip = home_headscale.select_lan_dial_ip(*headscale.collect_lan_inventory())
+            publication = self._headscale_publication()
+            if publication and publication["dial_ip"] != dial_ip:
+                raise headscale.HeadscaleServiceError("address-changed")
+            headscale.preflight_ports(dial_ip)
             outcome = "owned" if receipt else "unowned"
             if self._headscale_owner is None:
                 try:
@@ -1601,6 +1695,11 @@ class ManagedInstaller:
                 self._write_provision_file(headscale.RECEIPT, json.dumps(record, sort_keys=True).encode(),
                                            self.root_owner, 0o600, relative=headscale.INSTALLER_STATE)
                 outcome = "created"
+            # No running process may use this UID while we publish service
+            # custody. This observes only; preparation never stops a service.
+            self._headscale_stopped()
+            with self._directory(headscale.INSTALLER_STATE, create=True):
+                pass
             for path in headscale.CUSTODY:
                 with self._directory(path, create=True):
                     pass
@@ -1617,10 +1716,24 @@ class ManagedInstaller:
                         raise headscale.HeadscaleServiceError("foreign-custody")
                 if existing is None:
                     self._write_provision_file(name, data, owner, mode, relative=relative)
+            if publication is None:
+                files = self._headscale_config(dial_ip)
+                for name, data in files.items():
+                    self._write_provision_file(name, data, self._headscale_owner, 0o600,
+                                               relative=headscale.CUSTODY[0])
+                uid, gid = self._headscale_owner
+                record = dict(version=1, uid=uid, gid=gid, dial_ip=dial_ip,
+                              files={f"/{headscale.CUSTODY[0]}/{name}": hashlib.sha256(data).hexdigest()
+                                     for name, data in files.items()})
+                self._write_provision_file(headscale.PUBLICATION, json.dumps(record, sort_keys=True).encode(),
+                                           self.root_owner, 0o600, relative=headscale.INSTALLER_STATE)
+            self._headscale_inventory()
             return {"state": "inert", "account": outcome,
                     "preservation": "preserved: not created by HappyRanch" if outcome == "unowned" else "receipt-recorded"}
         except headscale.HeadscaleServiceError as error:
             category = error.category
+        except home_headscale.HomeHeadscaleError as error:
+            category = str(error)
         except (OSError, InstallerError, UnicodeError, ValueError, ServiceManagerError):
             category = "custody-uncertain"
         finally:
@@ -2030,8 +2143,10 @@ class ManagedInstaller:
         }
         if relative != "etc/happyranch":
             metadata = {
-                headscale.INSTALLER_STATE: {headscale.RECEIPT: (self.root_owner, 0o600)},
-                headscale.CUSTODY[0]: {"policy.hujson": (self._headscale_owner, 0o600)},
+                headscale.INSTALLER_STATE: {name: (self.root_owner, 0o600)
+                                            for name in (headscale.RECEIPT, headscale.PUBLICATION)},
+                headscale.CUSTODY[0]: {name: (self._headscale_owner, 0o600)
+                                       for name in ("policy.hujson", *headscale.CONFIG_FILES)},
                 _UNIT_DIR: {headscale.UNIT: (self.root_owner, 0o644)},
             }.get(relative, {}) if self._headscale_preparing and expected_transaction is None else {}
         if (name not in metadata or metadata[name] != (owner, mode)
