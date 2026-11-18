@@ -52,6 +52,10 @@ uv run --frozen python -B -m unittest scripts.test_daemon_lock scripts.test_job_
 These standalone checks use real flock descriptors and owned subprocesses,
 including SIGKILL release, duplicate main refusal without startup writes, the
 transition PID matrix and the real main/build ordering/error-tail boundary.
+The same matrix covers the retained PID sidecar, including self/reused-alive
+refusal, active-PID precedence and unsafe/ambiguous sidecar evidence. The two
+real-main stream shutdown checks also observe serving-marker removal, retained
+owner PID, positive death proof and exact marker bytes on the next acquisition.
 Only PID read/probe errors are injected; flock is never mocked. Hidden cleanup
 dispatch runs under a competing holder. Existing stop-policy checks accelerate
 clock waits while verifying the 60s TERM and bounded post-KILL refusal. Real

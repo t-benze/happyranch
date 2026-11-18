@@ -1150,7 +1150,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         paths.ensure_daemon_home()
 
-        from runtime.daemon.lifetime_lock import acquire_daemon_lock
+        from runtime.daemon.lifetime_lock import acquire_daemon_lock, record_daemon_pid
         try:
             lifetime_lock = acquire_daemon_lock(paths.daemon_home())
         except OSError as exc:
@@ -1180,6 +1180,7 @@ def main(argv: list[str] | None = None) -> int:
         state = _build_state(settings, lock_proof=proof)
         app = create_app(state)
 
+        record_daemon_pid(paths.daemon_home())
         sock, port = _bind_port(settings.daemon_bind_host, settings.daemon_port)
         paths.port_file().write_text(str(port))
         paths.pid_file().write_text(str(os.getpid()))

@@ -282,13 +282,27 @@ lock-era operation. **Assumption:** pre-lock binaries are not subsequently run
 against this home; a downgrade/replacement or manual marker edit invalidates
 that inference and needs operator reconciliation. Without the exact marker,
 this is a transition boot: proof additionally requires a strictly positive,
-distinct old `daemon.pid` and `os.kill(pid, 0)` raising `ProcessLookupError`.
+distinct old PID and `os.kill(pid, 0)` raising `ProcessLookupError`.
+Use `daemon.pid` when present; only its genuine absence permits reading the
+retained `daemon.lock.pid` sidecar with the same strict PID reader. An invalid,
+unreadable or dangling-symlink `daemon.pid` never falls back to the sidecar.
 Missing, malformed, unreadable, aliased, own, alive or ambiguous/permission-error
 PID evidence means NOT PROVEN. Normal serving may continue, but later cleanup
 must release nothing using that proof. An unproven transition never publishes
 the marker, so its uncertainty cannot disappear next boot. Consequently a fresh
-empty home, or repeated clean boots without a retained dead PID, can remain
-unproven. Only a proven transition publishes the marker under the held lock.
+empty home's first boot remains unproven. Only a proven transition publishes
+the marker under the held lock.
+
+Normal lock-owning main atomically records its own PID in owner-only
+`daemon.lock.pid` before listener/PID publication; offline maintenance does not
+write it. Clean signal shutdown and shell stop still remove `daemon.pid` and
+`daemon.port`, leaving the sidecar for the next boot's positive death probe.
+The sidecar is evidence only, never a lock-era marker or a stopped claim. A
+reused PID that is alive, the new process's own PID, or an ambiguous probe remains
+NOT PROVEN and cannot publish the marker. No timestamp or process-name guess
+overrides those refusals. The signed THR-357 design note
+`engineering_manager-2026-11-16-startup-cleanup-design-note.md` keeps its original
+positive-death/lock-exclusion rule; this retention fixes evidence loss only.
 
 The shell preserves stale `daemon.pid` until lock-owning Python startup observes
 it; only that owner discards the stale port. Shell and legacy migration stop
