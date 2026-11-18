@@ -5,7 +5,28 @@ import Testing
 @testable import HappyRanchSupervisor
 @testable import HappyRanchApp
 
+/// Deliberately ignores Task cancellation: real dispatched work can return late.
+private actor HomeAwaitGate {
+    private var point: String?
+    private var reached: String?
+    private var continuation: CheckedContinuation<Void, Never>?
+    func arm(_ point: String) { self.point = point; reached = nil }
+    func pause(_ point: String) async {
+        guard self.point == point else { return }
+        self.point = nil; reached = point
+        await withCheckedContinuation { continuation = $0 }
+    }
+    func waitFor(_ point: String) async -> Bool {
+        let deadline = Date().addingTimeInterval(5)
+        while reached != point, Date() < deadline { try? await Task.sleep(for: .milliseconds(10)) }
+        return reached == point
+    }
+    func release() { continuation?.resume(); continuation = nil }
+}
+
 private actor HomeStoreFixture: SavedHomeCredentialStore {
+    let gate: HomeAwaitGate
+    init(gate: HomeAwaitGate = HomeAwaitGate()) { self.gate = gate }
     var credentials: [SavedDeviceCredential] = []
     var readFailure: SavedAccessFailure?
     var discoveryFailures: [SavedAccessFailure] = []
@@ -19,27 +40,32 @@ private actor HomeStoreFixture: SavedHomeCredentialStore {
         readFailure = read; self.saveFails = saveFails; self.deleteFails = deleteFails
     }
     func savedHomes() async throws -> SavedHomeDiscovery {
+        await gate.pause("discovery")
         if let readFailure { throw readFailure }
         return SavedHomeDiscovery(credentials: credentials, failures: discoveryFailures)
     }
     func save(_ credential: SavedDeviceCredential) async throws {
         saves += 1
+        await gate.pause("save")
         if saveFails { throw SavedAccessFailure.saveFailed }
         credentials.removeAll { $0.binding == credential.binding }; credentials.append(credential)
     }
     func load(binding: SavedDeviceBinding, trust: SavedHomeTrust) async throws -> SavedDeviceCredential {
+        await gate.pause("load")
         if let readFailure { throw readFailure }
         guard let credential = credentials.first(where: { $0.binding == binding && $0.trust == trust }) else { throw SavedAccessFailure.notFound }
         return credential
     }
     func refreshAddress(from credential: SavedDeviceCredential, to trust: SavedHomeTrust) async throws -> SavedDeviceCredential {
         refreshes += 1
+        await gate.pause("refresh")
         if saveFails { throw SavedAccessFailure.saveFailed }
         let updated = try credential.updatingAddress(to: trust)
         credentials.removeAll { $0.binding == credential.binding }; credentials.append(updated)
         return updated
     }
     func delete(binding: SavedDeviceBinding) async throws {
+        await gate.pause("delete")
         if deleteFails { throw SavedAccessFailure.deletionFailed }
         deletedBindings.append(binding)
         credentials.removeAll { $0.binding == binding }
@@ -47,6 +73,10 @@ private actor HomeStoreFixture: SavedHomeCredentialStore {
 }
 
 private actor HomeSessionFixture: HomeInviteSession {
+    let gate: HomeAwaitGate
+    init(gate: HomeAwaitGate = HomeAwaitGate()) { self.gate = gate }
+    private(set) var stops = 0
+    private(set) var opens = 0
     var joinFailure: HomeConnectionFailure?
     var accessFailure: HomeConnectionFailure?
     private(set) var recoveries = 0
@@ -73,6 +103,7 @@ private actor HomeSessionFixture: HomeInviteSession {
     func resetApproval() { approved = false }
     func join(trust: SavedHomeTrust, profileID: UUID, key: Data?) async throws {
         joins += 1
+        await gate.pause("join")
         if key == nil { emptyKeys += 1; emptyProfiles.append(profileID) }
         else { keyProfiles.append(profileID); keyedMaterials.append(key!) }
         if suspendJoin { try await Task.sleep(for: .seconds(30)) }
@@ -81,6 +112,7 @@ private actor HomeSessionFixture: HomeInviteSession {
     }
     func recoverAddress(_ credential: SavedDeviceCredential, to trust: SavedHomeTrust) async throws -> SavedDeviceCredential {
         recoveries += 1
+        await gate.pause("recover")
         if let accessFailure { throw accessFailure }
         let updated = try credential.updatingAddress(to: trust)
         if let returnedNode {
@@ -92,22 +124,26 @@ private actor HomeSessionFixture: HomeInviteSession {
     }
     func pair(_ invite: HomePairingInvitation) async throws -> PendingHomeApproval {
         pairs += 1
+        await gate.pause("pair")
         return try PendingHomeApproval(comparisonPhrase: "pair-1234-abcd-5678-efab", expiresAt: invite.expiresAt,
             completionHandle: String(repeating: "a", count: 64))
     }
     func complete(_ pending: PendingHomeApproval, trust: SavedHomeTrust, profileID: UUID) async throws -> SavedDeviceCredential? {
         completions += 1
+        await gate.pause("complete")
         guard approved else { return nil }
         return try SavedDeviceCredential(binding: SavedDeviceBinding(homeID: trust.homeID,
             controlPlaneID: trust.controlPlaneID, stableNodeID: "synthetic-stable-node"), trust: trust,
             deliveredBearer: Data("hrpin_1_SYNTHETIC-BEARER-CANARY".utf8), networkProfileID: profileID)
     }
     func open(_ credential: SavedDeviceCredential) async throws -> URL {
+        opens += 1
+        await gate.pause("open")
         try await checkAccess()
         return URL(string: "http://127.0.0.1:49152/")!
     }
     func checkAccess() async throws { if let accessFailure { throw accessFailure } }
-    func stop() async throws {}
+    func stop() async throws { stops += 1; await gate.pause("stop") }
 }
 
 @Suite("Single home invite UI contract")
@@ -162,15 +198,15 @@ struct HomeInviteModelTests {
         #expect(await eventually { model.phase == .opening && model.webURL != nil })
         #expect(model.phase != .connected)
         let url = try #require(model.webURL)
-        model.webLoaded(url: url, attempt: UUID())
+        model.webLoaded(url: url, lifetime: HomeInviteModel.Lifetime(attempt: UUID(), document: model.documentGeneration))
         #expect(model.phase == .opening)
-        model.webLoaded(url: URL(string: "http://127.0.0.1:49153/")!, attempt: model.attemptID)
+        model.webLoaded(url: URL(string: "http://127.0.0.1:49153/")!, lifetime: model.lifetime)
         #expect(model.phase == .opening)
-        model.webLoaded(url: url, attempt: model.attemptID)
+        model.webLoaded(url: url, lifetime: model.lifetime)
         #expect(model.phase == .connected)
         #expect(model.expiresAt == nil && model.comparisonPhrase == nil)
-        #expect(phases.filter { [.validating, .joining, .pairing, .awaitingApproval, .opening, .connected].contains($0) } ==
-            [.validating, .joining, .pairing, .awaitingApproval, .opening, .connected])
+        #expect(phases.filter { [.validating, .joining, .pairing, .awaitingApproval, .saving, .opening, .connected].contains($0) } ==
+            [.validating, .joining, .pairing, .awaitingApproval, .saving, .opening, .connected])
     }
 
     @Test("1563: failed home control join leaves a sanitized failure and Retry")
@@ -196,11 +232,11 @@ struct HomeInviteModelTests {
         #expect(await session.joins == 0)
         model.accept(try invite())
         #expect(await eventually { model.phase == .awaitingApproval })
-        let old = model.attemptID
+        let old = model.lifetime
         model.cancel()
         #expect(await eventually { model.phase == .idle && !model.busy })
         await session.approve()
-        model.webLoaded(url: URL(string: "http://127.0.0.1:49152/")!, attempt: old)
+        model.webLoaded(url: URL(string: "http://127.0.0.1:49152/")!, lifetime: old)
         #expect(model.phase == .idle)
         #expect(model.expiresAt == nil && model.comparisonPhrase == nil && model.webURL == nil)
     }
@@ -228,23 +264,37 @@ struct HomeInviteModelTests {
         #expect(HomeConnectionFailure.homeUnavailable.localizedDescription == "Not on your home network, or home computer unavailable")
     }
 
-    @Test("Save retry retains delivery, reopen uses no key, and Keychain failure stays visible")
-    func savedAccessRecovery() async throws {
-        let store = HomeStoreFixture(), session = HomeSessionFixture()
+    @Test("Save retry retains native loads before/during saving, reopen uses no key, and Keychain failure stays visible",
+          arguments: [false, true])
+    func savedAccessRecovery(loadDuringSave: Bool) async throws {
+        let gate = HomeAwaitGate()
+        let store = HomeStoreFixture(gate: gate), session = HomeSessionFixture()
         await store.configure(saveFails: true); await session.approve()
         let model = HomeInviteModel(store: store, makeSession: { session })
         model.accept(try invite())
-        #expect(await eventually { model.phase == .opening && model.saveFailure == .saveFailed })
-        model.webLoaded(url: try #require(model.webURL), attempt: model.attemptID)
+        #expect(await eventually { model.webURL != nil })
+        #expect(model.phase == .opening && model.saveFailure == .saveFailed)
+        let url = try #require(model.webURL)
+        if !loadDuringSave { model.webLoaded(url: url, lifetime: model.lifetime) }
         await store.configure()
+        let savingContext = model.lifetime
+        #expect(model.beginConfirmation(for: savingContext))
+        await gate.arm("save")
         model.retrySave()
-        #expect(await eventually { model.saveFailure == nil && !model.savedHomes.isEmpty && !model.busy })
+        try #require(await gate.waitFor("save"))
+        if loadDuringSave { model.webLoaded(url: url, lifetime: savingContext) }
+        #expect(model.phase == .saving)
+        await gate.release()
+        #expect(await eventually { model.saveFailure == nil && !model.savedHomes.isEmpty && model.phase == .opening })
+        #expect(model.phase == .opening, "Save retry cannot bypass a native confirmation hold")
+        model.endConfirmation(for: savingContext)
+        #expect(model.phase == .connected && !model.busy)
         model.cancel()
         #expect(await eventually { !model.busy })
         let reopen = HomeInviteModel(store: store, makeSession: { session })
         reopen.prepare()
         #expect(await eventually { reopen.phase == .opening && reopen.webURL != nil })
-        reopen.webLoaded(url: try #require(reopen.webURL), attempt: reopen.attemptID)
+        reopen.webLoaded(url: try #require(reopen.webURL), lifetime: reopen.lifetime)
         #expect(await session.emptyKeys == 1)
         reopen.cancel()
         #expect(await eventually { !reopen.busy })
@@ -257,6 +307,30 @@ struct HomeInviteModelTests {
             denied.accept(try invite())
             #expect(denied.phase == .keychain(failure), "Replacement needs explicit consent")
         }
+    }
+
+    @Test("The native navigation deadline remains effective during Retry save")
+    func retrySaveNavigationDeadline() async throws {
+        let gate = HomeAwaitGate()
+        let store = HomeStoreFixture(gate: gate), session = HomeSessionFixture()
+        await store.configure(saveFails: true); await session.approve()
+        let model = HomeInviteModel(store: store, makeSession: { session })
+        model.accept(try invite())
+        try #require(await eventually { model.webURL != nil })
+        let url = try #require(model.webURL), context = model.lifetime
+        await store.configure()
+        await gate.arm("save")
+        model.retrySave()
+        try #require(await gate.waitFor("save"))
+        // Exercise the existing production timer; no test clock or new hook.
+        try await Task.sleep(for: .seconds(11))
+        #expect(model.phase == .stopping && model.webURL == nil)
+        #expect(await session.stops == 0, "Timeout waits for storage readback")
+        await gate.release()
+        #expect(await eventually { !model.busy })
+        #expect(model.phase == .failed(.homeUnavailable) && model.savedHomes.count == 1)
+        model.webLoaded(url: url, lifetime: context)
+        #expect(model.phase == .failed(.homeUnavailable))
     }
 
     @Test("Local deletion failure reports what remains and Retry removal erases the record")
@@ -297,7 +371,7 @@ struct HomeInviteModelTests {
         #expect(await store.refreshes == 1)
         #expect(await store.saves == 1)
         #expect(model.savedHomes.first?.trust.dialIP == "192.168.1.41")
-        model.webLoaded(url: try #require(model.webURL), attempt: model.attemptID)
+        model.webLoaded(url: try #require(model.webURL), lifetime: model.lifetime)
         #expect(model.phase == .connected)
         model.cancel()
     }
@@ -496,6 +570,226 @@ struct HomeInviteModelTests {
         #expect(await session.recoveries == 0)
         #expect(await store.refreshes == 0)
         #expect(model.webURL == nil)
+    }
+
+    @Test("Cancel and document replacement discard every late discovery/join/pair/load result",
+          arguments: ["discovery", "load", "join", "pair", "complete", "open", "recover", "refresh"], [false, true])
+    func cancelledAwaitCompletion(point: String, replaceDocument: Bool) async throws {
+        let gate = HomeAwaitGate()
+        let store = HomeStoreFixture(gate: gate), session = HomeSessionFixture(gate: gate)
+        let model = HomeInviteModel(store: store, makeSession: { session })
+        await session.approve()
+        if ["discovery", "load", "recover", "refresh"].contains(point) {
+            let trust = try RemoteInvite.parse(invite()).trust
+            try await store.save(SavedDeviceCredential(binding: SavedDeviceBinding(homeID: trust.homeID,
+                controlPlaneID: trust.controlPlaneID, stableNodeID: "synthetic-stable-node"), trust: trust,
+                deliveredBearer: Data("SYNTHETIC-LIFETIME-CANARY".utf8), networkProfileID: UUID()))
+            if point == "discovery" { await store.setDiscoveryFailures([.denied]) }
+            if point == "recover" || point == "refresh" {
+                model.prepare()
+                #expect(await eventually { model.webURL != nil })
+                model.cancel()
+                #expect(await eventually { !model.busy })
+            }
+        }
+        await gate.arm(point)
+        if point == "discovery" || point == "load" { model.prepare() }
+        else { model.accept(try invite(dialIP: ["recover", "refresh"].contains(point) ? "192.168.1.41" : "192.168.1.40")) }
+        try #require(await gate.waitFor(point))
+        let old = model.lifetime
+        var afterCancel: [HomeInviteModel.Phase] = []
+        if replaceDocument { model.documentDidChange() } else { model.cancel() }
+        let observation = model.$phase.sink { afterCancel.append($0) }
+        defer { observation.cancel() }
+        #expect(model.lifetime != old && model.phase == .stopping)
+        await gate.release()
+        #expect(await eventually { !model.busy })
+        #expect(model.phase == .idle && model.webURL == nil)
+        #expect(!afterCancel.contains(.opening) && !afterCancel.contains(.connected))
+        model.webLoaded(url: URL(string: "http://127.0.0.1:49152/")!, lifetime: old)
+        #expect(model.phase == .idle)
+        if point == "discovery" { #expect(model.savedHomes.isEmpty && model.discoveryFailures.isEmpty) }
+        if point == "complete" { #expect(await store.saves == 0) }
+        if point == "recover" { #expect(await store.refreshes == 0) }
+        if point == "refresh" { #expect(model.savedHomes.first?.trust.dialIP == "192.168.1.41") }
+    }
+
+    @Test("Cancel waits for initial/retry save readback and retains success or failure without opening",
+          arguments: ["initial-success", "initial-failure", "retry-success", "retry-failure"], [false, true])
+    func cancelledSaveOutcome(scenario: String, replaceDocument: Bool) async throws {
+        let gate = HomeAwaitGate()
+        let store = HomeStoreFixture(gate: gate), session = HomeSessionFixture(gate: gate)
+        let model = HomeInviteModel(store: store, makeSession: { session })
+        await session.approve()
+        let retry = scenario.hasPrefix("retry"), fails = scenario.hasSuffix("failure")
+        if retry {
+            await store.configure(saveFails: true)
+            model.accept(try invite())
+            try #require(await eventually { model.webURL != nil })
+            #expect(model.saveFailure == .saveFailed)
+        }
+        await store.configure(saveFails: fails)
+        await gate.arm("save")
+        if retry { model.retrySave() } else { model.accept(try invite()) }
+        try #require(await gate.waitFor("save"))
+        #expect(model.phase == .saving && model.busy)
+        let old = model.lifetime
+        if retry {
+            #expect(model.beginConfirmation(for: old))
+            model.webLoaded(url: try #require(model.webURL), lifetime: old)
+            #expect(model.phase == .saving, "A native load cannot bypass storage settlement")
+        }
+        if replaceDocument { model.documentDidChange() } else { model.cancel() }
+        model.endConfirmation(for: old)
+        #expect(model.phase == .stopping && model.webURL == nil)
+        #expect(await session.stops == 0, "Teardown must wait for Keychain readback")
+        await gate.release()
+        #expect(await eventually { !model.busy })
+        #expect(model.phase == .idle && model.webURL == nil)
+        #expect(model.savedHomes.count == (fails ? 0 : 1))
+        #expect(model.saveFailure == (fails ? .saveFailed : nil))
+        #expect(try await store.savedHomes().credentials.count == (fails ? 0 : 1))
+        #expect(await session.opens == (retry ? 1 : 0))
+        model.webLoaded(url: URL(string: "http://127.0.0.1:49152/")!, lifetime: old)
+        #expect(model.phase == .idle)
+        let saves = await store.saves
+        model.retrySave()
+        await Task.yield()
+        #expect(await store.saves == saves, "Cancel forgets in-memory retry authority")
+    }
+
+    @Test("A failure awaiting stop cannot overwrite Cancel or document replacement", arguments: [false, true])
+    func cancelledFailureStop(replaceDocument: Bool) async throws {
+        let gate = HomeAwaitGate(), store = HomeStoreFixture()
+        let session = HomeSessionFixture(gate: gate)
+        await session.configure(join: .controlUnreachable)
+        await gate.arm("stop")
+        let model = HomeInviteModel(store: store, makeSession: { session })
+        model.accept(try invite())
+        try #require(await gate.waitFor("stop"))
+        if replaceDocument { model.documentDidChange() } else { model.cancel() }
+        var phases: [HomeInviteModel.Phase] = []
+        let observation = model.$phase.sink { phases.append($0) }
+        defer { observation.cancel() }
+        await gate.release()
+        #expect(await eventually { !model.busy })
+        #expect(model.phase == .idle && !phases.contains(.failed(.controlUnreachable)))
+    }
+
+    @Test("A superseded cancellation teardown cannot publish its old terminal state")
+    func supersededTeardown() async throws {
+        let gate = HomeAwaitGate()
+        let gatedSession = HomeSessionFixture(gate: gate)
+        await gatedSession.approve()
+        let model = HomeInviteModel(store: HomeStoreFixture(), makeSession: { gatedSession })
+        model.accept(try invite())
+        #expect(await eventually { model.webURL != nil })
+        await gate.arm("stop")
+        model.cancel(endingAt: .failed(.homeUnavailable))
+        try #require(await gate.waitFor("stop"))
+        model.documentDidChange()
+        var phases: [HomeInviteModel.Phase] = []
+        let observation = model.$phase.sink { phases.append($0) }
+        defer { observation.cancel() }
+        await gate.release()
+        #expect(await eventually { !model.busy })
+        #expect(model.phase == .idle && !phases.contains(.failed(.homeUnavailable)))
+    }
+
+    @Test("Interrupted removal exposes exact-target recovery and reconciles observed deletion",
+          arguments: ["stop", "delete-success", "delete-failure"], [false, true])
+    func cancelledRemoval(scenario: String, replaceDocument: Bool) async throws {
+        let gate = HomeAwaitGate()
+        let store = HomeStoreFixture(gate: gate), session = HomeSessionFixture(gate: gate)
+        await session.approve()
+        let model = HomeInviteModel(store: store, makeSession: { session })
+        model.accept(try invite())
+        try #require(await eventually { model.webURL != nil })
+        let credential = try #require(try await store.savedHomes().credentials.first)
+        let point = scenario == "stop" ? "stop" : "delete"
+        await store.configure(deleteFails: scenario == "delete-failure")
+        await gate.arm(point)
+        model.removeSavedComputer()
+        try #require(await gate.waitFor(point))
+        let old = model.lifetime
+        if replaceDocument { model.documentDidChange() } else { model.cancel() }
+        await gate.release()
+        #expect(await eventually { !model.busy })
+        #expect(model.webURL == nil)
+        model.webLoaded(url: URL(string: "http://127.0.0.1:49152/")!, lifetime: old)
+        if scenario == "delete-success" {
+            #expect(model.phase == .idle && model.removalFailures.isEmpty)
+            #expect(model.savedHomes.isEmpty, "Current cancellation owner reconciles confirmed erasure")
+            #expect(await store.deletedBindings == [credential.binding])
+        } else {
+            #expect(model.phase == .failed(.cleanupIncomplete) && !model.removalFailures.isEmpty)
+            #expect(model.savedHomes.count == 1 && model.target == credential.trust)
+            #expect(await store.deletedBindings.isEmpty)
+            let joins = await session.joins
+            model.reconnect()
+            await Task.yield()
+            #expect(await session.joins == joins, "Incomplete removal retains its captured target")
+            // Retry owns the retained target even if picker selection changes.
+            model.selectedHomeID = UUID()
+            await store.configure()
+            model.removeSavedComputer()
+            #expect(await eventually { !model.busy })
+            #expect(model.phase == .idle && model.removalFailures.isEmpty && model.savedHomes.isEmpty)
+            #expect(await store.deletedBindings == [credential.binding])
+        }
+        #expect(try await store.savedHomes().credentials.isEmpty)
+        model.accept(try invite(home: "after-removal"))
+        #expect(await eventually { model.webURL != nil })
+        model.webLoaded(url: try #require(model.webURL), lifetime: model.lifetime)
+        #expect(model.phase == .connected, "Settled cleanup releases the new-connection guard")
+        model.cancel()
+        #expect(await eventually { !model.busy })
+    }
+
+    @Test("Only a current native loaded document can leave a confirmation hold on every entry")
+    func confirmationLoadGate() async throws {
+        let store = HomeStoreFixture(), session = HomeSessionFixture()
+        await session.approve()
+        let model = HomeInviteModel(store: store, makeSession: { session })
+        model.accept(try invite())
+        #expect(await eventually { model.webURL != nil })
+        let first = model.lifetime, url = try #require(model.webURL)
+        let wrongDocument = HomeInviteModel.Lifetime(attempt: first.attempt, document: UUID())
+        #expect(!model.beginConfirmation(for: wrongDocument))
+        #expect(model.beginConfirmation(for: first))
+        #expect(!model.beginConfirmation(for: first), "No stacked confirmations")
+        model.webLoaded(url: url, lifetime: wrongDocument)
+        model.webFailed(url: url, lifetime: wrongDocument)
+        model.endConfirmation(for: wrongDocument)
+        #expect(model.phase == .opening)
+        model.webLoaded(url: url, lifetime: first)
+        #expect(model.phase == .opening)
+        model.endConfirmation(for: first)
+        #expect(model.phase == .connected)
+        model.cancel()
+        #expect(await eventually { !model.busy })
+        model.reconnect()
+        #expect(await eventually { model.webURL != nil })
+        let second = model.lifetime
+        #expect(model.beginConfirmation(for: second))
+        model.webLoaded(url: url, lifetime: first)
+        model.webFailed(url: url, lifetime: first)
+        model.endConfirmation(for: first)
+        #expect(model.phase == .opening)
+        model.endConfirmation(for: second)
+        #expect(model.phase == .opening, "Dismissing without a native load proves nothing")
+        #expect(model.beginConfirmation(for: second))
+        model.webLoaded(url: url, lifetime: second)
+        #expect(model.phase == .opening)
+        model.cancel()
+        model.endConfirmation(for: second)
+        #expect(await eventually { !model.busy })
+        #expect(model.phase == .idle)
+        model.reconnect()
+        #expect(await eventually { model.webURL != nil })
+        model.webLoaded(url: try #require(model.webURL), lifetime: model.lifetime)
+        #expect(model.phase == .connected, "Saved entry still requires its own native load")
+        model.cancel()
     }
 
 }

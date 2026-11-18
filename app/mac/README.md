@@ -31,13 +31,25 @@ URL/key intake does not exist and is not planned; outside-home access uses a fix
 build-configured server (see [the spec](../../docs/specs/2026-11-16-one-click-remote-access.md#outside-home-access-fixed-operator-server)).
 QR transfer remains deferred.
 
-`HomeInviteModel` owns attempt IDs, the actual invite-expiry countdown and cancel
-fencing. `ManagedHomeInviteSession` uses the 5b helper and the existing managed
-peer-only bridge for every ceremony, health and product request. Native/helper
+`HomeInviteModel` owns attempt IDs, native document generations, the actual
+invite-expiry countdown and cancel fencing. Native load callbacks capture both
+identities, including on saved reconnect. A native confirmation hold defers
+Connected until dismissal and a still-current authorized load; direct Cancel in
+the native attempt form needs no second confirmation. Static bridge dispatch and
+web-initiated confirmations remain a later slice. `ManagedHomeInviteSession`
+uses the 5b helper and the existing managed peer-only bridge for every ceremony, health and product request. Native/helper
 join has a 120-second bound, each ceremony request and opening navigation a
 10-second bound, and approval cannot outlive the invite. Cancel forgets draft,
-pairing material and handle; late results cannot reconnect. A failed join,
-including a helper TLS-close failure, reaches a closed failure with Retry (#1563).
+pairing material and handle; late results cannot reconnect. The explicit Saving
+phase covers Keychain write/readback. Cancel fences progression immediately and
+shows Stopping until that storage step settles, retaining its observed saved
+access or save failure before local teardown; it cannot advance to Opening or
+Connected. Failed or unknown teardown remains visible.
+The native release-UI load observation is retained if it arrives during Retry
+saving; Connected still waits for saving and any native confirmation to settle.
+The ten-second navigation deadline remains effective while Retry saving waits.
+A failed join, including a helper TLS-close failure, reaches a closed failure
+with Retry (#1563).
 A spent join key is never retried. A retained same-trust unfinished membership,
 or a saved computer, reopens with an empty key. An interrupted first enrollment
 is checked explicitly without a key; if that check refuses, a fresh invite may
@@ -70,7 +82,11 @@ storage. Revocation observed through the closed connector code closes access
 and runs local removal for the exact active credential/profile, including a
 newly delivered credential whose save failed. Picker selection never chooses an
 automatic deletion target. Failed removal retains that exact target for Retry;
-new connection attempts wait for removal. Local removal never claims host revocation.
+new connection attempts wait for removal. Interrupting removal keeps a visible
+Removal incomplete warning and Retry removal for that captured target. If the
+dispatched deletion confirms erasure before cancellation settles, the current
+cancellation owner reconciles that result without reconnecting. Local removal
+never claims host revocation.
 
 **Pairing wire reconciled against merged Linux** (`origin/main` at
 `19c952c05502c1b091f8dc66e8acdd2f9a7de838`, PRs #1574/#1578): POST

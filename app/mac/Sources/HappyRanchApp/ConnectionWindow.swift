@@ -268,6 +268,7 @@ enum ConnectionClientProjection {
             case .joining: stage = "joining"
             case .pairing: stage = "pairing"
             case .awaitingApproval: stage = "waitingApproval"
+            case .saving: stage = "saving"
             case .opening: stage = "opening"
             case .connected: stage = "connected"; runtime = "available"
             case .stopping: stage = "stopping"
