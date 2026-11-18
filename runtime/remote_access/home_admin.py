@@ -4,10 +4,12 @@ from __future__ import annotations
 import fcntl
 import hashlib
 import os
+import re
 import stat
 import time
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
+from functools import lru_cache
 from typing import Iterator
 
 from runtime.remote_access.headscale_service import INVITE_USER
@@ -20,6 +22,8 @@ from runtime.remote_access.service_manager import _default_run
 _RUNNER = '/opt/happyranch-desktop/libexec/remote-access/happyranch-home-admin'
 _STATE = '/var/lib/happyranch-remote-access/home-minter'
 _MAX_BYTES = 128 << 20
+_KEY = re.compile('[0-9a-f]{48}')
+_RECORD_TYPES = {1: 2, 2: 2, 3: 2, 4: 0, 5: 0, 6: 0, 7: 2, 8: 2, 9: 2}
 
 
 def _deadline(timeout_s: float) -> float:
@@ -50,45 +54,60 @@ def _bytes(number: int, value: bytes) -> bytes:
     return _varint(number * 8 + 2) + _varint(len(value)) + value
 
 
+def _take_varint(data: bytes, offset: int) -> tuple[int, int]:
+    value, shift = data[offset] & 127, 7
+    offset += 1
+    while True:
+        if offset >= len(data) or shift >= 70:
+            raise ValueError('wire')
+        b = data[offset]
+        offset += 1
+        value |= (b & 127) << shift
+        if b < 128:
+            if b == 0 or (shift == 63 and b > 1):
+                raise ValueError('wire')
+            return value, offset
+        shift += 7
+
+
 def _fields(data: bytes, deadline: float | None = None) -> Iterator[tuple[int, int, bytes | int]]:
     offset = 0
-
-    def take() -> int:
-        nonlocal offset
-        start, value = offset, 0
-        for shift in range(0, 70, 7):
-            if offset >= len(data):
-                raise ValueError('wire')
-            b = data[offset]
+    size = len(data)
+    checkpoint = 0
+    while offset < size:
+        if offset >= checkpoint:
+            _remaining(deadline)
+            checkpoint = offset + 4096
+        # Single-byte tags/values dominate Headscale's inventory. Check minimal
+        # unsigned varints directly, without allocating/re-encoding each one.
+        tag = data[offset]
+        if tag < 128:
             offset += 1
-            value |= (b & 127) << shift
-            if not b & 128:
-                if value >= 1 << 64 or data[start:offset] != _varint(value):
-                    raise ValueError('wire')
-                return value
-        raise ValueError('wire')
-
-    while offset < len(data):
-        _remaining(deadline)
-        tag = take()
+        else:
+            tag, offset = _take_varint(data, offset)
         number, wire = tag >> 3, tag & 7
         if not 0 < number < 1 << 29 or wire not in (0, 2):
             raise ValueError('wire')
-        value = take()
+        if offset >= size:
+            raise ValueError('wire')
+        value = data[offset]
+        if value < 128:
+            offset += 1
+        else:
+            value, offset = _take_varint(data, offset)
         if wire == 2:
             end = offset + value
-            if end > len(data):
+            if end > size:
                 raise ValueError('wire')
             value, offset = data[offset:end], end
-        _remaining(deadline)
         yield number, wire, value
+    _remaining(deadline)
 
 
 def _message(data: bytes, types: dict[int, int], repeated: int = 0,
              deadline: float | None = None) -> dict[int, object]:
     values: dict[int, object] = {repeated: []} if repeated else {}
     for number, wire, value in _fields(data, deadline):
-        _remaining(deadline)
         if types.get(number) != wire or (number != repeated and number in values):
             raise ValueError('wire')
         if number == repeated:
@@ -101,29 +120,37 @@ def _message(data: bytes, types: dict[int, int], repeated: int = 0,
 
 
 def _timestamp(data: bytes, deadline: float | None = None) -> datetime:
-    values = _message(data, {1: 0, 2: 0}, deadline=deadline)
+    _remaining(deadline)
+    return _timestamp_value(data)
+
+
+@lru_cache(maxsize=1024)
+def _timestamp_value(data: bytes) -> datetime:
+    # Only successfully validated timestamp bytes are cached; no keys/records.
+    values = _message(data, {1: 0, 2: 0})
     seconds, nanos = values.get(1, 0), values.get(2, 0)
     if seconds >= 1 << 63:
         seconds -= 1 << 64
     if not -62135596800 <= seconds <= 253402300799 or not 0 <= nanos <= 999999999:
         raise ValueError('wire')
     # Datetime projects nanos to microseconds by truncation; expiry never extends.
-    return datetime(1970, 1, 1, tzinfo=timezone.utc) + timedelta(seconds=seconds, microseconds=nanos // 1000)
+    return datetime.fromtimestamp(seconds, timezone.utc).replace(microsecond=nanos // 1000)
 
 
 def _record(data: bytes, deadline: float | None = None) -> PreAuthKey:
     if len(data) > 4096:
         raise ValueError('wire')
-    values = _message(data, {1: 2, 2: 2, 3: 2, 4: 0, 5: 0, 6: 0, 7: 2, 8: 2, 9: 2}, 9, deadline)
-    if any(n not in values for n in (1, 2, 3, 7, 8)) or any(not values[n] for n in (1, 2, 3)):
+    values = _message(data, _RECORD_TYPES, 9, deadline)
+    # Required fields use subscription: absence refuses rather than defaulting.
+    user, identity, key = values[1].decode('utf-8'), values[2].decode('utf-8'), values[3].decode('utf-8')
+    reusable, ephemeral, used = values.get(4, 0), values.get(5, 0), values.get(6, 0)
+    if (not user or not identity or not key
+            or reusable not in (0, 1) or ephemeral not in (0, 1) or used not in (0, 1)):
         raise ValueError('wire')
-    strings = [values[n].decode('utf-8') for n in (1, 2, 3)]
-    if any(values.get(n, 0) not in (0, 1) for n in (4, 5, 6)):
-        raise ValueError('wire')
-    record = PreAuthKey(*strings, *(bool(values.get(n, 0)) for n in (4, 5, 6)),
+    record = PreAuthKey(user, identity, key, bool(reusable), bool(ephemeral), bool(used),
                         _timestamp(values[7], deadline), _timestamp(values[8], deadline),
-                        tuple(tag.decode('utf-8') for tag in values[9]))
-    if len(record.key) != 48 or any(c not in '0123456789abcdef' for c in record.key):
+                        tuple(map(bytes.decode, values[9])))
+    if _KEY.fullmatch(record.key) is None:
         raise ValueError('wire')
     return record
 

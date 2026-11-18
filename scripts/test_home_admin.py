@@ -51,6 +51,25 @@ def test_proto3_omission_and_valid_timestamps(monkeypatch) -> None:
         assert value.microsecond == nanos // 1000
 
 
+def test_annual_inventory_under_real_deadline(monkeypatch) -> None:
+    # 366 days at one mint/minute; complete expired history still needs decoding.
+    rows = 527_040
+    started = int(NOW.timestamp()) - rows * 60 - 120
+    prefix = h._bytes(1, USER.encode())
+    suffix = h._bytes(3, KEY)
+    response = b''.join(h._bytes(1, prefix + h._bytes(2, str(i + 1).encode()) + suffix
+                                + h._bytes(7, timestamp(started + i * 60 + 120))
+                                + h._bytes(8, timestamp(started + i * 60)))
+                        for i in range(rows))
+    got = transport(monkeypatch, response).list_pre_auth_keys(user=USER, timeout_s=5)
+    assert len(got) == rows
+    for i, item in enumerate(got):
+        assert (item.user, item.id, item.key) == (USER, str(i + 1), KEY.decode())
+        assert (item.reusable, item.ephemeral, item.used, item.acl_tags) == (False, False, False, ())
+        assert item.created_at == datetime.fromtimestamp(started + i * 60, timezone.utc)
+        assert item.expiration == item.created_at + timedelta(seconds=120)
+
+
 def mutations() -> list[bytes]:
     good = record()
     missing = [b''.join(h._bytes(n, v) if w == 2 else h._varint(n * 8) + h._varint(v)

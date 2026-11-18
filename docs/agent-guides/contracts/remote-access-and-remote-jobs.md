@@ -2209,8 +2209,14 @@ valid nanos to microseconds by truncation, so expiration never extends.
 One original monotonic deadline, capped at five seconds, spans Python custody,
 request encoding, the remaining subprocess/socket/RPC/body budget, complete
 wire/record projection, per-row user/duplicate-ID validation and final success.
-Cooperative checks between bounded fields/records and after final projection
+Cooperative checks at bounded byte intervals, between records and after final projection
 raise sanitized uncertainty on expiry; no partial or late success is returned.
+Strict projection checks minimal varints directly without re-encoding each field,
+uses a compiled full-key check and retains a bounded cache of validated timestamp
+bytes only, never keys or records. Required fields, complete validation and
+duplicate-ID/user checks remain unchanged. The annual maximum-rate history
+(527,040 ordinary untagged rows) is exercised under the real five-second deadline;
+host sizing measurements must leave transport margin within that shared budget.
 The runner also checks its original context after the private response write,
 including any preceding durable fence settlement, before returning exit 0.
 Input and each projected record are capped at 4096 bytes, response at 128 MiB,
