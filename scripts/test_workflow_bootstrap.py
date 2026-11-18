@@ -4,6 +4,8 @@ from __future__ import annotations
 import asyncio
 import json
 import sqlite3
+import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -58,6 +60,10 @@ def test_no_effect_refusal_loads_and_latched_boot_does_not_retry(
     root = runtime.orgs_dir / 'scratch'
     home = runtime.root.parent
     hold = None
+    # Publication/profile custody still refuses; pending tasks carry forward.
+    with sqlite3.connect(root / 'happyranch.db') as conn:
+        conn.execute('INSERT INTO workflow_profile_leases VALUES (?,?,?)',
+                     ('synthetic-unused-profile', 'synthetic-owner', 2147483647))
     if prior_hold:
         seed = bootstrap.BootstrapStartup(home=home, runtime_root=runtime.root)
         seed._hold('scratch', 'history_check_failed', 'not_installed')
@@ -116,14 +122,14 @@ def test_unknown_latch_stays_broken_without_retry(runtime: RuntimeDir) -> None:
 
 
 @pytest.mark.parametrize('publisher,agents,teams,terminal,expected', [
-    ('disk_sweep', (), (), 'unknown', 'workflow_coding_source_owner_unresolved: tasks:TASK-retained'),
+    ('disk_sweep', (), (), 'unknown', None),
     ('disk_sweep', (), (), 'active', 'workflow_setup_history_not_idle'),
     ('other', (), (), 'unknown', 'workflow_setup_history_not_idle'),
     ('disk_sweep', ('worker',), (), 'unknown', 'workflow_setup_history_not_idle'),
     ('disk_sweep', (), ('engineering',), 'unknown', 'workflow_setup_history_not_idle'),
 ])
 def test_writer_exemption_preserves_unknown_and_later_gate(
-    runtime: RuntimeDir, publisher: str, agents: tuple[str, ...], teams: tuple[str, ...], terminal: str, expected: str,
+    runtime: RuntimeDir, publisher: str, agents: tuple[str, ...], teams: tuple[str, ...], terminal: str, expected: str | None,
 ) -> None:
     path = runtime.orgs_dir / 'scratch/happyranch.db'
     db = Database(path)
@@ -141,8 +147,11 @@ def test_writer_exemption_preserves_unknown_and_later_gate(
     fence = OrgAccessFence.acquire(path.parent, exclusive=True)
     source = bootstrap.BootstrapSource(fence=fence, deadline=time.monotonic()+119)
     try:
-        with pytest.raises(ValueError, match=expected):
+        if expected is None:
             source.open()
+        else:
+            with pytest.raises(ValueError, match=expected):
+                source.open()
     finally:
         source.close()
         fence.close()
@@ -150,3 +159,125 @@ def test_writer_exemption_preserves_unknown_and_later_gate(
     with sqlite3.connect(path) as conn:
         payload = conn.execute("SELECT payload FROM audit_log WHERE action='team_move_native_writer' ORDER BY id DESC LIMIT 1").fetchone()[0]
         assert json.loads(payload)['state'] == terminal
+
+
+@pytest.mark.parametrize('writers', [0, 1800], ids=['pending-source', 'large-writer-census'])
+def test_historical_sources_install_without_adoption_and_next_boot_noop(runtime: RuntimeDir, writers: int) -> None:
+    root = runtime.orgs_dir / 'scratch'
+    with sqlite3.connect(root / 'happyranch.db') as conn:
+        for number in range(writers):
+            row = NativeWriterLifecycle(org_slug='scratch', writer_id=f'synthetic-writer-{number}', publisher='synthetic')
+            for state in ('active', 'settled'):
+                conn.execute('INSERT INTO audit_log(timestamp,task_id,agent,action,payload) VALUES(?,?,?,?,?)',
+                    ('2026-11-17T00:00:00+00:00', 'config:team-move-writer:'+row.writer_id, 'native_writer',
+                     'team_move_native_writer', row.model_copy(update={'state': state}).model_dump_json()))
+        before = tuple(conn.execute('SELECT rowid,* FROM workflow_task_ownership'))
+        tasks = tuple(conn.execute('SELECT rowid,* FROM tasks'))
+    for boot in range(2):
+        state = DaemonState.from_runtime(runtime, Settings(), automatic_workflow_setup=True)
+        try:
+            assert set(state.orgs) == {'scratch'}, state.broken_orgs
+            assert not state.broken_orgs
+            conn = state.orgs['scratch'].db._conn
+            assert tuple(tuple(row) for row in conn.execute('SELECT rowid,* FROM workflow_task_ownership')) == before
+            assert tuple(tuple(row) for row in conn.execute('SELECT rowid,* FROM tasks')) == tasks
+            status = read_setup_status(runtime.root.parent, runtime.root, 'scratch')
+            assert (status.state, status.reason) == ('installed_verified', 'registered')
+            assert conn.execute('SELECT count(*) FROM workflow_seq_runs').fetchone()[0] == 0
+            assert conn.execute('SELECT count(*) FROM workflow_seq_settings').fetchone()[0] == 0
+            assert conn.execute('SELECT count(*) FROM workflow_seq_definitions').fetchone()[0] == 1
+            assert len(state._workflow_bootstrap.workers) == (1 if boot == 0 else 0)
+        finally:
+            asyncio.run(state.close_all())
+            state.metrics_store.close()
+
+
+@pytest.mark.parametrize('task_status,installed', [
+    ('completed', True), ('failed', True), ('cancelled', True), ('superseded', True),
+    ('pending', False), ('in_progress', False), ('escalated', False),
+])
+def test_native_recovery_history_install_or_fallback(
+    runtime: RuntimeDir, task_status: str, installed: bool,
+) -> None:
+    root = runtime.orgs_dir / 'scratch'
+    with sqlite3.connect(root / 'happyranch.db') as conn:
+        conn.execute('UPDATE tasks SET status=? WHERE id=?', (task_status, 'TASK-retained'))
+        for recovery_state in ('claimed', 'callback_accepted'):
+            conn.execute('INSERT INTO task_completion_recoveries '
+                '(task_id,agent,origin_session_id,recovery_session_id,provider_session_id,claimed_at,expires_at,state) '
+                'VALUES (?,?,?,?,?,?,?,?)',
+                ('TASK-retained', 'synthetic-agent', 'origin-'+recovery_state, 'recovery-'+recovery_state,
+                 'synthetic-provider', '2026-09-01T00:00:00Z', '2026-09-01T00:02:00Z', recovery_state))
+        before = tuple(conn.execute('SELECT rowid,* FROM task_completion_recoveries ORDER BY id'))
+    for boot in range(2):
+        state = DaemonState.from_runtime(runtime, Settings(), automatic_workflow_setup=True)
+        try:
+            assert set(state.orgs) == {'scratch'} and not state.broken_orgs
+            conn = state.orgs['scratch'].db._conn
+            assert tuple(tuple(row) for row in conn.execute(
+                'SELECT rowid,* FROM task_completion_recoveries ORDER BY id')) == before
+            status = read_setup_status(runtime.root.parent, runtime.root, 'scratch')
+            expected = ('installed_verified', 'registered') if installed else ('not_installed', 'history_check_failed')
+            assert (status.state, status.reason) == expected
+            assert len(state._workflow_bootstrap.workers) == (1 if boot == 0 else 0)
+            if installed:
+                assert conn.execute('SELECT count(*) FROM workflow_seq_runs').fetchone()[0] == 0
+                assert conn.execute('SELECT count(*) FROM workflow_seq_settings').fetchone()[0] == 0
+            else:
+                assert not conn.execute("SELECT 1 FROM sqlite_schema WHERE name='workflow_seq_runs'").fetchone()
+        finally:
+            asyncio.run(state.close_all())
+            state.metrics_store.close()
+
+
+def test_live_producer_refuses_install_with_fallback(runtime: RuntimeDir) -> None:
+    root = runtime.orgs_dir / 'scratch'
+    (root / 'org/teams.yaml').write_text(
+        'teams:\n  engineering:\n    manager: {kind: human, principal: founder}\n    workers: [synthetic_agent]\n')
+    (root / 'org/agents/synthetic_agent.md').write_text(
+        '---\nname: synthetic_agent\nteam: engineering\nrole: worker\nexecutor: codex\n---\nSynthetic agent.\n')
+    child = subprocess.Popen([sys.executable, '-c', """
+from datetime import datetime, timezone
+from pathlib import Path
+import sys
+from unittest.mock import patch
+from runtime.config import Settings
+from runtime.daemon.org_state import OrgState
+from runtime.models import DreamRecord
+from runtime.platform.passthrough_backend import PassthroughBackend
+with patch('runtime.platform.backend_factory.select_session_backend', PassthroughBackend):
+    live = OrgState.load(slug='scratch', root=Path(sys.argv[1]), settings=Settings())
+preparation = None
+try:
+    now = datetime.now(timezone.utc)
+    live.db.insert_dream(DreamRecord(id='DREAM-live', agent_name='synthetic_agent', local_date='2026-11-18',
+                                    scheduled_for=now, window_end=now))
+    admission = live.orchestrator._team_moves.producers
+    preparation = admission.reserve('dream', 'DREAM-live')
+    assert preparation is not None and admission.live[('dream', 'DREAM-live')] is preparation
+    print('live producer ready', flush=True)
+    sys.stdin.read(1)
+    assert admission.live[('dream', 'DREAM-live')] is preparation and preparation.owner_live
+finally:
+    if preparation is not None:
+        preparation.finish()
+    live.close()
+""", str(root)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    try:
+        assert child.stdout.readline().strip() == 'live producer ready'
+        assert child.poll() is None
+        state = DaemonState.from_runtime(runtime, Settings(), automatic_workflow_setup=True)
+        try:
+            assert set(state.orgs) == {'scratch'} and not state.broken_orgs
+            status = read_setup_status(runtime.root.parent, runtime.root, 'scratch')
+            assert (status.state, status.reason) == ('not_installed', 'writer_exclusion_unproven')
+            assert not state._workflow_bootstrap.workers
+            assert not state.orgs['scratch'].db._conn.execute(
+                "SELECT 1 FROM sqlite_schema WHERE name='workflow_seq_runs'").fetchone()
+            assert child.poll() is None
+        finally:
+            asyncio.run(state.close_all())
+            state.metrics_store.close()
+    finally:
+        _, stderr = child.communicate('x', timeout=10)
+        assert child.returncode == 0, stderr

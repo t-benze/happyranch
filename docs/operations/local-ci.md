@@ -1,13 +1,20 @@
 # Local CI
 
-## Focused A4 no-effect refusal and historical writers
+## Focused A4 carry-forward, no-effect refusal and live owners
 
 `uv run --frozen pytest scripts/test_workflow_bootstrap.py -v --tb=short`
 uses the existing standalone synthetic-org venue to drive the real bootstrap
 worker and ordinary startup loader without a serving daemon. It checks first and
 latched second boot, fresh SH attachment, persisted refusal reason/unchanged
-latch, unknown holds, and exact historical disk-sweep exemption boundaries with
-unchanged audit history and a real later current-domain refusal.
+latch, unknown holds, exact historical disk-sweep exemption boundaries, retained
+pending-source ownership without adoption, registration against 3600 native
+writer history rows under default budgets, and installed second-boot no-op.
+Unresolved native recovery receipts on terminal tasks install byte-identically;
+pending, in-progress and escalated tasks refuse with fallback on both boots.
+The live-producer negative holds a real mounted preparation and original SH
+while startup refuses EX and loads the old layout. No executor is launched.
+`--bootstrap-owners=CASE` also checks carried-forward native histories/legacy,
+unchanged source bytes, writer/lease refusals and unchanged time/SQL limits.
 The existing `WORKFLOW_SCHEMA_PYTHON=3.14 bash scripts/test-workflow-schema-load.sh --bootstrap-startup=history`
 (and `ex`, `backup`, `history_precommit`, `commit_uncertain`, and discovery-close
 selections) retains mounted startup coverage. These are focused scripts, outside

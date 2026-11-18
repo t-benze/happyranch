@@ -6,8 +6,8 @@
 attachment and serving; runtime switching retains its separate ordinary path.
 Founder THR-336 msg250/251 (A4:2) amends R2: predecessor proof is not required.
 Normal one-daemon startup-migration trust combines with original A1 EX, full I1a
-integrity, verified SHA-256 backup before source writes and complete durable
-producer/writer/Pause/thread/repository/current-domain idle history, repeated in
+integrity, verified SHA-256 backup before source writes, complete schema
+validation and startup ownership checks, repeated in
 the target transaction before COMMIT. A concurrent pre-A1/old-code daemon remains
 a documented cooperative limitation; no per-org closure receipt is introduced.
 `writer_exclusion_unproven` applies to unavailable/lost EX, never missing
@@ -32,7 +32,48 @@ latch. Unknown effects/close, in-flight workers, permit sent and registration
 mismatch remain broken. Pre-intent holds may publish private external latches;
 existing phases are never overwritten. The writer predicate reuses only the
 historical UNKNOWN empty-scope disk-sweep exemption with an empty live-owner set
-under startup EX; all other predicates and acquisition caps remain unchanged.
+under startup EX.
+
+Founder Option A, THR-380 (2026-11-18), carries forward producer UNKNOWN attempts,
+nonempty Pause journals, unresolved/orphan thread lifecycle, open repository
+preparation and native coding source owners without settling or rewriting them.
+Missing thread lifecycle is pre-instrumentation legacy at this startup gate;
+shared strict replay and offline `_validate_coding_source_idle` are unchanged.
+Original A1 EX/current source observations and native-writer/publication/profile/
+dispatch/recovery/remote/team-move owner refusals remain. Cooperating live SH
+owners prevent EX; no new PID or timestamp inference replaces that exclusion.
+
+EM R7/R8 permits unresolved native `task_completion_recoveries` only when the
+referenced task is in existing `run_step.TERMINAL_STATES`. Non-terminal or missing
+tasks retain `workflow_setup_history_not_idle`; receipts are never settled,
+expired or rewritten. This is native-history carry-forward, not sequential
+source adoption, and the shared offline validator is unchanged. On private
+copies, source-daemon running rows are prior-boot evidence relative to that copy;
+the unchanged ordinary `OrgState.load` recovery owns them as on fallback.
+Original A1 EX and existing native-writer/workflow owner predicates remain the
+live-owner proof, without an added live reader.
+
+Full typed inventory, schema/Pause validation and integrity checks still run.
+The installer copies ownership rowids/types/bytes exactly, creates no runs and
+checks every retained table before COMMIT; registration adds definition only.
+Existing native callback/session/result admission and the old-fresh fence prevent
+installation from adopting native source owners. Unneeded native history replays
+and their aggregate acquisition cap are removed; required native writer replay
+keeps its category bounds, and current-domain scans return at most one row.
+The 5s read, cumulative SQL, 120s/org and 180s total windows are unchanged.
+
+The required registrar native-writer census uses one advancing rowid lower
+bound instead of two equivalent bounds, so SQLite cannot repeatedly rescan the
+original prefix. Its singleton whole-row gate is materialized once instead of
+being flattened into every projected cell. Strict validation, live safety checks
+and the default SQL, time, row and byte limits are unchanged.
+Rehearsal's loader affects private copies only; registration/normal load preserve
+the ordinary Pause boot recovery behavior. Compare every Pause row to an identical
+old-layout boot, and all other retained tables to preboot source, excluding only
+intended sequential additions. Observe this at loader return, before later
+daemon selector initialization appends its ordinary native-writer audits.
+No supported automatic-latch reset/fresh-attempt
+mechanism exists; prior holds keep their meaning.
 A last pre_commit remains unknown/commit_uncertain; committed/verified without
 registered remains installed_unverified. Failed/unknown records never replay or
 auto-restore. Parent EOF/cancellation withdraws permission before bounded cleanup,
@@ -198,21 +239,15 @@ Original-owner qualification and helper supervision were incomplete at that
 checkpoint. All-org/listener timing acceptance remains separate; the checkpoint
 alone authorized no setup effects.
 
-The original `BootstrapSource.open` now checks retained native histories on its
-same coherent query-only snapshot before any attempt/backup. The strict native
-producer/writer and complete thread lifecycle readers retain their append and
-identity rules. Unsettled/deferred/unknown preparation, nonquiescent attempts,
-missing/orphan thread evidence and every retained Pause entry refuse; an ended
-task, a stale disk-sweep record or a thread predecessor attestation cannot settle
-them. Reads share the original inventory SQL ledger, with an at-most-five-second
-deadline, bounded scalar-before-payload acquisition and charged complete sibling
-replay. There is no writable Database facade, history rewrite or same-source
-replay. The existing shell's `--bootstrap-owners[=CASE]` covers these boundaries
-using private native storage and the original strict readers. This is a durable
-history prerequisite only: current source/domain, original host/process,
-registry/cooperating-host and full exclusion qualification remain separate.
-The automatic coordinator/supervisor and whole-startup acceptance are unfinished;
-ordinary installed loads do not enter this source/installer stage.
+Historical prerequisite checkpoint: the THR-380 carry-forward contract above
+supersedes the original strict native producer/thread/Pause/repository idle
+requirements. `BootstrapSource.open` still qualifies its coherent query-only
+snapshot before effects, and the actual writer repeats the startup gate before
+COMMIT. Complete schema/Pause validation and typed inventory remain mandatory;
+shared native replay readers keep their original semantics outside this gate.
+The existing `--bootstrap-owners[=CASE]` table covers unchanged history bytes,
+carried-forward prefixes/legacy, original writer/lease refusal, query-only,
+deadline, SQL exhaustion and no same-source replay.
 
 > Moved verbatim from the repository-root `AGENTS.md` on 2026-10-30. Sections keep
 > their original relative order. Where a later section says it supersedes or

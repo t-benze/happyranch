@@ -1175,23 +1175,22 @@ class BootstrapSource:
 
 
 def require_bootstrap_idle_history(source: BootstrapSource, *, writer: sqlite3.Connection | None = None) -> None:
-    """Complete durable prerequisite under A4:2's original cooperative EX.
+    """Startup-only carry-forward admission under the original cooperative EX.
 
-    Reuse the native owners' strict histories on the SAME coherent source.
-    No Database construction, recovery, attestation or new participation marker
-    can discharge retained preparation uncertainty. Only the existing historical
-    disk-sweep predicate applies, with no live owners under original startup EX.
-    The actual writer repeats this before COMMIT on the same cumulative ledger.
-    Pre-A1 concurrent daemons remain the documented startup-migration limitation.
+    THR-380 Option A: native producer/Pause/thread/repository histories and
+    version-1 source owners remain with their original readers. Installation
+    preserves their typed rows exactly and cannot adopt them as sequential runs.
+    Complete schema/Pause validation and whole-DB preservation inventory remain
+    unchanged. Ordinary loader Pause recovery is independent of installation.
+    Original EX excludes participating live owners; native writer and workflow
+    publication/profile/recovery owners still refuse. Repeat before COMMIT on
+    the same cumulative ledger. Pre-A1 daemons remain a cooperative limitation.
     """
     from types import SimpleNamespace
-    from runtime.infrastructure.producer_admission import (
-        ProducerAdmissionStore, NativeWriterStore, historical_disk_sweep,
-    )
-    from runtime.infrastructure.thread_admission import ThreadAdmissionStore
-    from runtime.infrastructure.task_pause_controls import decode_journal
-    from runtime.infrastructure.db.tasks import TasksMixin, repository_preparation_closed
-    from runtime.infrastructure.workflow_schema import _validate_coding_source_idle
+    from runtime.infrastructure.producer_admission import NativeWriterStore, historical_disk_sweep
+    from runtime.infrastructure.workflow_schema import _validate_submission_source_ownership
+    from runtime.infrastructure.team_move_store import validate_team_move_schema
+    from runtime.orchestrator.run_step import TERMINAL_STATES
 
     if writer is None and source._history_started:
         raise BootstrapEvidenceError('workflow_setup_history_latched')
@@ -1205,7 +1204,6 @@ def require_bootstrap_idle_history(source: BootstrapSource, *, writer: sqlite3.C
         raise BootstrapEvidenceError('workflow_setup_history_owner_invalid')
     source._history_started = True
     deadline = min(time.monotonic()+5, source.allowance.deadline)
-    rows_read = bytes_read = 0
 
     def check() -> None:
         source._check()
@@ -1216,142 +1214,64 @@ def require_bootstrap_idle_history(source: BootstrapSource, *, writer: sqlite3.C
         source._inventory_steps += 1000
         return int(source._inventory_steps > 640000000 or time.monotonic() >= deadline)
 
-    def acquire(sql: str) -> list[sqlite3.Row]:
-        nonlocal rows_read, bytes_read
-        result = []
-        for row in conn.execute(sql):
-            check()
-            rows_read += 1
-            # Native scalar lengths gate payload acquisition below; replayed
-            # rows debit again, rather than borrowing an uncharged collection.
-            bytes_read += sum(len(value.encode('utf8')) if type(value) is str else
-                              len(value) if type(value) is bytes else 8 for value in row)
-            if rows_read > 8192 or bytes_read > 64*1048576:
-                raise BootstrapEvidenceError('workflow_setup_history_acquisition_exhausted')
-            result.append(row)
-        check()
-        return result
-
     try:
         source._inventory_steps += 1000
         if source._inventory_steps > 640000000:
             raise BootstrapEvidenceError('workflow_setup_inventory_exhausted')
         conn.set_progress_handler(progress, 1000)
         check()
-        actions = "('producer_move_lifecycle','team_move_native_writer','thread_move_lifecycle','repository_preparation')"
+        # Only native writers still need complete historical replay here.
+        # Scalar-bound that category before its strict reader acquires payloads;
+        # unrelated carried-forward history consumes no replay allowance.
         audit_size = '+'.join('coalesce(length(CAST('+name+' AS BLOB)),0)'
                               for name in ('task_id', 'agent', 'payload'))
         bounds = conn.execute('SELECT count(*),coalesce(sum('+audit_size+'),0),'
             'coalesce(max(length(CAST(payload AS BLOB))),0),'
-            "coalesce(sum(typeof(payload)!='text'),0) FROM audit_log WHERE action IN " + actions).fetchone()
+            "coalesce(sum(typeof(payload)!='text'),0) FROM audit_log WHERE action='team_move_native_writer'").fetchone()
         if bounds[0] > 8192 or bounds[1] > 64*1048576 or bounds[2] > 16384 or bounds[3]:
             raise BootstrapEvidenceError('workflow_setup_history_acquisition_exhausted')
-        rows_read, bytes_read = bounds[0], bounds[1]
-        # Gate native variable-width input in SQL before fetching Python cells.
-        # This observation is not a task-count or runtime-capacity qualification.
-        pending_rows, pending_bytes = rows_read, bytes_read
-        for table, columns in (('thread_invocations', ('thread_id', 'agent_name', 'session_id')),
-                               ('task_pause_controls', ('admission_journal_json',))):
-            size = '+'.join('coalesce(length(CAST('+name+' AS BLOB)),0)' for name in columns)
-            count, total, largest = conn.execute('SELECT count(*),coalesce(sum('+size+'),0),'
-                'coalesce(max('+size+'),0) FROM '+table).fetchone()
-            pending_rows, pending_bytes = pending_rows+count, pending_bytes+total
-            if pending_rows > 8192 or pending_bytes > 64*1048576 or largest > 32*1048576:
-                raise BootstrapEvidenceError('workflow_setup_history_acquisition_exhausted')
-            check()
-        # These original stores need only _conn for reading. The actual native
-        # connection is query-only and has no writable Database facade to borrow.
+        check()
         facade = SimpleNamespace(_conn=conn)
-        producers = ProducerAdmissionStore(facade, source.fence.root.name).history_uncommitted()
-        if any(not state.producer_settled or state.deferred or state.unknown
-               or any(not attempt.settled or not attempt.quiescent for attempt in state.attempts)
-               for state in producers.values()):
-            raise BootstrapEvidenceError('workflow_setup_history_not_idle')
         writers = NativeWriterStore(facade, source.fence.root.name).history_uncommitted()
         if any(state.state != 'settled' and not historical_disk_sweep(key, state, set())
                for key, state in writers.items()):
             raise BootstrapEvidenceError('workflow_setup_history_not_idle')
-        # A terminal task label cannot settle even a pre-launch preparation.
-        # Closed Pause invocations are removed by their original owner; every
-        # remaining entry still needs that owner's positive reconciliation.
-        for row in acquire('SELECT admission_journal_json FROM task_pause_controls'):
-            if decode_journal(row[0])['entries']:
-                raise BootstrapEvidenceError('workflow_setup_history_not_idle')
-        invocations = acquire('SELECT id,thread_id,agent_name,session_id FROM thread_invocations ORDER BY id')
-        histories = acquire("SELECT id,task_id,agent,payload FROM audit_log WHERE action='thread_move_lifecycle' ORDER BY id")
-        by_thread: dict[str, list] = {}
-        for row in histories:
-            by_thread.setdefault(row['task_id'], []).append(row)
-        store = ThreadAdmissionStore(facade, source.fence.root.name)
-        native = {row['id']: row for row in invocations}
-        for thread, history in by_thread.items():
-            for _, state in store._decode_states(thread, history, check=check):
-                row = native.get(state.invocation_id)
-                if (row is None or (row['thread_id'], row['agent_name'], row['session_id'])
-                        != (thread, state.agent_id, state.session_id)):
-                    raise BootstrapEvidenceError('workflow_setup_history_not_idle')
-        for invocation in invocations:
-            history = by_thread.get(invocation['thread_id'], [])
-            # Bound complete sibling replay as well as initial acquisition.
-            rows_read += len(history)
-            bytes_read += sum(len(row['payload'].encode('utf8')) for row in history)
-            if rows_read > 8192 or bytes_read > 64*1048576:
-                raise BootstrapEvidenceError('workflow_setup_history_acquisition_exhausted')
-            states = store._replay_bounded(SimpleNamespace(**dict(invocation)), history, check=check)
-            state = states[-1][1]
-            if (not state.producer_settled or state.deferred or state.unknown
-                    or any(not attempt.settled or not attempt.quiescent for attempt in state.attempts)):
-                raise BootstrapEvidenceError('workflow_setup_history_not_idle')
-        # Repository commands have independent original worker/outer custody.
-        # A terminal native producer or empty Pause journal cannot close them.
-        # Scalar-size the WHOLE collection above, then debit each original
-        # scoped reader before acquiring its variable-width payloads.
-        scopes = acquire('SELECT task_id,count(*),sum('+audit_size+') FROM audit_log '
-            "WHERE action='repository_preparation' GROUP BY task_id ORDER BY task_id")
-        for scope, count, size in scopes:
-            rows_read, bytes_read = rows_read+count, bytes_read+size
-            if rows_read > 8192 or bytes_read > 64*1048576:
-                raise BootstrapEvidenceError('workflow_setup_history_acquisition_exhausted')
-            check()
-            history = TasksMixin.repository_preparation_history_uncommitted(facade, scope)
-            obligations: dict[str, list] = {}
-            for item in history:
-                check()
-                event = item['event']
-                if event['owner']['org'] != source.fence.root.name:
-                    raise BootstrapEvidenceError('workflow_setup_history_not_idle')
-                obligations.setdefault(event['obligation'], []).append(event)
-            for stream in obligations.values():
-                check()
-                if stream[-1]['phase'] != 'closed' or not repository_preparation_closed(stream):
-                    raise BootstrapEvidenceError('workflow_setup_history_not_idle')
-            check()
-        # Storage validity and native terminal history alone cannot exclude
-        # queued/result/recovery work or retained publication/profile owners.
-        # Bound the existing idle reader's whole collections BEFORE payload
-        # acquisition; debit its validation read as well as this preflight.
+        # No native history replay is needed for byte-exact carry-forward.
+        # In particular, invocations without lifecycle instrumentation are
+        # pre-instrumentation legacy, not missing evidence to initialize/repair.
+        # Do not change the shared offline _validate_coding_source_idle reader.
+        _validate_submission_source_ownership(conn, source.layout.document)
+        # Native recovery receipts on ended tasks are preservation-only history
+        # (THR-380 R7). Missing/non-terminal tasks retain the startup veto. This
+        # grants no settlement or recovery authority to the sequential engine.
+        terminal = tuple(sorted(status.value for status in TERMINAL_STATES))
+        if conn.execute(
+            "SELECT 1 FROM task_completion_recoveries AS r "
+            "WHERE r.state NOT IN ('callback_consumed','expired','restart_settled','superseded') "
+            "AND NOT EXISTS (SELECT 1 FROM tasks AS t WHERE t.id=r.task_id AND t.status IN ("
+            + ','.join('?' for _ in terminal) + ')) LIMIT 1', terminal,
+        ).fetchone():
+            raise BootstrapEvidenceError('workflow_setup_history_not_idle')
+        check()
         for table, predicate in (
-            ('workflow_dispatch_operations', '1'),
-            ('workflow_dispatch_outbox', '1'),
-            ('workflow_request_task_bridges', '1'),
-            ('workflow_publication_journals', '1'),
-            ('workflow_authority_pointers', '1'),
-            ('workflow_profile_operations', '1'),
-            ('task_completion_recoveries', '1'),
-            ('workflow_recovery_claims', '1'),
-            ('task_pause_controls', '1'),
-            ('jobs', "status='pending'"),
+            ('workflow_authority_pointers', "state!='ready'"),
+            ('workflow_dispatch_operations', "state NOT IN ('cancelled','completed')"),
+            ('workflow_dispatch_outbox', "state NOT IN ('cancelled','completed')"),
+            ('workflow_request_task_bridges', "state NOT IN ('cancelled','completed')"),
+            ('workflow_draft_dispatch_intents', "state NOT IN ('cancelled','failed','completed')"),
+            ('remote_job_attempts', "state!='terminal'"),
+            ('remote_runner_workspaces', "active_attempt_id IS NOT NULL OR state IN ('leased','recreate_pending','uncertain')"),
         ):
-            columns = [row[1] for row in conn.execute('PRAGMA table_info("'+table+'")')]
-            size = '+'.join('coalesce(length(CAST("'+name+'" AS BLOB)),0)' for name in columns)
-            count, total, largest = conn.execute('SELECT count(*),coalesce(sum('+size+'),0),'
-                'coalesce(max('+size+'),0) FROM "'+table+'" WHERE '+predicate).fetchone()
-            rows_read, bytes_read = rows_read+2*count, bytes_read+2*total
-            if rows_read > 8192 or bytes_read > 64*1048576 or largest > 32*1048576:
-                raise BootstrapEvidenceError('workflow_setup_history_acquisition_exhausted')
+            if table == 'workflow_draft_dispatch_intents' and source.layout.document == 'F':
+                continue
+            # Existing current-domain predicates, bounded output without
+            # materializing historical rows or replaying sibling collections.
+            if conn.execute('SELECT 1 FROM '+table+' WHERE '+predicate+' LIMIT 1').fetchone():
+                raise BootstrapEvidenceError('workflow_setup_history_not_idle')
             check()
-        _validate_coding_source_idle(conn, expected_org_slug=source.fence.root.name,
-                                     layout=source.layout.document)
+        if (validate_team_move_schema(conn, org_slug=source.fence.root.name)
+                and conn.execute('SELECT 1 FROM team_move_operations WHERE active_slot IS NOT NULL LIMIT 1').fetchone()):
+            raise BootstrapEvidenceError('workflow_setup_history_not_idle')
         check()
         source._unchanged() if writer is None else source._check()
     except BaseException:

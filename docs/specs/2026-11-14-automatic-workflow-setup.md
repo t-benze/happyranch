@@ -14,11 +14,11 @@ Positive previous-owner proof is **not required**. Existing org upgrades use the
 same one-daemon-at-a-time trust as the ordinary startup `ALTER TABLE` migrations
 in `runtime/infrastructure/db/schema.py`, together with the original A1 EX lock,
 I1a full `PRAGMA integrity_check`, a SHA-256 verified backup before any source
-write, and the complete durable idle/history checks. No per-org clean-shutdown
-receipt is created or consumed. A concurrently running pre-A1/old-code daemon
+write, complete schema validation and the startup ownership checks below.
+No per-org clean-shutdown receipt is created or consumed. A concurrently running pre-A1/old-code daemon
 is a **documented cooperative limitation**: it does not participate in the lock
 protocol. EX does not fence that process. A4:2 accepts that limitation; it does
-not certify its closure or weaken retained native/history predicates.
+not certify its closure or settle retained native history.
 
 `__main__._build_state` mounts `BootstrapStartup` before ordinary org attachment,
 startup recovery and serving. Runtime switching does not invoke this automatic
@@ -26,8 +26,8 @@ upgrade. SH discovery routes installed storage to ordinary complete validation
 without installer, inventory, physical scan or backup work. Absent storage is
 rediscovered under EX. The parent rechecks the original EX and source binding
 before intent and before its one bound COMMIT permission. The child checks full
-source/backup integrity, exact preservation and every durable producer, native
-writer, Pause, thread, repository-preparation and current-domain idle predicate.
+source/backup integrity, exact preservation, original native-writer history and
+current workflow publication/profile/recovery ownership predicates.
 It repeats the durable checks in the actual target transaction before COMMIT.
 No source checkpoint occurs before COMMIT, so a refused late gate cannot move
 an existing WAL into the original DB file. Known COMMIT alone permits checkpoint.
@@ -57,9 +57,66 @@ registration mismatch, worker in flight or unknown close remain broken as before
 
 The writer gate reuses `historical_disk_sweep` (Founder THR320seq477) with an empty
 live-owner set under original startup EX: only UNKNOWN `disk_sweep` records with
-empty agents and teams qualify. Their rows remain UNKNOWN. All other history
-predicates and the 8192-row/64MiB acquisition caps are unchanged; historical UNKNOWN
-treatment beyond that exemption awaits the Part 3 decision in THR-380.
+empty agents and teams qualify. Their rows remain UNKNOWN.
+
+### Historical carry-forward — Founder Option A, THR-380 (2026-11-18)
+
+Under the original startup EX, producer UNKNOWN attempts, nonempty Pause
+journals, unresolved thread invocations, lifecycle-without-invocation orphans,
+open repository-preparation obligations and native coding source owners carry
+forward unchanged. Invocations with no lifecycle are pre-instrumentation legacy;
+startup does not call the shared strict thread replay or initialize their history.
+The shared offline `_validate_coding_source_idle` semantics are unchanged.
+Startup retains the existing native-writer and workflow publication/profile,
+dispatch, recovery, remote-operation and active team-move owner refusals.
+A participating live owner holding SH still prevents EX; the original source
+observation also refuses concurrent changes. No new PID/timestamp heuristic is
+introduced and no absence observation settles an UNKNOWN record.
+
+EM R7/R8: native `task_completion_recoveries` is carried-forward history under
+R3, not a sequential source owner under R4. An unresolved receipt is permitted
+only when its native task belongs to the existing `run_step.TERMINAL_STATES`;
+non-terminal or missing tasks still refuse with `workflow_setup_history_not_idle`.
+Every recovery row remains byte-identical; no receipt is settled, expired or
+rewritten. The shared offline validator remains unchanged. A private DB copy has
+no process holding its org fence: source-daemon running rows are prior-boot
+evidence relative to the copy, handled by ordinary `OrgState.load` recovery as
+on old-layout fallback. Original A1 EX and existing native-writer/workflow owner
+predicates remain the live-owner proof; no new live reader is added.
+
+Preservation-only reads remain mandatory: full typed whole-DB inventory,
+complete schema/Pause validation, physical integrity and all existing source/
+backup/target/default-reader checks are unchanged. The install copies every
+`workflow_task_ownership` row, including rowid/types/bytes, and requires exact
+retained-table inventory equality before COMMIT. It creates no runs, visits or
+settings. Qualified registration adds only definition bytes. Native source
+owners cannot become sequential runs merely by installation or loading; genuine
+current callback/session/result admission and the existing old-fresh fence remain.
+
+Unneeded producer/thread/Pause/repository replays and aggregate 8192-row/64MiB
+history acquisition are removed from startup. Only the still-required native
+writer category retains those scalar bounds and its strict reader. Remaining
+current-domain checks use bounded-output `LIMIT 1` scans. The five-second history
+read, cumulative SQL meter, 120s/org and 180s total windows do not change.
+
+The required registrar native-writer census uses one advancing rowid lower
+bound instead of two equivalent bounds, so SQLite cannot repeatedly rescan the
+original prefix. Its singleton whole-row gate is materialized once instead of
+being flattened into every projected cell. Strict validation, live safety checks
+and the default SQL, time, row and byte limits are unchanged.
+
+Rehearsal loads private disposable copies. Registration and subsequent ordinary
+load run the unchanged Pause owner's normal boot recovery. Acceptance compares
+all `task_pause_controls` typed rows after install/registration/normal load with
+an identical source copy given an ordinary old-layout fallback load. Every other
+retained table must equal the preboot source, apart from intended sequential
+additions. Observe this boundary at the ordinary loader return; later daemon
+authority-selector initialization retains its ordinary native-writer audit
+additions. This differential rule grants no installer journal writer or repair.
+
+There is no supported latch reset or fresh automatic-attempt command. A retained
+`not_installed` hold still falls back without retry; preserve the latch and route
+operator assessment separately. This change does not release prior attempts.
 
 Pre-intent refusals publish a private no-follow `hold.json` latch
 when possible; status reports only observed absence, otherwise unknown. Integrity,
@@ -707,7 +764,10 @@ listener acceptance remain incomplete. Keep A4 draft. No limits, parts2-7,
 I1a/I1b, historical initializer, A1/A2, independent review/QA or exact-head gates
 change; no live install, restart, role/Allow or workflow work is authorized.
 
-### A4 retained native history prerequisite checkpoint
+### Historical: A4 retained native history prerequisite checkpoint
+
+The THR-380 carry-forward contract above supersedes this checkpoint's startup
+idle/replay requirements; shared readers and preservation validation remain.
 
 `BootstrapSource.open` now calls `require_bootstrap_idle_history` on its original
 coherent query-only snapshot after complete source/inventory acquisition and
@@ -740,7 +800,10 @@ qualification, supervised helper/parent permission, registration/audit/status,
 coordinator mount and whole-startup acceptance remain incomplete. Keep A4 draft;
 no automatic existing-org install caller or ordinary load cost is added here.
 
-### A4 current-domain prerequisite checkpoint
+### Historical: A4 current-domain prerequisite checkpoint
+
+The THR-380 carry-forward contract above supersedes this checkpoint's startup
+idle/replay requirements; shared readers and preservation validation remain.
 
 `BootstrapSource.open` now composes the existing SELECT-only
 `_validate_coding_source_idle` after strict native history on the SAME coherent
@@ -770,7 +833,10 @@ cooperating-host clearance. Supervisor/parent permission, final qualified
 registration/status, automatic mounting and whole-startup acceptance remain
 incomplete.
 
-### A4 repository-preparation prerequisite checkpoint
+### Historical: A4 repository-preparation prerequisite checkpoint
+
+The THR-380 carry-forward contract above supersedes this checkpoint's startup
+idle/replay requirements; shared readers and preservation validation remain.
 
 The same `require_bootstrap_idle_history` snapshot now composes the existing
 `TasksMixin.repository_preparation_history_uncommitted` and

@@ -3,9 +3,16 @@
 Daemon startup mounts automatic sequential storage setup before ordinary org
 attachment or serving. Under Founder THR-336 msg250/251 (A4:2), positive predecessor
 proof is not required: ordinary one-daemon startup-migration trust combines with
-A1 EX, I1a full integrity, verified SHA-256 backup before source writes and complete
-durable idle/history checks, repeated before COMMIT. Concurrent pre-A1/old-code
-daemons are a documented cooperative limitation. No clean-shutdown receipt exists.
+A1 EX, I1a full integrity, verified SHA-256 backup before source writes, complete
+schema validation and startup ownership checks, repeated before COMMIT. Founder
+Option A, THR-380, carries historical producer/Pause/thread/repository-preparation
+and native-source history forward byte-exact without replaying it as idle gates.
+Unresolved native `task_completion_recoveries` refuse unless their referenced task
+is in the existing `run_step.TERMINAL_STATES`; missing tasks also refuse. Original
+native-writer checks (including the `historical_disk_sweep` exemption), current
+workflow owner predicates, A1 EX and before-COMMIT gates remain. Concurrent
+pre-A1/old-code daemons are a documented cooperative limitation. No clean-shutdown
+receipt exists.
 
 Installed orgs take cheap SH selection and ordinary complete validation, with no
 installer/backup/inventory work. Absent orgs rediscover under EX, retain the backup
@@ -16,9 +23,14 @@ audit precede registered status and ordinary SH attachment. No pre-COMMIT source
 checkpoint occurs. Settings/roles/Allow remain unchanged; missing settings stay
 Disabled. Runtime switching does not mount this startup-only upgrade.
 
-Any failed gate holds its org without fallback writable attachment. Closed
-pre-intent reasons may be retained in private `hold.json`; original attempt phases
-always take precedence. Failed/unknown records never replay or auto-restore.
+A setup refusal with proven no source effect reports `not_installed` and loads
+the org on its current (old) layout under fresh SH after positive original custody
+closure; ordinary loader validation still applies. A validated prior
+`not_installed` hold falls back without retry or latch modification. Unknown-effect
+refusals (sent COMMIT permit, COMMIT/close uncertainty or unknown latch), in-flight
+workers and registration mismatch still keep the org broken without fallback.
+Closed pre-intent reasons may be retained in private `hold.json`; original attempt
+phases always take precedence. Failed/unknown records never replay or auto-restore.
 Missing predecessor evidence never causes `writer_exclusion_unproven`; unavailable
 or lost EX does. Existing profile dependency uncertainty may conservatively hold
 other consumers. Original native spawn/socket/reap/close custody survives failure;
