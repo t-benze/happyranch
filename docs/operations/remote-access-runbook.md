@@ -174,10 +174,12 @@ The release install record and verifier socket/service are removed.
 A missing package is not required for uninstall; unit safety checks still apply.
 The separately callable `disable-headscale --layout deb` root operator entry
 and legacy uninstall remove the proven inert Headscale unit/policy/custody and
-config/DERP files bound by the final root-only publication receipt,
+config/DERP/leaf/key/public-CA files and empty CA directory bound by the final
+root-only publication receipt,
 keeping package payload/notices. The staged-profile uninstall refusal remains;
 helper Turn off and activation-state cleanup remain later slices. Unknown
-or edited config/DERP and all DB/Noise/key/socket entries refuse and remain.
+or edited/unreceipted config/DERP/leaf/key/CA and all DB/Noise/socket entries
+refuse and remain.
 The `home-ca/` signing/staging tree is preserved. The config prefix selects from
 complete kernel IPv4/IPv6 default-route inventory (including ECMP), refusing
 unresolved preferred sources as `inventory`; no address input is accepted.
@@ -186,7 +188,19 @@ idempotent; a changed address refuses `address-changed` pending future
 RefreshHomeAddress. Publication is receipt-last; missing members or pending
 residue refuse without automatic repair. Cleanup rechecks each digest/custody
 before deletion; a crash with a partial pair and retained receipt also refuses.
-Leaf/CA handoff and materializer invocation remain unimplemented in this prefix.
+Preparation invokes the fixed root-run materializer through the existing command
+runner, validating its closed status and source custody. ensure validates the
+initial handoff; complete unchanged reruns use read-only status and digests; renew-leaf runs only after status reports due. Only
+server leaf/key enter service UID:GID 0600 custody. control-ca.pem is
+root:happyranch 0640; empty-ca-directory is root:root 0755 and empty. The CA key
+is never read/copied by the installer. Source/destination digests and public CA
+fingerprint are bound before publication. Files and empty directory use
+exclusive pending plus atomic no-replace publication; the extended existing
+receipt is last. Config-only receipts remain admitted for extension. Due inert
+renewal retains config/DERP/public-CA/directory inodes and the signing key, and
+never reloads. Interrupted extension or renewal refuses without repair; cleanup
+removes only fully receipted members and retires the publication receipt after
+them. Helper Turn off and running-service coordination remain 3b-2h.
 Only a valid creation receipt plus fresh identity/shape, unshared group, stopped unit and no process using its UID permits userdel then conditional
 groupdel. Unowned accounts remain visibly `preserved: not created by HappyRanch`.
 Before userdel succeeds, failures keep account/receipt. A later groupdel failure

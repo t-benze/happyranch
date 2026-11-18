@@ -19,6 +19,7 @@ import math
 import os
 import pwd
 import re
+import ssl
 import stat
 import sys
 import uuid
@@ -1245,28 +1246,181 @@ class ManagedInstaller:
                 raise headscale.HeadscaleServiceError("publication-uncertain") from None
             return None
         record = self._json(data)
-        if (set(record) != {"version", "uid", "gid", "dial_ip", "files"}
+        extended = "directories" in record
+        if (set(record) != {"version", "uid", "gid", "dial_ip", "files"} | ({"directories"} if extended else set())
                 or type(record["version"]) is not int or record["version"] != 1
                 or type(record["uid"]) is not int or type(record["gid"]) is not int
                 or (record["uid"], record["gid"]) != self._headscale_owner
                 or type(record["files"]) is not dict):
             raise headscale.HeadscaleServiceError("publication-uncertain")
         expected = self._headscale_config(record["dial_ip"])
-        digests = {f"/{headscale.CUSTODY[0]}/{name}": hashlib.sha256(value).hexdigest()
-                   for name, value in expected.items()}
-        if record["files"] != digests or any(name not in expected for name in removed):
+        members = self._headscale_members(extended)
+        if (set(record["files"]) != set(members)
+                or any(type(value) is not str or re.fullmatch("[0-9a-f]{64}", value) is None
+                       for value in record["files"].values())
+                or (extended and record["directories"] != ["/" + headscale.EMPTY_CA])
+                or any(name not in {Path(path).name for path in members} | {Path(headscale.EMPTY_CA).name}
+                       for name in removed)):
             raise headscale.HeadscaleServiceError("publication-uncertain")
-        with self._directory(headscale.CUSTODY[0]) as parent:
-            for name, value in expected.items():
+        for path, (owner, mode) in members.items():
+            relative, name = str(Path(path.lstrip("/")).parent), Path(path).name
+            with self._directory(relative) as parent:
+                self._headscale_no_pending(parent, name)
                 if name in removed:
                     try:
                         os.stat(name, dir_fd=parent, follow_symlinks=False)
                     except FileNotFoundError:
                         continue
                     raise headscale.HeadscaleServiceError("publication-uncertain")
-                if self._read_file(parent, name, owner=self._headscale_owner, mode=0o600) != value:
+                value = self._read_file(parent, name, owner=owner, mode=mode)
+                if (hashlib.sha256(value).hexdigest() != record["files"][path]
+                        or (name in expected and value != expected[name])):
                     raise headscale.HeadscaleServiceError("publication-uncertain")
+        if extended:
+            self._headscale_empty_ca(removed=Path(headscale.EMPTY_CA).name in removed)
         return record
+
+    @staticmethod
+    def _headscale_no_pending(parent: int, name: str) -> None:
+        try:
+            os.stat(f".{name}.pending", dir_fd=parent, follow_symlinks=False)
+        except FileNotFoundError:
+            return
+        raise headscale.HeadscaleServiceError("publication-uncertain")
+
+    def _headscale_members(self, extended: bool = True) -> dict[str, tuple[tuple[int, int], int]]:
+        members = {f"/{headscale.CUSTODY[0]}/{name}": (self._headscale_owner, 0o600)
+                   for name in (*headscale.CONFIG_FILES, *(headscale.LEAF_FILES if extended else ()))}
+        if extended:
+            try:
+                group = self._lookup_group("happyranch")
+            except KeyError:
+                raise headscale.HeadscaleServiceError("custody-uncertain") from None
+            if (group.gr_name != "happyranch" or type(group.gr_gid) is not int
+                    or not 0 <= group.gr_gid < 2**32 - 1):
+                raise headscale.HeadscaleServiceError("custody-uncertain")
+            members["/" + headscale.CONTROL_CA] = ((self.root_owner[0], group.gr_gid), 0o640)
+        return members
+
+    def _headscale_empty_ca(self, *, removed: bool = False) -> None:
+        path = Path(headscale.EMPTY_CA)
+        with self._directory(str(path.parent)) as parent:
+            self._headscale_no_pending(parent, path.name)
+            if removed:
+                self._refuse_provision_entry(parent, path.name)
+                return
+        with self._directory(headscale.EMPTY_CA) as directory:
+            with os.scandir(directory) as entries:
+                if os.fstat(directory).st_nlink != 2 or next(entries, None) is not None:
+                    raise headscale.HeadscaleServiceError("publication-uncertain")
+
+    def _headscale_ca_sources(self) -> dict[str, bytes] | None:
+        """Read ONLY public CA and leaf staging; never open the CA private key."""
+        try:
+            with self._directory(headscale.HOME_CA) as parent:
+                names: set[str] = set()
+                with os.scandir(parent) as entries:
+                    for entry in entries:
+                        names.add(entry.name)
+                        if len(names) > 4:
+                            raise headscale.HeadscaleServiceError("materializer-uncertain")
+                if not names:
+                    return None
+                if names not in ({"ca.pem", "ca.key"}, {"ca.pem", "ca.key", "leaf.pem", "leaf.key"}):
+                    raise headscale.HeadscaleServiceError("materializer-uncertain")
+                result = {}
+                for name in ("ca.pem", "ca.key", "leaf.pem", "leaf.key"):
+                    if name not in names:
+                        continue
+                    info = os.stat(name, dir_fd=parent, follow_symlinks=False)
+                    if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+                            or (info.st_uid, info.st_gid) != self.root_owner
+                            or stat.S_IMODE(info.st_mode) != 0o600 or not 0 < info.st_size <= 4096):
+                        raise headscale.HeadscaleServiceError("materializer-uncertain")
+                    if name != "ca.key":
+                        result[name] = self._read_file(parent, name, owner=self.root_owner, mode=0o600)
+                return result
+        except FileNotFoundError:
+            # Only the directory itself may be absent, never a partial pair.
+            with self._directory(headscale.INSTALLER_STATE) as parent:
+                try:
+                    os.stat("home-ca", dir_fd=parent, follow_symlinks=False)
+                except FileNotFoundError:
+                    return None
+            raise headscale.HeadscaleServiceError("materializer-uncertain") from None
+
+    def _headscale_materializer(self, verb: str) -> dict:
+        # Trusted fixed package executable, never PATH or caller-supplied argv.
+        binary = Path(headscale.MATERIALIZER)
+        with self._directory(str(binary.parent)) as parent:
+            info = os.stat(binary.name, dir_fd=parent, follow_symlinks=False)
+            if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+                    or (info.st_uid, info.st_gid) != self.root_owner or stat.S_IMODE(info.st_mode) != 0o755):
+                raise headscale.HeadscaleServiceError("materializer-uncertain")
+        code, output = self._run(["/" + headscale.MATERIALIZER, verb], timeout=30.0)
+        if code or type(output) is not str or len(output) > 4096 or len(output.splitlines()) != 1:
+            raise headscale.HeadscaleServiceError("materializer-uncertain")
+        result = self._json(output.encode())
+        if (set(result) != {"ca_fingerprint", "ca_not_after", "leaf_not_after", "renewal_due"}
+                or type(result["ca_fingerprint"]) is not str
+                or re.fullmatch("[0-9a-f]{64}", result["ca_fingerprint"]) is None
+                or type(result["renewal_due"]) is not bool):
+            raise headscale.HeadscaleServiceError("materializer-uncertain")
+        for name in ("ca_not_after", "leaf_not_after"):
+            value = result[name]
+            if value == "" and name == "leaf_not_after" and result["renewal_due"]:
+                continue
+            if type(value) is not str or re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", value) is None:
+                raise headscale.HeadscaleServiceError("materializer-uncertain")
+            datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ")
+        return result
+
+    def _headscale_handoff(self, publication: dict | None) -> tuple[dict[str, bytes], bool]:
+        """Materializer owns certificate/key validation; bind its public status."""
+        try:
+            sources = self._headscale_ca_sources()
+            if publication and "directories" in publication:
+                bindings = {"ca.pem": "/" + headscale.CONTROL_CA,
+                            "leaf.pem": f"/{headscale.CUSTODY[0]}/server.crt",
+                            "leaf.key": f"/{headscale.CUSTODY[0]}/server.key"}
+                if sources is None or any(name not in sources or hashlib.sha256(sources[name]).hexdigest()
+                                          != publication["files"][path] for name, path in bindings.items()):
+                    raise ValueError
+            status = self._headscale_materializer("status" if sources is not None else "ensure")
+            if sources is not None:
+                ca = sources["ca.pem"].decode("ascii")
+                der = ssl.PEM_cert_to_DER_cert(ca)
+                if (ssl.DER_cert_to_PEM_cert(der) != ca
+                        or hashlib.sha256(der).hexdigest() != status["ca_fingerprint"]):
+                    raise ValueError
+            renewing = sources is not None and status["renewal_due"]
+            before = status
+            if sources is not None and (renewing or not publication or "directories" not in publication):
+                status = self._headscale_materializer("renew-leaf" if renewing else "ensure")
+                if (status["ca_fingerprint"], status["ca_not_after"]) != (
+                        before["ca_fingerprint"], before["ca_not_after"]):
+                    raise ValueError
+            sources = self._headscale_ca_sources()
+            if sources is None or status["renewal_due"] or not status["leaf_not_after"]:
+                raise ValueError
+            ca = sources["ca.pem"].decode("ascii")
+            der = ssl.PEM_cert_to_DER_cert(ca)
+            if (ssl.DER_cert_to_PEM_cert(der) != ca
+                    or hashlib.sha256(der).hexdigest() != status["ca_fingerprint"]):
+                raise ValueError
+            if self._headscale_materializer("status") != status or self._headscale_ca_sources() != sources:
+                raise ValueError
+            files = {f"/{headscale.CUSTODY[0]}/server.crt": sources["leaf.pem"],
+                     f"/{headscale.CUSTODY[0]}/server.key": sources["leaf.key"],
+                     "/" + headscale.CONTROL_CA: sources["ca.pem"]}
+            if publication and "directories" in publication:
+                unchanged = ("/" + headscale.CONTROL_CA,) if renewing else tuple(files)
+                if any(hashlib.sha256(files[path]).hexdigest() != publication["files"][path] for path in unchanged):
+                    raise ValueError
+            return files, renewing
+        except (OSError, InstallerError, KeyError, UnicodeError, ValueError):
+            pass
+        raise headscale.HeadscaleServiceError("materializer-uncertain")
 
     @staticmethod
     def _headscale_config(dial_ip: str) -> dict[str, bytes]:
@@ -1277,12 +1431,19 @@ class ManagedInstaller:
         }
 
     def _headscale_inventory(self, removed: tuple[str, ...] = ()) -> None:
-        """Admit empty/policy custody or exactly the root-receipted config pair.
+        """Admit empty/policy custody or exactly the root-receipted members.
 
-        DB, key, socket, pending and unknown objects remain foreign. Nothing
+        DB, unreceipted key, socket, pending and unknown objects remain foreign. Nothing
         permits adopting a running or unrelated installation.
         """
         publication = self._headscale_publication(removed)
+        if not publication or "directories" not in publication:
+            try:
+                with self._directory("etc/happyranch") as parent:
+                    for name in ("control-ca.pem", "empty-ca-directory"):
+                        self._refuse_provision_entry(parent, name)
+            except FileNotFoundError:
+                pass
         paths = list(_HEADSCALE_UNIT_DIRS)
         with self._directory() as root:
             try:
@@ -1326,6 +1487,8 @@ class ManagedInstaller:
                         allowed = {"policy.hujson"}
                         if publication:
                             allowed.update(set(headscale.CONFIG_FILES) - set(removed))
+                            if "directories" in publication:
+                                allowed.update(set(headscale.LEAF_FILES) - set(removed))
                         if entries and (path != headscale.CUSTODY[0] or set(entries) - allowed):
                             raise headscale.HeadscaleServiceError("foreign-custody")
                         if entries and self._read_file(parent, "policy.hujson", owner=self._headscale_owner,
@@ -1538,20 +1701,16 @@ class ManagedInstaller:
             if publication:
                 removed: tuple[str, ...] = ()
                 partial = True
-                for name in headscale.CONFIG_FILES:
+                names = [Path(path).name for path in publication["files"]]
+                if "directories" in publication:
+                    names.append(Path(headscale.EMPTY_CA).name)
+                for name in names:
                     self._headscale_cleanup_identity(receipt)
                     self._headscale_stopped()
                     self._headscale_inventory(removed)
                     if self._headscale_publication(removed) != publication:
                         raise headscale.HeadscaleServiceError("cleanup-uncertain")
-                    with self._publication_parent(headscale.CUSTODY[0]) as (parent, revalidate):
-                        value = self._read_file(parent, name, owner=self._headscale_owner, mode=0o600)
-                        path = f"/{headscale.CUSTODY[0]}/{name}"
-                        if hashlib.sha256(value).hexdigest() != publication["files"][path]:
-                            raise headscale.HeadscaleServiceError("cleanup-uncertain")
-                        revalidate()
-                        os.unlink(name, dir_fd=parent)
-                        os.fsync(parent)
+                    self._headscale_remove_member(publication, name)
                     removed += (name,)
                 self._headscale_cleanup_identity(receipt)
                 self._headscale_stopped()
@@ -1648,6 +1807,51 @@ class ManagedInstaller:
             self._headscale_preparing = False
         raise headscale.HeadscaleServiceError("partial-cleanup-uncertain" if partial else "cleanup-uncertain")
 
+    def _headscale_remove_member(self, publication: dict, name: str) -> None:
+        directory = name == Path(headscale.EMPTY_CA).name
+        path = ("/" + headscale.EMPTY_CA if directory else
+                next(path for path in publication["files"] if Path(path).name == name))
+        relative = str(Path(path.lstrip("/")).parent)
+        with self._publication_parent(relative) as (parent, revalidate):
+            if directory:
+                self._headscale_empty_ca()
+                with self._directory(headscale.EMPTY_CA) as opened:
+                    named, info = os.stat(name, dir_fd=parent, follow_symlinks=False), os.fstat(opened)
+                    if (named.st_dev, named.st_ino) != (info.st_dev, info.st_ino):
+                        raise headscale.HeadscaleServiceError("cleanup-uncertain")
+                    revalidate()
+                    os.rmdir(name, dir_fd=parent)
+            else:
+                owner, mode = self._headscale_members("directories" in publication)[path]
+                value = self._read_file(parent, name, owner=owner, mode=mode)
+                if hashlib.sha256(value).hexdigest() != publication["files"][path]:
+                    raise headscale.HeadscaleServiceError("cleanup-uncertain")
+                revalidate()
+                os.unlink(name, dir_fd=parent)
+            os.fsync(parent)
+
+    def _headscale_publish_empty_ca(self) -> None:
+        path = Path(headscale.EMPTY_CA)
+        with self._publication_parent(str(path.parent)) as (parent, revalidate):
+            self._refuse_provision_entry(parent, path.name)
+            pending = "." + path.name + ".pending"
+            os.mkdir(pending, mode=0o700, dir_fd=parent)
+            descriptor = os.open(pending, _DIR_FLAGS, dir_fd=parent)
+            try:
+                os.fchown(descriptor, *self.root_owner)
+                os.fchmod(descriptor, 0o755)
+                os.fsync(descriptor)
+                named, info = os.stat(pending, dir_fd=parent, follow_symlinks=False), os.fstat(descriptor)
+                if ((named.st_dev, named.st_ino) != (info.st_dev, info.st_ino)
+                        or (info.st_uid, info.st_gid, info.st_mode, info.st_nlink) !=
+                        (*self.root_owner, stat.S_IFDIR | 0o755, 2) or os.listdir(descriptor)):
+                    raise headscale.HeadscaleServiceError("publication-uncertain")
+                revalidate()
+                self._rename_provision_entry(parent, pending, path.name)
+                os.fsync(parent)
+            finally:
+                os.close(descriptor)
+
     def prepare_headscale(self) -> dict[str, str]:
         """Explicit inert root-step, separate from all connector activation.
 
@@ -1716,15 +1920,49 @@ class ManagedInstaller:
                         raise headscale.HeadscaleServiceError("foreign-custody")
                 if existing is None:
                     self._write_provision_file(name, data, owner, mode, relative=relative)
-            if publication is None:
-                files = self._headscale_config(dial_ip)
-                for name, data in files.items():
-                    self._write_provision_file(name, data, self._headscale_owner, 0o600,
-                                               relative=headscale.CUSTODY[0])
+            handoff, renewing = self._headscale_handoff(publication)
+            extended = publication is not None and "directories" in publication
+            if publication is None or not extended or renewing:
+                removed: tuple[str, ...] = ()
+                if publication:
+                    if renewing and extended:
+                        for name in ("server.key", "server.crt"):
+                            self._headscale_stopped()
+                            self._headscale_inventory(removed)
+                            if self._headscale_publication(removed) != publication:
+                                raise headscale.HeadscaleServiceError("publication-uncertain")
+                            self._headscale_remove_member(publication, name)
+                            removed += (name,)
+                    self._headscale_stopped()
+                    self._headscale_inventory(removed)
+                    if self._headscale_publication(removed) != publication:
+                        raise headscale.HeadscaleServiceError("publication-uncertain")
+                    with self._publication_parent(headscale.INSTALLER_STATE) as (parent, revalidate):
+                        if self._json(self._read_file(parent, headscale.PUBLICATION,
+                                                      owner=self.root_owner, mode=0o600)) != publication:
+                            raise headscale.HeadscaleServiceError("publication-uncertain")
+                        revalidate()
+                        os.unlink(headscale.PUBLICATION, dir_fd=parent)
+                        os.fsync(parent)
+                files = {f"/{headscale.CUSTODY[0]}/{name}": data
+                         for name, data in self._headscale_config(dial_ip).items()} | handoff
+                members = self._headscale_members()
+                # Key is durable before cert; no published certificate precedes its key.
+                order = (*headscale.CONFIG_FILES, "server.key", "server.crt", "control-ca.pem")
+                for name in order:
+                    path = next(path for path in files if Path(path).name == name)
+                    if publication and path in publication["files"] and name not in removed:
+                        continue
+                    self._headscale_stopped()
+                    self._write_provision_file(name, files[path], *members[path],
+                                               relative=str(Path(path.lstrip("/")).parent))
+                if not extended:
+                    self._headscale_publish_empty_ca()
                 uid, gid = self._headscale_owner
                 record = dict(version=1, uid=uid, gid=gid, dial_ip=dial_ip,
-                              files={f"/{headscale.CUSTODY[0]}/{name}": hashlib.sha256(data).hexdigest()
-                                     for name, data in files.items()})
+                              files={path: hashlib.sha256(data).hexdigest() for path, data in files.items()},
+                              directories=["/" + headscale.EMPTY_CA])
+                self._headscale_stopped()
                 self._write_provision_file(headscale.PUBLICATION, json.dumps(record, sort_keys=True).encode(),
                                            self.root_owner, 0o600, relative=headscale.INSTALLER_STATE)
             self._headscale_inventory()
@@ -1734,7 +1972,7 @@ class ManagedInstaller:
             category = error.category
         except home_headscale.HomeHeadscaleError as error:
             category = str(error)
-        except (OSError, InstallerError, UnicodeError, ValueError, ServiceManagerError):
+        except (OSError, InstallerError, KeyError, UnicodeError, ValueError, ServiceManagerError):
             category = "custody-uncertain"
         finally:
             self._headscale_preparing = False
@@ -1753,7 +1991,11 @@ class ManagedInstaller:
                 mode = 0o700 if base == "var/lib" and name == "happyranch-tsnet-sidecar" else 0o755
                 layout[f"{base}/{name}"] = (mode, self._service_owner)
         if self._headscale_preparing:
+            for path in ("var", "var/lib"):
+                layout[path] = (0o755, self.root_owner)
             layout[headscale.INSTALLER_STATE] = (0o700, self.root_owner)
+            layout[headscale.HOME_CA] = (0o700, self.root_owner)
+            layout[headscale.EMPTY_CA] = (0o755, self.root_owner)
             for path in headscale.CUSTODY:
                 layout[path] = (0o700, self._headscale_owner)
         return layout
@@ -2141,12 +2383,14 @@ class ManagedInstaller:
             "provision.json": (self.root_owner, 0o600),
             "install-transaction.json": (self.root_owner, 0o600),
         }
+        if self._headscale_preparing and relative == "etc/happyranch" and expected_transaction is None:
+            metadata["control-ca.pem"] = self._headscale_members()["/" + headscale.CONTROL_CA]
         if relative != "etc/happyranch":
             metadata = {
                 headscale.INSTALLER_STATE: {name: (self.root_owner, 0o600)
                                             for name in (headscale.RECEIPT, headscale.PUBLICATION)},
                 headscale.CUSTODY[0]: {name: (self._headscale_owner, 0o600)
-                                       for name in ("policy.hujson", *headscale.CONFIG_FILES)},
+                                       for name in ("policy.hujson", *headscale.CONFIG_FILES, *headscale.LEAF_FILES)},
                 _UNIT_DIR: {headscale.UNIT: (self.root_owner, 0o644)},
             }.get(relative, {}) if self._headscale_preparing and expected_transaction is None else {}
         if (name not in metadata or metadata[name] != (owner, mode)

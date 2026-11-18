@@ -21,6 +21,11 @@ CUSTODY = ("etc/happyranch/headscale", "var/lib/happyranch-headscale", "run/happ
 INSTALLER_STATE = "var/lib/happyranch-remote-access"
 PUBLICATION = "headscale-publication.json"
 CONFIG_FILES = ("config.yaml", "derp.yaml")
+LEAF_FILES = ("server.crt", "server.key")
+CONTROL_CA = "etc/happyranch/control-ca.pem"
+EMPTY_CA = "etc/happyranch/empty-ca-directory"
+HOME_CA = INSTALLER_STATE + "/home-ca"
+MATERIALIZER = "opt/happyranch-desktop/libexec/remote-access/happyranch-home-ca"
 
 
 class HeadscaleServiceError(RuntimeError):
