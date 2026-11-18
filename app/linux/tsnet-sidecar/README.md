@@ -488,8 +488,8 @@ prepare-headscale --layout deb` prepares the locked dedicated
 0600 TCP443 invite-to-node ACL and separate root-owned hardened system unit.
 It also derives the LAN address and publishes receipted config/DERP YAML (the
 inert 3b-2f-2 prefix below). It never enables, starts or reloads the unit, runs
-Headscale or writes leaf/CA material. The staged home connector activation
-guards and
+Headscale or activates the prepared leaf/CA material. The staged home connector
+activation guards and
 `home_transport=False` stay unchanged. Database names are `happyranch-node`
 and dedicated Mac-invite user `happyranch-invite`; actual user creation/minter
 injection remains future activation work.
@@ -500,13 +500,24 @@ supplied addresses. A missing kernel preferred source refuses as `inventory`;
 it never guesses from interface address order. The merged selector and exclusive
 four-port preflight run before any publication. The root-only
 `/var/lib/happyranch-remote-access/headscale-publication.json` receipt is written
-last and binds the exact two config paths/digests, service IDs and selected IP.
+last and binds config/DERP, leaf/key and public-CA paths/digests, the empty CA
+directory, service IDs and selected IP. The merged config-only receipt remains
+admitted for extension without rewriting config inodes.
 Unchanged reruns are idempotent; changed addresses refuse `address-changed`.
 Unreceipted files, missing members, pending residue and unsafe metadata refuse
 without repair/deletion. Cleanup rechecks custody and digests before each unlink,
 then retires the publication receipt. Interrupted removal with a retained receipt
-refuses on retry. No leaf/CA copy or materializer call is wired in this prefix;
-that remainder and authenticated RefreshHomeAddress remain later work. See the
+refuses on retry. Preparation now invokes the fixed root-run materializer
+(ensure/status; renew-leaf only when status reports due), validates its closed
+status and binds the public CA fingerprint and staging digests. Only server
+leaf/key are copied to service UID:GID 0600 custody. control-ca.pem is
+root:happyranch 0640; empty-ca-directory is root:root 0755 and empty. The CA
+private key is never read/copied by the installer and home-ca/ survives cleanup.
+Every new member uses exclusive pending and atomic no-replace publication,
+exact custody checks and owned-only cleanup before receipt retirement. Unchanged
+reruns write nothing; interrupted extension/renewal refuses without repair.
+Inert renewal retains the CA and never reloads a service. Authenticated
+RefreshHomeAddress and running-service coordination remain later work. See the
 [full publication/crash contract](../../../docs/agent-guides/contracts/remote-access-and-remote-jobs.md#inert-linux-headscale-config-publication-3b-2f-2-prefix).
 
 Account ownership is distinct from its shape. An exact-shape pre-existing
