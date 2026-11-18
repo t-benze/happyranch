@@ -2194,6 +2194,11 @@ if sys.argv[1:] in ([], ['--bootstrap-worker']):
                 db._conn.commit()
                 if fault == 'source_error':
                     db.insert_task(TaskRecord(id='TASK-active', brief='synthetic pending owner'))
+                    # Pending tasks carry forward; a live workflow lease still
+                    # refuses source qualification before intent or backup.
+                    db._conn.execute('INSERT INTO workflow_profile_leases VALUES (?,?,?)',
+                        ('synthetic-unused-profile', 'synthetic-owner', 2147483647))
+                    db._conn.commit()
             finally:
                 db.close()
 
@@ -2375,6 +2380,8 @@ if sys.argv[1:] in ([], ['--bootstrap-worker']):
                         assert error is not None, ('A4-H refused worker succeeded', fault)
                         assert not worker.result or worker.result['state'] != 'verified', 'A4-H late success after refusal/cancellation'
                         assert worker.expired and (not worker.permit_sent or fault in ('foreign_permit', 'duplicate_permit')), 'A4-H granted COMMIT after stop/reserve/refusal'
+                        if fault == 'source_error':
+                            assert (worker.result['state'], worker.result['reason'], worker.result['attempt_id']) == ('not_started', 'history_check_failed', None), 'A4-H live lease missed pre-intent source refusal'
                         if fault == 'kill':
                             assert worker.process.returncode == -signal.SIGKILL, 'A4-H lost original pre-COMMIT kill observation'
                         assert isinstance(error, asyncio.CancelledError) == (fault == 'cancel'), 'A4-H swallowed process cancellation'
