@@ -2,6 +2,7 @@ import 'connection-tokens.css';
 import './styles.css';
 import { Connection } from './bridge';
 import { ClientView } from './client';
+import { HostView } from './host';
 import { catalogs } from './strings';
 import type { Copy, Locale } from './strings';
 import type { HostSnapshot, ClientSnapshot, SnapshotEvent, Runtime } from './types';
@@ -33,7 +34,7 @@ function translate(): void {
   localized.forEach(({ node, key, ordinal }) => { node.textContent = text(key, ordinal); });
   language.setAttribute('aria-label', copy().language);
   updateStatus();
-  if (role === 'client') clientView.translate();
+  if (role === 'client') clientView.translate(); else if (role === 'host') hostView.translate();
 }
 const language = document.createElement('select');
 language.id = 'language';
@@ -56,6 +57,7 @@ function observe(snapshot: HostSnapshot | ClientSnapshot): void {
   }
   reading = false; updateStatus();
   if (role === 'client') clientView.update(snapshot as ClientSnapshot);
+  else hostView.update(snapshot as HostSnapshot);
 }
 function hide(): void {
   generation++; ended = true; stopRole?.(); connection?.dispose(); container.replaceChildren(); container.hidden = true;
@@ -67,11 +69,12 @@ async function loadRole(next: 'host' | 'client'): Promise<void> {
   roleButtons.forEach((button, value) => { button.setAttribute('aria-pressed', String(value === role)); });
   roleDescription.textContent = copy()[role === 'host' ? 'hostDescription' : 'clientDescription'];
   descriptionEntry.key = role === 'host' ? 'hostDescription' : 'clientDescription';
-  // Client presentation owns its own card/live region; host keeps the shell.
-  status.hidden = next === 'client'; hostPanel.hidden = next === 'client';
-  clientView.root.hidden = true; clientView.region.textContent = '';
+  // Each role view owns its card/live region; the shell runtime line stays for host.
+  status.hidden = next === 'client';
+  const view = next === 'client' ? clientView : hostView;
+  for (const each of [clientView, hostView]) { each.root.hidden = true; each.region.textContent = ''; }
   // Completions from an earlier selection (or overtaken by newer native state) are ignored.
-  clientView.reset();
+  clientView.reset(); hostView.reset();
   const selected = (): boolean => generation === selectedGeneration && !ended;
   if (!connection?.has(`${role}.status`)) { showUnsupported(); return; }
   try {
@@ -80,11 +83,11 @@ async function loadRole(next: 'host' | 'client'): Promise<void> {
       observedEvent = true;
       observe((JSON.parse(raw) as SnapshotEvent<HostSnapshot | ClientSnapshot>).snapshot);
     });
-    const first = clientView.fence();
+    const first = view.fence();
     const raw = await connection.call(`${role}.status`, '{}');
     if (!selected()) return;
-    if (!observedEvent && (next !== 'client' || clientView.latest(first))) observe(JSON.parse(raw) as HostSnapshot | ClientSnapshot);
-    clientView.root.hidden = next !== 'client';
+    if (!observedEvent && view.latest(first)) observe(JSON.parse(raw) as HostSnapshot | ClientSnapshot);
+    view.root.hidden = false;
     // Saved discovery failure is a client-screen state, not an unsupported bridge;
     // status is reread independently of discovery.
     if (next === 'client' && connection.has('client.savedComputers')) {
@@ -103,7 +106,11 @@ const clientView = new ClientView({
   current: () => !ended && role === 'client' && connection !== null,
 });
 clientView.root.hidden = true;
-const hostPanel = element('section');
+const hostView = new HostView({
+  connection: () => connection, locale: () => locale,
+  current: () => !ended && role === 'host' && connection !== null,
+});
+hostView.root.hidden = true;
 const roleButtons = new Map<'host' | 'client', HTMLButtonElement>();
 const roleDescription = element('p');
 const descriptionEntry = { node: roleDescription, key: 'hostDescription' as keyof Copy };
@@ -129,10 +136,8 @@ function mount(): void {
     button.addEventListener('click', () => { void loadRole(availableRole); });
     roleButtons.set(availableRole, button); roles.append(button);
   }
-  hostPanel.className = 'panel';
-  hostPanel.append(element('h2', 'shellTitle'), element('p', 'shellDescription'), element('p', 'native'));
   container.append(header, element('h1', 'title'), element('p', 'intro'), roles, roleDescription, status,
-    clientView.region, clientView.root, hostPanel);
+    clientView.region, clientView.root, hostView.region, hostView.root);
   translate(); container.hidden = false;
 }
 window.addEventListener('pagehide', hide, { once: true });
