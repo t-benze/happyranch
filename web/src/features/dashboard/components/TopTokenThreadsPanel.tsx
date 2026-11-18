@@ -55,13 +55,16 @@ export function TopTokenThreadsPanel(): JSX.Element {
 
   return (
     <section className="border-border-default bg-surface-raised shadow-pasture-sm rounded-lg border p-6">
-      <header className="mb-4 flex items-baseline justify-between">
+      {/* The title and the window control wrap onto two lines when the rail is
+          too narrow for both; the control itself never wraps (THR-376 D3). */}
+      <header className="mb-4 flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
         <h2 className="text-text-secondary text-xs font-semibold tracking-wider uppercase">
           {t('dashboard.topTokens.title', { window: t(win.labelKey) })}
         </h2>
         <SegmentedControl
           size="sm"
           aria-label={t('dashboard.topTokens.windowGroup')}
+          className="shrink-0 flex-nowrap"
           value={win.id}
           onValueChange={(id) => setWinIdx(WINDOWS.findIndex((w) => w.id === id))}
           options={WINDOWS.map((w) => ({ value: w.id, label: t(w.labelKey) }))}
@@ -81,13 +84,19 @@ export function TopTokenThreadsPanel(): JSX.Element {
               r.threadId === NO_THREAD_ID ? t('dashboard.topTokens.noThread') : r.threadId;
             return (
               <li key={r.threadId} className="flex items-center gap-2">
-                <span className="text-text-primary w-20 shrink-0 truncate" title={threadLabel}>
+                {/* Narrow lg rail (1024-1279px): the row cannot hold label, bar,
+                    total and cache, so the bar is hidden and the label may
+                    shrink (truncated, full text in the title) — THR-376 D3. */}
+                <span
+                  className="text-text-primary w-20 shrink-0 truncate lg:max-xl:w-auto lg:max-xl:min-w-0 lg:max-xl:shrink"
+                  title={threadLabel}
+                >
                   {threadLabel}
                 </span>
                 <svg
                   width={BAR_W}
                   height={BAR_H}
-                  className="shrink-0"
+                  className="shrink-0 lg:max-xl:hidden"
                   aria-hidden="true"
                 >
                   <rect

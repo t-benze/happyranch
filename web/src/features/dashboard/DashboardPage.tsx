@@ -94,7 +94,9 @@ interface PanelProps {
 function Panel({ title, meta, variant = 'eyebrow', children }: PanelProps): JSX.Element {
   return (
     <section className="border-border-default bg-surface-raised shadow-pasture-sm rounded-lg border p-6">
-      <header className="mb-4 flex items-baseline justify-between">
+      {/* Wraps instead of squeezing: in the narrow lg rail (1024-1279px) a long
+          eyebrow + meta pair no longer fits one line (THR-376 D2). */}
+      <header className="mb-4 flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
         {variant === 'title' ? (
           <h2 className="font-display text-h3 text-text-primary font-medium">
             {title}
@@ -105,7 +107,7 @@ function Panel({ title, meta, variant = 'eyebrow', children }: PanelProps): JSX.
           </h2>
         )}
         {meta ? (
-          <span className="text-text-muted font-mono text-xs">{meta}</span>
+          <span className="text-text-muted font-mono text-xs whitespace-nowrap">{meta}</span>
         ) : null}
       </header>
       {children}
@@ -333,20 +335,20 @@ export function DashboardPage(): JSX.Element {
                           label={t('dashboard.dreamBadge')}
                         />
                       )}
-                      {r.task_id && slug && (
-                        <Link
-                          to={
-                            r.task_id.startsWith('THR-')
-                              ? `/orgs/${slug}/threads/${r.task_id}`
-                              : `/orgs/${slug}/tasks/${r.task_id}`
-                          }
-                          className="text-id-task ml-auto hover:underline"
-                        >
-                          {r.task_id}
-                        </Link>
-                      )}
-                      {r.task_id && !slug && (
-                        <span className="text-id-task ml-auto">{r.task_id}</span>
+                      {r.task_id && (
+                        <span className="ml-auto">
+                          <IdBadge
+                            id={r.task_id}
+                            kind={r.task_id.startsWith('THR-') ? 'thread' : 'task'}
+                            to={
+                              slug
+                                ? r.task_id.startsWith('THR-')
+                                  ? `/orgs/${slug}/threads/${r.task_id}`
+                                  : `/orgs/${slug}/tasks/${r.task_id}`
+                                : undefined
+                            }
+                          />
+                        </span>
                       )}
                     </li>
                   ))}
@@ -369,8 +371,11 @@ export function DashboardPage(): JSX.Element {
                   escalationCount={pendingCount}
                 />
               </div>
-              {/* Counter tiles — ds.css display-num / mono pattern */}
-              <div className="border-border-default mt-6 grid grid-cols-5 gap-3 border-t pt-4">
+              {/* Counter tiles — ds.css display-num / mono pattern. Five equal
+                  columns collapsed to 32px at 1100 and 53px at 1440, so labels
+                  collided or wrapped (THR-376 D4). Three columns fit every label
+                  on one line; the narrow lg rail (1024-1279px) uses two. */}
+              <div className="border-border-default mt-6 grid grid-cols-3 items-end gap-x-3 gap-y-4 border-t pt-4 lg:grid-cols-2 xl:grid-cols-3">
                 <div className="text-center">
                   <div className="font-display text-h1 text-text-primary font-medium tabular-nums">
                     {s.narrative_counts.completed_today}

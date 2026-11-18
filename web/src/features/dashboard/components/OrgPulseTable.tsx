@@ -45,8 +45,16 @@ export function OrgPulseTable({ rows }: OrgPulseTableProps): JSX.Element {
               key={r.team}
               className="border-border-subtle border-b last:border-b-0"
             >
-              <td className="text-text-primary py-2 font-medium">{r.team}</td>
-              <td className="text-text-muted py-2 font-mono text-xs">
+              <td className="text-text-primary py-2 font-medium wrap-anywhere">
+                {r.team}
+                {/* Narrow lg rail (1024-1279px): the member count stacks under
+                    the team name instead of taking its own column, so the row
+                    fits the card (THR-376 D2). */}
+                <span className="text-text-muted hidden font-mono text-xs font-normal whitespace-nowrap lg:max-xl:block">
+                  {t('dashboard.pulse.members', { count: r.members })}
+                </span>
+              </td>
+              <td className="text-text-muted py-2 font-mono text-xs whitespace-nowrap lg:max-xl:hidden">
                 {t('dashboard.pulse.members', { count: r.members })}
               </td>
               <td className="py-2">
