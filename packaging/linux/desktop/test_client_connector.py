@@ -147,6 +147,48 @@ class ShippingConnectorTests(unittest.TestCase):
                 self.assertEqual(response, b"")
                 self.assertEqual(len(self.observed), before)
 
+    def test_declared_upload_limit_with_shipping_connector(self) -> None:
+        dials = []
+        dial = self.session.dial
+
+        def counted_dial(deadline: float) -> socket.socket:
+            dials.append(deadline)
+            return dial(deadline)
+
+        self.session.dial = counted_dial
+        proxy = self.proxy()
+        host = proxy.url[7:-1]
+        port = int(host.split(":")[1])
+        limit = 64 * 1024 * 1024
+        for length in (str(limit + 1), "999999999999", "-1", "+1", "1.0", "invalid", "9999999999999"):
+            with self.subTest(length=length):
+                before = len(dials), len(self.observed)
+                with socket.create_connection(("127.0.0.1", port), timeout=3) as stream:
+                    stream.sendall(f"POST /refused HTTP/1.1\r\nHost: {host}\r\nContent-Length: {length}\r\n\r\n".encode())
+                    stream.shutdown(socket.SHUT_WR)
+                    response = bytearray()
+                    while data := stream.recv(1024):
+                        response.extend(data)
+                        self.assertLessEqual(len(response), 1024)
+                self.assertEqual((len(dials), len(self.observed)), before, "refused length must never dial or submit")
+                expected = (b"HTTP/1.1 413 Payload Too Large\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                            if length in (str(limit + 1), "999999999999") else b"")
+                self.assertEqual(response, expected)
+        with socket.create_connection(("127.0.0.1", port), timeout=10) as stream:
+            wire = client.Wire(stream, time.monotonic() + 10)
+            wire.send(f"POST /upload HTTP/1.1\r\nHost: {host}\r\nContent-Length: {limit}\r\n\r\n".encode())
+            block = bytes(range(256)) * 256
+            for _ in range(limit // len(block)):
+                wire.send(block)
+            self.assertIn("200", wire.head(repeated=True)[0])
+        self.assertEqual(len(dials), 1)
+        self.assertEqual(len(self.observed), 1)
+        request = self.observed[0]
+        self.assertEqual(request.path, "/upload")
+        self.assertEqual([(h.name, h.value) for h in request.headers if h.name == "content-length"],
+                         [("content-length", str(limit))])
+        self.assertEqual(request.body, block * (limit // len(block)))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

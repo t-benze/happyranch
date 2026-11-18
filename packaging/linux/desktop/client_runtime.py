@@ -186,6 +186,9 @@ class RuntimeProxy:
         try:
             incoming = Wire(client, time.monotonic() + 10)
             line, headers = incoming.head()
+            if int(headers.get("content-length", "0")) > 64 * 1024 * 1024:
+                incoming.send(b"HTTP/1.1 413 Payload Too Large\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                return
             parts = line.split(" ")
             if (len(parts) != 3 or not re.fullmatch(r"[A-Z]+", parts[0])
                     or parts[2] != "HTTP/1.1" or not parts[1].startswith("/")
