@@ -20,7 +20,7 @@ AUDIT_PATH = Path('/var/lib/happyranch-remote-access/home-audit.jsonl')
 MAX_RECORD_BYTES = 1024
 MAX_FILE_BYTES = 1024 * 1024
 _DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
-_FILE_FLAGS = os.O_WRONLY | os.O_APPEND | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK
+_FILE_FLAGS = os.O_RDWR | os.O_APPEND | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK
 
 
 class Event(StrEnum):
@@ -237,7 +237,10 @@ class HomeAudit:
             directory = self._directory()
             fcntl.flock(directory, fcntl.LOCK_EX)
             descriptor = self._open(directory)
-            if os.fstat(descriptor).st_size + len(data) > MAX_FILE_BYTES:
+            size = os.fstat(descriptor).st_size
+            # Preserve a failed append's torn bytes as a separate evidence line.
+            separator = b'\n' if size and os.pread(descriptor, 1, size - 1) != b'\n' else b''
+            if size + len(separator) + len(data) > MAX_FILE_BYTES:
                 backup = self.path.name + '.1'
                 try:
                     info = os.stat(backup, dir_fd=directory, follow_symlinks=False)
@@ -250,7 +253,8 @@ class HomeAudit:
                 os.close(descriptor)
                 descriptor = None
                 descriptor = self._open(directory)
-            remaining = memoryview(data)
+                separator = b''  # the new current file has no torn tail
+            remaining = memoryview(separator + data)
             while remaining:
                 written = os.write(descriptor, remaining)
                 if written <= 0:

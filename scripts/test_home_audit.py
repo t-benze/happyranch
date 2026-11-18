@@ -6,6 +6,7 @@ import importlib.util
 import json
 import os
 import stat
+import subprocess
 import sys
 from dataclasses import replace
 from pathlib import Path
@@ -408,6 +409,128 @@ def test_io_failure_is_sanitized_and_preserves_prefix(venue: Any, monkeypatch: A
     assert error.value.__suppress_context__
     # A lost fsync is uncertainty, not a no-change guarantee.
     assert writer.path.read_bytes() == b'prefix\n' + audit.encode(record())
+
+
+@pytest.mark.parametrize('earlier', [b'', b'{"earlier":1}\n{"earlier":2}\n'],
+                         ids=['empty', 'earlier-lines'])
+def test_fresh_intent_after_kernel_partial_write(tmp_path: Path, earlier: bytes) -> None:
+    path = tmp_path / 'home-audit.jsonl'
+    if earlier:
+        seed(path, earlier)
+    # Isolate the process-wide kernel limit/signal; no OS operation is mocked.
+    fault = subprocess.run([sys.executable, '-c', '''
+import importlib.util
+import os
+import resource
+import signal
+import sys
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location('partial_home_audit', sys.argv[1])
+audit = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = audit
+spec.loader.exec_module(audit)
+path = Path(sys.argv[2])
+size = path.stat().st_size if path.exists() else 0
+writer = audit.HomeAudit(path, uid=os.geteuid(), gid=os.getegid())
+original_limit = resource.getrlimit(resource.RLIMIT_FSIZE)
+original_signal = signal.signal(signal.SIGXFSZ, signal.SIG_IGN)
+try:
+    resource.setrlimit(resource.RLIMIT_FSIZE, (size + 17, original_limit[1]))
+    try:
+        writer.intent('refresh', intent_id='intent-failed', operation_id='op-first')
+    except audit.AuditRefused as error:
+        assert str(error) == 'unavailable'
+    else:
+        raise AssertionError('kernel partial write did not refuse')
+finally:
+    resource.setrlimit(resource.RLIMIT_FSIZE, original_limit)
+    signal.signal(signal.SIGXFSZ, original_signal)
+assert resource.getrlimit(resource.RLIMIT_FSIZE) == original_limit
+assert signal.getsignal(signal.SIGXFSZ) == original_signal
+assert path.read_bytes()[size:] == b'{"component":null'
+''', str(SPEC.origin), str(path)], capture_output=True, text=True, timeout=10)
+    assert fault.returncode == 0, fault.stdout + fault.stderr
+    prefix = path.read_bytes()
+    assert prefix == earlier + b'{"component":null'  # exact real short-write bytes
+    inode = path.stat().st_ino
+
+    fresh = audit.HomeAudit(path, uid=os.geteuid(), gid=os.getegid())
+    fresh.intent('refresh', intent_id='intent-acknowledged', operation_id='op-second')
+    data = path.read_bytes()
+    lines = data.splitlines(keepends=True)
+    # Independent wire/JSON checks: encode() does not supply the expected line.
+    assert data.startswith(prefix + b'\n')
+    assert lines[:-2] == earlier.splitlines(keepends=True)
+    assert [json.loads(line) for line in lines[:-2]] == (
+        [{'earlier': 1}, {'earlier': 2}] if earlier else [])
+    assert lines[-2] == b'{"component":null\n'
+    with pytest.raises(json.JSONDecodeError):
+        json.loads(lines[-2])
+    assert lines[-1].endswith(b'\n') and len(lines[-1]) <= 1024
+    acknowledged = json.loads(lines[-1])
+    assert (acknowledged['intent_id'], acknowledged['operation_id'],
+            acknowledged['event'], acknowledged['stage']) == (
+                'intent-acknowledged', 'op-second', 'refresh', 'intent')
+    assert path.stat().st_ino == inode
+    assert set(item.name for item in tmp_path.iterdir()) == {'home-audit.jsonl'}
+
+
+@pytest.mark.parametrize('spare', [0, 1], ids=['separator-overflows', 'separator-fits'])
+def test_torn_tail_separator_counts_toward_file_cap(
+        venue: Any, monkeypatch: Any, spare: int) -> None:
+    writer, parent, _ = venue
+    line = b'{"fixture":"' + b'x' * 1009 + b'"}\n'
+    complete = line * 1022
+    prefix = complete + b'x' * (1024 - spare)
+    seed(writer.path, prefix)
+    backup = parent / 'home-audit.jsonl.1'
+    seed(backup, b'previous-generation\n')
+    writes: list[bytes] = []
+
+    def written(descriptor: int, data: Any) -> int:
+        writes.append(bytes(data))
+        return os.write(descriptor, data)
+
+    monkeypatch.setattr(audit.os, 'write', written)
+    writer.append(boundary_record(1024))
+    if spare == 0:
+        # Record alone fits exactly; the separator requires cap rotation.
+        assert backup.read_bytes() == prefix
+        retained = backup.read_bytes()
+        data = writer.path.read_bytes()
+        assert len(data) == 1024 and not data.startswith(b'\n')
+    else:
+        # Tornness alone must not rotate; separator + record fit exactly.
+        data = writer.path.read_bytes()
+        assert data.startswith(prefix + b'\n') and len(data) == 1024 * 1024
+        assert backup.read_bytes() == b'previous-generation\n'
+        retained = data
+    assert all(json.loads(row) == {'fixture': 'x' * 1009}
+               for row in retained.splitlines()[:1022])
+    last = data.splitlines(keepends=True)[-1]
+    assert len(last) == 1024 and last.endswith(b'\n')
+    assert json.loads(last)['intent_id'] == local_id('intent', 300)
+    assert writes == [last if spare == 0 else b'\n' + last]
+    assert set(item.name for item in parent.iterdir()) == {'home-audit.jsonl', 'home-audit.jsonl.1'}
+
+
+def test_tail_read_failure_refuses_without_writing(venue: Any, monkeypatch: Any) -> None:
+    writer, _, _ = venue
+    prefix = b'{"earlier":1}\n'
+    seed(writer.path, prefix)
+
+    def failed_read(descriptor: int, count: int, offset: int) -> bytes:
+        assert os.fstat(descriptor).st_ino == writer.path.stat().st_ino
+        assert (count, offset) == (1, len(prefix) - 1)
+        raise OSError('synthetic-private-tail-diagnostic')
+
+    monkeypatch.setattr(audit.os, 'pread', failed_read)
+    with pytest.raises(audit.AuditRefused) as error:
+        writer.append(record())
+    assert str(error.value) == 'unavailable' and error.value.__suppress_context__
+    assert writer.path.read_bytes() == prefix
+    assert not writer.path.with_name(writer.path.name + '.1').exists()
 
 
 def test_explicit_nonroot_custody_and_default_path(tmp_path: Path) -> None:

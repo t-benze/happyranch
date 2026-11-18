@@ -2820,6 +2820,13 @@ cleaning other entries.
 The API persists an intent before returning its reference; callers own effect
 ordering and settlement, and a reference confers no authorization/replay proof.
 An I/O failure may follow a partial append and must be treated as uncertain.
+Before a subsequent append to the same file, a non-newline tail is preserved
+byte-for-byte and terminated with one newline in the same write as the next
+record. The separator counts toward the file cap, not the record cap; a torn
+tail alone never triggers rotation. A tail-read failure refuses without writing.
+After an I/O failure the file may contain at most one newline-terminated
+unparseable fragment per failed append; readers skip lines that fail JSON
+parsing. Every successfully acknowledged record is a complete JSON line.
 Why no founder: the approved nonsecret retained audit, with bounded storage.
 
 **B17 — First replacement intent for recognized failed installation.**
