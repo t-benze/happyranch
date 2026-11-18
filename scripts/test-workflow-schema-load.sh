@@ -2012,7 +2012,8 @@ OrgState.close = uncertain_close
                         assert all((root/'happyranch.db').read_bytes() == before[slug] for slug, root in runtime.iter_org_roots()), 'A4-M second automatic setup wrote org DB'
                     state = entry._build_state(Settings())
                     try:
-                        expected = set(slugs) if fault == 'success' else set() if fault == 'late_spawn' else {'family'}
+                        fallback = fault in ('ex', 'history') or start == 'first' and fault == 'backup'
+                        expected = set(slugs) if fault == 'success' or fallback else set() if fault == 'late_spawn' else {'family'}
                         assert set(state._all_orgs_snapshot()) == expected, ('A4-M startup lost attachment isolation or bypassed hold', fault, state.broken_orgs)
                         # Existing profile policy may hold other consumers when a
                         # root is unavailable; A4 does not waive that global veto.
@@ -2053,7 +2054,11 @@ OrgState.close = uncertain_close
                             print('PASS A4-M actual mounted startup: late_spawn original retained/late child killed/reaped', flush=True)
                             break
                         if fault != 'success':
-                            assert 'happyranch' in state.broken_orgs, 'A4-M missing visible closed hold'
+                            assert ('happyranch' in state.broken_orgs) != fallback, 'A4-M wrong no-effect/unknown attachment'
+                            if fallback:
+                                assert state._workflow_bootstrap.hold_states['happyranch'] == 'not_installed'
+                                assert not state.orgs['happyranch'].db._conn.execute("SELECT 1 FROM sqlite_schema WHERE name GLOB 'workflow_seq_*'").fetchone()
+                                assert not state.orgs['happyranch'].db._org_access_fence.exclusive
                             status = read_setup_status(home, runtime.root, 'happyranch')
                             expected_status = ('unknown', 'commit_uncertain') if fault in ('commit_uncertain', 'kill') else ('installed_unverified', 'installation_unverified') if fault == 'close' else None
                             if expected_status:
@@ -2062,8 +2067,8 @@ OrgState.close = uncertain_close
                                 reason = dict(integrity='integrity_check_failed', ex='writer_exclusion_unproven', history='history_check_failed')[fault]
                                 assert (status.state, status.reason) == ('not_installed', reason), ('A4-M wrong pre-intent hold', fault, status)
                                 assert status.backup_path is None, 'A4-M pre-intent hold fabricated backup'
-                            if fault != 'close':
-                                assert path.read_bytes() == original_bytes, ('A4-M failed check changed source DB', fault)
+                            if fault != 'close' and not fallback:
+                                assert path.read_bytes() == (original_bytes if start == 'first' else before['happyranch']), ('A4-M failed check changed source DB', fault)
                             if start == 'next':
                                 assert not state._workflow_bootstrap.workers, 'A4-M replayed a failed or uncertain attempt'
                             elif fault in ('backup', 'history_precommit', 'commit_uncertain', 'kill', 'close', 'late_spawn'):
@@ -2088,6 +2093,12 @@ OrgState.close = uncertain_close
                                 if not worker.discovery.fence._closed:
                                     worker.discovery.fence.close()
                         for slug, org in state._all_orgs_snapshot().items():
+                            if slug == 'happyranch' and fallback:
+                                assert not org.db._conn.execute("SELECT 1 FROM sqlite_schema WHERE name GLOB 'workflow_seq_*'").fetchone(), 'A4-M fallback installed sequential storage'
+                                assert tuple(org.db._conn.execute('SELECT id,v FROM a4_mount_sentinel WHERE id=37').fetchone()) == (37, b'original\0typed'), 'A4-M fallback changed retained typed cells'
+                                task_status = 'pending' if fault == 'history' else 'completed'
+                                assert [tuple(row) for row in org.db._conn.execute('SELECT id,status FROM tasks')] == [('TASK-mounted',task_status)], 'A4-M fallback changed native tasks'
+                                continue
                             assert org.db._conn.execute("SELECT 1 FROM sqlite_schema WHERE name='workflow_seq_schema_versions'").fetchone(), 'A4-M daemon startup did not install sequential storage'
                             assert tuple(org.db._conn.execute('SELECT id,v FROM a4_mount_sentinel').fetchone()) == (37, b'original\0typed'), 'A4-M changed retained typed cells'
                             assert org.db._conn.execute('SELECT count(*) FROM workflow_seq_definitions').fetchone()[0] == 1, 'A4-M missed qualified catalog registration'
@@ -2109,7 +2120,8 @@ OrgState.close = uncertain_close
                         audit_path = home/'runtime-audit.db'
                         with closing(sqlite3.connect(audit_path.as_uri()+'?mode=ro', uri=True)) as conn:
                             audits = [json.loads(row[0]) for row in conn.execute("SELECT payload FROM audit_log WHERE task_id='' AND agent='daemon' AND action='workflow_setup_registered'")]
-                        assert {row['org_slug'] for row in audits} == expected and len(audits) == len(expected), 'A4-M missing, duplicate or premature runtime registration audit'
+                        installed = expected - {'happyranch'} if fallback else expected
+                        assert {row['org_slug'] for row in audits} == installed and len(audits) == len(installed), 'A4-M missing, duplicate or premature runtime registration audit'
                     finally:
                         if release_spawn is not None:
                             release_spawn.set()

@@ -470,7 +470,11 @@ class DaemonState:
                 from runtime.infrastructure.workflow_sequential_bootstrap import BootstrapStartup
                 state._workflow_bootstrap = BootstrapStartup(home=daemon_home(), runtime_root=runtime.root)
                 state._workflow_bootstrap.run(roots, settings)
-                state.broken_orgs.update(state._workflow_bootstrap.holds)
+                for slug, reason in state._workflow_bootstrap.holds.items():
+                    setup_state = state._workflow_bootstrap.hold_states.get(slug, 'unknown')
+                    logger.warning("org %r workflow setup: %s: %s", slug, setup_state, reason)
+                    if setup_state != 'not_installed':
+                        state.broken_orgs[slug] = reason
             for slug, root in roots:
                 state.workflow_setup_roots[slug] = root
                 if slug in state.broken_orgs:

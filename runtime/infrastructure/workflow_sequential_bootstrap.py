@@ -403,6 +403,8 @@ class BootstrapSelection:
             if not names:
                 return None
             value = self._read_evidence(evidence_deadline)
+            if value['state'] == 'not_installed' and value['phase'] == 'held':
+                return value
             if (value['state'], value['reason'], value['phase']) != (
                     'installed_verified', 'registered', 'registered'):
                 raise BootstrapEvidenceError('workflow_setup_attempt_latched')
@@ -427,6 +429,11 @@ class BootstrapSelection:
         try:
             self._check()
             self.attempt = self._prior()
+            if self.attempt is not None and self.attempt['phase'] == 'held':
+                self.close()
+                self._check()
+                self.result = 'held'
+                return self.result
             parent = _directory(self.path.parent, self.descriptors)
             _companions(self.path)
             before = _file(self.path)
@@ -509,6 +516,7 @@ class BootstrapStartup:
         self.discoveries: dict[Path, BootstrapDiscovery] = {}
         self.workers: list[BootstrapSupervisor] = []
         self.holds: dict[str, str] = {}
+        self.hold_states: dict[str, str] = {}
         self.hold_descriptors: list[dict] = []
         self.upgrade_seconds = 0.0
         self.prepared = False
@@ -598,6 +606,7 @@ class BootstrapStartup:
             discovery = None
             worker = None
             started = time.monotonic()
+            hold_offset = len(self.hold_descriptors)
             try:
                 discovery = self.discover(root)
                 selected = discovery.read()
@@ -633,6 +642,7 @@ class BootstrapStartup:
                 discovery.close()
             except Exception as exc:
                 reason = (worker.result['reason'] if worker is not None and worker.result and worker.result['state'] != 'verified' else
+                          discovery.reason if discovery is not None and discovery.result == 'held' else
                           str(exc) if isinstance(exc, BootstrapEvidenceError) and str(exc) in (
                               'writer_exclusion_unproven', 'startup_upgrade_budget_unavailable') else
                           'writer_exclusion_unproven' if isinstance(exc, OrgAccessHeld) else
@@ -642,26 +652,28 @@ class BootstrapStartup:
                         'registration_failed', 'default_load_budget_exceeded', 'commit_uncertain'):
                     reason = 'install_incomplete'
                 self.holds[slug] = reason
+                self.hold_states[slug] = 'unknown'
                 try:
-                    if discovery is not None:
-                        state = ('not_installed' if discovery.result in ('absent', 'held')
-                                 and (worker is None or worker.closed and not worker.permit_sent) else 'unknown')
-                        self._hold(slug, reason, state)
-                    # Count exhaustion is visible in holds/broken_orgs, without
-                    # acquiring DB, fence or publication descriptors past the cap.
-                except Exception:
-                    # Broken-org status remains visible even if external evidence
-                    # cannot be published. Never infer a persisted latch here.
-                    pass
-                try:
-                    # run retains its worker before any socket/spawn acquisition.
-                    # A pre-admission refusal owns only this discovery, even
-                    # when a different org's original worker remains pending.
+                    # No fallback until every original discovery/worker has
+                    # positively closed. A close fault retains unknown custody.
                     if discovery is not None and (worker is None or worker not in self.workers
                             or worker.reaped and worker.closed):
                         discovery.close()
                 except Exception:
-                    pass  # Original unknown custody remains in this startup owner.
+                    pass  # Retain original unknown custody; still publish its latch.
+                state = ('not_installed' if discovery is not None and discovery.closed
+                         and discovery.result in ('absent', 'held')
+                         and (worker is None or worker.closed and not worker.permit_sent) else 'unknown')
+                self.hold_states[slug] = state
+                try:
+                    if discovery is not None:
+                        self._hold(slug, reason, state)
+                    # Count exhaustion remains broken without acquiring DB,
+                    # fence or publication descriptors past the cap.
+                except Exception:
+                    # External publication failure proves no persisted latch.
+                    # Original custody is still checked before SH attachment.
+                    pass
             finally:
                 for record in reversed(self.hold_descriptors):
                     if not record['attempted']:
@@ -670,14 +682,18 @@ class BootstrapStartup:
                         except OSError as exc:
                             record['error'] = exc
                             self.holds[slug] = 'install_incomplete'
+                            self.hold_states[slug] = 'unknown'
+                if any(not record['closed'] for record in self.hold_descriptors[hold_offset:]):
+                    self.hold_states[slug] = 'unknown'
 
     def take_shared(self, root: Path) -> OrgAccessFence:
         discovery = self.discoveries[root]
         if discovery.result == 'present' and not discovery.closed:
             return discovery.take_shared()
-        # A successful upgrade released EX only after original closure. The
-        # normal attachment is a fresh SH interval, without another installer.
-        if root.name in self.holds or not discovery.closed:
+        # Successful upgrade or proven no-effect refusal released its original
+        # custody. Ordinary attachment always starts a fresh SH interval.
+        if (not discovery.closed or root.name in self.holds
+                and self.hold_states.get(root.name) != 'not_installed'):
             raise BootstrapEvidenceError('workflow_setup_discovery_transfer_refused')
         fence = self._acquire(discovery, exclusive=False, deadline=time.monotonic()+5)
         discovery.fences[-1]['transferred'] = True
@@ -719,7 +735,7 @@ class BootstrapDiscovery:
     """Owned SH selection, positive SH close and fresh EX rediscovery.
 
     A hold retains SH until the startup coordinator closes known custody;
-    it never authorizes fallback writable loading. Unknown closure never
+    only a proven no-effect refusal permits fresh SH attachment. Unknown closure never
     releases or transfers any original fence.
     A terminal/failed attempt is a refusal, never a new discovery permission.
     """
@@ -742,7 +758,10 @@ class BootstrapDiscovery:
     def _select(self, fence: OrgAccessFence, deadline: float) -> str:
         selected = BootstrapSelection(home=self.startup.home, fence=fence, deadline=deadline)
         self.selections.append(selected)
-        return selected.read()
+        result = selected.read()
+        if result == 'held':
+            self.reason = selected.attempt['reason']
+        return result
 
     def _close_fence(self, record: dict) -> None:
         if record['transferred']:
@@ -767,8 +786,9 @@ class BootstrapDiscovery:
         self.started = True
         try:
             self.fence = self.startup._acquire(self, exclusive=False, deadline=self.selection_deadline)
-            if self._select(self.fence, self.selection_deadline) == 'present':
-                self.result = 'present'
+            selected = self._select(self.fence, self.selection_deadline)
+            if selected in ('present', 'held'):
+                self.result = selected
                 return self.result
             now = time.monotonic()
             if self.startup.deadline-now < 60 or self.deadline-now <= 20:
@@ -788,8 +808,9 @@ class BootstrapDiscovery:
                 end = min(self.deadline, time.monotonic()+5)
                 self.fence = self.startup._acquire(self, exclusive=False, deadline=end)
                 selected = self._select(self.fence, end)
-                self.reason = 'writer_exclusion_unproven' if selected == 'absent' else None
-                self.result = 'held' if selected == 'absent' else 'present'
+                if selected == 'absent':
+                    self.reason = 'writer_exclusion_unproven'
+                self.result = 'held' if selected in ('absent', 'held') else 'present'
                 return self.result
             selected = self._select(self.fence, min(self.deadline-20, time.monotonic()+5))
             if selected == 'present':
@@ -1157,13 +1178,16 @@ def require_bootstrap_idle_history(source: BootstrapSource, *, writer: sqlite3.C
     """Complete durable prerequisite under A4:2's original cooperative EX.
 
     Reuse the native owners' strict histories on the SAME coherent source.
-    No Database construction, recovery, attestation, stale-writer exception or
-    new participation marker can discharge retained preparation uncertainty.
+    No Database construction, recovery, attestation or new participation marker
+    can discharge retained preparation uncertainty. Only the existing historical
+    disk-sweep predicate applies, with no live owners under original startup EX.
     The actual writer repeats this before COMMIT on the same cumulative ledger.
     Pre-A1 concurrent daemons remain the documented startup-migration limitation.
     """
     from types import SimpleNamespace
-    from runtime.infrastructure.producer_admission import ProducerAdmissionStore, NativeWriterStore
+    from runtime.infrastructure.producer_admission import (
+        ProducerAdmissionStore, NativeWriterStore, historical_disk_sweep,
+    )
     from runtime.infrastructure.thread_admission import ThreadAdmissionStore
     from runtime.infrastructure.task_pause_controls import decode_journal
     from runtime.infrastructure.db.tasks import TasksMixin, repository_preparation_closed
@@ -1244,7 +1268,8 @@ def require_bootstrap_idle_history(source: BootstrapSource, *, writer: sqlite3.C
                for state in producers.values()):
             raise BootstrapEvidenceError('workflow_setup_history_not_idle')
         writers = NativeWriterStore(facade, source.fence.root.name).history_uncommitted()
-        if any(state.state != 'settled' for state in writers.values()):
+        if any(state.state != 'settled' and not historical_disk_sweep(key, state, set())
+               for key, state in writers.items()):
             raise BootstrapEvidenceError('workflow_setup_history_not_idle')
         # A terminal task label cannot settle even a pre-launch preparation.
         # Closed Pause invocations are removed by their original owner; every

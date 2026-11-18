@@ -44,8 +44,24 @@ empty-task/daemon `workflow_setup_registered` audit in workflow-free
 ordinary attachment begin under fresh SH. An exact installed second start does
 no installation, backup or definition-registration DML and adds no setup audit.
 
-Failed checks HOLD the org with a closed visible cause, without a fallback
-writable load. Pre-intent refusals publish a private no-follow `hold.json` latch
+A refused setup with proven no source effect (`absent`/`held` discovery and no
+worker, or a positively closed worker with no COMMIT permit sent) is
+`not_installed`. After positive original discovery/descriptor closure, ordinary
+loading uses a fresh A1 SH fence on the current layout. The org does not enter
+`broken_orgs` for that refusal; the existing workflow-setup status surface and
+daemon log expose its reason. Normal loader validation still applies.
+A validated prior `hold.json` with state `not_installed` selects `held`, preserves
+its reason and bytes, and loads through the same fallback without another install
+attempt. No latch is removed or rewritten. Unknown source effects, permit sent,
+registration mismatch, worker in flight or unknown close remain broken as before.
+
+The writer gate reuses `historical_disk_sweep` (Founder THR320seq477) with an empty
+live-owner set under original startup EX: only UNKNOWN `disk_sweep` records with
+empty agents and teams qualify. Their rows remain UNKNOWN. All other history
+predicates and the 8192-row/64MiB acquisition caps are unchanged; historical UNKNOWN
+treatment beyond that exemption awaits the Part 3 decision in THR-380.
+
+Pre-intent refusals publish a private no-follow `hold.json` latch
 when possible; status reports only observed absence, otherwise unknown. Integrity,
 backup and history refusals use `integrity_check_failed`,
 `backup_verification_failed` and `history_check_failed`.
@@ -543,8 +559,10 @@ remains unchanged and discloses no extra native fields.
 
 No evidence or a positively empty namespace permits schema discovery only.
 Failed, incomplete, unknown, malformed or multiple attempts latch before any org
-DB open; even a not_installed terminal is not retry authority. A registered final
-record requires reserved storage present on the exact original DB. All reserved
+DB open. A validated `not_installed` hold selects `held` without opening the DB;
+it permits the current-contract fallback after closure, never another attempt.
+Other not_installed terminal attempts remain latched without retry authority.
+A registered final record requires reserved storage present on the exact original DB. All reserved
 prefixes (including partial/corrupt layouts) route to ordinary full validation;
 they never trigger installation, repair, backup, inventory or full integrity.
 Absence means routing only, never original-owner or size qualification. The
