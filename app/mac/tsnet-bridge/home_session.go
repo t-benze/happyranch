@@ -258,12 +258,15 @@ func runHomeSession(ctx context.Context, in io.Reader, out io.Writer) (code int)
 }
 
 func (session *homeSession) serve(ctx context.Context, in io.Reader, out io.Writer, transport *homeTransport, cfg homeSessionLaunch) (code int) {
+	// Keep control transport alive until tsnet has drained its workers. Closing
+	// it first can start a health-report Noise dial shared with a cancelled
+	// updater; tsnet then waits for that dial's independent timeout in Close.
+	defer transport.Close()
 	defer func() {
 		if session.Close() != nil {
 			code = managedStateError
 		}
 	}()
-	defer transport.Close()
 	if pipe, ok := out.(*os.File); ok {
 		// Inherited stdout is blocking and cannot accept Go deadlines. Use a
 		// nonblocking duplicate registered with the runtime poller instead.
@@ -286,11 +289,11 @@ func (session *homeSession) serve(ctx context.Context, in io.Reader, out io.Writ
 		defer interruptOutput()
 		out = output
 	}
-	cancel := context.AfterFunc(ctx, func() { cancelManaged(); transport.Close() })
+	cancel := context.AfterFunc(ctx, cancelManaged)
 	defer cancel()
 	// EOF closes admission during Up as well as while relaying. Never read
 	// another launch object or accept a replacement credential in this process.
-	go func() { _, _ = io.Copy(io.Discard, in); cancelManaged(); transport.Close() }()
+	go func() { _, _ = io.Copy(io.Discard, in); cancelManaged() }()
 	if code = session.up(); code != 0 {
 		return code
 	}
@@ -314,7 +317,7 @@ func (session *homeSession) serve(ctx context.Context, in io.Reader, out io.Writ
 		}
 		// Only this goroutine writes after the synchronous ready/snapshot pair.
 		// Notifications coalesce; each frame contains the entire current store.
-		exportCtx, finish := context.WithCancel(transport.ctx)
+		exportCtx, finish := context.WithCancel(session.engine.ctx)
 		done := make(chan struct{})
 		defer func() { finish(); cancelManaged(); <-done }()
 		go func() {
@@ -326,7 +329,6 @@ func (session *homeSession) serve(ctx context.Context, in io.Reader, out io.Writ
 				case <-session.state.changed:
 					if session.exportState(out) != nil {
 						cancelManaged()
-						transport.Close()
 						return
 					}
 				}
@@ -334,6 +336,6 @@ func (session *homeSession) serve(ctx context.Context, in io.Reader, out io.Writ
 		}()
 	}
 	host, _, _ := net.SplitHostPort(cfg.Target)
-	serveHomeRuntime(transport.ctx, listener, host)
+	serveHomeRuntime(session.engine.ctx, listener, host)
 	return 0
 }

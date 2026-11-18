@@ -117,6 +117,7 @@ func TestHomeSessionBackpressuredCancel(t *testing.T) {
 				}
 				time.Sleep(time.Millisecond)
 			}
+			cancelAt := time.Now()
 			if mode == "eof" {
 				in.Close()
 			} else if cmd.Process.Signal(syscall.SIGTERM) != nil {
@@ -124,16 +125,27 @@ func TestHomeSessionBackpressuredCancel(t *testing.T) {
 			}
 			done := make(chan error, 1)
 			go func() { done <- cmd.Wait() }()
-			select {
-			case err := <-done:
-				if err != nil {
-					t.Fatal("cancelled frame failed; diagnostics withheld")
+			deadlineTimer := time.NewTimer(2 * time.Second)
+			defer deadlineTimer.Stop()
+			probe := time.NewTimer(time.Second)
+			defer probe.Stop()
+		wait:
+			for {
+				select {
+				case err := <-done:
+					if err != nil {
+						t.Fatalf("cancelled frame failed after %s; %s", time.Since(cancelAt), diagnostics.String())
+					}
+					break wait
+				case <-probe.C:
+					_ = cmd.Process.Signal(syscall.SIGUSR2) // test-side stage probe only
+				case <-deadlineTimer.C:
+					_ = cmd.Process.Kill()
+					<-done
+					t.Fatalf("cancelled frame blocked cleanup until forced kill after %s; %s", time.Since(cancelAt), diagnostics.String())
 				}
-			case <-time.After(2 * time.Second):
-				_ = cmd.Process.Kill()
-				<-done
-				t.Fatal("cancelled frame blocked cleanup until forced kill")
 			}
+			t.Logf("process-exit after %s; %s", time.Since(cancelAt), diagnostics.String())
 			entries, err := os.ReadDir(runtime)
 			if err != nil || len(entries) != 0 {
 				t.Fatal("cancelled frame left runtime scratch")

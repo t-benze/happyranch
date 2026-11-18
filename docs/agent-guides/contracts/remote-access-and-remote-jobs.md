@@ -1338,6 +1338,9 @@ for the exact tuple and bounds. Existing
 issuer/roots/resolver, peer-only dial/pin/revalidation, bounded socket relay and
 private `0 <Self-StableID>` readiness line remain the transport boundary.
 Readiness proves membership only, never pairing approval or loaded runtime UI.
+On EOF or a catchable shutdown signal, engine cancellation interrupts private
+output and stops runtime admission. The control transport stays available while
+tsnet drains its workers, then closes before scratch cleanup is reported complete.
 
 The server uses pinned tsnet v1.78.0 with memory-only state: ordinary joins use
 `mem.Store` with `Ephemeral:true`; save-intent sessions use the bounded store

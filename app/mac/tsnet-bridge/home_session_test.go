@@ -20,6 +20,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -203,6 +204,8 @@ func TestHomeSessionProcessChild(t *testing.T) {
 	}
 	if mode != "custody" {
 		if mode == "backpressure" {
+			stopDiagnostics := observeHomeShutdown(ctx, s)
+			defer stopDiagnostics()
 			if s.state.WriteState("pipe-padding", bytes.Repeat([]byte("x"), 16*1024)) != nil {
 				t.Fatal("state padding failed")
 			}
@@ -213,6 +216,7 @@ func TestHomeSessionProcessChild(t *testing.T) {
 		}
 		code := s.serve(ctx, os.Stdin, os.Stdout, transport, cfg)
 		if mode == "backpressure" {
+			fmt.Fprintln(os.Stderr, "shutdown-stage serve-returned")
 			if code != 0 {
 				t.Fatal("cancelled frame did not exit cleanly")
 			}
@@ -221,6 +225,7 @@ func TestHomeSessionProcessChild(t *testing.T) {
 			}
 			// The parent deliberately leaves stdout full. Do not let the test
 			// runner's PASS line block after production cleanup has completed.
+			fmt.Fprintln(os.Stderr, "shutdown-stage scratch-removed process-exiting")
 			os.Exit(0)
 		}
 		fmt.Fprintln(os.Stdout, code)
@@ -593,4 +598,81 @@ func TestHomeSessionScratchCustodyAndLifetime(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Test-side diagnostics emit stage/function names only, never arguments or state.
+// Sampling is requested only if cancellation has already taken one second,
+// so ordinary enrollment and shutdown scheduling remain unperturbed.
+func observeHomeShutdown(ctx context.Context, s *homeSession) func() {
+	done, stopped := make(chan struct{}), make(chan struct{})
+	probe := make(chan os.Signal, 1)
+	signal.Notify(probe, syscall.SIGUSR2)
+	start := time.Now()
+	handled := context.AfterFunc(ctx, func() {
+		fmt.Fprintf(os.Stderr, "shutdown-stage signal-handled elapsed=%s\n", time.Since(start).Round(time.Millisecond))
+	})
+	cancelled := context.AfterFunc(s.engine.ctx, func() {
+		fmt.Fprintf(os.Stderr, "shutdown-stage engine-cancelled elapsed=%s\n", time.Since(start).Round(time.Millisecond))
+	})
+	go func() {
+		defer close(stopped)
+		select {
+		case <-done:
+			return
+		case <-probe:
+		}
+		stage := "signal-pending"
+		if ctx.Err() != nil {
+			stage = "signal-handled"
+		}
+		if s.engine.ctx.Err() != nil {
+			stage += " engine-cancelled"
+		}
+		stack := make([]byte, 256*1024)
+		frames := string(stack[:runtime.Stack(stack, true)])
+		for _, item := range []struct{ frame, label string }{
+			{"(*homeSession).exportState(", "snapshot-writer"},
+			{"(*homeTransport).Close(", "transport-close"},
+			{"tailscale.com/tsnet.(*Server).Close(", "tsnet-close"},
+			{"net/http.(*Server).Shutdown(", "http-shutdown"},
+			{"tailscale.com/ipn/ipnlocal.(*LocalBackend).Shutdown(", "backend-shutdown"},
+			{"tailscale.com/wgengine.(*userspaceEngine).Close(", "engine-close"},
+			{"os.RemoveAll(", "scratch-removal"},
+		} {
+			if strings.Contains(frames, item.frame) {
+				stage += " " + item.label
+			}
+		}
+		fmt.Fprintf(os.Stderr, "shutdown-stage delayed elapsed=%s %s\n", time.Since(start).Round(time.Millisecond), stage)
+		// Only cleanup and control-worker function names are retained.
+		// Omit argument values, paths and all unrelated goroutines.
+		for _, goroutine := range strings.Split(frames, "\n\n") {
+			if !strings.Contains(goroutine, "tailscale.com/tsnet.(*Server).Close(") &&
+				!strings.Contains(goroutine, "tailscale.com/control/controlclient.(*Auto).authRoutine(") &&
+				!strings.Contains(goroutine, "tailscale.com/control/controlclient.(*Auto).mapRoutine(") &&
+				!strings.Contains(goroutine, "tailscale.com/control/controlclient.(*Auto).updateRoutine(") &&
+				!strings.Contains(goroutine, "tailscale.com/control/controlclient.(*NoiseClient).dial(") {
+				continue
+			}
+			count := 0
+			lines := strings.Split(goroutine, "\n")
+			for index, line := range lines {
+				if strings.HasPrefix(line, "\t") || strings.HasPrefix(line, "goroutine ") {
+					continue
+				}
+				if i := strings.LastIndex(line, "("); i >= 0 && count < 20 {
+					location := ""
+					if index+1 < len(lines) {
+						fields := strings.Fields(lines[index+1])
+						if len(fields) > 0 {
+							location = filepath.Base(fields[0])
+						}
+					}
+					fmt.Fprintln(os.Stderr, "shutdown-function", line[:i], location)
+					count++
+				}
+			}
+		}
+	}()
+	return func() { handled(); cancelled(); signal.Stop(probe); close(done); <-stopped }
 }
