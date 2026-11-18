@@ -7,7 +7,7 @@ import {
 } from '@tanstack/react-query';
 import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { useParams } from 'react-router-dom';
-import { subscribeSSE, tasks as tasksApi } from '@/lib/api';
+import { ApiError, subscribeSSE, tasks as tasksApi } from '@/lib/api';
 import type { TaskEvent } from '@/lib/api/types';
 import type {
   CancelTaskArgs,
@@ -311,6 +311,9 @@ function useTask(taskId: string | undefined) {
   });
 }
 
+const RECALL_MAX_RETRIES = 3;
+const RECALL_RETRY_BASE_MS = 500;
+
 function useTaskRecall(taskId: string | undefined) {
   const slug = useRealOrgSlug();
   return useQuery({
@@ -320,6 +323,12 @@ function useTaskRecall(taskId: string | undefined) {
     // TaskRecallTree component cannot render.
     queryFn: () => tasksApi.recallTask(slug, taskId as string, { tree: true }),
     enabled: !!slug && !!taskId,
+    // The recall route answers a transient 503 when its per-node read budget
+    // meets DB-lock contention. Retry only that status, up to 3 times with
+    // 500ms/1s/2s backoff; every other failure surfaces immediately.
+    retry: (failureCount, error) =>
+      failureCount < RECALL_MAX_RETRIES && error instanceof ApiError && error.status === 503,
+    retryDelay: (attemptIndex) => RECALL_RETRY_BASE_MS * 2 ** attemptIndex,
   });
 }
 

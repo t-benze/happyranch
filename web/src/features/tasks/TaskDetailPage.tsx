@@ -353,6 +353,41 @@ function SubtaskRow({ node, depth = 0 }: SubtaskRowProps): JSX.Element {
   );
 }
 
+/**
+ * Recall is absent or unusable: distinguish an in-flight request, a failed
+ * request (with Retry) and data that failed selectedRecall's fail-closed check.
+ */
+function RecallFallback({
+  recall,
+  loadingKey,
+  className = '',
+}: {
+  recall: ReturnType<typeof useTaskRecall>;
+  loadingKey: MessageKey;
+  className?: string;
+}): JSX.Element {
+  const { t } = useTranslation();
+  if (recall.isError) {
+    return (
+      <div className={`flex items-center gap-2 ${className}`.trim()} role="alert">
+        <p className="text-text-muted text-xs">{t('tasks.detail.recall.loadError')}</p>
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={recall.isFetching}
+          onClick={() => { void recall.refetch(); }}
+        >
+          {t('tasks.detail.recall.retry')}
+        </Button>
+      </div>
+    );
+  }
+  if (recall.data === undefined) {
+    return <p className={`text-text-muted text-xs ${className}`.trim()} role="status">{t(loadingKey)}</p>;
+  }
+  return <p className={`text-text-muted text-xs ${className}`.trim()}>{t('tasks.detail.recall.unavailable')}</p>;
+}
+
 function ExecutionSubtasks({ recall }: { recall: TaskRecallNode }): JSX.Element {
   const { t } = useTranslation();
   const hasSubtasks = recall.children && recall.children.length > 0;
@@ -1287,7 +1322,7 @@ export function TaskDetailPage(): JSX.Element {
             )}
 
             {validRecall ? <ExecutionSubtasks recall={validRecall} />
-              : <p className="text-text-muted mt-6 text-xs">{t('tasks.detail.recall.unavailable')}</p>}
+              : <RecallFallback recall={recall} loadingKey="tasks.detail.subtasks.loading" className="mt-6" />}
 
             <section className="mt-6">
               <h3 className="text-text-secondary mb-2 text-xs font-semibold tracking-wider uppercase">
@@ -1296,7 +1331,7 @@ export function TaskDetailPage(): JSX.Element {
               {recallNode ? (
                 <TaskRecallTree node={recallNode} />
               ) : (
-                <p className="text-text-muted text-xs">{t('tasks.detail.recall.unavailable')}</p>
+                <RecallFallback recall={recall} loadingKey="tasks.detail.recall.loading" />
               )}
             </section>
 
