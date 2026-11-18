@@ -182,9 +182,11 @@ class CodingBuiltinStore:
                  for name, kind in zip(names, allowed, strict=True)]
         valid = ' AND '.join(gates) + ' AND ? > 0 AND (' + size + ')<=?'
         query = ('WITH candidate AS (SELECT rowid AS _scan_rowid,' + ','.join(names)
-                 + " FROM audit_log WHERE action='team_move_native_writer' AND id>?"
+                 + " FROM audit_log WHERE action='team_move_native_writer'"
                  + ' AND rowid>=? ORDER BY rowid LIMIT 1), '
-                 + 'gated AS (SELECT *,(' + valid + ') AS _scan_valid FROM candidate) '
+                 # Evaluate the whole-row gate once for this singleton, rather
+                 # than SQLite flattening it into every projected CASE cell.
+                 + 'gated AS MATERIALIZED (SELECT *,(' + valid + ') AS _scan_valid FROM candidate) '
                  + 'SELECT _scan_rowid,_scan_valid,'
                  + ','.join(f'CASE WHEN _scan_valid THEN {name} ELSE NULL END' for name in names)
                  + ',' + ','.join(f'typeof({name})' for name in names) + ' FROM gated')
@@ -195,10 +197,15 @@ class CodingBuiltinStore:
             if after == 0:
                 cursor.execute("SELECT 1 FROM audit_log WHERE action='team_move_native_writer' AND id<=0 LIMIT 1")
                 _require(cursor.fetchone() is None)
-            minimum, count, suffix = -9223372036854775808, 0, after
+            if after == 9223372036854775807:
+                return after
+            # id is the native INTEGER PRIMARY KEY/rowid. One advancing lower
+            # bound avoids SQLite choosing the fixed original suffix bound and
+            # revisiting the prefix on every singleton acquisition.
+            minimum, count = after + 1, 0
             while True:
                 budget.step()
-                cursor.execute(query, (suffix, minimum, min(8192 - count,
+                cursor.execute(query, (minimum, min(8192 - count,
                     8192 - budget.accepted_rows), budget.remaining_bytes))
                 row = cursor.fetchone()
                 if row is None:

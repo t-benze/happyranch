@@ -6,8 +6,8 @@ Founder THR-336 msg250/251 amends design v2 R2 (retained by v6): positive
 previous-owner proof is not required. Automatic startup uses the same
 one-daemon-at-a-time trust as ordinary startup schema migrations, plus original
 A1 EX, full I1a integrity, verified SHA-256 backup before source writes and all
-complete durable history checks, repeated before COMMIT. A concurrent
-pre-A1/old-code daemon is a **documented cooperative limitation**, because it
+complete schema validation and startup ownership checks, repeated before COMMIT.
+A concurrent pre-A1/old-code daemon is a **documented cooperative limitation**, because it
 does not acquire the participating lock. No clean-shutdown receipt is used.
 
 On the next startup each of happyranch, danze and family is treated conditionally:
@@ -20,8 +20,37 @@ reason. A validated prior `not_installed` hold falls back on later boots without
 retry or latch modification. Unknown effects/close, in-flight workers, sent permit
 and registration mismatch remain broken. Normal loader validation still applies.
 Only the existing historical UNKNOWN empty-scope `disk_sweep` exemption is applied
-with an empty live-owner set under startup EX. Other history gates and the
-8192-row/64MiB caps remain unchanged pending THR-380 Part 3. Unavailable/lost EX
+with an empty live-owner set under startup EX. Founder Option A, THR-380
+(2026-11-18), additionally carries forward producer UNKNOWN attempts, Pause
+journals, unresolved/orphan thread history, open repository-preparation
+obligations and native coding source owners. Missing lifecycle is
+pre-instrumentation legacy at startup. Their rows and original readers retain
+custody; nothing is settled, initialized or repaired.
+
+Preservation-only reads remain mandatory: typed whole-DB inventory, complete
+schema/Pause validation, integrity and unchanged default load qualification.
+Ownership rowids/types/bytes are copied exactly. Installation creates no runs,
+visits or settings; qualified registration adds definition only. Existing native
+callback/session/result admission and the old-fresh fence remain. Private
+rehearsal loads affect private copies; registration/normal load run the unchanged
+Pause boot recovery. Compare Pause rows against an identical old-layout boot and
+all other retained tables against the preboot source, excluding intended
+sequential additions. Observe this at loader return; later daemon selector
+initialization retains its ordinary native-writer audit additions.
+
+Unneeded native history replays and the aggregate history cap are removed.
+Required native-writer replay retains its own 8192-row/64MiB scalar bound;
+publication/profile/dispatch/recovery/remote/team-move owners still refuse using
+bounded-output scans and existing predicates. Original EX/current source
+observations still refuse cooperating live owners and concurrent changes.
+The five-second history read, cumulative SQL and startup windows are unchanged.
+The required registrar native-writer census uses one advancing rowid lower
+bound instead of two equivalent bounds, so SQLite cannot repeatedly rescan the
+original prefix. Its singleton whole-row gate is materialized once instead of
+being flattened into every projected cell. Strict validation, live safety checks
+and the default SQL, time, row and byte limits are unchanged.
+
+Unavailable/lost EX
 selects `writer_exclusion_unproven`; missing predecessor proof does not. No live
 DB observation is needed to state this policy. Existing profile dependency
 uncertainty may also hold other consumers.
@@ -49,7 +78,9 @@ Only a known COMMIT permits source checkpoint; verified storage, actual A2
 qualified registrar, positive closure and runtime audit precede registered
 status. Failed/unknown attempts, pre-intent hold latches and incomplete phases
 remain indefinitely for separately authorized operator assessment. Restart never
-replays them or automatically restores a backup. A last pre_commit stays unknown;
+replays them or automatically restores a backup. No supported reset/unlatch or
+fresh automatic-attempt command exists; preserve prior records and request
+separately authorized operator assessment. A last pre_commit stays unknown;
 committed/verified without registered stays installed_unverified. Never treat
 missing/malformed evidence or a daily advisory report as setup success.
 
@@ -415,7 +446,7 @@ complete reads under the original budgets and deadline.
 
 The supported explicit installers/migration writers now acquire stable EX before the first org connection; read-only check branches acquire SH. Sequential setup holds EX across its source reads, writer, close and publication. The source-only preflight/backup reader and maintenance readers acquire SH. Existing human-host exclusions precede any new fence-file effect. Operator confirmation, registry/lifecycle, backup, source/target checks, original deadlines and uncertain-outcome handling remain required.
 
-Lock files live under `<daemon_home>/org-access-fences/` and are never removed/replaced by the protocol. EX is cooperative exclusion, not original native closure or migration permission. Retained unknown native history still holds; preserve its original owner. Automatic A4 uses the startup-migration trust and cooperative limitation explicitly amended above by THR-336 msg250/251, without predecessor receipts or PID-based clearance. Explicit offline/manual operations retain their existing operator exclusion requirements.
+Lock files live under `<daemon_home>/org-access-fences/` and are never removed/replaced by the protocol. EX is cooperative exclusion, not original native closure or migration permission. Preserve retained unknown native history and its original owner. Automatic A4 carries the listed historical categories unchanged under Option A and uses the startup-migration trust and cooperative limitation explicitly amended above by THR-336 msg250/251, without predecessor receipts or PID-based clearance. Explicit offline/manual operations retain their existing operator exclusion requirements.
 
 ## History
 

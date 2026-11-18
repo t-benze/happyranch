@@ -1886,7 +1886,8 @@ if sys.argv[1:] in ([], ['--bootstrap-startup']):
                 path = runtime.orgs_dir/'happyranch/happyranch.db'
                 if fault == 'history':
                     with closing(sqlite3.connect(path)) as conn:
-                        conn.execute("UPDATE tasks SET status='pending' WHERE id='TASK-mounted'")
+                        conn.execute('INSERT INTO workflow_profile_leases VALUES (?,?,?)',
+                            ('synthetic-unused-profile', 'synthetic-owner', 2147483647))
                         conn.commit()
                 if fault == 'integrity':
                     # A genuine stale index, independently reported non-ok by SQLite.
@@ -1921,7 +1922,8 @@ bootstrap.BootstrapSource._hash = wrong_second_hash
 original_history = bootstrap.require_bootstrap_idle_history
 def late_history(source, *, writer=None):
     if writer is not None and source.path.parent == Path(SOURCE_ROOT):
-        writer.execute("UPDATE tasks SET status='pending' WHERE id='TASK-mounted'")
+        writer.execute('INSERT INTO workflow_profile_leases VALUES (?,?,?)',
+            ('synthetic-unused-profile', 'synthetic-owner', 2147483647))
     return original_history(source, writer=writer)
 bootstrap.require_bootstrap_idle_history = late_history
 """,
@@ -2096,7 +2098,7 @@ OrgState.close = uncertain_close
                             if slug == 'happyranch' and fallback:
                                 assert not org.db._conn.execute("SELECT 1 FROM sqlite_schema WHERE name GLOB 'workflow_seq_*'").fetchone(), 'A4-M fallback installed sequential storage'
                                 assert tuple(org.db._conn.execute('SELECT id,v FROM a4_mount_sentinel WHERE id=37').fetchone()) == (37, b'original\0typed'), 'A4-M fallback changed retained typed cells'
-                                task_status = 'pending' if fault == 'history' else 'completed'
+                                task_status = 'completed'
                                 assert [tuple(row) for row in org.db._conn.execute('SELECT id,status FROM tasks')] == [('TASK-mounted',task_status)], 'A4-M fallback changed native tasks'
                                 continue
                             assert org.db._conn.execute("SELECT 1 FROM sqlite_schema WHERE name='workflow_seq_schema_versions'").fetchone(), 'A4-M daemon startup did not install sequential storage'
@@ -4778,10 +4780,14 @@ if sys.argv[1:] in ([], ['--bootstrap-owners']):
                             source.open()
                         except (ValueError, sqlite3.Error) as exc:
                             error = exc
-                    good = fault in ('empty', 'producer_settled', 'writer_settled', 'thread_settled', 'task_terminal',
-                                     'repository_closed')
+                    # THR-380: active labels/UNKNOWN/missing instrumentation are
+                    # carried forward, not evidence of a currently mounted owner.
+                    # Their original strict readers are unchanged outside startup.
+                    good = (fault.startswith(('producer_', 'pause_', 'thread_', 'repository_'))
+                            or fault in ('empty', 'writer_settled', 'writer_unknown',
+                                         'task_active', 'task_terminal', 'domain_acquisition'))
                     assert reached == ['original-history'], ('A4-N original history gate missing', fault, reached)
-                    assert (error is None) == good, ('A4-N accepted unclosed native history' if not good else 'A4-N rejected settled original history', fault, type(error).__name__)
+                    assert (error is None) == good, ('A4-N accepted retained current owner' if not good else 'A4-N rejected byte-exact carry-forward', fault, type(error).__name__)
                     if not good:
                         expected = dict(producer_rewrite='producer identity changed',
                             writer_rewrite='native writer identity changed', thread_rewrite='thread lifecycle identity changed',
@@ -4789,7 +4795,7 @@ if sys.argv[1:] in ([], ['--bootstrap-owners']):
                             deadline='workflow_setup_history_deadline', sql_budget='workflow_setup_inventory_exhausted',
                             query_only='workflow_setup_history_owner_invalid', repository_rewrite='conflicting_history',
                             repository_acquisition='workflow_setup_history_acquisition_exhausted').get(fault, 'workflow_setup_history_not_idle')
-                        if fault in ('task_active', 'publication_lease', 'profile_lease'):
+                        if fault in ('publication_lease', 'profile_lease'):
                             owner = dict(task_active='tasks:TASK-synthetic-domain',
                                 publication_lease='workflow_publication_leases', profile_lease='workflow_profile_leases')[fault]
                             assert owner in str(error) and str(error).startswith(('workflow_coding_source_owner_unresolved:',
@@ -4822,7 +4828,7 @@ if sys.argv[1:] in ([], ['--bootstrap-owners']):
                     source.close()
                     assert source.closed and all(record['closed'] for record in source.connections), 'A4-N original close unproved'
                     assert path.read_bytes() == before, 'A4-N native history observation changed source'
-                    print('PASS A4-N strict original native history/source unchanged:', fault, flush=True)
+                    print('PASS A4-N startup carry-forward/current owners/source unchanged:', fault, flush=True)
                 finally:
                     source.close()
                     fence.close()
