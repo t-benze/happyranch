@@ -540,6 +540,7 @@ struct HomeInviteModelTests {
         if count == 32 {
             let rows = try #require(saved["computers"] as? [[String: String]])
             #expect(rows.count == 32)
+            #expect(first["computers"] as? [[String: String]] == rows)
             #expect(rows.compactMap { catalog.resolve($0["computerRef"]!, in: model) } == ids)
             #expect(!ConnectionClientProjection.observationLimits(first).contains("computers"))
             let second = ConnectionClientProjection.snapshot(model: model, catalog: catalog)

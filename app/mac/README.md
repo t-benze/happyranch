@@ -82,7 +82,7 @@ invite-expiry countdown and cancel fencing. Native load callbacks capture both
 identities, including on saved reconnect. A native confirmation hold defers
 Connected until dismissal and a still-current authorized load; direct Cancel in
 the native attempt form needs no second confirmation. The static contract layer
-below reuses these seams; web-initiated confirmations remain in 3b-2b. `ManagedHomeInviteSession`
+above reuses these seams; web-initiated confirmations remain in 3b-2b. `ManagedHomeInviteSession`
 uses the 5b helper and the existing managed peer-only bridge for every ceremony, health and product request. Native/helper
 join has a 120-second bound, each ceremony request and opening navigation a
 10-second bound, and approval cannot outlive the invite. Cancel forgets draft,
