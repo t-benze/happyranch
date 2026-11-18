@@ -6,6 +6,7 @@ import { useTheme } from '@/hooks/theme';
 import { translate, type Locale, type MessageKey } from '@/lib/i18n';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/design-system/primitives/Select';
 import { features } from '@/config/features';
+import { useTopbarSlotRefs } from './TopbarSlots';
 
 /**
  * AppBar — persistent top app bar (THR-030 BUG-04/05/06).
@@ -25,6 +26,10 @@ import { features } from '@/config/features';
  * There is no per-page presentation.
  * Optional `status` renders after the title and `actions` before the
  * language/theme controls; both are omitted when not supplied.
+ *
+ * THR-376 r2 PR-S1 (A1b/A2): the routed page fills the same two places through
+ * `TopbarStatus` / `TopbarActions` (./TopbarSlots), which portal into the slot
+ * elements below. Empty slots are `empty:hidden` so they add no flex gap.
  */
 
 const SECTION_TITLES: Record<string, MessageKey> = {
@@ -70,13 +75,16 @@ export function AppBar({ status, actions }: AppBarProps): JSX.Element {
   const location = useLocation();
   const { locale, setLocale, t } = useI18n();
   const title = pageTitleFromPath(location.pathname, locale);
+  const { statusRef, actionsRef } = useTopbarSlotRefs();
 
   return (
     <div className="border-border-default bg-surface-canvas/80 flex h-14 shrink-0 items-center gap-3.5 border-b px-6.5">
       <span className="text-text-primary font-display text-lg font-medium tracking-[-0.2px]">{title}</span>
       {status != null && <div className="flex min-w-0 items-center gap-2">{status}</div>}
+      <div ref={statusRef} data-topbar-slot="status" className="flex min-w-0 items-center gap-2 empty:hidden" />
       <div className="ml-auto flex shrink-0 items-center gap-2">
         {actions != null && <div className="flex items-center gap-2">{actions}</div>}
+        <div ref={actionsRef} data-topbar-slot="actions" className="flex items-center gap-2 empty:hidden" />
         <Select value={locale} onValueChange={(next) => {
           if (next === 'en' || next === 'zh-CN') setLocale(next);
         }}>

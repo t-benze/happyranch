@@ -20,6 +20,7 @@ import { NewThreadDialog } from '@/shared/threads/NewThreadDialog';
 import { useThreadRoutes } from '@/hooks/threads';
 import { List, Row, RowAction } from '@/design-system/patterns/List';
 import { PageTitle } from '@/design-system/patterns/PageTitle';
+import { TopbarActions } from '@/design-system/layouts/AppShell/TopbarSlots';
 import {
   Tabs,
   TabsList,
@@ -130,27 +131,31 @@ export function AgentsPage(): JSX.Element {
   };
 
   return (
-    <div className="bg-surface-canvas flex h-full flex-col">
+    // THR-376 r2 A13: this outer column is the page's ONE scroll container
+    // (AppShell <main> is overflow-hidden). From md up the roster rail and
+    // the detail pane flow inside it instead of scrolling on their own.
+    <div className="bg-surface-canvas flex h-full flex-col md:overflow-y-auto">
       {/* --- Top bar --- */}
-      <header className="border-border-subtle border-b p-4">
-        {/* AGENTS-03: the primary action is the Direction-A `a-agents`
-            "+ New agent" button; the reference renders it in the app bar,
-            which is a cross-surface change held out of this page. */}
+      <header className="border-border-subtle shrink-0 border-b p-4">
         <PageTitle
           title={t('agents.page.title')}
           lede={t('agents.page.meta')}
-          actions={
-            <Button onClick={() => setAddOpen(true)}>
-              <Plus aria-hidden="true" />
-              {t('agents.page.newAgent')}
-            </Button>
-          }
         />
+        {/* AGENTS-03 / THR-376 r2 A1b: "+ New agent" lives in the AppBar. */}
+        <TopbarActions>
+          <Button size="sm" onClick={() => setAddOpen(true)}>
+            <Plus aria-hidden="true" />
+            {t('agents.page.newAgent')}
+          </Button>
+        </TopbarActions>
+        {/* THR-376 r2 Ag4: the roster switch uses the SegmentedControl look
+            (`Tabs variant="segmented"` reads the same class constants) while
+            keeping Radix Tabs semantics and keyboard behaviour. */}
         <Tabs value={tab} onValueChange={onTabChange} className="mt-3">
-          <TabsList>
-            <TabsTrigger value="active">{t('agents.tab.active')}</TabsTrigger>
-            <TabsTrigger value="pending">{t('agents.tab.pending')}</TabsTrigger>
-            <TabsTrigger value="terminated">{t('identity.terminated')}</TabsTrigger>
+          <TabsList variant="segmented">
+            <TabsTrigger variant="segmented" value="active">{t('agents.tab.active')}</TabsTrigger>
+            <TabsTrigger variant="segmented" value="pending">{t('agents.tab.pending')}</TabsTrigger>
+            <TabsTrigger variant="segmented" value="terminated">{t('identity.terminated')}</TabsTrigger>
           </TabsList>
         </Tabs>
       </header>
@@ -163,13 +168,14 @@ export function AgentsPage(): JSX.Element {
           two-pane (plan §1b INNER-1180, same recipe as thread-detail Slice 4).
           The single 1180 cap covers BOTH list and detail (detail is a pane in
           the grid). The topbar stays full-bleed, matching the mockup .topbar;
-          the 720px inner cap lives inside AgentDetailPane, not here. Panes keep
-          their own overflow — presentational cap only, nothing functional. */}
+          the 720px inner cap lives inside AgentDetailPane, not here. THR-376 r2
+          A13: from md up the panes no longer scroll on their own; the outer
+          page column above is the single scroll owner. */}
       {/* W4c: below md the roster stacks above the detail (height-capped, scrolls)
           instead of a fixed 244px rail squeezing the detail to ~90px at 390. */}
-      <div className="max-w-content mx-auto flex w-full flex-1 flex-col overflow-hidden md:flex-row">
+      <div className="max-w-content mx-auto flex w-full flex-1 flex-col max-md:overflow-hidden md:flex-row">
         {/* LEFT: Roster list — Pasture w-rail (244px) from md up */}
-        <aside className="border-border-subtle bg-surface-sunken max-h-48 w-full shrink-0 overflow-y-auto border-b md:max-h-none md:w-rail md:border-r md:border-b-0">
+        <aside className="border-border-subtle bg-surface-sunken max-h-48 w-full shrink-0 overflow-y-auto border-b md:max-h-none md:w-rail md:overflow-visible md:border-r md:border-b-0">
           <Tabs value={tab}>
             <TabsContent value="active" className="mt-0">
               {agentsQuery.isLoading ? (
@@ -268,7 +274,7 @@ export function AgentsPage(): JSX.Element {
         </aside>
 
         {/* RIGHT: Detail/Edit pane */}
-        <main className="bg-surface-canvas max-md:min-h-0 flex-1 overflow-hidden">
+        <main className="bg-surface-canvas max-md:min-h-0 min-w-0 flex-1 max-md:overflow-hidden">
           {tab === 'terminated' && selectedSource ? (
             <RetiredAgentDetail key={selectedSource} sourceId={selectedSource} />
           ) : tab === 'terminated' ? (

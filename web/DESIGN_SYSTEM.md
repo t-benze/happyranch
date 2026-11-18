@@ -273,6 +273,19 @@ Feature compositions keep using the stable `@/design-system/...` import paths.
   page-local `.tasks-appbar` class. Optional `status` (rendered after the
   title) and `actions` (rendered before the language/theme controls) slots
   take a `ReactNode`; pages supply them instead of adding a per-page header.
+- Topbar slots (THR-376 r2 PR-S1). `AppShell` wraps the `AppBar` and the routed
+  `<main>` in `TopbarSlotsProvider` (`layouts/AppShell/TopbarSlots.tsx`). A
+  routed page renders `<TopbarStatus>` (page-status chip(s), placed after the
+  title) and `<TopbarActions>` (its primary action, placed before the
+  language/theme controls); both portal into the `AppBar`, so handlers and
+  dialog state stay with the page and leave with it on unmount. The primary
+  action is a `Button size="sm"` (ds.css `.btn-sm`). Status chips use
+  `StatusBadge` tones or existing controls; no new tokens. Empty slots are
+  `empty:hidden`. Outside the provider (isolated tests/stories) the children
+  render inline where written. Current users: New thread, New agent, Add
+  custom skill (solid primary), Export (secondary) and New task in
+  `TopbarActions`; Health "Live · polling 15s" and the Usage window label +
+  Compare switch in `TopbarStatus`.
 - The `Sidebar` active nav row follows Pasture `[data-dir="a"]
   .nav-item.active`: `bg-accent-soft text-accent-text font-semibold`, with no
   left bar or border. Nav rows use `text-nav` (13.5px) at weight 500, and the

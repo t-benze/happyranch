@@ -11,6 +11,7 @@ import {
 import { AppBar } from '@/design-system/layouts/AppShell/AppBar';
 import { ErrorBoundary, type ErrorBoundaryCopy } from '@/design-system/layouts/AppShell/ErrorBoundary';
 import { Sidebar } from '@/design-system/layouts/AppShell/Sidebar';
+import { TopbarSlotsProvider } from '@/design-system/layouts/AppShell/TopbarSlots';
 import { useTranslation } from '@/hooks/i18n';
 import { useOrgsList } from '@/hooks/orgs';
 import { OrgProvider } from '@/lib/orgSlug';
@@ -95,14 +96,18 @@ function AppShell(): JSX.Element {
   return (
     <div className="flex h-full flex-row">
       <Sidebar />
-      <div className="flex min-w-0 flex-1 flex-col">
-        <AppBar />
-        <main className="flex-1 overflow-hidden">
-          <AppShellErrorBoundary resetKey={location.pathname}>
-            <Outlet />
-          </AppShellErrorBoundary>
-        </main>
-      </div>
+      {/* THR-376 r2 PR-S1: pages portal their status chip / primary action
+          into the AppBar through TopbarStatus / TopbarActions. */}
+      <TopbarSlotsProvider>
+        <div className="flex min-w-0 flex-1 flex-col">
+          <AppBar />
+          <main className="flex-1 overflow-hidden">
+            <AppShellErrorBoundary resetKey={location.pathname}>
+              <Outlet />
+            </AppShellErrorBoundary>
+          </main>
+        </div>
+      </TopbarSlotsProvider>
     </div>
   );
 }
