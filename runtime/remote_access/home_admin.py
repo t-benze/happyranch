@@ -8,6 +8,7 @@ import re
 import stat
 import time
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from typing import Iterator
@@ -265,6 +266,106 @@ class RootHeadscaleAdminOperations:
         del self, user, key
         if not ok:
             raise MintUncertain() from None
+
+    def list_users(self, *, timeout_s: float) -> tuple[HeadscaleUser, ...]:
+        return self._fixed_admin('list-users', None, timeout_s)
+
+    def create_user(self, *, name: str, timeout_s: float) -> HeadscaleUser:
+        return self._fixed_admin('create-user', name, timeout_s)[0]
+
+    def list_nodes(self, *, user: str, timeout_s: float) -> tuple[HeadscaleNode, ...]:
+        return self._fixed_admin('list-nodes', user, timeout_s)
+
+    def _fixed_admin(self, verb: str, name: str | None, timeout_s: float) -> tuple:
+        # Only these three fixed operations. Create reconciliation/serialization
+        # belongs to the root runner, so Python never issues a second create.
+        result, refused = None, False
+        try:
+            deadline = _deadline(timeout_s)
+            if verb not in ('list-users', 'create-user', 'list-nodes'):
+                raise AdminRefused()
+            if verb != 'list-users' and (type(name) is not str or name not in (NODE_USER, INVITE_USER)):
+                raise AdminRefused()
+            data = self._call(verb, b'' if name is None else _bytes(1, name.encode()), deadline)
+            if len(data) > 4 << 20:
+                raise ValueError('wire')
+            if verb == 'create-user':
+                rows = [_message(data, {1: 2}, deadline=deadline)[1]]
+            else:
+                rows = []
+                limit = 512 if verb == 'list-nodes' else 64
+                for number, wire, row in _fields(data, deadline):
+                    if number != 1 or wire != 2 or len(rows) >= limit or len(row) > 4096:
+                        raise ValueError('wire')
+                    rows.append(row)
+            projected, ids, names = [], set(), set()
+            user_id = None
+            for row in rows:
+                _remaining(deadline)
+                if len(row) > 4096:
+                    raise ValueError('wire')
+                if verb == 'list-nodes':
+                    fields = _message(row, {1: 0, 7: 2}, deadline=deadline)
+                    identity, user = fields[1], _user_identity(fields[7], deadline)
+                    if (not 0 < identity < 1 << 64 or user.name != name
+                            or (user_id is not None and user_id != user.id)):
+                        raise ValueError('wire')
+                    user_id = user.id
+                    item = HeadscaleNode(identity, user)
+                else:
+                    item = _user_identity(row, deadline)
+                    identity = item.id
+                    if item.name in names or (verb == 'create-user' and item.name != name):
+                        raise ValueError('wire')
+                    names.add(item.name)
+                if identity in ids:
+                    raise ValueError('wire')
+                ids.add(identity)
+                projected.append(item)
+            _remaining(deadline)
+            result = tuple(projected)
+        except AdminRefused:
+            refused = True
+        except BaseException:
+            pass
+        del self, name
+        if refused:
+            raise AdminRefused('refused') from None
+        if result is None:
+            raise MintUncertain() from None
+        return result
+
+
+@dataclass(frozen=True, repr=False)
+class HeadscaleUser:
+    """Nonsecret DB identity; metadata and keys are never projected."""
+
+    id: int
+    name: str
+
+    def __repr__(self) -> str:
+        return 'HeadscaleUser(<redacted>)'
+
+
+@dataclass(frozen=True, repr=False)
+class HeadscaleNode:
+    """Read-only node identity, without machine/node/disco/pre-auth keys."""
+
+    id: int
+    user: HeadscaleUser
+
+    def __repr__(self) -> str:
+        return 'HeadscaleNode(<redacted>)'
+
+
+def _user_identity(data: bytes, deadline: float) -> HeadscaleUser:
+    if len(data) > 4096:
+        raise ValueError('wire')
+    values = _message(data, {1: 0, 2: 2}, deadline=deadline)
+    identity, name = values[1], values[2].decode('utf-8')
+    if not 0 < identity < 1 << 64 or name not in (NODE_USER, INVITE_USER):
+        raise ValueError('wire')
+    return HeadscaleUser(identity, name)
 
 
 def _directory(user: str = INVITE_USER) -> int:

@@ -2415,14 +2415,37 @@ Why no founder: private IPC between existing processes, unchanged user/network U
 **B3 — Fixed Headscale DB-user/node administration.**
 Extend only the existing root runner/adapter with `ListUsers`, `CreateUser`
 (names only `happyranch-node` and `happyranch-invite`), `ListNodes` filtered to
-those users, and `DeleteNode` only for B12-proven ownership. No generic RPC or
-secret CLI argument. Per call: 5 seconds, at most 64 ListUsers rows, 512
+those users. `DeleteNode` lands with B12, once its recorded StableID-to-node-ID
+ownership proof exists; it is deferred from G2-B. No generic RPC or secret CLI
+argument. Per call: 5 seconds, at most 64 ListUsers rows, 512
 ListNodes rows, 4 MiB response and 4096 bytes per record/input. Lists must be
 complete; truncation refuses. These new limits do not replace the existing
 600,000-row/128 MiB pre-auth-key inventory limits. After a lost CreateUser reply,
 re-list by exact name and adopt only the exact user with zero nodes and zero
 pre-auth keys outside our fences; otherwise refuse and retain. A foreign extra
 user refuses and is never deleted.
+
+G2-B keeps these operations uncalled. `list-users` takes an empty request;
+`create-user` and `list-nodes` take exactly one fixed user name through stdin,
+never argv. Each ListNodes call requests one of the two users and verifies every
+returned row belongs to that user. Closed tagged v0.25.1 schemas reject unknown
+fields (including pagination), duplicate identities/singular fields and torn
+records. Output projects only user ID/name and node ID/user; raw node/machine/
+disco/pre-auth keys and optional metadata are discarded before stdout.
+
+CreateUser serializes on the existing per-user `rpc.lock` and honors the existing
+pre-auth-key fence. Before its sole create, it fsyncs an insert-only root:root
+0600 `home-minter/<fixed-user>/user-create` attempt marker containing `1`.
+The marker is retained on every outcome. A missing user with a prior marker or
+an unsafe/torn marker refuses as uncertain, never retries create or repairs it.
+Both successful and lost replies require a complete exact-name re-list and
+zero nodes/keys under the same original deadline; a successful reply must also
+match the re-listed user ID. Existing key fences record no key IDs, so G2-B
+cannot prove a nonempty key inventory belongs to our fences and refuses it.
+A repeat exact user is returned only after the same empty-inventory proof.
+Pre-create refusal uses runner exit 2 / `AdminRefused`; possible create effects
+use exit 3 / `MintUncertain`. Reconciliation retains the existing complete
+pre-auth-key response bounds, rather than replacing them with the B3 limits.
 Why no founder: fixed-name operations on the existing root-only admin transport.
 
 **B4 — Staged/activating/live transaction.**
