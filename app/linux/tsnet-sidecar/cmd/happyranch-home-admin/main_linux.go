@@ -63,6 +63,9 @@ func command(args []string, in io.Reader, out io.Writer, s machine) int {
 	if err != nil || len(data) > 4096 {
 		return 2
 	}
+	if verb == "list-users" || verb == "create-user" || verb == "list-nodes" {
+		return adminCommand(ctx, verb, data, out, s)
+	}
 	name, deadline, ok := request(verb, data, s.now())
 	if !ok {
 		return 2

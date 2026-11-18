@@ -482,3 +482,134 @@ def test_custody_consumes_original_transport_budget(monkeypatch) -> None:
     admin.expire_pre_auth_key(user=USER, key=KEY.decode(), timeout_s=5)
     assert calls[0][0][-1] == '3000'
     assert calls[0][1]['timeout'] == 3.0
+
+
+def admin_user(identity: int = 1, name: str = 'happyranch-node') -> bytes:
+    return b'\x08' + h._varint(identity) + h._bytes(2, name.encode())
+
+
+@pytest.mark.parametrize('verb', ['list-users', 'create-user', 'list-nodes'])
+def test_fixed_admin_projection_and_pipes(monkeypatch, verb: str) -> None:
+    row = admin_user()
+    if verb == 'list-nodes':
+        row = b'\x08\x07' + h._bytes(7, row)
+    admin = transport(monkeypatch, h._bytes(1, row))
+    calls = []
+    monkeypatch.setattr(h, '_default_run', lambda argv, **kw: calls.append((argv, kw)) or (0, h._bytes(1, row)))
+    if verb == 'list-users':
+        got = admin.list_users(timeout_s=1)
+        assert [(u.id, u.name) for u in got] == [(1, 'happyranch-node')]
+    elif verb == 'create-user':
+        got = admin.create_user(name='happyranch-node', timeout_s=1)
+        assert (got.id, got.name) == (1, 'happyranch-node')
+    else:
+        got = admin.list_nodes(user='happyranch-node', timeout_s=1)
+        assert [(n.id, n.user.id, n.user.name) for n in got] == [(7, 1, 'happyranch-node')]
+    assert len(calls) == 1
+    argv, kw = calls[0]
+    assert argv[:2] == [h._RUNNER, verb] and len(argv) == 3
+    assert 0 < int(argv[2]) <= 1000
+    assert kw['input_bytes'] == (b'' if verb == 'list-users' else h._bytes(1, b'happyranch-node'))
+    assert 'redacted' in repr(got)
+
+
+@pytest.mark.parametrize('name', ['foreign', 'happyranch-node\x00', KEY.decode(), '', None])
+def test_fixed_admin_invalid_names_before_runner(monkeypatch, name) -> None:
+    admin = transport(monkeypatch, b'')
+    calls = []
+    monkeypatch.setattr(h, '_default_run', lambda *a, **kw: calls.append(a))
+    for call in (lambda: admin.create_user(name=name, timeout_s=1),
+                 lambda: admin.list_nodes(user=name, timeout_s=1)):
+        with pytest.raises(AdminRefused) as caught:
+            call()
+        assert str(caught.value) == 'refused' and caught.value.__context__ is None
+    assert calls == []
+
+
+@pytest.mark.parametrize('verb', ['list-users', 'create-user', 'list-nodes'])
+@pytest.mark.parametrize('code,exception', [(2, AdminRefused), (3, MintUncertain), (-1, MintUncertain)])
+def test_fixed_admin_error_categories(monkeypatch, caplog, verb: str, code: int, exception) -> None:
+    admin = transport(monkeypatch, KEY, code)
+    with pytest.raises(exception) as caught:
+        if verb == 'list-users': admin.list_users(timeout_s=1)
+        elif verb == 'create-user': admin.create_user(name='happyranch-node', timeout_s=1)
+        else: admin.list_nodes(user='happyranch-node', timeout_s=1)
+    assert KEY.decode() not in repr(caught.value) + caplog.text
+    assert caught.value.__context__ is None and caught.value.__cause__ is None
+
+
+@pytest.mark.parametrize('bad', [
+    h._bytes(1, admin_user(name='foreign')),
+    h._bytes(1, admin_user()) * 2,
+    h._bytes(1, admin_user() + h._bytes(3, KEY)),
+    h._bytes(1, admin_user() + h._bytes(2, b'happyranch-node')),
+    h._bytes(1, b'\x08\x81\x00' + h._bytes(2, b'happyranch-node')),
+    h._bytes(1, admin_user()) + b'\x0a\x7fabc',
+    h._bytes(1, admin_user()) + h._bytes(2, b'next-page'),
+    h._bytes(1, admin_user()) * 65,
+    b'x' * ((4 << 20) + 1),
+])
+def test_fixed_admin_complete_projection_or_refuse(monkeypatch, bad: bytes) -> None:
+    admin = transport(monkeypatch, bad)
+    with pytest.raises(MintUncertain):
+        admin.list_users(timeout_s=1)
+
+
+@pytest.mark.parametrize('verb', ['list-users', 'create-user', 'list-nodes'])
+def test_fixed_admin_late_transport(monkeypatch, verb: str) -> None:
+    row = admin_user()
+    if verb == 'list-nodes':
+        row = b'\x08\x07' + h._bytes(7, row)
+    response = h._bytes(1, row)
+    admin = transport(monkeypatch, response)
+    clock = [0.0]
+    monkeypatch.setattr(h, 'time', SimpleNamespace(monotonic=lambda: clock[0]))
+    def late(*a, **kw):
+        clock[0] = 1.0
+        return 0, response
+    monkeypatch.setattr(h, '_default_run', late)
+    with pytest.raises(MintUncertain):
+        if verb == 'list-users': admin.list_users(timeout_s=1)
+        elif verb == 'create-user': admin.create_user(name='happyranch-node', timeout_s=1)
+        else: admin.list_nodes(user='happyranch-node', timeout_s=1)
+
+
+@pytest.mark.parametrize('scenario', ['512', '513', 'duplicate', 'wrong-user', 'unknown', 'missing-id', 'mismatched-user-id'])
+def test_fixed_admin_node_inventory(monkeypatch, scenario: str) -> None:
+    def node(identity: int = 1, user: bytes = admin_user()) -> bytes:
+        return b'\x08' + h._varint(identity) + h._bytes(7, user)
+    body = h._bytes(1, node())
+    if scenario in ('512', '513'):
+        body = b''.join(h._bytes(1, node(i + 1)) for i in range(int(scenario)))
+    elif scenario == 'duplicate': body *= 2
+    elif scenario == 'wrong-user': body = h._bytes(1, node(user=admin_user(name=USER)))
+    elif scenario == 'unknown': body = h._bytes(1, node() + h._bytes(3, KEY))
+    elif scenario == 'missing-id': body = h._bytes(1, h._bytes(7, admin_user()))
+    elif scenario == 'mismatched-user-id': body += h._bytes(1, node(2, admin_user(2)))
+    admin = transport(monkeypatch, body)
+    if scenario == '512':
+        got = admin.list_nodes(user='happyranch-node', timeout_s=1)
+        assert [n.id for n in got] == list(range(1, 513))
+    else:
+        with pytest.raises(MintUncertain):
+            admin.list_nodes(user='happyranch-node', timeout_s=1)
+
+
+@pytest.mark.parametrize('bad', [b'', h._bytes(1, admin_user(name=USER)), h._bytes(1, admin_user()) * 2])
+def test_fixed_admin_create_reply_mismatch(monkeypatch, bad: bytes) -> None:
+    with pytest.raises(MintUncertain):
+        transport(monkeypatch, bad).create_user(name='happyranch-node', timeout_s=1)
+
+
+def test_fixed_admin_projection_deadline(monkeypatch) -> None:
+    admin = transport(monkeypatch, h._bytes(1, admin_user()))
+    clock = [0.0]
+    monkeypatch.setattr(h, 'time', SimpleNamespace(monotonic=lambda: clock[0]))
+    original = h._user_identity
+    def late(*a, **kw):
+        value = original(*a, **kw)
+        clock[0] = 1.0
+        return value
+    monkeypatch.setattr(h, '_user_identity', late)
+    with pytest.raises(MintUncertain):
+        admin.list_users(timeout_s=1)
