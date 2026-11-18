@@ -1,4 +1,4 @@
-# Packaged connection shell (slice 1a)
+# Packaged connection shell (slices 1a / 1b-LINUX)
 
 From `web/`, use existing dependencies only:
 
@@ -10,9 +10,9 @@ npm run typecheck
 ```
 
 This independent TypeScript entry emits only `dist-connection/`. The runtime
-SPA, daemon routes, native loaders and packaging are unchanged. No connection
-lifecycle controls ship here. Native integration and custom-scheme admission
-are slice 1b; lifecycle screens are slice 4. This shell reads status only.
+SPA and daemon routes are unchanged. No connection lifecycle controls ship here.
+Linux native integration and packaging are slice 1b-LINUX below; Mac integration
+is pending. Lifecycle screens are slice 4. This shell reads status only.
 
 `resource-manifest.json` is a literal version-1 object with `entry: "index.html"`
 and a `resources` array of exact relative `path`, UTF-8/file `bytes` and SHA-256
@@ -96,8 +96,62 @@ transition, including attempted navigation that JS cannot observe.
 
 The internal request/reply/event codecs are module exports for later relay use,
 not extra window APIs. They preserve fixed protocol/version, closed shapes,
-request/result correlation and JSON-string delivery. No native handler, platform
-transport or authorization is implemented by this web-only slice.
+request/result correlation and JSON-string delivery. The web entry supplies no native authorization; Linux owns the separate
+transport and admission described below.
+
+## Linux native loader (slice 1b-LINUX)
+
+The native titlebar **Connection / 连接** button opens `connection_window.py`
+independently of daemon startup, failure or runtime-page loading. The existing
+remote-access card remains during development. No handler or user script is
+added to the daemon-served runtime view.
+
+`build-payload.sh` runs the existing connection build and copies its output,
+manifest, protocol and native modules beside the desktop window. Payload and
+Debian validation use the packager's trusted `connection_contract.py`, never
+code from an input tarball. Both reject missing/extra files, wrong sizes/digests,
+symlinks and nonregular assets. Runtime reads repeat no-follow descriptor walks
+and byte/hash checks. Only manifest-listed literal URLs at
+`happyranch-shell://connection/` are served; the manifest itself is not served.
+The loader never reads `HAPPYRANCH_WEB_DIST`, a daemon URL or a caller asset path.
+
+Each connection view owns an ephemeral WebContext, UserContentManager,
+asset-only scheme, exact §2 CSP response header and manifest-only network filter.
+Navigation, popups, reloads, redirects, load failure and process loss invalidate
+the generation, unregister the handler and disconnect its dedicated bus caller.
+Opening Connection again creates a fresh view; no automatic re-admission/replay.
+
+Runtime admission checks API availability and probes custom-origin serialization,
+page versus named-world separation, structured execution and child-frame parent
+function reachability (initial/about:blank, same-origin and srcdoc frames).
+TOP_FRAME alone is not a native frame check. An unsafe or unproven engine disables
+the **whole** bridge and shows a bilingual native notice. No dependency-floor
+increase, file URL or network-command fallback is used; the notice explicitly
+says the connection CLI is not available yet. This fail-closed outcome does not
+qualify GTK isolation or CLI parity.
+
+Only an admitted fresh view receives the two-function facade and named-world
+relay. Native independently validates duplicate-free JSON, closed command/args
+schemas, 4 KiB requests, 32 KiB inbound replies, UTF-8 and depth limits. Hello
+advertises Linux host and client roles, only `host.status` available, all mutations
+unavailable, and limited observations. Status calls the existing helper `Status`
+with zero inputs, no interactive authorization, on a dedicated D-Bus connection.
+Only bounded public label/phrase fields are projected; fingerprints are omitted.
+Linux `client.status` returns a closed unavailable error (slice 3a is pending).
+No status event source exists in this helper seam, so this slice emits no events;
+`on` accepts the two fixed names and returns an idempotent unsubscribe. No invite,
+credential, selection or mutation call is implemented.
+
+Standalone invocation against an already-built/staged prefix (no daemon start):
+
+```sh
+/usr/bin/python3 -I /absolute/prefix/share/happyranch/desktop/connection_window.py --prefix /absolute/prefix --locale en
+# --locale zh-CN exercises the Chinese native unavailable notice.
+/usr/bin/python3 -B packaging/linux/desktop/test_connection.py
+/usr/bin/python3 -B packaging/linux/test_build_deb.py DebPackageTests -v
+python -m py_compile packaging/linux/desktop/connection_contract.py packaging/linux/desktop/connection_window.py packaging/linux/desktop/happyranch_window.py
+bash -n packaging/linux/build-payload.sh packaging/linux/build-deb.sh
+```
 
 ## Verification boundaries
 

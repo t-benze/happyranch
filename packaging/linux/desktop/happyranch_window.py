@@ -924,6 +924,17 @@ def run_gui(prefix: Path, home: Path) -> int:
     requests = queue.Queue()
     controls = None
     remote = None
+    connection_windows = []
+
+    def open_connection(_button: object) -> None:
+        # Keep the installed module local to this native control. The daemon's
+        # WebView below receives no content manager, user scripts or forwarding.
+        import importlib.util
+        path = prefix / "share/happyranch/desktop/connection_window.py"
+        spec = importlib.util.spec_from_file_location("connection_window", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        connection_windows.append(module.ConnectionWindow(app, window, prefix, tr))
 
     def attach_remote(box: object) -> None:
         nonlocal remote
@@ -1175,6 +1186,11 @@ def run_gui(prefix: Path, home: Path) -> int:
             window.present()
             return
         window = Gtk.ApplicationWindow(application=app, title="HappyRanch")
+        header = Gtk.HeaderBar(title="HappyRanch", show_close_button=True)
+        connection_button = Gtk.Button(label=tr("Connection", "连接"))
+        connection_button.connect("clicked", open_connection)
+        header.pack_end(connection_button)
+        window.set_titlebar(header)
         window.set_default_size(1100, 760)
         icon = prefix / "share/icons/hicolor/128x128/apps/happyranch.png"
         if icon.is_file():
@@ -1202,6 +1218,8 @@ def run_gui(prefix: Path, home: Path) -> int:
     try:
         return app.run([])
     finally:
+        for connection_window in connection_windows:
+            connection_window.close()
         if remote is not None:
             remote.close()
         cancel.set()

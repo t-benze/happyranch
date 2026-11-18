@@ -115,9 +115,19 @@ with tempfile.TemporaryDirectory(prefix='happyranch-deb-', dir='/tmp') as tempor
                      'licenses/headscale/go-runtime/LICENSE',
                      'python/bin/python3', 'web/dist/index.html',
                      'share/happyranch/desktop/happyranch_window.py',
+                     'share/happyranch/desktop/connection_window.py',
+                     'share/happyranch/desktop/connection_contract.py',
+                     'share/happyranch/desktop/native-connection-bridge.v1.json',
                      'share/applications/happyranch.desktop.in', 'licenses/HappyRanch-LICENSE'):
         if not (payload / required).is_file():
             parser.error('incomplete desktop payload: ' + required)
+
+    # Use the packager's trusted validator, never execute supplied payload code.
+    try:
+        runpy.run_path(str(packaging / 'desktop/connection_contract.py'))['Assets'](
+            payload / 'share/happyranch/desktop/connection')
+    except (OSError, ValueError, UnicodeError):
+        parser.error('invalid connection resource manifest or assets')
 
     materializer = payload / 'libexec/remote-access/happyranch-home-ca'
     if materializer.is_symlink() or not materializer.stat().st_mode & 0o111:
