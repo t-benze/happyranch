@@ -17,7 +17,8 @@ CSP = ("default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self';
        "base-uri 'none'; form-action 'none'")
 MAX_ASSET = 16 * 1024 * 1024
 CLIENT_COMMANDS = {"client.status", "client.acceptInvite", "client.cancelAttempt",
-                   "client.disconnect", "client.retry", "client.health"}
+                   "client.disconnect", "client.retry", "client.health", "client.savedComputers",
+                   "client.connectSaved", "client.retrySave", "client.removeSaved"}
 
 
 class Requests:
@@ -30,7 +31,7 @@ class Requests:
 
     def admit(self, request: dict, attempt: int, finish: object) -> object:
         command, key = request["command"], request["requestId"]
-        read = command in ("bridge.hello", "host.status", "client.status", "client.health")
+        read = command in ("bridge.hello", "host.status", "client.status", "client.health", "client.savedComputers")
         body = json.dumps(request, sort_keys=True)
         record = self.mutations.get(key)
         if record is None and self.cancel and self.cancel["key"] == key:
@@ -291,7 +292,7 @@ class Protocol:
                 "available" if name in CLIENT_COMMANDS | {"host.status"} else "unavailable")}
                 for name in self.commands if name != "bridge.hello"],
             "observationLimits": {"host": ["inviteState", "expiresAt"],
-                                  "client": ["route", "computers", "activeComputerRef", "comparisonPhrase"]}})
+                                  "client": ["route", "comparisonPhrase"]}})
 
     def host(self, raw: str) -> dict:
         value = parse_json(raw, 32768)

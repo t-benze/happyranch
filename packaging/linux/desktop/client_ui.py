@@ -27,6 +27,8 @@ class ClientUI:
         self.listener = None
         self.document = None
         self.prompt_cancel = None
+        self.notice = self.retry_save = None
+        self.show_controls = None
 
     def idle(self, callback: object) -> None:
         self.GLib.idle_add(callback)
@@ -35,6 +37,10 @@ class ClientUI:
         self.GLib.timeout_add(milliseconds, callback)
 
     def changed(self) -> None:
+        if self.notice:
+            unsaved = self.model.saved_access != "saved"
+            self.notice.set_visible(unsaved)
+            self.retry_save.set_visible(unsaved and self.model.save_intent)
         if self.listener:
             self.listener()
 
@@ -86,11 +92,36 @@ class ClientUI:
         fields = [_model.plain(value) for value in
                   (invite.home_id, invite.control_plane_id, invite.home_endpoint)]
         fingerprint = hashlib.sha256(invite.ca_der).hexdigest()
-        self.dialog(self.tr("Confirm computer", "确认电脑"),
+        save = self.Gtk.CheckButton(label=self.tr(
+            "Save access in this computer's login keyring for reconnecting",
+            "将访问权限保存在此电脑的登录密钥环中，以便重新连接"))
+        dialog = self.dialog(self.tr("Confirm computer", "确认电脑"),
             self.tr("Connect this device to this exact Host? Verify its identity with the Host owner.",
                     "允许此设备连接到这台主机吗？请与主机所有者核对其身份。")
             + "\n\n" + "\n".join(fields) + "\nSHA-256: " + fingerprint,
-            self.tr("Connect this device", "连接此设备"), callback)
+            self.tr("Connect this device", "连接此设备"), lambda yes: callback(yes, save.get_active()))
+        dialog.get_content_area().add(save)
+        save.show()
+
+    def saved_target(self, record: object, remove: bool, callback: object) -> None:
+        fields = [_model.plain(value) for value in
+                  (record.home_id, record.control_plane_id, record.home_endpoint)]
+        text = self.tr(
+            "Remove saved access from this computer only? This does not revoke Host approval or remove network membership.",
+            "仅从此电脑移除已保存的访问权限？此操作不会撤销主机批准或移除网络成员资格。") if remove else self.tr(
+            "Reconnect to this exact Host using saved access?", "使用已保存的访问权限重新连接到这台主机？")
+        self.dialog(self.tr("Saved computer", "已保存的电脑"),
+            text + "\n\n" + "\n".join(fields) + "\nSHA-256: " + record.fingerprint,
+            self.tr("Remove local access", "移除本地访问权限") if remove else self.tr("Connect", "连接"), callback)
+
+    def storage_wait(self) -> None:
+        dialog = self.Gtk.Dialog(title=self.tr("Stopping", "正在停止"), transient_for=self.parent)
+        label = self.Gtk.Label(label=self.tr(
+            "Waiting for keyring write and verification to finish safely. Saved access is retained.",
+            "正在等待密钥环写入和验证安全完成。已保存的访问权限将保留。"))
+        dialog.get_content_area().add(label)
+        self.prompt = dialog
+        dialog.show_all()
 
     def waiting(self, phrase: str, expiry: float, target: str) -> None:
         self.dismiss_waiting()
@@ -154,7 +185,11 @@ class ClientUI:
             "expired": ("Approval deadline passed. Ask the Host for a new invite.", "批准期限已过。请向主机索取新邀请。"),
             "newInviteRequired": ("Approval could not be completed. Ask the Host for a new invite.", "无法完成批准。请向主机索取新邀请。"),
             "networkUnavailable": ("Connection failed. A new invite is required.", "连接失败。需要新的邀请。"),
-            "runtimeUnavailable": ("The runtime UI did not load. A new invite is required.", "运行界面未能加载。需要新的邀请。"),
+            "runtimeUnavailable": ("The runtime UI did not load. Check the connection and try again.", "运行界面未能加载。请检查连接后重试。"),
+            "keychainLocked": ("Unlock this computer's login keyring, then retry.", "请解锁此电脑的登录密钥环，然后重试。"),
+            "keychainDenied": ("Keyring access was denied. Check native permissions before retrying.", "密钥环访问被拒绝。请检查原生权限后重试。"),
+            "savedUnavailable": ("Saved reconnect is unavailable. Check the connection and saved access before retrying.", "无法使用已保存的访问权限重新连接。请检查连接和保存的权限后重试。"),
+            "identityChanged": ("The saved device identity changed. Ask the Host for a new invite and approval.", "已保存的设备身份发生变化。请向主机索取新邀请并重新批准。"),
         }
         message = messages.get(code, ("Local cleanup is incomplete. Reopen controls before retrying.", "本地清理未完成。请重新打开控制页后再试。"))
         dialog = self.Gtk.MessageDialog(transient_for=self.parent, message_type=self.Gtk.MessageType.WARNING,
@@ -183,7 +218,13 @@ class ClientUI:
             "仅限当前会话 · 访问权限未保存。重新打开需要新邀请和主机批准。"))
         notice.set_line_wrap(True)
         notice.get_accessible().set_name(notice.get_text())
+        notice.set_no_show_all(True)
         box.pack_start(notice, False, False, 8)
+        retry_save = Gtk.Button(label=self.tr("Retry save…", "重试保存…"))
+        retry_save.set_no_show_all(True)
+        retry_save.connect("clicked", lambda *_: self.show_controls() if self.show_controls else None)
+        box.pack_start(retry_save, False, False, 0)
+        self.notice, self.retry_save = notice, retry_save
         stop = Gtk.Button(label=self.tr("Disconnect", "断开连接"))
         stop.connect("clicked", lambda *_: self.model.confirm_stop(lambda *_: None) if not self.prompt else self.prompt.present())
         box.pack_start(stop, False, False, 0)
@@ -226,9 +267,11 @@ class ClientUI:
         view.connect("permission-request", lambda _v, request: (request.deny(), True)[1])
         window.connect("delete-event", lambda *_: (self.model.confirm_stop(lambda *_: None) if not self.prompt else self.prompt.present(), True)[1])
         window.show_all()
+        self.changed()
         view.load_uri(url)
 
     def close_runtime(self) -> None:
+        self.notice = self.retry_save = None
         window, self.runtime_window = self.runtime_window, None
         view, self.runtime_view = self.runtime_view, None
         if view:
@@ -241,7 +284,13 @@ class ClientUI:
         session, self.model.session = self.model.session, None
         self.dismiss()
         self.close_runtime()
-        deadline = time.monotonic() + 5
+        deadline = time.monotonic() + 20
+        # Do not tear down the credential owner during write/readback.
+        if self.model.saving:
+            with self.model.worker_lock:
+                writers = list(self.model.workers)
+            for writer in writers:
+                writer.join(max(0, deadline - time.monotonic()))
         if session:
             def stop() -> None:
                 try:

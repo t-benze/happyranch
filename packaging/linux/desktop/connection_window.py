@@ -154,8 +154,10 @@ class ConnectionWindow:
         from gi.repository import Gio, GLib, Gtk, JavaScriptCore, Soup, WebKit2
         self.Gio, self.GLib, self.Gtk, self.JSC, self.Soup, self.W = Gio, GLib, Gtk, JavaScriptCore, Soup, WebKit2
         self.tr, self.prefix = tr, prefix
+        self.app, self.parent = app, parent
         self.owns_client = client is None
         self.client = client or ClientUI(app, parent, prefix, tr)
+        self.client.show_controls = self.show_controls
         self.client_document = object()
         self.requests = _contract.Requests()
         self.subscribed, self.event_pending, self.event_sequence = False, False, 0
@@ -441,23 +443,42 @@ class ConnectionWindow:
                 finish(model.snapshot())
             elif command == "client.health":
                 model.health(finish)
+            elif command == "client.savedComputers":
+                model.discover(finish)
+            elif command == "client.connectSaved":
+                model.connect_saved(request["args"]["computerRef"], self.client_document, finish)
+            elif command == "client.removeSaved":
+                model.remove_saved(request["args"]["computerRef"], self.client_document, finish)
+            elif command == "client.retrySave":
+                if model.stage == "connected" and model.saved_access != "saved":
+                    model.save(model.token, finish=finish)
+                else:
+                    finish(None, "stateChanged")
             elif command in ("client.acceptInvite", "client.retry"):
                 if model.cleanup == "incomplete":
                     finish(None, "outcomeUnknown", "unknown")
-                elif self.client.prompt or model.session or model.stage not in ("idle", "failed"):
+                elif self.client.prompt or model.storage_busy or model.session or model.stage not in ("idle", "failed"):
                     finish(None, "busy")
                 else:
                     model.accept(self.client_document)
                     finish(model.action())
             elif ((command == "client.disconnect" and model.stage == "connected")
                   or (command == "client.cancelAttempt" and model.stage in
-                      ("validating", "joining", "pairing", "waitingApproval", "opening"))):
+                      ("validating", "joining", "pairing", "waitingApproval", "saving", "opening"))):
                 model.confirm_stop(finish, self.client_document)
             else:
                 finish(None, "stateChanged")
         else:
             finish(None, "unavailable")
         return True
+
+    def show_controls(self) -> None:
+        if self.closed:
+            self.replacement = ConnectionWindow(self.app, self.parent,
+                                                self.prefix, self.tr, self.client)
+        else:
+            self.window.present()
+            self.queue_event()
 
     def queue_event(self) -> None:
         if not self.event_pending and self.active and self.subscribed:

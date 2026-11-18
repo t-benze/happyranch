@@ -14,6 +14,9 @@ import time
 _spec = importlib.util.spec_from_file_location("client_session", Path(__file__).with_name("client_session.py"))
 _native = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_native)
+_spec = importlib.util.spec_from_file_location("client_store", Path(__file__).with_name("client_store.py"))
+_store = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_store)
 
 
 def timestamp(value: float | None = None) -> str:
@@ -47,11 +50,18 @@ class ClientModel:
         self.load_succeeded = False
         self.workers = set()
         self.worker_lock = threading.Lock()
+        self.store = _store.SecretStore(_native)
+        self.records = {}
+        self.saved_access, self.saved_observation = "unknown", "unavailable"
+        self.active_ref = None
+        self.save_intent = False
+        self.saving, self.save_stop = False, None
+        self.storage_busy = False
 
     def snapshot(self) -> dict:
-        return dict(stage=self.stage, runtime=self.runtime, savedAccess="notSaved" if self.session else "none",
+        return dict(stage=self.stage, runtime=self.runtime, savedAccess=self.saved_access,
                     route="unknown", observedAt=self.observed, observation=self.observation,
-                    computers=None, activeComputerRef=None,
+                    computers=self.computers(), activeComputerRef=self.active_ref,
                     expiresAt=timestamp(self.expiry) if self.expiry else None, comparisonPhrase=None)
 
     def action(self, effect: str = "none") -> dict:
@@ -68,15 +78,15 @@ class ClientModel:
     def valid(self, token: int) -> bool:
         return token == self.token
 
-    def work(self, token: int, operation: object, done: object) -> None:
+    def work(self, token: int, operation: object, done: object, *, settle: bool = False) -> None:
         def worker() -> None:
             try:
                 result, error = operation(), None
             except Exception as exc:
-                result, error = None, str(exc) if isinstance(exc, _native.ClientError) else "unavailable"
+                result, error = None, str(exc) if isinstance(exc, (_native.ClientError, _store.StoreError)) else "unavailable"
             def deliver() -> bool:
-                if self.valid(token):
-                    if self.hold:
+                if self.valid(token) or settle:
+                    if self.hold and self.valid(token) and not settle:
                         self.defer(lambda: done(result, error))
                     else:
                         done(result, error)
@@ -102,6 +112,8 @@ class ClientModel:
         self.load_succeeded = False
         self.expiry, self.cleanup = None, "notApplicable"
         self.observation = "known"
+        self.active_ref, self.save_intent = None, False
+        self.saved_access = "notSaved"
         self.changed("validating")
         def pasted(text: str | None) -> None:
             if not self.valid(token):
@@ -117,13 +129,13 @@ class ClientModel:
                     self.target = plain(invite.home_id)
                     self.expiry = invite.expires_at
                     self.deadline = time.monotonic() + max(0, min(300, self.expiry - time.time()))
-                    self.ui.target(invite, lambda consent: self.consent(token, invite, consent))
+                    self.ui.target(invite, lambda consent, save=False: self.consent(token, invite, consent, save))
                 except (ValueError, UnicodeError):
                     self.fail("invalidInvite")
             self.work(token, lambda: _native.decode_invite(text), decoded)
         self.ui.paste(pasted)
 
-    def consent(self, token: int, invite: object, consent: bool) -> None:
+    def consent(self, token: int, invite: object, consent: bool, save: bool = False) -> None:
         if not self.valid(token):
             return
         if not consent:
@@ -132,10 +144,13 @@ class ClientModel:
         self.approval_timeout(token)
         if not self.valid(token):
             return
+        self.save_intent = save is True
+        self.saved_access = "notSaved" if self.save_intent else "none"
         self.session = _native.ClientSession(self.prefix)
         session = self.session
         self.changed("joining")
-        self.work(token, lambda: session.join(invite), lambda _r, e: self.joined(token, e))
+        self.work(token, lambda: session.join(invite, save_intent=True) if self.save_intent else session.join(invite),
+                  lambda _r, e: self.joined(token, e))
 
     def joined(self, token: int, error: str | None) -> None:
         if error:
@@ -198,8 +213,148 @@ class ClientModel:
             self.ui.later(1000, lambda: self.poll(token))
         else:
             self.ui.dismiss_waiting()
-            self.changed("opening")
-            self.work(token, self.session.open_runtime, lambda url, e: self.opened(token, url, e))
+            if self.save_intent:
+                self.save(token, opening=True)
+            else:
+                self.open(token)
+
+    def open(self, token: int) -> None:
+        self.changed("opening")
+        self.work(token, self.session.open_runtime, lambda url, e: self.opened(token, url, e))
+
+    def computers(self) -> list | None:
+        if self.saved_observation != "known" and not self.records:
+            return None
+        # Human trust/identity stays in native confirmation; web gets opaque refs.
+        return [dict(computerRef=ref, label="Saved computer " + str(i + 1))
+                for i, ref in enumerate(self.records)]
+
+    def discover(self, finish: object) -> None:
+        if (self.storage_busy or self.saving or self.hold
+                or self.stage not in ("idle", "failed", "connected", "opening")):
+            finish(None, "busy", "none")
+            return
+        self.storage_busy = True
+        def found(result: object, error: str | None) -> None:
+            self.storage_busy = False
+            self.records, state, self.saved_observation = result if not error else ({}, "unknown", "unavailable")
+            if not self.session:
+                self.saved_access = state
+            self.changed()
+            finish(dict(computers=self.computers(), savedAccess=state, observation=self.saved_observation), None, "none")
+        self.work(self.token, self.store.list, found, settle=True)
+
+    def save(self, token: int, *, opening: bool = False, finish: object = None) -> None:
+        if self.saving or self.storage_busy or self.hold or not self.session or not self.save_intent:
+            if finish:
+                finish(None, "stateChanged", "none")
+            return
+        self.saving = True
+        previous_stage = self.stage
+        self.changed("saving")
+        session = self.session
+        def write() -> object:
+            record = session.saved_record()
+            self.store.save(record)
+            return record
+        def saved(record: object, error: str | None) -> None:
+            self.saving = False
+            self.saved_access = ("needsPermission" if error in ("keychainLocked", "keychainDenied")
+                                 else "notSaved" if error else "saved")
+            if not error:
+                self.active_ref = _store.reference(record)
+                self.records[self.active_ref] = record
+                self.saved_observation = "known"
+            if self.save_stop is not None:
+                stop_finish, failed = self.save_stop
+                self.save_stop = None
+                self.stop(finish=stop_finish, failed=failed)
+            elif self.valid(token):
+                continuation = lambda: self.open(token) if opening else self.changed(previous_stage)
+                if self.hold:
+                    self.defer(continuation)
+                else:
+                    continuation()  # Custody failure keeps a usable session.
+            if finish:
+                finish(self.action("unknown" if error else "confirmed"),
+                       error if error in ("keychainLocked", "keychainDenied") else "saveFailed" if error else None,
+                       "unknown" if error else "confirmed")
+        self.work(token, write, saved, settle=True)  # retain outcome after Cancel
+
+    def connect_saved(self, ref: str, document: object, finish: object) -> None:
+        if (self.session or self.storage_busy or self.hold or self.ui.prompt
+                or self.stage not in ("idle", "failed") or self.cleanup == "incomplete"):
+            finish(None, "busy", "none")
+            return
+        record = self.records.get(ref)
+        if record is None:
+            finish(None, "stateChanged", "none")
+            return
+        self.token += 1
+        token = self.token
+        self.document, self.active_ref = document, ref
+        self.expiry, self.load_succeeded = None, False
+        self.target = plain(record.home_id)
+        self.changed("validating")
+        def consent(yes: bool) -> None:
+            if not self.valid(token):
+                return
+            if not yes:
+                self.stop()
+                return
+            self.save_intent = True
+            self.session = _native.ClientSession(self.prefix)
+            session = self.session
+            self.changed("joining")
+            def resumed(_r: object, error: str | None) -> None:
+                if error:
+                    if error in ("keychainLocked", "keychainDenied"):
+                        self.saved_access = "needsPermission"
+                    self.fail(error if error in ("keychainLocked", "keychainDenied") else
+                              "identityChanged" if error == "identityMismatch" else "savedUnavailable")
+                else:
+                    self.open(token)
+            self.work(token, lambda: session.restore(self.store.load(record)), resumed)
+        self.ui.saved_target(record, False, consent)
+        finish(self.action(), None, "none")
+
+    def remove_saved(self, ref: str, document: object, finish: object) -> None:
+        if self.session or self.storage_busy or self.hold or self.ui.prompt or self.stage not in ("idle", "failed"):
+            finish(None, "busy", "none")
+            return
+        record = self.records.get(ref)
+        if record is None:
+            finish(None, "stateChanged", "none")
+            return
+        token = self.token
+        self.document = document
+        self.confirmation += 1
+        confirmation = self.confirmation
+        self.confirmation_document, self.hold = document, True
+        def confirmed(yes: bool) -> None:
+            if not self.valid(token) or confirmation != self.confirmation:
+                finish(None, "stateChanged", "none")
+                return
+            self.hold, self.confirmation_document = False, None
+            if not yes:
+                finish(self.action(), None, "none")
+                return
+            self.storage_busy = True
+            def removed(_r: object, error: str | None) -> None:
+                self.storage_busy = False
+                if error:
+                    self.saved_access, self.cleanup = "removalIncomplete", "incomplete"
+                else:
+                    self.records.pop(ref, None)
+                    if self.active_ref == ref:
+                        self.active_ref = None
+                    self.saved_access = "saved" if self.records else "none"
+                    self.cleanup = "confirmed"
+                self.changed()
+                finish(self.action("unknown" if error else "confirmed"),
+                       "removalIncomplete" if error else None, "unknown" if error else "confirmed")
+            self.work(token, lambda: self.store.delete(record), removed, settle=True)
+        self.ui.saved_target(record, True, confirmed)
 
     def opened(self, token: int, url: str | None, error: str | None) -> None:
         if error:
@@ -256,6 +411,15 @@ class ClientModel:
         self.stop(failed=code)
 
     def stop(self, finish: object = None, failed: str | None = None) -> None:
+        if self.saving:
+            if self.save_stop is None:
+                self.token += 1
+                self.hold, self.deferred = False, []
+                self.save_stop = (finish, failed)
+                self.ui.dismiss()
+                self.ui.storage_wait()
+                self.changed("stopping")  # storage write/readback safe point
+            return
         self.token += 1  # Invalidate before stop dispatch, including late approval/load.
         token = self.token
         session, self.session = self.session, None
