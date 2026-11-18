@@ -2193,7 +2193,11 @@ Root/service-owned literal parents are opened no-follow; service directory is
 0700, socket 0600/single-link with service UID/GID and matching SO_PEERCRED.
 The installed binary and its parents must be root-owned, without group/world
 write; the regular single-link binary is 0755. No endpoint/path/environment
-selector exists. Inherited HTTP/2 debug logging is disabled.
+selector exists. Before reading any secret, runner command startup discards the
+standard logger's output. This suppresses x/net's separate frame logging even
+when inherited `GODEBUG=http2debug=1` or `=2` enabled flags during package init;
+clearing `VerboseLogs` alone cannot suppress those flags. No diagnostic sink is
+re-enabled, and the private binary response writer is separate.
 
 Requests/responses use bounded binary stdin/stdout pipes, never argv/env/logs;
 runner failure is only exit 2 (no RPC sent) or 3 (uncertain), with no diagnostic
@@ -2202,8 +2206,14 @@ outside handlers. Complete unary uncompressed gRPC framing, HTTP 200 and exactly
 one successful grpc-status are required; other server codes remain uncertain.
 All response fields follow R1–R3 below, without JSON/protojson. Datetime projects
 valid nanos to microseconds by truncation, so expiration never extends.
-The caller's timeout is capped at five seconds across socket/RPC/body reading;
-input and each projected record are capped at 4096 bytes, response at 128 MiB,
+One original monotonic deadline, capped at five seconds, spans Python custody,
+request encoding, the remaining subprocess/socket/RPC/body budget, complete
+wire/record projection, per-row user/duplicate-ID validation and final success.
+Cooperative checks between bounded fields/records and after final projection
+raise sanitized uncertainty on expiry; no partial or late success is returned.
+The runner also checks its original context after the private response write,
+including any preceding durable fence settlement, before returning exit 0.
+Input and each projected record are capped at 4096 bytes, response at 128 MiB,
 inventory at 600,000 rows and tags at 128 per row. A single HTTP/2 ClientConn
 performs one RPC without Transport automatic retries.
 That byte cap fits 600,000 ordinary ~200-byte untagged rows, but unusually large

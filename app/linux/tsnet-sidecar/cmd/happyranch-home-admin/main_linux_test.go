@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"sync/atomic"
@@ -118,6 +119,73 @@ func TestUnaryOperations(t *testing.T) {
 	}
 	if calls.Load() != 3 {
 		t.Fatal("missing RPC")
+	}
+}
+
+func TestRunnerDiagnosticsStartup(t *testing.T) {
+	// Re-exec so x/net observes GODEBUG during package initialization. The
+	// child uses production command startup with real stdin/stdout/stderr and
+	// the existing temporary machine/socket fixture; no shipped override exists.
+	if verb := os.Getenv("HAPPYRANCH_HOME_ADMIN_TEST_VERB"); verb != "" {
+		s := fixture(t)
+		serve(t, s, func(w http.ResponseWriter, r *http.Request) {
+			_, _ = io.Copy(io.Discard, r.Body)
+			var body []byte
+			if verb != "expire" {
+				body = fieldBytes(1, fieldBytes(3, bytes.Repeat([]byte("a1"), 24)))
+			}
+			reply(w, body, "0")
+		})
+		// Prove suppression even if the inherited logger targets stdout.
+		log.SetOutput(os.Stdout)
+		os.Exit(command([]string{verb, "1000"}, os.Stdin, os.Stdout, s))
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, level := range []string{"1", "2"} {
+		for _, verb := range []string{"create", "list", "expire"} {
+			t.Run(level+"/"+verb, func(t *testing.T) {
+				child := exec.Command(executable, "-test.run=^TestRunnerDiagnosticsStartup$")
+				child.Env = append(os.Environ(), "GODEBUG=http2debug="+level,
+					"HAPPYRANCH_HOME_ADMIN_TEST_VERB="+verb, "TMPDIR="+t.TempDir())
+				child.Stdin = bytes.NewReader(input(verb, machine{now: time.Now}))
+				var out, diagnostics bytes.Buffer
+				child.Stdout, child.Stderr = &out, &diagnostics
+				if err := child.Run(); err != nil {
+					t.Fatal("runner startup failed")
+				}
+				var expected []byte
+				if verb != "expire" {
+					expected = fieldBytes(1, fieldBytes(3, bytes.Repeat([]byte("a1"), 24)))
+				}
+				if diagnostics.Len() != 0 || !bytes.Equal(out.Bytes(), expected) {
+					t.Fatal("runner emitted diagnostics outside private response")
+				}
+			})
+		}
+	}
+}
+
+type delayedResponse struct{ wrote bool }
+
+func (w *delayedResponse) Write(data []byte) (int, error) {
+	w.wrote = true
+	time.Sleep(1100 * time.Millisecond)
+	return len(data), nil
+}
+
+func TestRunnerDeadlineAtSuccess(t *testing.T) {
+	s := fixture(t)
+	serve(t, s, func(w http.ResponseWriter, r *http.Request) { reply(w, nil, "0") })
+	out := &delayedResponse{}
+	code := command([]string{"list", "1000"}, bytes.NewReader(input("list", s)), out, s)
+	if !out.wrote {
+		t.Fatal("did not reach final response boundary")
+	}
+	if code != 3 {
+		t.Fatal("runner returned late success")
 	}
 }
 func TestLostCreateFenceSurvivesRestart(t *testing.T) {

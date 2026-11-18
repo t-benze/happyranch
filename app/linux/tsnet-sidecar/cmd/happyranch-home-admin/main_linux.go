@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/binary"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"os/user"
@@ -43,7 +44,10 @@ func main() {
 
 // 2 proves no RPC was sent; 3 is uncertain. No underlying error or stream echo.
 func command(args []string, in io.Reader, out io.Writer, s machine) int {
-	// Ignore inherited GODEBUG=http2debug: DATA frame diagnostics can expose keys.
+	// x/net initializes separate frame flags from GODEBUG before main runs.
+	// Disable their standard-log sink before any secret is read or RPC starts,
+	// regardless of those flags or the logger's inherited stdout/stderr target.
+	log.SetOutput(io.Discard)
 	http2.VerboseLogs = false
 	if len(args) != 2 {
 		return 2
@@ -131,6 +135,9 @@ func command(args []string, in io.Reader, out io.Writer, s machine) int {
 		return 3
 	}
 	if n, err := out.Write(body[5:]); err != nil || n != len(body)-5 {
+		return 3
+	}
+	if ctx.Err() != nil {
 		return 3
 	}
 	return 0

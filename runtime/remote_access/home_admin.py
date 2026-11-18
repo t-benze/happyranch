@@ -5,6 +5,7 @@ import fcntl
 import hashlib
 import os
 import stat
+import time
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Iterator
@@ -21,6 +22,21 @@ _STATE = '/var/lib/happyranch-remote-access/home-minter'
 _MAX_BYTES = 128 << 20
 
 
+def _deadline(timeout_s: float) -> float:
+    if not 0 < timeout_s <= 5:
+        raise AdminRefused()
+    return time.monotonic() + timeout_s
+
+
+def _remaining(deadline: float | None) -> float:
+    if deadline is None:
+        return 0
+    remaining = deadline - time.monotonic()
+    if not remaining > 0:
+        raise MintUncertain()
+    return remaining
+
+
 def _varint(value: int) -> bytes:
     data = bytearray()
     while value >= 128:
@@ -34,7 +50,7 @@ def _bytes(number: int, value: bytes) -> bytes:
     return _varint(number * 8 + 2) + _varint(len(value)) + value
 
 
-def _fields(data: bytes) -> Iterator[tuple[int, int, bytes | int]]:
+def _fields(data: bytes, deadline: float | None = None) -> Iterator[tuple[int, int, bytes | int]]:
     offset = 0
 
     def take() -> int:
@@ -53,6 +69,7 @@ def _fields(data: bytes) -> Iterator[tuple[int, int, bytes | int]]:
         raise ValueError('wire')
 
     while offset < len(data):
+        _remaining(deadline)
         tag = take()
         number, wire = tag >> 3, tag & 7
         if not 0 < number < 1 << 29 or wire not in (0, 2):
@@ -63,12 +80,15 @@ def _fields(data: bytes) -> Iterator[tuple[int, int, bytes | int]]:
             if end > len(data):
                 raise ValueError('wire')
             value, offset = data[offset:end], end
+        _remaining(deadline)
         yield number, wire, value
 
 
-def _message(data: bytes, types: dict[int, int], repeated: int = 0) -> dict[int, object]:
+def _message(data: bytes, types: dict[int, int], repeated: int = 0,
+             deadline: float | None = None) -> dict[int, object]:
     values: dict[int, object] = {repeated: []} if repeated else {}
-    for number, wire, value in _fields(data):
+    for number, wire, value in _fields(data, deadline):
+        _remaining(deadline)
         if types.get(number) != wire or (number != repeated and number in values):
             raise ValueError('wire')
         if number == repeated:
@@ -80,8 +100,8 @@ def _message(data: bytes, types: dict[int, int], repeated: int = 0) -> dict[int,
     return values
 
 
-def _timestamp(data: bytes) -> datetime:
-    values = _message(data, {1: 0, 2: 0})
+def _timestamp(data: bytes, deadline: float | None = None) -> datetime:
+    values = _message(data, {1: 0, 2: 0}, deadline=deadline)
     seconds, nanos = values.get(1, 0), values.get(2, 0)
     if seconds >= 1 << 63:
         seconds -= 1 << 64
@@ -91,17 +111,17 @@ def _timestamp(data: bytes) -> datetime:
     return datetime(1970, 1, 1, tzinfo=timezone.utc) + timedelta(seconds=seconds, microseconds=nanos // 1000)
 
 
-def _record(data: bytes) -> PreAuthKey:
+def _record(data: bytes, deadline: float | None = None) -> PreAuthKey:
     if len(data) > 4096:
         raise ValueError('wire')
-    values = _message(data, {1: 2, 2: 2, 3: 2, 4: 0, 5: 0, 6: 0, 7: 2, 8: 2, 9: 2}, 9)
+    values = _message(data, {1: 2, 2: 2, 3: 2, 4: 0, 5: 0, 6: 0, 7: 2, 8: 2, 9: 2}, 9, deadline)
     if any(n not in values for n in (1, 2, 3, 7, 8)) or any(not values[n] for n in (1, 2, 3)):
         raise ValueError('wire')
     strings = [values[n].decode('utf-8') for n in (1, 2, 3)]
     if any(values.get(n, 0) not in (0, 1) for n in (4, 5, 6)):
         raise ValueError('wire')
     record = PreAuthKey(*strings, *(bool(values.get(n, 0)) for n in (4, 5, 6)),
-                        _timestamp(values[7]), _timestamp(values[8]),
+                        _timestamp(values[7], deadline), _timestamp(values[8], deadline),
                         tuple(tag.decode('utf-8') for tag in values[9]))
     if len(record.key) != 48 or any(c not in '0123456789abcdef' for c in record.key):
         raise ValueError('wire')
@@ -133,14 +153,16 @@ class RootHeadscaleAdminOperations:
     def __repr__(self) -> str:
         return 'RootHeadscaleAdminOperations(<redacted>)'
 
-    def _call(self, verb: str, request: bytes, timeout_s: float) -> bytes:
+    def _call(self, verb: str, request: bytes, deadline: float) -> bytes:
         refused = False
         try:
-            if not 0 < timeout_s <= 5 or os.geteuid() != 0:
+            if os.geteuid() != 0:
                 raise AdminRefused()
             _runner_custody()
-            code, data = _default_run([_RUNNER, verb, str(max(1, int(timeout_s * 1000)))],
-                                      timeout=timeout_s, input_bytes=request)
+            remaining = _remaining(deadline)
+            code, data = _default_run([_RUNNER, verb, str(max(1, int(remaining * 1000)))],
+                                      timeout=remaining, input_bytes=request)
+            _remaining(deadline)
             refused = code == 2
             if code == 0 and type(data) is bytes and len(data) <= _MAX_BYTES:
                 return data
@@ -158,15 +180,18 @@ class RootHeadscaleAdminOperations:
         result = None
         refused = False
         try:
+            deadline = _deadline(timeout_s)
             if reusable is not False or ephemeral is not False or expiration.utcoffset() != timedelta(0):
                 raise AdminRefused()
             seconds = int(expiration.timestamp())
             timestamp = b'\x08' + _varint(seconds)
-            response = self._call('create', _bytes(1, user.encode()) + _bytes(4, timestamp), timeout_s)
-            values = _message(response, {1: 2})
-            result = _record(values[1])
-            if result.user != user:
-                result = None
+            response = self._call('create', _bytes(1, user.encode()) + _bytes(4, timestamp), deadline)
+            values = _message(response, {1: 2}, deadline=deadline)
+            projected = _record(values[1], deadline)
+            if projected.user != user:
+                raise ValueError('wire')
+            _remaining(deadline)
+            result = projected
         except AdminRefused:
             refused = True
         except BaseException:
@@ -181,11 +206,19 @@ class RootHeadscaleAdminOperations:
     def list_pre_auth_keys(self, *, user: str, timeout_s: float) -> tuple[PreAuthKey, ...]:
         result = None
         try:
-            values = _message(self._call('list', _bytes(1, user.encode()), timeout_s), {1: 2}, 1)
-            if len(values[1]) <= 600_000:
-                result = tuple(_record(data) for data in values[1])
-                if any(r.user != user for r in result) or len({r.id for r in result}) != len(result):
-                    result = None
+            deadline = _deadline(timeout_s)
+            values = _message(self._call('list', _bytes(1, user.encode()), deadline), {1: 2}, 1, deadline)
+            records, ids = [], set()
+            for data in values[1]:
+                _remaining(deadline)
+                record = _record(data, deadline)
+                if record.user != user or record.id in ids:
+                    raise ValueError('wire')
+                ids.add(record.id)
+                records.append(record)
+            projected = tuple(records)
+            _remaining(deadline)
+            result = projected
         except BaseException:
             pass
         del self, user
@@ -196,7 +229,10 @@ class RootHeadscaleAdminOperations:
     def expire_pre_auth_key(self, *, user: str, key: str, timeout_s: float) -> None:
         ok = False
         try:
-            ok = self._call('expire', _bytes(1, user.encode()) + _bytes(2, key.encode()), timeout_s) == b''
+            deadline = _deadline(timeout_s)
+            response = self._call('expire', _bytes(1, user.encode()) + _bytes(2, key.encode()), deadline)
+            _remaining(deadline)
+            ok = response == b''
         except BaseException:
             pass
         del self, user, key

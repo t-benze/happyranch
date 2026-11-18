@@ -89,6 +89,9 @@ def test_response_schema_refuses(monkeypatch, bad: bytes) -> None:
 
 
 def test_calls_have_secret_only_in_pipes(monkeypatch) -> None:
+    # Keep the existing exact argv assertion deterministic as transport now
+    # receives the original deadline's remaining budget.
+    monkeypatch.setattr(h, 'time', SimpleNamespace(monotonic=lambda: 0), raising=False)
     calls = []
     admin = transport(monkeypatch, b'')
     monkeypatch.setattr(h, '_default_run', lambda argv, **kw: calls.append((argv, kw)) or (0, b''))
@@ -256,3 +259,90 @@ def test_after_create_wrapper_failure_stays_uncertain(monkeypatch) -> None:
     monkeypatch.setattr(h, '_locked', failing_close)
     with pytest.raises(MintUncertain):
         h.RootHomeInviteMinter().mint('op', NOW)
+
+
+@pytest.mark.parametrize('phase', ['wire', 'records', 'final'])
+def test_list_projection_deadline(monkeypatch, phase: str) -> None:
+    # Unique, proto3-omitted history; synthetic time avoids a speed benchmark.
+    rows = 8192
+    response = b''.join(h._bytes(1, record().replace(h._bytes(2, b'1'),
+                                                   h._bytes(2, str(i).encode())))
+                        for i in range(rows))
+    admin = transport(monkeypatch, response)
+    clock = [0.0]
+    monkeypatch.setattr(h, 'time', SimpleNamespace(monotonic=lambda: clock[0]), raising=False)
+    original_fields, original_record = h._fields, h._record
+    projected = [0]
+
+    def fields(data, *args, **kwargs):
+        for i, field in enumerate(original_fields(data, *args, **kwargs)):
+            if data is response and i == 1024 and phase == 'wire':
+                clock[0] = 5.0
+            yield field
+
+    def project(data, *args, **kwargs):
+        result = original_record(data, *args, **kwargs)
+        projected[0] += 1
+        if projected[0] == (rows if phase == 'final' else 1024) and phase != 'wire':
+            clock[0] = 5.0
+        return result
+
+    monkeypatch.setattr(h, '_fields', fields)
+    monkeypatch.setattr(h, '_record', project)
+    with pytest.raises(MintUncertain) as caught:
+        admin.list_pre_auth_keys(user=USER, timeout_s=5)
+    assert caught.value.__context__ is None and caught.value.__cause__ is None
+    assert KEY.decode() not in repr(caught.value)
+    if phase != 'final':
+        assert projected[0] < rows
+
+
+@pytest.mark.parametrize('verb', ['create', 'list', 'expire'])
+def test_transport_deadline_never_returns_late_success(monkeypatch, verb: str) -> None:
+    response = b'' if verb == 'expire' else h._bytes(1, record())
+    admin = transport(monkeypatch, response)
+    clock = [0.0]
+    monkeypatch.setattr(h, 'time', SimpleNamespace(monotonic=lambda: clock[0]), raising=False)
+
+    def late(*args, **kwargs):
+        clock[0] = 5.0
+        return 0, response
+
+    monkeypatch.setattr(h, '_default_run', late)
+    with pytest.raises(MintUncertain):
+        if verb == 'create':
+            admin.create_pre_auth_key(user=USER, reusable=False, ephemeral=False,
+                                      expiration=NOW + timedelta(seconds=120), timeout_s=5)
+        elif verb == 'list':
+            admin.list_pre_auth_keys(user=USER, timeout_s=5)
+        else:
+            admin.expire_pre_auth_key(user=USER, key=KEY.decode(), timeout_s=5)
+
+
+def test_create_projection_deadline(monkeypatch) -> None:
+    admin = transport(monkeypatch, h._bytes(1, record()))
+    clock = [0.0]
+    monkeypatch.setattr(h, 'time', SimpleNamespace(monotonic=lambda: clock[0]), raising=False)
+    original = h._record
+
+    def late(*args, **kwargs):
+        result = original(*args, **kwargs)
+        clock[0] = 5.0
+        return result
+
+    monkeypatch.setattr(h, '_record', late)
+    with pytest.raises(MintUncertain):
+        admin.create_pre_auth_key(user=USER, reusable=False, ephemeral=False,
+                                  expiration=NOW + timedelta(seconds=120), timeout_s=5)
+
+
+def test_custody_consumes_original_transport_budget(monkeypatch) -> None:
+    admin = transport(monkeypatch, b'')
+    clock = [0.0]
+    monkeypatch.setattr(h, 'time', SimpleNamespace(monotonic=lambda: clock[0]), raising=False)
+    monkeypatch.setattr(h, '_runner_custody', lambda: clock.__setitem__(0, 2.0))
+    calls = []
+    monkeypatch.setattr(h, '_default_run', lambda argv, **kw: calls.append((argv, kw)) or (0, b''))
+    admin.expire_pre_auth_key(user=USER, key=KEY.decode(), timeout_s=5)
+    assert calls[0][0][-1] == '3000'
+    assert calls[0][1]['timeout'] == 3.0

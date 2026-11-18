@@ -1009,7 +1009,13 @@ The package now includes root:root 0755
 home CA materializer and outside PATH. It uses the existing pinned x/net HTTP/2
 module and existing collected notices. Packaging never invokes it. Only the
 fixed protected local socket's Create/List/ExpirePreAuthKey RPCs are admitted;
-secret wire bytes use anonymous pipes and diagnostics are fixed categories.
+secret wire bytes use anonymous pipes and failures use fixed categories.
+Before reading secrets, runner startup discards standard logger output, including
+x/net frame logs enabled at package init by inherited `GODEBUG=http2debug=1/2`.
+The private binary response pipe remains separate. Python carries one original
+monotonic deadline through transport, complete projection, user/duplicate-ID
+validation and final success; expiry raises sanitized uncertainty. Checks are
+cooperative and do not establish hard OS-I/O or scheduling deadlines.
 The uncalled `home_admin.RootHomeInviteMinter` holds a per-invite-user lock over
 mint/recovery; root-only operation reservations and the lost-create deadline
 fence survive helper restart. Preserve every reservation and uncertain/pending
