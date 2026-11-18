@@ -246,6 +246,9 @@ Feature compositions keep using the stable `@/design-system/...` import paths.
   permanently removed neutral) render this way; the former `StatusPill` and
   `SkillStatusBadge` are deleted. Words and i18n keys are unchanged; the
   Skills pill moved from mono to the body font.
+  Every `StatusBadge` stays on one line (`whitespace-nowrap`, THR-376 r2
+  PR-P0d); a lifecycle `qualifier` truncates with an ellipsis inside the
+  badge's `max-w-full` and carries its full text in the `title` attribute.
 - `Avatar` (`primitives/Avatar.tsx`, THR-376 PR9) is the one initials
   avatar: Agents roster and detail, Jobs requested-by, Todos owner (list and
   detail), Threads transcript turns, retired agents and the Sidebar founder.
