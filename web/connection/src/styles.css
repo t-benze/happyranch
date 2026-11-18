@@ -20,7 +20,6 @@ button, select { font: inherit; color: var(--color-text-primary); background: va
 button { cursor: pointer; }
 button[aria-pressed='true'] { color: var(--color-accent-text); border-color: var(--color-accent-default); font-weight: 600; }
 :focus-visible { outline: 2px solid var(--color-accent-default); outline-offset: 4px; }
-.panel { background: var(--color-surface-raised); border: 1px solid var(--color-border-default); border-radius: 16px; margin-top: 32px; padding: 24px; }
 code { white-space: pre-wrap; overflow-wrap: anywhere; }
 @media (max-width: 480px) { main { margin: 12px auto; padding: 24px; } h1 { font-size: 28px; } }
 .visually-hidden { position: absolute; width: 1px; height: 1px; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
@@ -72,3 +71,9 @@ button[aria-disabled='true'] { cursor: not-allowed; opacity: .55; }
 .facts dt { color: var(--color-text-secondary); }
 .facts dd { margin: 0; font-weight: 600; text-align: right; }
 @media (max-width: 480px) { .card-header, .card-body { padding-left: 16px; padding-right: 16px; } .card-title { font-size: 21px; } }
+/* Host (slice 4b): confirmation and invite panels reuse the existing semantic tokens. */
+.warning.tone-danger { background: var(--color-danger-soft); }
+.warning.tone-danger p, .warning.tone-danger strong { color: var(--color-danger); }
+.warning.tone-progress { background: var(--color-info-soft); }
+.warning.tone-progress p, .warning.tone-progress strong { color: var(--color-info); }
+.deadline-text { font-weight: 600; }

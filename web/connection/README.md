@@ -14,7 +14,7 @@ SPA and daemon routes are unchanged. Client lifecycle controls only request
 closed native commands; native owns every effect.
 Linux native integration and packaging are slice 1b-LINUX below; Mac client-only
 integration and bundle assembly are slice 1b-MAC below. Client lifecycle screens are
-slice 4a (below); Linux host screens remain slice 4b, so the host role reads status only.
+slice 4a and Linux host lifecycle screens are slice 4b (both below).
 
 `resource-manifest.json` is a literal version-1 object with `entry: "index.html"`
 and a `resources` array of exact relative `path`, UTF-8/file `bytes` and SHA-256
@@ -27,7 +27,7 @@ absolute daemon paths, a preload network shim and embedded asset data.
 
 ## Import audit
 
-`index.html` → `src/main.ts` → `bridge.ts`, `client.ts`, `protocol.ts`, `strings.ts`, CSS.
+`index.html` → `src/main.ts` → `bridge.ts`, `client.ts`, `host.ts`, `protocol.ts`, `strings.ts`, CSS.
 `protocol.ts` imports only `protocol/native-connection-bridge.v1.json`.
 There are no runtime imports from `web/src/`, React, App, router, auth/bootstrap,
 API/data providers, analytics or the runtime feature-flag resolver. No network,
@@ -113,10 +113,13 @@ native snapshot says `connected`. After every action the view rereads
 `client.savedComputers` and `client.status` independently; it never edits lists
 optimistically. Discovery `busy` during an active attempt is expected, not a
 failure; any other reread failure is shown beside the original action outcome
-(same command, record and effect), never instead of it. Every async status/health
-read and role load is bound to the role selection and a monotonic
+(same command, record and effect), never instead of it. Every async status read
+and role load is bound to the role selection and a monotonic
 native-observation revision: a reply overtaken by a native event, a newer read,
-a completed action or a role change is ignored, so the newest native state wins. Native confirmations own Connect, Remove, Disconnect and Cancel;
+a completed action or a role change is ignored, so the newest native state wins.
+`client.health` reads are not fenced by that shared revision: each read carries
+its own role-selection and request marker, and a snapshot that leaves
+`connected` invalidates any outstanding health reply. Native confirmations own Connect, Remove, Disconnect and Cancel;
 dismissing one returns `effect:none` and the view says nothing changed.
 Unknown effects (including transport loss after dispatch) show “couldn’t
 confirm” with Check again, never “nothing changed”. A recovery `explicitRetry` or
@@ -145,6 +148,60 @@ names in retained outcomes/recovery re-render in the current locale; focus is re
 the same control after a native re-render, or moved to the card heading when the
 stage changes and focus was lost. Visible focus uses the shared outline. The
 connection shell has no dark theme; light only.
+
+## Host screens (slice 4b)
+
+`host.ts` renders the Linux host role from the closed v1 host commands/events
+only: `host.status`/`host.stateChanged` snapshots, `host.enable`, `host.turnOff`,
+`host.createInvite`, `host.approveDevice`, `host.rejectDevice`, `host.nextDevice`
+and `host.revokeDevice` results, and closed errors. Every command takes `{}`; the
+web never supplies a device identity. States: off (Turn on), setting up, ready
+(Add a device), ready with the runtime offline/restarting, invite active (local
+expiry time, no countdown), last invite expired/used, pending device request
+(Approve / Reject request the native system prompt), devices with access, the
+helper-selected device (Select next device / Revoke selected device), paused,
+failed (needs repair), and unknown. Unknown setup, an unavailable observation or
+a limited `setup`/`observation` field shows “not confirmed” with Check again, never
+Off. A null or limited device list is shown as unreadable, not empty. Devices
+carry no ID and labels can repeat, so list rows have no actions or selection
+marker; the selection is shown separately from the native `selected` record.
+
+Turn off and Revoke first open an in-view confirmation (focus starts on Cancel;
+Cancel returns focus to the opener), then native shows the system prompt. Native
+owns the exact target and every effect. The view never renders invite bytes,
+fingerprints or any `comparisonPhrase`; the invite is displayed and copied only
+in the native invite window. Action outcomes are honest: an unknown effect shows
+“couldn’t confirm” with Check again (never “nothing changed” and never full Off);
+`effect: none` says nothing changed; Turn off and Revoke list host denial, owned
+remote services/state and network cleanup separately, and “Remote access is off”
+is the title only when the native snapshot says `off`. A successful Create invite
+is reported as an active invite only when native reports `issued`. Recovery
+(`explicitRetry`/`nativePermission`) retries the same command only while the
+same pending request or selected device is still current; otherwise it says the
+record changed. After every action the view rereads `host.status`; it never edits
+lists optimistically. NextDevice's returned snapshot is applied only if no
+observation or read arrived while it was pending (the revision captured at
+dispatch); an overtaken reply is discarded and does not count as an observation.
+Status reads and role loads use the same role-selection and native-observation
+revision fence as the client view, so stale replies never override newer native
+state. Every accepted host snapshot (events, role loads, Check again/after-action
+rereads and NextDevice) goes through the shell's single observation owner, so the
+runtime status line and its polite announcement always match the card. If an
+action's effect is unknown and the reread fails, the retained snapshot is shown
+as not confirmed (Not confirmed badge/title, lifecycle and device controls
+hidden, the original outcome kept, Check again offered) until a later
+authoritative observation arrives; the native snapshot itself is not altered. Missing capabilities hide their control with one
+update note; a plain browser still hides the feature. en/zh-CN, keyboard order,
+focus restoration, `aria-disabled` while an action is pending and one polite live
+region (keyed by phase, record and outcome identity, silent on language change)
+match the client view.
+
+v1 has no host command for: cancelling or replacing an issued invite (H09), so
+Add a device is not offered while an invite is active and the view discloses that
+closing the native window does not cancel it; replacing a recognized failed setup
+(H04/X02); observing or refreshing a changed home address (H20); retrying policy
+renewal (H19); or cancelling host setup from the web (setup is cancelled in the
+system prompt). These render nothing fake and remain slice 2 / TASK-16779 work.
 
 ## Linux native loader (slice 1b-LINUX)
 
