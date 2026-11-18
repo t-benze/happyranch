@@ -2703,6 +2703,24 @@ effect until B6 restoration/Turn off/ReplaceFailed; E1 adds no restoration path.
 Why no founder: implements settled B4 using an existing protected record with
 stricter cross-checks, without schema, dependency, user, UX or check relaxation.
 
+**Manager Ruling 14 (G2-E1a, retained local-node key history):**
+The owner verifier validates the complete happyranch-node pre-auth-key inventory:
+an exact tuple of at most `_MAX_INVENTORY_KEYS`, every row through the existing
+minter `_record` validator, with unique IDs. Select the current key only from the
+operation's durable local-node creation window, inclusive of both endpoints;
+exactly one row must have `started_at <= created_at <= expires_at`. It must be
+non-reusable, non-ephemeral and untagged, with expiration exactly equal to the
+window expiry, and, if unused, still unexpired. Every other row must precede the
+window and be used or expired at the verification time. In-window duplicates,
+post-window rows and still-usable unused history refuse. Safety assumption:
+historical keys must also be non-reusable, because used reusable keys can still
+enroll; this is the ruling's permitted stricter history check. History retains
+the existing `_record` rules for ephemeral flags and tags, without new restrictions.
+This admits B7's retained expired-unused/used rows through the next fenced mint
+and credential staging, without changing the minter, recovery or coordinator.
+The owner has no separate retained-node singleton check; node observation remains
+with the existing B2/B3 observer and its live-node contract.
+
 **G2-E1a delivered boundary and stated assumptions:**
 `home_activation_owner.py` supplies unmounted fixed-effect adapters, an independent
 same-FD release-token source verifier and the observer's exact-unit process owner.

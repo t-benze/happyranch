@@ -22,7 +22,7 @@ from runtime.remote_access.home_activation import ACTIVATION_PATH, MEMBER_PATHS
 from runtime.remote_access.home_activation_coordinator import ActivationRefused, HomeActivationCoordinator
 from runtime.remote_access.home_activation_txn import CONFIG_MEMBERS, EFFECTS, TRANSACTION_PATH, Effect, HomeActivationTransaction
 from runtime.remote_access.home_admin import HeadscaleUser
-from runtime.remote_access.home_minter import CreationWindow, PreAuthKey
+from runtime.remote_access.home_minter import CreationWindow, HeadscaleJoinKeyMinter, PreAuthKey
 from runtime.remote_access.home_observer import ObservationRefused, SidecarProcess
 from runtime.remote_access.invite_issuer import MintedKey
 from runtime.remote_access.service_manager import SystemdServiceManager
@@ -313,6 +313,105 @@ def test_mint_inventory_refusals(venue, monkeypatch, case):
     if case == "window": v.admin.key = replace(key, created_at=v.admin.window.started_at - timedelta(seconds=1))
     if case == "duplicate": monkeypatch.setattr(v.admin, "list_pre_auth_keys", lambda **kw: (key, key))
     assert not v.production.verify("local_node_mint", v.prepared)
+
+
+def history_minter(v, monkeypatch, *, used=False, corrupt=None):
+    """Real fenced minter; synthetic admin transport/reservation like the review repro."""
+    class HistoryAdmin(Admin):
+        def __init__(self):
+            super().__init__()
+            now = datetime.now(timezone.utc)
+            self.keys = (replace(self.key, id="old", key="b" * 48, used=used,
+                created_at=now - timedelta(minutes=3),
+                expiration=now + timedelta(minutes=1) if used else now - timedelta(minutes=1)),)
+            self.reservations = []
+
+        def list_pre_auth_keys(self, **kwargs):
+            assert kwargs == dict(user="happyranch-node", timeout_s=5)
+            self.calls.append("list-keys")
+            return self.keys
+
+        def create_pre_auth_key(self, *, user, reusable, ephemeral, expiration, timeout_s):
+            assert (user, reusable, ephemeral, timeout_s) == ("happyranch-node", False, False, 5)
+            self.calls.append("create-key")
+            fresh = replace(self.key, id="new", created_at=datetime.now(timezone.utc), expiration=expiration)
+            self.keys += (fresh,)
+            if corrupt is not None:
+                self.keys = corrupt(self.keys, self.window)
+            return fresh
+
+        def expire_pre_auth_key(self, **kwargs):
+            raise AssertionError("inert history must not require expiration")
+
+    v.admin = HistoryAdmin()
+    v.production._admin = v.admin
+
+    class Records:
+        def reserve(self, operation_id, window):
+            assert operation_id == v.prepared.operation_id and not v.admin.reservations
+            v.admin.reservations.append((operation_id, window))
+            v.admin.window = window
+            return True
+
+    def mint(operation_id, expires_at):
+        return HeadscaleJoinKeyMinter(admin=v.admin, invite_user="happyranch-node",
+            now_fn=lambda: datetime.now(timezone.utc), records=Records()).mint(operation_id, expires_at)
+
+    monkeypatch.setattr(h.home_admin, "mint_local_node", mint)
+
+
+@pytest.mark.parametrize("history", ["expired-unused", "used"])
+def test_coordinator_stages_after_historical_key(venue, monkeypatch, history):
+    v = venue
+    history_minter(v, monkeypatch, used=history == "used")
+    def stop_after_staging(*args):
+        raise ActivationRefused("failed_uncertain")
+    monkeypatch.setattr(v.config, "perform", stop_after_staging)
+    with pytest.raises(ActivationRefused, match="^failed_uncertain$"):
+        HomeActivationCoordinator(owner=v.production, root=v.root, root_owner=v.owner_ids).run(v.prepared)
+    txn = v.transactions.read_optional()
+    assert txn.phase == "failed_uncertain"
+    assert txn.effects == tuple(Effect(name, "done", {}) for name in EFFECTS[:5]) + (
+        Effect("home_config", "intent", {}),)
+    assert v.admin.calls.count("create-key") == 1 and len(v.admin.reservations) == 1
+    assert len(v.admin.keys) == 2
+    assert v.path("/etc/happyranch/enrollment.key").read_bytes() == b"a" * 48
+    assert v.receipts._io._check_enrollment()
+    assert [call for call in v.native.calls if call[1] == "start"] == [["systemctl", "start", h._HEADSCALE]]
+
+
+@pytest.mark.parametrize("case", ["in-window", "after-window", "usable-history", "reusable-history",
+                               "duplicate-id", "oversize"])
+def test_coordinator_refuses_ambiguous_key_inventory(venue, monkeypatch, case):
+    v = venue
+    def corrupt(keys, window):
+        old, fresh = keys
+        if case == "in-window":
+            return old, fresh, replace(fresh, id="extra", key="c" * 48)
+        if case == "after-window":
+            return old, fresh, replace(fresh, id="extra", key="c" * 48,
+                created_at=window.expires_at + timedelta(seconds=1))
+        if case == "usable-history":
+            return replace(old, expiration=window.expires_at), fresh
+        if case == "reusable-history":
+            return replace(old, reusable=True, used=True, expiration=window.expires_at), fresh
+        if case == "duplicate-id":
+            return replace(old, id=fresh.id), fresh
+        assert case == "oversize"
+        return old, fresh, replace(old, id="extra", key="c" * 48)
+    if case == "oversize":
+        # Exercise the real size guard with a small test-side bound and unique IDs.
+        monkeypatch.setattr(h, "_MAX_INVENTORY_KEYS", 2)
+    history_minter(v, monkeypatch, corrupt=corrupt)
+    with pytest.raises(ActivationRefused):
+        HomeActivationCoordinator(owner=v.production, root=v.root, root_owner=v.owner_ids).run(v.prepared)
+    txn = v.transactions.read_optional()
+    assert txn.phase == "failed_uncertain"
+    assert txn.effects == tuple(Effect(name, "done", {}) for name in EFFECTS[:3]) + (
+        Effect("local_node_mint", "intent", {}),)
+    assert v.admin.calls.count("create-key") == 1 and len(v.admin.reservations) == 1
+    assert not v.path("/etc/happyranch/enrollment.key").exists()
+    assert ("perform", "home_config") not in v.config.calls
 
 
 def test_managed_services_consumption_and_observation(venue, monkeypatch):

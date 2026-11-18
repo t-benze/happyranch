@@ -234,12 +234,25 @@ class HomeActivationOwner(HomeSystemdProcessOwner):
             if key.id in ids:
                 raise ActivationRefused()
             ids.add(key.id)
-        if (len(keys) != 1 or keys[0].reusable or keys[0].ephemeral or keys[0].acl_tags
-                or not window.started_at <= keys[0].created_at <= window.expires_at
-                or keys[0].expiration != window.expires_at
-                or (not keys[0].used and keys[0].expiration <= datetime.now(timezone.utc))):
+        current = [key for key in keys
+                   if window.started_at <= key.created_at <= window.expires_at]
+        if len(current) != 1:
             raise ActivationRefused()
-        return keys[0]
+        key = current[0]
+        now = datetime.now(timezone.utc)
+        if (key.reusable or key.ephemeral or key.acl_tags
+                or key.expiration != window.expires_at
+                or (not key.used and key.expiration <= now)):
+            raise ActivationRefused()
+        for historical in keys:
+            if historical is key:
+                continue
+            # B7 retains inert rows. Used reusable keys can still enroll, so
+            # history is conservatively restricted to non-reusable keys too.
+            if (historical.created_at >= window.started_at or historical.reusable
+                    or (not historical.used and historical.expiration > now)):
+                raise ActivationRefused()
+        return key
 
     def _users(self) -> None:
         users = self._admin.list_users(timeout_s=5)
