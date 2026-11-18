@@ -1,8 +1,7 @@
 """Fixed no-input Gio service, intended for system Python -I as root.
 
-The protected release UID is a mandatory constructor value supplied by the
-root-owned package launcher, never a bus argument or environment/config value.
-Package activation and reading the release record belong to slice 3b.
+The installed entry binds each authenticated sender to its validated release
+home before connector reads or authorization. Lifecycle effects remain absent.
 """
 from __future__ import annotations
 
@@ -31,12 +30,20 @@ CONTROL_SOCKET, MUTATIONS = _control.CONTROL_SOCKET, _control.MUTATIONS
 ControlClient, Device, Refused, Snapshot = (_control.ControlClient, _control.Device,
                                          _control.Refused, _control.Snapshot)
 
+_OWNER_SPEC = importlib.util.spec_from_file_location(
+    'happyranch_fixed_helper_owner', Path(__file__).with_name('helper_owner.py'))
+_owner = importlib.util.module_from_spec(_OWNER_SPEC)
+sys.modules[_OWNER_SPEC.name] = _owner
+_OWNER_SPEC.loader.exec_module(_owner)
+bootstrap_owner, OwnerRefused, Owner = _owner.bootstrap_owner, _owner.OwnerRefused, _owner.Owner
+
 SYSTEM_BUS_ADDRESS = 'unix:path=/run/dbus/system_bus_socket'
 BUS_NAME = 'ai.happyranch.RemoteAccess1'
 OBJECT_PATH = '/ai/happyranch/RemoteAccess1'
 INTERFACE = BUS_NAME
 ACTION_PREFIX = 'ai.happyranch.remote-access.'
 AUTH_DEADLINE = 120.0
+IDLE_SECONDS = 60.0
 METHODS = frozenset({'Status', 'NextDevice', *MUTATIONS})
 INTROSPECTION = '<node><interface name="' + INTERFACE + '">' + ''.join(
     '<method name="' + name + '"><arg name="result" type="s" direction="out"/></method>'
@@ -49,6 +56,7 @@ class Capture:
     method: str
     sender: str
     uid: int
+    owner: Owner
     snapshot: Snapshot
     record: Device
     deadline: float
@@ -57,14 +65,16 @@ class Capture:
 
 
 class RemoteAccessHelper:
-    def __init__(self, connection: Gio.DBusConnection, release_uid: int,
+    def __init__(self, connection: Gio.DBusConnection, release_uid: int | None = None,
                  control_path: str = CONTROL_SOCKET, clock: Callable[[], float] = time.monotonic,
                  deadline: float = AUTH_DEADLINE) -> None:
-        if type(release_uid) is not int or release_uid <= 0 or not 0 < deadline <= AUTH_DEADLINE:
+        if ((release_uid is not None and (type(release_uid) is not int or release_uid <= 0))
+                or not 0 < deadline <= AUTH_DEADLINE):
             raise Refused('unavailable')
         self.connection, self.release_uid = connection, release_uid
         self.control = ControlClient(control_path)
         self.clock, self.deadline = clock, deadline
+        self.last_activity = self.clock()
         self.lock = threading.RLock()
         self.cursors: dict[str, str] = {}
         self.inflight: Capture | None = None
@@ -86,6 +96,11 @@ class RemoteAccessHelper:
         if result.unpack()[0] != 1:
             self.close()
             raise Refused('unavailable')
+
+    def _idle(self, loop: GLib.MainLoop) -> bool:
+        if self.inflight is None and self.clock() - self.last_activity >= IDLE_SECONDS:
+            loop.quit()
+        return True  # serve removes the source even on the idle-exit path
 
     def close(self) -> None:
         if self.inflight is not None:
@@ -113,7 +128,7 @@ class RemoteAccessHelper:
         self.connection.send_message(reply, Gio.DBusSendMessageFlags.NONE)
 
     def _error(self, message: Gio.DBusMessage, category: str) -> None:
-        category = Refused(category).category
+        category = category if category in _owner.FAILURES else Refused(category).category
         LOG.info('remote-access-helper %s', category)
         reply = message.new_method_error_literal(INTERFACE + '.Error.' + category.replace('-', '_'), category)
         self.connection.send_message(reply, Gio.DBusSendMessageFlags.NONE)
@@ -127,9 +142,15 @@ class RemoteAccessHelper:
         except Exception:
             raise Refused('disconnected') from None
 
-    def _snapshot(self) -> Snapshot:
+    def _binding(self, uid: int) -> Owner:
+        owner = bootstrap_owner(uid)
+        if self.release_uid is not None and owner.uid != self.release_uid:
+            raise Refused('wrong-uid')
+        return owner
+
+    def _snapshot(self, uid: int) -> Snapshot:
         snapshot = self.control.status()
-        if not snapshot.owned or snapshot.release_uid != self.release_uid:
+        if not snapshot.owned or snapshot.release_uid != uid:
             raise Refused('changed')
         return snapshot
 
@@ -143,6 +164,7 @@ class RemoteAccessHelper:
         return target
 
     def _dispatch(self, message: Gio.DBusMessage, busy_on_arrival: bool = False) -> bool:
+        self.last_activity = self.clock()
         try:
             fds = message.get_unix_fd_list()
             if message.get_signature() or (fds is not None and fds.get_length()):
@@ -154,11 +176,10 @@ class RemoteAccessHelper:
                 raise Refused('invalid-request')
             with self.lock:
                 uid = self._uid(sender)
-                if uid != self.release_uid:
-                    raise Refused('wrong-uid')
+                owner = self._binding(uid)
                 if method in MUTATIONS and (busy_on_arrival or self.inflight is not None):
                     raise Refused('busy')
-                snapshot = self._snapshot()
+                snapshot = self._snapshot(uid)
                 if method in ('Status', 'NextDevice'):
                     if method == 'NextDevice':
                         if self.inflight is not None and self.inflight.sender == sender:
@@ -176,7 +197,7 @@ class RemoteAccessHelper:
                         'selected': selected.public() if selected else None})
                     return False
                 record = self._target(method, sender, snapshot)
-                capture = Capture(method, sender, uid, snapshot, record, self.clock() + self.deadline,
+                capture = Capture(method, sender, uid, owner, snapshot, record, self.clock() + self.deadline,
                                   uuid.uuid4().hex, message)
                 self.inflight, self.cancelled = capture, False
                 self.authorization_terminal = False
@@ -195,7 +216,7 @@ class RemoteAccessHelper:
             if self.inflight is not None and self.inflight.message == message:
                 self._cancel('unavailable')
             else:
-                self._error(message, error.category if isinstance(error, Refused) else 'unavailable')
+                self._error(message, error.category if isinstance(error, (Refused, OwnerRefused)) else 'unavailable')
         return False
 
     def _clear(self) -> None:
@@ -203,6 +224,7 @@ class RemoteAccessHelper:
             GLib.source_remove(self.timer)
         self.timer, self.inflight = 0, None
         self.authorization_terminal = False
+        self.last_activity = self.clock()
 
     def _authorized(self, proxy: Gio.DBusProxy, result: Gio.AsyncResult, capture: Capture) -> None:
         terminal = False
@@ -232,9 +254,11 @@ class RemoteAccessHelper:
                     return
                 if not granted:
                     raise Refused('denied')
-                if self._uid(capture.sender) != capture.uid or capture.uid != self.release_uid:
+                if self._uid(capture.sender) != capture.uid:
                     raise Refused('wrong-uid')
-                current = self._snapshot()
+                if self._binding(capture.uid) != capture.owner:
+                    raise Refused('changed')
+                current = self._snapshot(capture.uid)
                 if current != capture.snapshot or self._target(capture.method, capture.sender, current) != capture.record:
                     raise Refused('changed')
                 if self.clock() >= capture.deadline:
@@ -248,7 +272,7 @@ class RemoteAccessHelper:
                 if isinstance(error, Refused) and error.category == 'expired':
                     self._cancel('expired')
                     return
-                self._error(capture.message, error.category if isinstance(error, Refused) else 'unavailable')
+                self._error(capture.message, error.category if isinstance(error, (Refused, OwnerRefused)) else 'unavailable')
             self._clear()
 
     def _before_commit(self, capture: Capture) -> None:
@@ -256,8 +280,10 @@ class RemoteAccessHelper:
         if (self.clock() >= capture.deadline
                 or (capture.method != 'RevokeSelected' and capture.record.expires_at <= time.time())):
             raise Refused('expired')
-        if self._uid(capture.sender) != capture.uid or capture.uid != self.release_uid:
+        if self._uid(capture.sender) != capture.uid:
             raise Refused('wrong-uid')
+        if self._binding(capture.uid) != capture.owner:
+            raise Refused('changed')
         if self.inflight is not capture or self.cancelled:
             raise Refused('changed')
         if self.clock() >= capture.deadline:
@@ -301,14 +327,24 @@ class RemoteAccessHelper:
                     self._cancel('disconnected')
 
 
-def serve(release_uid: int) -> None:
-    """Fixed production bootstrap; only the protected launcher supplies the UID."""
+def serve() -> None:
+    """Fixed production bootstrap; caller credentials select the owner per call."""
     if os.geteuid() != 0:
         raise Refused('wrong-uid')
     connection = Gio.DBusConnection.new_for_address_sync(SYSTEM_BUS_ADDRESS,
         Gio.DBusConnectionFlags.AUTHENTICATION_CLIENT | Gio.DBusConnectionFlags.MESSAGE_BUS_CONNECTION, None, None)
-    helper = RemoteAccessHelper(connection, release_uid)
+    helper = RemoteAccessHelper(connection)
+    loop = GLib.MainLoop()
+    timer = GLib.timeout_add_seconds(1, helper._idle, loop)
     try:
-        GLib.MainLoop().run()
+        loop.run()
     finally:
+        GLib.source_remove(timer)
         helper.close()
+        connection.close_sync(None)
+
+
+if __name__ == '__main__':
+    if len(sys.argv) != 1:
+        raise SystemExit('invalid-request')
+    serve()

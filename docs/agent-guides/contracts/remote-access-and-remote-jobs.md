@@ -2535,9 +2535,25 @@ Gio handles bus/polkit; the fixed bundled Python `-I` installer and existing
 root-step runner (`useradd`/`userdel`/`groupdel`, `systemctl`) are children in
 that same sandbox. No shell, user imports/settings, second privileged executor,
 transient unit or different user. Before auth, derive clean-host release UID
-from the actual bus sender UID → passwd home → fixed package release record,
-validating owner/mode/no-follow; zero or multiple valid candidates refuses with
-a fixed category. Daemon bearer is never setup authority. Package install only
+from the actual bus credential UID and exactly one matching `pwd.getpwall()`
+row. UID 0 and system UIDs below 1000 refuse `owner_unsupported`; zero rows
+refuse `owner_unknown`, multiple rows refuse `owner_ambiguous`. If the fixed
+root-owned `/etc/happyranch/release-daemon.json` exists, reuse the release
+verifier's trusted-parent, no-follow, single-link and closed-record validation;
+its UID/user must match the sender/passwd row or refuse `owner_mismatch`.
+Its `data_home` wins; otherwise use only passwd-home + `.local/share/happyranch`,
+never XDG/environment/caller input. Validate that single candidate by
+descriptor-relative no-follow traversal: a real directory owned by the UID,
+not group/world-writable, outside passwd-home/`.happyranch`, `/`, `/etc` and
+`/var`. Missing/invalid evidence refuses `release_home_invalid`; no username
+or path crosses the boundary. These five bootstrap refusal codes are closed.
+The packaged entry retains only Status/NextDevice/ApprovePending/RejectPending/
+RevokeSelected; installer-backed lifecycle effects remain deferred to serial
+integration. Focused bootstrap/package verification uses
+`/usr/bin/python3 -B packaging/linux/test_build_deb.py -v`; the existing
+standalone `scripts/test_remote_access_helper.py` private-bus command also
+checks refusal before connector reads/auth. These focused checks do not install
+or start the helper. Daemon bearer is never setup authority. Package install only
 registers the service and never runs Enable.
 Why no founder: pins the approved root helper and existing dependencies/effects.
 

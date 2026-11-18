@@ -1,0 +1,21 @@
+[Unit]
+Description=HappyRanch remote access helper
+
+[Service]
+Type=dbus
+BusName=ai.happyranch.RemoteAccess1
+User=root
+ExecStart=/usr/bin/python3 -I /opt/happyranch-desktop/bin/happyranch-remote-access-helper
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=yes
+ReadWritePaths=/etc
+ReadWritePaths=/var/lib/happyranch-remote-access
+ReadWritePaths=-/var/lib/happyranch-headscale
+ReadWritePaths=-/var/lib/happyranch-connector
+ReadWritePaths=-/var/lib/happyranch-tsnet-sidecar
+ReadWritePaths=-/run/happyranch-headscale
+ReadWritePaths=-/run/happyranch-connector
+ReadWritePaths=-/run/happyranch-tsnet-sidecar
+ReadWritePaths=-/opt/happyranch

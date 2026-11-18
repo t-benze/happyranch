@@ -5,6 +5,7 @@ import importlib.util
 import json
 import logging
 import os
+import pwd
 import socket
 import struct
 import subprocess
@@ -17,6 +18,9 @@ import xml.etree.ElementTree as ET
 from contextlib import ExitStack, contextmanager
 from dataclasses import asdict, replace
 from pathlib import Path
+from functools import partial
+from types import SimpleNamespace
+from unittest.mock import Mock
 from typing import Any
 
 import pytest
@@ -205,7 +209,17 @@ class Call:
 
 
 @pytest.fixture
-def venue(tmp_path: Any, request: Any) -> Any:
+def venue(tmp_path: Any, request: Any, monkeypatch: Any) -> Any:
+    # Exercise the real owner resolver against an isolated passwd home. Only
+    # the external protected-record read is isolated as clean-host absence.
+    home = tmp_path / 'owner'
+    (home / '.local/share/happyranch').mkdir(parents=True, mode=0o700)
+    row = pwd.struct_passwd(('owner', 'x', os.getuid(), os.getgid(), '', str(home), '/bin/sh'))
+    monkeypatch.setattr(HELPER, 'bootstrap_owner', partial(HELPER._owner.bootstrap_owner,
+        passwd=SimpleNamespace(getpwall=lambda: [row])))
+    def absent_record(*args: Any, **kwargs: Any) -> Any:
+        raise FileNotFoundError
+    monkeypatch.setattr(HELPER._owner._verifier, '_read', absent_record)
     # Bus config belongs to task scratch; abstract address avoids Unix path limits.
     config = tmp_path / 'bus.conf'
     config.write_text('<busconfig><type>session</type><apparmor mode="disabled"/>'
@@ -240,7 +254,7 @@ def venue(tmp_path: Any, request: Any) -> Any:
         operations.snapshot = replace(operations.snapshot, release_uid=options.get('release_uid', os.getuid()))
         server = ControlServer(operations)
         cleanup.callback(server.close)
-        helper = RemoteAccessHelper(new(), options.get('release_uid', os.getuid()), server.path,
+        helper = RemoteAccessHelper(new(), None if options.get('bootstrap') else options.get('release_uid', os.getuid()), server.path,
                                     deadline=options.get('deadline', 120))
         cleanup.callback(helper.close)
         yield helper, authority, operations, new(), new
@@ -302,6 +316,7 @@ def test_target_capture_survives_dialog(venue: Any, change: Any) -> None:
     assert not operations.effects
 
 
+@pytest.mark.parametrize('venue', [{}, {'bootstrap': True}], indirect=True)
 def test_fresh_authorization_and_operations(venue: Any) -> None:
     _, authority, operations, client, _ = venue
     Call(client).finish()
@@ -1155,3 +1170,56 @@ def test_bound_publication_uncertainty_stays_reported(monkeypatch: Any, method: 
         assert Path(supervisor.config.state_path).read_bytes() == before
         for _ in range(2):
             assert client.status().phase == 'failed' and not client.status().ready
+
+
+@pytest.mark.parametrize('case,category', [
+    ('unknown', 'owner_unknown'), ('ambiguous', 'owner_ambiguous'),
+    ('missing', 'release_home_invalid'), ('mismatch', 'owner_mismatch'),
+])
+def test_bootstrap_refuses_before_connector_or_auth(venue: Any, monkeypatch: Any,
+                                                     tmp_path: Any, case: Any, category: Any) -> None:
+    _, authority, operations, client, _ = venue
+    home = tmp_path / 'owner'
+    row = pwd.struct_passwd(('owner', 'x', os.getuid(), os.getgid(), '', str(home), '/bin/sh'))
+    rows = [] if case == 'unknown' else [row, row] if case == 'ambiguous' else [row]
+    if case == 'missing':
+        (home / '.local/share/happyranch').rmdir()
+    if case == 'mismatch':
+        record = dict(user='another', uid=os.getuid(), data_home=str(home / '.local/share/happyranch'),
+                      unit='happyranch-daemon.service', fragment_path='/usr/lib/systemd/user/happyranch-daemon.service')
+        monkeypatch.setattr(HELPER._owner._verifier, '_read', lambda *a, **k: json.dumps(record).encode())
+    monkeypatch.setattr(HELPER, 'bootstrap_owner', partial(HELPER._owner.bootstrap_owner,
+        passwd=SimpleNamespace(getpwall=lambda: rows)))
+    Call(client).finish(category)
+    assert operations.status_reads == 0 and not operations.effects and not authority.calls
+
+
+def test_idle_exit_after_sixty_idle_seconds(venue: Any) -> None:
+    helper, _, _, client, _ = venue
+    now = [0.0]
+    helper.clock = lambda: now[0]
+    helper.last_activity = 0.0
+    loop = SimpleNamespace(quit=Mock())
+    now[0] = 59.999
+    assert helper._idle(loop) is True
+    loop.quit.assert_not_called()
+    now[0] = 60.0
+    assert helper._idle(loop) is True
+    loop.quit.assert_called_once_with()
+    loop.quit.reset_mock()
+    Call(client, 'Status').finish()  # real dispatch resets the idle clock
+    now[0] = 119.999
+    helper._idle(loop)
+    loop.quit.assert_not_called()
+    helper.inflight = object()  # an outstanding authorization is never idle
+    now[0] = 180.0
+    helper._idle(loop)
+    loop.quit.assert_not_called()
+    helper.inflight = None
+    helper._clear()  # a settled authorization starts a new idle interval
+    now[0] = 239.999
+    helper._idle(loop)
+    loop.quit.assert_not_called()
+    now[0] = 240.0
+    helper._idle(loop)
+    loop.quit.assert_called_once_with()

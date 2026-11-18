@@ -109,6 +109,11 @@ with tempfile.TemporaryDirectory(prefix='happyranch-deb-', dir='/tmp') as tempor
         if path.is_symlink() and not path.resolve(strict=True).is_relative_to(payload):
             parser.error('payload symlink escapes its prefix')
     for required in ('bin/happyranch', 'bin/happyranch-daemon', 'bin/happyranch-app',
+                     'bin/happyranch-remote-access-helper',
+                     'libexec/remote-access/remote_access_helper.py',
+                     'libexec/remote-access/helper_owner.py',
+                     'libexec/remote-access/helper_control.py',
+                     'libexec/remote-access/release_verifier.py',
                      'libexec/headscale/headscale', 'libexec/remote-access/happyranch-home-ca',
                      'libexec/remote-access/happyranch-home-admin',
                      'licenses/headscale-LICENSE',
@@ -163,6 +168,21 @@ with tempfile.TemporaryDirectory(prefix='happyranch-deb-', dir='/tmp') as tempor
     unit.parent.mkdir(parents=True)
     shutil.copyfile(packaging / 'systemd/happyranch-daemon.service', unit)
     unit.chmod(0o644)
+    # Register activation/policy only. No maintainer script starts a service.
+    for source, destination in (
+        ('dbus/ai.happyranch.RemoteAccess1.conf', 'usr/share/dbus-1/system.d/ai.happyranch.RemoteAccess1.conf'),
+        ('dbus/ai.happyranch.RemoteAccess1.service', 'usr/share/dbus-1/system-services/ai.happyranch.RemoteAccess1.service'),
+        ('polkit/ai.happyranch.remote-access.policy', 'usr/share/polkit-1/actions/ai.happyranch.remote-access.policy'),
+        ('systemd/happyranch-remote-access-helper.service', 'usr/lib/systemd/system/happyranch-remote-access-helper.service'),
+    ):
+        destination = stage / destination
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(packaging / source, destination)
+        destination.chmod(0o644)
+    # The contract deliberately has no '-' on this required writable directory.
+    # Package its empty root-owned mountpoint so clean-host activation can start.
+    helper_state = stage / 'var/lib/happyranch-remote-access'
+    helper_state.mkdir(parents=True)
     applications = stage / 'usr/share/applications'
     applications.mkdir(parents=True)
     template = (prefix / 'share/applications/happyranch.desktop.in').read_text()
@@ -221,6 +241,7 @@ with tempfile.TemporaryDirectory(prefix='happyranch-deb-', dir='/tmp') as tempor
     for path in stage.rglob('*'):
         if not path.is_symlink():
             path.chmod(0o755 if path.is_dir() or path.stat().st_mode & 0o111 else 0o644)
+    helper_state.chmod(0o700)
     files = sorted(path for path in stage.rglob('*')
                    if path.is_file() and not path.is_symlink() and not path.is_relative_to(control))
     (control / 'md5sums').write_text(''.join(
