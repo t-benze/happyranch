@@ -269,7 +269,10 @@ export interface TasksApi {
     assigned_agent?: string;
   }) => TaskListStreams;
   useTask: (taskId: string | undefined) => QueryLike<TaskRecord>;
-  useTaskRecall: (taskId: string | undefined) => QueryLike<TaskRecallNode>;
+  useTaskRecall: (taskId: string | undefined) => QueryLike<TaskRecallNode> & {
+    isFetching: boolean;
+    refetch: () => Promise<unknown>;
+  };
 
   /** Subscribes; passes each event to `onEvent`. No-op under mocks. */
   useTaskTailSSE: (
