@@ -12,6 +12,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache
+from pathlib import Path
 from typing import Iterator
 
 from runtime.remote_access.headscale_service import INVITE_USER, NODE_USER
@@ -433,6 +434,39 @@ class DurableOperationRecordStore:
         finally:
             os.close(fd)
         return True
+
+
+def read_local_node_window(operation_id: str, *, root: Path = Path("/"),
+                           root_owner: tuple[int, int] = (0, 0)) -> CreationWindow:
+    """Read only the existing node reservation. No mkdir, repair or reservation write."""
+    from runtime.remote_access.home_activation import HomeActivationStore, _signature
+    try:
+        if type(operation_id) is not str or re.fullmatch("[0-9a-f]{32}", operation_id) is None:
+            raise ValueError
+        io = HomeActivationStore(root=root, root_owner=root_owner)._io
+        relative = _STATE.lstrip("/") + "/" + NODE_USER
+        with io._publication_parent(relative) as (parent, check):
+            # Match the existing minter's 0700 custody at all managed levels.
+            for path in (_STATE.lstrip("/"), relative):
+                with io._directory(path) as directory:
+                    io._check_directory(directory, path, (0o700, root_owner))
+            name = "operation-" + hashlib.sha256(operation_id.encode("utf-8")).hexdigest()
+            before = os.stat(name, dir_fd=parent, follow_symlinks=False)
+            if not 0 < before.st_size <= 160:
+                raise ValueError
+            data = io._read_file(parent, name, owner=root_owner, mode=0o600)
+            started, expires, end = data.decode("ascii").split("\n")
+            window = CreationWindow(datetime.fromisoformat(started), datetime.fromisoformat(expires))
+            if (end or any(t.utcoffset() != timedelta(0) for t in (window.started_at, window.expires_at))
+                    or not timedelta(0) < window.expires_at - window.started_at <= timedelta(minutes=5)
+                    or data != (window.started_at.isoformat() + "\n" + window.expires_at.isoformat() + "\n").encode("ascii")
+                    or _signature(os.stat(name, dir_fd=parent, follow_symlinks=False)) != _signature(before)
+                    or io._read_file(parent, name, owner=root_owner, mode=0o600) != data):
+                raise ValueError
+            check()
+            return window
+    except Exception:
+        raise AdminRefused("refused") from None
 
 
 @contextmanager

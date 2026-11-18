@@ -225,6 +225,32 @@ def validate_transition(previous: HomeActivationReceipt, updated: HomeActivation
         raise HomeActivationError("transition")
 
 
+def validate_recovery_transition(previous: HomeActivationReceipt, updated: HomeActivationReceipt) -> None:
+    """B7 only; ordinary linear transitions retain their terminal fence."""
+    if (type(previous) is not HomeActivationReceipt or type(updated) is not HomeActivationReceipt
+            or previous.phase != "failed_uncertain"
+            or previous.member_digests != updated.member_digests
+            or previous.ownership != updated.ownership):
+        raise HomeActivationError("transition")
+    fixed = tuple(key for key in BINDING_KEYS if key != "activation_generation")
+    if any(getattr(previous, key) != getattr(updated, key) for key in fixed):
+        raise HomeActivationError("transition")
+    if updated.phase == "ready":
+        if (previous.activation_generation != updated.activation_generation
+                or previous.operation_id != updated.operation_id
+                or updated.local_node_stable_id is None
+                or (previous.local_node_stable_id is not None and
+                    (previous.local_node_stable_id, previous.home_endpoint) !=
+                    (updated.local_node_stable_id, updated.home_endpoint))):
+            raise HomeActivationError("transition")
+    elif updated.phase == "prepared":
+        if (updated.activation_generation != previous.activation_generation + 1
+                or updated.operation_id == previous.operation_id):
+            raise HomeActivationError("transition")
+    else:
+        raise HomeActivationError("transition")
+
+
 def _signature(info: os.stat_result) -> tuple[int, ...]:
     return (info.st_dev, info.st_ino, info.st_uid, info.st_gid, info.st_mode,
             info.st_nlink, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
