@@ -567,7 +567,7 @@ export function KbPage(): JSX.Element {
                 <button
                   type="button"
                   onClick={() => setCandidatesView(true)}
-                  className="text-xs font-medium text-feedback-warning bg-feedback-warning/10 px-2.5 py-1 rounded-full hover:bg-feedback-warning/20 transition-colors"
+                  className="text-xs font-medium text-attention-text bg-attention-soft px-2.5 py-1 rounded-full hover:underline transition-colors"
                 >
                   {t('kb.pendingCandidatesTag', { count: candidatePendingCount, number: formatCountFor(locale, candidatePendingCount) })}
                 </button>

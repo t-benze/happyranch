@@ -44,7 +44,7 @@ function CollapsibleBody({
         <button
           type="button"
           onClick={() => setExpanded((v) => !v)}
-          className="text-accent-default mt-1 text-xs hover:underline"
+          className="text-accent-text mt-1 text-xs hover:underline"
         >
           {expanded
             ? t(TOGGLE_KEYS[kind].hide)

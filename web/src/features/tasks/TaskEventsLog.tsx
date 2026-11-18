@@ -60,7 +60,7 @@ function rowTone(label: string): string {
     return 'bg-tier-red-tint text-status-abandoned';
   }
   if (label === 'task_blocked' || label === 'escalated') {
-    return 'bg-tier-yellow-tint text-status-blocked';
+    return 'bg-tier-yellow-tint text-attention-text';
   }
   if (label === 'task_complete') return 'bg-tier-green-tint text-status-open';
   return 'text-text-primary';

@@ -1797,7 +1797,7 @@ function SystemDivider({ timestamp, systemPayload, slug }: SystemDividerProps): 
           <path d="M22 21v-2a4 4 0 00-3-3.9" />
         </svg>
         <span className="text-text-secondary whitespace-pre-wrap">{description}</span>{' '}
-        <span className="text-text-disabled">{t('threads.page.system.suffix')}</span>
+        <span className="text-text-muted">{t('threads.page.system.suffix')}</span>
       </div>
     </div>
   );

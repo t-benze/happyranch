@@ -23,6 +23,7 @@ import { Lock } from 'lucide-react';
 import { Link, useParams } from 'react-router-dom';
 import { ContentWrap } from '@/design-system/layouts/ContentWrap/ContentWrap';
 import { List, Row, RowAction } from '@/design-system/patterns/List';
+import { IdBadge } from '@/design-system/patterns/IdBadge';
 import { PageTitle } from '@/design-system/patterns/PageTitle';
 import { TONE_CLASS, toneClass } from '@/design-system/patterns/semanticTone';
 import { useJobsList } from '@/hooks/jobs';
@@ -161,7 +162,9 @@ function JobCard({ job, to }: { job: JobRecord; to: string }): JSX.Element {
         }`}
       >
         {/* JOB */}
-        <span className={`${CARD_COL.job} text-mono-sm text-accent-text tracking-wide`}>{job.id}</span>
+        <span className={CARD_COL.job}>
+          <IdBadge id={job.id} kind="job" />
+        </span>
 
         {/* COMMAND — title + verbatim command */}
         <div className={`${CARD_COL.command} flex flex-col gap-1`}>
@@ -186,7 +189,9 @@ function JobCard({ job, to }: { job: JobRecord; to: string }): JSX.Element {
         </div>
 
         {/* TASK */}
-        <span className={`${CARD_COL.task} text-mono-sm text-accent-text truncate`}>{job.task_id}</span>
+        <span className={`${CARD_COL.task} truncate`}>
+          <IdBadge id={job.task_id} kind="task" />
+        </span>
 
         {/* OPENED */}
         <div className={`${CARD_COL.opened} flex justify-end`}>
