@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/tls"
@@ -171,7 +172,7 @@ func TestHomeSessionProcessChild(t *testing.T) {
 	if err != nil {
 		t.Fatal("session allocation failed")
 	}
-	transport, err := prepareHomeProcess(cfg)
+	transport, err := prepareHomeProcess(cfg.homeLaunch)
 	if err != nil {
 		s.Close()
 		t.Fatal("transport refused")
@@ -183,14 +184,30 @@ func TestHomeSessionProcessChild(t *testing.T) {
 	}
 	transport.upstream = os.Getenv("HOME_SESSION_TEST_UPSTREAM")
 	server := s.engine.server
+	if s.state != nil && server.Ephemeral {
+		t.Fatal("save intent remained ephemeral")
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP, syscall.SIGQUIT)
 	defer stop()
+	if mode == "save" {
+		changed := make(chan os.Signal, 1)
+		signal.Notify(changed, syscall.SIGUSR1)
+		defer signal.Stop(changed)
+		go func() {
+			select {
+			case <-changed:
+				_ = s.state.WriteState("later-test-state", []byte("changed"))
+			case <-ctx.Done():
+			}
+		}()
+	}
 	if mode != "custody" {
 		cfg.SocketPath = os.Getenv("HOME_SESSION_TEST_SOCKET")
 		if mode == "error" {
 			cfg.SocketPath = "relative-refused"
 		}
 		code := s.serve(ctx, os.Stdin, os.Stdout, transport, cfg)
+		fmt.Fprintln(os.Stdout, code)
 		if mode == "error" && code != managedStateError {
 			t.Fatal("listener error not observed")
 		}
@@ -342,9 +359,18 @@ func TestHomeSessionScratchCustodyAndLifetime(t *testing.T) {
 	upstream.TLS = &tls.Config{Certificates: []tls.Certificate{homeLeaf(t, ca, "valid")}}
 	upstream.StartTLS()
 	defer upstream.Close()
-	for _, mode := range []string{"custody", "eof", "signal", "error", "eof-enrolling", "signal-enrolling"} {
+	var saved []byte
+	var savedNode string
+	var savedCount int
+	for _, mode := range []string{"custody", "save", "resume", "changed-identity", "eof", "signal", "error", "eof-enrolling", "signal-enrolling"} {
 		t.Run(mode, func(t *testing.T) {
 			holdEnrollment.Store(strings.HasSuffix(mode, "-enrolling"))
+			// testcontrol requires a join key even on re-registration by default.
+			// Allow its existing registered node to reconnect without a new key.
+			control.RequireAuthKey = strings.Repeat("ab", 24)
+			if mode == "resume" || mode == "changed-identity" {
+				control.RequireAuthKey = ""
+			}
 			runtime, err := filepath.EvalSymlinks(t.TempDir())
 			if err != nil {
 				t.Fatal("canonical runtime setup failed")
@@ -366,11 +392,129 @@ func TestHomeSessionScratchCustodyAndLifetime(t *testing.T) {
 			}
 			var out bytes.Buffer
 			cmd.Stdout, cmd.Stderr = &out, &out
+			var output io.ReadCloser
+			if mode == "save" || mode == "resume" || mode == "changed-identity" {
+				cmd.Stdout = nil
+				output, err = cmd.StdoutPipe()
+				if err != nil {
+					t.Fatal("private output pipe failed")
+				}
+			}
 			if cmd.Start() != nil {
 				t.Fatal("child failed to start")
 			}
-			if _, err := in.Write(sessionFrame(t, sessionPayload(t, ca.der))); err != nil {
+			defer in.Close()
+			defer func() {
+				if cmd.ProcessState == nil {
+					_ = cmd.Process.Kill()
+					_ = cmd.Wait()
+				}
+			}()
+			payload := sessionPayload(t, ca.der)
+			if output != nil {
+				var fields map[string]any
+				json.Unmarshal(payload, &fields)
+				fields["version"], fields["saveIntent"], fields["stableNodeID"] = 3, true, ""
+				if mode != "save" {
+					delete(fields, "joinKey")
+					fields["networkState"], fields["stableNodeID"] = saved, savedNode
+				}
+				if mode == "changed-identity" {
+					// Keep machine/node keys intact but supply another expected
+					// identity consistently in all saved metadata. Live Self
+					// still authenticates the original node and must refuse.
+					var state homeStateEnvelope
+					json.Unmarshal(saved, &state)
+					state.StableNodeID = "expected-other-node"
+					for name, value := range state.Store {
+						state.Store[name] = bytes.ReplaceAll(value, []byte(savedNode), []byte(state.StableNodeID))
+					}
+					fields["networkState"], _ = json.Marshal(state)
+					fields["stableNodeID"] = state.StableNodeID
+				}
+				payload, _ = json.Marshal(fields)
+			}
+			if _, err := in.Write(sessionFrame(t, payload)); err != nil {
 				t.Fatal("launch delivery failed")
+			}
+			if output != nil {
+				reader := bufio.NewReader(output)
+				ready, err := reader.ReadString('\n')
+				if mode == "changed-identity" {
+					if err != nil || ready != "-22\n" {
+						if regexp.MustCompile(`^-?[0-9]+\n$`).MatchString(ready) {
+							t.Log("closed helper category", strings.TrimSpace(ready))
+						}
+						t.Fatal("live replacement identity was not distinctly refused")
+					}
+				} else {
+					if err != nil || !strings.HasPrefix(ready, "0 ") {
+						if regexp.MustCompile(`^-?[0-9]+\n$`).MatchString(ready) {
+							t.Log("closed helper category", strings.TrimSpace(ready))
+						}
+						t.Fatal("saved session readiness unavailable")
+					}
+					node := strings.TrimSuffix(strings.TrimPrefix(ready, "0 "), "\n")
+					var size uint32
+					if binary.Read(reader, binary.BigEndian, &size) != nil || size == 0 || size > homeSessionStateLimit {
+						t.Fatal("bounded state frame missing")
+					}
+					state := make([]byte, size)
+					if _, err := io.ReadFull(reader, state); err != nil {
+						t.Fatal("state frame truncated")
+					}
+					values, err := restoreHomeState(state, "synthetic-control", node)
+					if err != nil {
+						t.Fatal("export is not complete restorable state")
+					}
+					if mode == "save" {
+						if cmd.Process.Signal(syscall.SIGUSR1) != nil {
+							t.Fatal("later write trigger failed")
+						}
+						for attempt := 0; ; attempt++ {
+							if attempt > 8 {
+								t.Fatal("later store change was not exported")
+							}
+							if binary.Read(reader, binary.BigEndian, &size) != nil || size == 0 || size > homeSessionStateLimit {
+								t.Fatal("later bounded frame missing")
+							}
+							state = make([]byte, size)
+							if _, err := io.ReadFull(reader, state); err != nil {
+								t.Fatal("later state truncated")
+							}
+							values, err = restoreHomeState(state, "synthetic-control", node)
+							if err != nil {
+								t.Fatal("later state incomplete")
+							}
+							if string(values["later-test-state"]) == "changed" {
+								break
+							}
+						}
+						saved, savedNode, savedCount = state, node, control.NumNodes()
+					} else if node != savedNode || control.NumNodes() != savedCount {
+						t.Fatal("resume replaced StableNodeID")
+					}
+					// Actual machine/node state must never reach scratch.
+					filepath.WalkDir(runtime, func(path string, entry os.DirEntry, err error) error {
+						if err != nil {
+							t.Fatal("scratch observation failed")
+						}
+						if !entry.Type().IsRegular() {
+							return nil
+						}
+						data, err := os.ReadFile(path)
+						if err != nil {
+							t.Fatal("scratch read failed")
+						}
+						if bytes.Contains(data, []byte("privkey:")) || bytes.Contains(data, values["_machinekey"]) {
+							t.Fatal("saved credentials reached disk")
+						}
+						return nil
+					})
+				}
+				in.Close()
+				// Drain subsequent complete snapshots, retaining none in logs.
+				go io.Copy(io.Discard, reader)
 			}
 			if strings.HasSuffix(mode, "-enrolling") {
 				select {
@@ -406,7 +550,7 @@ func TestHomeSessionScratchCustodyAndLifetime(t *testing.T) {
 				}
 			}
 			if err := cmd.Wait(); err != nil {
-				for _, reason := range []string{"credential bytes reached scratch", "unexpected scratch file", "session scratch survived teardown", "serve left scratch", "session credentials are not memory-only"} {
+				for _, reason := range []string{"synthetic membership failed", "missing peer was not refused", "local socket unavailable", "real production log scratch not observed", "credential bytes reached scratch", "unexpected scratch file", "session scratch survived teardown", "serve left scratch", "session credentials are not memory-only"} {
 					if bytes.Contains(out.Bytes(), []byte(reason)) {
 						t.Log(reason)
 					}

@@ -1,4 +1,4 @@
-"""Session-only Linux client owner; called natively after explicit target consent.
+"""In-memory Linux client owner; called natively after explicit target consent.
 
 No GTK/JS dependency. 3a.2 owns prompts, attempts and the real runtime load gate.
 All methods may block and belong on a native worker; stop is independently callable.
@@ -83,6 +83,41 @@ def _fields(body: bytes) -> dict[str, str]:
     raise ClientError("protocol")
 
 
+_STATE_LIMIT = 64 * 1024
+
+
+class SavedRecord(_codec._Redacted):
+    """Native-only immutable binding; Secret Service custody belongs to slice 8b."""
+
+    __slots__ = ("version", "bearer", "home_id", "control_plane_id", "stable_node_id",
+                 "connector_id", "control_url", "ca_der", "fingerprint", "dial_ip",
+                 "home_endpoint", "profile_id", "hostname", "network_state")
+    _types = (int, str, str, str, str, str, str, bytes, str, str, str, str, str, bytes)
+
+
+def _network_state(data: bytes, control: str, node: str) -> bytes:
+    def pairs(items: list[tuple[str, object]]) -> dict:
+        result = {}
+        for name, value in items:
+            if name in result:
+                raise ClientError("stateUnavailable")
+            result[name] = value
+        return result
+    try:
+        if not 0 < len(data) <= _STATE_LIMIT:
+            raise ValueError()
+        body = json.loads(data, object_pairs_hook=pairs)
+        if (type(body) is not dict or body.keys() != {"version", "controlPlaneID", "stableNodeID", "store"}
+                or type(body["version"]) is not int or body["version"] != 1
+                or body["controlPlaneID"] != control or body["stableNodeID"] != node
+                or type(body["store"]) is not dict or not 0 < len(body["store"]) <= 32
+                or any(type(value) is not str for value in body["store"].values())):
+            raise ValueError()
+        return data  # Full tsnet validation belongs to the Go launch boundary.
+    except (ValueError, UnicodeError, RecursionError):
+        raise ClientError("stateUnavailable") from None
+
+
 class ClientSession:
     """Single-use owner. stop seals launch/dial/credential admission permanently."""
 
@@ -100,16 +135,54 @@ class ClientSession:
         self._bearer = self._pair_secret = self._handle = ""
         self._expiry = 0.0
         self._node = None
+        self._binding = None
+        self._network = b""
+        self._state_reader = None
 
     def __repr__(self) -> str:
         return "ClientSession(<redacted>)"
 
-    def join(self, invite: object) -> None:
+    @classmethod
+    def resume(cls, prefix: Path, record: SavedRecord) -> ClientSession:
+        session = cls(prefix)
+        try:
+            if (type(record) is not SavedRecord or record.version != 1
+                    or not re.fullmatch(r"hrpin_[1-9][0-9]{0,18}_[0-9a-f]{64}", record.bearer)
+                    or not re.fullmatch(r"[0-9a-f]{32}", record.profile_id)
+                    or record.hostname != "happyranch-linux-" + record.profile_id
+                    or record.fingerprint != hashlib.sha256(record.ca_der).hexdigest()):
+                raise ClientError("stateUnavailable")
+            _network_state(record.network_state, record.control_plane_id, record.stable_node_id)
+            session._launch(record, True, record)
+            return session
+        except (OSError, ValueError, ClientError) as error:
+            session.stop()
+            category = "identityMismatch" if str(error) == "identityMismatch" else "resumeUnavailable"
+            raise ClientError(category) from None
+
+    def saved_record(self) -> SavedRecord:
+        with self._lock:
+            if (self._closed or not self._bearer or not self._binding or not self._network
+                    or self._process.poll() is not None):
+                raise ClientError("stateUnavailable")
+            return SavedRecord(version=1, bearer=self._bearer, stable_node_id=self._node,
+                               network_state=self._network, **self._binding)
+
+    def join(self, invite: object, *, save_intent: bool = False) -> None:
         try:
             # Re-admit the shared codec's immutable result against the current
             # clock. The Go child independently owns full certificate/peer trust.
             if type(invite) is not _codec.DecodedInvite or not time.time() < invite.expires_at:
                 raise ClientError("invalidInvite")
+            if type(save_intent) is not bool:
+                raise ClientError("invalidInvite")
+            self._launch(invite, save_intent)
+        except (OSError, ValueError, ClientError):
+            self.stop()
+            raise ClientError("joinUnavailable") from None
+
+    def _launch(self, trust: object, save_intent: bool, record: SavedRecord | None = None) -> None:
+        try:
             with self._lock:
                 if self._closed or self._process is not None:
                     raise ClientError("unavailable")
@@ -120,15 +193,27 @@ class ClientSession:
                 path = str(self._directory / "dial")
                 if len(path.encode()) > 100:
                     raise ClientError("runtimeUnavailable")
-                fields = {"version": 2, "caDER": base64.b64encode(invite.ca_der).decode(),
-                          "dialIP": invite.dial_ip, "homeID": invite.home_id,
-                          "controlPlaneID": invite.control_plane_id,
-                          "fingerprint": hashlib.sha256(invite.ca_der).hexdigest(),
-                          "controlURL": invite.control_url, "hostname": "happyranch-linux-" + os.urandom(8).hex(),
-                          "joinKey": invite.join_key, "socketPath": path, "target": invite.home_endpoint}
+                profile_id = record.profile_id if record else os.urandom(16).hex()
+                self._binding = dict(home_id=trust.home_id, control_plane_id=trust.control_plane_id,
+                                     connector_id=trust.connector_id, control_url=trust.control_url,
+                                     ca_der=trust.ca_der, fingerprint=hashlib.sha256(trust.ca_der).hexdigest(),
+                                     dial_ip=trust.dial_ip, home_endpoint=trust.home_endpoint,
+                                     profile_id=profile_id, hostname="happyranch-linux-" + profile_id)
+                fields = {"version": 3 if save_intent else 2, "caDER": base64.b64encode(trust.ca_der).decode(),
+                          "dialIP": trust.dial_ip, "homeID": trust.home_id,
+                          "controlPlaneID": trust.control_plane_id,
+                          "fingerprint": hashlib.sha256(trust.ca_der).hexdigest(),
+                          "controlURL": trust.control_url, "hostname": self._binding["hostname"],
+                          "socketPath": path, "target": trust.home_endpoint}
+                if save_intent:
+                    fields.update(saveIntent=True, stableNodeID=record.stable_node_id if record else "")
+                if record:
+                    fields["networkState"] = base64.b64encode(record.network_state).decode()
+                else:
+                    fields["joinKey"] = trust.join_key
                 payload = json.dumps(fields, separators=(",", ":")).encode()
                 del fields
-                if not 0 < len(payload) <= 16384:
+                if not 0 < len(payload) <= (128 * 1024 if save_intent else 16384):
                     raise ClientError("invalidInvite")
                 # No HOME, PATH, credential, proxy, debug, trust or TS_* controls.
                 process = subprocess.Popen([str(self._executable), "--home-session-v1"],
@@ -162,17 +247,68 @@ class ClientSession:
                     if not byte:
                         raise ClientError("joinUnavailable")
                     ready.extend(byte)
+            if ready == b"-22\n":
+                raise ClientError("identityMismatch")
             if not re.fullmatch(rb"0 [!-~]{1,256}\n", ready):
                 raise ClientError("joinUnavailable")
-            process.stdout.close()
             with self._lock:
                 if self._closed or process.poll() is not None:
                     raise ClientError("cancelled")
                 self._node = ready[2:-1].decode("ascii")
-                self._pair_secret, self._expiry = invite.pair_secret, invite.expires_at
+                if record and self._node != record.stable_node_id:
+                    raise ClientError("identityMismatch")
+                if record:
+                    self._bearer = record.bearer
+                else:
+                    self._pair_secret, self._expiry = trust.pair_secret, trust.expires_at
+            if save_intent:
+                self._read_state(process, deadline)
+                reader = threading.Thread(target=self._watch_state, args=(process,), daemon=True)
+                with self._lock:
+                    self._state_reader = reader
+                    reader.start()
+            else:
+                process.stdout.close()
         except (OSError, ValueError, ClientError):
             self.stop()
-            raise ClientError("joinUnavailable") from None
+            raise
+
+    def _read_state(self, process: subprocess.Popen, deadline: float | None) -> None:
+        def exact(size: int) -> bytes:
+            data = bytearray()
+            while len(data) < size:
+                with self._lock:
+                    if self._closed:
+                        raise ClientError("cancelled")
+                if deadline is not None and time.monotonic() >= deadline:
+                    raise ClientError("deadline")
+                if select.select([process.stdout], [], [], 0.1)[0]:
+                    part = os.read(process.stdout.fileno(), size - len(data))
+                    if not part:
+                        raise ClientError("stateUnavailable")
+                    data.extend(part)
+            return bytes(data)
+        size = struct.unpack("!I", exact(4))[0]
+        if not 0 < size <= _STATE_LIMIT:
+            raise ClientError("stateUnavailable")
+        data = exact(size)
+        with self._lock:
+            if self._closed:
+                raise ClientError("cancelled")
+            self._network = _network_state(data, self._binding["control_plane_id"], self._node)
+
+    def _watch_state(self, process: subprocess.Popen) -> None:
+        try:
+            while True:
+                self._read_state(process, None)
+        except (OSError, ValueError, ClientError):
+            with self._lock:
+                closed = self._closed
+            if not closed:
+                try:
+                    self.stop()
+                except ClientError:
+                    pass
 
     def dial(self, deadline: float) -> socket.socket:
         stream = socket.socket(socket.AF_UNIX)
@@ -313,6 +449,7 @@ class ClientSession:
                 self._closed = True
                 self._bearer = self._pair_secret = self._handle = ""
                 self._node = None
+                self._network, self._binding = b"", None
                 for stream in self._streams:
                     _runtime.close_socket(stream)
                 self._streams.clear()
@@ -334,6 +471,9 @@ class ClientSession:
                         raise ClientError("cleanupIncomplete") from None
                 if process.returncode != 0:
                     self._cleanup_uncertain = True
+                reader = self._state_reader
+                if reader is not None and reader is not threading.current_thread():
+                    reader.join(timeout=1)
                 if process.stdout:
                     process.stdout.close()
             if proxy is not None:
