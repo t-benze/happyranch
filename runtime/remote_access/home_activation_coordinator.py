@@ -6,6 +6,7 @@ No CLI, helper, installer, supervisor or application calls this module.
 from __future__ import annotations
 
 import hashlib
+import os
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -25,7 +26,7 @@ from runtime.remote_access.home_observer import HomeObserver
 class ActivationRefused(ValueError):
     def __init__(self, reason: str = "activation_refused") -> None:
         super().__init__(reason if reason in ("activation_refused", "token_source_invalid",
-                                             "failed_uncertain") else "activation_refused")
+                                             "failed_uncertain", "pending_residue") else "activation_refused")
 
 
 class ActivationOwner(Protocol):
@@ -60,6 +61,16 @@ class HomeActivationCoordinator:
 
     def __repr__(self) -> str:
         return "HomeActivationCoordinator(<redacted>)"
+
+    def _pending(self) -> None:
+        with self._receipts._parent("/var/lib/happyranch-remote-access/home-activation.json") as (parent, check):
+            for name in ("home-activation.json", "home-activation-txn.json"):
+                try:
+                    os.stat("." + name + ".pending", dir_fd=parent, follow_symlinks=False)
+                except FileNotFoundError:
+                    continue
+                raise ActivationRefused("pending_residue")
+            check()
 
     def _source(self, receipt: HomeActivationReceipt) -> None:
         try:
@@ -177,6 +188,7 @@ class HomeActivationCoordinator:
             raise ActivationRefused()
         try:
             with self._transactions.locked():
+                self._pending()
                 try:
                     return self._run(prepared)
                 except Exception as error:
@@ -198,17 +210,28 @@ class HomeActivationCoordinator:
                 or receipt.phase not in ("prepared", "activating", "joined")):
             raise ActivationRefused()
         transaction = self._transactions.read_optional()
-        if transaction is not None:
+        older_failed = (transaction is not None and receipt.phase == "prepared"
+                        and transaction.phase == "failed_uncertain"
+                        and transaction.activation_generation < receipt.activation_generation)
+        if transaction is not None and not older_failed:
             # Every valid txn contains the first durable intent. A new run has no
             # authority to resume it; run's failure path publishes txn then receipt.
             raise ActivationRefused("failed_uncertain")
         self._source(receipt)
-        self._members(receipt, transaction)
+        self._members(receipt, None if older_failed else transaction)
         self._verify("preflight", receipt)
         if receipt.phase != "prepared":
             raise ActivationRefused()
+        previous = transaction
         transaction = HomeActivationTransaction.begin(receipt)
-        self._publish_transaction(transaction, receipt, None)
+        if older_failed:
+            # B7 rollover replaces only the older terminal journal at first intent.
+            self._source(receipt)
+            self._transactions._publish_record(
+                "/var/lib/happyranch-remote-access/home-activation-txn.json", transaction.to_bytes(),
+                expected=previous, parse=HomeActivationTransaction.parse)
+        else:
+            self._publish_transaction(transaction, receipt, None)
         if receipt.phase == "prepared":
             updated = replace(receipt, phase="activating")
             self._publish_receipt(updated, receipt)

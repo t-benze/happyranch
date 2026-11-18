@@ -61,6 +61,7 @@ class HomeActivationTransaction:
     dial_ip: str
     phase: str
     effects: tuple[Effect, ...]
+    recovery_observation: Mapping[str, str] | None = None
 
     def __post_init__(self) -> None:
         # Reuse all B1 identity predicates, without inventing another grammar.
@@ -77,6 +78,14 @@ class HomeActivationTransaction:
         complete = len(self.effects) == len(EFFECTS) and self.effects[-1].state == "done"
         if self.phase == "joined" and not complete:
             raise HomeActivationError()
+        if self.recovery_observation is not None:
+            pair = self.recovery_observation
+            if (not isinstance(pair, Mapping) or pair.keys() != {"local_node_stable_id", "home_endpoint"}
+                    or self.phase not in ("joined", "failed_uncertain") or not complete):
+                raise HomeActivationError()
+            HomeActivationReceipt(**self.binding(), member_digests={p: "0" * 64 for p in MEMBER_PATHS},
+                                  phase="ready", **pair)
+            object.__setattr__(self, "recovery_observation", MappingProxyType(dict(pair)))
 
     def __repr__(self) -> str:
         return "HomeActivationTransaction(<redacted>)"
@@ -93,12 +102,21 @@ class HomeActivationTransaction:
         return self.binding() == {key: getattr(receipt, key) for key in self.binding()}
 
     def to_bytes(self) -> bytes:
-        return _encode_record(dict(format=TRANSACTION_FORMAT, **self.binding(), phase=self.phase,
-                                   effects=[effect.to_dict() for effect in self.effects]))
+        record = dict(format=TRANSACTION_FORMAT, **self.binding(), phase=self.phase,
+                      effects=[effect.to_dict() for effect in self.effects])
+        if self.recovery_observation is not None:
+            record["recovery_observation"] = dict(self.recovery_observation)
+        return _encode_record(record)
 
     @classmethod
     def parse(cls, data: bytes) -> HomeActivationTransaction:
-        record = _decode_record(data, _KEYS, TRANSACTION_FORMAT)
+        # Old records retain their exact key set and byte encoding.
+        try:
+            record = _decode_record(data, _KEYS, TRANSACTION_FORMAT)
+        except HomeActivationError:
+            record = _decode_record(data, _KEYS | {"recovery_observation"}, TRANSACTION_FORMAT)
+            if record["recovery_observation"] is None:
+                raise HomeActivationError()
         record.pop("format")
         effects = record["effects"]
         if (type(effects) is not list or any(type(item) is not dict or item.keys() !=
@@ -110,7 +128,8 @@ class HomeActivationTransaction:
 
 def validate_transaction_transition(previous: HomeActivationTransaction,
                                     updated: HomeActivationTransaction) -> None:
-    if previous.binding() != updated.binding() or previous.phase == "failed_uncertain":
+    if (previous.binding() != updated.binding() or previous.phase == "failed_uncertain"
+            or previous.recovery_observation != updated.recovery_observation):
         raise HomeActivationError("transition")
     if updated.phase == "failed_uncertain" and updated.effects == previous.effects:
         return

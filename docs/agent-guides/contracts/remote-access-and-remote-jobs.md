@@ -2760,6 +2760,87 @@ fresh mint under a new generation. Anything else stays uncertain and requires
 Turn off/ReplaceFailed. Valid restart uses empty-key state and never rekeys.
 Why no founder: fail-closed recovery through the existing Enable action.
 
+**Manager Ruling 12 (G2-C2, B7 explicit fresh-auth recovery)** —
+engineering_manager, TASK-17421 step 19. Context: main after G2-D1 #1690
+(`101d1bc5`), with G2-A #1677, G2-B #1673, G2-C1 #1684 and G2-D2 #1687 merged.
+
+1. One explicit unmounted entry, `home_activation_recovery.py`, has no production
+   caller. Fresh authentication is an injected caller precondition; polkit wiring
+   belongs to G2-E/Track B. Require both receipt and txn `failed_uncertain` for
+   externally expected generation G and the same operation O. Other pairs refuse
+   unchanged; a matching nonterminal pair with a txn takes Ruling 7's terminal
+   marker path first and never recovers in that call. Validate release UID and
+   the same-FD source token before any Headscale read and before every publication;
+   source failure refuses without publication under Ruling 6 semantics.
+2. Use only B3 `list_pre_auth_keys` and `list_nodes` for `happyranch-node`, with
+   complete bounded lists. Error, timeout, limit or parse failure retains uncertain
+   state unchanged. Our fenced key has creation time inside O's durable
+   `CreationWindow`, read without mutation from the existing root-custodied,
+   no-follow `operation-<sha256>` reservation. Never rewrite/delete reservations.
+3. RESUME requires exactly one key, inside O's window, used, non-reusable and
+   non-ephemeral; exactly one node; B2 observation passing Ruling 11 against that
+   node; and independent owner verification of all eight effects, without executing
+   any effect. Publish ready(G,O) with the observation pair through a separate
+   recovery-only validator. Ordinary `validate_transition` stays unchanged.
+   The recovered pair must pass the unchanged G2-D1 ready verifier. One additive
+   closed nonsecret txn recovery marker is permitted when necessary. Publish txn
+   first, receipt second, through A5.
+4. FRESH/ROLLOVER requires zero nodes and zero usable keys (unused and unexpired).
+   Generate a new root operation O' (32 lowercase hex) and publish only receipt
+   `prepared(G+1,O')`. No mint, expire or other effect runs in recovery. Retain
+   txn(G) untouched. Coordinator fresh-start admits an existing txn only when
+   it is older than the prepared generation and `failed_uncertain`, replacing it
+   at the first intent. An unused unexpired key keeps uncertainty; callers may
+   retry after the 120-second key expires. Crash repeatability is amended by 12a.
+5. Everything else refuses unchanged with a closed nonsecret reason and stays
+   uncertain for Turn off/ReplaceFailed.
+6. Valid-restart empty-key admission belongs to G2-E production wiring.
+
+**Manager Ruling 12a (G2-C2 crash outcomes; amends Ruling 12(4))** —
+engineering_manager, TASK-17421 step 20. A5 is unchanged: no pending adoption
+and no pending deletion outside B6.
+
+- Pending residue: a crash after exclusive pending inode creation/fsync and
+  before rename leaves old finals unchanged plus the retained pending entry.
+  This is an admitted fail-closed outcome. Every later recovery or coordinator
+  attempt refuses with closed reason `pending_residue`, bytes unchanged, until
+  authorized inspection / Turn off / ReplaceFailed; B6 owns removal. Recovery
+  repeatability applies only without residue. No reconciliation mechanism or
+  A5 writer/reader change is introduced; existing pending tests stay unchanged.
+- Half-published RESUME: after txn-first publication and before receipt-second,
+  admit exactly the txn already at the same (G,O) recovery target with identical
+  observation pair and the still-failed receipt. Repeat the full source-token,
+  B3 lists, reservation-window, B2/Ruling 11 and eight-effect evidence, and only
+  then publish the receipt. Any failed condition refuses unchanged. No other
+  mixed pair is admitted to recovery.
+- ROLLOVER publishes only prepared(G+1,O'); txn(G) stays untouched. Crash outcomes
+  are exactly the old failed pair, retained pending residue, or the new prepared
+  receipt plus the older failed txn.
+
+G2-C2 implements `HomeActivationRecovery.recover` with externally expected G/O,
+a strict fresh-auth precondition and an injected observation owner. It constructs
+B2 with the fixed admin's fresh node list required equal to the recovery
+singleton. All eight effects are verified, prepared/live members are rechecked,
+and both records are compared before publication. No service/admin/config effect
+is executed. Reservation reads retain the existing 0700 directory / 0600 regular
+single-link file custody, bounded canonical two-UTC-timestamp encoding, and
+literal pinned parents; they never create a missing directory.
+
+The additive optional txn key `recovery_observation` is a closed object with
+exactly `local_node_stable_id, home_endpoint`, using B1 observation predicates.
+It is present only on a complete eight-done `joined` recovery target (or retained
+on its subsequent `failed_uncertain` terminal marker). Absence preserves legacy
+format bytes; explicit null, extra fields, partial effects or `activating` with
+this marker refuse. No new phase is introduced. The recovery-only validator
+permits failed→joined with that marker after full verification; ordinary txn
+transitions cannot add/change it or leave a failed state. This makes 12a's half
+pair distinguishable while keeping G2-D1 `verify_ready` unchanged.
+
+Why no founder: fail-closed recovery through the already-settled B7 Enable action;
+no new dependency, UX or production activation authority. Production wiring,
+installed fresh-auth/systemd/Headscale acceptance and valid-restart admission
+remain G2-E; home_transport remains false.
+
 **B8 — Installed helper, bootstrap and fixed write inventory.**
 Package the system D-Bus service for fixed BusName `ai.happyranch.RemoteAccess1`, User=root,
 SystemdService=`happyranch-remote-access-helper.service`, Type=dbus, with
