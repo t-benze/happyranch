@@ -2792,6 +2792,32 @@ most 1 MiB; rotate once to `.1` at cap, retaining one generation. Record intent
 before effect and uncertainty after lost settlement. Audit survives Turn off
 and replacement and is never automatically removed; no raw secrets or node-key/
 digest-prefix output, no DB or audit-task-ID reinterpretation.
+The inert stdlib writer is `runtime/remote_access/home_audit.py`; helper/lifecycle
+wiring is deferred until the B9 follow-up. Its closed event spellings are
+`activation`, `invite_issued`, `invite_cancelled`, `invite_recovered`,
+`invite_expired`, `device_approved`, `device_rejected`, `device_revoked`, `refresh`,
+`policy_renew`, `policy_fail`, `turn_off`, `uncertain`. Activation uses the existing
+`prepared`, `activating`, `joined`, `ready`, `failed_uncertain` phases. Turn off
+components are `sidecar`, `connector`, `headscale`, `units`, `live_state`,
+`credentials`, `accounts`; outcomes are `succeeded`, `failed`, `refused`, plus
+Turn off's `absent`, `retained`, `partial_cleanup`. Lost settlement instead uses
+an explicit `uncertain` event/stage/outcome referencing the original intent.
+Records contain only `version=1`, `event`, `stage` (`intent`, `outcome`,
+`uncertain`), `intent_id`, `operation_id`, `timestamp_ns`, nullable `subject_id`,
+`phase`, `component`, `outcome`. IDs are local audit labels, at most 320 ASCII
+bytes each: `intent-`, `op-`, `subject-` respectively, followed by lowercase
+alphanumeric segments of 1–12 characters separated by `-`. Key/token words,
+hex segments of 8+ characters and long unbroken key/base64 strings refuse;
+node identities, digest prefixes, arbitrary labels and diagnostics are not ID
+inputs. The complete JSON line including newline must fit 1024 bytes or refuse
+before I/O. The existing parent must be owned by the expected UID/GID and not
+group/world writable; all literal parents are opened without following links.
+Cooperating appends/rotation lock that directory through file fsync and directory
+fsync after create/rename. An unsafe existing file or `.1` refuses without repair;
+only cap rotation replaces `.1`, never creating `.2` or cleaning other entries.
+The API persists an intent before returning its reference; callers own effect
+ordering and settlement, and a reference confers no authorization/replay proof.
+An I/O failure may follow a partial append and must be treated as uncertain.
 Why no founder: the approved nonsecret retained audit, with bounded storage.
 
 **B17 — First replacement intent for recognized failed installation.**
