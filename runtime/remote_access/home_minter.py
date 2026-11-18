@@ -41,7 +41,14 @@ class PreAuthKey:
 
     v0.25.1 proto/headscale/v1/preauthkey.proto:7-17 includes string user/id/key,
     bool reusable/ephemeral/used, expiration/created_at timestamps and acl_tags.
-    Missing timestamps/fields must not be defaulted to plausible values.
+    R1: omitted reusable/ephemeral/used decode false; omitted acl_tags is empty
+    per proto3 implicit presence, not an application default. R2: user/id/key
+    must be present/nonempty and pass minter validation; expiration/created_at
+    must be present, valid seconds/nanos, UTC. R3: malformed varints/lengths,
+    wrong known wire types, truncation, duplicate singulars and unknown fields
+    in records/responses refuse. No JSON/protojson or string/int coercion.
+    Sources: https://github.com/juanfont/headscale/blob/v0.25.1/proto/headscale/v1/preauthkey.proto
+    and https://protobuf.dev/programming-guides/field_presence/
     """
 
     user: str
@@ -68,8 +75,8 @@ class HeadscaleAdminOperations(Protocol):
     RPC cancellation alone is not settlement proof. User is a NAME, not an ID. Create sends
     no ACL tags. Keys are in-memory values/request fields ONLY. Raw keys and
     request/response bodies must NEVER enter argv, env, URLs, logs or exceptions.
-    CLI `preauthkeys expire KEY` is forbidden. A transport needs a separately
-    protected admin socket; no transport/dependency is selected here.
+    CLI `preauthkeys expire KEY` is forbidden. The inert home_admin transport
+    uses the packaged fixed-socket Go runner; this pure core remains unwired.
     """
 
     def create_pre_auth_key(self, *, user: str, reusable: bool, ephemeral: bool,

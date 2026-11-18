@@ -312,6 +312,7 @@ class DebPackageTests(unittest.TestCase):
             'licenses/headscale/go-runtime/LICENSE': 'original Go 1.23.4 notice',
             'libexec/headscale/headscale': 'fixture Headscale',
             'libexec/remote-access/happyranch-home-ca': 'fixture home CA materializer',
+            'libexec/remote-access/happyranch-home-admin': 'fixture home admin runner',
         }
         for launcher in ('happyranch', 'happyranch-daemon', 'happyranch-app'):
             files['bin/' + launcher] = '#!/bin/sh\nexit 0\n'
@@ -331,7 +332,8 @@ class DebPackageTests(unittest.TestCase):
         # Static Go binary has no GNU_STACK: Python-only ELF checks must leave
         # its verified upstream bytes unchanged, on both architectures.
         (payload / 'libexec/headscale/headscale').write_bytes(self.elf(arch, 'missing'))
-        (payload / 'libexec/remote-access/happyranch-home-ca').write_bytes(self.elf(arch, 'missing'))
+        for name in ('happyranch-home-ca', 'happyranch-home-admin'):
+            (payload / 'libexec/remote-access' / name).write_bytes(self.elf(arch, 'missing'))
         (payload / 'python/bin/python3').symlink_to('python3.12')
         archive = self.work / (root + '.tar.gz')
         with tarfile.open(archive, 'w:gz') as stream:
@@ -498,6 +500,12 @@ class DebPackageTests(unittest.TestCase):
                 self.assertFalse((installed / 'usr/bin/headscale').exists())
                 self.assertFalse((prefix / 'bin/happyranch-home-ca').exists())
                 self.assertFalse((installed / 'usr/bin/happyranch-home-ca').exists())
+                admin = prefix / 'libexec/remote-access/happyranch-home-admin'
+                self.assertEqual(admin.read_bytes(), self.elf(payload_arch, 'missing'))
+                self.assertEqual(admin.stat().st_mode & 0o777, 0o755)
+                self.assertFalse(admin.is_symlink())
+                self.assertFalse((prefix / 'bin/happyranch-home-admin').exists())
+                self.assertFalse((installed / 'usr/bin/happyranch-home-admin').exists())
                 materializer = prefix / 'libexec/remote-access/happyranch-home-ca'
                 self.assertEqual(materializer.stat().st_mode & 0o777, 0o755)
                 self.assertFalse(materializer.is_symlink())
@@ -528,7 +536,8 @@ class DebPackageTests(unittest.TestCase):
         for index, missing in enumerate(('libexec/headscale/headscale', 'licenses/headscale-LICENSE',
                                          'licenses/headscale-modules.json', 'licenses/headscale-build-info.json',
                                          'licenses/headscale/go-runtime/LICENSE',
-                                         'libexec/remote-access/happyranch-home-ca')):
+                                         'libexec/remote-access/happyranch-home-ca',
+                                         'libexec/remote-access/happyranch-home-admin')):
             with self.subTest(missing=missing):
                 archive = self.payload(version=f'0.3.{index}')
                 root = self.work / f'happyranch-0.3.{index}-linux-x86_64'

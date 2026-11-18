@@ -1,0 +1,300 @@
+"""Inert root-only fixed Headscale runner, durable records and mint serialization."""
+from __future__ import annotations
+
+import fcntl
+import hashlib
+import os
+import stat
+from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
+from typing import Iterator
+
+from runtime.remote_access.headscale_service import INVITE_USER
+from runtime.remote_access.home_minter import (
+    AdminRefused, CreationWindow, HeadscaleJoinKeyMinter, MintUncertain, PreAuthKey,
+)
+from runtime.remote_access.invite_issuer import MintedKey, MintRefused
+from runtime.remote_access.service_manager import _default_run
+
+_RUNNER = '/opt/happyranch-desktop/libexec/remote-access/happyranch-home-admin'
+_STATE = '/var/lib/happyranch-remote-access/home-minter'
+_MAX_BYTES = 128 << 20
+
+
+def _varint(value: int) -> bytes:
+    data = bytearray()
+    while value >= 128:
+        data.append((value & 127) | 128)
+        value >>= 7
+    data.append(value)
+    return bytes(data)
+
+
+def _bytes(number: int, value: bytes) -> bytes:
+    return _varint(number * 8 + 2) + _varint(len(value)) + value
+
+
+def _fields(data: bytes) -> Iterator[tuple[int, int, bytes | int]]:
+    offset = 0
+
+    def take() -> int:
+        nonlocal offset
+        start, value = offset, 0
+        for shift in range(0, 70, 7):
+            if offset >= len(data):
+                raise ValueError('wire')
+            b = data[offset]
+            offset += 1
+            value |= (b & 127) << shift
+            if not b & 128:
+                if value >= 1 << 64 or data[start:offset] != _varint(value):
+                    raise ValueError('wire')
+                return value
+        raise ValueError('wire')
+
+    while offset < len(data):
+        tag = take()
+        number, wire = tag >> 3, tag & 7
+        if not 0 < number < 1 << 29 or wire not in (0, 2):
+            raise ValueError('wire')
+        value = take()
+        if wire == 2:
+            end = offset + value
+            if end > len(data):
+                raise ValueError('wire')
+            value, offset = data[offset:end], end
+        yield number, wire, value
+
+
+def _message(data: bytes, types: dict[int, int], repeated: int = 0) -> dict[int, object]:
+    values: dict[int, object] = {repeated: []} if repeated else {}
+    for number, wire, value in _fields(data):
+        if types.get(number) != wire or (number != repeated and number in values):
+            raise ValueError('wire')
+        if number == repeated:
+            if len(values[number]) >= (600_000 if repeated == 1 else 128):
+                raise ValueError('wire')
+            values[number].append(value)
+        else:
+            values[number] = value
+    return values
+
+
+def _timestamp(data: bytes) -> datetime:
+    values = _message(data, {1: 0, 2: 0})
+    seconds, nanos = values.get(1, 0), values.get(2, 0)
+    if seconds >= 1 << 63:
+        seconds -= 1 << 64
+    if not -62135596800 <= seconds <= 253402300799 or not 0 <= nanos <= 999999999:
+        raise ValueError('wire')
+    # Datetime projects nanos to microseconds by truncation; expiry never extends.
+    return datetime(1970, 1, 1, tzinfo=timezone.utc) + timedelta(seconds=seconds, microseconds=nanos // 1000)
+
+
+def _record(data: bytes) -> PreAuthKey:
+    if len(data) > 4096:
+        raise ValueError('wire')
+    values = _message(data, {1: 2, 2: 2, 3: 2, 4: 0, 5: 0, 6: 0, 7: 2, 8: 2, 9: 2}, 9)
+    if any(n not in values for n in (1, 2, 3, 7, 8)) or any(not values[n] for n in (1, 2, 3)):
+        raise ValueError('wire')
+    strings = [values[n].decode('utf-8') for n in (1, 2, 3)]
+    if any(values.get(n, 0) not in (0, 1) for n in (4, 5, 6)):
+        raise ValueError('wire')
+    record = PreAuthKey(*strings, *(bool(values.get(n, 0)) for n in (4, 5, 6)),
+                        _timestamp(values[7]), _timestamp(values[8]),
+                        tuple(tag.decode('utf-8') for tag in values[9]))
+    if len(record.key) != 48 or any(c not in '0123456789abcdef' for c in record.key):
+        raise ValueError('wire')
+    return record
+
+
+def _runner_custody() -> None:
+    fd = os.open('/', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        parts = _RUNNER.strip('/').split('/')
+        for i, part in enumerate(parts):
+            leaf = i == len(parts) - 1
+            child = os.open(part, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK
+                            | (0 if leaf else os.O_DIRECTORY), dir_fd=fd)
+            os.close(fd)
+            fd = child
+            st = os.fstat(fd)
+            if (st.st_uid != 0 or st.st_gid != 0 or st.st_mode & 0o022
+                    or (leaf and (not stat.S_ISREG(st.st_mode) or st.st_nlink != 1
+                                  or stat.S_IMODE(st.st_mode) != 0o755))):
+                raise AdminRefused('refused')
+    finally:
+        os.close(fd)
+
+
+class RootHeadscaleAdminOperations:
+    """Fixed packaged binary, unary protobuf only; no caller path or credentials."""
+
+    def __repr__(self) -> str:
+        return 'RootHeadscaleAdminOperations(<redacted>)'
+
+    def _call(self, verb: str, request: bytes, timeout_s: float) -> bytes:
+        refused = False
+        try:
+            if not 0 < timeout_s <= 5 or os.geteuid() != 0:
+                raise AdminRefused()
+            _runner_custody()
+            code, data = _default_run([_RUNNER, verb, str(max(1, int(timeout_s * 1000)))],
+                                      timeout=timeout_s, input_bytes=request)
+            refused = code == 2
+            if code == 0 and type(data) is bytes and len(data) <= _MAX_BYTES:
+                return data
+        except AdminRefused:
+            refused = True
+        except BaseException:
+            pass
+        del self, request
+        if refused:
+            raise AdminRefused('refused') from None
+        raise MintUncertain() from None
+
+    def create_pre_auth_key(self, *, user: str, reusable: bool, ephemeral: bool,
+                            expiration: datetime, timeout_s: float) -> PreAuthKey:
+        result = None
+        refused = False
+        try:
+            if reusable is not False or ephemeral is not False or expiration.utcoffset() != timedelta(0):
+                raise AdminRefused()
+            seconds = int(expiration.timestamp())
+            timestamp = b'\x08' + _varint(seconds)
+            response = self._call('create', _bytes(1, user.encode()) + _bytes(4, timestamp), timeout_s)
+            values = _message(response, {1: 2})
+            result = _record(values[1])
+            if result.user != user:
+                result = None
+        except AdminRefused:
+            refused = True
+        except BaseException:
+            pass
+        del self, user, expiration
+        if refused:
+            raise AdminRefused('refused') from None
+        if result is None:
+            raise MintUncertain() from None
+        return result
+
+    def list_pre_auth_keys(self, *, user: str, timeout_s: float) -> tuple[PreAuthKey, ...]:
+        result = None
+        try:
+            values = _message(self._call('list', _bytes(1, user.encode()), timeout_s), {1: 2}, 1)
+            if len(values[1]) <= 600_000:
+                result = tuple(_record(data) for data in values[1])
+                if any(r.user != user for r in result) or len({r.id for r in result}) != len(result):
+                    result = None
+        except BaseException:
+            pass
+        del self, user
+        if result is None:
+            raise MintUncertain() from None
+        return result
+
+    def expire_pre_auth_key(self, *, user: str, key: str, timeout_s: float) -> None:
+        ok = False
+        try:
+            ok = self._call('expire', _bytes(1, user.encode()) + _bytes(2, key.encode()), timeout_s) == b''
+        except BaseException:
+            pass
+        del self, user, key
+        if not ok:
+            raise MintUncertain() from None
+
+
+def _directory() -> int:
+    if os.geteuid() != 0:
+        raise ValueError('custody')
+    fd = os.open('/', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        st = os.fstat(fd)
+        if st.st_uid != 0 or st.st_gid != 0 or st.st_mode & 0o022:
+            raise ValueError('custody')
+        for i, part in enumerate((_STATE + '/' + INVITE_USER).strip('/').split('/')):
+            if i >= 2:
+                try:
+                    os.mkdir(part, 0o700, dir_fd=fd)
+                    os.fsync(fd)
+                except FileExistsError:
+                    pass
+            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=fd)
+            os.close(fd)
+            fd = child
+            st = os.fstat(fd)
+            if st.st_uid != 0 or st.st_gid != 0 or st.st_mode & 0o022 or (i >= 2 and stat.S_IMODE(st.st_mode) != 0o700):
+                raise ValueError('custody')
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+class DurableOperationRecordStore:
+    """Used under the root wrapper's directory flock; writes no raw operation ID/key."""
+
+    def __init__(self, directory_fd: int) -> None:
+        st = os.fstat(directory_fd)
+        if not stat.S_ISDIR(st.st_mode) or st.st_uid != 0 or st.st_gid != 0 or stat.S_IMODE(st.st_mode) != 0o700:
+            raise ValueError('custody')
+        self._fd = directory_fd
+
+    def reserve(self, operation_id: str, window: CreationWindow) -> bool:
+        name = 'operation-' + hashlib.sha256(operation_id.encode('utf-8')).hexdigest()
+        data = (window.started_at.isoformat() + '\n' + window.expires_at.isoformat() + '\n').encode('ascii')
+        try:
+            fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+                         0o600, dir_fd=self._fd)
+        except FileExistsError:
+            return False
+        try:
+            os.fchown(fd, 0, 0)
+            os.fchmod(fd, 0o600)
+            if os.write(fd, data) != len(data):
+                raise ValueError('store')
+            os.fsync(fd)
+            os.fsync(self._fd)
+        finally:
+            os.close(fd)
+        return True
+
+
+@contextmanager
+def _locked() -> Iterator[HeadscaleJoinKeyMinter]:
+    fd = _directory()
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        yield HeadscaleJoinKeyMinter(admin=RootHeadscaleAdminOperations(), invite_user=INVITE_USER,
+                                    now_fn=lambda: datetime.now(timezone.utc),
+                                    records=DurableOperationRecordStore(fd))
+    finally:
+        os.close(fd)
+
+
+class RootHomeInviteMinter:
+    """Unwired composition; nonblocking per-invite-user lock spans mint/recover."""
+
+    def mint(self, operation_id: str, expires_at: datetime) -> MintedKey:
+        refused, entered = False, False
+        try:
+            with _locked() as minter:
+                entered = True
+                return minter.mint(operation_id, expires_at)
+        except MintRefused:
+            refused = True
+        except MintUncertain:
+            pass
+        except BaseException:
+            refused = not entered
+        del self, operation_id, expires_at
+        if refused:
+            raise MintRefused('refused') from None
+        raise MintUncertain() from None
+
+    def recover(self, operation_id: str) -> bool:
+        try:
+            with _locked() as minter:
+                return minter.recover(operation_id)
+        except BaseException:
+            return False
