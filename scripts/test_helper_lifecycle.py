@@ -300,3 +300,12 @@ def test_transport_loss_after_dispatch_remains_uncertain(venue: Any, error: type
     assert operation.complete(lifecycle.SetupPhase.OFF).value == 'uncertain'
     assert lifecycle.transport_outcome(dispatched=True).value == 'uncertain'
     assert lifecycle.transport_outcome(dispatched=True, in_progress=True).value == 'in_progress'
+
+
+def test_lifecycle_methods_absent_from_exported_interface() -> None:
+    # This is the schema consumed by Gio.register_object, independent of the
+    # dispatcher refusing calls to unimplemented methods.
+    interface = HELPER.Gio.DBusNodeInfo.new_for_xml(HELPER.INTROSPECTION).interfaces[0]
+    expected = {'Status', 'NextDevice', 'ApprovePending', 'RejectPending', 'RevokeSelected'}
+    assert {method.name for method in interface.methods} == expected
+    assert HELPER.METHODS == expected
