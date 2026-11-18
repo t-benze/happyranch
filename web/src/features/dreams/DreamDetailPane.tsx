@@ -36,6 +36,7 @@ import {
   useDismissCandidate,
 } from '@/hooks/dreams';
 import { CrescentMoonBadge } from '@/design-system/patterns/CrescentMoonBadge';
+import { Markdown } from '@/design-system/patterns/Markdown';
 import {
   classifyDreamError,
   dreamStatusLabel,
@@ -43,6 +44,7 @@ import {
   type DreamErrorView,
 } from './strings';
 import { isValidCount, formatCount } from './count-helpers';
+import { SUMMARY_CODE_TOKENS } from './summary-code';
 import type { DreamKbCandidate } from '@/hooks/dreams';
 import { useTranslation } from '@/hooks/i18n';
 
@@ -294,8 +296,9 @@ export function DreamDetailPane({
             <div className="space-y-4">
               {/* Quote / summary */}
               {dream.summary && (
-                <blockquote className="border-accent-default text-text-secondary border-l-2 pl-4 text-sm italic">
-                  &ldquo;{dream.summary}&rdquo;
+                <blockquote className={`border-accent-default text-text-secondary border-l-2 pl-4 text-sm italic ${SUMMARY_CODE_TOKENS}`}>
+                  {/* Dr1 (THR-376 r2): render the summary markdown, not raw text */}
+                  <Markdown body={dream.summary} mermaidLoadingLabel={t('common.mermaidLoading')} />
                 </blockquote>
               )}
 
