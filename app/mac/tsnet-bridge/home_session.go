@@ -264,6 +264,28 @@ func (session *homeSession) serve(ctx context.Context, in io.Reader, out io.Writ
 		}
 	}()
 	defer transport.Close()
+	if pipe, ok := out.(*os.File); ok {
+		// Inherited stdout is blocking and cannot accept Go deadlines. Use a
+		// nonblocking duplicate registered with the runtime poller instead.
+		fd, err := unix.Dup(int(pipe.Fd()))
+		if err != nil {
+			return managedStateError
+		}
+		if unix.SetNonblock(fd, true) != nil {
+			unix.Close(fd)
+			return managedStateError
+		}
+		output := os.NewFile(uintptr(fd), "home-session-output")
+		defer output.Close()
+		if output.SetWriteDeadline(time.Time{}) != nil {
+			return managedStateError
+		}
+		interruptOutput := context.AfterFunc(session.engine.ctx, func() {
+			_ = output.SetWriteDeadline(time.Now())
+		})
+		defer interruptOutput()
+		out = output
+	}
 	cancel := context.AfterFunc(ctx, func() { cancelManaged(); transport.Close() })
 	defer cancel()
 	// EOF closes admission during Up as well as while relaying. Never read
@@ -278,17 +300,23 @@ func (session *homeSession) serve(ctx context.Context, in io.Reader, out io.Writ
 	}
 	defer listener.Close()
 	if writeHomeReady(out, session.engine.selfNodeID) != nil {
+		if session.engine.ctx.Err() != nil {
+			return 0
+		}
 		return managedStateError
 	}
 	if session.state != nil {
 		if session.exportState(out) != nil {
+			if session.engine.ctx.Err() != nil {
+				return 0
+			}
 			return managedStateError
 		}
 		// Only this goroutine writes after the synchronous ready/snapshot pair.
 		// Notifications coalesce; each frame contains the entire current store.
 		exportCtx, finish := context.WithCancel(transport.ctx)
 		done := make(chan struct{})
-		defer func() { finish(); <-done }()
+		defer func() { finish(); cancelManaged(); <-done }()
 		go func() {
 			defer close(done)
 			for {

@@ -202,11 +202,27 @@ func TestHomeSessionProcessChild(t *testing.T) {
 		}()
 	}
 	if mode != "custody" {
+		if mode == "backpressure" {
+			if s.state.WriteState("pipe-padding", bytes.Repeat([]byte("x"), 16*1024)) != nil {
+				t.Fatal("state padding failed")
+			}
+		}
 		cfg.SocketPath = os.Getenv("HOME_SESSION_TEST_SOCKET")
 		if mode == "error" {
 			cfg.SocketPath = "relative-refused"
 		}
 		code := s.serve(ctx, os.Stdin, os.Stdout, transport, cfg)
+		if mode == "backpressure" {
+			if code != 0 {
+				t.Fatal("cancelled frame did not exit cleanly")
+			}
+			if _, err := os.Lstat(s.dir); !os.IsNotExist(err) {
+				t.Fatal("cancelled frame left scratch")
+			}
+			// The parent deliberately leaves stdout full. Do not let the test
+			// runner's PASS line block after production cleanup has completed.
+			os.Exit(0)
+		}
 		fmt.Fprintln(os.Stdout, code)
 		if mode == "error" && code != managedStateError {
 			t.Fatal("listener error not observed")
