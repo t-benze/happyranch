@@ -3057,6 +3057,32 @@ stays unchanged. The two Headscale DB users are not OS users and disappear with
 the owned DB.
 Why no founder: exact ownership/removal under approved Turn off and existing A–E.
 
+I2a implements the **unmounted** installer B6 executor through
+`ManagedInstaller.cleanup_headscale` with all five explicit expected release UID,
+installation IDs and generation arguments. It uses the A5 reader under the
+existing activation-directory lock, B5 disable/absence gate, full owned-unit
+quiescence and C's UID snapshot before deletion and fresh checks before effects.
+Existing no-argument CLI/uninstall calls retain D exactly; the future lifecycle
+caller must close admission, revoke and stop services first. No public Disable,
+Enable or ReplaceFailed is mounted here. B17 remains I2b.
+
+The executor unlinks only validated fixed members (including the separately
+publication-receipted leaf/key handoff), explicitly unlinks the root-custodied
+CA private key without reading it, and removes fixed custody directories only
+when empty. Absence supports a partial-cleanup retry; existing preparation
+publication validation still requires every member. Unknown/unsafe entries
+refuse, with no recursive removal. Activation/publication evidence survives
+earlier partial failures; the account receipt retires last under A–E.
+Key-fence, nonempty issuer and transaction evidence retirement remains
+**DEFERRED**: main has no cleanup proof-plus-audit retirement owner for B7/B11.
+Those objects and the activation/account receipts stay retained and cleanup
+reports `partial-cleanup-uncertain` after known members were removed. No key
+settlement, journal adoption or automatic retry is inferred from quiescence.
+The B6 CA exception is only `home-ca/ca.key`: unlisted root-only staging
+`ca.pem`, `leaf.pem` and `leaf.key` also remain and report incomplete cleanup;
+they are not silently added to the deletion allowlist. Their presence prevents
+receipt/account retirement. The root-only directory is removed only if empty.
+
 **B7 — Local-node mint uncertainty and explicit recovery.**
 Persist one root-generated activation operation ID before `mint_local_node`.
 A lost create/enroll/start outcome is `failed_uncertain`, never an automatic
@@ -3240,8 +3266,9 @@ Python child (`/opt/happyranch-desktop/python/bin/python3 -I -m runtime.remote_a
 runs the zero-argument read entry with empty environment, no stdin and the supplied
 remaining timeout. It returns only the closed bounded snapshot, never full receipt,
 node identity or secrets. No installer effect runs; root/sandbox ownership is unchanged.
-Native lifecycle-auth wiring and installer/B6/B17 step executors remain DEFERRED to
-I2/I3. Lifecycle/activation audit intents must be placed at those actual future effect
+I2a supplies only the unmounted installer B6 executor described above. Native
+lifecycle-auth wiring, B17 and mounted lifecycle step executors remain DEFERRED to
+I2b/I3. Lifecycle/activation audit intents must be placed at those actual future effect
 boundaries; no synthetic lifecycle outcome is recorded by I1. Focused verification
 uses the existing private-bus
 venue: `uv run --frozen --python /usr/bin/python3 pytest scripts/test_helper_lifecycle.py scripts/test_remote_access_helper.py -v --tb=short`.

@@ -1288,11 +1288,12 @@ class ManagedInstaller:
             raise headscale.HeadscaleServiceError("account-receipt-uncertain")
         return value
 
-    def _headscale_publication(self, removed: tuple[str, ...] = ()) -> dict | None:
+    def _headscale_publication(self, removed: tuple[str, ...] = (), *, missing_ok: bool = False) -> dict | None:
         """Only the final root receipt proves ownership; never adopt by bytes.
 
-        Missing members refuse, including after a crashed cleanup. ``removed``
-        names only members freshly deleted in this cleanup invocation.
+        Missing members refuse by default. B6 alone supplies missing_ok after
+        binding its current activation receipt; absence is permitted there.
+        ``removed`` names only members freshly deleted in an inert invocation.
         """
         try:
             with self._directory(headscale.INSTALLER_STATE) as parent:
@@ -1326,20 +1327,28 @@ class ManagedInstaller:
             raise headscale.HeadscaleServiceError("publication-uncertain")
         for path, (owner, mode) in members.items():
             relative, name = str(Path(path.lstrip("/")).parent), Path(path).name
-            with self._directory(relative) as parent:
-                self._headscale_no_pending(parent, name)
-                if name in removed:
-                    try:
-                        os.stat(name, dir_fd=parent, follow_symlinks=False)
-                    except FileNotFoundError:
-                        continue
-                    raise headscale.HeadscaleServiceError("publication-uncertain")
-                value = self._read_file(parent, name, owner=owner, mode=mode)
-                if (hashlib.sha256(value).hexdigest() != record["files"][path]
-                        or (name in expected and value != expected[name])):
-                    raise headscale.HeadscaleServiceError("publication-uncertain")
+            try:
+                with self._directory(relative) as parent:
+                    self._headscale_no_pending(parent, name)
+                    if name in removed:
+                        try:
+                            os.stat(name, dir_fd=parent, follow_symlinks=False)
+                        except FileNotFoundError:
+                            continue
+                        raise headscale.HeadscaleServiceError("publication-uncertain")
+                    value = self._read_file(parent, name, owner=owner, mode=mode)
+                    if (hashlib.sha256(value).hexdigest() != record["files"][path]
+                            or (name in expected and value != expected[name])):
+                        raise headscale.HeadscaleServiceError("publication-uncertain")
+            except FileNotFoundError:
+                if not missing_ok:
+                    raise
         if extended:
-            self._headscale_empty_ca(removed=Path(headscale.EMPTY_CA).name in removed)
+            try:
+                self._headscale_empty_ca(removed=Path(headscale.EMPTY_CA).name in removed)
+            except FileNotFoundError:
+                if not missing_ok:
+                    raise
         return record
 
     @staticmethod
@@ -1912,12 +1921,302 @@ class ManagedInstaller:
                 os.close(lock)
         raise headscale.HeadscaleServiceError("issuer-partial-cleanup-uncertain" if partial else "issuer-cleanup-uncertain")
 
-    def cleanup_headscale(self) -> dict[str, str]:
-        """Disable/remove only the inert installation this installer can prove.
+    def _cleanup_home_headscale(
+        self, release_uid: int, home_id: str, control_plane_id: str, connector_id: str,
+        generation: int,
+    ) -> dict[str, str]:
+        """Unmounted B6 executor. The lifecycle caller supplies trusted expectations.
+
+        The caller stops all owned services first. The activation-directory lock
+        serializes existing cooperative activation writers; sampled native state
+        and literal parents are freshly checked before every destructive effect.
+        No authentication, stop, admission revocation or public lifecycle is added.
+        """
+        # Callable-local imports avoid the existing activation -> installer edge.
+        from runtime.remote_access import home_activation as activation
+        from runtime.remote_access.home_activation_txn import HomeActivationTransactionStore
+        from runtime.remote_access.home_unit_gate import HomeUnitGate
+
+        partial = False
+        self._headscale_preparing = True
+        try:
+            if self.layout != "deb":
+                raise InstallerError("deb-layout-required")
+            gate = HomeUnitGate(expected_release_uid=release_uid, expected_home_id=home_id,
+                                expected_control_plane_id=control_plane_id,
+                                expected_connector_id=connector_id, expected_generation=generation,
+                                root=self.root, root_owner=self.root_owner)
+            store = activation.HomeActivationStore(root=self.root, root_owner=self.root_owner)
+            transactions = HomeActivationTransactionStore(root=self.root, root_owner=self.root_owner)
+            with transactions.locked():
+                current = store.read(expected_generation=generation)
+                if (current.release_uid, current.home_id, current.control_plane_id, current.connector_id) != (
+                        release_uid, home_id, control_plane_id, connector_id):
+                    raise InstallerError("home binding")
+                receipt = self._headscale_receipt()
+                self._headscale_cleanup_identity(receipt)
+                self._service_owner = self._account(create=False)
+                if self._headscale_owner is None or self._service_owner is None:
+                    raise InstallerError("cleanup identity")
+                publication = self._headscale_publication(missing_ok=True)
+                if receipt is None and publication is None:
+                    raise InstallerError("Headscale UID/GID not receipted")
+                if publication is not None and publication["dial_ip"] != current.dial_ip:
+                    raise InstallerError("publication binding")
+
+                link_disabled = False
+
+                def require() -> None:
+                    if store.read(expected_generation=generation) != current:
+                        raise InstallerError("home receipt changed")
+                    self._headscale_cleanup_identity(receipt)
+                    if self._account(create=False) != self._service_owner:
+                        raise InstallerError("service identity changed")
+                    self._confirm_quiescent()
+                    self._headscale_stopped()
+                    gate._inspect(require_absent=link_disabled)
+
+                # kind, owner (directory GID may be unspecified by B6), mode, digest.
+                members: dict[str, tuple[str, tuple[int, int | None], int, str | None]] = {}
+                for path in activation.LIVE_MEMBERS:
+                    kind = ("directory" if path.endswith("/acme-unused") else
+                            "socket" if path.endswith(".sock") else "file")
+                    owner = (self._service_owner if path.endswith("/observe.sock") else
+                             (self._headscale_owner[0], None) if kind == "directory" else self._headscale_owner)
+                    members[path] = kind, owner, 0o700 if kind == "directory" else 0o600, None
+                custody = self._headscale_members()
+                for path, digest in current.member_digests.items():
+                    owner, mode = custody.get(path, (self.root_owner, 0o600))
+                    if path == activation.OWNED_LINK_TARGET:
+                        mode = 0o644
+                    elif path.endswith("/policy.hujson"):
+                        owner = self._headscale_owner
+                    members[path] = "file", owner, mode, digest
+                if publication is not None:
+                    for path, digest in publication["files"].items():
+                        if path in members and members[path][3] != digest:
+                            raise InstallerError("publication digest")
+                        owner, mode = custody[path]
+                        members[path] = "file", owner, mode, digest
+                    if "directories" in publication:
+                        members["/" + headscale.EMPTY_CA] = "directory", self.root_owner, 0o755, None
+                # B6 grants only the signing-key exception to D's preservation
+                # of root-only CA staging. Other entries remain incomplete.
+                # CA private bytes and sockets are never opened/read/connected.
+                members[f"/{headscale.HOME_CA}/ca.key"] = "file", self.root_owner, 0o600, None
+
+                def entry(path: str, *, remove: bool = False) -> bool:
+                    nonlocal partial
+                    kind, owner, mode, digest = members[path]
+                    relative = Path(path.lstrip("/"))
+                    try:
+                        with self._publication_parent(str(relative.parent)) as (parent, check):
+                            self._headscale_no_pending(parent, relative.name)
+                            try:
+                                info = os.stat(relative.name, dir_fd=parent, follow_symlinks=False)
+                            except FileNotFoundError:
+                                check()
+                                return False
+                            valid_type = {"file": stat.S_ISREG, "socket": stat.S_ISSOCK,
+                                          "directory": stat.S_ISDIR}[kind]
+                            if (not valid_type(info.st_mode) or info.st_uid != owner[0]
+                                    or (owner[1] is not None and info.st_gid != owner[1])
+                                    or stat.S_IMODE(info.st_mode) != mode
+                                    or info.st_nlink != (2 if kind == "directory" else 1)):
+                                raise InstallerError("live member custody")
+                            if kind == "directory":
+                                child = os.open(relative.name, _DIR_FLAGS, dir_fd=parent)
+                                try:
+                                    with os.scandir(child) as entries:
+                                        nonempty = next(entries, None) is not None
+                                    if (activation._signature(os.fstat(child)) != activation._signature(info)
+                                            or nonempty):
+                                        raise InstallerError("live directory not empty")
+                                finally:
+                                    os.close(child)
+                            elif digest is not None:
+                                data = self._read_file(parent, relative.name, owner=owner, mode=mode)
+                                if hashlib.sha256(data).hexdigest() != digest:
+                                    raise InstallerError("live member digest")
+                            check()
+                            if activation._signature(os.stat(relative.name, dir_fd=parent,
+                                                              follow_symlinks=False)) != activation._signature(info):
+                                raise InstallerError("live member changed")
+                            if remove:
+                                require()
+                                inventory()
+                                check()
+                                if activation._signature(os.stat(relative.name, dir_fd=parent,
+                                                                  follow_symlinks=False)) != activation._signature(info):
+                                    raise InstallerError("live member changed before removal")
+                                partial = True  # An attempted unlink/fsync can have an uncertain outcome.
+                                (os.rmdir if kind == "directory" else os.unlink)(relative.name, dir_fd=parent)
+                                os.fsync(parent)
+                            return True
+                    except FileNotFoundError:
+                        return False
+
+                def inventory() -> None:
+                    # Shallow fixed custody only; never recurse into an unknown entry.
+                    for directory in headscale.CUSTODY:
+                        try:
+                            with self._publication_parent(directory) as (parent, check):
+                                allowed = {Path(path).name for path in members
+                                           if str(Path(path).parent) == "/" + directory}
+                                with os.scandir(parent) as entries:
+                                    for index, item in enumerate(entries):
+                                        if index >= 64 or item.name not in allowed:
+                                            raise InstallerError("unknown live member")
+                                check()
+                        except FileNotFoundError:
+                            pass
+                    for path in members:
+                        entry(path)
+
+                require()
+                inventory()
+                # Existing B5 owns the exact-link exception and post-disable absence proof.
+                def disable() -> None:
+                    nonlocal partial
+                    require()
+                    partial = True
+                    self.manager.disable(headscale.UNIT)
+
+                gate.disable_owned_link(disable)
+                link_disabled = True
+                require()
+                for path in members:
+                    inventory()
+                    entry(path, remove=True)
+                if any(entry(path) for path in members):
+                    raise InstallerError("live member returned")
+
+                # B7/B11 currently expose no cleanup proof + audit retirement
+                # owner. Retain all fences, issuer journals and txn evidence.
+                deferred = False
+                with self._publication_parent(headscale.INSTALLER_STATE) as (parent, check):
+                    with os.scandir(parent) as entries:
+                        for index, item in enumerate(entries):
+                            if index >= 64:
+                                raise InstallerError("cleanup evidence inventory")
+                            if item.name not in {Path(activation.ACTIVATION_PATH).name,
+                                                 headscale.RECEIPT, headscale.PUBLICATION, "home-ca",
+                                                 "home-issuer", _ISSUER_RECEIPT}:
+                                deferred = True
+                    check()
+                try:
+                    with self._publication_parent(HOME_ISSUER) as (parent, check):
+                        with os.scandir(parent) as entries:
+                            deferred = deferred or next(entries, None) is not None
+                        check()
+                except FileNotFoundError:
+                    pass
+                try:
+                    with self._publication_parent(headscale.HOME_CA) as (parent, check):
+                        with os.scandir(parent) as entries:
+                            deferred = deferred or next(entries, None) is not None
+                        check()
+                except FileNotFoundError:
+                    pass
+                if deferred:
+                    raise InstallerError("unlisted custody or B7/B11 retirement deferred")
+                require()
+                self._cleanup_issuer()  # Empty, receipted issuer only; never a journal here.
+                # A-E are unchanged: fresh identity, userdel then unshared groupdel.
+                user, group = self._headscale_cleanup_identity(receipt)
+                if receipt:
+                    partial = partial or not user
+                    if user:
+                        require()
+                        code, _ = self._run(["userdel", headscale.ACCOUNT], timeout=30.0)
+                        if code:
+                            raise InstallerError("userdel uncertain")
+                        partial = True
+                    require()
+                    user, group = self._headscale_cleanup_identity(receipt)
+                    if user:
+                        raise InstallerError("user remains")
+                    if group and receipt["group_created_with_user"]:
+                        code, _ = self._run(["groupdel", headscale.ACCOUNT], timeout=30.0)
+                        if code:
+                            raise InstallerError("groupdel uncertain")
+                    if self._headscale_cleanup_identity(receipt) != (False, False):
+                        raise InstallerError("identity remains")
+                for directory in (*headscale.CUSTODY, headscale.HOME_CA, "run/happyranch-tsnet-sidecar"):
+                    require()
+                    inventory()
+                    relative = Path(directory)
+                    try:
+                        with self._publication_parent(directory) as (opened, check):
+                            with os.scandir(opened) as entries:
+                                if next(entries, None) is not None:
+                                    raise InstallerError("custody not empty")
+                            with self._publication_parent(str(relative.parent)) as (parent, parent_check):
+                                named = os.stat(relative.name, dir_fd=parent, follow_symlinks=False)
+                                if activation._signature(named) != activation._signature(os.fstat(opened)):
+                                    raise InstallerError("custody changed")
+                                check()
+                                parent_check()
+                                partial = True
+                                os.rmdir(relative.name, dir_fd=parent)
+                                os.fsync(parent)
+                    except FileNotFoundError:
+                        pass
+                require()
+                self.manager.daemon_reload()
+                require()
+                inventory()
+                if any(entry(path) for path in members):
+                    raise InstallerError("live member returned")
+                # Publication and activation evidence survive every earlier failure;
+                # the account receipt is last, exactly as in the inert owner.
+                retire = ([headscale.PUBLICATION] if publication else [])
+                retire += [Path(activation.ACTIVATION_PATH).name]
+                retire += [headscale.RECEIPT] if receipt else []
+                for name in retire:
+                    self._headscale_stopped()
+                    self._confirm_quiescent()
+                    inventory()
+                    if any(entry(path) for path in members):
+                        raise InstallerError("live member returned before receipt retirement")
+                    with self._publication_parent(headscale.INSTALLER_STATE) as (parent, check):
+                        if name == headscale.PUBLICATION:
+                            if self._headscale_publication(missing_ok=True) != publication:
+                                raise InstallerError("publication changed")
+                        elif name == Path(activation.ACTIVATION_PATH).name:
+                            require()
+                        elif self._headscale_receipt() != receipt:
+                            raise InstallerError("account receipt changed")
+                        self._headscale_no_pending(parent, name)
+                        check()
+                        partial = True
+                        os.unlink(name, dir_fd=parent)
+                        os.fsync(parent)
+                return {"state": "removed" if receipt else "preserved",
+                        "account": "removed" if receipt else "preserved: not created by HappyRanch",
+                        "home_ca": "removed"}
+        except (OSError, InstallerError, ValueError, UnicodeError, ServiceManagerError,
+                headscale.HeadscaleServiceError):
+            pass
+        finally:
+            self._headscale_preparing = False
+        raise headscale.HeadscaleServiceError("partial-cleanup-uncertain" if partial else "cleanup-uncertain")
+
+    def cleanup_headscale(
+        self, *, expected_release_uid: int | None = None, expected_home_id: str | None = None,
+        expected_control_plane_id: str | None = None, expected_connector_id: str | None = None,
+        expected_generation: int | None = None,
+    ) -> dict[str, str]:
+        """Remove only proven custody; explicit trusted expectations select B6.
 
         Config/DERP need their final publication receipt. DB/key/socket entries
-        remain foreign. home-ca/ is preserved for authenticated later lifecycle.
+        remain foreign without B6. No CLI/uninstall caller supplies expectations;
+        their ruling D behavior, including CA preservation, remains unchanged.
         """
+        expected = (expected_release_uid, expected_home_id, expected_control_plane_id,
+                    expected_connector_id, expected_generation)
+        if any(value is not None for value in expected):
+            return self._cleanup_home_headscale(*expected)
         if self.layout != "deb":
             raise headscale.HeadscaleServiceError("deb-layout-required")
         self._headscale_preparing = True
