@@ -307,8 +307,8 @@ the existing 0600 check do not establish source UID ownership. Preserve TASK-162
 | `/etc/happyranch/{provision,install-transaction}.json` | root:root 0600; helper records layout/version/digests/phase, not secrets. No arbitrary path manifest. |
 | `/etc/happyranch/release-daemon.json` | root:root 0644; exact existing verifier fields, derived owner/home and packaged fragment. |
 | `/etc/happyranch/daemon.token` | hr:hr 0600; helper copies only the validated fixed release-home token; existing file provider, no change to daemon bearer custody. |
-| `/etc/happyranch/enrollment.key`, reserved `/etc/credstore/happyranch-tsnet-enrollment` link | root:root 0600 source and existing exact-target link; helper stages home-only key, existing LoadCredential handoff deletes source/link after durable enrollment/READY. |
-| `/etc/happyranch/invite-issuer.json` | root:root 0600; mode, local Headscale binding/CA fingerprint. No API/admin credential, key pool or standing remote mint capability. |
+| `/etc/happyranch/enrollment.key`, reserved `/etc/credstore/happyranch-tsnet-enrollment` link | root:root 0600 source and existing exact-target link; helper stages home-only key, existing LoadCredential handoff deletes source/link after durable enrollment/READY. B7 rollover also retires the abandoned generation's source/link through the same installer primitive before prepared publication; section 7 defines refusal/retry semantics. |
+| `/etc/happyranch/invite-issuer.json` | root:root 0600; closed `home-invite-config@2`: format, release_uid, home_id, control_plane_id, connector_id, ca_der_sha256, dial_ip, control_url. Stable identity only; generation and endpoint come from B1/B2 receipt. Initial protected-source publication belongs to `ManagedInstaller.publish_invite_config()`; exact-byte reuse only, no rewrite. No API/admin credential, key pool or standing remote mint capability. |
 | `/etc/happyranch/control-ca.pem`, `/etc/happyranch/empty-ca-directory/` | Home mode only: root:hr 0640 PEM bundle containing ONLY this home's CA; root:root 0755 empty directory prevents Go's default CA-directory loading. Root helper writes/checks these; hr cannot replace them. No system trust-store mutation. |
 | `/etc/happyranch/headscale/`, `/var/lib/happyranch-headscale`, `/run/happyranch-headscale` | Protected local config, TLS and DB/Noise/DERP state/socket; dedicated locked `happyranch-headscale` user, dirs 0700, files 0600. Root retains CA signing key separately, server gets only its leaf key; socket owner is this service, root helper is its sole administrative client, no hr/founder access. |
 | Existing five connector/sidecar/target/verifier unit files in `/etc/systemd/system` | root:root 0644; shared renderer, exact unit names, helper only. Add separate bus-helper unit/definition with bounded lifecycle; no authority added to connector units. |
@@ -786,6 +786,26 @@ replacement and memory theft remain limits. Concrete ACL/update/migration behavi
 security review and native tests; never claim Keychain defeats same-session compromise.
 
 ## 7. Mac, installation recovery and upgrades
+
+I5d-0 B7 rollover retains the older failed transaction. After all existing proofs
+and the unchanged-pair check, its recovery owner retires the abandoned enrollment
+source/link through the existing installer primitive, repeats the unchanged-pair
+and source-token checks, then publishes prepared G+1 with a new operation as the
+sole commit point. Unsafe custody or removal failure retains the failed pair
+without prepared publication. A crash leaving only the link or neither entry
+admits fresh-auth retry with every proof repeated and idempotent removal.
+READY/RESUME and half-published recovery leave enrollment untouched.
+Backend Enable forwards the rollover pair to the existing
+coordinator only when stable bindings match, txn is older failed_uncertain and
+operation IDs differ; matching pairs keep Ruling 17 terminal handling. The existing
+live-config owner admits an exact earlier render over protected staged provenance
+only for this prepared rollover: connector digest unchanged, exact sidecar insertion
+for integer 0 <= g < G+1, stripped digest equal to provision. Old done home_config
+also requires its live member digests and g equal to the old transaction generation.
+Partial/foreign/pending/unsafe inputs refuse without effects. Captured inputs are
+the proven staged bytes; only the normal next home_config effect publishes the
+G+1 render. Recovery never rewrites live configs or stable @2 invite configuration.
+Current transaction checks, custody, receipt CAS and B2 observation remain required.
 
 **Round-7 trust qualification:** slice 5b/#1575's fallback-root/IP-constraint proposal is not
 accepted as protection against LE fallback. After approval, replace its home transport design

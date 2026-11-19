@@ -4561,3 +4561,116 @@ def test_home_units_effects_hold_activation_lock(fixture: Fixture, monkeypatch: 
     monkeypatch.setattr(os, "open", locked)
     io.publish_home_units()
     assert observed == list(module.UNITS)
+
+
+def test_invite_config_clean_publication_and_reuse(fixture: Fixture, monkeypatch: pytest.MonkeyPatch) -> None:
+    import fcntl
+    from runtime.remote_access.invite_issuer import HomeInviteConfigRecord
+    head = home_publication_setup(fixture, monkeypatch)
+    io = fixture.installer
+    io.provision(release_user=fixture.user, data_home=fixture.home)
+    assert io.prepare_headscale()['state'] == 'inert'
+    io.publish_home_units()
+    before = staged_inventory(fixture)
+    io.manager.calls.clear()
+    head.calls.clear()
+    original_run = io._run
+    def run(args: list[str], **kwargs: object) -> tuple[int, str]:
+        if args[-1] == 'status':
+            descriptor = os.open(fixture.root / 'var/lib/happyranch-remote-access', os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                with pytest.raises(BlockingIOError):
+                    fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            finally:
+                os.close(descriptor)
+        return original_run(args, **kwargs)
+    monkeypatch.setattr(io, '_run', run)
+    writes = home_unit_writes(monkeypatch, fixture.root)
+    syncs = []
+    original_sync = os.fsync
+    def sync(fd: int) -> None:
+        syncs.append('directory' if __import__('stat').S_ISDIR(os.fstat(fd).st_mode) else 'file')
+        original_sync(fd)
+    monkeypatch.setattr(os, 'fsync', sync)
+    io.publish_invite_config()
+    path = fixture.root / 'etc/happyranch/invite-issuer.json'
+    raw = json.loads(path.read_bytes())
+    connector = json.loads((fixture.root / 'etc/happyranch/connector.json').read_bytes())
+    assert raw == dict(format='home-invite-config@2', release_uid=os.getuid(),
+        home_id=connector['home_id'], control_plane_id=connector['managed']['control_plane_id'],
+        connector_id=connector['connector_id'], ca_der_sha256=hashlib.sha256(b'synthetic public CA').hexdigest(),
+        dial_ip='192.168.1.40', control_url='https://control.happyranch.invalid:8443')
+    assert HomeInviteConfigRecord.parse(path.read_bytes()).home_id == connector['home_id']
+    assert (path.stat().st_uid, path.stat().st_gid) == io.root_owner
+    assert path.stat().st_mode & 0o777 == 0o600
+    assert syncs == ['file', 'directory']
+    assert set(staged_inventory(fixture)) - set(before) == {'etc/happyranch/invite-issuer.json'}
+    after = staged_inventory(fixture)
+    assert all(after[key] == value for key, value in before.items() if key != 'etc/happyranch')
+    # Publication changes only this parent's size/mtime/ctime, not its custody.
+    assert after['etc/happyranch'][:6] == before['etc/happyranch'][:6]
+    assert after['etc/happyranch'][9:] == before['etc/happyranch'][9:]
+    assert set(writes) == {'etc/happyranch/.invite-issuer.json.pending'}
+    assert io.manager.calls == []
+    assert all(call == ['/opt/happyranch-desktop/libexec/remote-access/happyranch-home-ca', 'status']
+               or call[0] == 'getent' or call[:2] == ['passwd', '--status'] for call in head.calls)
+    before, info = staged_inventory(fixture), path.stat()
+    writes.clear()
+    syncs.clear()
+    io.publish_invite_config()
+    assert staged_inventory(fixture) == before and path.stat() == info and writes == syncs == []
+
+
+@pytest.mark.parametrize('case', ['different', 'old-format', 'pending', 'symlink', 'hardlink', 'mode',
+    'source', 'provision', 'connector', 'release', 'missing-headscale', 'publication',
+    'materializer', 'ca-binding', 'locked'])
+def test_invite_config_refuses_without_effects(fixture: Fixture, monkeypatch: pytest.MonkeyPatch, case: str) -> None:
+    import fcntl
+    from runtime.remote_access.home_activation import HomeActivationError
+    from runtime.remote_access.invite_issuer import IssuerError
+    head = home_publication_setup(fixture, monkeypatch)
+    io = fixture.installer
+    io.provision(release_user=fixture.user, data_home=fixture.home)
+    if case != 'missing-headscale': io.prepare_headscale()
+    io.publish_home_units()
+    parent = fixture.root / 'etc/happyranch'
+    path = parent / 'invite-issuer.json'
+    if case in ('different', 'old-format', 'symlink', 'hardlink', 'mode'):
+        io.publish_invite_config()
+        if case == 'different': path.write_bytes(path.read_bytes() + b' ')
+        if case == 'old-format': path.write_bytes(path.read_bytes().replace(b'home-invite-config@2', b'home-invite-config@1'))
+        if case in ('symlink', 'hardlink'):
+            saved = path.with_name('saved-invite')
+            path.rename(saved)
+            if case == 'symlink': path.symlink_to(saved)
+            else: os.link(saved, path)
+        if case == 'mode': path.chmod(0o644)
+    if case == 'pending': (parent / '.invite-issuer.json.pending').touch(mode=0o600)
+    if case == 'source': fixture.token.write_bytes(b'synthetic rotated token')
+    if case in ('provision', 'connector', 'release'):
+        target = parent / {'provision': 'provision.json', 'connector': 'connector.json', 'release': 'release-daemon.json'}[case]
+        target.write_bytes(target.read_bytes() + b' ' if case == 'connector' else b'{}')
+    if case == 'publication':
+        (fixture.root / 'var/lib/happyranch-remote-access/headscale-publication.json').write_bytes(b'{}')
+    if case in ('materializer', 'ca-binding'):
+        status = json.loads(head.run(['/opt/happyranch-desktop/libexec/remote-access/happyranch-home-ca', 'status'])[1])
+        if case == 'materializer': status['renewal_due'] = True
+        else: status['ca_fingerprint'] = 'a' * 64
+        head.materializer_result = (0, json.dumps(status) + '\n')
+    before = staged_inventory(fixture)
+    writes = home_unit_writes(monkeypatch, fixture.root)
+    io.manager.calls.clear()
+    head.calls.clear()
+    fd = os.open(fixture.root / 'var/lib/happyranch-remote-access', os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        if case == 'locked': fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with pytest.raises((module.InstallerError, module.headscale.HeadscaleServiceError,
+                            HomeActivationError, IssuerError, OSError, ValueError)):
+            io.publish_invite_config()
+    finally:
+        os.close(fd)
+    assert writes == [] and staged_inventory(fixture) == before
+    assert io.manager.calls == []
+    assert all(call[0] == 'getent' or call[:2] == ['passwd', '--status']
+               or call == ['/opt/happyranch-desktop/libexec/remote-access/happyranch-home-ca', 'status']
+               for call in head.calls)

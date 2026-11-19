@@ -356,7 +356,7 @@ def test_coordinator_composition_and_b7_digest_verification(venue: Venue, monkey
     assert not fresh.verify("home_config", terminal)
 
 
-def test_installer_refuses_delivered_live_profile_and_rollover(venue: Venue) -> None:
+def test_installer_refuses_live_profile_and_rollover_preflight_is_read_only(venue: Venue) -> None:
     v = venue
     receipt = finish_config(v)
     io = v.receipts._io
@@ -374,7 +374,8 @@ def test_installer_refuses_delivered_live_profile_and_rollover(venue: Venue) -> 
     put(v.path(TRANSACTION_PATH), replace(old, phase="failed_uncertain").to_bytes())
     next_owner = new_owner(v, generation=8, operation="d" * 32)
     before = configs(v), v.records()
-    assert not next_owner.verify("preflight", next_receipt)
+    assert next_owner.verify("preflight", next_receipt)
+    assert not next_owner.verify("home_config", next_receipt)
     assert (configs(v), v.records()) == before
 
 

@@ -45,6 +45,7 @@ BINDING_KEYS = (
     "release_uid", "home_id", "control_plane_id", "connector_id",
     "activation_generation", "ca_der_sha256", "dial_ip",
 )
+IDENTITY_KEYS = tuple(key for key in BINDING_KEYS if key != "activation_generation")
 _RECEIPT_KEYS = frozenset((
     "format", *BINDING_KEYS, "operation_id", "member_digests",
     "local_node_stable_id", "home_endpoint", "phase", "ownership",
@@ -106,17 +107,21 @@ def _digest(value: object) -> None:
         raise HomeActivationError()
 
 
-def _validate_binding(record: Any) -> None:
+def _validate_identity(record: Any) -> None:
     if type(record.release_uid) is not int or not 0 < record.release_uid < 2**32 - 1:
         raise HomeActivationError()
     for name in ("home_id", "control_plane_id", "connector_id"):
         value = getattr(record, name)
         if type(value) is not str or re.fullmatch(r"[A-Za-z0-9_-]{1,128}", value) is None:
             raise HomeActivationError()
-    _generation(record.activation_generation)
     _digest(record.ca_der_sha256)
     if type(record.dial_ip) is not str or not invite_v2._canonical_dial_ip(record.dial_ip):
         raise HomeActivationError()
+
+
+def _validate_binding(record: Any) -> None:
+    _validate_identity(record)
+    _generation(record.activation_generation)
 
 
 def _endpoint(value: object) -> None:

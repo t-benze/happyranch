@@ -14,7 +14,7 @@ from pathlib import Path
 
 from runtime.remote_access import headscale_service, home_admin, installer
 from runtime.remote_access.home_activation import (
-    BINDING_KEYS, INVITE_CONFIG_PATH, MEMBER_PATHS, HomeActivationReceipt, HomeActivationStore,
+    IDENTITY_KEYS, INVITE_CONFIG_PATH, MEMBER_PATHS, HomeActivationReceipt, HomeActivationStore,
 )
 from runtime.remote_access.home_activation_coordinator import ActivationOwner, ActivationRefused
 from runtime.remote_access.home_activation_txn import EFFECTS, HomeActivationTransactionStore
@@ -183,7 +183,7 @@ class HomeActivationOwner(HomeSystemdProcessOwner):
                     raise ActivationRefused()
                 if path == INVITE_CONFIG_PATH:
                     config = HomeInviteConfigRecord.parse(data)
-                    if any(getattr(config, key) != getattr(receipt, key) for key in BINDING_KEYS):
+                    if any(getattr(config, key) != getattr(receipt, key) for key in IDENTITY_KEYS):
                         raise ActivationRefused()
                 if path.endswith("control-ca.pem"):
                     der = ssl.PEM_cert_to_DER_cert(data.decode("ascii"))

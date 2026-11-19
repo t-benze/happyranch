@@ -22,9 +22,9 @@ from typing import Callable, Iterator, Protocol
 
 from runtime.remote_access import invite_v2
 from runtime.remote_access.home_activation import (
-    ACTIVATION_PATH, BINDING_KEYS, CONTROL_URL, INVITE_CONFIG_PATH,
+    ACTIVATION_PATH, IDENTITY_KEYS, CONTROL_URL, INVITE_CONFIG_PATH,
     HomeActivationError, HomeActivationReceipt, HomeActivationStore,
-    _decode_record, _endpoint, _generation, _validate_binding,
+    _decode_record, _generation, _validate_identity,
 )
 from runtime.remote_access.pairing import PinnedPairingManager
 
@@ -85,16 +85,13 @@ class HomeInviteConfigRecord:
     home_id: str
     control_plane_id: str
     connector_id: str
-    activation_generation: int
     ca_der_sha256: str
     dial_ip: str
     control_url: str
-    home_endpoint: str
 
     def __post_init__(self) -> None:
         try:
-            _validate_binding(self)
-            _endpoint(self.home_endpoint)
+            _validate_identity(self)
             if type(self.control_url) is not str or self.control_url != CONTROL_URL:
                 raise HomeActivationError()
         except HomeActivationError:
@@ -106,8 +103,8 @@ class HomeInviteConfigRecord:
     @classmethod
     def parse(cls, data: bytes) -> HomeInviteConfigRecord:
         try:
-            record = _decode_record(data, frozenset(("format", *BINDING_KEYS, "control_url", "home_endpoint")),
-                                    "home-invite-config@1")
+            record = _decode_record(data, frozenset(("format", *IDENTITY_KEYS, "control_url")),
+                                    "home-invite-config@2")
         except HomeActivationError:
             raise IssuerError("configuration") from None
         record.pop("format")
@@ -131,8 +128,7 @@ def read_home_invite_config(*, expected_generation: int, root: Path = Path("/"),
                 receipt = HomeActivationReceipt.parse(receipt_data)
                 if (receipt.phase != "ready"
                         or receipt.activation_generation != expected_generation
-                        or any(getattr(config, key) != getattr(receipt, key) for key in BINDING_KEYS)
-                        or config.home_endpoint != receipt.home_endpoint
+                        or any(getattr(config, key) != getattr(receipt, key) for key in IDENTITY_KEYS)
                         or hashlib.sha256(data).hexdigest() != receipt.member_digests[INVITE_CONFIG_PATH]):
                     raise HomeActivationError("binding")
         return config

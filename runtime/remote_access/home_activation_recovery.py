@@ -150,6 +150,8 @@ class HomeActivationRecovery(HomeActivationCoordinator):
                                    operation_id=secrets.token_hex(16), local_node_stable_id=None, home_endpoint=None)
                 validate_recovery_transition(receipt, prepared)
                 self._unchanged(receipt, txn)
+                self._io._remove_enrollment()
+                self._unchanged(receipt, txn)
                 self._source(receipt)
                 self._receipts._publish_record(ACTIVATION_PATH, prepared.to_bytes(), expected=receipt,
                                                parse=HomeActivationReceipt.parse)

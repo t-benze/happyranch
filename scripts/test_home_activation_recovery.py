@@ -250,6 +250,97 @@ def test_rollover_retains_txn_and_has_no_effects(venue: RecoveryVenue, history: 
     venue.no_effects()
 
 
+def staged_enrollment(venue: RecoveryVenue) -> tuple[Path, Path]:
+    venue.path('/etc/credstore').mkdir(mode=0o755)
+    venue.receipts._io._write_enrollment(bytearray(b'synthetic-abandoned-enrollment'))
+    return venue.path('/etc/happyranch/enrollment.key'), venue.path('/etc/credstore/happyranch-tsnet-enrollment')
+
+
+def enrollment_snapshot(source: Path, link: Path) -> tuple[Any, ...]:
+    return (source.read_bytes(), source.lstat(), os.readlink(link), link.lstat())
+
+
+@pytest.mark.parametrize('case', ['mode', 'owner', 'hardlink', 'link-target', 'exception'])
+def test_rollover_enrollment_refusal_retains_pair_and_bytes(
+        venue: RecoveryVenue, monkeypatch: pytest.MonkeyPatch, case: str) -> None:
+    venue.empty()
+    source, link = staged_enrollment(venue)
+    if case == 'mode': source.chmod(0o640)
+    if case == 'hardlink': os.link(source, source.with_name('saved-enrollment'))
+    if case == 'link-target':
+        link.unlink(); link.symlink_to(source.with_name('foreign'))
+    if case == 'owner':
+        original = os.stat
+        def foreign(path: Any, *args: Any, **kwargs: Any) -> Any:
+            result = original(path, *args, **kwargs)
+            if path == 'enrollment.key' and 'dir_fd' in kwargs:
+                values = list(result); values[4] += 1
+                return os.stat_result(values)
+            return result
+        monkeypatch.setattr(os, 'stat', foreign)
+    if case == 'exception':
+        def refused(self: Any) -> None: raise OSError('synthetic removal failure')
+        monkeypatch.setattr(venue.receipts._io.__class__, '_remove_enrollment', refused)
+    before, pair = enrollment_snapshot(source, link), venue.records()
+    from scripts.test_installer_token_custody import home_unit_writes
+    writes = home_unit_writes(monkeypatch, venue.root)
+    with pytest.raises(RecoveryRefused): venue.recover()
+    assert enrollment_snapshot(source, link) == before and venue.records() == pair
+    assert writes == []
+    venue.no_effects()
+
+
+@pytest.mark.parametrize('half', [False, True])
+def test_resume_and_half_leave_enrollment_untouched(
+        venue: RecoveryVenue, monkeypatch: pytest.MonkeyPatch, half: bool) -> None:
+    if half: half_publish(venue, monkeypatch)
+    source, link = staged_enrollment(venue)
+    before = enrollment_snapshot(source, link)
+    with peer(venue, json.dumps(reply(venue.failed)).encode()) as (path, _):
+        assert venue.recover().phase == 'ready'
+    path.unlink()
+    assert enrollment_snapshot(source, link) == before
+    with pytest.raises(RecoveryRefused): venue.recover()
+    assert enrollment_snapshot(source, link) == before
+    venue.no_effects()
+
+
+@pytest.mark.parametrize('boundary', ['link-only', 'removed', 'pair-drift'])
+def test_rollover_enrollment_interruption_and_retry(
+        venue: RecoveryVenue, monkeypatch: pytest.MonkeyPatch, boundary: str) -> None:
+    venue.empty()
+    source, link = staged_enrollment(venue)
+    before = venue.records()
+    with monkeypatch.context() as patch:
+        if boundary == 'link-only':
+            unlink = os.unlink
+            def crash(path: Any, *args: Any, **kwargs: Any) -> None:
+                if path == link.name: raise Crash()
+                unlink(path, *args, **kwargs)
+            patch.setattr(os, 'unlink', crash)
+        else:
+            remove = venue.receipts._io.__class__._remove_enrollment
+            def removed(io: Any) -> None:
+                remove(io)
+                if boundary == 'removed': raise Crash()
+                txn = venue.transactions.read_optional()
+                put(venue.path(TRANSACTION_PATH), replace(txn, operation_id='a' * 32).to_bytes())
+            patch.setattr(venue.receipts._io.__class__, '_remove_enrollment', removed)
+        with pytest.raises(RecoveryRefused if boundary == 'pair-drift' else Crash): venue.recover()
+    assert not source.exists() and link.is_symlink() == (boundary == 'link-only')
+    assert venue.records()[0] == before[0]
+    if boundary == 'pair-drift':
+        assert venue.transactions.read_optional().operation_id == 'a' * 32
+        venue.no_effects()
+        return
+    assert venue.records() == before
+    result = venue.recover()
+    assert result.phase == 'prepared' and result.activation_generation == 8
+    assert not source.exists() and not link.is_symlink()
+    assert venue.records()[1] == before[1]
+    venue.no_effects()
+
+
 @pytest.mark.parametrize("case", ["absent", "operation", "binding", "newer-failed", "older-active", "half-foreign"])
 def test_other_pairs_refuse_without_recovery(venue: RecoveryVenue, case: str) -> None:
     txn = venue.transactions.read_optional()

@@ -5,7 +5,7 @@ import hashlib
 import json
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from runtime.remote_access.home_activation import (
     CONTROL_URL, HomeActivationReceipt, HomeActivationStore, _signature,
@@ -79,7 +79,8 @@ class HomeLiveConfigOwner:
 
     Prepared inputs are read once, then retained with custody signatures. Each
     publication validates source and original inputs again; a partial pair is
-    never resumed. Fresh/B7 verification uses done txn digests, never provenance.
+    never resumed. Current txn verification uses done digests. Post-B7 prepared
+    admission proves staged provenance under the exact earlier render.
     """
 
     def __init__(self, *, io: ManagedInstaller, expected_generation: int,
@@ -123,6 +124,15 @@ class HomeLiveConfigOwner:
 
     def _prepare(self, receipt: HomeActivationReceipt) -> dict[str, bytes]:
         if not self._inputs:
+            txn = self._transactions.read_optional()
+            rollover = (receipt.phase == "prepared" and txn is not None
+                        and txn.phase == "failed_uncertain"
+                        and txn.activation_generation < receipt.activation_generation)
+            if rollover and self._context(receipt) != txn:
+                raise ActivationRefused()
+            old_effect = next((e for e in txn.effects if e.name == "home_config"), None) if rollover else None
+            if old_effect is not None and old_effect.state != "done":
+                raise ActivationRefused()
             service = self._io._account(create=False)
             if service is None:
                 raise ActivationRefused()
@@ -137,9 +147,29 @@ class HomeLiveConfigOwner:
                     owner, mode = ((self._io.root_owner, 0o644) if name == "release-daemon.json"
                                    else ((self._io.root_owner[0], service[1]), 0o640))
                     item = self._read(parent, name, owner=owner, mode=mode)
-                    if item.digest != raw["digests"][name]:
-                        raise ActivationRefused()
                     inputs[name] = item
+                if inputs["connector.json"].digest != raw["digests"]["connector.json"]:
+                    raise ActivationRefused()
+                sidecar = inputs["sidecar.json"]
+                if sidecar.digest != raw["digests"]["sidecar.json"]:
+                    if not rollover:
+                        raise ActivationRefused()
+                    g = self._io._json(sidecar.data).get("home_binding", {}).get("activation_generation")
+                    if type(g) is not int or not 0 <= g < receipt.activation_generation:
+                        raise ActivationRefused()
+                    end, addition = sidecar.data.rindex(b"}"), _addition(replace(receipt, activation_generation=g))
+                    if sidecar.data[end-len(addition):end] != addition:
+                        raise ActivationRefused()
+                    staged = sidecar.data[:end-len(addition)] + sidecar.data[end:]
+                    if _digest(staged) != raw["digests"]["sidecar.json"]:
+                        raise ActivationRefused()
+                    if old_effect is not None and (
+                            g != txn.activation_generation or old_effect.member_digests != {
+                                _CONNECTOR: inputs["connector.json"].digest, _SIDECAR: sidecar.digest}):
+                        raise ActivationRefused()
+                    inputs["sidecar.json"] = _Input(staged, sidecar.signature, _digest(staged))
+                if inputs["release-daemon.json"].digest != raw["digests"]["release-daemon.json"]:
+                    raise ActivationRefused()
                 release = self._io._json(inputs["release-daemon.json"].data)
                 validate_record(release)
                 if release["uid"] != receipt.release_uid:
@@ -209,7 +239,10 @@ class HomeLiveConfigOwner:
             txn = self._context(receipt)
             self._source.require(receipt)
             config_effect = next((e for e in txn.effects if e.name == "home_config"), None) if txn else None
-            if config_effect and (config_effect.state == "done" or self._live is not None):
+            rollover = (receipt.phase == "prepared" and txn is not None
+                        and txn.phase == "failed_uncertain"
+                        and txn.activation_generation < receipt.activation_generation)
+            if config_effect and not rollover and (config_effect.state == "done" or self._live is not None):
                 self._verify_live(receipt, txn)
             elif effect == "preflight" and not self._attempted and receipt.phase in ("prepared", "activating"):
                 self._prepare(receipt)

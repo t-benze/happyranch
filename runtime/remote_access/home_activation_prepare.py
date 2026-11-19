@@ -10,7 +10,7 @@ from pathlib import Path
 
 from runtime.remote_access import headscale_service
 from runtime.remote_access.home_activation import (
-    ACTIVATION_PATH, BINDING_KEYS, INVITE_CONFIG_PATH, MEMBER_PATHS, OWNED_LINK,
+    ACTIVATION_PATH, IDENTITY_KEYS, INVITE_CONFIG_PATH, MEMBER_PATHS, OWNED_LINK,
     HomeActivationReceipt, HomeActivationStore, _generation,
 )
 from runtime.remote_access.home_activation_coordinator import ActivationRefused
@@ -76,7 +76,7 @@ class HomeActivationPrepare:
                     data = self._io._read_file(parent, relative.name, owner=owner, mode=mode)
                 if path == INVITE_CONFIG_PATH:
                     config = HomeInviteConfigRecord.parse(data)
-                    if any(getattr(config, key) != getattr(receipt, key) for key in BINDING_KEYS):
+                    if any(getattr(config, key) != getattr(receipt, key) for key in IDENTITY_KEYS):
                         raise ActivationRefused()
                 if path.endswith("control-ca.pem"):
                     der = ssl.PEM_cert_to_DER_cert(data.decode("ascii"))
@@ -103,10 +103,9 @@ class HomeActivationPrepare:
                 self._absent()
                 with self._receipts._record(INVITE_CONFIG_PATH) as data:
                     config = HomeInviteConfigRecord.parse(data)
-                if config.activation_generation != expected_generation:
-                    raise ActivationRefused()
                 receipt = HomeActivationReceipt(
-                    **{key: getattr(config, key) for key in BINDING_KEYS},
+                    **{key: getattr(config, key) for key in IDENTITY_KEYS},
+                    activation_generation=expected_generation,
                     operation_id="0" * 32, phase="prepared",
                     member_digests={path: "0" * 64 for path in MEMBER_PATHS},
                     local_node_stable_id=None, home_endpoint=None)

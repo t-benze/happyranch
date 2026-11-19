@@ -2395,8 +2395,9 @@ No record/fence auto-cleanup or retention/reset operation is introduced within
 one Headscale DB lifetime; the sole removal exception is B6 retirement after
 same-operation DB deletion proof (I3c M1).
 
-HomeInviteConfig reader deferred to 3b-2g-2: home_endpoint is the node's runtime tailnet endpoint, which exists only after activation joins the local node; it will come from a root receipt written at activation.
-The activation endpoint receipt remains undelivered. Items 4 and 5 now supply
+HomeInviteConfig obtains home_endpoint only from the protected READY activation
+receipt, populated by B2 after the local node joins. The stable installation
+config carries neither endpoint nor activation generation. Items 4 and 5 now supply
 inert issuer-directory custody and the uncalled local-node mint composition.
 `prepare-headscale` publishes `home-issuer/` through the installer's literal
 no-follow, exclusive pending-directory/no-replace/fsync path and records its
@@ -2461,9 +2462,19 @@ are maxima; smaller implementation limits need sizing evidence.
 
 **B1 — Protected activation/config and endpoint receipt.**
 `/etc/happyranch/invite-issuer.json` is root:root 0600, at most 16 KiB, closed
-`home-invite-config@1`. Its field set is the format, release UID, installation IDs
-(`home_id`, `control_plane_id`, `connector_id`), activation generation, CA DER
-SHA-256, dial IP, canonical control URL and runtime endpoint (`home_endpoint`).
+`home-invite-config@2`. Its field set is the format, release UID, installation IDs
+(`home_id`, `control_plane_id`, `connector_id`), CA DER SHA-256, dial IP and canonical
+control URL. Generation and endpoint belong only to the activation receipt;
+legacy @1 bytes refuse. No-receipt Enable capture expects generation 0, including
+a first activation after B6 retires the receipt.
+`ManagedInstaller.publish_invite_config()` is the sole initial publisher, with no
+public/CLI caller. Under the existing activation-directory flock it derives fields
+from complete protected staged-inert provenance, release/source-token binding,
+Headscale publication and materializer status. Release UID/IDs, CA and dial IP
+come only from those protected sources; control URL is fixed. The existing A5
+exclusive-pending/fsync/no-follow rename publishes root:root 0600. Exact-byte reuse
+is a no-op; differing bytes, pending residue or unsafe custody refuse. It never
+rewrites or deletes; B5/B6/B17 maps are unchanged.
 `/var/lib/happyranch-remote-access/home-activation.json` is root:root 0600 in the
 existing root:root 0700 parent, at most 16 KiB, closed `home-activation@1`.
 It binds the same release UID/IDs, monotonic integer activation generation,
@@ -2478,9 +2489,9 @@ rename under literal no-follow parents (the existing A5 publication discipline),
 never an in-place edit or pending adoption. Only B6 owns deletion; v1 install
 records are neither reused nor extended.
 
-G2-A fixes the exact closed top-level keys of `home-invite-config@1` to
+G2-A fixes the exact closed top-level keys of `home-invite-config@2` to
 `format, release_uid, home_id, control_plane_id, connector_id,
-activation_generation, ca_der_sha256, dial_ip, control_url, home_endpoint`;
+ca_der_sha256, dial_ip, control_url`;
 `format` is the literal version above. The exact closed top-level keys of
 `home-activation@1` are `format, release_uid, home_id, control_plane_id,
 connector_id, activation_generation, operation_id, ca_der_sha256, dial_ip,
@@ -2524,8 +2535,9 @@ not receipt ownership members), and `links`
 is the single-key object mapping the literal B5 link path to its exact literal
 target. No path selection or deletion authority follows from parsing it.
 The G2-A reader requires an externally expected generation, a ready receipt,
-equal release/installation IDs, CA, dial IP, generation and endpoint, and the
-full config-file digest from that receipt. It pins/revalidates both files and
+equal release/installation IDs, CA and dial IP, and the full config-file digest
+from that receipt. Generation is checked against the receipt; endpoint comes
+only from its ready observation, re-verified through B2. It pins/revalidates both files and
 literal parents, refuses either pending entry, and never manufactures an
 endpoint. The distinct <=4096-byte issuance journal under
 `/var/lib/happyranch-remote-access/home-issuer/invite-issuer.json` and the
@@ -2758,8 +2770,8 @@ immediately before rendering and publish only from those bytes. Done verificatio
 compares fresh live bytes to renderer output and transaction member digests;
 B7 recovery uses transaction digests, not provision.json. Do not write provenance.
 At the E1 boundary the installer intentionally reported drift/refused the live
-profile; E2a below adds the protected validated-state exception. G+1 with already-live configs likewise refuses without
-effect until B6 restoration/Turn off/ReplaceFailed; E1 adds no restoration path.
+profile; E2a below adds the protected validated-state exception. The I5d-0
+rollover admission below supersedes E1's original G+1 live-config refusal.
 Why no founder: implements settled B4 using an existing protected record with
 stricter cross-checks, without schema, dependency, user, UX or check relaxation.
 
@@ -2796,8 +2808,18 @@ reaches home_config done; installed acceptance remains unverified.
 
 E1b's original fail-closed boundary reported provisioned-config drift/refused the
 live profile after home_config done. E2a below supplies the validated exception.
-A G+1 rollover with already-live configs refuses the prepared precondition without
-config effects until B6 restoration/Turn off/ReplaceFailed. E1b grants no
+For I5d-0, only a prepared receipt paired with an older failed_uncertain txn
+admits staged bytes or a proven earlier render: connector equals its provision
+digest, and sidecar ends in the exact authorized insertion for integer
+0 <= g < receipt generation, with every other field equal to the receipt.
+Stripping that insertion must yield the provision sidecar digest. An old done
+home_config additionally requires both live digests equal its member_digests
+and g equal its txn generation; intent/partial evidence refuses. Unknown/foreign
+tails, strip mismatch, pending residue and custody drift refuse without effects.
+Captured data/digests are the proven staged bytes, with the live custody signature.
+The next normal home_config perform/_publish alone writes the new render;
+recovery never rewrites configs. Current-txn _verify_live matching, renderer,
+source checks, B1 digests and B5/B6/B17 stay unchanged. E1b grants no
 restoration or public Enable path. Installer/supervisor admission, provenance,
 drift, unit publication and home_transport selection remain E2; no CLI, helper,
 D-Bus, app or other production caller is mounted.
@@ -2951,12 +2973,15 @@ retains the remaining bytes; later attempts repeat only this terminal path.
 
 Ready or both failed_uncertain refuse unchanged: ordinary admission owns ready,
 and Ruling 12/12a Recover owns failed pairs. Stale/mismatched G/O, unknown/unsafe
-records or pending residue refuse unchanged without adoption. This backend gate
-also refuses a prepared receipt paired with an older failed txn; it narrows the
-earlier backend rollover assumption without changing the coordinator's Ruling 12
-rollover admission or the existing Recover entry. No re-entry can Prepare, replay
-an effect, create O/G, restore/rollback units, start/stop/reload services, mint,
-call admin APIs, probe ports or publish configs.
+records or pending residue refuse unchanged without adoption, except the I5d-0
+B7 pair: prepared receipt, older failed_uncertain txn, equal every binding key
+other than generation/operation, and distinct operation IDs. Under the held lock,
+backend Enable forwards only that nonmatching pair to normal compose -> run ->
+publish_ready. The unchanged coordinator repeats its checks and replaces the old
+txn at the first intent with expected=previous. Matching txn Ruling 17 remains
+exactly the terminal-marker path above; every other nonmatching pair refuses.
+That terminal path cannot Prepare, replay an effect, create O/G, restore units,
+start/stop/reload services, mint, call admin APIs, probe ports or publish configs.
 
 The backend passes the actual protected receipt to the unchanged coordinator's
 _pending/_fail handling after classifying the pair. _fail independently rereads
@@ -3269,11 +3294,23 @@ engineering_manager, TASK-17421 step 19. Context: main after G2-D1 #1690
    closed nonsecret txn recovery marker is permitted when necessary. Publish txn
    first, receipt second, through A5.
 4. FRESH/ROLLOVER requires zero nodes and zero usable keys (unused and unexpired).
-   Generate a new root operation O' (32 lowercase hex) and publish only receipt
-   `prepared(G+1,O')`. No mint, expire or other effect runs in recovery. Retain
+   After all proofs and `_unchanged(receipt, txn)`, the existing B7 recovery owner
+   calls the installer's fixed-path `_remove_enrollment()` to retire the abandoned
+   generation's enrollment source and intentional credstore link. It rechecks
+   `_unchanged(receipt, txn)`, then source-token binding before publishing receipt
+   `prepared(G+1,O')` with a new root operation O' (32 lowercase hex). This receipt
+   publication remains the sole commit point. Custody or removal failure refuses
+   without publishing prepared and retains the failed pair. A crash after source
+   removal may leave only the link or neither entry; fresh-auth retry repeats all
+   proofs and the idempotent removal. READY/RESUME and half-published branches never
+   remove enrollment. No mint, expire or forward effect runs in recovery. Retain
    txn(G) untouched. Coordinator fresh-start admits an existing txn only when
    it is older than the prepared generation and `failed_uncertain`, replacing it
-   at the first intent. An unused unexpired key keeps uncertainty; callers may
+   at the first intent. The I5d-0 backend forwards this pair only for equal stable
+   identity binding and distinct operation IDs (Ruling 17); the existing live-config
+   owner proves earlier rendered bytes against staged provenance as above. Recovery
+   never rewrites invite/live configs; the normal next home_config writes G+1.
+   An unused unexpired key keeps uncertainty; callers may
    retry after the 120-second key expires. Crash repeatability is amended by 12a.
 5. Everything else refuses unchanged with a closed nonsecret reason and stays
    uncertain for Turn off/ReplaceFailed.
