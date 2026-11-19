@@ -815,11 +815,47 @@ def _legacy_history(conn: sqlite3.Connection, org_slug: str, budget: _ReadBudget
     return retained
 
 
+def _reserve_generic_cancellation(data: dict[str, list[dict]], budget: _ReadBudget) -> None:
+    """Non-cancel commit headroom, charged AFTER the entire combined read.
+
+    Per unfinished @2 run, 16 MiB covers the max 1414488-byte native carrier
+    (5*n+512 digest charge), two 16 KiB original proofs including their two
+    auxiliary decodes, two 48 KiB events and a 48 KiB control/receipt, raw rows,
+    native lookups and projection/container overhead. 128 copies of the known
+    source/visit identity bytes additionally cover repeated native ownership
+    checks, without assuming small externally assigned task/principal/SIDs.
+    History payloads have already been charged in full: their sizes/counts do
+    not enter this future delta. All unfinished runs reserve, so another run's
+    non-cancel write cannot spend this run's cancellation space.
+    """
+    visits = {row['id']: row for row in data['workflow_seq_visits']}
+    for run in data['workflow_seq_runs']:
+        if run['engine_version'] != 2 or run['state'] not in ('running', 'held'):
+            continue
+        identity = sum(len(run[key].encode('utf8')) for key in (
+            'id', 'source_task_id', 'source_principal', 'source_session_id', 'carrier_task_id'))
+        visit = visits.get(run['active_visit_id'])
+        if visit is not None:
+            identity += sum(len(visit[key].encode('utf8')) for key in (
+                'id', 'task_id', 'principal', 'session_id') if visit[key] is not None)
+        budget.reserve(16 * 1048576 + 128 * identity)
+        # The finite row/traversal ledgers also retain room for the two events,
+        # one control, original proofs and their fixed-shape reconstruction.
+        budget.work(4096)
+        for _ in range(32):
+            budget.candidate()
+        budget.sql_steps += 65536
+        _budget_check(budget.sql_steps <= budget.sql_limit,
+                      lambda ok: _require(ok, 'read_sql_exhausted'), budget,
+                      'sql', 65536, budget.sql_limit - budget.sql_steps + 65536)
+
+
 def read_sequential_history(conn: sqlite3.Connection, *, expected_org_slug: str,
                             retained_budget: _Budget | None = None,
                             deadline: float | None = None,
                             ownership_sql_limit: int = 32000000,
-                            task_id: str | None = None) -> SequentialHistory:
+                            task_id: str | None = None,
+                            reserve_cancellation: bool = False) -> SequentialHistory:
     """Validate all sequential rows and complete combined schema in one snapshot.
 
     Empty/absent storage is explicitly unavailable. A readable inventory is not
@@ -946,6 +982,8 @@ def read_sequential_history(conn: sqlite3.Connection, *, expected_org_slug: str,
                 validate_sequential_ownership_guards(conn, budget=budget)
             retained = _legacy_history(conn, expected_org_slug, budget, data,
                                        retained_budget=retained_budget)
+        if reserve_cancellation:
+            _reserve_generic_cancellation(data, budget)
         budget.check()
         ready = bool(definitions and settings and layout.ownership == 2)
         result = SequentialHistory(layout, 'storage readable' if ready else 'new-engine unavailable',

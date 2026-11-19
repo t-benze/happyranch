@@ -57,7 +57,7 @@ from runtime.orchestrator.agent_def import AgentDef, render_agent_text
 # A focused phase selects the same retained corruption rows/assertions. The
 # default/full matrix remains all four phases; no case is skipped or weakened.
 assignment_case = None
-S4A_CASES = ('empty_summary_hold', 'empty_summary_cancel', 'document_retry_history', 'document_history_refusal', 'timeout_no_result', 'bad_shape', 'oversize', 'unknown_outcome', 'unavailable',
+S4A_CASES = ('empty_summary_hold', 'empty_summary_cancel', 'document_retry_history', 'document_history_refusal', 'document_variable_refusal', 'document_history_sweep', 'timeout_no_result', 'bad_shape', 'oversize', 'unknown_outcome', 'unavailable',
     'exhausted', 'retry_cas', 'rebrief_history', 'reassign_eligible', 'replay_conflict',
     'control_state_action_matrix', 'cancel_never_held', 'cancel_resumed_running', 'stale_hold_event',
     'held_retry_replay_running', 'cancel_replay_finished', 'control_cas_race',
@@ -2317,6 +2317,107 @@ if s4a_case or not sys.argv[1:]:
         assert f.conn.execute('SELECT count(*) FROM workflow_seq_visits').fetchone()[0] == 1
         return event
 
+    def s4document(size):
+        return '' if size == 0 else s4bytes(dict(format='workflow-sequential-callback@2', outcome='unknown',
+            content_base64=base64.b64encode(b'x' * size).decode('ascii'), findings=[])).decode('utf8')
+
+    def s4tryhold(f):
+        run = s4row(f, 'workflow_seq_runs', f.ids.run_id)
+        capture = f.org.workflow_authority.capture_admission()
+        with f.org.workflow_authority.admission_writer(capture) as writer:
+            return hold_generic_uncommitted(writer, f.db, org_slug='scratch', run_id=run['id'],
+                visit_id=run['active_visit_id'], expected_cas=run['cas'], compiled=f.compiled,
+                authority=f.org.workflow_authority, capture=capture)
+
+    def s4budgetcancel(f, label):
+        run = s4row(f, 'workflow_seq_runs', f.ids.run_id)
+        visits, recoveries, count = run['visit_count'], run['recovery_count'], run['event_count']
+        counters = tuple(tuple(row) for row in f.conn.execute('SELECT * FROM workflow_seq_node_counters ORDER BY rowid'))
+        s4apply(f, s4command(f, 'cancel'))
+        fenced = s4row(f, 'workflow_seq_runs', f.ids.run_id)
+        if run['active_visit_id'] is not None:
+            assert (fenced['state'], fenced['progress'], fenced['active_visit_id'], fenced['event_count']) == (
+                'running', 'cancelling', run['active_visit_id'], count + 1), label + ': cancellation fence missing'
+            try:
+                s4finish(f)
+            except (ValueError, RuntimeError) as exc:
+                raise AssertionError(label + ': cancellation finish at maximal history must commit: ' + str(exc)) from exc
+        stopped = s4row(f, 'workflow_seq_runs', f.ids.run_id)
+        assert (stopped['state'], stopped['progress'], stopped['terminal_outcome'], stopped['active_visit_id']) == (
+            'finished', None, 'cancelled', None), label + ': terminal cancellation missing'
+        assert stopped['event_count'] == count + (2 if run['active_visit_id'] is not None else 1), label + ': wrong cancellation event count'
+        assert (stopped['visit_count'], stopped['recovery_count']) == (visits, recoveries), label + ': cancellation spent allowance'
+        assert tuple(tuple(row) for row in f.conn.execute('SELECT * FROM workflow_seq_node_counters ORDER BY rowid')) == counters, label + ': cancellation changed node counters'
+        assert f.conn.execute('SELECT count(*) FROM workflow_seq_visits WHERE result_id IS NOT NULL').fetchone()[0] == 0, label + ': synthetic acceptance'
+        assert f.conn.execute('SELECT count(*) FROM workflow_seq_visits WHERE selected=1').fetchone()[0] == 0, label + ': outstanding visit'
+        assert f.conn.execute("SELECT count(*) FROM workflow_seq_events WHERE kind='transition'").fetchone()[0] == 0, label + ': accepted refused result'
+        assert f.conn.execute('SELECT count(*) FROM workflow_seq_outputs').fetchone()[0] == 0, label + ': produced output'
+        try:
+            history = read_sequential_history(f.conn, expected_org_slug='scratch')
+        except ValueError as exc:
+            raise AssertionError(label + ': complete terminal history must remain readable: ' + str(exc)) from exc
+        assert f.ids.run_id in history.run_ids, label + ': terminal history missing'
+
+    def s4budgethistory(pattern, finals, *, expected=None):
+        # Discover the maximal real-writer Running prefix for this size mix,
+        # stopping only at a no-effect byte refusal or the original recovery cap.
+        # No count injection, reader patch, or production budget override.
+        committed = 0
+        with s4fixture(document=True) as probe, closing(sqlite3.connect(':memory:')) as checkpoint:
+            # Branch only the private DB from a real-writer-produced prefix;
+            # each final callback drives the actual fence/finish/complete reader.
+            probe.conn.backup(checkpoint)
+            for size in pattern:
+                visit = s4row(probe, 'workflow_seq_runs', probe.ids.run_id)['active_visit_id']
+                s4closed(probe, visit, summary=s4document(size), terminal='success')
+                before = s4snap(probe)
+                try:
+                    s4tryhold(probe)
+                except ValueError as exc:
+                    assert str(exc) == 'workflow_seq_read_bytes_exhausted', (case, str(exc))
+                    assert s4snap(probe) == before, case + ': hold reservation refusal changed rows'
+                    break
+                before = s4snap(probe)
+                try:
+                    s4apply(probe, s4command(probe))
+                except ValueError as exc:
+                    assert str(exc) == 'workflow_seq_read_bytes_exhausted', (case, str(exc))
+                    assert s4snap(probe) == before, case + ': retry reservation refusal changed rows'
+                    break
+                committed += 1
+                probe.conn.backup(checkpoint)
+                assert probe.ids.run_id in read_sequential_history(probe.conn, expected_org_slug='scratch').run_ids
+            if expected is not None:
+                assert committed == expected, case + ': cancellation reservation boundary must refuse without spending headroom'
+            run = s4row(probe, 'workflow_seq_runs', probe.ids.run_id)
+            if run['active_visit_id'] is not None and s4row(probe, 'workflow_seq_visits', run['active_visit_id'])['session_id'] is None:
+                s4closed(probe, run['active_visit_id'], summary=s4document(1048576), terminal='success')
+                if case == 'document_variable_refusal':
+                    s4refuses(probe, lambda: s4tryhold(probe), 'read_bytes_exhausted')
+            s4budgetcancel(probe, case + ': refusal boundary ' + str(pattern))
+            for final in finals:
+                label = case + ': prefix=' + str(pattern[:committed]) + ' final=' + str(final)
+                checkpoint.backup(probe.conn)
+                f = probe
+                visit = s4row(f, 'workflow_seq_runs', f.ids.run_id)['active_visit_id']
+                summary = s4document(final)
+                s4closed(f, visit, summary=summary, terminal='success')
+                # The large candidate must still roll back atomically when its
+                # resulting complete history cannot preserve cancellation room.
+                if final == 1048576 and committed < len(pattern):
+                    s4refuses(f, lambda: s4tryhold(f), 'read_bytes_exhausted')
+                s4budgetcancel(f, label)
+                native_task = s4row(f, 'workflow_seq_visits', visit)['task_id']
+                try:
+                    f.conn.execute('UPDATE task_results SET output_summary=? WHERE task_id=?', (summary + ' ', native_task))
+                    f.conn.commit()
+                    s4refuses(f, lambda: read_sequential_history(f.conn, expected_org_slug='scratch'), 'hold_callback_conflict')
+                finally:
+                    f.conn.execute('UPDATE task_results SET output_summary=? WHERE task_id=?', (summary, native_task))
+                    f.conn.commit()
+                assert f.ids.run_id in read_sequential_history(f.conn, expected_org_slug='scratch').run_ids
+                print('PASS S4a budget', label, 'maximal committed retries=' + str(committed), flush=True)
+
     def s4spent(f):
         from runtime.workflows.sequential_contracts import GenericCounters, GenericNodeCounters
         from runtime.workflows.sequential_definition import parse_generic_result
@@ -2612,7 +2713,19 @@ if s4a_case or not sys.argv[1:]:
             with s3_fixture() as f:
                 s4v1(f, case)
             continue
-        with s4fixture(events=1 if case == 'exhausted' else 8, document=case in ('document_retry_history', 'document_history_refusal')) as f:
+        if case == 'document_history_refusal':
+            s4budgethistory((1048576,) * 6, (1048576,), expected=4)
+            continue
+        if case == 'document_variable_refusal':
+            s4budgethistory((960 * 1024,) * 6, (1048576,))
+            continue
+        if case == 'document_history_sweep':
+            for pattern in ((960 * 1024,) * 6, (1048576,) * 6, (65536, 262144, 524288, 1048576, 1048576, 1048576),
+                            (1048575, 1048576, 1048574, 1048576, 1048575, 1048576),
+                            (131072,) * 6):
+                s4budgethistory(pattern, (0, 524288, 1048576))
+            continue
+        with s4fixture(events=1 if case == 'exhausted' else 8, document=case == 'document_retry_history') as f:
             if case == 'empty_summary_cancel':
                 s4held(f)
                 visit = json.loads(s4apply(f, s4command(f)))['new_visit_id']
@@ -2624,57 +2737,6 @@ if s4a_case or not sys.argv[1:]:
                 assert (run['state'], run['terminal_outcome'], run['active_visit_id']) == ('finished', 'cancelled', None), case + ': positive empty closure did not finish cancellation'
                 assert s4row(f, 'workflow_seq_visits', visit)['result_id'] is None, case + ': synthetic result acceptance'
                 assert f.conn.execute('SELECT count(*) FROM workflow_seq_outputs').fetchone()[0] == 0
-            elif case == 'document_history_refusal':
-                summary = s4bytes(dict(format='workflow-sequential-callback@2', outcome='unknown',
-                    content_base64=base64.b64encode(b'x' * 1048576).decode('ascii'), findings=[])).decode('utf8')
-                for attempt in range(1, 7):
-                    visit = s4row(f, 'workflow_seq_runs', f.ids.run_id)['active_visit_id']
-                    s4closed(f, visit, summary=summary, terminal='success')
-                    if attempt < 6:
-                        s4hold(f)
-                        s4apply(f, s4command(f))
-                    else:
-                        before = s4snap(f)
-                        capture = f.org.workflow_authority.capture_admission()
-                        try:
-                            with f.org.workflow_authority.admission_writer(capture) as writer:
-                                hold_generic_uncommitted(writer, f.db, org_slug='scratch', run_id=f.ids.run_id,
-                                    visit_id=visit, expected_cas=s4row(f, 'workflow_seq_runs', f.ids.run_id)['cas'],
-                                    compiled=f.compiled, authority=f.org.workflow_authority, capture=capture)
-                        except ValueError as exc:
-                            assert str(exc) == 'workflow_seq_read_bytes_exhausted', (case, str(exc))
-                        else:
-                            raise AssertionError(case + ': writer committed a history beyond the existing complete-read byte budget')
-                        assert s4snap(f) == before, case + ': rejected unreadable history changed persisted rows'
-                assert f.ids.run_id in read_sequential_history(f.conn, expected_org_slug='scratch').run_ids, case + ': rollback history unreadable'
-                s4apply(f, s4command(f, 'cancel'))
-                fenced = s4row(f, 'workflow_seq_runs', f.ids.run_id)
-                assert (fenced['state'], fenced['progress'], fenced['active_visit_id'], fenced['event_count']) == ('running', 'cancelling', visit, 12), case + ': cancellation fence missing'
-                try:
-                    s4finish(f)
-                except (ValueError, RuntimeError) as exc:
-                    raise AssertionError(case + ': cancellation finish after budget refusal must commit: ' + str(exc)) from exc
-                stopped = s4row(f, 'workflow_seq_runs', f.ids.run_id)
-                assert (stopped['state'], stopped['progress'], stopped['terminal_outcome'], stopped['active_visit_id'], stopped['event_count']) == ('finished', None, 'cancelled', None, 13), case + ': terminal cancellation missing'
-                assert f.conn.execute('SELECT count(*) FROM workflow_seq_visits WHERE selected=1').fetchone()[0] == 0, case + ': outstanding visit after cancellation'
-                try:
-                    history = read_sequential_history(f.conn, expected_org_slug='scratch')
-                except ValueError as exc:
-                    raise AssertionError(case + ': complete terminal cancellation history must remain readable: ' + str(exc)) from exc
-                assert f.ids.run_id in history.run_ids, case + ': terminal history missing'
-                assert (stopped['visit_count'], stopped['recovery_count']) == (6, 5), case + ': cancellation spent visit/recovery allowance'
-                assert f.conn.execute("SELECT count(*) FROM workflow_seq_events WHERE kind='transition'").fetchone()[0] == 0, case + ': cancellation accepted a refused result'
-                assert f.conn.execute('SELECT count(*) FROM workflow_seq_outputs').fetchone()[0] == 0, case + ': cancellation produced output'
-                native_task = s4row(f, 'workflow_seq_visits', visit)['task_id']
-                try:
-                    f.conn.execute('UPDATE task_results SET output_summary=? WHERE task_id=?',
-                        (summary.replace('"unknown"', '"changed"', 1), native_task))
-                    f.conn.commit()
-                    s4refuses(f, lambda: read_sequential_history(f.conn, expected_org_slug='scratch'), 'hold_callback_conflict')
-                finally:
-                    f.conn.execute('UPDATE task_results SET output_summary=? WHERE task_id=?', (summary, native_task))
-                    f.conn.commit()
-                assert f.ids.run_id in read_sequential_history(f.conn, expected_org_slug='scratch').run_ids, case + ': restored terminal history unreadable'
             elif case == 'document_retry_history':
                 summary = s4bytes(dict(format='workflow-sequential-callback@2', outcome='unknown',
                     content_base64=base64.b64encode(b'x' * 1048576).decode('ascii'), findings=[])).decode('utf8')

@@ -58,13 +58,26 @@ Cancellation-only closure instead authenticates a bounded UTF8-validated byte
 stream against the same native callback digest, charging raw bytes and validation
 copies without reserving business-content parsing copies it never creates. A
 callback refused by Held is not accepted or parsed as business content by
-cancellation. After five 1MiB Held/retry cycles and a sixth Held candidate's
-64MiB budget refusal, cancellation finish and the complete terminal history
-remain readable within that unchanged budget. Native identity and original
-terminal/outer authentication remain required.
-Fresh hold/control/cancellation-finish writers run the complete reader on their
-resulting uncommitted state with its unchanged budgets and the operation's
-original deadline; refusal rolls back all business writes. No-result holds create
+cancellation. Non-cancel admission, hold and replacement writers additionally
+reserve cancellation space after validating the **entire combined history**,
+including retained families and other runs. Each unfinished @2 run reserves
+16MiB plus 128 copies of its known source/current-visit identity bytes inside
+the unchanged 64MiB allowance, plus 32 row acquisitions, 4096 traversal steps
+and 65536 SQL steps inside the original finite ledgers. This covers worst-case fence, finish, bounded
+original proofs and a maximum 1MiB document callback (including its base64 carrier),
+independently of prior document sizes and committed visit/recovery counts.
+A candidate that cannot preserve that headroom refuses with
+`read_bytes_exhausted`, rolling back all allocations, rows, counters and CAS;
+cancellation stays available. Fence/finish consume the reservation without
+business-content acceptance. A cancelling run keeps its reservation against
+other runs' non-cancel writes. The rule can refuse a hold/retry before the
+ordinary reader itself exhausts; it is not a callback-size or event-cap increase.
+The native digest, INTEGER result/task/principal/SID/status and original positive
+terminal/outer proofs remain mandatory. Start grammar/limits are unchanged.
+Fresh admission/hold/control/cancellation-finish writers run the complete reader
+on their resulting uncommitted state with unchanged budgets and the operation's
+original deadline; cancellation omits only the future headroom reservation.
+No-result holds create
 no synthetic result, output or successor. Running cancel fences progression;
 only positive closure permits its completion. Native cancellation delivery belongs to S6b;
 native producers/dispatch mounting belong to S4b, and initiator wakes/inbox to

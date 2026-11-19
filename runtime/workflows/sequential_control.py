@@ -321,18 +321,21 @@ def apply_control_uncommitted(conn: sqlite3.Connection, db: object, *, org_slug:
              command.expected_cas, command.expected_held_event_id, command.action, capture.command_bytes,
              hashlib.sha256(capture.command_bytes).hexdigest(), event_id, new_visit,
              receipt, hashlib.sha256(receipt).hexdigest()))
-    validate_control_write(conn, org_slug=org_slug, deadline=budget.deadline)
+    validate_control_write(conn, org_slug=org_slug, deadline=budget.deadline,
+                           reserve_cancellation=command.action != 'cancel')
     return receipt
 
 
-def validate_control_write(conn: sqlite3.Connection, *, org_slug: str, deadline: float) -> None:
+def validate_control_write(conn: sqlite3.Connection, *, org_slug: str, deadline: float,
+                           reserve_cancellation: bool = False) -> None:
     """Refuse an unreadable resulting history before the authority writer commits.
 
     Use the complete reader's unchanged allowances on the operation's original
     deadline. No payload cache survives from the earlier writer observation.
     """
     from runtime.workflows.sequential_history import read_sequential_history
-    read_sequential_history(conn, expected_org_slug=org_slug, deadline=deadline)
+    read_sequential_history(conn, expected_org_slug=org_slug, deadline=deadline,
+                            reserve_cancellation=reserve_cancellation)
 
 
 def finish_cancellation_uncommitted(conn: sqlite3.Connection, db: object, *, org_slug: str,

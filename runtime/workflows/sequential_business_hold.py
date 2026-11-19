@@ -409,5 +409,6 @@ def hold_generic_uncommitted(conn: sqlite3.Connection, db: object, *, org_slug: 
         conn.execute("UPDATE workflow_seq_visits SET state='held',selected=0 WHERE id=? AND selected=1", (visit_id,))
         _move(conn, run, event_id, state='held', progress=None, active_visit_id=None,
               held_node_id=visit['node_id'], held_event_id=event_id)
-    validate_control_write(conn, org_slug=org_slug, deadline=budget.deadline)
+    validate_control_write(conn, org_slug=org_slug, deadline=budget.deadline,
+                           reserve_cancellation=True)
     return event_id
