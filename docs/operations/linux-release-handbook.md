@@ -459,6 +459,17 @@ Each input is limited to 120 seconds; empty/invalid selection or timeout cancels
 without mutation. Missing terminal fails closed before launch. No invite/device/
 path/credential flags exist.
 
+C19 address recovery uses the same `client accept-invite` action and web
+`client.acceptInvite`. One exact saved home/control-plane/connector/CA binding
+with changed address metadata opens a native updated-target confirmation; the
+terminal requires `update` and GTK defaults to Cancel. Confirmation precedes
+exact keyring reread and unchanged v3 resume with saved network state/node and
+no join key. Authenticated health validates the live grant before 8b save/readback.
+Identity/profile/bearer remain the same. Failure requires separate fresh consent
+for normal join and Host approval, without overwriting the saved record. Decline
+launches nothing. No Client update proves Host-wide invalidation. Real-network
+C19 acceptance belongs to slice 7 and is **NOT RUN**.
+
 Connections live only in this foreground invocation. Authenticated native health
 yields `runtimeReachable`, never `Connected`: CLI cannot observe the GUI's loaded
 RELEASE UI. Open the loopback URL printed only on the terminal and keep CLI

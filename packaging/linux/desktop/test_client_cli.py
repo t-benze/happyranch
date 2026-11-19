@@ -46,6 +46,7 @@ class Session:
     runtime_error = False
     join_cancel = False
     calls = []
+    snapshot = None
 
     def __init__(self, prefix: Path) -> None:
         self.instances.append(self)
@@ -67,8 +68,13 @@ class Session:
     def restore(self, saved: object) -> None:
         self.calls.append(("restore", cli.custody.encode(saved)))
 
+    def recover_address(self, saved: object, invite: object) -> None:
+        self.calls.append("recover")
+        if self.runtime_error:
+            raise cli.native.ClientError("identityMismatch")
+
     def saved_record(self) -> object:
-        return record()
+        return self.snapshot if self.snapshot is not None else record()
 
     def open_runtime(self) -> str:
         self.calls.append("open")
@@ -85,12 +91,12 @@ class Session:
 class ClientCLITests(unittest.TestCase):
     def setUp(self) -> None:
         self.secret = FakeSecret()
-        Session.instances, Session.calls = [], []
+        Session.instances, Session.calls, Session.snapshot = [], [], None
         Session.cleanup_error = Session.runtime_error = Session.join_cancel = False
         Terminal.choices, Terminal.output, Terminal.reads = [], [], []
         from gi.repository import Gio
         for target, name, value in ((cli.native, "ClientSession", Session), (cli, "Terminal", Terminal),
-                (cli.native, "decode_invite", lambda text: NS(home_id="synthetic-home", control_plane_id="synthetic-control", home_endpoint="100.64.0.1:443")),
+                (cli.native, "decode_invite", lambda text: NS(**{field: getattr(record(), field) for field in record().__slots__})),
                 (Gio.DBusError, "get_remote_error", lambda e: e.remote if isinstance(e, RemoteError) else None)):
             active = patch.object(target, name, value)
             active.start()
@@ -114,6 +120,61 @@ class ClientCLITests(unittest.TestCase):
                        "synthetic-control", "100.64.0.1", "synthetic-private-canary", "b" * 64, "fingerprint", "127.0.0.1", "secret diagnostic canary"):
             self.assertNotIn(secret, out.getvalue())
         return code, [json.loads(line) for line in out.getvalue().splitlines()]
+
+    def address_case(self, **changes: object) -> object:
+        saved = record()
+        Session.snapshot = cli.native.SavedRecord(**({name: getattr(saved, name) for name in saved.__slots__}
+            | dict(dial_ip="100.64.0.2", home_endpoint="100.64.0.2:443")))
+        self.secret.items.append(Item(self.secret, cli.custody.binding(saved) | {"xdg:schema": cli.custody.SCHEMA}, cli.custody.encode(saved)))
+        invite = NS(**({name: getattr(saved, name) for name in saved.__slots__}
+                    | dict(dial_ip="100.64.0.2", home_endpoint="100.64.0.2:443") | changes))
+        return invite
+
+    def test_address_recovery_terminal_consent_and_readback(self) -> None:
+        invite = self.address_case()
+        with patch.object(cli.native, "decode_invite", return_value=invite):
+            code, rows = self.run_cli("accept-invite", ["unused-invite", "update"])
+        self.assertEqual(code, 0)
+        self.assertEqual(Session.calls, ["recover", "open", "stop"])
+        self.assertIn("Dial IP: 100.64.0.2", Terminal.output)
+        self.assertIn("Control URL: " + invite.control_url, Terminal.output)
+        self.assertEqual(cli.custody.decode(self.secret.items[0].raw, cli.native).dial_ip, invite.dial_ip)
+        self.assertEqual(rows[0]["savedAccess"], "saved")
+
+    def test_address_recovery_decline_never_launches(self) -> None:
+        invite = self.address_case()
+        before = self.secret.items[0].raw
+        with patch.object(cli.native, "decode_invite", return_value=invite):
+            code, rows = self.run_cli("accept-invite", ["unused-invite", "cancel"])
+        self.assertEqual((code, rows), (0, [dict(state="cancelled", effect="none")]))
+        self.assertEqual(Session.calls, [])
+        self.assertIn("Type update to confirm the updated target (default: cancel):", [r[0] for r in Terminal.reads])
+        self.assertEqual(self.secret.writes, [])
+        self.assertEqual(self.secret.items[0].raw, before)
+
+    def test_address_recovery_failure_requests_fresh_approval(self) -> None:
+        invite = self.address_case()
+        before = self.secret.items[0].raw
+        Session.runtime_error = True
+        with patch.object(cli.native, "decode_invite", return_value=invite):
+            code, rows = self.run_cli("accept-invite", ["unused-invite", "update", "cancel"])
+        self.assertEqual(code, 0)
+        self.assertEqual(Session.calls, ["recover", "stop"])
+        self.assertTrue(any("Fresh consent" in line for line in Terminal.output))
+        self.assertEqual(self.secret.writes, [])
+        self.assertEqual(self.secret.items[0].raw, before)
+
+    def test_address_identity_changes_use_normal_approval(self) -> None:
+        for field in ("home_id", "control_plane_id", "connector_id", "ca_der"):
+            with self.subTest(field=field):
+                self.secret.items = []
+                Terminal.reads = []
+                invite = self.address_case(**{field: b"other" if field == "ca_der" else "other"})
+                with patch.object(cli.native, "decode_invite", return_value=invite):
+                    code, rows = self.run_cli("accept-invite", ["unused-invite", "cancel"])
+                self.assertEqual(code, 0)
+                self.assertEqual(Session.calls, [])
+                self.assertIn("Type connect to consent (default: cancel):", [r[0] for r in Terminal.reads])
 
     def test_registration_exec_and_deferred_mac(self) -> None:
         parser = argparse.ArgumentParser()

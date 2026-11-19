@@ -140,6 +140,30 @@ class Client:
                              ("Host", target.home_endpoint)):
             self.terminal.say(label + ": " + model.plain(value))
 
+    def recover(self, invite: object) -> bool | None:
+        records, _state, observation = self.work(self.store.list)
+        record = native.recovery_candidate(records, invite) if observation == "known" else None
+        if record is None:
+            return False
+        self.show_target(invite)
+        self.terminal.say("Control URL: " + model.plain(invite.control_url, 1024))
+        self.terminal.say("Dial IP: " + model.plain(invite.dial_ip))
+        self.terminal.say("SHA-256: " + record.fingerprint)
+        self.terminal.say("Verify saved access at this updated target without redeeming the invitation.")
+        if self.terminal.read("Type update to confirm the updated target (default: cancel):") != "update":
+            return None
+        self.session = native.ClientSession(self.prefix)
+        try:
+            self.work(lambda: self.session.recover_address(self.store.load(record), invite))
+        except (native.ClientError, custody.StoreError):
+            self.work(self.session.stop)  # uncertain cleanup must not start another session
+            self.session = None
+            self.terminal.say("Saved access could not be verified. Fresh consent and Host approval are required.")
+            return False
+        self.saved = "saved"
+        self.save()
+        return True
+
     def select_saved(self, action: str) -> object | None:
         records, state, observation = self.work(self.store.list)
         if not records or len(records) > 32:
@@ -174,25 +198,11 @@ class Client:
             text = self.terminal.read("Paste invite (hidden):", hidden=True, limit=16384)
             invite = native.decode_invite(text)
             del text
-            self.show_target(invite)
-            if self.terminal.read("Type connect to consent (default: cancel):") != "connect":
+            recovered = self.recover(invite)
+            if recovered is None:
                 return dict(state="cancelled", effect="none")
-            save = self.terminal.read("Save access in the login keyring? Type save (default: session-only):") == "save"
-            self.saved = "notSaved" if save else "none"
-            self.session = native.ClientSession(self.prefix)
-            self.work(lambda: self.session.join(invite, save_intent=save))
-            phrase, expiry = self.work(self.session.pair)
-            self.terminal.say("Compare on Host: " + model.plain(phrase))
-            self.terminal.say("Waiting for Host approval. Ctrl-C cancels this attempt.")
-            deadline = time.monotonic() + max(0, min(300, expiry - time.time()))
-            while True:
-                if time.time() >= expiry or time.monotonic() >= deadline:
-                    raise native.ClientError("expiredInvite")
-                if self.work(self.session.complete):
-                    break
-                time.sleep(1)
-            if save:
-                self.save()
+            if not recovered:
+                self.join(invite)
         else:
             record = self.select_saved(action)
             if record is None:
@@ -207,6 +217,30 @@ class Client:
             self.saved = "saved"
             self.session = native.ClientSession(self.prefix)
             self.work(lambda: self.session.restore(record))
+        return self.foreground()
+
+    def join(self, invite: object) -> None:
+        self.show_target(invite)
+        if self.terminal.read("Type connect to consent (default: cancel):") != "connect":
+            raise Cancelled()
+        save = self.terminal.read("Save access in the login keyring? Type save (default: session-only):") == "save"
+        self.saved = "notSaved" if save else "none"
+        self.session = native.ClientSession(self.prefix)
+        self.work(lambda: self.session.join(invite, save_intent=save))
+        phrase, expiry = self.work(self.session.pair)
+        self.terminal.say("Compare on Host: " + model.plain(phrase))
+        self.terminal.say("Waiting for Host approval. Ctrl-C cancels this attempt.")
+        deadline = time.monotonic() + max(0, min(300, expiry - time.time()))
+        while True:
+            if time.time() >= expiry or time.monotonic() >= deadline:
+                raise native.ClientError("expiredInvite")
+            if self.work(self.session.complete):
+                break
+            time.sleep(1)
+        if save:
+            self.save()
+
+    def foreground(self) -> dict:
         url = self.work(self.session.open_runtime)  # authenticated health, never a UI-load claim
         self.terminal.say("Runtime reachable: " + url)
         self.terminal.say("Foreground connection; Ctrl-C or SIGTERM disconnects. Loaded RELEASE UI is unverified.")

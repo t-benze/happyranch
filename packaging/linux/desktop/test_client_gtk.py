@@ -95,6 +95,23 @@ class GTKTests(unittest.TestCase):
             time.sleep(0.01)
         self.assertTrue(predicate(), "GTK/WebKit result did not arrive")
 
+    def test_updated_target_requires_native_confirmation(self):
+        invite = SimpleNamespace(home_id="synthetic-home", control_plane_id="control", home_endpoint="100.64.0.2:443",
+                                 control_url="https://control.invalid", dial_ip="192.168.1.41", ca_der=b"synthetic-DER")
+        for accept in (False, True):
+            consent = []
+            self.ui.recovery_target(invite, consent.append)
+            dialog = self.ui.prompt
+            label = next(widget for widget in dialog.get_content_area().get_children() if isinstance(widget, Gtk.Label))
+            for field in (invite.home_id, invite.control_plane_id, invite.control_url, invite.dial_ip,
+                          invite.home_endpoint, hashlib.sha256(invite.ca_der).hexdigest()):
+                self.assertIn(field, label.get_text())
+            self.assertIn("invitation will not be redeemed", label.get_text())
+            self.assertEqual(dialog.get_default_widget(), dialog.get_widget_for_response(Gtk.ResponseType.CANCEL))
+            self.assertEqual(consent, [])
+            dialog.response(Gtk.ResponseType.OK if accept else Gtk.ResponseType.CANCEL)
+            self.assertEqual(consent, [accept])
+
     def test_native_prompt_defaults_and_runtime_gate(self):
         pasted = []
         self.ui.paste(pasted.append)
