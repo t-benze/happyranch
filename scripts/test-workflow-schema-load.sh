@@ -6366,8 +6366,9 @@ if sys.argv[1:] in ([], ['--install-integrity'], ['--bootstrap-backup'], ['--boo
                         identities = {(target.stat().st_dev, target.stat().st_ino): category
                                       for target, category in paths.items()}
                         directories = {}
-                        def directory(target, custody):
-                            record = native_directory(target, custody)
+                        def directory(target, custody, *, deadline=None, private_root=None):
+                            record = native_directory(target, custody, deadline=deadline,
+                                                      private_root=private_root)
                             directories[record['fd']] = paths[target]
                             return record
                         def observed_stat(fd):
