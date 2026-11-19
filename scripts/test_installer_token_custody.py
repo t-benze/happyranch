@@ -3977,8 +3977,59 @@ def test_renewal_recovery_old_or_new_rolls_forward(fixture: Fixture, monkeypatch
     assert fixture.manager.calls == []
 
 
-@pytest.mark.parametrize('boundary', ['install-transaction.json', 'policy.json', 'provision.json'])
+def renewal_pending(fixture: Fixture, monkeypatch: pytest.MonkeyPatch, boundary: str) -> Path:
+    """Kill the real writer after its pending fsync; finally must not run."""
+    folder, _ = renewal_setup(fixture, monkeypatch)
+    rename = fixture.installer._rename_provision_entry
+    with monkeypatch.context() as patcher:
+        def interrupt(parent: int, source: str, target: str, *, updating: bool = False) -> None:
+            if target == boundary:
+                os._exit(91)
+            rename(parent, source, target, updating=updating)
+        patcher.setattr(fixture.installer, '_rename_provision_entry', interrupt)
+        child = os.fork()
+        if child == 0:
+            try:
+                fixture.installer.renew_policy()
+            except BaseException:
+                os._exit(93)
+            os._exit(92)
+        waited, status = os.waitpid(child, 0)
+    assert waited == child and os.waitstatus_to_exitcode(status) == 91
+    return folder
+
+
+@pytest.mark.parametrize('boundary', ['install-transaction.json', 'policy.json', 'provision.json',
+                                     'policy.json.pending', 'provision.json.pending'])
 def test_renewal_interruption_recovers(fixture: Fixture, monkeypatch: pytest.MonkeyPatch, boundary: str) -> None:
+    if boundary.endswith('.pending'):
+        import base64
+        destination = boundary.removesuffix('.pending')
+        folder = renewal_pending(fixture, monkeypatch, destination)
+        journal = folder / 'install-transaction.json'
+        record = json.loads(journal.read_bytes())
+        pending = folder / ('.' + boundary)
+        assert pending.read_bytes() == base64.b64decode(record['files'][destination]['new_base64'])
+        metadata = {name: ((folder / name).stat().st_uid, (folder / name).stat().st_gid,
+                           (folder / name).stat().st_mode) for name in record['files']}
+        for name, entry in record['files'].items():
+            expected = 'new_sha256' if destination == 'provision.json' and name == 'policy.json' else 'old_sha256'
+            assert hashlib.sha256((folder / name).read_bytes()).hexdigest() == entry[expected]
+        error = None
+        try:
+            fixture.installer.renew_policy()
+        except Exception as exc:
+            error = exc
+        assert error is None, f'journal-bound pending must recover: {error!r}'
+        for name, entry in record['files'].items():
+            assert (folder / name).read_bytes() == base64.b64decode(entry['new_base64'])
+            assert hashlib.sha256((folder / name).read_bytes()).hexdigest() == entry['new_sha256']
+            info = (folder / name).stat()
+            assert (info.st_uid, info.st_gid, info.st_mode) == metadata[name]
+        assert not journal.exists()
+        assert not any(path.name.endswith('.pending') for path in folder.iterdir())
+        assert fixture.manager.calls == []
+        return
     folder, _ = renewal_setup(fixture, monkeypatch)
     write = fixture.installer._write_provision_file
     def interrupt(name: str, *args: object, **kwargs: object) -> None:
@@ -3996,9 +4047,56 @@ def test_renewal_interruption_recovers(fixture: Fixture, monkeypatch: pytest.Mon
     assert fixture.manager.calls == []
 
 
+_RENEWAL_PENDING_REFUSALS = [f'{destination}:{attack}'
+    for destination in ('policy.json', 'provision.json')
+    for attack in ('bytes', 'mode', 'owner', 'group', 'hardlink', 'symlink', 'foreign', 'unjournaled')]
+
+
 @pytest.mark.parametrize('case', ['policy_drift', 'provision_drift', 'malformed', 'extra', 'oversize',
-                                   'digest', 'symlink', 'hardlink', 'mode', 'pending', 'other_transaction'])
+                                   'digest', 'symlink', 'hardlink', 'mode', 'pending', 'other_transaction',
+                                   'unjournaled-intent', *_RENEWAL_PENDING_REFUSALS])
 def test_renewal_recovery_refuses_and_retains(fixture: Fixture, monkeypatch: pytest.MonkeyPatch, case: str) -> None:
+    if ':' in case or case == 'unjournaled-intent':
+        destination, attack = case.split(':') if ':' in case else ('install-transaction.json', 'unjournaled')
+        folder = renewal_pending(fixture, monkeypatch, destination)
+        journal = folder / 'install-transaction.json'
+        pending = folder / ('.' + destination + '.pending')
+        if attack == 'bytes':
+            pending.write_bytes(b'substituted')
+        elif attack == 'mode':
+            pending.chmod(0o644)
+        elif attack in ('owner', 'group'):
+            target = pending.stat()
+            fstat, named_stat = os.fstat, os.stat
+            def foreign(info: os.stat_result) -> object:
+                if (info.st_dev, info.st_ino) != (target.st_dev, target.st_ino):
+                    return info
+                values = {name: getattr(info, name) for name in dir(info) if name.startswith('st_')}
+                field = 'st_uid' if attack == 'owner' else 'st_gid'
+                values[field] += 1
+                return SimpleNamespace(**values)
+            monkeypatch.setattr(os, 'fstat', lambda fd: foreign(fstat(fd)))
+            monkeypatch.setattr(os, 'stat', lambda *args, **kwargs: foreign(named_stat(*args, **kwargs)))
+        elif attack in ('hardlink', 'symlink'):
+            foreign_path = folder / 'foreign'
+            if attack == 'hardlink':
+                os.link(pending, foreign_path)
+            else:
+                pending.rename(foreign_path)
+                pending.symlink_to('foreign')
+        elif attack == 'foreign':
+            # Retain the valid own pending too: unknown evidence must refuse
+            # before even that otherwise recoverable inode is discarded.
+            (folder / '.foreign.pending').write_bytes(pending.read_bytes())
+        elif journal.exists():
+            journal.unlink()
+        before = staged_inventory(fixture)
+        from runtime.remote_access.home_activation import HomeActivationError
+        with pytest.raises((module.InstallerError, HomeActivationError)):
+            fixture.installer.renew_policy()
+        assert staged_inventory(fixture) == before
+        assert fixture.manager.calls == []
+        return
     folder, transaction = renewal_intent(fixture, monkeypatch)
     journal = folder / 'install-transaction.json'
     if case.endswith('_drift'):

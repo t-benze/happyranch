@@ -3554,18 +3554,53 @@ class ManagedInstaller:
                 raise InstallerError("policy renewal destination drift")
         return current
 
+    def _policy_renewal_pending(self, parent: int, files: dict | None = None) -> dict[str, tuple[int, ...]]:
+        """Only exact journal-bound destination bytes can belong to renewal."""
+        expected = {f".{name}.pending": name for name in files} if files is not None else {}
+        pending = {}
+        fields = ("st_dev", "st_ino", "st_uid", "st_gid", "st_mode", "st_nlink", "st_size", "st_mtime_ns", "st_ctime_ns")
+        for entry in os.listdir(parent):
+            if not entry.endswith(".pending"):
+                continue
+            if entry not in expected:
+                raise InstallerError("unknown policy renewal pending entry")
+            name = expected[entry]
+            owner, mode = ((self.root_owner, 0o600) if name == "provision.json" else
+                           ((self.root_owner[0], self._service_owner[1]), 0o640))
+            before = os.stat(entry, dir_fd=parent, follow_symlinks=False)
+            if self._read_file(parent, entry, owner=owner, mode=mode) != files[name]["new_bytes"]:
+                raise InstallerError("policy renewal pending bytes differ")
+            signature = tuple(getattr(before, field) for field in fields)
+            after = os.stat(entry, dir_fd=parent, follow_symlinks=False)
+            if signature != tuple(getattr(after, field) for field in fields):
+                raise InstallerError("policy renewal pending changed")
+            pending[name] = signature
+        return pending
+
     def _recover_policy_renewal(self, transaction: bytes) -> None:
         """Same lock/owner: validate BOTH destinations before any roll-forward."""
         files = self._policy_renewal_record(transaction)
         with self._publication_parent() as (parent, check):
-            for name in ("install-transaction.json", *files):
-                self._headscale_no_pending(parent, name)
+            self._headscale_no_pending(parent, "install-transaction.json")
             self._check_policy_renewal(parent, transaction)
+            self._policy_renewal_pending(parent, files)
             check()
         for name in ("policy.json", "provision.json"):
             with self._publication_parent() as (parent, check):
                 current = self._check_policy_renewal(parent, transaction)
+                pending = self._policy_renewal_pending(parent, files)
                 check()
+                if name in pending:
+                    # Discard only this validated inode, then republish through
+                    # the protected writer. A crash after discard still has
+                    # the durable journal and permitted old/new destinations.
+                    entry = f".{name}.pending"
+                    info = os.stat(entry, dir_fd=parent, follow_symlinks=False)
+                    fields = ("st_dev", "st_ino", "st_uid", "st_gid", "st_mode", "st_nlink", "st_size", "st_mtime_ns", "st_ctime_ns")
+                    if pending[name] != tuple(getattr(info, field) for field in fields):
+                        raise InstallerError("policy renewal pending changed before discard")
+                    os.unlink(entry, dir_fd=parent)
+                    os.fsync(parent)
             if current[name] != files[name]["new_bytes"]:
                 owner, mode = ((self.root_owner, 0o600) if name == "provision.json" else
                                ((self.root_owner[0], self._service_owner[1]), 0o640))
@@ -3574,6 +3609,7 @@ class ManagedInstaller:
         with self._publication_parent() as (parent, check):
             before = os.stat("install-transaction.json", dir_fd=parent, follow_symlinks=False)
             current = self._check_policy_renewal(parent, transaction)
+            self._policy_renewal_pending(parent)
             if any(current[name] != files[name]["new_bytes"] for name in files):
                 raise InstallerError("policy renewal incomplete")
             check()
@@ -3611,6 +3647,7 @@ class ManagedInstaller:
             self._recover_policy_renewal(transaction)
             return
         with self._publication_parent() as (parent, check):
+            self._policy_renewal_pending(parent)
             for name in ("policy.json", "provision.json"):
                 self._headscale_no_pending(parent, name)
             old_policy = self._read_file(parent, "policy.json", owner=(self.root_owner[0], self._service_owner[1]), mode=0o640)

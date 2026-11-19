@@ -3635,7 +3635,15 @@ fsyncs the journal before either destination, replaces `policy.json` first and
 journal last. Only the policy digest changes in the provision record. Recovery
 under the same lock rolls forward only when BOTH destinations match their old
 or new digest; malformed/unsafe journals or any other digest refuse without
-effects and retain the journal. Expired durable new bytes may roll forward;
+effects and retain the journal. A crash-left `.policy.json.pending` or
+`.provision.json.pending` is recoverable only with that durable valid journal,
+exact new bytes/digest, and the destination's regular single-link owner/mode.
+Both destinations and every pending entry are checked before effects. The same
+owner discards the validated pending inode (unlink + parent fsync), then
+republishes from the journal through the protected writer in policy/provision
+order. Unknown names, substituted bytes, unsafe custody and any pending entry
+without a durable journal refuse without effects; an unjournaled first intent
+is never adopted. Expired durable new bytes may roll forward;
 consumers still enforce expiry. All ordinary admission, inventory, replacement,
 provision, uninstall and other install-journal readers refuse this format.
 Activation receipt format, `MEMBER_PATHS`, B5, transaction `EFFECTS` and B6 stay
