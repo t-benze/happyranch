@@ -861,12 +861,14 @@ def test_first_replacement_intent_precedes_stop(fixture: Fixture, case: str) -> 
     assert any(call[0] == "stop" for call in manager.calls)
 
 
-@pytest.mark.parametrize("case", ["failed", "modern-failed", "partial-legacy", "manual-0600", "manual-0644", "prefix", "unit-only"])
+@pytest.mark.parametrize("case", ["failed", "modern-failed", "modern-unrecorded", "partial-legacy", "manual-0600", "manual-0640", "manual-0644", "prefix", "unit-only"])
 def test_first_replacement_recovers_to_fresh_inert_inventory(
     fixture: Fixture, monkeypatch: pytest.MonkeyPatch, case: str,
 ) -> None:
-    manager, parent, _ = prepared_replacement(fixture, "modern-failed" if case == "modern-failed" else "failed")
+    manager, parent, _ = prepared_replacement(fixture, "modern-failed" if case in {"modern-failed", "modern-unrecorded"} else "failed")
     (parent / "install-transaction.json").unlink()
+    if case == "modern-unrecorded":
+        (parent / "provision.json").unlink()
     if case.startswith("manual-"):
         (parent / "provision.json").unlink()
         for name in QUARANTINE_CONFIGS:
@@ -899,6 +901,8 @@ def test_first_replacement_recovers_to_fresh_inert_inventory(
         fixture.installer.begin_replacement(expected_release_uid=os.getuid(), expected_generation=candidate.inventory_generation)
     journal = parent / "install-transaction.json"
     intent = json.loads(journal.read_bytes())
+    if case == "modern-unrecorded" or case.startswith("manual-"):
+        assert intent["digests"]["provision.json"] == "absent"
     if case in {"partial-legacy", "prefix", "unit-only"}:
         assert intent["digests"]["sidecar.json"] == "absent"
     if case in {"prefix", "unit-only"}:

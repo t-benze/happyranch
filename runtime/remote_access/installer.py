@@ -551,11 +551,17 @@ class ManagedInstaller:
             except FileNotFoundError:
                 pass
             location = str(self.root / _UNIT_DIR)
-            # Once the connector copy is journaledly removed, only the validated
-            # provenance selects the existing exact unit-byte profile. No old
-            # config/argv/control binding is reconstructed or executed.
-            if (phase in _CONFIG_REMOVAL_PHASES or unit_removal) and "connector.json" not in files and modern:
-                connector = {"managed": {"profile": "linux-managed-identity-v1"}}
+            # After connector removal, v2 retains the independently validated
+            # unit digest even when provisioning provenance was originally absent.
+            # Select only the fixed rendering; never reconstruct old config/argv.
+            if (phase in _CONFIG_REMOVAL_PHASES or unit_removal) and "connector.json" not in files:
+                modern_connector = {"managed": {"profile": "linux-managed-identity-v1"}}
+                if replacement_record is not None and replacement_record["version"] == 2:
+                    original = replacement_record["inventory"][_UNIT_DIR + "/" + UNITS[0]]
+                    modern = (isinstance(original, dict) and original.get("digest") == hashlib.sha256(
+                        managed_units(self.layout, connector_config=modern_connector)[UNITS[0]].encode()).hexdigest())
+                if modern:
+                    connector = modern_connector
             units, properties = self._inventory_units(connector, removing_units=removing_units,
                 observed_units=HomeProfileAdmission(self).observed_units(home) if home else None)
             paths.extend(str(self.root / _UNIT_DIR / name) for name in units)
