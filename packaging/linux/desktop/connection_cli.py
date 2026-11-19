@@ -47,6 +47,8 @@ class Host:
         self.protocol = contract.Protocol(schema)
 
     def request(self, method: str) -> dict:
+        if self.connection is not None and self.connection.is_closed():
+            raise ClosedError()  # Never move a process-local selection to a new bus.
         loop, outcome = self.GLib.MainLoop(), []
         self.mutating = method in contract.HOST_MUTATIONS
 

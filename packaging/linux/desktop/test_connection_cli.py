@@ -193,6 +193,13 @@ class ConnectionCLITests(unittest.TestCase):
             self.assertEqual(self.run_native("revoke-device")[1]["effect"], "none")
         with patch.object(Terminal, "isatty", return_value=False):
             self.assertEqual(self.run_native("revoke-device")[1]["recovery"], "nativePermission")
+        self.bus.calls.clear()
+        self.opens.clear()
+        with patch.object(Terminal, "readline", side_effect=lambda _limit: (setattr(self.bus, "closed", True), "revoke\n")[1]):
+            code, result, _ = self.run_native("revoke-device")
+        self.assertEqual((code, result["effect"]), (1, "none"))
+        self.assertEqual(len(self.opens), 1)
+        self.assertNotIn("RevokeSelected", [call[3] for call in self.bus.calls])
 
 
 if __name__ == "__main__":
