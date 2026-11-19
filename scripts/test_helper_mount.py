@@ -1260,8 +1260,9 @@ def test_issue_invite_real_child_frame_is_bounded_and_validated(issue_mount: Any
     if case == 'alphabet': frame['invite'] = 'hrinvite2:AA='
     if case == 'too_long': frame['invite'] += 'A'
     if case == 'bool_expiry': frame['expires_at'] = True
-    if case == 'expired': frame['expires_at'] = int(time.time())
-    if case == 'future_expiry': frame['expires_at'] = int(time.time()) + 301
+    # Keep invalid expiry fixtures well clear of child/validation clock boundaries.
+    if case == 'expired': frame['expires_at'] = int(time.time()) - 3600
+    if case == 'future_expiry': frame['expires_at'] = int(time.time()) + 3600
     raw = json.dumps(frame, separators=(',', ':')) + '\n'
     if case in ('frame_at_limit', 'frame_limit'):
         limit = 6144 if case == 'frame_at_limit' else 6145

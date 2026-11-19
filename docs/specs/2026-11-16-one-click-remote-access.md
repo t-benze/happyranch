@@ -125,14 +125,17 @@ The remaining engineering details are recorded in the contract's
 [Home-network engineering settlements B1–B18](../agent-guides/contracts/remote-access-and-remote-jobs.md#home-network-engineering-settlements-b1-b18-thr-327-seq577);
 these settlements preserve the approved behavior and UX and do not claim activation delivery.
 
-I1 source integration exports only StatusV2 in addition to the existing Status,
-NextDevice and three device-mutation methods. It retains the same bus-owner gate and
-no polkit prompt for reads, returns the canonical B15 bounded JSON within a 2-second
-status budget, and leaves unsupported observation dimensions unknown. Setup comes from
-a read-only protected HomeActivationStore snapshot through the fixed bundled Python
+I1 added StatusV2 to the then-existing Status, NextDevice and three
+device-mutation methods; I5a's seven public lifecycle/invite additions are listed
+below, with unchanged admission, Linux CLI consumers in I5b and bridge consumers
+in I5c. RefreshHomeAddress remains absent and B13-deferred. StatusV2 retains the
+same bus-owner gate and no polkit prompt for reads, returns the canonical B15
+bounded JSON within a 2-second status budget, and leaves unsupported observation
+dimensions unknown. Setup comes from a read-only protected HomeActivationStore snapshot through the fixed bundled Python
 `-I` child; stopped connector means runtime unavailable, never setup Off. Status v1
-bytes are unchanged. The B16 retained writer now brackets only the three existing
-fresh-auth device effects with durable intent and fixed outcome/uncertainty records.
+bytes are unchanged. At I1, the B16 writer bracketed the three device effects
+with durable intent and fixed outcome/uncertainty records; the lifecycle/invite
+audit composition follows below.
 The fixed helper source contract already reflects B8/B9's optional compatibility UID
 pin and installed root Type=dbus packaging. I3a adds the lifecycle/auth/audit
 composition below; I5a exposes Enable, ReplaceFailed, Disable, IssueInvite,
