@@ -112,7 +112,7 @@ is unchanged; outside-home key delivery remains an open founder/security gate (�
 | `RefreshHomeAddress()` / `refresh-home-address` | Deferred to B13: no helper method exists and the CLI verb remains unavailable. Planned behavior: re-derive LAN address from kernel inventory, renew the leaf/SAN/config with the same private CA, verify readiness; no supplied address or new CA accepted. |
 | `ReplaceFailed()` / `replace-failed` | Replace only a recognized failed/partial installation, with the verbatim loss-of-pairings warning and terminal confirmation in section 7 below. |
 | `Disable()` / `turn-off` (polkit action `disable`) | Stop admission, revoke devices, stop/disable/unlink owned remote units, then clean owned activation config/state/credentials. Renewal units remain package payload; install-scope policy/provision survive. Never stop/delete the release daemon or package. |
-| `IssueInvite()` / `create-invite` (polkit action `issue-invite`) | Public on the helper in I5a; Linux CLI delivered in I5b, bridge wiring follows in I5c. Fresh auth mints one-use join key and pairing secret, invalidates old invite, and delivers once in the sole terminal `(s)` JSON reply after B16 settlement within the original 120 seconds; no prior accepted reply. |
+| `IssueInvite()` / `create-invite` (polkit action `issue-invite`) | Public on the helper in I5a; Linux CLI delivered in I5b, bridge delivered in I5c (source only; I6 native/live acceptance pending). Fresh auth mints one-use join key and pairing secret, invalidates old invite, and delivers once in the sole terminal `(s)` JSON reply after B16 settlement within the original 120 seconds; no prior accepted reply. |
 | `CancelInvite()` / `cancel-invite` | Public on the helper in I5a; Linux CLI delivered in I5b (no v1 bridge command). Fresh auth invalidates the current protected invite in the connector, then expires its key; report network cleanup separately. |
 | `RecoverInvite()` / `recover-invite` | Public on the helper in I5a; Linux CLI delivered in I5b (no v1 bridge command). Fresh auth proves no usable key remains and consumes the old ceremony; only a later IssueInvite creates fresh authority. |
 | `RetryPolicyRenewal()` / `retry-policy-renewal` **R2-approved** | Public on the helper in I5a; Linux CLI delivered in I5b (no v1 bridge command). Fresh auth retries only fixed shipped-policy renewal under the original 120 seconds and B16 intent/outcome, with final deadline validation after audit. No connector restart; all readiness gates must pass before access resumes. |
@@ -133,6 +133,20 @@ revalidation, then reports
 or cleanup from admission. Private worker outcomes/residue are not a terminal
 receipt. Lost/late/malformed results remain unknown; no polling or redispatch.
 Turn off uses fresh system authorization without an additional CLI prompt.
+
+I5c / bridge slice 2b delivers only host.enable, host.turnOff and host.createInvite
+in the Linux packaged window, using the same validator and fixed zero-input
+Enable/Disable/IssueInvite methods with 482/302/122-second transport deadlines.
+Enable/Disable acceptance leaves effect, host denial and host/network cleanup
+unknown; the persistent dedicated bus and later Status observations own state.
+IssueInvite returns only closed nonsecret issuance/expiry metadata. The complete
+invite stays in a native GTK sheet with explicit Copy, local absolute expiry and
+m:ss countdown; expiry/close drops the text and best-effort clears only our
+unchanged clipboard content. Closing does not cancel the invite; the Linux owner
+still approves the device. Missing desktop refuses before dispatch. Loss, late
+reply or cancellation never authorizes replay. Replacement, invite cancellation/
+recovery and policy renewal remain CLI-only; refresh remains B13-deferred and
+Mac host closed. Source delivery is not I6 native/live acceptance (NOT RUN).
 
 The remaining engineering details are recorded in the contract's
 [Home-network engineering settlements B1–B18](../agent-guides/contracts/remote-access-and-remote-jobs.md#home-network-engineering-settlements-b1-b18-thr-327-seq577);
@@ -155,7 +169,7 @@ composition below; I5a exposes Enable, ReplaceFailed, Disable, IssueInvite,
 CancelInvite, RecoverInvite and RetryPolicyRenewal on the public helper.
 Linux CLI consumers are delivered in I5b; I5c wires only the existing bridge
 enable/turnOff/createInvite commands. RefreshHomeAddress has no helper method
-and remains deferred to B13. I5b switches only CLI consumers; the bridge stays unchanged.
+and remains deferred to B13. I5b switches CLI consumers; I5c adds exactly those three existing v1 bridge mappings.
 
 I3a wires the serving supervisor's optional B10 reserve/invalidate/revoke-all
 capability to the existing InviteControl and its one current pinned pairing
@@ -169,7 +183,7 @@ refused or uncertain settlement. Admission returns before the worker; the single
 slot remains held through all effects under the original 480/300-second budget.
 The already-designed three action definitions retain auth_admin/no-keep defaults.
 I5a includes all three in public dispatch/introspection; Linux CLI consumers are delivered in I5b; bridge
-consumers follow in I5c.
+consumers are delivered in I5c, with native/live acceptance still pending.
 
 I3b privately mounts CancelInvite and RecoverInvite through that same helper
 capture/auth/worker slot and fixed bundled child, with their exact auth_admin,
@@ -226,7 +240,7 @@ AND B6 success AND no residue (I3a R4/R7b, I3c C3/C5).
 All ownership and quiescence gates remain required.
 Ready Enable remains inspect-only, and fresh-auth activation recovery remains
 verify/publication-only without renewal or timer replay. I5a opens the helper
-public gate; Linux CLI consumers are delivered in I5b and bridge consumers follow in I5c. B18 artifact-changing
+public gate; Linux CLI consumers are delivered in I5b and bridge consumers are delivered in I5c (source only; I6 pending). B18 artifact-changing
 upgrade repair remains separate.
 
 Disable holds that slot throughout → existing revoke-all (burn ceremony, durable

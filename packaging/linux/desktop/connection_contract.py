@@ -24,9 +24,13 @@ CLIENT_COMMANDS = {"client.status", "client.acceptInvite", "client.cancelAttempt
 
 HOST_METHODS = {"host.status": "Status", "host.nextDevice": "NextDevice",
                 "host.approveDevice": "ApprovePending", "host.rejectDevice": "RejectPending",
-                "host.revokeDevice": "RevokeSelected"}
-HOST_MUTATIONS = frozenset({"ApprovePending", "RejectPending", "RevokeSelected"})
-# CLI opt-in only; the v1 window's method/capability maps stay unchanged.
+                "host.revokeDevice": "RevokeSelected", "host.enable": "Enable",
+                "host.turnOff": "Disable", "host.createInvite": "IssueInvite"}
+HOST_MUTATIONS = frozenset({"ApprovePending", "RejectPending", "RevokeSelected",
+                            "Enable", "Disable", "IssueInvite"})
+# Only these three lifecycle methods have v1 window commands. The other four
+# remain CLI opt-in only; all consumers share the same original helper budgets.
+WINDOW_LIFECYCLE = frozenset({"Enable", "Disable", "IssueInvite"})
 CLI_LIFECYCLE_TIMEOUTS = {"Enable": 482000, "ReplaceFailed": 482000, "Disable": 302000,
                           "IssueInvite": 122000, "CancelInvite": 122000,
                           "RecoverInvite": 122000, "RetryPolicyRenewal": 122000}
@@ -359,7 +363,7 @@ def request_host(self: object, method: str, complete: object, current: object, o
     The caller owns lifetime/admission; this owner owns the dedicated bus,
     closed projection, acknowledgement and loss semantics. Never retry mutations.
     """
-    lifecycle = cli_lifecycle and method in CLI_LIFECYCLE_TIMEOUTS
+    lifecycle = method in WINDOW_LIFECYCLE or cli_lifecycle and method in CLI_LIFECYCLE_TIMEOUTS
     if method not in HOST_METHODS.values() and not lifecycle:
         complete(None, "unavailable")
         return
@@ -423,7 +427,7 @@ def request_host(self: object, method: str, complete: object, current: object, o
                         host=None, client=None))
                     if time.monotonic() >= deadline or time.time() >= frame["expires_at"]:
                         raise ValueError("late helper invite")
-                    display_invite(frame["invite"])
+                    display_invite(frame["invite"], frame["expires_at"], deadline)
                     complete(projection)
                 else:
                     # The public reply is admission-only ("accepted"), before
@@ -431,6 +435,17 @@ def request_host(self: object, method: str, complete: object, current: object, o
                     # denial/cleanup, even if a later read happens to be ready.
                     if parse_json(raw, 32768) != "accepted":
                         raise ValueError("invalid helper admission")
+
+                    if not cli_lifecycle:
+                        # The window retains its dedicated caller connection.
+                        # Acceptance proves admission only; later Status/events
+                        # own every observed effect and cleanup claim.
+                        command = "host.enable" if method == "Enable" else "host.turnOff"
+                        complete(self.protocol.result(command, dict(
+                            effect="unknown", hostDenial="unknown", hostCleanup="unknown",
+                            localCleanup="notApplicable", networkCleanup="unknown",
+                            inviteState="unknown", expiresAt=None, host=None, client=None)))
+                        return
 
                     def held() -> bool:
                         self.wait_source = None
@@ -461,7 +476,7 @@ def request_host(self: object, method: str, complete: object, current: object, o
     def call(called: str) -> None:
         nonlocal deadline
         try:
-            if lifecycle:
+            if lifecycle and deadline is None:
                 deadline = time.monotonic() + CLI_LIFECYCLE_TIMEOUTS[called] / 1000
             self.connection.call("ai.happyranch.RemoteAccess1", "/ai/happyranch/RemoteAccess1",
                 "ai.happyranch.RemoteAccess1", called, None, self.GLib.VariantType.new("(s)"),

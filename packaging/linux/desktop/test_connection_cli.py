@@ -281,12 +281,13 @@ class ConnectionCLITests(unittest.TestCase):
                     self.assertEqual(result["code"], "outcomeUnknown")  # accepted is not terminal success.
                     self.assertGreater(self.holds[-1][0], budget)
                     self.assertFalse(self.holds[-1][1])  # The caller lives through the held budget.
-                host, outcomes = native.Host(), []
-                native.contract.request_host(host, method, lambda *args: outcomes.append(args),
-                                             lambda: True, lambda _snapshot: None)
-                self.assertEqual(outcomes, [(None, "unavailable")])  # No bridge capability expansion.
-                self.assertIsNone(host.connection)
-                host.close()
+                if method in ("ReplaceFailed", "CancelInvite", "RecoverInvite", "RetryPolicyRenewal"):
+                    host, outcomes = native.Host(), []
+                    native.contract.request_host(host, method, lambda *args: outcomes.append(args),
+                                                 lambda: True, lambda _snapshot: None)
+                    self.assertEqual(outcomes, [(None, "unavailable")])  # These remain CLI-only.
+                    self.assertIsNone(host.connection)
+                    host.close()
         with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as stopped:
             parser.parse_args(["connection", "host", "issue-invite"])
         self.assertEqual(stopped.exception.code, 2)
