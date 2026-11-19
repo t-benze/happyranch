@@ -3364,10 +3364,17 @@ Traps:
 
 ### Current Stop/status boundary — THR321seq6
 
-Stop200 means an actual owned Stop signal request, never exit. CLI says “Stop
-requested”; inspect show/wait for the actual row/reason/nullable exit and output.
+Stop200 acknowledges an owned Stop signal request, or the proven-dead retained
+job settlement in [the jobs contract](contracts/jobs-and-cleanup.md#independent-runtime-budgets-and-retained-job-diagnostics-1699).
+The latter sends no signal and records `failed/orphaned_process_dead` with NULL
+exit/duration only after bounded exact-job death/fence proof and original run
+attribution validated against its persisted start audit. Missing or inconsistent
+attribution refuses without writes. Terminal hint/owner wake follow commit;
+unknown journals and holds remain intact. CLI says “Stop requested”; inspect
+show/wait for the actual row/reason/nullable exit and output.
 Running without a signal target returns409 `job_runner_pending`,
-`job_runner_finalizing` or `job_liveness_unknown`. Unavailable attribution/history
+`job_runner_finalizing` or, unless retained-job death and attribution are proven,
+`job_liveness_unknown`. Unavailable ownership/history
 returns409 `job_owner_unavailable`. Stop no longer checks affected/causal team-move
 holds; the `team_move_native_held` response model and exception translator remain
 compatibility surfaces. Actual owned Stop remains possible under active root Pause.

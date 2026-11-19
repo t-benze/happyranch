@@ -82,10 +82,12 @@ authority; current job recovery and unknown-ownership rules below still apply.
 
 ### Current Stop/status boundary — THR321seq6
 
-Stop200 means an actual owned Stop signal request, never exit. CLI says “Stop
-requested”; inspect show/wait for the actual row/reason/nullable exit and output.
+Stop200 acknowledges an owned Stop signal request, or a proven-dead retained
+job settlement. CLI says “Stop requested”; inspect show/wait for the actual
+row/reason/nullable exit and output.
 Running without a signal target returns409 `job_runner_pending`,
-`job_runner_finalizing` or `job_liveness_unknown`. Unavailable attribution/history
+`job_runner_finalizing` or, unless retained-job death is proven,
+`job_liveness_unknown`. Unavailable attribution/history
 returns409 `job_owner_unavailable`. Stop no longer checks affected/causal team-move
 holds; the `team_move_native_held` response model and exception translator remain
 compatibility surfaces. Actual owned Stop remains possible under active root Pause.
@@ -248,6 +250,16 @@ Unbounded jobs retain direct launch. Restart still retains unproven running
 rows as `job_liveness_unknown`: `jobs show` reports advisory fence holders with
 job ID, PID/PGID and age, plus observed timeout markers, without adopting or
 clearing the row. Missing identity or `/proc` reports unavailable, never free.
+Online `jobs stop` can separately settle a retained job only with valid exact-job
+boot/start identity, a dead or reused leader plus no same-boot PGID/SID members,
+and an available advisory observation with no holder. It rechecks before a
+running-only CAS, validates `reviewed_by` against the original persisted start
+audit, audits `failed/orphaned_process_dead` with NULL exit as that run initiator,
+and uses the existing terminal owner-wake path. It sends no signals and changes
+no fence custody, unknown journals or holds. Missing/legacy/invalid evidence, live members,
+unsupported platforms, missing/inconsistent run attribution or exhausted/unavailable
+reads retain `job_liveness_unknown` without writes or signals.
+See the jobs-and-cleanup contract for exact proof and bounds.
 Offline operator stopping requires separate authority and the boot/start-time
 identity checks in `docs/agent-guides/contracts/jobs-and-cleanup.md`; numeric
 PIDs, parent loss and timeout alone never authorize release or row edits.

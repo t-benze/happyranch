@@ -10,6 +10,7 @@ import stat
 import subprocess
 import sys
 import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -68,6 +69,21 @@ def timeout_observed(stderr_path: str) -> bool:
         return read_record(Path(stderr_path + '.timeout.json')).get('reason') == 'timeout'
     except (OSError, ValueError, RecursionError):
         return False
+
+
+def read_process_record(path: Path, job_id: str) -> dict:
+    """Validate the Linux identity emitted for one original session leader."""
+    value = read_record(path)
+    if (value.get('job_id') != job_id
+            or any(type(value.get(key)) is not int or value[key] <= 0
+                   for key in ('pid', 'pgid', 'sid', 'start_ticks'))
+            or value['pid'] != value['pgid'] or value['pid'] != value['sid']
+            or not isinstance(value.get('boot_id'), str)
+            or str(uuid.UUID(value['boot_id'])) != value['boot_id']
+            or not isinstance(value.get('started_at'), str)
+            or datetime.fromisoformat(value['started_at']).utcoffset() is None):
+        raise ValueError('job_identity_unavailable')
+    return value
 
 
 def launch_observed(stderr_path: str) -> bool:

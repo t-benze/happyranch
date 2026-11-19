@@ -13,7 +13,7 @@ from typing import Literal
 
 from pydantic import BaseModel
 
-from runtime.daemon.job_guardian import read_record, timeout_observed
+from runtime.daemon.job_guardian import read_process_record, timeout_observed
 from runtime.infrastructure.org_access_fence import org_access_key
 
 
@@ -41,7 +41,8 @@ def _read(path: Path, limit: int, deadline: float) -> str:
     return raw.decode('ascii')
 
 
-def observe_job_fences(home: Path, org_root: Path, job_ids: list[str] | None = None) -> JobFenceObservation:
+def observe_job_fences(home: Path, org_root: Path, job_ids: list[str] | None = None,
+                       *, deadline: float | None = None) -> JobFenceObservation:
     """One sampled Linux observation, at most 1s/1024 jobs/65536 PIDs/4096 FDs.
 
     /proc/locks may still name the *dead acquiring daemon*, not its inheritor.
@@ -51,7 +52,7 @@ def observe_job_fences(home: Path, org_root: Path, job_ids: list[str] | None = N
     result = JobFenceObservation()
     if job_ids is None:
         return result
-    deadline = time.monotonic() + 1
+    deadline = min(deadline, time.monotonic() + 1) if deadline is not None else time.monotonic() + 1
     try:
         if len(job_ids) > 1024:
             raise ValueError('observation_jobs_exhausted')
@@ -77,22 +78,22 @@ def observe_job_fences(home: Path, org_root: Path, job_ids: list[str] | None = N
         missing = []
         for job_id in job_ids:
             try:
-                record = read_record(org_root / 'jobs' / f'{job_id}.err.process.json')
+                record = read_process_record(org_root / 'jobs' / f'{job_id}.err.process.json', job_id)
             except (OSError, ValueError, RecursionError):
                 missing.append(job_id)
                 continue
-            if (record.get('job_id') != job_id or record.get('boot_id') != boot
-                    or type(record.get('pid')) is not int or record['pid'] <= 0
-                    or record.get('pgid') != record['pid'] or record.get('sid') != record['pid']
-                    or type(record.get('start_ticks')) is not int):
-                raise ValueError('job_identity_unavailable')
+            if record['boot_id'] != boot:
+                continue  # Prior-boot identities cannot hold a current-boot FD.
             try:
                 fields = _read(Path(f"/proc/{record['pid']}/stat"), 4096, deadline).rpartition(')')[2].split()
             except FileNotFoundError:
                 fields = None
-            if fields is not None and (int(fields[19]) != record['start_ticks']
-                    or int(fields[2]) != record['pgid'] or int(fields[3]) != record['sid']):
-                raise ValueError('job_identity_changed')
+            if fields is not None:
+                if int(fields[19]) == record['start_ticks']:
+                    if int(fields[2]) != record['pgid'] or int(fields[3]) != record['sid']:
+                        raise ValueError('job_identity_changed')
+                elif int(fields[2]) == record['pgid'] or int(fields[3]) == record['sid']:
+                    raise ValueError('job_identity_changed')
             if record['pgid'] in groups:
                 raise ValueError('job_identity_ambiguous')
             groups[record['pgid']] = record

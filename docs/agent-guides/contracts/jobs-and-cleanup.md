@@ -34,10 +34,12 @@ limits and all-terminal resumption. No schema/auth/permission/credential/general
 notifier change or deployment follows. Current contract: [Jobs](../../specs/2026-05-26-jobs-design.md).
 
 
-Stop200 means an actual owned Stop signal request, never exit. CLI says “Stop
-requested”; inspect show/wait for the actual row/reason/nullable exit and output.
+Stop200 acknowledges an owned Stop signal request, or the proven-dead retained
+job settlement described below. CLI says “Stop requested”; inspect show/wait for
+the actual row/reason/nullable exit and output.
 Running without a signal target returns409 `job_runner_pending`,
-`job_runner_finalizing` or `job_liveness_unknown`. Unavailable attribution/history
+`job_runner_finalizing` or, unless retained-job death is proven,
+`job_liveness_unknown`. Unavailable attribution/history
 returns409 `job_owner_unavailable`. Stop no longer checks affected/causal team-move
 holds; the `team_move_native_held` response model and exception translator remain
 compatibility surfaces. Actual owned Stop remains possible under active root Pause.
@@ -110,12 +112,47 @@ the diagnostic opens no database and acquires no new fence.
 A timeout marker is visible even while the retained DB row remains running;
 these readers never change rows, kill, adopt, clear holds or release descriptors.
 
+
+For a retained running job with no live registration, the existing online
+`happyranch jobs stop JOB-NNN` can settle **already-dead** processes on Linux.
+It requires a readable valid identity sidecar for that exact job, including
+positive integer PID/PGID/SID/start ticks, the original session-leader equality,
+an aware timestamp and a valid boot UUID. A different current boot proves the
+recorded processes dead. On the same boot, the leader must be absent or have
+different start ticks (parse stat after its final `)`), **and** a complete bounded
+`/proc` scan must find no process with either the recorded PGID or SID. Zombies
+also refuse until reaped. A reused PID alone never suffices. The existing advisory
+fence observation must additionally be `observed` with no matching holder;
+`unavailable` refuses, even with independent process-death evidence. Prior-boot
+records cannot hold current-boot descriptors; a reused leader outside the original
+group/session no longer hides an otherwise available advisory observation.
+
+The proof runs once before admission and again immediately before the existing
+running-only CAS in the root/DB terminal transaction. Each pass allows two seconds,
+65536 proc entries and 16 MiB of stat/boot reads; the existing fence observation
+keeps its own smaller bounds. Read errors, exhaustion, missing/invalid identity,
+unsupported platforms or surviving members preserve409 `job_liveness_unknown`
+and the running row. This path sends **no signals**. It records `failed` with
+`reason=orphaned_process_dead`, NULL exit code/duration and a genuine finish time,
+never script success. It atomically adds the existing `job_run_failed` audit
+(actual owner task scope, `script_request_id` job ID). Its actor is the original
+run initiator: `reviewed_by` must agree with exactly one original start audit,
+including its actor, trigger and persisted run fields. Missing, malformed,
+duplicate or inconsistent run evidence preserves409 `job_liveness_unknown`
+without writes or signals. The Stop caller never supplies terminal attribution.
+After commit it emits the terminal hint and invokes the existing
+all-blocking-jobs-terminal owner wake path. A racing terminal winner owns the
+audit and wake. Unknown producer/Pause journals and all holds remain intact;
+terminal status grants no fence release,
+setup retry or cleanup authority. Legacy rows without the sidecar remain refused.
+
 ### Operator stop with the daemon down
 
-There is no new offline CLI: legacy jobs lack persisted start identity and the
-online Stop path deliberately requires its original live registration. A
-separate reconciler would exceed this observation/budget fix. An operator with
-separate stop authority can use the following manual Linux procedure:
+There is no offline settlement CLI. Once the daemon is online, use the existing
+Stop path above to settle a positively proven dead retained job; live or unproven
+retained jobs remain refused without signalling. Legacy jobs lack the required
+identity and remain refused. An operator with separate stop authority can use
+the following manual Linux procedure while the daemon is down:
 
 1. Read the exact job's `.err.process.json`; compare its `boot_id` with
    `/proc/sys/kernel/random/boot_id` and its PID's `/proc/PID/stat` field 22
@@ -140,7 +177,9 @@ Focused standalone checks (not the retired Python suite):
 `uv run --frozen python -B -m unittest scripts.test_job_guardian -v`.
 They include the private-runtime parent-SIGKILL demonstration, real inherited
 flock/lsof and EX probe, durable marker, whole-group timeout and retained-boot
-job/setup status output. Native frozen/Darwin execution remains separate evidence.
+job/setup status output, retained Stop terminal/wake, live/member/identity/fence
+refusals and concurrent terminalization. Native frozen/Darwin execution remains
+separate evidence.
 
 **Independent THR307 nightly disk sweeper — Founder seq117/134, ROOT TASK12353 recovery.**
 
