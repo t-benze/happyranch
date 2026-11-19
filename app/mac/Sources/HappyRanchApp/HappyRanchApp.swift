@@ -2,7 +2,6 @@ import SwiftUI
 import AppKit
 import HappyRanchSupervisor
 
-@main
 struct HappyRanchApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
 

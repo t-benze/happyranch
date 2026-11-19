@@ -15,6 +15,61 @@ Retained historical source is nonshipping; it is not invoked indirectly.
 
 ## Development
 
+### THR-379 slice 5c: foreground Mac client CLI
+
+Use the CLI shipped inside the same app bundle (adjust the app location):
+
+```sh
+/Applications/HappyRanch.app/Contents/Resources/daemon/happyranch connection status
+/Applications/HappyRanch.app/Contents/Resources/daemon/happyranch connection client --help
+/Applications/HappyRanch.app/Contents/Resources/daemon/happyranch connection client accept-invite
+/Applications/HappyRanch.app/Contents/Resources/daemon/happyranch connection client saved-computers
+/Applications/HappyRanch.app/Contents/Resources/daemon/happyranch connection client connect-saved
+/Applications/HappyRanch.app/Contents/Resources/daemon/happyranch connection client remove-saved
+```
+
+The frozen CLI execs the fixed sibling `Contents/MacOS/HappyRanch` with
+`--connection-client <action>`. This foreground branch runs before SwiftUI or
+AppDelegate startup and directly reuses ManagedHomeInviteSession and
+LoginKeychainDeviceStore, including the existing helper, private profile lock,
+normal unlock/consent UI and exact-executable ACL. No additional signing is
+required. Source-only Python reports unavailable instead of searching for an app;
+the packaged native binary also accepts the fixed internal grammar directly.
+Mac host commands remain unavailable/deferred.
+
+A controlling terminal is required before invite/selection work. Paste is hidden,
+limited to 5500 UTF-8 bytes and 120 seconds. The terminal displays the exact target;
+type `connect` to consent and optionally `save` to save access in login Keychain.
+The comparison phrase stays on the terminal for comparison with Linux Host.
+No invite arguments, environment/file/stdin intake, clipboard read or secret
+export exists. Saved connect/remove enumerates at most 32 choices, waits at most
+120 seconds per input, defaults to Cancel and rereads the exact binding, trust,
+profile and bearer after explicit target confirmation. Local removal uses the
+existing native profile deletion, then exact Keychain delete/absence verification;
+it never claims Host revocation. Denied, locked or changed executable identity is
+reported through the existing closed storage outcomes, with no ACL repair or
+plaintext fallback. Failed/declined saving has an explicit session-only warning.
+
+Connections belong only to this invocation. `status` reports `notOwned` with an
+unavailable observation. Separate `disconnect`, `cancel-attempt`, `retry`,
+`retry-save` and `health` verbs return closed `unavailable/notOwned`, effect none.
+Ctrl-C/SIGTERM in the owning invocation cancels/disconnects, preserves observed
+save/deletion settlement and performs independently bounded session teardown.
+Unconfirmed cleanup is `cleanupIncomplete`/unknown. Retry uses a new invocation
+and fresh consent. Authenticated runtime health/open is `runtimeReachable`, never
+Connected or a claim that the RELEASE page loaded. The loopback URL is shown only
+on the terminal and lasts only while the process lives. JSON stdout contains
+closed states/effects and generic saved-computer labels/opaque refs; no target,
+invite, phrase, URL, bearer, fingerprint or diagnostics. Exit 0 means completed
+read/action or cancellation, 1 a closed error, 2 invalid grammar without argument
+echo. No GUI/other CLI session control or new IPC/service is provided.
+
+Focused native tests: from `app/mac`, `swift test --filter ConnectionCLITests`.
+They are NOT RUN on the Linux maker host. The existing unsigned
+`build-mac-app.yml` builds release app sources only and does not compile or run
+Swift tests. Native terminal/signal behavior, Keychain consent/unsigned reopen,
+helper integration and home/different-network acceptance remain NOT RUN.
+
 ### THR-379 slice 3b-2a: static Mac client bridge contract
 
 The separate packaged Connection view asynchronously dispatches `bridge.hello`,
