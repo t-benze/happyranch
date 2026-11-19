@@ -13,6 +13,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from enum import StrEnum
+from functools import partial
 from pathlib import Path
 from typing import Any, Callable, Coroutine, Literal, TypeVar
 
@@ -3168,7 +3169,11 @@ def _workspace_memory_store(org: OrgState, agent_name: str) -> MemoryStore:
             detail={"error": "workspace_not_migrated", "migrate_first": True},
         )
     org_cfg = load_org_config(OrgPaths(root=org.root))
-    return MemoryStore(memory_dir, compaction_config=org_cfg.memory_compaction)
+    return MemoryStore(
+        memory_dir, compaction_config=org_cfg.memory_compaction,
+        on_auto_compaction=partial(AuditLogger(org.db).log_memory_compaction,
+                                   agent=agent_name, reason="compaction (auto_trigger)"),
+    )
 
 
 def _entry_to_dict(entry: MemoryItem) -> dict:
@@ -3676,17 +3681,9 @@ async def compact_memory(
         result = await asyncio.to_thread(_memory_workspace_write, store, store.compact, dry_run=body.dry_run, policy=policy)
         # Audit each eviction
         if not body.dry_run:
-            for evicted_id in result.evicted:
-                AuditLogger(org.db).log_memory_lifecycle_changed(
-                    agent=agent_name,
-                    id=evicted_id,
-                    from_lifecycle="valid" if evicted_id not in {
-                        c.id for c in result.candidates if c.current_lifecycle == "superseded"
-                    } else "superseded",
-                    to_lifecycle="evicted",
-                    reason=f"compaction (dry_run={body.dry_run})",
-                    source="compaction",
-                )
+            AuditLogger(org.db).log_memory_compaction(
+                agent=agent_name, result=result, reason=f"compaction (dry_run={body.dry_run})",
+            )
         return {
             "dry_run": result.dry_run,
             "candidates": [

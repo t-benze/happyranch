@@ -127,7 +127,11 @@ They cover writer salience/clamping, creation-age eviction after a metadata edit
 both supersession paths and grace, protections, caps, dry-run and restoration.
 The timestamp table includes YAML datetime/date/integer values, UTC boundaries
 and conservative fallback/retention. Auto-trigger cases assert persisted notes,
-index entries and exact add audits, including when the sweep raises an error.
+index entries and exact add audits, including when the sweep or its audit raises
+an error. They also assert the manual eviction audit shape for automatic valid
+and superseded retirements, persisted-before-audit ordering, off-loop dream
+reflection sweeps, explicit disable/zero behavior, and missing/partial-section
+defaults with the real 150-file threshold.
 The 300-entry cost check bounds selection to one parse per entry and apply to
 two passes plus fresh candidate reads (the second pass regenerates the index).
 Reference cases cover aliases, body boundaries, self references, retired sources

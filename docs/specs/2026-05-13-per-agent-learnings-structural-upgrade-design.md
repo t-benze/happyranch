@@ -554,33 +554,47 @@ RLock spans an await: store workers acquire/release it themselves, and bootstrap
 uses it synchronously. A worker releases it before returning to the loop and never
 waits for the loop, authority or teams lock while holding it. This is process-local
 coordination; direct offline store callers and external filesystem edits are not
-fenced. Update does not call the automatic sweep; the dream writer is unchanged.
+fenced. Updates and inherited Instill writes do not call the automatic sweep.
+Dream reflection writes use the same worker/cancellation and workspace-lock
+boundary as ordinary adds, including automatic eviction audits.
 
-Org `org/config.yaml` supports this opt-in block (shown with all defaults):
+Org `org/config.yaml` supports this block (shown with all code defaults, also
+used when the section is absent):
 
 ```yaml
 memory_compaction:
-  enabled: false
+  enabled: true
   salience_floor: 10
   stale_days: 45
   superseded_grace_days: 7
   max_evictions_per_run: 25
-  auto_trigger_entry_count: 0
+  auto_trigger_entry_count: 150
 ```
 
-`enabled` gates manual apply and automatic compaction; dry-run is always
-available. `salience_floor` is the inclusive effective-salience ceiling (0–100).
+Explicit `enabled: false` disables manual apply and automatic compaction; dry-run
+is always available. `salience_floor` is the inclusive effective-salience ceiling (0–100).
 `stale_days` and `superseded_grace_days` are inclusive whole-day thresholds
 (1–3650). `max_evictions_per_run` bounds a sweep (1–10000).
 `auto_trigger_entry_count` (0–100000) disables automatic triggering at zero;
-when positive and enabled, ordinary adds run compaction inline after reaching
-that many entry files, including superseded/evicted files. It triggers on each
+when positive and enabled, ordinary adds and dream reflections run compaction
+in worker threads after reaching that many entry files, including
+superseded/evicted files. It triggers on each
 subsequent add, not just the threshold crossing. This sweep is best effort:
-after the note is written, a sweep exception logs a warning and does not propagate
-to the add caller, allowing the route to complete its existing `memory_added`
+after the note is written, a sweep or audit exception logs a warning and does not
+propagate to the add caller, allowing the route to complete its existing `memory_added`
 audit. Already applied sweep effects are not rolled back. Updates and inherited
-imports do not trigger it. There is no scheduled sweep. The existing manual API accepts
-policy overrides without changing config. This PR does not enable live config
+imports do not trigger it. Every automatic eviction is persisted first, then
+logged through `log_memory_lifecycle_changed`, just like manual apply:
+`task_id='AGENT-{agent}'`, action `memory_lifecycle_changed`, payload keys
+`id`, `from_lifecycle` (valid or superseded), `to_lifecycle='evicted'`, `reason`
+and `source='compaction'`. Automatic reason is `compaction (auto_trigger)`;
+manual reason remains unchanged. The store notifies a caller-supplied observer
+with the sweep result and has no database handle. Ordinary and dream write
+callers supply the audit observer; Instill's reserved inherited write bypasses
+ordinary `write_entry` entirely, including retries. Dream writes drain each
+worker's write/audit on cancellation before releasing `org.db_lock`, and share
+the workspace lock with bootstrap. There is no scheduled sweep. The existing
+manual API accepts policy overrides without changing config. This PR does not enable live config
 or curate live memories.
 
 Examples (each lifecycle operation requires a nonempty reason):

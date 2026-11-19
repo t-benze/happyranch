@@ -1,7 +1,9 @@
 """Dream endpoints: private scheduled agent reflection."""
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
+from functools import partial
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Request
@@ -9,6 +11,7 @@ from pydantic import BaseModel, Field
 
 from runtime.daemon.auth import require_token
 from runtime.daemon.routes._org_dep import OrgDep
+from runtime.daemon.routes.agents import _finish_consumer_write, _memory_workspace_write
 from runtime.daemon.routes.threads import (
     FOUNDER_LITERAL,
     _create_agent_thread_locked,
@@ -180,18 +183,24 @@ async def complete_dream(slug: str, dream_id: str, body: DreamCompleteBody, org:
         migrate_workspace(workspace)
         memory_dir = workspace / "memory"
         memory_dir.mkdir(parents=True, exist_ok=True)
-        store = MemoryStore(memory_dir, compaction_config=load_org_config(OrgPaths(root=org.root)).memory_compaction)
+        store = MemoryStore(
+            memory_dir, compaction_config=load_org_config(OrgPaths(root=org.root)).memory_compaction,
+            on_auto_compaction=partial(AuditLogger(org.db).log_memory_compaction,
+                                       agent=dream.agent_name, reason="compaction (auto_trigger)"),
+        )
         for learning in body.learnings:
-            store.write_entry(MemoryItem(
-                id=store.next_id(),
-                slug=learning.slug,
-                title=learning.title,
-                topic=learning.topic,
-                body=learning.body if learning.body.endswith("\n") else learning.body + "\n",
-                source_task=dream_id,
-            ), agent=dream.agent_name)
+            await _finish_consumer_write(asyncio.to_thread(
+                _memory_workspace_write, store, store.write_entry, MemoryItem(
+                    id=store.next_id(),
+                    slug=learning.slug,
+                    title=learning.title,
+                    topic=learning.topic,
+                    body=learning.body if learning.body.endswith("\n") else learning.body + "\n",
+                    source_task=dream_id,
+                ), agent=dream.agent_name))
         if body.learnings:
-            store.regenerate_index()
+            await _finish_consumer_write(asyncio.to_thread(
+                _memory_workspace_write, store, store.regenerate_index))
 
         for candidate in body.kb_candidates:
             org.db.insert_dream_kb_candidate(DreamKbCandidate(

@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from difflib import SequenceMatcher
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 import yaml
 
@@ -295,10 +295,14 @@ class _CompactionReferences:
 
 
 class MemoryStore:
-    def __init__(self, root: Path, compaction_config: "MemoryCompactionConfig | None" = None) -> None:
+    def __init__(
+        self, root: Path, compaction_config: "MemoryCompactionConfig | None" = None,
+        *, on_auto_compaction: Callable[[MemoryCompactionResult], None] | None = None,
+    ) -> None:
         self._root = root
         self._root.mkdir(parents=True, exist_ok=True)
         self._compaction_config: "MemoryCompactionConfig | None" = compaction_config
+        self._on_auto_compaction = on_auto_compaction
 
     @property
     def root(self) -> Path:
@@ -513,9 +517,14 @@ class MemoryStore:
                         superseded_grace_days=cc.superseded_grace_days,
                         max_evictions_per_run=cc.max_evictions_per_run,
                     )
-                    self.compact(dry_run=False, policy=policy)
+                    result = self.compact(dry_run=False, policy=policy)
+                    # The caller owns auditing; the store has no database.
+                    # Persist evictions before notifying it, inside the same
+                    # best-effort boundary as the optional sweep.
+                    if self._on_auto_compaction is not None:
+                        self._on_auto_compaction(result)
             except Exception:
-                logging.getLogger(__name__).warning("Automatic memory compaction failed after memory write")
+                logging.getLogger(__name__).warning("Automatic memory compaction or audit failed after memory write")
 
         return stamped
 

@@ -2784,8 +2784,15 @@ is writer-settable on add/update (integer clamped to 0–100); omission defaults
 `authored_at` (local creation), falling back to `updated_at` for missing or
 unusable stamps; neither usable means retain. ISO strings and YAML datetime/date
 values normalize to UTC; naive timestamps and date-only midnight mean UTC.
-Lowering salience does not renew an old note. Auto-compaction errors after the
-note write are logged without aborting the add or preventing its add audit.
+Lowering salience does not renew an old note. Automatic compaction defaults to
+enabled at 150 entry files (including evicted files). Other defaults remain salience floor 10, stale age 45 days, superseded
+grace 7 days and cap 25. An absent or partial config section uses these defaults;
+explicit `enabled: false` disables apply and auto, and explicit
+`auto_trigger_entry_count: 0` disables auto alone. Each automatic eviction uses
+the same `AGENT-{agent}` / `memory_lifecycle_changed` row and five payload keys
+as manual apply, with its original valid/superseded lifecycle and
+`source: compaction`, after eviction persistence. Sweep or audit errors after
+the note write are logged without aborting the add or preventing its add audit.
 Each compaction run parses the selection inventory once and indexes related,
 supersedes and body-token references from non-evicted entries. Apply rereads each
 candidate, refreshes its reference contributions and removes them on eviction;
@@ -2802,7 +2809,10 @@ old captured index cannot overwrite a completed sweep. The workspace RLock is
 acquired/released synchronously inside each worker or bootstrap call, never held
 on the event loop across an await; the worker does not need a loop callback to
 release it. This is in-process serialization, not an external filesystem fence.
-Updates do not trigger compaction. Dream completion's writer is unchanged.
+Updates and Instill inherited imports do not trigger compaction. Dream
+reflections use ordinary `write_entry`, including auto-compaction and the same
+audit observer, in worker threads with cancellation draining and workspace
+locking; dreaming's enablement is unchanged.
 See the memory design spec's **Memory compaction and retirement (THR-366 PR-B)**
 section for defaults, protections, supersession grace and reversible retirement.
 The S3a Instill owner also preserves `inherited_from` and the separate
