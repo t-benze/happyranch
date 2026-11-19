@@ -695,7 +695,7 @@ def _generic_control_history(conn: sqlite3.Connection, *, org_slug: str, run: di
     """Authenticate immutable holds/controls and reconstruct their mutable projection."""
     import hashlib
     from runtime.infrastructure.workflow_task_ownership import selected_owner
-    from runtime.workflows.sequential_business_hold import generic_closed_visit, generic_hold_cause
+    from runtime.workflows.sequential_business_hold import generic_callback_bytes, generic_closed_visit, generic_hold_cause
     from runtime.workflows.sequential_control import _validate_control_assignment, parse_control, result_counters
     from runtime.workflows.sequential_contracts import GenericLimits
     from runtime.workflows.sequential_definition import generic_limits, parse_generic_start
@@ -756,9 +756,10 @@ def _generic_control_history(conn: sqlite3.Connection, *, org_slug: str, run: di
             proof = generic_closed_visit(conn, run=run, visit=visit, budget=budget)
             _require(proof['result_id'] == visit['result_id'] == event['source_result_id'] and not envelope.outputs,
                      'generic_result_conflict')
-            summary = conn.execute('SELECT output_summary FROM task_results WHERE id=?', (visit['result_id'],)).fetchone()[0]
+            payload = generic_callback_bytes(conn, visit['result_id'], budget)
+            _require(payload is not None, 'generic_result_conflict')
             node = next(node for node in compiled.definition.nodes if node.id == visit['node_id'])
-            callback = parse_generic_callback(summary.encode('utf8'), contract=node.output_contract.type)
+            callback = parse_generic_callback(payload[0], contract=node.output_contract.type)
             _require(callback.outcome == envelope.outcome and not callback.content_base64
                 and list(callback.findings) == [finding.text for finding in envelope.findings], 'generic_result_conflict')
             counts = result_counters(current, compiled, seen_visits, seen_events, seen_controls, [])

@@ -145,6 +145,10 @@ class _ReadBudget(_Budget):
     sql_steps: int = 0
     sql_limit: int = 2000000
     _sql_exhaustion: ClassVar[ReadExhaustion | None] = None
+    # Snapshot-local native @2 payloads: charged/acquired once, never shared
+    # between reads or writer transactions. Ownership/proofs are still checked
+    # at every reference. The reservation includes retained bytes and parsing.
+    generic_callbacks: dict[int, tuple[bytes, str]] = field(default_factory=dict)
 
     @property
     def remaining_bytes(self) -> int:

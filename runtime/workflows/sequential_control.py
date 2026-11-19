@@ -321,7 +321,18 @@ def apply_control_uncommitted(conn: sqlite3.Connection, db: object, *, org_slug:
              command.expected_cas, command.expected_held_event_id, command.action, capture.command_bytes,
              hashlib.sha256(capture.command_bytes).hexdigest(), event_id, new_visit,
              receipt, hashlib.sha256(receipt).hexdigest()))
-        return receipt
+    validate_control_write(conn, org_slug=org_slug, deadline=budget.deadline)
+    return receipt
+
+
+def validate_control_write(conn: sqlite3.Connection, *, org_slug: str, deadline: float) -> None:
+    """Refuse an unreadable resulting history before the authority writer commits.
+
+    Use the complete reader's unchanged allowances on the operation's original
+    deadline. No payload cache survives from the earlier writer observation.
+    """
+    from runtime.workflows.sequential_history import read_sequential_history
+    read_sequential_history(conn, expected_org_slug=org_slug, deadline=deadline)
 
 
 def finish_cancellation_uncommitted(conn: sqlite3.Connection, db: object, *, org_slug: str,
@@ -341,4 +352,5 @@ def finish_cancellation_uncommitted(conn: sqlite3.Connection, db: object, *, org
         conn.execute("UPDATE workflow_seq_visits SET state='cancelled',selected=0 WHERE id=?", (visit['id'],))
         _move(conn, run, event, state='finished', terminal_outcome='cancelled', progress=None,
               active_visit_id=None, held_node_id=None, held_event_id=None)
-        return event
+    validate_control_write(conn, org_slug=org_slug, deadline=budget.deadline)
+    return event

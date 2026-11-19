@@ -46,9 +46,19 @@ acceptance contract. This S4a change does not mount or edit S4b's producer.
 
 The inactive writers require the caller's current-authority transaction and
 original positive terminal/outer proof for launched visits. Uncertain closure
-retains the outstanding visit. No-result holds create no synthetic result,
-output or successor. Running cancel fences progression and only positive
-closure permits its completion. Native cancellation delivery belongs to S6b;
+retains the outstanding visit. Empty native output text is authenticated with
+its empty-text digest as closure evidence, classified as a rejected bad-shape
+carrier for Held, and does not prevent completion of a fenced cancellation.
+Closure never requires a valid business result. The complete reader acquires
+and charges each bounded native callback payload once per snapshot, reusing it
+for historical hold/replacement references while rechecking native ownership
+and terminal/outer proofs. Caches are local to one read or writer observation
+and are never reused by later operations.
+Fresh hold/control/cancellation-finish writers run the complete reader on their
+resulting uncommitted state with its unchanged budgets and the operation's
+original deadline; refusal rolls back all business writes. No-result holds create
+no synthetic result, output or successor. Running cancel fences progression;
+only positive closure permits its completion. Native cancellation delivery belongs to S6b;
 native producers/dispatch mounting belong to S4b, and initiator wakes/inbox to
 S5. No public @2 consumer, route, CLI or admission is mounted; Coding stays
 Disabled. @1 hold/cancel/result/settlement owners and bytes remain unchanged.
