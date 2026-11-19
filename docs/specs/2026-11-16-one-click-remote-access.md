@@ -188,7 +188,9 @@ Lost/late/malformed/expired post-dispatch results and lost delivery are uncertai
 no second reply, fetch, polling or alternate delivery channel exists. Text is
 absent from StatusV2, B16, issuer journal, logs/errors and stderr (DEVNULL);
 StatusV2 carries only existing phase/deadline, and B10 only digest/deadline.
-The pinned wire-size/TTL limits remain unchanged; B14 remains I4b.
+The pinned wire-size/TTL limits remain unchanged. B14 I4b-1 delivers the fixed
+renewal transition, executable, inert package units and connector pickup; P3/P5
+Enable/Disable/Retry wiring and policy status remain I4b-2.
 
 Disable holds that slot throughout → existing revoke-all (burn ceremony, durable
 denies and stream closure) → stop/disable recognized connector/sidecar/verifier
@@ -278,6 +280,15 @@ withdrawn policy or widen routes. Failure expires closed and stops remote access
 shows **“Remote access paused: policy could not be renewed”** with **Retry**; retry rechecks renewal
 and readiness, reopening only after successful fixed-action renewal and all existing gates pass.
 No key is renewed automatically. Founder seq508 approved this route-policy renewal mechanism.
+Automatic renewal cannot revive expiry; only a fresh-auth
+fixed-action retry may re-stamp an expired identical shipped artifact. Linux I4b-1
+ships the fixed executable and both unit files at `/usr/lib/systemd/system/`
+without enabling them. Pickup precedes readiness inside the existing connector
+lifecycle lock and updates the single consumer without restart/stream closure;
+cached expiry still follows the existing readiness-loss teardown. P3 Enable/Disable
+wiring and P5 Retry remain I4b-2. Turn off stops/disables/unlinks the units while
+their package files remain installed. A changed shipped artifact needs B18
+repair/upgrade rewrapping before renewal can succeed.
 
 ## 5. Identity transport, pairing and every-request checks
 

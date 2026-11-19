@@ -1,6 +1,8 @@
 """Literal-loopback ingress from the managed embedded-tailnet sidecar."""
 from __future__ import annotations
 
+from typing import Callable
+
 import os
 import pwd
 import stat
@@ -224,7 +226,7 @@ class _PinnedRequestAuthorization:
 
 def make_pinned_context_factory(
     *, identity: ConnectorIdentity, pairing: PinnedPairingManager,
-    control_plane_id: str | None, policy: RoutePolicyConsumer,
+    control_plane_id: str | None, policy: RoutePolicyConsumer | Callable[[], RoutePolicyConsumer],
     credential_provider: DaemonCredentialProvider, forwarder: LoopbackForwarder,
     registry: StreamRegistry,
 ) -> ContextFactory:
@@ -241,7 +243,7 @@ def make_pinned_context_factory(
                 issued_at=now, expires_at=now + timedelta(minutes=1),
             ),
             proof_verifier=authorization, single_use_guard=SingleUseGuard(),
-            authorization=authorization, policy=policy, credential_provider=credential_provider,
+            authorization=authorization, policy=policy() if callable(policy) else policy, credential_provider=credential_provider,
             forwarder=forwarder, stream_registry=registry, scanner=CredentialScanner(),
             now=now, pinned_admission=verdict,
         )

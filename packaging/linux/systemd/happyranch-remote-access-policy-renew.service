@@ -1,0 +1,37 @@
+[Unit]
+Description=HappyRanch fixed route-policy renewal
+PartOf=happyranch-managed.target
+
+[Service]
+Type=oneshot
+User=root
+Group=happyranch
+ExecStart=/opt/happyranch-desktop/bin/happyranch-remote-access-policy-renew
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX
+IPAddressDeny=any
+CapabilityBoundingSet=
+AmbientCapabilities=
+UMask=0077
+ReadWritePaths=/etc/happyranch /var/lib/happyranch-remote-access
+TasksMax=16
+MemoryMax=96M
+LimitNOFILE=128
+TimeoutStartSec=30
+TimeoutStopSec=5
+KillMode=control-group
+StandardOutput=null
+StandardError=null

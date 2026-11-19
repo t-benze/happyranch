@@ -189,3 +189,71 @@ def test_invalid_evidence_refused(installed: PolicyEnvelope, artifact: dict, inv
     before = installed.model_dump(mode="json")
     assert renew.renewal_candidate(installed, artifact, now=now) is None
     assert installed.model_dump(mode="json") == before
+
+
+@pytest.mark.parametrize('elapsed,accepted', [(-1, False), (0, True), (3600, True), (7200, True)])
+def test_fresh_auth_can_revive_only_identical_valid_policy(installed: PolicyEnvelope, artifact: dict,
+                                                         elapsed: int, accepted: bool) -> None:
+    now = installed.issued_at + timedelta(seconds=elapsed)
+    candidate = renew.fresh_auth_renewal_candidate(installed, artifact, now=now)
+    assert (candidate is not None) == accepted
+    if candidate is not None:
+        assert (candidate.revision, candidate.issued_at, candidate.max_age_seconds) == (6, now, 3600)
+        assert candidate.artifact == artifact
+    changed = copy.deepcopy(artifact)
+    changed['version'] = 999
+    assert renew.fresh_auth_renewal_candidate(installed, changed, now=now) is None
+    assert renew.fresh_auth_renewal_candidate(installed.model_copy(update={'state': 'withdrawn'}), artifact, now=now) is None
+
+
+def test_fixed_renewal_entry_and_launcher(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    import os
+    import runpy
+    import sys
+    from runtime.remote_access import policy_renew
+    calls = []
+    monkeypatch.setattr(sys, 'argv', ['fixed-entry'])
+    monkeypatch.setattr(os, 'geteuid', lambda: 0)
+    class Installer:
+        def __init__(self, **kwargs: object) -> None:
+            assert kwargs == {'layout': 'deb'}
+        def renew_policy(self, **kwargs: object) -> None:
+            calls.append(kwargs)
+    monkeypatch.setattr(policy_renew, 'ManagedInstaller', Installer)
+    assert policy_renew.main() == 0
+    assert calls == [{}], 'timer must use automatic mode only'
+    def refuse(self: object, **kwargs: object) -> None:
+        raise ValueError('synthetic-private-path-and-input')
+    monkeypatch.setattr(Installer, 'renew_policy', refuse)
+    assert policy_renew.main() == 1
+    assert capsys.readouterr().err == 'renewal-refused\n'
+    monkeypatch.setattr(os, 'geteuid', lambda: 1000)
+    assert policy_renew.main() == 1
+    assert capsys.readouterr().err == 'root-required\n'
+    launcher = Path(__file__).resolve().parents[1] / 'packaging/linux/bin/happyranch-remote-access-policy-renew'
+    for selector in ('--help', '/tmp/policy', 'https://untrusted.invalid'):
+        monkeypatch.setattr(sys, 'argv', ['fixed-entry', selector])
+        assert policy_renew.main() == 2
+        assert capsys.readouterr().err == 'invalid-request\n'
+        with pytest.raises(SystemExit, match='invalid-request'):
+            runpy.run_path(str(launcher), run_name='__main__')
+    monkeypatch.setattr(sys, 'argv', ['fixed-entry'])
+    monkeypatch.setenv('PYTHONPATH', '/untrusted')
+    monkeypatch.setenv('POLICY_PATH', '/untrusted')
+    class Executed(BaseException):
+        pass
+    def execute(path: str, argv: tuple[str, ...], env: dict[str, str]) -> None:
+        assert path == '/opt/happyranch-desktop/python/bin/python3'
+        assert argv == (path, '-I', '-m', 'runtime.remote_access.policy_renew')
+        assert env == {}
+        raise Executed()
+    monkeypatch.setattr(os, 'execve', execute)
+    with pytest.raises(Executed):
+        runpy.run_path(str(launcher), run_name='__main__')
+
+
+
+def test_packaged_renewal_units_are_exact_renderer_bytes() -> None:
+    folder = Path(__file__).resolve().parents[1] / 'packaging/linux/systemd'
+    assert (folder / renew.SERVICE_NAME).read_bytes() == SERVICE_GOLDEN == renew.render_service().encode()
+    assert (folder / renew.TIMER_NAME).read_bytes() == TIMER_GOLDEN == renew.render_timer().encode()

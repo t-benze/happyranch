@@ -3864,3 +3864,364 @@ def test_replacement_closure_rechecks_before_retirement(fixture: Fixture, monkey
     assert attacked, "late closure retirement boundary was not reached"
     assert staged_inventory(fixture) == attacked
     assert all(call[0] in {"show", "stop", "reload"} for call in manager.calls)
+
+
+# B14 exercises the existing protected writer and directory flock on real temp files.
+def renewal_setup(fixture: Fixture, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, datetime]:
+    generated_bundle(fixture)
+    # Installed package source is root-owned/non-writable; the Git clone is
+    # group-writable. Copy the exact shipped bytes into protected fixture custody.
+    source = fixture.inputs / 'route_policy.json'
+    source.write_bytes(Path(module.__file__).with_name('route_policy.json').read_bytes())
+    source.chmod(0o644)
+    monkeypatch.setattr(module, '__file__', str(fixture.inputs / 'installer.py'))
+    state = fixture.root / 'var/lib/happyranch-remote-access'
+    state.mkdir(parents=True, mode=0o700)
+    for parent in (state.parent, state.parent.parent):
+        parent.chmod(0o755)
+    folder = fixture.root / 'etc/happyranch'
+    issued = datetime.fromisoformat(json.loads((folder / 'policy.json').read_bytes())['issued_at'])
+    now = issued + timedelta(seconds=1800)
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz: object = None) -> datetime:
+            return now
+    monkeypatch.setattr(module, 'datetime', Clock)
+    monkeypatch.setattr(os, 'geteuid', lambda: 0)
+    fixture.manager.calls.clear()
+    return folder, now
+
+
+def renewal_intent(fixture: Fixture, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, bytes]:
+    folder, _ = renewal_setup(fixture, monkeypatch)
+    with monkeypatch.context() as patcher:
+        patcher.setattr(fixture.installer, '_recover_policy_renewal',
+                        lambda transaction: (_ for _ in ()).throw(RuntimeError('power loss')))
+        with pytest.raises(RuntimeError, match='power loss'):
+            fixture.installer.renew_policy()
+    return folder, (folder / 'install-transaction.json').read_bytes()
+
+
+def test_renewal_order_metadata_and_provision_digest(fixture: Fixture, monkeypatch: pytest.MonkeyPatch) -> None:
+    folder, now = renewal_setup(fixture, monkeypatch)
+    before = fixture.inventory()
+    old = json.loads((folder / 'provision.json').read_bytes())
+    metadata = {name: ((folder / name).stat().st_uid, (folder / name).stat().st_gid,
+                       (folder / name).stat().st_mode) for name in ('policy.json', 'provision.json')}
+    events = []
+    rename = fixture.installer._rename_provision_entry
+    def observe(parent: int, source: str, target: str, **kwargs: object) -> None:
+        if target != 'install-transaction.json':
+            assert (folder / 'install-transaction.json').is_file()
+        events.append(target)
+        rename(parent, source, target, **kwargs)
+    monkeypatch.setattr(fixture.installer, '_rename_provision_entry', observe)
+    fixture.installer.renew_policy()
+    assert events == ['install-transaction.json', 'policy.json', 'provision.json']
+    assert metadata == {name: ((folder / name).stat().st_uid, (folder / name).stat().st_gid,
+                              (folder / name).stat().st_mode) for name in metadata}
+    policy = json.loads((folder / 'policy.json').read_bytes())
+    assert (policy['revision'], datetime.fromisoformat(policy['issued_at']), policy['max_age_seconds']) == (2, now, 3600)
+    old['digests']['policy.json'] = hashlib.sha256((folder / 'policy.json').read_bytes()).hexdigest()
+    assert (folder / 'provision.json').read_bytes() == json.dumps(old, sort_keys=True).encode()
+    after = fixture.inventory()
+    for name, (data, mode) in before.items():
+        assert after[name][1] == mode
+        if name not in ('etc/happyranch/policy.json', 'etc/happyranch/provision.json'):
+            assert after[name][0] == data
+    assert not (folder / 'install-transaction.json').exists()
+    assert fixture.manager.calls == []
+
+
+@pytest.mark.parametrize('fresh_auth,accepted', [(False, False), (True, True)])
+def test_renewal_expiry_modes(fixture: Fixture, monkeypatch: pytest.MonkeyPatch, fresh_auth: bool, accepted: bool) -> None:
+    folder, _ = renewal_setup(fixture, monkeypatch)
+    data = json.loads((folder / 'policy.json').read_bytes())
+    data['issued_at'] = (datetime.fromisoformat(data['issued_at']) - timedelta(hours=2)).isoformat()
+    (folder / 'policy.json').write_bytes(json.dumps(data, sort_keys=True).encode())
+    record = json.loads((folder / 'provision.json').read_bytes())
+    record['digests']['policy.json'] = hashlib.sha256((folder / 'policy.json').read_bytes()).hexdigest()
+    (folder / 'provision.json').write_bytes(json.dumps(record, sort_keys=True).encode())
+    before = fixture.inventory()
+    if accepted:
+        fixture.installer.renew_policy(fresh_auth=fresh_auth)
+        assert json.loads((folder / 'policy.json').read_bytes())['revision'] == 2
+    else:
+        from runtime.remote_access.home_activation import HomeActivationError
+        with pytest.raises((module.InstallerError, HomeActivationError)):
+            fixture.installer.renew_policy(fresh_auth=fresh_auth)
+        assert fixture.inventory() == before
+    assert not (folder / 'install-transaction.json').exists()
+    assert fixture.manager.calls == []
+
+
+@pytest.mark.parametrize('policy_new,provision_new', [(False, False), (True, False), (False, True), (True, True)])
+def test_renewal_recovery_old_or_new_rolls_forward(fixture: Fixture, monkeypatch: pytest.MonkeyPatch,
+                                                  policy_new: bool, provision_new: bool) -> None:
+    import base64
+    folder, transaction = renewal_intent(fixture, monkeypatch)
+    record = json.loads(transaction)
+    for name, use_new in [('policy.json', policy_new), ('provision.json', provision_new)]:
+        if use_new:
+            (folder / name).write_bytes(base64.b64decode(record['files'][name]['new_base64']))
+    # Replaying durable bytes is allowed after their envelope expires.
+    class Later(datetime):
+        @classmethod
+        def now(cls, tz: object = None) -> datetime:
+            return datetime(2099, 1, 1, tzinfo=timezone.utc)
+    monkeypatch.setattr(module, 'datetime', Later)
+    fixture.installer.renew_policy()
+    for name in ('policy.json', 'provision.json'):
+        assert (folder / name).read_bytes() == base64.b64decode(record['files'][name]['new_base64'])
+    assert not (folder / 'install-transaction.json').exists()
+    assert fixture.manager.calls == []
+
+
+def renewal_pending(fixture: Fixture, monkeypatch: pytest.MonkeyPatch, boundary: str) -> Path:
+    """Kill the real writer after its pending fsync; finally must not run."""
+    folder, _ = renewal_setup(fixture, monkeypatch)
+    rename = fixture.installer._rename_provision_entry
+    with monkeypatch.context() as patcher:
+        def interrupt(parent: int, source: str, target: str, *, updating: bool = False) -> None:
+            if target == boundary:
+                os._exit(91)
+            rename(parent, source, target, updating=updating)
+        patcher.setattr(fixture.installer, '_rename_provision_entry', interrupt)
+        child = os.fork()
+        if child == 0:
+            try:
+                fixture.installer.renew_policy()
+            except BaseException:
+                os._exit(93)
+            os._exit(92)
+        waited, status = os.waitpid(child, 0)
+    assert waited == child and os.waitstatus_to_exitcode(status) == 91
+    return folder
+
+
+@pytest.mark.parametrize('boundary', ['install-transaction.json', 'policy.json', 'provision.json',
+                                     'policy.json.pending', 'provision.json.pending'])
+def test_renewal_interruption_recovers(fixture: Fixture, monkeypatch: pytest.MonkeyPatch, boundary: str) -> None:
+    if boundary.endswith('.pending'):
+        import base64
+        destination = boundary.removesuffix('.pending')
+        folder = renewal_pending(fixture, monkeypatch, destination)
+        journal = folder / 'install-transaction.json'
+        record = json.loads(journal.read_bytes())
+        pending = folder / ('.' + boundary)
+        assert pending.read_bytes() == base64.b64decode(record['files'][destination]['new_base64'])
+        metadata = {name: ((folder / name).stat().st_uid, (folder / name).stat().st_gid,
+                           (folder / name).stat().st_mode) for name in record['files']}
+        for name, entry in record['files'].items():
+            expected = 'new_sha256' if destination == 'provision.json' and name == 'policy.json' else 'old_sha256'
+            assert hashlib.sha256((folder / name).read_bytes()).hexdigest() == entry[expected]
+        error = None
+        try:
+            fixture.installer.renew_policy()
+        except Exception as exc:
+            error = exc
+        assert error is None, f'journal-bound pending must recover: {error!r}'
+        for name, entry in record['files'].items():
+            assert (folder / name).read_bytes() == base64.b64decode(entry['new_base64'])
+            assert hashlib.sha256((folder / name).read_bytes()).hexdigest() == entry['new_sha256']
+            info = (folder / name).stat()
+            assert (info.st_uid, info.st_gid, info.st_mode) == metadata[name]
+        assert not journal.exists()
+        assert not any(path.name.endswith('.pending') for path in folder.iterdir())
+        assert fixture.manager.calls == []
+        return
+    folder, _ = renewal_setup(fixture, monkeypatch)
+    write = fixture.installer._write_provision_file
+    def interrupt(name: str, *args: object, **kwargs: object) -> None:
+        write(name, *args, **kwargs)
+        if name == boundary:
+            raise RuntimeError('power loss')
+    with monkeypatch.context() as patcher:
+        patcher.setattr(fixture.installer, '_write_provision_file', interrupt)
+        with pytest.raises(RuntimeError, match='power loss'):
+            fixture.installer.renew_policy()
+    assert (folder / 'install-transaction.json').exists()
+    fixture.installer.renew_policy()
+    assert json.loads((folder / 'policy.json').read_bytes())['revision'] == 2
+    assert not (folder / 'install-transaction.json').exists()
+    assert fixture.manager.calls == []
+
+
+_RENEWAL_PENDING_REFUSALS = [f'{destination}:{attack}'
+    for destination in ('policy.json', 'provision.json')
+    for attack in ('bytes', 'mode', 'owner', 'group', 'hardlink', 'symlink', 'foreign', 'unjournaled')]
+
+
+@pytest.mark.parametrize('case', ['policy_drift', 'provision_drift', 'malformed', 'extra', 'oversize',
+                                   'digest', 'symlink', 'hardlink', 'mode', 'pending', 'other_transaction',
+                                   'unjournaled-intent', *_RENEWAL_PENDING_REFUSALS])
+def test_renewal_recovery_refuses_and_retains(fixture: Fixture, monkeypatch: pytest.MonkeyPatch, case: str) -> None:
+    if ':' in case or case == 'unjournaled-intent':
+        destination, attack = case.split(':') if ':' in case else ('install-transaction.json', 'unjournaled')
+        folder = renewal_pending(fixture, monkeypatch, destination)
+        journal = folder / 'install-transaction.json'
+        pending = folder / ('.' + destination + '.pending')
+        if attack == 'bytes':
+            pending.write_bytes(b'substituted')
+        elif attack == 'mode':
+            pending.chmod(0o644)
+        elif attack in ('owner', 'group'):
+            target = pending.stat()
+            fstat, named_stat = os.fstat, os.stat
+            def foreign(info: os.stat_result) -> object:
+                if (info.st_dev, info.st_ino) != (target.st_dev, target.st_ino):
+                    return info
+                values = {name: getattr(info, name) for name in dir(info) if name.startswith('st_')}
+                field = 'st_uid' if attack == 'owner' else 'st_gid'
+                values[field] += 1
+                return SimpleNamespace(**values)
+            monkeypatch.setattr(os, 'fstat', lambda fd: foreign(fstat(fd)))
+            monkeypatch.setattr(os, 'stat', lambda *args, **kwargs: foreign(named_stat(*args, **kwargs)))
+        elif attack in ('hardlink', 'symlink'):
+            foreign_path = folder / 'foreign'
+            if attack == 'hardlink':
+                os.link(pending, foreign_path)
+            else:
+                pending.rename(foreign_path)
+                pending.symlink_to('foreign')
+        elif attack == 'foreign':
+            # Retain the valid own pending too: unknown evidence must refuse
+            # before even that otherwise recoverable inode is discarded.
+            (folder / '.foreign.pending').write_bytes(pending.read_bytes())
+        elif journal.exists():
+            journal.unlink()
+        before = staged_inventory(fixture)
+        from runtime.remote_access.home_activation import HomeActivationError
+        with pytest.raises((module.InstallerError, HomeActivationError)):
+            fixture.installer.renew_policy()
+        assert staged_inventory(fixture) == before
+        assert fixture.manager.calls == []
+        return
+    folder, transaction = renewal_intent(fixture, monkeypatch)
+    journal = folder / 'install-transaction.json'
+    if case.endswith('_drift'):
+        (folder / ('policy.json' if case == 'policy_drift' else 'provision.json')).write_bytes(b'{}')
+    elif case in ('malformed', 'oversize', 'other_transaction'):
+        journal.write_bytes({'malformed': b'{', 'oversize': b'x' * 65537,
+                             'other_transaction': b'{"version":1}'}[case])
+    elif case in ('extra', 'digest'):
+        record = json.loads(transaction)
+        if case == 'extra':
+            record['selector'] = '/untrusted'
+        else:
+            record['files']['policy.json']['new_sha256'] = '0' * 64
+        journal.write_bytes(json.dumps(record, sort_keys=True).encode())
+    elif case == 'symlink':
+        journal.rename(folder / 'foreign')
+        journal.symlink_to('foreign')
+    elif case == 'hardlink':
+        os.link(journal, folder / 'foreign')
+    elif case == 'mode':
+        journal.chmod(0o644)
+    else:
+        (folder / '.policy.json.pending').write_bytes(b'unknown')
+    before = fixture.inventory()
+    from runtime.remote_access.home_activation import HomeActivationError
+    with pytest.raises((module.InstallerError, HomeActivationError)):
+        fixture.installer.renew_policy()
+    assert fixture.inventory() == before
+    assert journal.exists()
+    assert fixture.manager.calls == []
+
+
+@pytest.mark.parametrize('case', ['provision_drift', 'artifact_mismatch', 'unsafe_source', 'oversize_intent', 'locked'])
+def test_renewal_initial_refusals_have_no_effect(fixture: Fixture, monkeypatch: pytest.MonkeyPatch, case: str) -> None:
+    import fcntl
+    from runtime.remote_access.home_activation import HomeActivationError
+    folder, _ = renewal_setup(fixture, monkeypatch)
+    if case == 'provision_drift':
+        (folder / 'policy.json').write_bytes(b'{}')
+    elif case == 'oversize_intent':
+        policy = json.loads((folder / 'policy.json').read_bytes())
+        policy['padding'] = 'x' * 31000
+        (folder / 'policy.json').write_bytes(json.dumps(policy, sort_keys=True).encode())
+        provision = json.loads((folder / 'provision.json').read_bytes())
+        provision['digests']['policy.json'] = hashlib.sha256((folder / 'policy.json').read_bytes()).hexdigest()
+        (folder / 'provision.json').write_bytes(json.dumps(provision, sort_keys=True).encode())
+        assert (folder / 'policy.json').stat().st_size < 65536
+        write = fixture.installer._write_provision_file
+        def oversized(name: str, data: bytes, *args: object, **kwargs: object) -> None:
+            assert name == 'install-transaction.json' and len(data) > 65536
+            write(name, data, *args, **kwargs)
+        monkeypatch.setattr(fixture.installer, '_write_provision_file', oversized)
+    elif case in ('artifact_mismatch', 'unsafe_source'):
+        source = fixture.inputs / 'route_policy.json'
+        source.write_bytes(b'{}')
+        if case == 'unsafe_source':
+            source.chmod(0o666)
+        monkeypatch.setattr(module, '__file__', str(fixture.inputs / 'installer.py'))
+    descriptor = os.open(fixture.root / 'var/lib/happyranch-remote-access', os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        if case == 'locked':
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        before = fixture.inventory()
+        with pytest.raises((module.InstallerError, HomeActivationError)):
+            fixture.installer.renew_policy()
+        assert fixture.inventory() == before
+        assert fixture.manager.calls == []
+    finally:
+        os.close(descriptor)
+
+
+_RENEWAL_READERS = ['inventory', 'replacement_inventory', 'prepared_inventory', 'home_admission', 'home_inert_inventory',
+                    'ordinary_record', 'replacement_record', 'provision',
+                    'install', 'uninstall', 'check_drift', 'replace_failed', 'begin_replacement', 'stop_and_confirm',
+                    '_refuse_install_transaction', '_replacement_release', '_replacement_pending',
+                    '_discard_replacement_pending', '_quarantine_configs', '_remove_replacement_state',
+                    '_staging_inventory', '_replacement_custody', '_stage_replacement', '_close_replacement',
+                    '_remove_replacement_unit', '_remove_replacement_entry', '_check_replacement_member',
+                    '_check_replacement_transaction', '_quarantine_config', '_staging_data', 'replacement_writer']
+
+
+@pytest.mark.parametrize('reader', _RENEWAL_READERS)
+def test_every_other_transaction_reader_refuses_renewal(fixture: Fixture, monkeypatch: pytest.MonkeyPatch, reader: str) -> None:
+    from runtime.remote_access.home_admission import HomeProfileAdmission
+    folder, transaction = renewal_intent(fixture, monkeypatch)
+    if reader == 'provision':
+        for child in folder.iterdir():
+            if child.name != 'install-transaction.json':
+                child.unlink()
+    before = fixture.inventory()
+    io = fixture.installer
+    with io._publication_parent() as (parent, check):
+        calls = dict(
+            inventory=io.inventory, replacement_inventory=io.replacement_inventory,
+            prepared_inventory=lambda: io._inventory(prepared_transaction=transaction),
+            home_admission=lambda: HomeProfileAdmission(io).require(),
+            home_inert_inventory=lambda: HomeProfileAdmission(io).require(ordinary=False),
+            ordinary_record=lambda: io._validate_install_record('install-transaction.json', transaction),
+            replacement_record=lambda: io._validate_install_record('install-transaction.json', transaction, replacement=True),
+            provision=fixture.provision, install=lambda: io.install(enrollment_key_file=fixture.key),
+            uninstall=io.uninstall, check_drift=io.check_drift, replace_failed=io.replace_failed,
+            begin_replacement=lambda: io.begin_replacement(expected_release_uid=os.getuid(), expected_generation='0'*64),
+            stop_and_confirm=lambda: io.stop_and_confirm(_replacement_transaction=transaction),
+            _replacement_pending=lambda: io._replacement_pending(parent, transaction),
+            _check_replacement_transaction=lambda: io._check_replacement_transaction(parent, transaction),
+            _check_replacement_member=lambda: io._check_replacement_member('etc/happyranch/policy.json', transaction),
+            _quarantine_config=lambda: io._quarantine_config('policy.json', transaction),
+            _staging_data=lambda: io._staging_data('policy.json', transaction),
+            replacement_writer=lambda: io._write_provision_file('policy.json', b'{}',
+                (io.root_owner[0], io._service_owner[1]), 0o640, expected_transaction=transaction),
+        )
+        if reader in ('inventory', 'prepared_inventory'):
+            assert calls[reader]().state == 'manual-install-conflict'
+        elif reader == 'replacement_inventory':
+            result = calls[reader]()
+            assert result.installation.state == 'manual-install-conflict'
+            assert result.journal_generation is None
+        else:
+            call = calls.get(reader)
+            if call is None:
+                call = (getattr(io, reader) if reader == '_refuse_install_transaction' else
+                        lambda: getattr(io, reader)(transaction))
+            with pytest.raises(module.InstallerError):
+                call()
+        check()
+    assert fixture.inventory() == before
+    assert (folder / 'install-transaction.json').read_bytes() == transaction
+    assert fixture.manager.calls == []

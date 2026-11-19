@@ -3598,8 +3598,9 @@ inputs/environment/URL; its `.timer` has `OnUnitActiveSec=1800s`, `OnBootSec=60s
 `Persistent=false`. Under the installation lock it re-stamps only bytes matching
 the current shipped package route artifact, retaining the 3600-second envelope.
 Failure lets existing expiry close access. `RetryPolicyRenewal()` remains the
-fresh-auth retry. Turn off removes these owned units. Mid-upgrade artifact
-digest mismatch refuses until the next tick, never renews changed policy.
+fresh-auth retry. Turn off will stop, disable and unlink these owned units;
+their files remain package payload. Artifact mismatch refuses until B18 repair
+rewraps the installed policy; another timer tick cannot repair a package upgrade.
 Why no founder: pins the names/cadence of the already R2-approved mechanism.
 
 The inert B14 renderer/decision module is `runtime/remote_access/policy_renew_units.py`;
@@ -3616,32 +3617,65 @@ The 30-second start timeout bounds a stuck future writer; failure never extends
 the installed expiry. Both units are part of `happyranch-managed.target`; only
 the timer has an Install section, for that target.
 
-**Pinned assumptions for serial integration:** no renewal entry exists yet.
-`RENEW_EXECUTABLE` reserves the fixed absolute
-`/opt/happyranch-desktop/bin/happyranch-remote-access-policy-renew`, following
-the packaged helper's `bin/` convention, with no arguments. Packaging this entry
-is deferred. Artifact equality uses the existing `policy.canonical_json`
-SHA-256 convention on the envelope's embedded artifact, excluding envelope
-timestamps/revision and JSON formatting. `renewal_candidate` accepts decoded,
-protected installed/package evidence supplied under the installation lock;
-`None` represents missing/withdrawn evidence. It imports `PolicyEnvelope`,
-`RoutePolicyConsumer` and the canonical serializer; it does not duplicate the
-policy validator. A structurally valid, active, nonempty, identical shipped
-policy with the existing 3600-second envelope yields a deep-copied candidate
-issued at the supplied aware time, with revision incremented by one. All other
-fields stay unchanged. Automatic renewal refuses at or after existing expiry,
-and on backwards time, matching the spec's before-max-age rule; it cannot revive
-expired policy. Missing/withdrawn evidence, invalid policy/state, future
-issuance or artifact mismatch returns no candidate and leaves expiry unchanged.
-The next tick must obtain new evidence; no remembered digest permits renewal.
+**Delivered in I4b-1:** `ManagedInstaller.renew_policy` holds the existing
+activation-directory lock across protected reads, the decision and publication.
+Automatic mode uses `renewal_candidate` unchanged: identical shipped artifact,
+active valid structure, current 3600-second envelope and no backwards time.
+Fresh-auth mode is callable without a production caller yet; it applies those
+same checks but permits an expired installed envelope. Both increment revision,
+re-stamp issuance and retain all other envelope fields. Artifact equality uses
+`policy.canonical_json` SHA-256, excluding envelope timestamps and formatting.
+No key is renewed. Refusal never extends expiry.
 
-Deferred to serial integration: installing/enabling these owned units; the
-actual fixed executable that holds the installation lock across protected reads,
-revalidation and atomic publication through the installer (including existing
-provisioning/activation digest bookkeeping); Turn-off removal of both units;
-entry and units in the `.deb`; and fresh-auth `RetryPolicyRenewal()` D-Bus
-wiring/readiness checks. No production caller, executable or helper method is
-added by this slice. Nothing is installed, enabled or reachable.
+For renewal, the existing `/etc/happyranch/install-transaction.json` carries a
+closed `policy-renewal@1` record, bounded to 64 KiB, with old/new policy and provision
+SHA-256 values and base64 new bytes. The protected no-follow atomic writer
+fsyncs the journal before either destination, replaces `policy.json` first and
+`provision.json` second, preserving ownership/modes, then unlinks and fsyncs the
+journal last. Only the policy digest changes in the provision record. Recovery
+under the same lock rolls forward only when BOTH destinations match their old
+or new digest; malformed/unsafe journals or any other digest refuse without
+effects and retain the journal. A crash-left `.policy.json.pending` or
+`.provision.json.pending` is recoverable only with that durable valid journal,
+exact new bytes/digest, and the destination's regular single-link owner/mode.
+Both destinations and every pending entry are checked before effects. The same
+owner discards the validated pending inode (unlink + parent fsync), then
+republishes from the journal through the protected writer in policy/provision
+order. Unknown names, substituted bytes, unsafe custody and any pending entry
+without a durable journal refuse without effects; an unjournaled first intent
+is never adopted. Expired durable new bytes may roll forward;
+consumers still enforce expiry. All ordinary admission, inventory, replacement,
+provision, uninstall and other install-journal readers refuse this format.
+Activation receipt format, `MEMBER_PATHS`, B5, transaction `EFFECTS` and B6 stay
+unchanged.
+
+`RENEW_EXECUTABLE` is the fixed zero-option
+`/opt/happyranch-desktop/bin/happyranch-remote-access-policy-renew`. Its package
+launcher uses the fixed bundled Python with `-I` and an empty environment,
+automatic mode only, closed nonsecret errors and nonzero refusal exits. Both
+units ship at `/usr/lib/systemd/system/` with exact renderer bytes and no
+package enable/start action. The existing helper-service payload is the precedent.
+
+The connector observes only a changed no-follow policy stat signature in its
+existing supervised lifecycle-lock pass, before readiness. It reuses `load_policy`
+validation and swaps its one consumer only for a current envelope with greater
+revision and nondecreasing issuance. Existing readiness and per-request contexts
+read that consumer. A valid swap or refused update while cached policy remains
+current causes no restart or stream closure. Refusal retains the cache. On cached
+expiry, the existing readiness gate, shutdown/stream closure, return 1 and
+systemd `Restart=on-failure` remain unchanged. Startup still reads the file fresh.
+
+**Remaining I4b-2:** P3 fresh-auth Enable renewal and timer enablement inside the
+existing `managed_services` effect; Disable stop/disable/unlink and confirmed
+quiescence before B6, including renewal recovery or named partial cleanup; P5
+fresh-auth `RetryPolicyRenewal` and existing-field StatusV2 policy reporting.
+Only the timer receives its manager-owned Install link; receipt membership and
+B5 remain unchanged. Ready Enable stays inspect-only. Unit files remain dpkg
+payload after Turn off. Public methods and the public gate remain closed until I5.
+
+**B18 dependency:** a package upgrade with a different shipped route artifact
+makes renewal refuse until B18 repair/upgrade rewraps it. I4b-1 adds no upgrade
+repair path, activation authority or live installation.
 
 **B15 — Compatible versioned status.**
 Keep `Status()` v1 byte-compatible. Add zero-input, read-only `StatusV2()`, no

@@ -110,6 +110,7 @@ with tempfile.TemporaryDirectory(prefix='happyranch-deb-', dir='/tmp') as tempor
             parser.error('payload symlink escapes its prefix')
     for required in ('bin/happyranch', 'bin/happyranch-daemon', 'bin/happyranch-app',
                      'bin/happyranch-remote-access-helper',
+                     'bin/happyranch-remote-access-policy-renew',
                      'libexec/remote-access/remote_access_helper.py',
                      'libexec/remote-access/helper_owner.py',
                      'libexec/remote-access/helper_control.py',
@@ -179,6 +180,8 @@ with tempfile.TemporaryDirectory(prefix='happyranch-deb-', dir='/tmp') as tempor
         ('dbus/ai.happyranch.RemoteAccess1.service', 'usr/share/dbus-1/system-services/ai.happyranch.RemoteAccess1.service'),
         ('polkit/ai.happyranch.remote-access.policy', 'usr/share/polkit-1/actions/ai.happyranch.remote-access.policy'),
         ('systemd/happyranch-remote-access-helper.service', 'usr/lib/systemd/system/happyranch-remote-access-helper.service'),
+        ('systemd/happyranch-remote-access-policy-renew.service', 'usr/lib/systemd/system/happyranch-remote-access-policy-renew.service'),
+        ('systemd/happyranch-remote-access-policy-renew.timer', 'usr/lib/systemd/system/happyranch-remote-access-policy-renew.timer'),
     ):
         destination = stage / destination
         destination.parent.mkdir(parents=True, exist_ok=True)

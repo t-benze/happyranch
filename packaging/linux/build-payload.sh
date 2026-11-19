@@ -196,6 +196,8 @@ chmod 755 "$PAYLOAD/bin/happyranch" "$PAYLOAD/bin/happyranch-daemon"
 # System Python -I loads only these package-owned siblings, never site-packages.
 install -m 755 "$WORK/source/packaging/linux/bin/happyranch-remote-access-helper" \
     "$PAYLOAD/bin/happyranch-remote-access-helper"
+install -m 755 "$WORK/source/packaging/linux/bin/happyranch-remote-access-policy-renew" \
+    "$PAYLOAD/bin/happyranch-remote-access-policy-renew"
 for helper_source in remote_access_helper helper_owner helper_control release_verifier status_v2 home_audit helper_generation helper_lifecycle helper_invite; do
     install -m 644 "$WORK/source/runtime/remote_access/$helper_source.py" \
         "$PAYLOAD/libexec/remote-access/$helper_source.py"

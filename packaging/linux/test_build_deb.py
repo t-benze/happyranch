@@ -452,6 +452,7 @@ class DebPackageTests(unittest.TestCase):
             'libexec/remote-access/happyranch-home-ca': 'fixture home CA materializer',
             'libexec/remote-access/happyranch-home-admin': 'fixture home admin runner',
             'bin/happyranch-remote-access-helper': (BUILDER.parent / 'bin/happyranch-remote-access-helper').read_text(),
+            'bin/happyranch-remote-access-policy-renew': (BUILDER.parent / 'bin/happyranch-remote-access-policy-renew').read_text(),
         }
         for name in ('remote_access_helper', 'helper_owner', 'helper_control', 'release_verifier',
                      'status_v2', 'home_audit', 'helper_generation', 'helper_lifecycle', 'helper_invite'):
@@ -637,6 +638,9 @@ class DebPackageTests(unittest.TestCase):
                         ('polkit/ai.happyranch.remote-access.policy', 'usr/share/polkit-1/actions/ai.happyranch.remote-access.policy'),
                         ('systemd/happyranch-remote-access-helper.service', 'usr/lib/systemd/system/happyranch-remote-access-helper.service'),
                         ('bin/happyranch-remote-access-helper', 'opt/happyranch-desktop/bin/happyranch-remote-access-helper'),
+                        ('bin/happyranch-remote-access-policy-renew', 'opt/happyranch-desktop/bin/happyranch-remote-access-policy-renew'),
+                        ('systemd/happyranch-remote-access-policy-renew.service', 'usr/lib/systemd/system/happyranch-remote-access-policy-renew.service'),
+                        ('systemd/happyranch-remote-access-policy-renew.timer', 'usr/lib/systemd/system/happyranch-remote-access-policy-renew.timer'),
                     ):
                         self.assertIn('./' + destination, archive.getnames())
                         member = archive.getmember('./' + destination)
@@ -735,7 +739,8 @@ class DebPackageTests(unittest.TestCase):
                                          'libexec/remote-access/home_audit.py',
                                          'libexec/remote-access/helper_generation.py',
                                          'libexec/remote-access/helper_lifecycle.py',
-                                         'libexec/remote-access/helper_invite.py')):
+                                         'libexec/remote-access/helper_invite.py',
+                                         'bin/happyranch-remote-access-policy-renew')):
             with self.subTest(missing=missing):
                 archive = self.payload(version=f'0.3.{index}')
                 root = self.work / f'happyranch-0.3.{index}-linux-x86_64'

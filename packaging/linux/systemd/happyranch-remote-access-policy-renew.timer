@@ -1,0 +1,12 @@
+[Unit]
+Description=HappyRanch fixed route-policy renewal timer
+PartOf=happyranch-managed.target
+
+[Timer]
+OnUnitActiveSec=1800s
+OnBootSec=60s
+Persistent=false
+Unit=happyranch-remote-access-policy-renew.service
+
+[Install]
+WantedBy=happyranch-managed.target
