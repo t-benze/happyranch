@@ -80,6 +80,7 @@ final class HomeInviteModel: ObservableObject {
     private var activeCredential: SavedDeviceCredential?
     private var pendingRemoval: SavedDeviceCredential?
     private var pendingRemovalErased = false
+    private var pendingRemovalNetworkErased = false
     private var prepared = false
     private var needsNewInvite = false
     private var rePairHomeIDs: Set<UUID> = []
@@ -99,15 +100,59 @@ final class HomeInviteModel: ObservableObject {
     var bridgeActiveComputerID: UUID? { activeCredential?.networkProfileID }
     var bridgeHasUnsavedAccess: Bool { unsaved != nil }
     var bridgeHasConfirmation: Bool { confirmation != nil }
+    var bridgeCanAccept: Bool { !busy && session == nil && pendingRemoval == nil }
+    var bridgeCanCancel: Bool {
+        pendingRemoval == nil && [.joining, .pairing, .awaitingApproval, .saving, .opening].contains(phase)
+    }
+    var bridgeRemovalTarget: SavedHome? {
+        guard let credential = pendingRemoval, let id = credential.networkProfileID else { return nil }
+        return SavedHome(id: id, trust: credential.trust, binding: credential.binding)
+    }
+    var bridgeReplacementTarget: SavedHome? {
+        guard let credential = unsaved, let id = credential.networkProfileID else { return nil }
+        return SavedHome(id: id, trust: credential.trust, binding: credential.binding)
+    }
+    var bridgeNeedsNewInvite: Bool { needsNewInvite }
+    var bridgeCanReplace: Bool { !busy && unsaved != nil && saveFailure == .identityChanged }
     var bridgeCanRetrySave: Bool { !busy && unsaved != nil && !needsReplacementConsent && saveFailure != .identityChanged }
+
+    private func loadSaved(_ credential: SavedDeviceCredential, token: Lifetime) async throws -> SavedDeviceCredential {
+        // SecItem provides only a final result. No OS prompt observation exists.
+        // Keep the same safe point as writes; OS Cancel is a storage outcome.
+        let previous = phase
+        phase = .saving; saving = token
+        defer {
+            saving = nil; cancelledSave = nil
+            if lifetime == token { phase = previous }
+        }
+        let read = Task { try await store.load(binding: credential.binding, trust: credential.trust) }
+        let saved = try await read.value
+        try check(token)
+        guard saved.binding == credential.binding, saved.networkProfileID == credential.networkProfileID,
+              saved.trust == credential.trust,
+              saved.withBearer({ old in credential.withBearer { old == $0 } }) else {
+            throw SavedAccessFailure.identityChanged
+        }
+        return saved
+    }
+
+    /// Wait for the real native operation, including cancellation safe points.
+    /// Opening still waits for the existing native release-UI load callback.
+    func bridgeSettle() async {
+        while let current = operation { await current.value }
+        while phase == .opening {
+            try? await Task.sleep(for: .milliseconds(20))
+            if let current = operation { await current.value }
+        }
+    }
 
     /// Reuse the existing save path and await its observed write/readback. This
     /// never invokes the explicit replacement/delete path or guesses completion
-    /// from Task scheduling. Caller owns the one-prompt slot through settlement.
-    func bridgeRetrySave() async -> SaveSettlement {
-        guard bridgeCanRetrySave else { return .refused }
+    /// from Task scheduling. OS Keychain UI does not own the app prompt slot.
+    func bridgeRetrySave(replacing: Bool = false) async -> SaveSettlement {
+        guard replacing ? bridgeCanReplace : bridgeCanRetrySave else { return .refused }
         let token = lifetime
-        retrySave()
+        retrySave(replacing: replacing)
         guard let operation else { return .refused }
         await operation.value
         guard lifetime == token else { return .changed }
@@ -121,7 +166,7 @@ final class HomeInviteModel: ObservableObject {
             "Connect to your home network / Retry. Saved access needs no new invite while its grant remains valid."
     }
 
-    func prepare() {
+    func prepare(reconnectSingle: Bool = true) {
         guard !prepared, !busy else { return }
         prepared = true
         let token = lifetime
@@ -148,7 +193,7 @@ final class HomeInviteModel: ObservableObject {
                 phase = .idle
                 operation = nil
                 // A single saved computer is the ordinary quit/reopen path.
-                if savedHomes.count == 1 { reconnect() }
+                if reconnectSingle, savedHomes.count == 1 { reconnect() }
             } catch {
                 guard lifetime == token else { return }
                 phase = .keychain((error as? SavedAccessFailure) ?? .unavailable)
@@ -198,7 +243,7 @@ final class HomeInviteModel: ObservableObject {
                             invite = nil // New join key/pair secret are never submitted in metadata recovery.
                             armExpiry(deadline, token: token)
                             selectedHomeID = id
-                            let saved = try await store.load(binding: previous.binding, trust: previous.trust)
+                            let saved = try await loadSaved(previous, token: token)
                             try check(token)
                             guard saved.binding == previous.binding, saved.networkProfileID == id,
                                   saved.trust == previous.trust else { throw HomeConnectionFailure.identityUnavailable }
@@ -313,12 +358,13 @@ final class HomeInviteModel: ObservableObject {
         guard !busy, session == nil, pendingRemoval == nil, let id = selectedHomeID, let metadata = records[id] else { return }
         attemptID = UUID(); let token = lifetime
         confirmation = nil; loadedURL = nil; needsNewInvite = false
+        target = metadata.trust
         phase = .checkingSavedAccess
         operation = Task {
             defer { settleOperation(token) }
             do {
                 let credential: SavedDeviceCredential
-                do { credential = try await store.load(binding: metadata.binding, trust: metadata.trust) }
+                do { credential = try await loadSaved(metadata, token: token) }
                 catch {
                     guard lifetime == token else { return }
                     needsReplacementConsent = true
@@ -362,7 +408,7 @@ final class HomeInviteModel: ObservableObject {
             retainSaved(credential)
         } catch {
             guard lifetime == token || cancelledSave == token else { return }
-            saveFailure = (error as? SavedAccessFailure) == .identityChanged ? .identityChanged : .saveFailed
+            saveFailure = (error as? SavedAccessFailure) ?? .saveFailed
         }
     }
 
@@ -385,7 +431,7 @@ final class HomeInviteModel: ObservableObject {
         do { updated = try await write.value }
         catch {
             if lifetime == token || cancelledSave == token {
-                saveFailure = (error as? SavedAccessFailure) == .identityChanged ? .identityChanged : .saveFailed
+                saveFailure = (error as? SavedAccessFailure) ?? .saveFailed
             }
             throw error
         }
@@ -401,11 +447,23 @@ final class HomeInviteModel: ObservableObject {
             defer { settleOperation(token) }
             if replacing {
                 // Called only after fresh approval/delivery and explicit UI consent.
+                let previous = phase
+                phase = .saving; saving = token
+                defer {
+                    saving = nil; cancelledSave = nil
+                    if lifetime == token, phase == .saving { phase = previous }
+                }
                 do {
                     try await store.delete(binding: delivered.binding)
+                    if lifetime != token, cancelledSave == token {
+                        // Deletion settled, replacement did not. Retain the
+                        // partial effect; Cancel cannot claim complete cleanup.
+                        saveFailure = .deletionFailed
+                        return
+                    }
                     try check(token)
                 } catch {
-                    guard lifetime == token else { return }
+                    guard lifetime == token || cancelledSave == token else { return }
                     saveFailure = .deletionFailed; return
                 }
             }
@@ -588,11 +646,15 @@ final class HomeInviteModel: ObservableObject {
         if phase == .failed(.revoked) { removeSavedComputer(afterRevocation: true) }
     }
 
-    func removeSavedComputer(afterRevocation: Bool = false) {
+    func removeSavedComputer(afterRevocation: Bool = false, expected: SavedHome? = nil) {
         guard operation == nil else { return }
         let selected = selectedHomeID.flatMap { records[$0] }
         guard let credential = pendingRemoval ?? (afterRevocation ? activeCredential : selected),
               let id = credential.networkProfileID else { return }
+        if let expected {
+            guard expected.id == id, expected.binding == credential.binding, expected.trust == credential.trust else { return }
+        }
+        if pendingRemoval == nil { pendingRemovalNetworkErased = false }
         pendingRemoval = credential
         pendingRemovalErased = false
         attemptID = UUID(); let token = lifetime
@@ -600,19 +662,38 @@ final class HomeInviteModel: ObservableObject {
         monitor?.cancel(); navigationDeadline?.cancel(); expiryTask?.cancel()
         webURL = nil; unsaved = nil; comparisonPhrase = nil; expiresAt = nil
         phase = .stopping; removalFailures = []
+        let candidate = session
         operation = Task {
             defer { if lifetime == token { operation = nil } }
+            // Local teardown does not depend on Keychain read permission.
+            // Keep the captured removal target for retry if custody is unreadable.
             do {
-                let candidate = session
                 try await candidate?.stop()
                 try check(token)
-                session = nil
+                session = nil; activeCredential = nil
             } catch {
                 guard lifetime == token else { return }
                 removalFailures = ["Local session could not be confirmed stopped"]; phase = .failed(.cleanupIncomplete); return
             }
+            // The web sheet captured this exact native record. Reread its
+            // binding/trust/profile/bearer before the first destructive effect.
+            if expected != nil {
+                do { _ = try await loadSaved(credential, token: token) }
+                catch {
+                    guard lifetime == token else { return }
+                    // A retry after confirmed native-state erasure may find
+                    // Keychain already absent. Delete still verifies absence.
+                    if !pendingRemovalNetworkErased || (error as? SavedAccessFailure) != .notFound {
+                        removalFailures = ["Saved access changed or could not be read; removal was not confirmed"]
+                        phase = .keychain((error as? SavedAccessFailure) ?? .identityChanged)
+                        return
+                    }
+                }
+            }
             do {
                 try await Task.detached { try HomeNetworkState.remove(id) }.value
+                if pendingRemoval?.binding == credential.binding,
+                   pendingRemoval?.networkProfileID == id { pendingRemovalNetworkErased = true }
                 try check(token)
             } catch {
                 guard lifetime == token else { return }
@@ -644,7 +725,7 @@ final class HomeInviteModel: ObservableObject {
         records.removeValue(forKey: id); savedHomes.removeAll { $0.id == id }
         if selectedHomeID == id { selectedHomeID = savedHomes.first?.id }
         if activeCredential?.binding == credential.binding { activeCredential = nil }
-        pendingRemoval = nil; pendingRemovalErased = false
+        pendingRemoval = nil; pendingRemovalErased = false; pendingRemovalNetworkErased = false
         removalFailures = []; target = nil; saveFailure = nil
     }
 }

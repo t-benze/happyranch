@@ -145,29 +145,66 @@ struct ConnectionContractTests {
         #expect(ledger.count == 1 && ledger.mutationID == nil)
     }
 
-    @Test("64 retained IDs never evict; attempt cancellation has its own repeat-safe record")
+    @Test("64 retained mutations and archived cancellations never evict; current Cancel has a separate slot")
     func ledgerBoundsAndCancellation() throws {
-        var ledger = ConnectionMutationLedger()
-        for number in 0..<64 {
-            let item = try ConnectionRequest(request("client.retrySave", id: "m\(number)"))
-            guard case .start = ledger.begin(item) else { Issue.record("early saturation"); return }
-            ledger.finish(item.id, outcome: .failure(.init(.saveFailed, effect: .unknown, recovery: .explicitRetry)))
+        for ordinaryCount in [64, 62, 0] {
+            var ledger = ConnectionMutationLedger()
+            for number in 0..<ordinaryCount {
+                let item = try ConnectionRequest(request("client.retrySave", id: "m\(number)"))
+                guard case .start = ledger.begin(item) else { Issue.record("early saturation"); return }
+                if ordinaryCount == 62 && number == 61 {
+                    // Keep a saving attempt pending while cancellation intents settle.
+                    ledger.markDispatched(item.id)
+                } else {
+                    ledger.finish(item.id, outcome: .failure(.init(.saveFailed, effect: .unknown, recovery: .explicitRetry)))
+                }
+            }
+            let attempt = UUID()
+            var cancel = try ConnectionRequest(request("client.cancelAttempt", id: "cancel"))
+            guard case .start = ledger.begin(cancel, cancelling: attempt) else { Issue.record("First Cancel blocked by saturation"); return }
+            #expect(ledger.count == ordinaryCount)
+            if ordinaryCount == 64 {
+                #expect(try error(ledger.begin(ConnectionRequest(request("client.retrySave", id: "overflow"))))?["code"] == .string("busy"))
+                #expect(try error(ledger.begin(ConnectionRequest(request("client.retrySave", id: "m0"))))?["code"] == .string("saveFailed"))
+                #expect(ledger.reservePrompt(for: cancel.id))
+                #expect(!ledger.reservePrompt(for: cancel.id))
+                ledger.markDispatched(cancel.id)
+                ledger.finish(cancel.id, outcome: .failure(.init(.outcomeUnknown, effect: .unknown, recovery: .nativeRecovery)))
+                let repeated = try ConnectionRequest(request("client.cancelAttempt", id: "cancel2"))
+                #expect(try error(ledger.begin(repeated, cancelling: attempt))?["effect"] == .string("unknown"))
+                #expect(try error(ledger.begin(cancel, cancelling: UUID()))?["code"] == .string("outcomeUnknown"))
+                #expect(try error(ledger.begin(ConnectionRequest(request("client.retrySave", id: cancel.id))))?["code"] == .string("invalidRequest"))
+                #expect(ledger.count == 64)
+                continue
+            }
+            let kept = ConnectionOutcome.result(["effect": "none"])
+            var archived: [ConnectionRequest] = []
+            for number in ordinaryCount..<64 {
+                ledger.finish(cancel.id, outcome: kept)
+                archived.append(cancel)
+                cancel = try ConnectionRequest(request("client.cancelAttempt", id: "cancel-\(number)"))
+                guard case .start = ledger.begin(cancel, cancelling: attempt) else { Issue.record("Cancel after Keep refused below capacity"); return }
+                #expect(ledger.count == number + 1)
+            }
+            ledger.finish(cancel.id, outcome: kept)
+            #expect(ledger.count == 64)
+            let full: [String: ConnectionJSON] = ["code": .string("busy"), "effect": .string("none"), "recovery": .string("refresh")]
+            let repeated = try ConnectionRequest(request("client.cancelAttempt", id: "overflow-cancel"))
+            #expect(try error(ledger.begin(repeated, cancelling: attempt)) == full)
+            #expect(try error(ledger.begin(repeated, cancelling: UUID())) == full)
+            #expect(try error(ledger.begin(ConnectionRequest(request("client.retrySave", id: "overflow")))) == full)
+            for retained in archived + [cancel] {
+                guard case .replay(let outcome) = ledger.begin(retained, cancelling: attempt) else { Issue.record("retained Cancel did not replay"); return }
+                #expect(outcome.reply(id: retained.id) == kept.reply(id: retained.id))
+                #expect(try error(ledger.begin(ConnectionRequest(request("client.retrySave", id: retained.id))))?["code"] == .string("invalidRequest"))
+            }
+            for number in 0..<ordinaryCount {
+                let code = ordinaryCount == 62 && number == 61 ? "outcomeUnknown" : "saveFailed"
+                #expect(try error(ledger.begin(ConnectionRequest(request("client.retrySave", id: "m\(number)"))))?["code"] == .string(code))
+            }
+            if ordinaryCount == 62 { #expect(ledger.mutationID == "m61") }
+            #expect(ledger.count == 64)
         }
-        #expect(ledger.count == 64)
-        #expect(try error(ledger.begin(ConnectionRequest(request("client.retrySave", id: "overflow"))))?["code"] == .string("busy"))
-        #expect(try error(ledger.begin(ConnectionRequest(request("client.retrySave", id: "m0"))))?["code"] == .string("saveFailed"))
-        let cancel = try ConnectionRequest(request("client.cancelAttempt", id: "cancel"))
-        let attempt = UUID()
-        guard case .start = ledger.begin(cancel, cancelling: attempt) else { Issue.record("Cancel blocked by saturation"); return }
-        #expect(ledger.reservePrompt(for: cancel.id))
-        #expect(!ledger.reservePrompt(for: cancel.id))
-        ledger.markDispatched(cancel.id)
-        ledger.finish(cancel.id, outcome: .failure(.init(.outcomeUnknown, effect: .unknown, recovery: .nativeRecovery)))
-        let repeated = try ConnectionRequest(request("client.cancelAttempt", id: "cancel2"))
-        #expect(try error(ledger.begin(repeated, cancelling: attempt))?["effect"] == .string("unknown"))
-        #expect(try error(ledger.begin(cancel, cancelling: UUID()))?["code"] == .string("outcomeUnknown"))
-        #expect(try error(ledger.begin(ConnectionRequest(request("client.retrySave", id: "cancel"))))?["code"] == .string("invalidRequest"))
-        #expect(ledger.count == 64)
     }
 
     @Test("Timeout retains the native prompt and original action; Cancel bypasses only the mutation slot")
@@ -189,7 +226,54 @@ struct ConnectionContractTests {
         #expect(ledger.originatingAction == "client.retrySave")
     }
 
-    @Test("Hello omits consent-dependent actions and every host capability")
+    @Test("Released app sheet leaves Cancel reachable through storage and stopping")
+    func cancellationAfterSheetRelease() throws {
+        var ledger = ConnectionMutationLedger()
+        let connect = try ConnectionRequest(request("client.connectSaved", args: "{\"computerRef\":\"c1\"}"))
+        guard case .start = ledger.begin(connect) else { Issue.record("connect refused"); return }
+        #expect(ledger.reservePrompt(for: connect.id))
+        ledger.releasePrompt(connect.id)
+        ledger.markDispatched(connect.id)
+        #expect(ledger.mutationID == connect.id && ledger.promptID == nil)
+        let cancel = try ConnectionRequest(request("client.cancelAttempt", id: "cancel"))
+        let attempt = UUID()
+        guard case .start = ledger.begin(cancel, cancelling: attempt) else { Issue.record("Cancel unreachable"); return }
+        #expect(ledger.reservePrompt(for: cancel.id))
+        let repeated = try ConnectionRequest(request("client.cancelAttempt", id: "again"))
+        #expect(try error(ledger.begin(repeated, cancelling: attempt))?["code"] == .string("busy"))
+        // Keep and expiry both settle the sheet with effect:none. Neither
+        // consumes a later explicit Cancel for this unchanged attempt.
+        let kept = ConnectionOutcome.result(["effect": "none"])
+        ledger.finish(cancel.id, outcome: kept)
+        #expect(ledger.count == 1)
+        guard case .start = ledger.begin(repeated, cancelling: attempt) else { Issue.record("Cancel after Keep refused"); return }
+        #expect(ledger.reservePrompt(for: repeated.id))
+        #expect(ledger.count == 2)
+        guard case .replay(let archived) = ledger.begin(cancel, cancelling: attempt) else { Issue.record("archived Cancel did not replay"); return }
+        #expect(archived.reply(id: cancel.id) == kept.reply(id: cancel.id))
+        #expect(ledger.recorded(cancel)?.reply(id: cancel.id) == kept.reply(id: cancel.id))
+        #expect(try error(ledger.begin(ConnectionRequest(request("client.retrySave", id: cancel.id))))?["code"] == .string("invalidRequest"))
+        let later = try ConnectionRequest(request("client.cancelAttempt", id: "after-expiry"))
+        #expect(try error(ledger.begin(later, cancelling: attempt))?["code"] == .string("busy"))
+        ledger.finish(repeated.id, outcome: kept)
+        guard case .start = ledger.begin(later, cancelling: attempt) else { Issue.record("Cancel after expiry refused"); return }
+        #expect(ledger.reservePrompt(for: later.id))
+        #expect(ledger.count == 3)
+        #expect(ledger.recorded(repeated)?.reply(id: repeated.id) == kept.reply(id: repeated.id))
+        #expect(ledger.recorded(cancel)?.reply(id: cancel.id) == kept.reply(id: cancel.id))
+        ledger.releasePrompt(later.id); ledger.markDispatched(later.id)
+        let stopping = try ConnectionRequest(request("client.cancelAttempt", id: "stopping"))
+        // Confirmed stop has invalidated the model attempt; it is now stopping.
+        #expect(try error(ledger.begin(stopping))?["effect"] == .string("unknown"))
+        #expect(ledger.promptID == nil && ledger.mutationID == connect.id)
+        ledger.timedOut(later.id)
+        #expect(try error(ledger.begin(stopping))?["effect"] == .string("unknown"))
+        ledger.finish(later.id, outcome: .failure(.init(.outcomeUnknown, effect: .unknown)))
+        #expect(try error(ledger.begin(stopping, cancelling: attempt))?["effect"] == .string("unknown"))
+        #expect(ledger.recorded(cancel)?.reply(id: cancel.id) == kept.reply(id: cancel.id))
+    }
+
+    @Test("Hello advertises all ten backed client commands and no host capability")
     @MainActor
     func backedCapabilities() throws {
         let previous = UserDefaults.standard.object(forKey: "connectionRolePreference")
@@ -200,7 +284,8 @@ struct ConnectionContractTests {
         let app = AppDelegate(); app.connectionRolePreference = .client; app.clientLane = .managed
         let hello = ConnectionClientProjection.hello(app: app, catalog: ConnectionComputerCatalog())
         let commands = Set((hello["capabilities"] as? [[String: String]] ?? []).compactMap { $0["command"] })
-        #expect(commands == ["client.status", "client.savedComputers", "client.health", "client.retrySave"])
+        #expect(commands == ["client.status", "client.savedComputers", "client.health", "client.retrySave",
+            "client.acceptInvite", "client.connectSaved", "client.removeSaved", "client.disconnect", "client.cancelAttempt", "client.retry"])
         #expect(hello["roles"] as? [String] == ["client"])
         #expect(!commands.contains { $0.hasPrefix("host.") })
         #expect(try ConnectionJSON.parse(ConnectionRequest.reply(id: "r1")).object?["error"]?.object ==

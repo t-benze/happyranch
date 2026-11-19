@@ -177,6 +177,7 @@ struct ConnectionMutationLedger {
     private struct Entry {
         let request: ConnectionRequest
         var dispatched = false
+        var settled = false
         var outcome: ConnectionOutcome?
         var current: ConnectionOutcome {
             outcome ?? .failure(.init(dispatched ? .outcomeUnknown : .busy,
@@ -184,14 +185,16 @@ struct ConnectionMutationLedger {
         }
     }
     private var entries: [String: Entry] = [:]
+    private var cancellationReplays: [String: Entry] = [:]
     private var cancellation: (attempt: UUID, entry: Entry)?
     private(set) var mutationID: String?
     private(set) var promptID: String?
     private(set) var originatingAction: String?
-    var count: Int { entries.count }
+    var count: Int { entries.count + cancellationReplays.count }
 
     func recorded(_ request: ConnectionRequest) -> ConnectionOutcome? {
-        if let previous = entries[request.id] ?? (cancellation?.entry.request.id == request.id ? cancellation?.entry : nil) {
+        if let previous = entries[request.id] ?? cancellationReplays[request.id]
+            ?? (cancellation?.entry.request.id == request.id ? cancellation?.entry : nil) {
             return previous.request.hasSameBody(as: request) ? previous.current : .failure(.init(.invalidRequest))
         }
         return nil
@@ -199,22 +202,42 @@ struct ConnectionMutationLedger {
     mutating func begin(_ request: ConnectionRequest, cancelling attempt: UUID? = nil) -> Admission {
         if let previous = recorded(request) { return .replay(previous) }
         if request.command == "client.cancelAttempt" {
+            if let cancellation, !cancellation.entry.settled {
+                return .replay(attempt == nil || cancellation.attempt == attempt
+                    ? cancellation.entry.current : .failure(.init(.stateChanged)))
+            }
             guard let attempt else { return .replay(.failure(.init(.stateChanged))) }
-            if let cancellation, cancellation.attempt == attempt { return .replay(cancellation.entry.current) }
-            if let cancellation, cancellation.entry.outcome == nil { return .replay(.failure(.init(.stateChanged))) }
+            if let cancellation, cancellation.attempt == attempt {
+                // Keep (including sheet expiry) settles this intent, not the
+                // attempt. A later explicit Cancel needs its own confirmation.
+                guard case .result(let result) = cancellation.entry.current,
+                      result["effect"] as? String == "none" else { return .replay(cancellation.entry.current) }
+            }
+            if let cancellation {
+                guard count < 64 else { return .replay(.failure(.init(.busy))) }
+                // Archived replies share the non-evicting journal bound.
+                cancellationReplays[cancellation.entry.request.id] = cancellation.entry
+            }
             cancellation = (attempt, Entry(request: request))
-            return .start // separate record; exhaustion and mutation busy cannot hide Cancel
+            return .start // current cancellation has its own slot, even at journal capacity
         }
         guard request.isMutation else { return .replay(.failure(.init(.invalidRequest))) }
-        guard mutationID == nil, promptID == nil, entries.count < 64 else { return .replay(.failure(.init(.busy))) }
+        guard mutationID == nil, promptID == nil, count < 64 else { return .replay(.failure(.init(.busy))) }
         entries[request.id] = Entry(request: request)
         mutationID = request.id; originatingAction = request.command
         return .start
     }
 
+    func pendingCancellation() -> ConnectionOutcome? {
+        guard let cancellation, !cancellation.entry.settled else { return nil }
+        return cancellation.entry.current
+    }
     mutating func reservePrompt(for id: String) -> Bool {
         guard promptID == nil, entries[id] != nil || cancellation?.entry.request.id == id else { return false }
         promptID = id; return true
+    }
+    mutating func releasePrompt(_ id: String) {
+        if promptID == id { promptID = nil }
     }
     mutating func markDispatched(_ id: String) {
         if cancellation?.entry.request.id == id { cancellation?.entry.dispatched = true }
@@ -228,8 +251,11 @@ struct ConnectionMutationLedger {
         // transport deadline expires while a Keychain operation is still open.
     }
     mutating func finish(_ id: String, outcome: ConnectionOutcome) {
-        if cancellation?.entry.request.id == id { cancellation?.entry.outcome = outcome }
-        else { entries[id]?.outcome = outcome }
+        if cancellation?.entry.request.id == id {
+            cancellation?.entry.outcome = outcome; cancellation?.entry.settled = true
+        } else {
+            entries[id]?.outcome = outcome; entries[id]?.settled = true
+        }
         if mutationID == id { mutationID = nil }
         if promptID == id { promptID = nil }
     }
@@ -393,8 +419,8 @@ final class ConnectionComputerCatalog {
 
 @MainActor
 enum ConnectionClientProjection {
-    // Consent-dependent commands are absent until 3b-2b supplies native sheets.
-    static let backedCommands = ["client.status", "client.savedComputers", "client.health", "client.retrySave"]
+    static let backedCommands = ["client.status", "client.savedComputers", "client.health", "client.retrySave",
+        "client.acceptInvite", "client.connectSaved", "client.removeSaved", "client.disconnect", "client.cancelAttempt", "client.retry"]
     nonisolated static func timestamp(_ date: Date) -> String {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime]
@@ -416,7 +442,12 @@ enum ConnectionClientProjection {
             if [.locked, .denied, .cancelled, .identityChanged].contains(failure) { return "needsPermission" }
             return "unknown"
         }
-        if model.bridgeHasUnsavedAccess || model.saveFailure != nil { return "notSaved" }
+        if let failure = model.saveFailure {
+            if [.locked, .denied, .cancelled, .identityChanged].contains(failure) { return "needsPermission" }
+            if failure == .unavailable || failure == .deletionFailed { return "unknown" }
+            return "notSaved"
+        }
+        if model.bridgeHasUnsavedAccess { return "notSaved" }
         if !model.savedHomes.isEmpty { return "saved" }
         return model.discoveryComplete ? "none" : "unknown"
     }
@@ -510,9 +541,10 @@ enum ConnectionClientProjection {
         default: return .init(.saveFailed, effect: .unknown, recovery: .explicitRetry)
         }
     }
-    static func savedAction(_ model: HomeInviteModel, catalog: ConnectionComputerCatalog) -> [String: Any] {
-        ["effect": "confirmed", "hostDenial": "notApplicable", "hostCleanup": "notApplicable",
-         "localCleanup": "notApplicable", "networkCleanup": "notApplicable", "inviteState": "unknown",
+    static func savedAction(_ model: HomeInviteModel, catalog: ConnectionComputerCatalog,
+                            effect: String = "confirmed", localCleanup: String = "notApplicable") -> [String: Any] {
+        ["effect": effect, "hostDenial": "notApplicable", "hostCleanup": "notApplicable",
+         "localCleanup": localCleanup, "networkCleanup": "notApplicable", "inviteState": "unknown",
          "expiresAt": NSNull(), "host": NSNull(), "client": snapshot(model: model, catalog: catalog)]
     }
 }
