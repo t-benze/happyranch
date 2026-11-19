@@ -3017,9 +3017,10 @@ class ManagedInstaller:
             self._headscale_stopped()
             with self._directory(headscale.INSTALLER_STATE, create=True):
                 pass
-            for path in headscale.CUSTODY:
-                with self._directory(path, create=True):
-                    pass
+            # systemd creates state/runtime custody at first start. Only /etc
+            # needs pre-start writes; absent service directories stay absent.
+            with self._directory(headscale.CUSTODY[0], create=True):
+                pass
             for relative, name, data, owner, mode in (
                 (headscale.CUSTODY[0], "policy.hujson", headscale.render_policy(), self._headscale_owner, 0o600),
                 (_UNIT_DIR, headscale.UNIT, render_headscale_unit().encode(), self.root_owner, 0o644),
@@ -3992,8 +3993,9 @@ class ManagedInstaller:
                   daemon_token_source: Path | None = None) -> None:
         """Stage fresh files; omitted config inputs generate an inert identity bundle.
 
-        The operator CLI still requires its original three inputs. No helper
-        action selects this generator until the package/H2 slice ships.
+        The operator CLI still requires its original three inputs. Clean helper
+        composition can use omitted inputs; service-owned state/log/runtime
+        directories are left to systemd. Existing directories remain checked.
         """
         try:
             self._refuse_install_transaction()
@@ -4034,6 +4036,9 @@ class ManagedInstaller:
             self._preflight()
             self._check_deb_payload()
             for path in self._layout():
+                if path in {f"{base}/{name}" for base in ("var/lib", "var/log", "run")
+                            for name in ("happyranch-connector", "happyranch-tsnet-sidecar")}:
+                    continue
                 with self._directory(path, create=True):
                     pass
             for name, data in files.items():
@@ -4173,6 +4178,211 @@ class ManagedInstaller:
                 finally:
                     os.close(descriptor)
             os.fsync(parent)
+
+    def publish_home_units(self) -> None:
+        """Publish inert identity fragments; no public caller or service activation.
+
+        Missing fragments require complete staged provenance. A complete exact
+        set (including the home sidecar retained by Disable) is read-only reuse;
+        it grants no configuration admission. The activation-directory lock is
+        shared with B4/B6. Later composition must call outside a nested flock.
+        """
+        from runtime.remote_access.home_activation_txn import HomeActivationTransactionStore
+
+        with HomeActivationTransactionStore(root=self.root, root_owner=self.root_owner).locked() as activation_parent:
+            for name in ("home-activation.json", "home-activation-txn.json"):
+                self._headscale_no_pending(activation_parent, name)
+            self._service_owner = self._account(create=False)
+            if self._service_owner is None:
+                raise InstallerError("provisioned service account is missing")
+            self._refuse_install_transaction()
+            with self._publication_parent() as (config_parent, config_check):
+                for name in ("connector.json", "sidecar.json", "policy.json", "release-daemon.json",
+                             "daemon.token", "provision.json"):
+                    self._headscale_no_pending(config_parent, name)
+                connector_data = self._read_file(config_parent, "connector.json",
+                    owner=(self.root_owner[0], self._service_owner[1]), mode=0o640)
+                connector = self._json(connector_data)
+                self._validate_configs({"connector.json": connector_data}, staged=True, partial=True)
+                if connector["managed"].get("profile") != "linux-managed-identity-v1":
+                    raise InstallerError("home publication requires the identity profile")
+                record = self._read_file(config_parent, "provision.json", owner=self.root_owner, mode=0o600)
+                self._validate_install_record("provision.json", record)
+                provenance = self._json(record)
+                if (provenance.get("version") != 1
+                        or provenance["digests"]["connector.json"] != hashlib.sha256(connector_data).hexdigest()):
+                    raise InstallerError("home publication requires protected identity provenance")
+                units = managed_units(self.layout, connector_config=connector)
+                retained = dict(units)
+                prefix = "happyranch-desktop" if self.layout == "deb" else "happyranch"
+                retained[UNITS[1]] = render_sidecar_unit(SidecarUnitSpec(
+                    binary_path=f"/opt/{prefix}/bin/happyranch-tsnet-sidecar",
+                    home_transport=True))
+                # Inspect every destination and every load root before any effect.
+                present = self._home_unit_inventory(units, retained)
+                self._home_unit_provisioning(config_parent, provenance, reuse=len(present) == len(units))
+                if len(present) != len(units):
+                    self._check_provisioning()
+                    # A partially published set may contain only the inert bytes.
+                    if any(present[name] != units[name].encode() for name in present):
+                        raise InstallerError("partial home unit generation")
+                config_check()
+                if self._read_file(config_parent, "connector.json",
+                        owner=(self.root_owner[0], self._service_owner[1]), mode=0o640) != connector_data:
+                    raise InstallerError("home publication configuration changed")
+                if self._read_file(config_parent, "provision.json", owner=self.root_owner, mode=0o600) != record:
+                    raise InstallerError("home publication provenance changed")
+                # /etc is packaged and writable in B8. No service-owned directory
+                # or activation lock directory is created by this owner.
+                with self._directory(_UNIT_DIR, create=True):
+                    pass
+                with self._publication_parent(_UNIT_DIR) as (parent, check):
+                    for name, text in units.items():
+                        self._headscale_no_pending(parent, name)
+                        check()
+                        config_check()
+                        if name in present:
+                            if self._read_unit(parent, name) != present[name]:
+                                raise InstallerError("home unit changed during publication")
+                            continue
+                        self._home_unit_provisioning(config_parent, provenance, reuse=False)
+                        descriptor = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL
+                            | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600, dir_fd=parent)
+                        try:
+                            os.fchown(descriptor, *self.root_owner)
+                            with os.fdopen(descriptor, "wb", closefd=False) as stream:
+                                stream.write(text.encode())
+                                stream.flush()
+                                os.fchmod(descriptor, 0o644)
+                                os.fsync(descriptor)
+                            check()
+                            os.fsync(parent)
+                        finally:
+                            os.close(descriptor)
+                    check()
+                self.manager.daemon_reload()
+                for name in units:
+                    expected = dict(FragmentPath=str(self.root / _UNIT_DIR / name), DropInPaths="",
+                                    NeedDaemonReload="no", LoadState="loaded", Names=name)
+                    if self.manager.show_properties(name, tuple(expected)) != expected:
+                        raise InstallerError("home unit load verification failed")
+                if self._home_unit_inventory(units, retained) != {
+                        name: present.get(name, text.encode()) for name, text in units.items()}:
+                    raise InstallerError("home unit changed after reload")
+                config_check()
+
+    def _home_unit_provisioning(self, parent: int, record: dict, *, reuse: bool) -> None:
+        """Reverify the complete original generation, even after Disable.
+
+        Live sidecar publication appends fixed fields without changing prepared
+        bytes. Reuse may verify those original bytes against provenance; it never
+        republishes or admits the retained live configuration.
+        """
+        files = {}
+        for name, (owner, mode) in {
+            **{name: ((self.root_owner[0], self._service_owner[1]), 0o640)
+               for name in ("connector.json", "sidecar.json", "policy.json")},
+            "release-daemon.json": (self.root_owner, 0o644),
+            "daemon.token": (self._service_owner, 0o600),
+        }.items():
+            self._headscale_no_pending(parent, name)
+            files[name] = self._read_file(parent, name, owner=owner, mode=mode)
+        sidecar = self._json(files["sidecar.json"])
+        if reuse and "home_binding" in sidecar:
+            from runtime.remote_access.home_activation import CONTROL_URL
+            connector = self._json(files["connector.json"])
+            binding = sidecar["home_binding"]
+            if (not isinstance(binding, dict) or set(binding) != {
+                    "home_id", "control_plane_id", "connector_id", "activation_generation"}
+                    or binding["home_id"] != connector["home_id"]
+                    or binding["connector_id"] != connector["connector_id"]
+                    or binding["control_plane_id"] != connector["managed"]["control_plane_id"]
+                    or type(binding["activation_generation"]) is not int or binding["activation_generation"] < 0
+                    or sidecar.get("ControlURL") != CONTROL_URL):
+                raise InstallerError("retained home configuration binding")
+            addition = b"," + json.dumps({key: sidecar[key] for key in (
+                "ControlURL", "control_tls", "home_binding")}, separators=(",", ":"), ensure_ascii=True).encode()[1:-1]
+            end = files["sidecar.json"].rindex(b"}")
+            if not files["sidecar.json"][:end].endswith(addition):
+                raise InstallerError("retained home configuration shape")
+            files["sidecar.json"] = files["sidecar.json"][:end - len(addition)] + files["sidecar.json"][end:]
+        if record["digests"] != {name: hashlib.sha256(data).hexdigest() for name, data in files.items()}:
+            raise InstallerError("home publication generation drift")
+        self._validate_configs({name: files[name] for name in ("connector.json", "sidecar.json", "policy.json")},
+                               staged=True, require_current=not reuse)
+        release = self._check_release_record()
+        source = self._input(Path(release["data_home"]) / "daemon.token", token=True, source_uid=release["uid"])
+        if source != files["daemon.token"]:
+            raise InstallerError("home publication token drift")
+
+    def _home_unit_inventory(self, units: dict[str, str], retained: dict[str, str]) -> dict[str, bytes]:
+        """Bounded no-follow load-root scan; no aliases or merged overrides."""
+        present: dict[str, bytes] = {}
+        forbidden = {"." + name + ".pending" for name in units}
+        for name in units:
+            stem, suffix = name.rsplit(".", 1)
+            forbidden.update({name + ".d", suffix + ".d"})
+            while "-" in stem:
+                stem = stem.rsplit("-", 1)[0]
+                forbidden.add(stem + "-." + suffix + ".d")
+        count = 0
+
+        def scan(parent: int, relative: str, depth: int) -> None:
+            nonlocal count
+            if depth > 32:
+                raise InstallerError("home unit inventory bound")
+            with os.scandir(parent) as entries:
+                for entry in entries:
+                    count += 1
+                    if count > 65536 or entry.name in forbidden:
+                        raise InstallerError("home unit override or pending residue")
+                    info = os.stat(entry.name, dir_fd=parent, follow_symlinks=False)
+                    if entry.name in units:
+                        if relative != _UNIT_DIR:
+                            raise InstallerError("home unit override or alias")
+                        data = self._read_unit(parent, entry.name)
+                        if data not in (units[entry.name].encode(), retained[entry.name].encode()):
+                            raise InstallerError("differing home unit")
+                        present[entry.name] = data
+                    elif stat.S_ISLNK(info.st_mode):
+                        if Path(os.readlink(entry.name, dir_fd=parent)).name in units:
+                            raise InstallerError("home unit alias")
+                    elif stat.S_ISDIR(info.st_mode):
+                        with self._publication_parent(relative + "/" + entry.name) as (child, check):
+                            scan(child, relative + "/" + entry.name, depth + 1)
+                            check()
+
+        roots = list(_HEADSCALE_UNIT_DIRS)
+        with self._directory() as parent:
+            try:
+                info = os.stat("lib", dir_fd=parent, follow_symlinks=False)
+            except FileNotFoundError:
+                pass
+            else:
+                if stat.S_ISLNK(info.st_mode):
+                    if os.readlink("lib", dir_fd=parent) not in {"usr/lib", "/usr/lib"}:
+                        raise InstallerError("home unit load-root alias")
+                else:
+                    roots.append("lib/systemd/system")
+        for relative in roots:
+            opened = False
+            try:
+                with self._publication_parent(relative) as (parent, check):
+                    opened = True
+                    scan(parent, relative, 0)
+                    check()
+            except FileNotFoundError:
+                if opened:
+                    raise InstallerError("home unit inventory changed") from None
+        for name in units:
+            props = self.manager.show_properties(name, ("FragmentPath", "DropInPaths", "LoadState", "Names"))
+            location = (props.get("FragmentPath"), props.get("LoadState"))
+            allowed = {("", "not-found")}
+            if name in present:
+                allowed.add((str(self.root / _UNIT_DIR / name), "loaded"))
+            if (location not in allowed or props.get("DropInPaths") != "" or props.get("Names") != name):
+                raise InstallerError("home unit load inventory failed")
+        return present
 
     def _key_info(self, info: os.stat_result) -> None:
         if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1

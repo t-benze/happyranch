@@ -223,6 +223,13 @@ class Fixture:
         output = capsys.readouterr()
         return code, output.out + output.err
 
+    def service_directories(self) -> None:
+        # Explicit live/cleanup prestate, modeling systemd's directory creation.
+        for relative in home.CUSTODY[1:]:
+            path = self.root / relative
+            path.mkdir(mode=0o700, parents=True, exist_ok=True)
+            path.parent.chmod(0o755)
+
     def cleanup(self, monkeypatch, capsys, command="disable-headscale"):
         with monkeypatch.context() as patch:
             patch.setattr(module, "ManagedInstaller", lambda **kw: self.installer)
@@ -543,9 +550,10 @@ def test_created_receipt_custody_and_inert_unit(fixture, monkeypatch, capsys) ->
         "group_created_with_user": True}
     assert fixture.receipt().stat().st_mode & 0o777 == 0o600
     assert fixture.receipt().parent.stat().st_mode & 0o777 == 0o700
-    for name in ("etc/happyranch/headscale", "var/lib/happyranch-headscale", "run/happyranch-headscale"):
-        info = (fixture.root / name).stat()
-        assert (info.st_uid, info.st_gid, info.st_mode & 0o777) == (fixture.uid, fixture.gid, 0o700)
+    info = (fixture.root / "etc/happyranch/headscale").stat()
+    assert (info.st_uid, info.st_gid, info.st_mode & 0o777) == (fixture.uid, fixture.gid, 0o700)
+    assert not (fixture.root / "var/lib/happyranch-headscale").exists()
+    assert not (fixture.root / "run/happyranch-headscale").exists()
     policy = fixture.root / "etc/happyranch/headscale/policy.hujson"
     assert policy.read_bytes() == EXPECTED_POLICY
     assert policy.stat().st_mode & 0o777 == 0o600
@@ -556,7 +564,6 @@ def test_created_receipt_custody_and_inert_unit(fixture, monkeypatch, capsys) ->
     assert set(args[0] for args in fixture.calls) == {"useradd", "getent", "passwd", "systemctl", "ps", MATERIALIZER}
     assert all(args[0] != "systemctl" or args[1] == "show" for args in fixture.calls)
     assert sorted(p.name for p in policy.parent.iterdir()) == ["config.yaml", "derp.yaml", "policy.hujson", "server.crt", "server.key"]
-    assert not list((fixture.root / "var/lib/happyranch-headscale").iterdir())
     assert fixture.prepare(monkeypatch, capsys)[0] == 0
     assert [args[0] for args in fixture.calls].count("useradd") == 1
 
@@ -784,7 +791,9 @@ def test_foreign_custody_preserved(fixture, monkeypatch, capsys, entry) -> None:
         target.chmod(0o600)
         (folder / "policy.hujson").symlink_to(target)
     if entry == "mode": folder.chmod(0o755)
-    if entry == "state": (fixture.root / "var/lib/happyranch-headscale/db.sqlite").write_bytes(b"foreign")
+    if entry == "state":
+        fixture.service_directories()
+        (fixture.root / "var/lib/happyranch-headscale/db.sqlite").write_bytes(b"foreign")
     if entry == "unit": (fixture.root / "etc/systemd/system/happyranch-headscale.service").write_bytes(b"foreign")
     if entry == "dropin": (fixture.root / "etc/systemd/system/happyranch-headscale.service.d").mkdir()
     if entry in {"prefix-dropin", "type-dropin"}:
@@ -909,6 +918,7 @@ def test_readiness_is_fixed_local_and_bounded(monkeypatch, ready) -> None:
                                   "unrelated-links", "merged-usr-relative", "merged-usr-absolute"])
 def test_cleanup_receipted_transitions(fixture, monkeypatch, capsys, command, case) -> None:
     assert fixture.prepare(monkeypatch, capsys)[0] == 0
+    fixture.service_directories()
     receipt = fixture.receipt().read_bytes()
     payload = fixture.root / "opt/happyranch-desktop/libexec/headscale/headscale"
     notices = fixture.root / "opt/happyranch-desktop/licenses/headscale.txt"
@@ -1510,6 +1520,7 @@ def b6_setup(fixture: Fixture, monkeypatch: pytest.MonkeyPatch, capsys: pytest.C
              phase: str = "ready", live: bool = True, staging: bool = False) -> tuple[Path, Path]:
     from scripts.test_home_activation import receipt_record
     assert fixture.prepare(monkeypatch, capsys)[0] == 0
+    fixture.service_directories()
     root = fixture.root
     if not staging:
         # Older B6 cases isolate live members; I3c below covers full staging.
