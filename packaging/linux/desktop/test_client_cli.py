@@ -10,6 +10,7 @@ from pathlib import Path
 import pty
 import select
 import signal
+import subprocess
 import sys
 import termios
 import threading
@@ -100,11 +101,14 @@ class ClientCLITests(unittest.TestCase):
 
     def run_cli(self, action: str, choices: list | None = None) -> tuple:
         Terminal.choices = list(choices or [])
-        out = io.StringIO()
-        def interrupt() -> None:
-            os.kill(os.getpid(), signal.SIGINT)
-        with patch.object(sys, "argv", ["client_cli.py", action]), redirect_stdout(out), \
-                patch.object(cli.signal, "pause", side_effect=interrupt):
+        class Output(io.StringIO):
+            def write(self, text: str) -> int:
+                count = super().write(text)
+                if text == "\n" and '"state": "runtimeReachable"' in self.getvalue().splitlines()[-1]:
+                    os.kill(os.getpid(), signal.SIGINT)
+                return count
+        out = Output()
+        with patch.object(sys, "argv", ["client_cli.py", action]), redirect_stdout(out):
             code = cli.main()
         for secret in ("synthetic-invite-secret", "synthetic-comparison", "synthetic-home",
                        "synthetic-control", "100.64.0.1", "synthetic-private-canary", "b" * 64, "fingerprint", "127.0.0.1", "secret diagnostic canary"):
@@ -160,6 +164,54 @@ class ClientCLITests(unittest.TestCase):
         self.assertEqual(len(self.secret.writes), 1)
         self.assertNotIn("synthetic-invite-secret", str(Terminal.output))
         self.assertNotIn("connected", json.dumps(rows).lower())
+        # Exercise the actual wait transition, without mocking pause or its replacement.
+        for signum in (signal.SIGINT, signal.SIGTERM):
+            for attempt in range(10):
+                with self.subTest(signal=signum, attempt=attempt):
+                    master, slave = pty.openpty()
+                    process = None
+                    try:
+                        process = subprocess.Popen([sys.executable, "-B", str(Path(__file__).resolve()),
+                            "--foreground-child"], stdin=slave, stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, start_new_session=True)
+                        terminal, sent = b"", set()
+                        deadline = time.monotonic() + 3
+                        cancelled_at = None
+                        while process.poll() is None and time.monotonic() < deadline:
+                            if not select.select([master], [], [], 0.01)[0]:
+                                continue
+                            terminal += os.read(master, 65536)
+                            for prompt, answer in ((b"Paste invite (hidden):", b"synthetic-invite-secret\n"),
+                                    (b"Type connect to consent", b"connect\n"),
+                                    (b"Save access in the login keyring?", b"\n")):
+                                if prompt in terminal and prompt not in sent:
+                                    sent.add(prompt)
+                                    os.write(master, answer)
+                            if b"Foreground connection;" in terminal and cancelled_at is None:
+                                cancelled_at = time.monotonic()
+                                os.kill(process.pid, signum)
+                                deadline = cancelled_at + 1
+                        self.assertIsNotNone(cancelled_at, "child never published foreground readiness")
+                        self.assertIsNotNone(process.poll(),
+                            "foreground signal did not exit within 1s of publication")
+                        out, error = process.communicate(timeout=1)
+                        self.assertEqual((process.returncode, error), (0, b""))
+                        # Cancellation can interrupt the first print before its newline.
+                        rows, remaining = [], out.decode().strip()
+                        while remaining:
+                            row, end = json.JSONDecoder().raw_decode(remaining)
+                            rows.append(row)
+                            remaining = remaining[end:].lstrip()
+                        self.assertEqual(rows[-2], dict(state="cancelled", effect="confirmed", savedAccess="none"))
+                        self.assertEqual(rows[-1]["calls"][-1], "stop")
+                        self.assertTrue(all(row.get("state") in ("runtimeReachable", "cancelled") for row in rows[:-1]))
+                    finally:
+                        if process is not None:
+                            if process.poll() is None:
+                                process.kill()
+                            process.communicate(timeout=2)
+                        os.close(master)
+                        os.close(slave)
 
     def test_cancel_headless_and_invalid_invite_do_not_launch(self) -> None:
         self.assertEqual(self.run_cli("accept-invite", ["synthetic-invite-secret", "", ""]),
@@ -350,4 +402,19 @@ class TerminalTests(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main(verbosity=2)
+    if sys.argv[1:] == ["--foreground-child"]:
+        import fcntl
+        fcntl.ioctl(sys.stdin.fileno(), termios.TIOCSCTTY, 0)
+        real_terminal = cli.Terminal
+        fixture = ClientCLITests("runTest")
+        fixture.setUp()
+        try:
+            with patch.object(cli, "Terminal", real_terminal), \
+                    patch.object(sys, "argv", ["client_cli.py", "accept-invite"]):
+                code = cli.main()
+            print(json.dumps(dict(calls=Session.calls)), flush=True)
+        finally:
+            fixture.doCleanups()
+        raise SystemExit(code)
+    else:
+        unittest.main(verbosity=2)
