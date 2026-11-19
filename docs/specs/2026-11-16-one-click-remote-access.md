@@ -138,6 +138,20 @@ pin and installed root Type=dbus packaging. Public Enable, installer effects,
 lifecycle authentication and I3 mutation audit outcomes remain deferred and unreachable;
 this source integration does not activate the journey or switch bridge/CLI consumers.
 
+I3a's first serial slice wires the serving supervisor's optional B10
+reserve/invalidate/revoke-all capability to the existing InviteControl and its
+one current pinned pairing manager. No second owner, store, listener or IPC verb
+is added. Helper lifecycle mounting is still deferred and the public gate stays
+closed. The settled Disable composition is: hold the single helper mutation
+slot throughout → existing revoke-all (burn ceremony, durable denies and stream
+closure) → installer stop/disable and confirmed quiescence → B6 with the five
+authenticated-store expectations. Stop still runs if revocation fails; uncertain
+stop prevents B6. Complete requires successful revocation or B6 removal of trust
+state, and retained CA/key evidence still makes cleanup incomplete. A changed
+generation allows at most one re-read/retry within the original 300-second
+budget. Successful revocation leaves no admissible ceremony or credential after
+connector restart/runtime rotation before stop; B10's meaning is unchanged.
+
 Action IDs are exactly `ai.happyranch.remote-access.<suffix>` for authenticated methods. Defaults:
 `allow_any=no`, `allow_inactive=no`, `allow_active=auth_admin`; never `_keep`, wildcard rules,
 retained capabilities or general systemctl grants. Root calls `CheckAuthorization` on the actual

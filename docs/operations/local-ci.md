@@ -3753,6 +3753,17 @@ checks change systemd hardening, required CI selection or workflow triggers.
 
 ## Fixed remote-access helper
 
+I3a supervisor B10 wiring uses the retained standalone venue:
+`PYTHONPATH=$PWD uv run --frozen pytest scripts/test_invite_control.py -v --tb=short`.
+Its supervisor cases use a real private control listener, the serving pinned
+pairing manager, anchored files and stream registry. Only root-peer credentials
+and the protected release record are simulated, as in the bound helper venue.
+They cover digest reservation, all three ceremony phases, absent-owner refusal,
+transaction deadline forwarding, removed-owner stream closure (including failure),
+and denied admission after runtime rotation and connector restart. No host
+systemd, system bus or installed polkit acceptance is exercised. Helper Disable
+ordering and native lifecycle authentication await the next serial slice.
+
 The slice 3b-1 token-reader sub-part uses the existing standalone venue:
 `uv run --frozen pytest scripts/test_installer_token_custody.py -v --tb=short`.
 It drives real temp-root provisioning, install admission and drift with a fake

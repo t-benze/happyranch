@@ -3063,9 +3063,33 @@ installation IDs and generation arguments. It uses the A5 reader under the
 existing activation-directory lock, B5 disable/absence gate, full owned-unit
 quiescence and C's UID snapshot before deletion and fresh checks before effects.
 Existing no-argument CLI/uninstall calls retain D exactly; the future lifecycle
-caller must close admission, revoke and stop services first. No public Disable,
-Enable or ReplaceFailed is mounted here. I2b now supplies B17's separate unmounted
-first-intent entry described below.
+caller must close admission, revoke and stop services first, in the order below.
+No public Disable, Enable or ReplaceFailed is mounted here. I2b now supplies
+B17's separate unmounted first-intent entry described below.
+
+I3a admission-close ruling (TASK-17385 R1–R4): Disable holds the single helper
+mutation slot for its whole call, blocking all other root-owned admission paths.
+It then calls existing B10 `revoke-all@1` on the serving connector. Its first
+committed transaction burns the invite, pending approval and undelivered grant
+and snapshots the device set; per-device durable denial and attributed stream
+closure follow, including removed-owner fencing. Only then stop and disable the
+owned connector, sidecar, verifier and local Headscale through the existing
+installer stop/confirm path. B6 may run only after confirmed quiescence, using
+the five expectations captured from the authenticated activation store.
+
+A restart or supervisor runtime rotation between revoke and stop re-serves no
+admissible devices or ceremony after successful revocation. This composition
+adds no IPC verb or new meaning to `revoke-all@1`. Revocation non-success
+(unavailable, changed, expired or lost reply) records the appropriate B16
+refused/uncertain outcome and **still runs stop**. Stop/ownership uncertainty
+prevents B6 and reports partial cleanup. After confirmed stop, B6 may remove
+trust state even if revocation failed; Disable must not report complete unless
+revocation succeeded or B6 removed that state. A changed generation permits at
+most one fresh generation read and retry within the original 300-second budget.
+Retained CA staging and B7/B11 evidence still require incomplete cleanup; I3c
+owns retirement. This paragraph specifies the lifecycle composition; the B10
+supervisor capability below is wired first, while helper lifecycle mounting
+remains deferred.
 
 The executor unlinks only validated fixed members (including the separately
 publication-receipted leaf/key handoff), explicitly unlinks the root-custodied
@@ -3305,7 +3329,7 @@ uncertain, including when the reserve already committed.
 
 `InviteOperationAPI` is optional and separate from the unchanged slice-2
 `OperationAPI`; an implementation without it refuses these operations as
-`unavailable`. The inert `invite_control.InviteControl` accepts the existing
+`unavailable`. `invite_control.InviteControl` accepts the existing
 serving manager, constructing no owner/store/listener. Revoke-all burns the
 ceremony, then uses existing per-device durable-deny/attributed-stream closure,
 with generation CAS at every transaction. It also fences and acknowledges
@@ -3314,8 +3338,14 @@ the trust flock. Cleanup failure on any owner does not prevent revoking the rest
 and yields `unavailable`; a racing writer refuses `changed`, preserving any prior
 denies. Expiry refuses `expired` before new writes, while necessary cleanup of
 committed work completes; bulk refusal can follow partial durable effects and
-never claims rollback. Supervisor and issuer wiring remain
-serial integration work.
+never claims rollback. Supervisor `_HelperOperations` now implements the optional
+capability by delegating reserve, invalidate and revoke-all to this adapter over
+its current serving pinned pairing manager. It resolves that owner per call,
+refuses an absent owner and carries the unchanged generation/deadline into the
+manager's anchored transactions. The same manager mutation lock still spans the
+control ready/commit exchange; wire framing, root SO_PEERCRED and CAS checks are
+unchanged. Helper lifecycle mounting and root issuer wiring remain serial
+integration work; no public helper method is opened by this capability.
 
 Why no founder: fixed operations on existing root-only private IPC.
 
