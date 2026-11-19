@@ -1374,6 +1374,7 @@ export const en = {
   'dashboard.escalation.cancel': 'Cancel',
   'dashboard.escalation.continuing': 'Continuing…',
   'dashboard.escalation.continue': 'Continue & resolve',
+  'dashboard.escalation.sendHint': 'to send',
   'dashboard.topTokens.title': 'Top token threads · {window}',
   'dashboard.topTokens.windowGroup': 'Window',
   'dashboard.topTokens.window.24h': '24h',
