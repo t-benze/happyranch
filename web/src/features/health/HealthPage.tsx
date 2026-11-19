@@ -427,6 +427,8 @@ interface TrendDef {
   label: MessageKey;
   pick: (s: MetricsSnapshot) => number | null;
   fmt: (v: number, t: Translate, locale: Locale) => string;
+  /** Optional exact value for the title attribute (THR-376 r2 H3: p95 keeps exact ms). */
+  exactTitle?: (v: number, t: Translate, locale: Locale) => string | undefined;
   variant: 'default' | 'green' | 'yellow' | 'red';
 }
 
@@ -464,6 +466,7 @@ const TRENDS: TrendDef[] = [
     label: 'health.metric.p95',
     pick: (s) => s.http?.[AGGREGATE_KEY]?.p95 ?? null,
     fmt: (v, t, locale) => fmtMs(v, t, locale),
+    exactTitle: (v, t, locale) => fmtExactMs(v, t, locale),
     variant: 'default',
   },
 ];
@@ -497,11 +500,17 @@ function TrendCard({
     <div className="bg-surface-raised border-border-default shadow-pasture-sm rounded-lg border p-4">
       <div className="flex items-baseline justify-between gap-2">
         <p className="text-text-secondary text-task-meta font-medium">{t(def.label)}</p>
-        <p className="text-text-muted text-2xs tabular-nums">
+        <p
+          className="text-text-muted text-2xs tabular-nums"
+          title={peak != null ? def.exactTitle?.(peak, t, locale) : undefined}
+        >
           {peak != null ? t('health.trends.peak', { value: def.fmt(peak, t, locale) }) : ''}
         </p>
       </div>
-      <p className="font-display text-h3 text-text-primary mt-2 font-medium tabular-nums">
+      <p
+        className="font-display text-h3 text-text-primary mt-2 font-medium tabular-nums"
+        title={current != null ? def.exactTitle?.(current, t, locale) : undefined}
+      >
         {current != null ? def.fmt(current, t, locale) : '—'}
       </p>
       <div className="mt-3">
