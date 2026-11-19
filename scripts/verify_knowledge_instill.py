@@ -150,6 +150,23 @@ def curation_warning_prompt() -> None:
             in brief, 'built brief missing flagged-item warning contract')
 
 
+def curation_date_citation_prompt() -> None:
+    source, _ = capture()
+    brief = build_curation_input(source, org_slug='synthetic', task_id='TASK-curation', storage_key='snapshot.json')
+    for instruction in (
+        'open_work.as_of and any other date field must be an ISO 8601 date or datetime '
+        '(e.g. 2026-11-18 or 2026-11-18T09:00:00+08:00), or null when unknown; '
+        'never prose or a relative/approximate date.',
+        'founder_ruling must be the exact text THR-N seqN or THR-N#N appearing verbatim in '
+        'the cited founder_ruling_reference captured body or JSON-serialized metadata; '
+        'founder_ruling_reference must be one of the item references.',
+        'If no such exact literal citation exists, set founder_ruling and founder_ruling_reference both null; '
+        'for founder_decision_preference items without a cited ruling, '
+        f'include exactly this warning: {ATTRIBUTION_UNVERIFIED!r} and flag attribution_unverified.',
+    ):
+        require(instruction in brief, 'built brief missing date/citation contract: ' + instruction)
+
+
 def curation_qualification_lists() -> None:
     source, result = capture()
     item = result['items'][0]
@@ -1150,7 +1167,7 @@ def cli_import_validation() -> None:
 
 
 CASES = {f.__name__: f for f in (
-    curation_warning_prompt,
+    curation_warning_prompt, curation_date_citation_prompt,
     curation_qualification_lists, curation_invalid_qualification_lists,
     curation_empty_qualification_lists, curation_other_field_lists,
     curation_dates, curation_founder_eligibility, curation_open_work_eligibility, curation_reference_only,
