@@ -2024,6 +2024,8 @@ export const en = {
   'health.metric.queue': 'Queue depth',
   'health.metric.queueHint': 'run-step queue',
   'health.metric.p95': 'p95 latency · all routes',
+  'health.duration.ms': '{value} ms',
+  'health.duration.seconds': '{value} s',
   'health.uptime.days': '{days}d {hours}h',
   'health.uptime.hours': '{hours}h {minutes}m',
   'health.uptime.minutes': '{minutes}m {seconds}s',

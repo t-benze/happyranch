@@ -1,0 +1,5 @@
+/* Health page-local type rule (THR-376 r2 H2). The Pasture stat value is
+ * 27px Newsreader, and no 27px type token exists in tokens.css, so the size
+ * lives here as a page-local rule (same pattern as features/tasks/tasks.css).
+ * Unlayered, so it wins over Tailwind utilities. Imported by HealthPage.tsx. */
+.health-stat-value { font-size: 27px; line-height: 1.2; }
