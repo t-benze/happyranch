@@ -95,6 +95,21 @@ class SavedRecord(_codec._Redacted):
     _types = (int, str, str, str, str, str, str, bytes, str, str, str, str, str, bytes)
 
 
+def same_home(record: object, invite: object) -> bool:
+    return (record.home_id == invite.home_id and record.control_plane_id == invite.control_plane_id
+            and record.connector_id == invite.connector_id and record.ca_der == invite.ca_der
+            and record.fingerprint == hashlib.sha256(invite.ca_der).hexdigest())
+
+
+def recovery_candidate(records: dict, invite: object) -> SavedRecord | None:
+    matches = [record for record in records.values() if record.home_id == invite.home_id]
+    if len(matches) != 1 or not same_home(matches[0], invite):
+        return None
+    record = matches[0]
+    return record if any(getattr(record, field) != getattr(invite, field)
+                         for field in ("control_url", "dial_ip", "home_endpoint")) else None
+
+
 def _network_state(data: bytes, control: str, node: str) -> bytes:
     def pairs(items: list[tuple[str, object]]) -> dict:
         result = {}
@@ -171,6 +186,21 @@ class ClientSession:
                 raise ClientError("stateUnavailable")
             return SavedRecord(version=1, bearer=self._bearer, stable_node_id=self._node,
                                network_state=self._network, **self._binding)
+
+    def recover_address(self, record: SavedRecord, invite: object) -> None:
+        """After native consent: unchanged v3 resume, then live saved-grant proof."""
+        try:
+            if (type(invite) is not _codec.DecodedInvite or not time.time() < invite.expires_at
+                    or type(record) is not SavedRecord or not same_home(record, invite)):
+                raise ClientError("identityMismatch")
+            values = {field: getattr(record, field) for field in record.__slots__}
+            values.update({field: getattr(invite, field)
+                           for field in ("control_url", "dial_ip", "home_endpoint")})
+            self.restore(SavedRecord(**values))
+            self.health()  # No save or pairing before this bearer-authenticated gate.
+        except (OSError, ValueError, ClientError):
+            self.stop()
+            raise
 
     def join(self, invite: object, *, save_intent: bool = False) -> None:
         try:

@@ -132,7 +132,14 @@ class ClientModel:
                     self.target = plain(invite.home_id)
                     self.expiry = invite.expires_at
                     self.deadline = time.monotonic() + max(0, min(300, self.expiry - time.time()))
-                    self.ui.target(invite, lambda consent, save=False: self.consent(token, invite, consent, save))
+                    def found(result: object, error: str | None) -> None:
+                        records, _state, observation = result if not error else ({}, "unknown", "unavailable")
+                        record = _native.recovery_candidate(records, invite) if observation == "known" else None
+                        if record is None:
+                            self.ui.target(invite, lambda yes, save=False: self.consent(token, invite, yes, save))
+                        else:
+                            self.ui.recovery_target(invite, lambda yes: self.recover(token, record, invite, yes))
+                    self.work(token, self.store.list, found)
                 except (ValueError, UnicodeError):
                     self.fail("invalidInvite")
             self.work(token, lambda: _native.decode_invite(text), decoded)
@@ -155,6 +162,39 @@ class ClientModel:
         self.changed("joining")
         self.work(token, lambda: session.join(invite, save_intent=True) if self.save_intent else session.join(invite),
                   lambda _r, e: self.joined(token, e))
+
+    def recover(self, token: int, record: object, invite: object, consent: bool) -> None:
+        if not self.valid(token):
+            return
+        self.confirming_target = False
+        if not consent:
+            self.stop()
+            return
+        self.approval_timeout(token)
+        if not self.valid(token):
+            return
+        self.save_intent = True
+        self.saved_access = "saved"
+        self.session = _native.ClientSession(self.prefix)
+        session = self.session
+        self.changed("joining")
+        def recovered(_result: object, error: str | None) -> None:
+            if not error:
+                self.save(token, opening=True)
+                return
+            # Never spend the invitation automatically after failed validation.
+            # Finish cleanup before a distinct normal-join consent dialog.
+            def stopped(_r: object, cleanup_error: str | None) -> None:
+                if cleanup_error:
+                    self.fail("outcomeUnknown")
+                    return
+                self.session = None
+                self.save_intent = False
+                self.confirming_target = True
+                self.changed("validating")
+                self.ui.target(invite, lambda yes, save=False: self.consent(token, invite, yes, save), fresh=True)
+            self.work(token, session.stop, stopped)
+        self.work(token, lambda: session.recover_address(self.store.load(record), invite), recovered)
 
     def joined(self, token: int, error: str | None) -> None:
         if error:
