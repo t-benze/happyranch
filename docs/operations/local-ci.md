@@ -301,6 +301,25 @@ it adds no production containment. The job checks run without daemon lifespan
 or providers; macOS native enumeration needs a separate macOS venue.
 General integration remains SKIPPED under THR-243 seq42.
 
+## Foreground connection CLI boundaries (5b/5c)
+
+```sh
+GSETTINGS_BACKEND=memory /usr/bin/python3 -B packaging/linux/desktop/test_connection_cli.py -v
+GSETTINGS_BACKEND=memory /usr/bin/python3 -B packaging/linux/desktop/test_client_cli.py -v
+```
+
+These existing standalone native-script venues exercise shared CLI grammar,
+fixed Linux/Mac dispatch, missing bundled owner and deferred Mac host, closed
+outputs and Linux foreground terminal/session behavior with synthetic services.
+The Mac dispatch case uses a temporary bundle layout and intercepts exec; it
+proves the Python boundary, not Darwin execution, Keychain ACL or native signals.
+On authorized macOS, from `app/mac`, `swift test --filter ConnectionCLITests`
+checks foreground ownership/no-custody control verbs, saved projection secrecy,
+selection capacity and cancellation-before-intake. The unsigned Mac build
+workflow compiles only release app sources, not tests. No new required check,
+install or test venue is added; native/live and cross-device qualification
+remain separate. General integration stays SKIPPED under THR-243 seq42.
+
 ## Connector platform lifecycle focused coverage
 
 ```sh

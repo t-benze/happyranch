@@ -8,6 +8,7 @@ import io
 import json
 from pathlib import Path
 import sys
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -118,6 +119,45 @@ class ConnectionCLITests(unittest.TestCase):
             with self.subTest(args=args), redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as stopped:
                 parser.parse_args(["connection", *args])
             self.assertEqual(stopped.exception.code, 2)
+
+    def test_mac_bundle_dispatch_and_closed_host(self) -> None:
+        parser = argparse.ArgumentParser()
+        command.register(parser.add_subparsers(dest="command"))
+        with tempfile.TemporaryDirectory() as scratch:
+            contents = Path(scratch) / "HappyRanch.app/Contents"
+            executable = contents / "Resources/daemon/happyranch"
+            executable.parent.mkdir(parents=True)
+            executable.touch()
+            entry = contents / "MacOS/HappyRanch"
+            entry.parent.mkdir()
+            entry.write_text("synthetic-native-owner")
+            entry.chmod(0o755)
+            with patch.object(command.sys, "platform", "darwin"), \
+                    patch.object(command.sys, "executable", str(executable)), \
+                    patch.object(command.sys, "frozen", True, create=True), \
+                    patch.object(command.os, "execv", side_effect=SystemExit(0)) as execute:
+                out = io.StringIO()
+                with redirect_stdout(out):
+                    command.cmd_connection(parser.parse_args(["connection", "status"]))
+                self.assertEqual(json.loads(out.getvalue()), dict(platform="mac", roles=dict(host="unavailable", client="available")))
+                for action in command.CLIENT_ACTIONS:
+                    with self.subTest(action=action), self.assertRaises(SystemExit) as stopped:
+                        command.cmd_connection(parser.parse_args(["connection", "client", action]))
+                    self.assertEqual(stopped.exception.code, 0)
+                    self.assertEqual(execute.call_args.args, (str(entry), [str(entry), "--connection-client", action]))
+                execute.reset_mock()
+                for action in command.HOST_ACTIONS + command.UNAVAILABLE:
+                    with self.subTest(host=action), redirect_stdout(io.StringIO()), self.assertRaises(SystemExit) as stopped:
+                        command.cmd_connection(parser.parse_args(["connection", "host", action]))
+                    self.assertEqual(stopped.exception.code, 1)
+                execute.assert_not_called()
+                entry.unlink()
+                with redirect_stdout(io.StringIO()), self.assertRaises(SystemExit) as stopped:
+                    command.cmd_connection(parser.parse_args(["connection", "client", "accept-invite"]))
+                self.assertEqual(stopped.exception.code, 1)
+                execute.assert_not_called()
+                with patch.object(command.sys, "frozen", False):
+                    self.assertIsNone(command.mac_client_entry())
 
     def test_fixed_transport_and_projection(self) -> None:
         for action, method in native.METHODS.items():

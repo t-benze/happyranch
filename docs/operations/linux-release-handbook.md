@@ -423,8 +423,8 @@ observations may explicitly be unavailable). Exit 1: closed error. Exit 2:
 invalid command/arguments. Enable/turn-off/create-invite return unavailable
 without dispatch. Recovery placeholders `cancel-invite`, `replace-failed`, `refresh-home-address`
 and `retry-policy-renewal` also return closed unavailable without dispatch.
-Linux foreground Client CLI is documented below. Mac host and Mac Client CLI
-are deferred/unavailable. There is no connector, DIY, installer or admin fallback.
+Linux foreground Client CLI is documented below. Mac host remains deferred/unavailable;
+the [Mac foreground client CLI](../../app/mac/README.md#thr-379-slice-5c-foreground-mac-client-cli) is separate. There is no connector, DIY, installer or admin fallback.
 
 ### Linux foreground client CLI fallback (slice 5b)
 
