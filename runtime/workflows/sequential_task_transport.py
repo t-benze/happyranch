@@ -51,6 +51,9 @@ async def selected_read(org: Any, *, task_id: str, principal: str, session_id: s
                 dispatcher = org.workflow_sequential_dispatch
                 with _sql_budget(conn, budget):
                     owner, native = _live_owner(org, dispatcher, conn, task_id, principal, session_id, budget)
+                    selected_run, _, _ = dispatcher._entry(conn, task_id, budget=budget)
+                    if selected_run.get('engine_version', 1) == 2:
+                        raise ProjectionRefusal('sequential_domain_transport_unavailable')
                     if change is not None:
                         result = select_final_uncommitted(conn, org=org, dispatcher=dispatcher,
                             task_id=task_id, principal=principal, session_id=session_id,
@@ -59,6 +62,8 @@ async def selected_read(org: Any, *, task_id: str, principal: str, session_id: s
                     else:
                         run, visit, compiled = dispatcher._entry(conn, task_id, budget=budget)
                         conn.set_progress_handler(budget.progress, 1000)
+                        if run.get('engine_version', 1) == 2:
+                            raise ProjectionRefusal('sequential_domain_transport_unavailable')
                         if (run['state'] != 'active' or run['active_visit_id'] != visit['id']
                                 or _native_task(conn, task_id)['status'] != 'in_progress'
                                 or (visit['state'], visit['selected']) != ('running', 1)

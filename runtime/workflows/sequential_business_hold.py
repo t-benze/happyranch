@@ -331,6 +331,7 @@ def generic_closed_visit(conn: sqlite3.Connection, *, run: dict, visit: dict, bu
 
 def generic_hold_cause(conn: sqlite3.Connection, *, run: dict, visit: dict, compiled: object,
                        budget: _ReadBudget, unavailable: bool = False) -> tuple[str, dict]:
+    from runtime.platform.session_backend import TerminalReason
     from runtime.workflows.sequential_definition import SequentialContractError, parse_generic_callback
     proof = generic_closed_visit(conn, run=run, visit=visit, budget=budget)
     if unavailable:
@@ -340,8 +341,16 @@ def generic_hold_cause(conn: sqlite3.Connection, *, run: dict, visit: dict, comp
     if proof['result_id'] is None:
         terminal, _ = _proof(conn, run['id'], visit['id'], 'terminal', budget)
         reason = terminal['receipt']['terminal_reason']
-        _require(reason in ('timeout', 'failed', 'error', 'cancelled'), 'hold_cause_unavailable')
-        return ('task_timed_out_without_result' if reason == 'timeout' else 'task_failed_without_result'), proof
+        _require(reason in tuple(item.value for item in TerminalReason if item != TerminalReason.SUCCESS)
+                 + ('failed', 'error'), 'hold_cause_unavailable')
+        return ('task_timed_out_without_result' if reason == TerminalReason.TIMEOUT.value else 'task_failed_without_result'), proof
+    terminal, _ = _proof(conn, run['id'], visit['id'], 'terminal', budget)
+    reason = terminal['receipt']['terminal_reason']
+    _require(reason in tuple(item.value for item in TerminalReason) + ('failed', 'error'), 'hold_cause_unavailable')
+    if reason == TerminalReason.TIMEOUT.value:
+        return 'task_timed_out_after_result', proof
+    if reason != TerminalReason.SUCCESS.value:
+        return 'task_failed_after_result', proof
     payload = generic_callback_bytes(conn, proof['result_id'], budget)
     if payload is None:
         return 'result_too_large', proof

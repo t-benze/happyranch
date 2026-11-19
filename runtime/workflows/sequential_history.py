@@ -497,6 +497,15 @@ def _outputs(data: dict[str, list[dict]], visits: dict[str, dict], runs: dict[st
         _require((row['task_id'], row['session_id'], row['result_id'], row['epoch']) ==
                  (visit['task_id'], visit['session_id'], visit['result_id'], visit['epoch']),
                  'output_result_conflict')
+        if run.get('engine_version', 1) == 2:
+            from runtime.workflows.sequential_definition import validate_generic_content
+            _require(row['engine_version'] == 2 and row['epoch'] is None, 'output_result_conflict')
+            budget.reserve(8 * len(row['content_bytes']) + 512)
+            validate_generic_content(row['contract'], row['content_bytes'])
+            selected.setdefault(visit['id'], []).append(dict(slot=row['slot'], contract=row['contract'],
+                version=visit['ordinal'], producer_visit=visit['id'], task_id=row['task_id'], session_id=row['session_id'],
+                result_id=row['result_id'], digest=row['content_digest']))
+            continue
         if row['contract'] == 'immutable-document@1':
             row['content_bytes'].decode('utf8')
         else:
@@ -907,6 +916,7 @@ def read_sequential_history(conn: sqlite3.Connection, *, expected_org_slug: str,
                              if table not in (*SEQUENTIAL_TABLES, 'workflow_seq_assignments',
                                               'workflow_seq_controls', 'workflow_seq_node_counters')),
                          'schema2_runtime_history_unavailable')
+            if layout.schema_version == 2 and not any(row['engine_version'] == 2 for row in data['workflow_seq_outputs']):
                 _require(all(row['engine_version'] == 1 for row in data['workflow_seq_outputs']),
                          'schema2_runtime_history_unavailable')
             for table in tables:

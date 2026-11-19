@@ -1,5 +1,15 @@
 # U3d-2 sequential queue, launch and native owner ports
 
+S4b adds version-selected internal @2 queue/launch/session/PID/recovery and
+generic brief ports. Prelaunch rechecks the saved executor/options before native
+reservation and calls S4a Held/assignee_unavailable on drift, without substitution
+or launch. Terminal/outer proofs retain actual native reason values and gate
+generic acceptance; selected readers authenticate queued/executing/settling
+progress. The historical @1 path below retains its bytes.
+Public @2 remains unadmitted and Coding stays Disabled; private source evidence
+does not prove genuine provider/process execution. See the
+[S4b contract](../agent-guides/contracts/reusable-workflows.md#s4b-generic-dispatch-and-native-closure-2).
+
 TASK-14727, engineering_manager ROOT TASK-14640, Founder THR336 msg85 U1–U9
 SOURCE plan rev3 and msg102 Decision1=B/Decision2=1/SB-1(a)/narrowed F4.
 Base b643516d4ce50b1c87d954a30c83ab0ce7999273 (U3d-1 PR1317);
