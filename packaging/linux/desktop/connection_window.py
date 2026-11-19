@@ -160,7 +160,10 @@ class InviteSheet:
         content.set_spacing(12)
         content.set_border_width(16)
         self.label = Gtk.Label(label=text)
-        self.label.set_selectable(True)
+        # GTK selection exports PRIMARY and supplies an untracked Copy action.
+        # Only the explicit Copy button may export invite text.
+        self.label.set_selectable(False)
+        self.label.set_can_focus(False)
         self.label.set_line_wrap(True)
         self.label.set_max_width_chars(64)
         scroll = Gtk.ScrolledWindow()

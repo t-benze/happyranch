@@ -2127,9 +2127,11 @@ pin. The root-only `serve()` connects Gio to the fixed system-bus socket
 the bus/polkit definitions and root Type=dbus unit; package install registers the
 service without running Enable. I3a mounts Enable/ReplaceFailed/Disable
 through B9 and the fixed bundled-Python child; I5a exposes all seven lifecycle/invite
-methods in public dispatch and introspection. Linux CLI consumer wiring is delivered in I5b; bridge wiring
-follows in I5c. RefreshHomeAddress has no helper method and is deferred to B13. Run the fixed
-packaged entry with system Python `-I`, without user settings or argv overrides.
+methods in public dispatch and introspection. Linux CLI consumer wiring is
+delivered in I5b; bridge Enable/Disable/IssueInvite consumers are delivered in
+I5c (source only; I6 native/live acceptance pending). RefreshHomeAddress has no
+helper method and is deferred to B13. Run the fixed packaged entry with system
+Python `-I`, without user settings or argv overrides.
 
 The helper captures caller/UID, target, ownership and snapshot generation before
 authorization, then revalidates after it. The 120-second deadline cancels an
@@ -3416,10 +3418,11 @@ and no automatic retry. Polkit denial means permissionDenied and no effect.
 Client paste/confirmation reservations and mutation/Status busy rules remain.
 IssueInvite gives the web only closed issuance outcome and authoritative expiry,
 never invite bytes. Immediately before display the native GTK sheet rechecks
-expiry and the original deadline. It shows the complete selectable text, explains
+expiry and the original deadline. It shows visible complete text with explicit
+Copy only: the invite label is non-selectable and non-focusable. It explains
 that Linux-owner approval is also required, shows absolute local expiry and an
-m:ss countdown, and provides explicit Copy and Close. Expiry drops the text and
-disables Copy; expiry/close best-effort clears the clipboard only while it still
+m:ss countdown, and provides Close. Expiry drops the text and disables Copy;
+expiry/close best-effort clears the clipboard only while it still
 holds our copied text. Close does not cancel the invite, and other apps/clipboard
 history can retain a copy. No desktop means unavailable/nativePermission before
 dispatch. ReplaceFailed/CancelInvite/RecoverInvite/RetryPolicyRenewal remain

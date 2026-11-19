@@ -17,8 +17,9 @@ from unittest.mock import patch
 
 import gi
 gi.require_version("Gtk", "3.0")
+gi.require_version("Gdk", "3.0")
 gi.require_version("WebKit2", "4.1")
-from gi.repository import Gio, GLib, Gtk
+from gi.repository import Gdk, Gio, GLib, Gtk
 
 import client_ui as client_owner
 import connection_window as connection_owner
@@ -273,13 +274,41 @@ class GTKTests(unittest.TestCase):
                                     tr=lambda en, zh: zh if chinese else en)
             clipboard = Gtk.Clipboard.get_default(parent.get_display())
             for close in (False, True):
+                primary = Gtk.Clipboard.get(Gdk.SELECTION_PRIMARY)
+                primary.set_text("other-app-primary", -1)
                 clipboard.set_text("other-app-content", -1)
                 sheet = connection_owner.InviteSheet(owner, INVITE, expiry, time.monotonic() + 120)
                 owner.invite_sheet = sheet
                 self.addCleanup(sheet.close)
                 self.assertEqual(sheet.label.get_text(), INVITE)
-                self.assertTrue(sheet.label.get_selectable())
-                self.assertEqual(clipboard.wait_for_text(), "other-app-content")
+                # Exercise GTK's real focus and key-binding handlers, including
+                # the label action shared by Ctrl+C and its context Copy.
+                for action in ("focus", "select-all", "ctrl-a", "ctrl-c", "label-copy"):
+                    if action == "focus":
+                        sheet.label.grab_focus()
+                    elif action == "select-all":
+                        sheet.label.select_region(0, -1)
+                    elif action in ("ctrl-a", "ctrl-c"):
+                        key = Gdk.KEY_a if action == "ctrl-a" else Gdk.KEY_c
+                        event = Gdk.Event.new(Gdk.EventType.KEY_PRESS)
+                        event.window = sheet.dialog.get_window()
+                        event.send_event = True
+                        event.time = Gdk.CURRENT_TIME
+                        event.state = Gdk.ModifierType.CONTROL_MASK
+                        event.keyval = key
+                        event.set_device(parent.get_display().get_default_seat().get_keyboard())
+                        sheet.dialog.emit("key-press-event", event)
+                    else:
+                        sheet.label.emit("copy-clipboard")
+                    for selection, expected in ((primary, "other-app-primary"),
+                                                (clipboard, "other-app-content")):
+                        with self.subTest(chinese=chinese, close=close, action=action, selection=expected):
+                            self.assertEqual(selection.wait_for_text(), expected)
+                    self.assertFalse(sheet.copied)
+                with self.subTest(chinese=chinese, close=close, label="flags"):
+                    self.assertFalse(sheet.label.get_selectable())
+                    self.assertFalse(sheet.label.get_can_focus())
+                    self.assertIsNot(sheet.dialog.get_focus(), sheet.label)
                 with patch.object(connection_owner.time, "time", return_value=expiry - 125):
                     self.assertTrue(sheet.tick())
                 self.assertIn("2:05", sheet.expiry.get_text())
@@ -289,7 +318,10 @@ class GTKTests(unittest.TestCase):
                 self.assertTrue(any(("关闭不会取消" if chinese else "Closing does not cancel") in text for text in labels))
                 self.assertEqual(sheet.dialog.get_default_widget(), sheet.dialog.get_widget_for_response(Gtk.ResponseType.CLOSE))
                 sheet.copy.clicked()
+                self.assertTrue(sheet.copied)
                 self.assertEqual(clipboard.wait_for_text(), INVITE)
+                with self.subTest(chinese=chinese, close=close, action="explicit-copy-primary"):
+                    self.assertEqual(primary.wait_for_text(), "other-app-primary")
                 if close:
                     sheet.dialog.response(Gtk.ResponseType.CLOSE)
                     self.assertIsNone(owner.invite_sheet)
@@ -299,7 +331,10 @@ class GTKTests(unittest.TestCase):
                     self.assertEqual(sheet.expiry.get_text(), "邀请已过期" if chinese else "Invite expired")
                 self.assertEqual((sheet.text, sheet.label.get_text()), ("", ""))
                 self.assertFalse(sheet.copy.get_sensitive())
+                self.assertFalse(sheet.copied)
                 self.assertNotEqual(clipboard.wait_for_text(), INVITE)
+                with self.subTest(chinese=chinese, close=close, action="ending-primary"):
+                    self.assertEqual(primary.wait_for_text(), "other-app-primary")
                 sheet.close()
             for ending in ("close", "expiry"):
                 sheet = connection_owner.InviteSheet(owner, INVITE, expiry, time.monotonic() + 120)

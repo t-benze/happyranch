@@ -391,8 +391,9 @@ Enable, Turn off and Create invite, with zero inputs and 482/302/122-second
 transport deadlines. Enable/Disable acceptance leaves effect/host denial/host
 and network cleanup unknown, while the persistent bus and later Status drive
 the card. IssueInvite shares the CLI frame validator and shows a native GTK
-sheet: selectable complete text, Linux approval explanation, local absolute
-expiry/m:ss countdown, explicit Copy and Close. The web gets issuance/expiry
+sheet: visible complete text (non-selectable and non-focusable; explicit Copy
+only), Linux approval explanation, local absolute expiry/m:ss countdown, and
+Close. The web gets issuance/expiry
 metadata only. Expiry/close drops native text and best-effort clears only our
 unchanged clipboard content; Close does not cancel, and clipboard history/other
 apps may retain a copy. Missing/closed desktop refuses before dispatch with
