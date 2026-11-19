@@ -159,22 +159,22 @@ function TimelineRow({ entry, legendColor, slug }: TimelineRowProps): JSX.Elemen
   const hasDream = !!entry._thread_dream_id;
 
   return (
-    <div className="border-border-subtle hover:bg-surface-raised flex gap-3 border-b pr-3 pl-4 text-sm transition-colors">
-      {/* Vertical dot-rail: a continuous 1px connector line threads every row of
-          a day group; the color-coded status dot sits on the rail, painted over
-          the line as an opaque node (a-audit dot-rail, THR-099 PR2). Vertical
-          padding lives on the content column, not the row, so the rail spans the
-          FULL row height and the connector stays unbroken across rows. */}
+    <div className="hover:bg-surface-raised flex gap-3 pr-3 pl-4 text-sm transition-colors">
+      {/* Borderless timeline (THR-376 r2 Au2): no per-row dividers; a
+          continuous 2px rail threads every row of a day group and the
+          kind-coloured status dot sits on it, ringed in the card surface so
+          the rail breaks around it. Vertical padding lives on the content
+          column, not the row, so the rail spans the FULL row height and the
+          rail stays unbroken across rows. */}
       <div aria-hidden="true" className="relative flex w-3 shrink-0 justify-center">
-        {/* Full-height 1px connector line (border-l, centered) behind the dot.
-            h-full spans the row (vertical padding lives on the content column),
-            so consecutive rows' lines abut into one continuous rail. */}
-        <span className="border-border-subtle absolute left-1/2 h-full border-l" />
+        {/* Full-height 2px rail (centered) behind the dot. h-full spans the
+            row, so consecutive rows' rail segments abut into one line. */}
+        <span className="bg-border-default absolute left-1/2 h-full w-0.5 -translate-x-1/2" />
         {/* Status dot on the rail, nudged to the first text line, painted over
-            the line (relative → above the absolute connector). */}
+            the rail (relative → above the absolute rail). */}
         <span
           className={cn(
-            'relative mt-3 h-2 w-2 rounded-full',
+            'ring-surface-raised relative mt-3 h-2 w-2 rounded-full ring-2',
             DOT_COLOR_CLASS[legendColor as keyof typeof DOT_COLOR_CLASS] ?? 'bg-text-secondary',
           )}
         />
@@ -226,7 +226,7 @@ function TimelineSkeleton(): JSX.Element {
           {[1, 2].map((j) => (
             <div
               key={j}
-              className="border-border-subtle flex items-center gap-3 border-b px-3 py-2"
+              className="flex items-center gap-3 px-3 py-2"
             >
               <div className="bg-surface-sunken h-3 w-16 animate-pulse rounded-sm" />
               <div className="bg-surface-sunken h-2 w-2 rounded-full" />
@@ -250,9 +250,12 @@ export interface AuditTimelineProps {
   /** Stable ISO string for the `since` time-window (memoized by caller
    *  to prevent queryKey churn from sinceToISO's new Date() per render). */
   sinceISO?: string | null;
+  /** The page scroll owner, used as the infinite-load IntersectionObserver
+   *  root (THR-376 r2 Au1: the timeline has no inner scroller of its own). */
+  scrollRoot?: Element | null;
 }
 
-export function AuditTimeline({ legendMap, sinceISO }: AuditTimelineProps): JSX.Element {
+export function AuditTimeline({ legendMap, sinceISO, scrollRoot = null }: AuditTimelineProps): JSX.Element {
   const { slug = '' } = useParams<{ slug: string }>();
   const [searchParams] = useSearchParams();
   const filters = decodeFilters(searchParams);
@@ -317,14 +320,11 @@ export function AuditTimeline({ legendMap, sinceISO }: AuditTimelineProps): JSX.
     );
   }
 
-  // All-clear calm state (zero failures/escalations). This wrapper must carry
-  // the SAME bounded-height flex-column chain the normal branch gets from its
-  // card parent, so TimelineBody (flex-1 overflow-y-auto) gets a height and its
-  // infinite-scroll sentinel can re-intersect — otherwise this branch clips and
-  // dies exactly like the normal one did (THR-098 re-open).
+  // All-clear calm state (zero failures/escalations): banner above the same
+  // page-scrolled timeline body.
   if (isAllClear(entries)) {
     return (
-      <div data-testid="all-clear" className="flex h-full min-h-0 flex-col">
+      <div data-testid="all-clear">
         <AllClearBanner />
         <TimelineBody
           entries={entries}
@@ -333,6 +333,7 @@ export function AuditTimeline({ legendMap, sinceISO }: AuditTimelineProps): JSX.
           fetchNextPage={fetchNextPage}
           hasNextPage={hasNextPage}
           isFetchingNextPage={isFetchingNextPage}
+          scrollRoot={scrollRoot}
         />
       </div>
     );
@@ -346,6 +347,7 @@ export function AuditTimeline({ legendMap, sinceISO }: AuditTimelineProps): JSX.
       fetchNextPage={fetchNextPage}
       hasNextPage={hasNextPage}
       isFetchingNextPage={isFetchingNextPage}
+      scrollRoot={scrollRoot}
     />
   );
 }
@@ -373,6 +375,7 @@ function TimelineBody({
   fetchNextPage,
   hasNextPage,
   isFetchingNextPage,
+  scrollRoot,
 }: {
   entries: AuditEntry[];
   legendMap: Map<string, string>;
@@ -380,29 +383,20 @@ function TimelineBody({
   fetchNextPage: () => void;
   hasNextPage: boolean;
   isFetchingNextPage: boolean;
+  scrollRoot: Element | null;
 }): JSX.Element {
   const days = useMemo(() => groupByDay(entries), [entries]);
   const { t, locale } = useTranslation();
 
-  // Infinite scroll: observe a bottom sentinel against THIS scroll container
-  // (the timeline scrolls inside its own overflow-y-auto box, not the
-  // viewport) and load the next older page as it nears view. Re-subscribes
-  // when pagination state changes so the moved sentinel is re-observed.
-  //
-  // Root = sentinel.parentElement (the scroll container) — not scrollRef.current.
-  // scrollRef.current can be null during the commit/effect handoff, which would
-  // silently fall back to the document viewport and never fire while the user
-  // scrolls inside the overflow box (THR-098). parentElement is a DOM property
-  // set the moment the sentinel is appended, so it is always correct.
-  const scrollRef = useRef<HTMLDivElement | null>(null);
+  // Infinite scroll: observe a bottom sentinel against the PAGE scroll owner
+  // (THR-376 r2 Au1: the page's ContentWrap, passed in as `scrollRoot`) and
+  // load the next older page as it nears view. Re-subscribes when pagination
+  // state or the scroll owner changes so the moved sentinel is re-observed.
   const sentinelRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     const node = sentinelRef.current;
     if (!node || !hasNextPage) return;
-    // Sentinel is a direct child of the overflow-y-auto container —
-    // parentElement IS the scroll box. Use it to guarantee the observer
-    // root is the scroll container, never the document viewport.
-    const root = node.parentElement;
+    const root = scrollRoot;
     const obs = new IntersectionObserver(
       (obsEntries) => {
         if (obsEntries[0]?.isIntersecting && !isFetchingNextPage) {
@@ -413,10 +407,10 @@ function TimelineBody({
     );
     obs.observe(node);
     return () => obs.disconnect();
-  }, [fetchNextPage, hasNextPage, isFetchingNextPage]);
+  }, [fetchNextPage, hasNextPage, isFetchingNextPage, scrollRoot]);
 
   return (
-    <div ref={scrollRef} className="flex-1 overflow-y-auto" aria-label={t('audit.timeline.label')}>
+    <div aria-label={t('audit.timeline.label')}>
       {days.map(({ date, entries: dayEntries }) => (
         <div key={date}>
           <h3 className="text-text-muted bg-surface-raised sticky top-0 z-10 px-4 pt-4 pb-2 text-xs font-medium tracking-wide uppercase">

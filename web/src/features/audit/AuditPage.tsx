@@ -15,7 +15,7 @@
  * States: loading skeleton, empty ("No audit entries"), all-clear calm
  * ("All clear — no failures or escalations"), error with retry.
  */
-import { useMemo, useCallback } from 'react';
+import { useMemo, useCallback, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { Check } from 'lucide-react';
 import { Button } from '@/design-system/primitives/Button';
@@ -53,6 +53,9 @@ export function AuditPage(): JSX.Element {
   const { t } = useTranslation();
   const [searchParams, setSearchParams] = useSearchParams();
   const filters = useMemo(() => decodeFilters(searchParams), [searchParams]);
+  // The page scroll owner (ContentWrap), used as AuditTimeline's
+  // infinite-load IntersectionObserver root (THR-376 r2 Au1).
+  const [scrollRoot, setScrollRoot] = useState<HTMLDivElement | null>(null);
 
   // We need the FULL (unfiltered-by-class) set to build the legend counts.
   // The legend toggle drives a client-side filter, so the class counts stay
@@ -151,20 +154,13 @@ export function AuditPage(): JSX.Element {
 
   return (
     <div className="bg-surface-canvas flex h-full flex-col min-w-0 overflow-hidden">
-      {/* EM ruling (THR-099 audit): KEEP the bordered card header + the side
-          event-legend; cap the inner content at the shared 1180 `max-w-content`
-          centered in the main region beside the shell rail, with the same 26px
-          horizontal pad as tasks. Audit is a full-height, own-inner-scroll page
-          (AuditTimeline scrolls internally + paginates against its own overflow
-          box), so we REUSE <ContentWrap> purely for its 1180 cap + 26px pad and
-          override its inner column to `flex h-full` — that keeps the bounded
-          flex height AuditTimeline's internal scroll/infinite-load needs (its
-          overflow-y-auto never engages because the inner column is exactly
-          h-full). This avoids hand-rolling the arbitrary 26px pad, which eslint
-          forbids in the feature layer. AuditTimeline itself is untouched. */}
-      <ContentWrap className="flex h-full min-h-0 flex-col gap-4">
-      {/* --- Top bar --- */}
-      <header className="bg-surface-raised border-border-default shrink-0 rounded-lg border p-4">
+      {/* THR-376 r2 Au1/A13: ONE <ContentWrap> is the page's single scroll
+          owner (1180 `max-w-content` cap, 26px pad), as on Tasks/Threads —
+          the timeline no longer has its own inner scroller. The scroll box is
+          handed to AuditTimeline as its infinite-load observer root. */}
+      <ContentWrap className="flex flex-col gap-4" scrollRef={setScrollRoot}>
+      {/* --- Top bar (THR-376 r2 Au4: unboxed, like every other page) --- */}
+      <header>
         {/* AUDIT-03: uppercase eyebrow + page title (PageTitle). */}
         <PageTitle
           eyebrow={t('audit.page.eyebrow')}
@@ -188,24 +184,21 @@ export function AuditPage(): JSX.Element {
       </header>
 
       {/* Timeline (left) + Event-types legend-filter rail (right).
-          At narrow widths the rail stacks below the timeline so the fixed
-          side-by-side layout doesn't force horizontal overflow. */}
-      <div className="flex flex-col lg:flex-row min-h-0 flex-1 gap-4 overflow-hidden">
-        {/* The timeline card MUST be a bounded-height flex COLUMN (`flex
-            flex-col min-h-0`), not a plain block. AuditTimeline's TimelineBody
-            is `flex-1 overflow-y-auto` and paginates via an IntersectionObserver
-            whose root is that scroll box — TimelineBody only gets a height, and
-            its inner scroll only engages, when its parent is a bounded flex
-            column. A plain `overflow-hidden` block makes `flex-1` inert, so
-            TimelineBody grows to full content height, the card clips it with no
-            scrollbar, the bottom sentinel sits below the clip and never
-            re-intersects, and infinite scroll dies ("can't load more"). */}
-        <div className="border-border-default bg-surface-raised flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-lg border">
-          <AuditTimeline legendMap={legendColorMap} sinceISO={sinceISO} />
+          At narrow widths the two stack so the fixed side-by-side layout
+          doesn't force horizontal overflow. */}
+      <div className="flex flex-col lg:flex-row lg:items-start gap-4">
+        {/* Content-height card. `overflow-clip` (not `hidden`) clips to the
+            rounded corners without creating a scroll container, so the sticky
+            day headers still stick to the page scroll owner. */}
+        <div className="border-border-default bg-surface-raised min-w-0 flex-1 overflow-clip rounded-lg border">
+          <AuditTimeline legendMap={legendColorMap} sinceISO={sinceISO} scrollRoot={scrollRoot} />
         </div>
         {/* Right rail: event-type legend-filter, with the green "Clean record"
-            panel stacked below it when the window has zero failures. */}
-        <div className="flex w-full lg:w-56 shrink-0 flex-col gap-4">
+            panel stacked below it when the window has zero failures. With the
+            page now the scroll owner (Au1) the rail stays reachable: sticky
+            beside the timeline on lg+, and stacked ABOVE the (infinitely
+            loading) timeline below lg. */}
+        <div className="order-first flex w-full shrink-0 flex-col gap-4 lg:sticky lg:top-0 lg:order-none lg:w-56">
           <EventTypesRail
             legend={legend}
             activeClass={filters.eventClass}
