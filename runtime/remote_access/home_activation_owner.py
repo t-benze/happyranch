@@ -222,6 +222,19 @@ class HomeActivationOwner(HomeSystemdProcessOwner):
                                  DropInPaths="", NeedDaemonReload="no", LoadState="loaded"):
                     raise ActivationRefused()
             check()
+        from runtime.remote_access.policy_renew_units import SERVICE_NAME, TIMER_NAME, render_service, render_timer
+        with self._io._publication_parent("usr/lib/systemd/system") as (parent, check):
+            for name, render in ((SERVICE_NAME, render_service), (TIMER_NAME, render_timer)):
+                self._io._headscale_no_pending(parent, name)
+                if self._io._read_file(parent, name, owner=self._io.root_owner, mode=0o644) != render().encode():
+                    raise ActivationRefused()
+                expected = dict(FragmentPath=str(self._io.root / "usr/lib/systemd/system" / name),
+                                DropInPaths="", Names=name, NeedDaemonReload="no", LoadState="loaded")
+                if name == TIMER_NAME:
+                    expected["Unit"] = SERVICE_NAME
+                if self._io.manager.show_properties(name, tuple(expected)) != expected:
+                    raise ActivationRefused()
+            check()
         return units
 
     def _key(self, receipt: HomeActivationReceipt) -> PreAuthKey:
@@ -394,6 +407,13 @@ class HomeActivationOwner(HomeSystemdProcessOwner):
                 self._source.require(receipt)
                 self._io.manager.daemon_reload()
                 self._managed_fragments(require_home=True)
+                # The coordinator already owns the SAME activation-directory
+                # flock used by renew_policy(). Never reacquire or release it.
+                self._source.require(receipt)
+                self._io._renew_policy_locked(fresh_auth=True)
+                from runtime.remote_access.policy_renew_units import TIMER_NAME
+                self._source.require(receipt)
+                self._io.manager.enable(TIMER_NAME)
                 for name in ("happyranch-release-verifier.socket", _TARGET):
                     self._source.require(receipt)
                     self._io.manager.enable(name)

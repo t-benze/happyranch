@@ -448,8 +448,8 @@ def test_polkit_policy_shape() -> None:
     actions = root.findall('action')
     assert {a.attrib['id'] for a in actions} == {'ai.happyranch.remote-access.' + suffix for suffix in
         ('approve-pending', 'reject-pending', 'revoke-selected', 'enable', 'replace-failed', 'disable',
-         'cancel-invite', 'recover-invite')}
-    assert len(actions) == 8
+         'cancel-invite', 'recover-invite', 'issue-invite', 'retry-policy-renewal')}
+    assert len(actions) == 10
     for action in actions:
         assert {element.tag: element.text for element in action.find('defaults')} == {
             'allow_any': 'no', 'allow_inactive': 'no', 'allow_active': 'auth_admin'}
@@ -1362,6 +1362,27 @@ def test_status_v2_stopped_connector_and_unreadable_store(venue: Any, monkeypatc
     assert value['runtime'] == {'state': 'unavailable', 'age_seconds': 0}
     assert value['setup'] == {'state': 'unknown', 'age_seconds': None}
     assert not authority.calls and not operations.effects
+
+
+@pytest.mark.parametrize('policy', ['current', 'renewing', 'expired', 'renewal_failed', 'uncertain'])
+def test_status_v2_policy_projection(venue: Any, monkeypatch: Any, policy: str) -> None:
+    helper, authority, operations, client, _ = venue
+    calls = []
+    class PolicyReader:
+        def __init__(self, method: str, uid: int) -> None:
+            assert method == 'RetryPolicyRenewal' and uid == os.getuid()
+        def policy_status(self, remaining: float) -> dict:
+            assert 0 < remaining <= 2
+            calls.append(policy)
+            return {'policy': policy}
+    monkeypatch.setattr(HELPER._helper_generation, 'HomeLifecycleClient', PolicyReader)
+    monkeypatch.setattr(helper.generations, 'current_generation', lambda _: None)
+    before = Call(client, 'Status').finish()
+    value = Call(client, 'StatusV2').finish()
+    assert value['policy'] == {'state': policy, 'age_seconds': 0} and calls == [policy]
+    assert set(value) == {'version', 'setup', 'runtime', 'invite', 'address', 'policy', 'cleanup'}
+    assert Call(client, 'Status').finish() == before
+    assert not authority.calls and not operations.effects and not helper.audit.path.exists()
 
 
 @pytest.mark.parametrize('case', ['body', 'fd', 'owner', 'receipt_owner'])
