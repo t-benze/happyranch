@@ -3,11 +3,17 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import stat
+import tempfile
 import sqlite3
 import subprocess
 import sys
 import time
+import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 
@@ -281,3 +287,129 @@ finally:
     finally:
         _, stderr = child.communicate('x', timeout=10)
         assert child.returncode == 0, stderr
+
+
+class WorkflowPathDiagnostics(unittest.TestCase):
+    """Real namespace refusal/log boundary; no database install or serving daemon."""
+
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory(prefix='workflow-path-diagnostics-')
+        self.addCleanup(self.temporary.cleanup)
+        self.home = Path(self.temporary.name).resolve()
+        self.runtime = self.home / 'runtime'
+        root = self.runtime / 'orgs/scratch'
+        root.mkdir(parents=True)
+        database = root / 'happyranch.db'
+        database.touch(mode=0o600)
+        environment = patch.dict(os.environ, HAPPYRANCH_DAEMON_HOME=str(self.home))
+        environment.start()
+        self.addCleanup(environment.stop)
+        self.fence = OrgAccessFence.acquire(root, exclusive=True)
+        self.addCleanup(self.fence.close)
+        info = database.stat()
+        self.attempt = bootstrap.BootstrapAttempt(home=self.home, runtime_root=self.runtime,
+            slug='scratch', fence=self.fence,
+            source_identity=(str(database), info.st_dev, info.st_ino, info.st_size),
+            source_inventory_digest='0' * 64, deadline=time.monotonic()+119)
+        self.addCleanup(self.attempt.close)
+
+    def refusal(self, path: Path, check: str, error: type[Exception], reason: str = '') -> str:
+        with self.assertLogs(bootstrap.__name__, level='WARNING') as captured:
+            with self.assertRaises(error) as raised:
+                self.attempt.begin()
+        if reason:
+            self.assertEqual(str(raised.exception), reason)
+        message = '\n'.join(captured.output)
+        self.assertIn(repr(str(path)), message)
+        self.assertIn('check=' + check, message)
+        self.assertIn('exception=' + type(raised.exception).__name__, message)
+        self.assertTrue(self.attempt.failed)
+        self.assertIsNone(self.attempt._phase)
+        return message
+
+    def test_wrong_mode_is_logged_and_never_repaired(self) -> None:
+        path = self.home / 'backups'
+        path.mkdir(mode=0o755)
+        message = self.refusal(path, 'mode', bootstrap.BootstrapEvidenceError,
+                               'workflow_setup_namespace_unsafe')
+        self.assertIn('actual=0755 expected=0700', message)
+        self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o755)
+        self.assertEqual(list(path.iterdir()), [])
+
+    def test_wrong_owner_is_logged_without_chown(self) -> None:
+        path = self.home / 'backups'
+        path.mkdir(mode=0o700)
+        original = os.fstat
+        identity = path.stat().st_dev, path.stat().st_ino
+        # No privileged chown: replace only the observed backup inode's UID.
+        def owner(fd):
+            info = original(fd)
+            if (info.st_dev, info.st_ino) == identity:
+                return SimpleNamespace(st_mode=info.st_mode, st_uid=os.getuid()+1)
+            return info
+        with patch.object(bootstrap.os, 'fstat', side_effect=owner):
+            message = self.refusal(path, 'owner', bootstrap.BootstrapEvidenceError,
+                                   'workflow_setup_namespace_unsafe')
+        self.assertIn(f'actual_uid={os.getuid()+1} expected_uid={os.getuid()}', message)
+        self.assertEqual(path.stat().st_uid, os.getuid())
+
+    def test_symlink_is_logged_without_following(self) -> None:
+        path = self.home / 'backups'
+        target = self.home / 'untouched'
+        target.mkdir(mode=0o700)
+        path.symlink_to(target, target_is_directory=True)
+        message = self.refusal(path, 'symlink', OSError)
+        self.assertIn('expected=directory', message)
+        self.assertTrue(path.is_symlink())
+        self.assertEqual(list(target.iterdir()), [])
+
+    def test_wrong_type_is_logged_and_preserved(self) -> None:
+        path = self.home / 'backups'
+        path.write_text('unchanged')
+        message = self.refusal(path, 'type', OSError)
+        self.assertIn('expected=directory', message)
+        self.assertEqual(path.read_text(), 'unchanged')
+
+    def test_missing_path_logs_original_exception_and_keeps_refusal(self) -> None:
+        path = self.home / 'backups'
+        original = os.open
+        def missing(name, flags, *args, **kwargs):
+            if name == 'backups':
+                raise FileNotFoundError(2, 'No such file or directory', name)
+            return original(name, flags, *args, **kwargs)
+        with patch.object(bootstrap.os, 'open', side_effect=missing):
+            message = self.refusal(path, 'missing', FileNotFoundError)
+        self.assertIn('No such file or directory', message)
+        self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o700)
+
+
+def test_worker_path_diagnostic_reaches_installer_stderr(
+    runtime: RuntimeDir, monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture,
+) -> None:
+    """Actual private worker's stderr survives the real supervisor spawn."""
+    path = runtime.root.parent / 'backups'
+    original = bootstrap.BootstrapSupervisor.run
+    async def run(self, qualify):
+        async def wrong_mode_after_discovery(*args):
+            accepted = await qualify(*args)
+            path.mkdir(mode=0o755)
+            return accepted
+        return await original(self, wrong_mode_after_discovery)
+    monkeypatch.setattr(bootstrap.BootstrapSupervisor, 'run', run)
+    state = DaemonState.from_runtime(runtime, Settings(), automatic_workflow_setup=True)
+    try:
+        worker, = state._workflow_bootstrap.workers
+        assert worker.reaped and worker.result['state'] == 'unknown'
+        assert set(worker.result) == {'event', 'state', 'closed', 'reason', 'attempt_id'}
+        assert worker.result['reason'] == 'org_load_refused'
+        assert stat.S_IMODE(path.stat().st_mode) == 0o755
+        stderr = capfd.readouterr().err
+        assert repr(str(path)) in stderr
+        assert 'check=mode actual=0755 expected=0700' in stderr
+        assert 'exception=BootstrapEvidenceError' in stderr
+        assert 'workflow_setup_namespace_unsafe' in stderr
+        with capfd.disabled():
+            print(next(line for line in stderr.splitlines() if 'check=mode actual=0755' in line))
+    finally:
+        asyncio.run(state.close_all())
+        state.metrics_store.close()

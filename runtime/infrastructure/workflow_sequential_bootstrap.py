@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import math
 import os
 import re
@@ -37,6 +38,9 @@ class BootstrapEvidenceError(ValueError):
     """Closed cause; preserve original errors locally, never publish their text."""
 
 
+logger = logging.getLogger(__name__)
+
+
 _PHASES = ('intent', 'backup_verified', 'pre_commit', 'committed', 'verified', 'registered')
 _STATES = {
     'intent': ('unknown', 'install_incomplete'),
@@ -59,17 +63,54 @@ def _close_descriptor(record: dict) -> None:
     record['closed'] = True
 
 
+def _path_failure(path: Path, check: str, error: BaseException, detail: str = '') -> None:
+    """Local filesystem metadata only; never request/settings/DB contents.
+
+    Logging is advisory: even a broken sink must preserve the original refusal.
+    """
+    try:
+        logger.warning('workflow setup path check failed: path=%r check=%s %s exception=%r',
+                       str(path), check, detail, error)
+    except Exception:
+        pass
+
+
+def _open_directory(path: Path, *, name: str | None = None, parent: int | None = None) -> int:
+    try:
+        return os.open(path if name is None else name,
+                       os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+    except OSError as exc:
+        check = 'missing' if isinstance(exc, FileNotFoundError) else 'open'
+        # Diagnostic observation only, after the original no-follow open refused.
+        # A race or failed stat never replaces that original exception or retries.
+        if check != 'missing':
+            try:
+                info = os.stat(path if name is None else name, dir_fd=parent, follow_symlinks=False)
+                if stat.S_ISLNK(info.st_mode):
+                    check = 'symlink'
+                elif not stat.S_ISDIR(info.st_mode):
+                    check = 'type'
+            except OSError:
+                pass
+        _path_failure(path, check, exc, 'expected=directory (no symlinks)')
+        raise
+
+
 def _directory(path: Path, custody: list[dict], *, deadline: float | None = None) -> dict:
     """Literal absolute traversal, including all existing ancestors."""
     if not path.is_absolute() or str(path) != os.path.normpath(path) or '..' in path.parts:
-        raise BootstrapEvidenceError('workflow_setup_path_invalid')
-    record = dict(fd=os.open('/', os.O_RDONLY | os.O_DIRECTORY), attempted=False, closed=False)
+        error = BootstrapEvidenceError('workflow_setup_path_invalid')
+        _path_failure(path, 'path', error)
+        raise error
+    record = dict(fd=_open_directory(Path('/')), attempted=False, closed=False)
     custody.append(record)
+    current = Path('/')
     for name in path.parts[1:]:
         if deadline is not None and time.monotonic() >= deadline:
             raise BootstrapEvidenceError('workflow_setup_deadline')
-        child = dict(fd=os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
-                               dir_fd=record['fd']), attempted=False, closed=False)
+        current = current / name
+        child = dict(fd=_open_directory(current, name=name, parent=record['fd']),
+                     attempted=False, closed=False)
         # Own the new descriptor BEFORE the preceding fallible close. On any
         # error the caller still owns both originals and attempts no blind retry.
         custody.append(child)
@@ -78,11 +119,23 @@ def _directory(path: Path, custody: list[dict], *, deadline: float | None = None
     return record
 
 
-def _private_directory(fd: int) -> None:
-    info = os.fstat(fd)
-    if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid()
-            or stat.S_IMODE(info.st_mode) != 0o700):
-        raise BootstrapEvidenceError('workflow_setup_namespace_unsafe')
+def _private_directory(fd: int, path: Path) -> None:
+    try:
+        info = os.fstat(fd)
+    except OSError as exc:
+        _path_failure(path, 'fstat', exc)
+        raise
+    if not stat.S_ISDIR(info.st_mode):
+        check, detail = 'type', f'actual_type={stat.S_IFMT(info.st_mode):#o} expected=directory'
+    elif info.st_uid != os.getuid():
+        check, detail = 'owner', f'actual_uid={info.st_uid} expected_uid={os.getuid()}'
+    elif stat.S_IMODE(info.st_mode) != 0o700:
+        check, detail = 'mode', f'actual={stat.S_IMODE(info.st_mode):04o} expected=0700'
+    else:
+        return
+    error = BootstrapEvidenceError('workflow_setup_namespace_unsafe')
+    _path_failure(path, check, error, detail)
+    raise error
 
 
 def _names(fd: int, limit: int, deadline: float) -> set[str]:
@@ -171,6 +224,7 @@ class BootstrapAttempt:
             if self._descriptors or self._phase is not None:
                 raise BootstrapEvidenceError('workflow_setup_attempt_latched')
             parent = _directory(self.home, self._descriptors)['fd']
+            path = self.home
             for name in ('backups', 'workflow-sequential', self.runtime_key, self.slug):
                 self._check(reserve=True)
                 try:
@@ -179,17 +233,17 @@ class BootstrapAttempt:
                     pass
                 else:
                     os.fsync(parent)
-                parent = self._own(os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent))
-                _private_directory(parent)
+                path = path / name
+                parent = self._own(_open_directory(path, name=name, parent=parent))
+                _private_directory(parent, path)
             # Complete bounded discovery, never a selected prefix. No observed
             # old/failed/unknown attempt is automatic retry authority.
             if _names(parent, 64, min(self.deadline, time.monotonic()+1)):
                 raise BootstrapEvidenceError('workflow_setup_attempt_latched')
             os.mkdir(self.attempt_id, 0o700, dir_fd=parent)
             os.fsync(parent)
-            self._parent = self._own(os.open(self.attempt_id,
-                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent))
-            _private_directory(self._parent)
+            self._parent = self._own(_open_directory(self.root, name=self.attempt_id, parent=parent))
+            _private_directory(self._parent, self.root)
             self.publish('intent')
         except BaseException:
             self.failed = True
@@ -398,7 +452,7 @@ class BootstrapSelection:
         except FileNotFoundError:
             return None
         try:
-            _private_directory(parent['fd'])
+            _private_directory(parent['fd'], namespace)
             names = _names(parent['fd'], 64, evidence_deadline)
             if not names:
                 return None
@@ -563,6 +617,7 @@ class BootstrapStartup:
         """External pre-intent latch only; never obscure an existing attempt."""
         self.holds[slug] = reason
         parent = _directory(self.home, self.hold_descriptors)['fd']
+        path = self.home
         key = hashlib.sha256(str(self.runtime_root).encode('utf8')).hexdigest()
         for name in ('backups', 'workflow-sequential', key, slug):
             try:
@@ -571,11 +626,11 @@ class BootstrapStartup:
                 pass
             else:
                 os.fsync(parent)
-            child = dict(fd=os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
-                                   dir_fd=parent), attempted=False, closed=False)
+            path = path / name
+            child = dict(fd=_open_directory(path, name=name, parent=parent), attempted=False, closed=False)
             self.hold_descriptors.append(child)
             parent = child['fd']
-            _private_directory(parent)
+            _private_directory(parent, path)
         if _names(parent, 64, time.monotonic()+1):
             return
         value = dict(format='workflow-setup-hold@1', runtime_key=key, org_slug=slug,
@@ -1464,7 +1519,7 @@ class BootstrapRehearsal:
             # TemporaryDirectory finalizer can delete unknown live handles.
             self.root = Path(tempfile.mkdtemp(prefix='happyranch-workflow-rehearsal-', dir=temporary))
             parent = _directory(self.root, self.descriptors)
-            _private_directory(parent['fd'])
+            _private_directory(parent['fd'], self.root)
             info = os.fstat(parent['fd'])
             self._scratch_identity = info.st_dev, info.st_ino
             space = os.fstatvfs(parent['fd'])
@@ -1536,7 +1591,7 @@ class BootstrapRehearsal:
         if self.root is not None and not self.closed:
             try:
                 parent = _directory(self.root, self.descriptors)
-                _private_directory(parent['fd'])
+                _private_directory(parent['fd'], self.root)
                 info = os.fstat(parent['fd'])
                 if (info.st_dev, info.st_ino) != self._scratch_identity:
                     raise BootstrapEvidenceError('workflow_setup_rehearsal_scratch_changed')
@@ -1607,7 +1662,7 @@ def require_bootstrap_space(source: BootstrapSource, attempt: BootstrapAttempt) 
         parent = _directory(path, source.descriptors)
         try:
             if path == Path(temporary):
-                _private_directory(parent['fd'])
+                _private_directory(parent['fd'], path)
                 if not os.access(path, os.W_OK | os.X_OK):
                     raise BootstrapEvidenceError('workflow_setup_temp_volume_unavailable')
             info, space = os.fstat(parent['fd']), os.fstatvfs(parent['fd'])
@@ -2303,7 +2358,8 @@ class BootstrapSupervisor:
             self.spawn = asyncio.create_task(asyncio.create_subprocess_exec(*args,
                 pass_fds=(self.child_channel.fileno(), route.fence.fd, route.fence._parent),
                 stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.DEVNULL, start_new_session=True))
+                # Keep the helper's metadata-only diagnostics in the daemon's log.
+                stderr=None, start_new_session=True))
         except BaseException as exc:
             self.primary, self.expired = exc, True
             self.reaped = self.spawn is None  # positively no native launch
