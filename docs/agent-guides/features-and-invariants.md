@@ -2287,7 +2287,27 @@ and `limits` remain string-or-null fields; only lists of strings in these two
 fields are tolerated before strict validation, joined with `; `. Empty lists
 still fail `curation_qualification_missing`; other invalid shapes and lists in
 other scalar fields remain `curation_output_malformed`. All existing semantic
-checks inspect the normalized model. Task, claim/audit and
+checks inspect the normalized model. The curator brief requires any item flagged
+`uncertain`, `conflict`, `historical` or `attribution_unverified` to carry at least
+one non-empty warning stating the caveat; for `historical`, it must state that the
+item describes past state and may no longer hold. This clarifies the existing
+`curation_warning_missing` check without inventing, inserting or defaulting warnings.
+The brief also requires `open_work.as_of` and any other date field to use only
+a valid calendar date `YYYY-MM-DD` or datetime `YYYY-MM-DDTHH:MM:SS` (hours 00-23)
+followed by `+HH:MM`, `-HH:MM` or `Z` (e.g. `2026-11-18`,
+`2026-11-18T09:00:00+08:00`, `2026-11-18T09:00:00-08:00` or `2026-11-18T01:00:00Z`),
+or null when unknown; never ordinal/week dates, prose or relative/approximate
+dates. Exact captured `authored_at` and `observed_at`/`CAPTURE_CUTOFF` requirements
+take precedence. `founder_ruling`
+must be the exact literal `THR-N seqN` or `THR-N#N` appearing verbatim in the
+cited `founder_ruling_reference` captured body or JSON-serialized metadata;
+that reference must be among the item's references. Otherwise both fields must
+be null, and `founder_decision_preference` items without a cited ruling must
+carry `attribution_unverified` and the exact warning
+`source reports a Founder preference; attribution unverified`. These producer
+instructions preserve the existing validator and result schema, without
+date/citation coercion or warning synthesis.
+Task, claim/audit and
 operation binding commit together; a rollback may leave an unclaimed file under
 the persisted operation's stable snapshot key for redispatch. Publication still
 validates capture_json/digest and never trusts the attachment as authority. No
@@ -2789,8 +2809,17 @@ is writer-settable on add/update (integer clamped to 0–100); omission defaults
 `authored_at` (local creation), falling back to `updated_at` for missing or
 unusable stamps; neither usable means retain. ISO strings and YAML datetime/date
 values normalize to UTC; naive timestamps and date-only midnight mean UTC.
-Lowering salience does not renew an old note. Auto-compaction errors after the
-note write are logged without aborting the add or preventing its add audit.
+Lowering salience does not renew an old note. Automatic compaction defaults to
+enabled at 150 entry files (including evicted files). Other defaults remain salience floor 10, stale age 45 days, superseded
+grace 7 days and cap 25. An absent or partial config section uses these defaults;
+explicit `enabled: false` disables apply and auto, and explicit
+`auto_trigger_entry_count: 0` disables auto alone. Each automatic eviction uses
+the same `AGENT-{agent}` / `memory_lifecycle_changed` row and five payload keys
+as manual apply, with its original valid/superseded lifecycle and
+`source: compaction`, after eviction persistence. Sweep or audit errors after
+the note write are logged without aborting the add or preventing its add audit.
+Automatic callers audit each persisted eviction before the next candidate or
+final index can fail; manual callers still audit after the sweep returns.
 Each compaction run parses the selection inventory once and indexes related,
 supersedes and body-token references from non-evicted entries. Apply rereads each
 candidate, refreshes its reference contributions and removes them on eviction;
@@ -2807,7 +2836,12 @@ old captured index cannot overwrite a completed sweep. The workspace RLock is
 acquired/released synchronously inside each worker or bootstrap call, never held
 on the event loop across an await; the worker does not need a loop callback to
 release it. This is in-process serialization, not an external filesystem fence.
-Updates do not trigger compaction. Dream completion's writer is unchanged.
+Updates and Instill inherited imports do not trigger compaction. Dream
+reflections use ordinary `write_entry`, including auto-compaction and the same
+audit observer, in a worker thread with workspace locking. Cancellation drains
+the entire admitted dream completion (all reflections, index, KB candidates,
+transcript, terminal status and audits) before releasing `org.db_lock`;
+dreaming's enablement is unchanged.
 See the memory design spec's **Memory compaction and retirement (THR-366 PR-B)**
 section for defaults, protections, supersession grace and reversible retirement.
 The S3a Instill owner also preserves `inherited_from` and the separate

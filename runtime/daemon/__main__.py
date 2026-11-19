@@ -35,6 +35,10 @@ if TYPE_CHECKING:
     from runtime.daemon.thread_delivery_release_service import _StartupThreadReleases
     from runtime.daemon.preparation_recovery import StartupPreparations
 
+if __name__ == '__main__' and sys.argv[1:2] == ['--job-guardian']:
+    from runtime.daemon.job_guardian import main as job_guardian_main
+    raise SystemExit(job_guardian_main(sys.argv[2:]))
+
 # Frozen repository children must reach their resource limits/Git exec before
 # importing the daemon. This is the existing fixed helper dispatch, not serve.
 if __name__ == '__main__' and sys.argv[1:2] == ['--workflow-sequential-bootstrap-helper']:
@@ -1109,6 +1113,9 @@ class _DiagnosticServer(uvicorn.Server):
 
 def main(argv: list[str] | None = None) -> int:
     arguments = sys.argv[1:] if argv is None else argv
+    if arguments[:1] == ['--job-guardian']:
+        from runtime.daemon.job_guardian import main as job_guardian_main
+        return job_guardian_main(arguments[1:])
     if arguments[:1] == ['--workflow-integrity-helper']:
         from runtime.daemon.org_integrity_monitor import helper_main as integrity_helper_main
         return integrity_helper_main(arguments[1:])

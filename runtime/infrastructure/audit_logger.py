@@ -7,6 +7,7 @@ from runtime.models import CompletionReport, TokenUsage
 
 
 if TYPE_CHECKING:
+    from runtime.infrastructure.learnings_store import MemoryCompactionResult
     from runtime.orchestrator.thread_move import ThreadPreparation
     from runtime.knowledge.lifecycle_models import ImportOperation
 
@@ -1014,6 +1015,21 @@ class AuditLogger:
                 if id in memory_ids:
                     return "search"
         return "explicit_or_other"
+
+    def log_memory_compaction(
+        self, result: MemoryCompactionResult, *, agent: str, reason: str,
+    ) -> None:
+        """Audit persisted manual or automatic evictions with the existing rows."""
+        superseded = {c.id for c in result.candidates if c.current_lifecycle == "superseded"}
+        for evicted_id in result.evicted:
+            self.log_memory_lifecycle_changed(
+                agent=agent,
+                id=evicted_id,
+                from_lifecycle="superseded" if evicted_id in superseded else "valid",
+                to_lifecycle="evicted",
+                reason=reason,
+                source="compaction",
+            )
 
     def log_memory_lifecycle_changed(
         self,

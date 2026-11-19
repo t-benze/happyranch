@@ -169,15 +169,15 @@ class MemorySearchConfig:
 @dataclass(frozen=True)
 class MemoryCompactionConfig:
     """THR-032 P3b: memory compaction policy defaults."""
-    enabled: bool = False
+    enabled: bool = True
     salience_floor: int = 10
     stale_days: int = 45
     superseded_grace_days: int = 7
     max_evictions_per_run: int = 25
-    # THR-091 WS-D: auto-trigger threshold. 0 = disabled (default).
+    # THR-091 WS-D: auto-trigger threshold. Explicit 0 disables the trigger.
     # When enabled=True and auto_trigger_entry_count > 0, write_entry
     # invokes compact() inline once entry count >= this threshold.
-    auto_trigger_entry_count: int = 0
+    auto_trigger_entry_count: int = 150
 
 
 @dataclass(frozen=True)
@@ -888,7 +888,7 @@ def _build_org_config(data: dict, path: str) -> OrgConfig:
         if not isinstance(comp_block, dict):
             raise OrgConfigError(f"{path}: memory_compaction must be a mapping")
         comp_cfg = MemoryCompactionConfig(
-            enabled=bool(comp_block.get("enabled", False)),
+            enabled=bool(comp_block.get("enabled", comp_cfg.enabled)),
             salience_floor=_validate_positive_int(
                 comp_block.get("salience_floor", 10), "memory_compaction.salience_floor",
                 min_v=0, max_v=100, path=path,
@@ -906,7 +906,7 @@ def _build_org_config(data: dict, path: str) -> OrgConfig:
                 min_v=1, max_v=10000, path=path,
             ),
             auto_trigger_entry_count=_validate_positive_int(
-                comp_block.get("auto_trigger_entry_count", 0), "memory_compaction.auto_trigger_entry_count",
+                comp_block.get("auto_trigger_entry_count", comp_cfg.auto_trigger_entry_count), "memory_compaction.auto_trigger_entry_count",
                 min_v=0, max_v=100000, path=path,
             ),
         )

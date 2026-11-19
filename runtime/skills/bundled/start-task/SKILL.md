@@ -781,13 +781,16 @@ logs/screenshots/review packets to Shared Artifacts as an ownership workaround.
    These commands describe the interface; live curation/config changes still
    require the task's authority. Promoted notes remain locked.
 
-   Org `memory_compaction` defaults: `enabled: false`, `salience_floor: 10`,
+   Org `memory_compaction` defaults: `enabled: true`, `salience_floor: 10`,
    `stale_days: 45`, `superseded_grace_days: 7`, `max_evictions_per_run: 25`,
-   `auto_trigger_entry_count: 0`. Dry-run is always available; `--apply` requires
+   `auto_trigger_entry_count: 150`. Dry-run is always available; `--apply` requires
    enablement. A positive auto-trigger count plus enablement runs compaction
-   inline after ordinary adds at/above that many files (including evicted
-   files); zero disables the trigger, and updates do not trigger it. Inherited
-   imports bypass it. Sweep errors after the note write log a warning without
+   after ordinary adds and dream reflections at/above that many files (including
+   evicted files), off the event loop. Explicit `enabled: false` disables apply
+   and auto; zero disables the trigger, and updates do not trigger it. Inherited
+   imports bypass it. Each automatic eviction uses the existing
+   `memory_lifecycle_changed` audit with `source: compaction`, after persistence.
+   Sweep or audit errors after the note write log a warning without
    aborting the add or preventing its `memory_added` audit. There is no scheduled sweep.
    Staleness uses local creation `authored_at`, preserved by updates (legacy
    missing/unusable stamps fall back to `updated_at`; neither usable retains the

@@ -138,7 +138,16 @@ They cover writer salience/clamping, creation-age eviction after a metadata edit
 both supersession paths and grace, protections, caps, dry-run and restoration.
 The timestamp table includes YAML datetime/date/integer values, UTC boundaries
 and conservative fallback/retention. Auto-trigger cases assert persisted notes,
-index entries and exact add audits, including when the sweep raises an error.
+index entries and exact add audits, including when the sweep or its audit raises
+an error. They also assert the manual eviction audit shape for automatic valid
+and superseded retirements, persisted-before-audit ordering, off-loop dream
+reflection sweeps, explicit disable/zero behavior, and missing/partial-section
+defaults with the real 150-file threshold. Partial-sweep cases fail a later
+candidate write or the final sweep index after actual evictions and require all
+persisted eviction audits plus the surviving add and its audit. The dream
+cancellation case interrupts the first of two reflections, cancels again at the
+second, and checks the final notes/index, candidate, transcript, status and
+completion audit under the lock, plus the terminal retry response.
 The 300-entry cost check bounds selection to one parse per entry and apply to
 two passes plus fresh candidate reads (the second pass regenerates the index).
 Reference cases cover aliases, body boundaries, self references, retired sources
