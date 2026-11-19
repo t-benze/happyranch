@@ -453,7 +453,8 @@ class DebPackageTests(unittest.TestCase):
             'libexec/remote-access/happyranch-home-admin': 'fixture home admin runner',
             'bin/happyranch-remote-access-helper': (BUILDER.parent / 'bin/happyranch-remote-access-helper').read_text(),
         }
-        for name in ('remote_access_helper', 'helper_owner', 'helper_control', 'release_verifier'):
+        for name in ('remote_access_helper', 'helper_owner', 'helper_control', 'release_verifier',
+                     'status_v2', 'home_audit', 'helper_generation'):
             files['libexec/remote-access/' + name + '.py'] = (
                 BUILDER.parents[2] / 'runtime/remote_access' / (name + '.py')).read_text()
         for launcher in ('happyranch', 'happyranch-daemon', 'happyranch-app'):
@@ -648,7 +649,8 @@ class DebPackageTests(unittest.TestCase):
                     self.assertEqual((state.uid, state.gid, state.mode), (0, 0, 0o700))
                     self.assertEqual(list((installed / 'var/lib/happyranch-remote-access').iterdir()), [])
                     self.assertFalse((installed / 'etc/systemd/system').exists(), 'no enablement links')
-                    for name in ('remote_access_helper', 'helper_owner', 'helper_control', 'release_verifier'):
+                    for name in ('remote_access_helper', 'helper_owner', 'helper_control', 'release_verifier',
+                                 'status_v2', 'home_audit', 'helper_generation'):
                         source = BUILDER.parents[2] / 'runtime/remote_access' / (name + '.py')
                         shipped = installed / 'opt/happyranch-desktop/libexec/remote-access' / (name + '.py')
                         self.assertEqual(shipped.read_bytes(), source.read_bytes())
@@ -728,7 +730,10 @@ class DebPackageTests(unittest.TestCase):
                                          'licenses/headscale-modules.json', 'licenses/headscale-build-info.json',
                                          'licenses/headscale/go-runtime/LICENSE',
                                          'libexec/remote-access/happyranch-home-ca',
-                                         'libexec/remote-access/happyranch-home-admin')):
+                                         'libexec/remote-access/happyranch-home-admin',
+                                         'libexec/remote-access/status_v2.py',
+                                         'libexec/remote-access/home_audit.py',
+                                         'libexec/remote-access/helper_generation.py')):
             with self.subTest(missing=missing):
                 archive = self.payload(version=f'0.3.{index}')
                 root = self.work / f'happyranch-0.3.{index}-linux-x86_64'

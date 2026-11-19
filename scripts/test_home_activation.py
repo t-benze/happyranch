@@ -490,3 +490,52 @@ def test_record_size_maximum_is_inclusive(kind: str) -> None:
     assert parser(data + b" " * (16384 - len(data)))
     with pytest.raises((HomeActivationError, IssuerError)):
         parser(data + b" " * (16385 - len(data)))
+
+
+@pytest.mark.parametrize('case', ['absent', 'receipt', 'pending', 'symlink', 'malformed', 'parent'])
+def test_current_receipt_read_only(store: HomeActivationStore, tmp_path: Path, case: str) -> None:
+    path = tmp_path / RECEIPT
+    if case == 'receipt':
+        put(tmp_path, RECEIPT, receipt().to_bytes())
+    elif case == 'pending':
+        put(tmp_path, str(Path(RECEIPT).with_name('.home-activation.json.pending')), b'evidence')
+    elif case == 'symlink':
+        path.symlink_to('missing')
+    elif case == 'malformed':
+        put(tmp_path, RECEIPT, b'{}')
+    elif case == 'parent':
+        path.parent.chmod(0o755)
+    before = {str(p): (p.lstat().st_mode, None if p.is_symlink() or p.is_dir() else p.read_bytes())
+              for p in tmp_path.rglob('*')}
+    if case == 'absent':
+        assert store.current() is None
+    elif case == 'receipt':
+        observed = store.current()
+        assert observed is not None
+        assert observed.activation_generation == 7 and observed.operation_id == 'b' * 32
+        assert observed == store.read(expected_generation=7)
+    else:
+        with pytest.raises(HomeActivationError):
+            store.current()
+    after = {str(p): (p.lstat().st_mode, None if p.is_symlink() or p.is_dir() else p.read_bytes())
+             for p in tmp_path.rglob('*')}
+    assert after == before
+
+
+def test_current_absence_revalidates_before_return(store: HomeActivationStore, tmp_path: Path) -> None:
+    with pytest.raises(HomeActivationError):
+        with store._record(activation.ACTIVATION_PATH, allow_absent=True) as value:
+            assert value is None
+            put(tmp_path, RECEIPT, receipt().to_bytes())
+    assert store.current() == receipt()
+
+
+def test_helper_snapshot_is_closed_and_read_only(store: HomeActivationStore, tmp_path: Path,
+                                                monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(activation, 'HomeActivationStore', lambda: store)
+    assert activation.helper_snapshot() == b'null\n'
+    path = put(tmp_path, RECEIPT, receipt().to_bytes())
+    original = path.read_bytes()
+    assert json.loads(activation.helper_snapshot()) == {
+        'generation': 7, 'operation': 'b' * 32, 'release_uid': 1000, 'phase': 'prepared'}
+    assert path.read_bytes() == original

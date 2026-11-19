@@ -256,6 +256,8 @@ def venue(tmp_path: Any, request: Any, monkeypatch: Any) -> Any:
         cleanup.callback(server.close)
         helper = RemoteAccessHelper(new(), None if options.get('bootstrap') else options.get('release_uid', os.getuid()), server.path,
                                     deadline=options.get('deadline', 120))
+        helper.audit = HELPER._home_audit.HomeAudit(tmp_path / 'home-audit.jsonl',
+                                                   uid=os.getuid(), gid=os.getgid())
         cleanup.callback(helper.close)
         yield helper, authority, operations, new(), new
 
@@ -1223,3 +1225,150 @@ def test_idle_exit_after_sixty_idle_seconds(venue: Any) -> None:
     now[0] = 240.0
     helper._idle(loop)
     loop.quit.assert_called_once_with()
+
+
+@pytest.mark.parametrize('phase,expected', [('prepared', 'in_progress'), ('ready', 'ready'),
+                                          ('failed_uncertain', 'uncertain'), (None, 'unknown')])
+def test_status_v2_bus_projection(venue: Any, monkeypatch: Any, phase: str | None, expected: str) -> None:
+    helper, authority, operations, client, _ = venue
+    observed = None if phase is None else HELPER._helper_generation.GenerationSnapshot(7, 'a' * 32, os.getuid(), phase)
+    monkeypatch.setattr(helper.generations, 'current_generation', lambda _: observed)
+    before = Call(client, 'Status').finish()
+    status = Call(client, 'StatusV2')
+    value = status.finish()
+    raw = status.reply.get_body().unpack()[0].encode()
+    assert HELPER._status_v2.decode(raw).setup.state.value == expected
+    assert len(raw) <= 16384 and raw.endswith(b'\n')
+    assert value['runtime'] == {'state': 'available', 'age_seconds': 0}
+    assert value['setup']['age_seconds'] == (None if phase is None else 0)
+    for dimension in ('invite', 'address', 'policy', 'cleanup'):
+        assert value[dimension]['state'] == 'unknown' and value[dimension]['age_seconds'] is None
+    assert Call(client, 'Status').finish() == before
+    assert not authority.calls and not operations.effects and not helper.cursors
+    assert not helper.audit.path.exists()
+
+
+def test_status_v2_stopped_connector_and_unreadable_store(venue: Any, monkeypatch: Any) -> None:
+    helper, authority, operations, client, _ = venue
+    helper.control.path += '-absent'
+    def unavailable(_: float) -> None:
+        raise HELPER._helper_generation.GenerationUnavailable()
+    monkeypatch.setattr(helper.generations, 'current_generation', unavailable)
+    value = Call(client, 'StatusV2').finish()
+    assert value['runtime'] == {'state': 'unavailable', 'age_seconds': 0}
+    assert value['setup'] == {'state': 'unknown', 'age_seconds': None}
+    assert not authority.calls and not operations.effects
+
+
+@pytest.mark.parametrize('case', ['body', 'fd', 'owner', 'receipt_owner'])
+def test_status_v2_preserves_read_boundary(venue: Any, monkeypatch: Any, case: str) -> None:
+    helper, authority, operations, client, _ = venue
+    if case == 'owner':
+        def refuse(_: int) -> None:
+            raise HELPER.OwnerRefused('owner_mismatch')
+        monkeypatch.setattr(helper, '_binding', refuse)
+    if case == 'receipt_owner':
+        monkeypatch.setattr(helper.generations, 'current_generation', lambda _: (
+            HELPER._helper_generation.GenerationSnapshot(7, 'a' * 32, os.getuid() + 1, 'ready')))
+    call = Call(client, 'StatusV2', body=GLib.Variant('(s)', ('input',)) if case == 'body' else None,
+                fd=case == 'fd')
+    call.finish('invalid-request' if case in ('body', 'fd') else
+                'owner_mismatch' if case == 'owner' else 'changed')
+    assert not authority.calls and not operations.effects and operations.status_reads == 0
+
+
+def test_status_v2_deadline_and_single_worker(venue: Any, monkeypatch: Any) -> None:
+    helper, authority, operations, client, new = venue
+    entered, release = threading.Event(), threading.Event()
+    monkeypatch.setattr(helper.generations, 'current_generation', lambda _: None)
+    original = helper.control.status
+    def blocked() -> Any:
+        entered.set()
+        assert release.wait(3)
+        return original()
+    monkeypatch.setattr(helper.control, 'status', blocked)
+    started = time.monotonic()
+    first = Call(client, 'StatusV2')
+    assert entered.wait(1)
+    try:
+        Call(new(), 'StatusV2').finish('busy')
+        first.finish('expired')
+        assert time.monotonic() - started < 2.1
+    finally:
+        release.set()
+    eventually(lambda: helper.status_worker is None)
+    assert Call(client, 'StatusV2').finish()['runtime']['state'] == 'available'
+    assert not authority.calls and not operations.effects
+
+
+@pytest.mark.parametrize('method,event', [('ApprovePending', 'device_approved'),
+                                         ('RejectPending', 'device_rejected'),
+                                         ('RevokeSelected', 'device_revoked')])
+def test_device_audit_intent_before_effect_and_outcome(venue: Any, method: str, event: str) -> None:
+    helper, _, operations, client, _ = venue
+    if method == 'RevokeSelected':
+        Call(client, 'NextDevice').finish()
+    original = helper.control.mutate
+    def checked(*args: Any) -> Any:
+        assert helper.audit.path.exists(), 'durable intent must precede connector admission'
+        lines = [json.loads(line) for line in helper.audit.path.read_bytes().splitlines()]
+        assert len(lines) == 1 and lines[0]['stage'] == 'intent' and lines[0]['event'] == event
+        assert not operations.effects
+        return original(*args)
+    helper.control.mutate = checked
+    assert Call(client, method).finish() == 'ok'
+    rows = [json.loads(line) for line in helper.audit.path.read_bytes().splitlines()]
+    assert [(row['event'], row['stage'], row['outcome']) for row in rows] == [
+        (event, 'intent', None), (event, 'outcome', 'succeeded')]
+    assert rows[0]['intent_id'] == rows[1]['intent_id'] and len(operations.effects) == 1
+    assert helper.audit.path.stat().st_mode & 0o777 == 0o600
+    assert all(row['subject_id'] is None for row in rows)
+    assert b'stable-c' not in helper.audit.path.read_bytes()
+
+
+@pytest.mark.parametrize('case', ['intent_failure', 'before_commit', 'lost_reply', 'outcome_failure'])
+def test_device_audit_failure_settlement(venue: Any, monkeypatch: Any, case: str) -> None:
+    helper, _, operations, client, _ = venue
+    original = helper.control.mutate
+    if case == 'intent_failure':
+        monkeypatch.setattr(helper.audit, 'intent', Mock(side_effect=HELPER._home_audit.AuditRefused('unavailable')))
+    elif case == 'before_commit':
+        monkeypatch.setattr(helper.control, 'mutate', Mock(side_effect=HELPER.Refused('changed')))
+    elif case == 'outcome_failure':
+        monkeypatch.setattr(helper.audit, 'outcome', Mock(side_effect=HELPER._home_audit.AuditRefused('unavailable')))
+    else:
+        def lost(*args: Any) -> None:
+            original(*args)
+            raise ConnectionError('synthetic lost settlement')
+        monkeypatch.setattr(helper.control, 'mutate', lost)
+    Call(client).finish('changed' if case == 'before_commit' else 'unavailable')
+    rows = ([json.loads(line) for line in helper.audit.path.read_bytes().splitlines()]
+            if helper.audit.path.exists() else [])
+    if case == 'intent_failure':
+        assert not rows and not operations.effects
+    else:
+        assert rows, 'intent must survive the attempted mutation'
+        assert rows[0]['stage'] == 'intent'
+        assert rows[-1]['outcome'] == ('refused' if case == 'before_commit' else 'uncertain')
+        assert rows[-1]['event'] == ('device_approved' if case == 'before_commit' else 'uncertain')
+        assert len(operations.effects) == (0 if case == 'before_commit' else 1)
+
+
+def test_status_v2_responds_while_mutation_context_is_busy(venue: Any, monkeypatch: Any) -> None:
+    helper, authority, operations, client, _ = venue
+    monkeypatch.setattr(helper.generations, 'current_generation', lambda _: None)
+    held, release = threading.Event(), threading.Event()
+    def hold_context() -> bool:
+        with helper.lock:
+            held.set()
+            assert release.wait(3)
+        return False
+    GLib.idle_add(hold_context)
+    assert held.wait(1)
+    try:
+        started = time.monotonic()
+        assert Call(client, 'StatusV2').finish()['runtime']['state'] == 'available'
+        assert time.monotonic() - started < 2
+    finally:
+        release.set()
+    assert not authority.calls and not operations.effects

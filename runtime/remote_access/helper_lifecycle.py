@@ -43,8 +43,8 @@ class GenerationReader(Protocol):
     def current_generation(self, remaining: float) -> object:
         """Return an immutable, opaque comparison token, including absence.
 
-        The concrete protected reader defines the token; no path/record format
-        or HomeActivationStore.read(expected_generation=...) adaptation is here.
+        The helper supplies HomeGenerationReader over HomeActivationStore.current().
+        Its frozen token includes operation as well as generation; no connector read.
         """
         ...
 
