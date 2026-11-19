@@ -2577,14 +2577,17 @@ if s4a_case or s4b_case or not sys.argv[1:]:
                         run = s4row(f, 'workflow_seq_runs', f.ids.run_id)
                         assert (run['event_count'], run['state'], run['active_visit_id']) == (4094, 'running', receipt['new_visit_id']), case + ': permitted 4094 replacement refused'
         elif case == 'capacity_no_result_hold':
-            for summary in (None, '{}'):
+            for summary, terminal, cause in ((None, 'timeout', 'task_timed_out_without_result'),
+                    ('{}', 'success', 'result_bad_shape'), ('{}', 'timeout', 'task_timed_out_after_result')):
                 with s4fixture() as f:
-                    s4closed(f, f.ids.visit_id, summary=summary)
+                    s4closed(f, f.ids.visit_id, summary=summary, terminal=terminal,
+                        native_status='completed' if terminal == 'success' else 'failed',
+                        classification='success' if terminal == 'success' else 'unknown')
                     s4cursor(f, 4094)
                     before = s4snap(f)
                     event_id = s4hold(f)
                     body = s4stored_event(f, event_id, 4095, 'held')
-                    assert body['cause'] == ('task_timed_out_without_result' if summary is None else 'result_bad_shape')
+                    assert body['cause'] == cause, (case, terminal, summary, body['cause'], cause)
                     run = s4row(f, 'workflow_seq_runs', f.ids.run_id)
                     assert (run['event_count'], run['cas'], run['state'], run['held_event_id'], run['active_visit_id']) == (4095, 4094, 'held', event_id, None), case + ': Running 4094 did not hold at 4095'
                     after = s4snap(f)
