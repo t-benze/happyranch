@@ -21,6 +21,7 @@ from runtime.remote_access.home_activation_txn import EFFECTS, HomeActivationTra
 from runtime.remote_access.home_minter import HeadscaleJoinKeyMinter, PreAuthKey, _MAX_INVENTORY_KEYS
 from runtime.remote_access.home_observer import HomeObserver, ObservationRefused, SidecarProcess
 from runtime.remote_access.home_unit_gate import HomeUnitGate
+from runtime.remote_access.home_unit_publication import publish_home_unit
 from runtime.remote_access.invite_issuer import HomeInviteConfigRecord, MintedKey
 from runtime.remote_access.release_verifier import VerifierClient
 from runtime.remote_access.systemd_unit import SidecarUnitSpec, render_headscale_unit, render_sidecar_unit
@@ -107,7 +108,7 @@ class HomeSystemdProcessOwner:
             return SidecarProcess(account[0], int(pid))
 
     def _sidecar_unit(self) -> bytes:
-        # Rendering for comparison only. Installer selection/publication stays E2.
+        # One exact rendering; publication belongs only to managed_services intent.
         prefix = "happyranch-desktop" if self._io.layout == "deb" else "happyranch"
         return render_sidecar_unit(SidecarUnitSpec(
             binary_path=f"/opt/{prefix}/bin/happyranch-tsnet-sidecar", home_transport=True)).encode()
@@ -127,7 +128,8 @@ class HomeActivationOwner(HomeSystemdProcessOwner):
 
     config_owner is REQUIRED, with no permissive default. E1b owns its preflight
     (Ruling 13a prepared binding, or txn-bound live verification), home_config
-    publication and verification. No production config owner is delivered in E1a.
+    publication and verification. E1b supplies HomeLiveConfigOwner; the uncalled
+    E2b backend composes it explicitly.
     Call only under the coordinator's original lock and current durable intent.
     """
 
@@ -200,17 +202,19 @@ class HomeActivationOwner(HomeSystemdProcessOwner):
         self._managed_fragments()
         self._bound(receipt)
 
-    def _managed_fragments(self) -> dict[str, str]:
+    def _managed_fragments(self, *, require_home: bool = False) -> dict[str, str]:
         with self._io._publication_parent() as (parent, check):
             raw = self._io._json(self._io._read_file(parent, "connector.json",
                 owner=(self._io.root_owner[0], self._io._service_owner[1]), mode=0o640))
             check()
         units = installer.managed_units(self._io.layout, connector_config=raw)
+        legacy = units[_SIDECAR].encode()
         units[_SIDECAR] = self._sidecar_unit().decode("utf-8")
         with self._io._publication_parent("etc/systemd/system") as (parent, check):
             for name, expected in units.items():
                 self._io._headscale_no_pending(parent, name)
-                if self._io._read_unit(parent, name) != expected.encode():
+                allowed = (expected.encode(), legacy) if name == _SIDECAR and not require_home else (expected.encode(),)
+                if self._io._read_unit(parent, name) not in allowed:
                     raise ActivationRefused()
                 props = self._io.manager.show_properties(name, (
                     "FragmentPath", "DropInPaths", "NeedDaemonReload", "LoadState"))
@@ -293,7 +297,7 @@ class HomeActivationOwner(HomeSystemdProcessOwner):
             check()
 
     def _services(self, receipt: HomeActivationReceipt) -> None:
-        units = self._managed_fragments()
+        units = self._managed_fragments(require_home=True)
         self._unit(_CONNECTOR, units[_CONNECTOR].encode(), user="happyranch")
         self.sidecar_process(receipt)
         VerifierClient().resolve()  # Existing root verifier proves the RELEASE owner.
@@ -378,8 +382,18 @@ class HomeActivationOwner(HomeSystemdProcessOwner):
                 if self._config.verify("home_config", receipt) is not True:
                     raise ActivationRefused()
                 self._credential(receipt)
+                def require_publication() -> None:
+                    self._source.require(receipt)
+                    self._bound(receipt)
+                    if self._transactions.read_optional() != transaction:
+                        raise ActivationRefused()
+
+                legacy = installer.managed_units(self._io.layout)[_SIDECAR].encode()
+                publish_home_unit(self._io, _SIDECAR, legacy=legacy,
+                                  home=self._sidecar_unit(), require=require_publication)
                 self._source.require(receipt)
                 self._io.manager.daemon_reload()
+                self._managed_fragments(require_home=True)
                 for name in ("happyranch-release-verifier.socket", _TARGET):
                     self._source.require(receipt)
                     self._io.manager.enable(name)
