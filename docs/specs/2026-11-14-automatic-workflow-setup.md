@@ -124,7 +124,17 @@ backup and history refusals use `integrity_check_failed`,
 `backup_verification_failed` and `history_check_failed`.
 `writer_exclusion_unproven` means EX could not be acquired or original custody
 was lost; missing predecessor proof never selects it. Existing attempt phases
-are never replaced by a hold. `pre_commit` stays `unknown/commit_uncertain`;
+are never replaced by a hold. Status now includes advisory `writer_blockers`
+for this reason: on Linux it names recorded jobs holding the fence, with job
+ID, live PID/PGID and process age. It compares the fence device/inode in
+`/proc/locks` and matching groups' FD lock records; an inherited flock can be
+absent from the global list after the acquiring daemon dies. Legacy jobs without
+process sidecars, missing `/proc`, read errors and observation-budget exhaustion
+report `unavailable`. Job IDs come only from an existing fenced org attachment;
+an unattached org reports unavailable without a database open or new fence.
+An empty sampled list never proves the fence free. This
+observation does not release, adopt, kill or clear any owner or setup latch.
+`pre_commit` stays `unknown/commit_uncertain`;
 committed/verified without registered stays installed_unverified. Failed,
 unfinished, malformed and unknown recorded attempts never replay or auto-restore,
 even after restart. Backups and records remain for separately authorized operator
@@ -389,6 +399,17 @@ OrgState takes SH before naming preflight and Database construction and keeps it
 Profile writers acquire captured org SH gates sorted by stable fence key, rediscover exact dependency attachment membership, then acquire their existing profile flocks/publication/DB locks. Startup cache population first uses `state.py`'s metadata-only runtime org-root provider; it acquires those same gates before profile/cache effects. Normal profile writes refuse discovered but unloaded dependencies. During original dynamic attachment, only that loaded, unpublished candidate joins the exact discovered membership and sorted org-fence set; unrelated unloaded orgs still refuse publication. They cannot pass an org held EX. No setup path borrows a later profile lease.
 
 The original native JOB owner is **`runtime/daemon/jobs_runner.py`**: `create_subprocess_exec` inherits the original fence description via pass_fds and its parent duplicate is retained through the existing positive `confirm_job_processes_empty` path. Registration, producer commitment, Process/output attribution, terminal persistence and the documented process-group/session closure scope are unchanged; process return alone does not release this holder. `routes/jobs.py` does not need an edit.
+
+Bounded-job guardians leave external Stop/shutdown escalation to the daemon,
+without duplicate TERM or a shorter shutdown grace. Their independent runtime
+deadline still applies after an external TERM or parent loss. A reserved launch
+confirmation sidecar and a private helper-only pipe acknowledgement distinguish
+successful inner launch from helper admission failure. The helper sends the
+acknowledgement only after file fsync and parent-directory open/fsync succeed;
+the script does not inherit the pipe. A readable sidecar after a failed
+publication, or missing/invalid confirmation, persists `failed/spawn_failed` with the
+helper error in stderr; confirmed script nonzero exits remain `completed`.
+See [the jobs contract](../agent-guides/contracts/jobs-and-cleanup.md#independent-runtime-budgets-and-retained-job-diagnostics-1699).
 
 Agent sessions use the in-set host supervisor and `runtime/daemon/sessions.py` guardian. A separate shell inherits the original descriptor before native prepare and retains it on EOF/parent loss. The supervisor sends a close instruction only for positive original receipt/quiescence with complete cleanup, or positively unlaunched/abandoned preparation. Provider-wrapper refusal, final-validator veto/deferral and task-commit exceptions record positive never-launched abandonment before the guardian finalizer. Unknown prepare/spawn/cleanup, failed abandonment or lost original guardian remains HOLD. The four platform/executor transport files remain unchanged. This source delivery does not qualify service-wide kill, cold/macOS operating behavior or historical original owners from a dead PID.
 

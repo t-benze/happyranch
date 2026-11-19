@@ -8,6 +8,13 @@
  * attribute name (e.g. ``ThreadRecord.id`` is serialized as ``thread_id``).
  */
 
+export interface JobFenceObservation {
+  status: 'observed' | 'unavailable';
+  detail: string;
+  holders: { job_id: string; pid: number; pgid: number; age_seconds: number }[];
+  exhausted_jobs: string[];
+}
+
 export interface WorkflowSetupStatus {
   format: 'workflow-setup-status@1';
   org_slug: string;
@@ -15,6 +22,7 @@ export interface WorkflowSetupStatus {
   reason: 'evidence_unavailable' | 'registered' | 'not_installed' | 'install_incomplete' | 'commit_uncertain' | 'installation_unverified' | 'default_load_budget_exceeded' | 'default_load_qualification_unavailable' | 'writer_exclusion_unproven' | 'startup_upgrade_budget_unavailable' | 'history_check_failed' | 'integrity_check_failed' | 'backup_verification_failed' | 'registration_failed';
   attempt_time: string | null;
   backup_path: string | null;
+  writer_blockers: JobFenceObservation | null;
   integrity_report: {
     outcome: 'ok' | 'failed' | 'unavailable';
     reason: 'full_integrity_ok' | 'full_integrity_not_ok' | 'database_corrupt' | 'busy' | 'deadline' | 'sql_budget' | 'open_failed' | 'io' | 'identity_changed' | 'unattached_unreadable' | 'interrupted' | 'in_flight_reader' | 'report_unavailable';
@@ -760,6 +768,8 @@ export type JobInterpreter = 'bash' | 'sh' | 'zsh' | 'python3';
 
 export interface JobRecord {
   id: string;
+  liveness?: 'job_liveness_unknown';
+  fence_observation?: JobFenceObservation;
   task_id: string;
   agent_name: string;
   title: string;

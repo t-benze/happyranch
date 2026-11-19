@@ -492,7 +492,15 @@ async def get_job_route(
         record, has_bearer=has_bearer,
         task_id=task_id, session_id=session_id, org=org, allow_recovery_read=True,
     )
-    return record.model_dump()
+    from runtime.daemon.job_fence_observation import observe_job_fences
+    from runtime.runtime import daemon_home
+    from runtime.daemon.jobs_runner import _RUNNER_TASKS
+    value = record.model_dump()
+    if record.status == JobStatus.RUNNING and (org.db, job_id) not in _RUNNER_TASKS:
+        value['liveness'] = 'job_liveness_unknown'
+        observation = await asyncio.to_thread(observe_job_fences, daemon_home(), org.root, [job_id])
+        value['fence_observation'] = observation.model_dump()
+    return value
 
 
 def _structured_job_identity(record: JobRecord) -> dict:

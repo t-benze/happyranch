@@ -1,14 +1,34 @@
 """Founder-only setup status, independent of runnable org attachments."""
 from __future__ import annotations
 
+import sqlite3
+
 from fastapi import APIRouter, HTTPException, Request, Response
 from starlette.concurrency import run_in_threadpool
 
 from runtime.daemon.auth import require_token
 from runtime.daemon.workflow_setup_status import WorkflowSetupStatus, read_setup_status
+from runtime.infrastructure.memory_collection import CensusReadUnavailable
 from runtime.runtime import daemon_home
 
 router = APIRouter(dependencies=[require_token()])
+
+
+def _running_job_ids(org: object | None) -> list[str] | None:
+    """Read only through an existing A1 attachment; no extra opener or fence."""
+    if org is None:
+        return None
+    try:
+        with org.db._memory_collection_read_budget():
+            fence = getattr(org.db, '_org_access_fence', None)
+            if fence is None:
+                return None
+            fence.assert_held()
+            rows = org.db._conn.execute("SELECT id FROM jobs WHERE status='running' LIMIT 1025").fetchall()
+            fence.assert_held()
+            return [row[0] for row in rows]
+    except (CensusReadUnavailable, OSError, ValueError, sqlite3.Error):
+        return None
 
 
 @router.get('/runtime/workflow-setup/orgs/{slug}', response_model=WorkflowSetupStatus,
@@ -30,7 +50,8 @@ async def setup_status(slug: str, request: Request, response: Response) -> Workf
     root = await run_in_threadpool(state.workflow_setup_root, slug)
     if root is None:
         raise HTTPException(404, detail={'code': 'unknown_org'})
-    value = await run_in_threadpool(read_setup_status, daemon_home(), runtime.root, slug)
+    job_ids = await run_in_threadpool(_running_job_ids, state.orgs_snapshot().get(slug))
+    value = await run_in_threadpool(read_setup_status, daemon_home(), runtime.root, slug, job_ids=job_ids)
     if state.runtime is not runtime:
         raise HTTPException(409, detail={'code': 'workflow_setup_runtime_changed'})
     return value
