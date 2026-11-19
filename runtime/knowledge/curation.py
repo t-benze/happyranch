@@ -178,7 +178,8 @@ def build_curation_input(capture: RetiredSource, *, org_slug: str, task_id: str,
         'In particular, founder_decision_preference items (cited or attribution_unverified with the exact warning) and '
         'open_work_reference items with owner/status/as_of/next_action/holds qualifications are '
         'Instill-eligible references, never directives or assignments. '
-        'Procedures need prerequisites and limits (null explicitly unknown); no present execution permission follows. '
+        'Procedures need prerequisites and limits, each a single string or null, never a list '
+        '(null explicitly unknown); no present execution permission follows. '
         'Open work needs owner/status/as_of/next_action/holds (null explicitly unknown), never assignments. '
         'Founder claims need a literal recorded THR-N seqN (or THR-N#N) ruling citation and its captured reference; absent a citation, '
         f'include exactly this warning: {ATTRIBUTION_UNVERIFIED!r} and flag attribution_unverified. '
@@ -256,6 +257,20 @@ def _output_strings(value: object) -> Iterator[str]:
             yield from _output_strings(child)
 
 
+def _normalize_qualifications(parsed: object) -> None:
+    # Curators sometimes emit string lists for these two prose fields. Keep
+    # the schema strict and let all semantic checks inspect the joined text.
+    if not isinstance(parsed, dict) or not isinstance(parsed.get('items'), list):
+        return
+    for item in parsed['items']:
+        if not isinstance(item, dict):
+            continue
+        for key in ('prerequisites', 'limits'):
+            value = item.get(key)
+            if isinstance(value, list) and all(isinstance(part, str) for part in value):
+                item[key] = '; '.join(value)
+
+
 def validate_curation_output(capture: RetiredSource, raw: str) -> CurationResult:
     """Validate bytes, completeness, provenance and eligibility without effects.
 
@@ -283,6 +298,7 @@ def validate_curation_output(capture: RetiredSource, raw: str) -> CurationResult
             _json(parsed).encode('utf-8')
         except UnicodeError:
             raise CurationError('curation_output_invalid_utf8') from None
+        _normalize_qualifications(parsed)
         result = CurationResult.model_validate(parsed)
     except (ValueError, TypeError, RecursionError, ValidationError) as error:
         if isinstance(error, CurationError):
