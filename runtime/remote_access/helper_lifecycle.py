@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
-from enum import StrEnum
+from enum import Enum
 from typing import Callable, ContextManager, Protocol, TypeVar
 
 from .remote_access_helper import AUTH_DEADLINE
@@ -24,7 +24,17 @@ OUTCOMES = frozenset({SetupPhase.READY, SetupPhase.OFF, SetupPhase.IN_PROGRESS,
 T = TypeVar('T')
 
 
-class CallReply(StrEnum):
+class _StringEnum(str, Enum):
+    """Value text on every supported Python, including system Python 3.10."""
+
+    def __str__(self) -> str:
+        return self.value
+
+    def __format__(self, spec: str) -> str:
+        return format(self.value, spec)
+
+
+class CallReply(_StringEnum):
     ACCEPTED = 'accepted'
     REFUSED = 'refused'
 
@@ -43,8 +53,8 @@ class GenerationReader(Protocol):
     def current_generation(self, remaining: float) -> object:
         """Return an immutable, opaque comparison token, including absence.
 
-        The concrete protected reader defines the token; no path/record format
-        or HomeActivationStore.read(expected_generation=...) adaptation is here.
+        The helper supplies HomeGenerationReader over HomeActivationStore.current().
+        Its frozen token includes operation as well as generation; no connector read.
         """
         ...
 

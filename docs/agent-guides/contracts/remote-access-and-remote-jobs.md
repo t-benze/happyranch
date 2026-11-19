@@ -2087,7 +2087,7 @@ binding is covered in the slice 2b-2 section below.
 ## Fixed Linux helper source (THR-327 slice 3a)
 
 `remote_access_helper.py` exports `ai.happyranch.RemoteAccess1` at
-`/ai/happyranch/RemoteAccess1` with zero-input Status, NextDevice,
+`/ai/happyranch/RemoteAccess1` with zero-input Status, StatusV2, NextDevice,
 ApprovePending, RejectPending and RevokeSelected. Only the last three request
 fresh interactive polkit authorization. B8's `helper_owner.py` now derives the
 release owner from the bus credential UID, passwd and validated protected release
@@ -2105,7 +2105,9 @@ outstanding polkit check; uncertain cancellation seals further mutations until
 cancellation is acknowledged or that check's terminal reply arrives. A terminal
 reply releases the dialog slot even if the authorization deadline or pending-request
 expiry refuses the mutation; a late reply never authorizes an expired request. One dialog
-is allowed globally. Per-unique-name cursors disappear on disconnect. Status
+is allowed globally. StatusV2 adds the bounded B15 read projection and B16 audits
+cover the three existing authenticated device effects (details below). Per-unique-name
+cursors disappear on disconnect. Status
 contains only bounded public summaries. Error/log categories are closed.
 Custom-server URL/key intake methods do not exist and are not planned; outside-home access
 uses a fixed build-configured server (see [Outside-home access (fixed operator server)](../../specs/2026-11-16-one-click-remote-access.md#outside-home-access-fixed-operator-server)).
@@ -3189,7 +3191,7 @@ descriptor-relative no-follow traversal: a real directory owned by the UID,
 not group/world-writable, outside passwd-home/`.happyranch`, `/`, `/etc` and
 `/var`. Missing/invalid evidence refuses `release_home_invalid`; no username
 or path crosses the boundary. These five bootstrap refusal codes are closed.
-The packaged entry retains only Status/NextDevice/ApprovePending/RejectPending/
+The packaged entry retains only Status/StatusV2/NextDevice/ApprovePending/RejectPending/
 RevokeSelected; installer-backed lifecycle effects remain deferred to serial
 integration. Focused bootstrap/package verification uses
 `/usr/bin/python3 -B packaging/linux/test_build_deb.py -v`; the existing
@@ -3224,11 +3226,24 @@ uncertainty retains the slot until terminal reply/cancellation acknowledgement.
 The six outcomes reuse B15's `status_v2.SetupPhase`, excluding UNKNOWN/STALE.
 The native 120-second auth and approximately 122-second transport are unchanged.
 No lifecycle method is exported and no root lifecycle effect is reachable.
-The concrete generation reader (intended source: Track A's HomeActivationStore,
-whose `read()` currently requires an expected generation), native lifecycle-auth
-wiring, installer/B6/B17 step executors and B15 helper status wiring remain
-DEFERRED to serial integration. No activation-record path/format or B16 audit
-persistence is defined here. Focused verification uses the existing private-bus
+I1 supplies `helper.generations` (`helper_generation.HomeGenerationReader`) as the
+concrete protected reader. Track A's additive `HomeActivationStore.current()` reads
+and pins the current receipt without an expected generation, preserving all existing
+parent/leaf custody, size, pending-entry and before/after checks. Only a safely absent
+leaf under the valid protected parent returns None; missing/unsafe parents, malformed
+receipts and pending evidence refuse. It performs no publication, recovery or repair.
+The immutable snapshot compares generation, operation ID and release UID; phase is
+display metadata excluded from equality, so own phase progress does not fence the
+next step. A different operation in the same generation does fence B9 effects.
+System Python loads only stdlib package-owned siblings. Its fixed existing bundled
+Python child (`/opt/happyranch-desktop/python/bin/python3 -I -m runtime.remote_access.home_activation`)
+runs the zero-argument read entry with empty environment, no stdin and the supplied
+remaining timeout. It returns only the closed bounded snapshot, never full receipt,
+node identity or secrets. No installer effect runs; root/sandbox ownership is unchanged.
+Native lifecycle-auth wiring and installer/B6/B17 step executors remain DEFERRED to
+I2/I3. Lifecycle/activation audit intents must be placed at those actual future effect
+boundaries; no synthetic lifecycle outcome is recorded by I1. Focused verification
+uses the existing private-bus
 venue: `uv run --frozen --python /usr/bin/python3 pytest scripts/test_helper_lifecycle.py scripts/test_remote_access_helper.py -v --tb=short`.
 
 **B10 — Root-to-connector issuance IPC.**
@@ -3415,8 +3430,24 @@ cleanup state, each supporting unknown/stale and observation age. With connector
 stopped report runtime unavailable, never infer Off. Bridge/CLI consumers switch
 together in the consuming PR; secret/public-output restrictions apply.
 
-The inert pure model is `runtime/remote_access/status_v2.py`; helper/D-Bus wiring
-and bridge/CLI integration are deferred. Its frozen `StatusV2` has exactly
+The pure model is `runtime/remote_access/status_v2.py`. I1 exports StatusV2 on the
+existing helper interface; bridge/CLI consumers remain deferred. The method retains
+Status's bus UID and B8 owner validation, accepts no arguments/FDs and never prompts
+polkit. It sends the canonical model JSON directly as the D-Bus string (no double
+JSON encoding). The existing destination policy already admits it; no policy changes.
+One read worker runs without the mutation slot or main context; concurrent StatusV2
+calls refuse busy. An independent 1.9-second watchdog reserves response overhead within
+the original 2-second status budget, suppresses late replies and keeps a stalled worker
+sealed until it settles. It never queues new workers or waits on a mutation-held lock.
+The receipt maps prepared/activating/joined to setup in_progress, ready to ready and
+failed_uncertain to uncertain. Missing/unreadable receipt means unknown, never Off;
+a receipt bound to a different UID refuses. A fresh successful connector snapshot
+supplies runtime available only when ready; otherwise unavailable. Unreachable connector
+supplies runtime unavailable independently of setup. Invite/address/policy/cleanup remain
+unknown until their authoritative sources are integrated. Observation ages measure time
+since the reads with a monotonic clock and pass through the existing stale normalization.
+No device data, IDs or receipt fields cross StatusV2. Status v1 serialization is unchanged.
+The frozen `StatusV2` has exactly
 `setup`, `runtime`, `invite`, `address`, `policy`, `cleanup`; wire JSON additionally
 has integer `version: 2`. Each dimension has exactly `state` and `age_seconds`;
 invite additionally has `deadline_utc_seconds`. All vocabularies include
@@ -3468,8 +3499,18 @@ most 1 MiB; rotate once to `.1` at cap, retaining one generation. Record intent
 before effect and uncertainty after lost settlement. Audit survives Turn off
 and replacement and is never automatically removed; no raw secrets or node-key/
 digest-prefix output, no DB or audit-task-ID reinterpretation.
-The inert stdlib writer is `runtime/remote_access/home_audit.py`; helper/lifecycle
-wiring is deferred until the B9 follow-up. Its closed event spellings are
+The stdlib writer is `runtime/remote_access/home_audit.py`. I1 wires the existing
+ApprovePending/RejectPending/RevokeSelected helper effects: after fresh authorization
+and revalidation, persist device_approved/device_rejected/device_revoked intent before
+connector commit, then succeeded on acknowledged completion. Before-commit refusal
+records refused; lost settlement after commit admission records uncertain. If outcome
+persistence fails after an effect, attempt uncertain and return the fixed unavailable
+error; no successful audit acknowledgement is inferred. Intent persistence failure
+prevents the effect. IDs are local random audit correlation labels, never the target
+StableID, record ID, activation operation ID or a digest. Read calls emit no audits.
+I3 lifecycle/invite/Turn off outcomes remain explicitly deferred until those effects
+exist; I1 does not invent them or export additional mutation methods. Its closed
+event spellings are
 `activation`, `invite_issued`, `invite_cancelled`, `invite_recovered`,
 `invite_expired`, `device_approved`, `device_rejected`, `device_revoked`, `refresh`,
 `policy_renew`, `policy_fail`, `turn_off`, `uncertain`. Activation uses the existing

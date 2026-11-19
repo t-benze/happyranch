@@ -306,6 +306,47 @@ def test_lifecycle_methods_absent_from_exported_interface() -> None:
     # This is the schema consumed by Gio.register_object, independent of the
     # dispatcher refusing calls to unimplemented methods.
     interface = HELPER.Gio.DBusNodeInfo.new_for_xml(HELPER.INTROSPECTION).interfaces[0]
-    expected = {'Status', 'NextDevice', 'ApprovePending', 'RejectPending', 'RevokeSelected'}
+    expected = {'Status', 'StatusV2', 'NextDevice', 'ApprovePending', 'RejectPending', 'RevokeSelected'}
     assert {method.name for method in interface.methods} == expected
     assert HELPER.METHODS == expected
+
+
+@pytest.mark.parametrize('case', ['absent', 'valid', 'phase_changed', 'operation_changed', 'invalid', 'timeout'])
+def test_concrete_generation_reader_fences_lifecycle(venue: Any, monkeypatch: Any, case: str) -> None:
+    import json
+    import subprocess
+    reader_module = HELPER._helper_generation
+    helper, _, _, client, _ = venue
+    value = None if case == 'absent' else {
+        'generation': 7, 'operation': 'a' * 32, 'release_uid': os.getuid(), 'phase': 'prepared'}
+    calls = []
+    def run(command: Any, **kwargs: Any) -> Any:
+        calls.append((command, kwargs))
+        if case == 'timeout':
+            raise subprocess.TimeoutExpired(command, 1)
+        return SimpleNamespace(returncode=0, stdout=b'{}' if case == 'invalid' else json.dumps(value).encode())
+    monkeypatch.setattr(reader_module.subprocess, 'run', run)
+    authorize = Mock(return_value=True)
+    reply, operation = lifecycle.LifecycleOperation.admit(
+        'Enable', client.get_unique_name(), helper, helper.generations, authorize)
+    if case in ('invalid', 'timeout'):
+        assert reply.value == 'refused' and operation is None and not authorize.called
+    else:
+        assert reply.value == 'accepted'
+        effect = Mock()
+        if case == 'phase_changed':
+            value['phase'] = 'activating'  # Own progress must not invalidate the captured generation.
+        if case == 'operation_changed':
+            value['operation'] = 'b' * 32  # Same generation, different operation must fence effects.
+            with pytest.raises(lifecycle.LifecycleRefused):
+                operation.run_step(effect)
+            assert not effect.called
+        else:
+            operation.run_step(effect)
+            assert effect.call_count == 1
+        operation.complete(lifecycle.SetupPhase.FAILED)
+    assert calls
+    for index, (command, kwargs) in enumerate(calls):
+        assert command == ('/opt/happyranch-desktop/python/bin/python3', '-I', '-m',
+                           'runtime.remote_access.home_activation')
+        assert kwargs['env'] == {} and kwargs['cwd'] == '/' and 0 < kwargs['timeout'] <= (122 if index < 2 else 480)

@@ -291,13 +291,25 @@ class HomeActivationStore:
         return data
 
     @contextmanager
-    def _record(self, path: str) -> Iterator[bytes]:
+    def _record(self, path: str, *, allow_absent: bool = False) -> Iterator[bytes | None]:
         """Pin both parent and leaf until a composed reader has finished."""
         try:
             with self._parent(path) as (parent, revalidate):
                 name = Path(path).name
                 self._io._headscale_no_pending(parent, name)
-                before = _signature(os.stat(name, dir_fd=parent, follow_symlinks=False))
+                try:
+                    before = _signature(os.stat(name, dir_fd=parent, follow_symlinks=False))
+                except FileNotFoundError:
+                    if not allow_absent:
+                        raise
+                    yield None
+                    self._io._headscale_no_pending(parent, name)
+                    try:
+                        os.stat(name, dir_fd=parent, follow_symlinks=False)
+                    except FileNotFoundError:
+                        revalidate()
+                        return
+                    raise HomeActivationError("state")
                 data = self._read_at(parent, name)
                 if _signature(os.stat(name, dir_fd=parent, follow_symlinks=False)) != before:
                     raise HomeActivationError("state")
@@ -309,6 +321,16 @@ class HomeActivationStore:
                 revalidate()
         except (OSError, InstallerError, HeadscaleServiceError):
             raise HomeActivationError("state") from None
+
+    def current(self) -> HomeActivationReceipt | None:
+        """Read a pinned current receipt; only a safely absent leaf is absence.
+
+        Pending evidence, missing/unsafe parents and changed reads still refuse.
+        No publication, recovery, directory creation or installer effect runs.
+        """
+        with self._record(ACTIVATION_PATH, allow_absent=True) as data:
+            receipt = None if data is None else HomeActivationReceipt.parse(data)
+        return receipt
 
     def read(self, *, expected_generation: int) -> HomeActivationReceipt:
         _generation(expected_generation)
@@ -381,3 +403,22 @@ class HomeActivationStore:
                     # No pending cleanup/adoption: failed publication is inspection evidence.
         except (OSError, InstallerError, HeadscaleServiceError):
             raise HomeActivationError("state") from None
+
+
+def helper_snapshot() -> bytes:
+    """Fixed bundled -I metadata read; no full receipt, node identity or secrets."""
+    receipt = HomeActivationStore().current()
+    value = None if receipt is None else {
+        'generation': receipt.activation_generation, 'operation': receipt.operation_id,
+        'release_uid': receipt.release_uid, 'phase': receipt.phase}
+    return json.dumps(value, sort_keys=True, separators=(',', ':')).encode() + b'\n'
+
+
+if __name__ == '__main__':
+    import sys
+    if len(sys.argv) != 1 or os.geteuid() != 0:
+        raise SystemExit('unavailable')
+    try:
+        sys.stdout.buffer.write(helper_snapshot())
+    except Exception:
+        raise SystemExit('unavailable') from None

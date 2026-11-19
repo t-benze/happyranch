@@ -41,6 +41,15 @@ sys.modules[_OWNER_SPEC.name] = _owner
 _OWNER_SPEC.loader.exec_module(_owner)
 bootstrap_owner, OwnerRefused, Owner = _owner.bootstrap_owner, _owner.OwnerRefused, _owner.Owner
 
+# Stdlib-only package siblings; the receipt owner runs only in bundled Python -I.
+for _name in ('status_v2', 'home_audit', 'helper_generation'):
+    _spec = importlib.util.spec_from_file_location(
+        'happyranch_fixed_' + _name, Path(__file__).with_name(_name + '.py'))
+    _module = importlib.util.module_from_spec(_spec)
+    sys.modules[_spec.name] = _module
+    _spec.loader.exec_module(_module)
+    globals()['_' + _name] = _module
+
 SYSTEM_BUS_ADDRESS = 'unix:path=/run/dbus/system_bus_socket'
 BUS_NAME = 'ai.happyranch.RemoteAccess1'
 OBJECT_PATH = '/ai/happyranch/RemoteAccess1'
@@ -48,7 +57,7 @@ INTERFACE = BUS_NAME
 ACTION_PREFIX = 'ai.happyranch.remote-access.'
 AUTH_DEADLINE = 120.0
 IDLE_SECONDS = 60.0
-METHODS = frozenset({'Status', 'NextDevice', *MUTATIONS})
+METHODS = frozenset({'Status', 'StatusV2', 'NextDevice', *MUTATIONS})
 INTROSPECTION = '<node><interface name="' + INTERFACE + '">' + ''.join(
     '<method name="' + name + '"><arg name="result" type="s" direction="out"/></method>'
     for name in sorted(METHODS)) + '</interface></node>'
@@ -82,6 +91,10 @@ class RemoteAccessHelper:
         self.lock = threading.RLock()
         self.cursors: dict[str, str] = {}
         self.inflight: Capture | LifecycleCapture | None = None
+        self.generations = _helper_generation.HomeGenerationReader()
+        self.audit = _home_audit.HomeAudit()
+        self.status_worker: object | None = None
+        self.status_lock = threading.Lock()
         self.timer = 0
         self.cancelled = False
         self.authorization_terminal = False
@@ -132,7 +145,8 @@ class RemoteAccessHelper:
                 self.last_activity = self.clock()
 
     def _idle(self, loop: GLib.MainLoop) -> bool:
-        if self.inflight is None and self.clock() - self.last_activity >= IDLE_SECONDS:
+        if (self.inflight is None and self.status_worker is None
+                and self.clock() - self.last_activity >= IDLE_SECONDS):
             loop.quit()
         return True  # serve removes the source even on the idle-exit path
 
@@ -148,11 +162,15 @@ class RemoteAccessHelper:
                 incoming: bool, data: object) -> Gio.DBusMessage | None:
         if (incoming and message.get_message_type() == Gio.DBusMessageType.METHOD_CALL
                 and message.get_path() == OBJECT_PATH):
-            # Gio filters run on its message thread; all work goes to the main context.
+            # Gio filters run on its message thread. Mutations use the main context;
+            # StatusV2 starts its bounded read worker directly below.
             # Preserve refusal at arrival even if main-context dispatch is busy
             # finishing the first operation. Never queue a second surprise dialog.
             busy = self.inflight is not None
-            GLib.idle_add(self._dispatch, message, busy)
+            if message.get_member() == 'StatusV2':
+                self._dispatch(message, busy)  # Read-only worker never waits on the main context.
+            else:
+                GLib.idle_add(self._dispatch, message, busy)
             return None
         return message
 
@@ -166,6 +184,82 @@ class RemoteAccessHelper:
         LOG.info('remote-access-helper %s', category)
         reply = message.new_method_error_literal(INTERFACE + '.Error.' + category.replace('-', '_'), category)
         self.connection.send_message(reply, Gio.DBusSendMessageFlags.NONE)
+
+    def _status_v2(self, message: Gio.DBusMessage, sender: str) -> None:
+        # One worker, no queue, no helper mutation lock. Slow filesystem/control
+        # reads cannot hold the main context beyond the 2s response deadline.
+        token = object()
+        with self.status_lock:
+            if self.status_worker is not None:
+                raise Refused('busy')
+            self.status_worker = token
+        deadline = time.monotonic() + 2.0
+        replied = False
+        reply_lock = threading.Lock()
+
+        def finish(raw: bytes | None, category: str | None = None) -> bool:
+            nonlocal replied
+            with reply_lock:
+                if not replied:
+                    replied = True
+                    if raw is None or time.monotonic() >= deadline:
+                        self._error(message, category or 'expired')
+                    else:
+                        reply = message.new_method_reply()
+                        reply.set_body(GLib.Variant('(s)', (raw.decode('utf-8'),)))
+                        self.connection.send_message(reply, Gio.DBusSendMessageFlags.NONE)
+            return False
+
+        def settled(raw: bytes | None, category: str | None) -> None:
+            timer.cancel()
+            try:
+                finish(raw, category)
+            finally:
+                with self.status_lock:
+                    if self.status_worker is token:
+                        self.status_worker = None
+
+        def observe() -> None:
+            raw, category = None, None
+            try:
+                uid = self._uid(sender)
+                self._binding(uid)  # Same B8 custody gate as Status v1; no polkit.
+                setup = None
+                try:
+                    observed = self.generations.current_generation(min(.75, deadline - time.monotonic()))
+                except _helper_generation.GenerationUnavailable:
+                    observed = None
+                observed_at = time.monotonic()
+                if observed is not None:
+                    if observed.release_uid != uid:
+                        raise Refused('changed')
+                    phase = ('ready' if observed.phase == 'ready' else
+                             'uncertain' if observed.phase == 'failed_uncertain' else 'in_progress')
+                    setup = _status_v2.SetupObservation(_status_v2.SetupPhase(phase), 0)
+                try:
+                    snapshot = self._snapshot(uid)
+                except Refused as error:
+                    if error.category != 'unavailable':
+                        raise
+                    connector = _status_v2.ConnectorObservation(_status_v2.ConnectorState.UNREACHABLE, 0)
+                    runtime = None
+                else:
+                    connector = _status_v2.ConnectorObservation(_status_v2.ConnectorState.RUNNING, 0)
+                    runtime = _status_v2.RuntimeObservation(
+                        _status_v2.RuntimeAvailability.AVAILABLE if snapshot.ready else
+                        _status_v2.RuntimeAvailability.UNAVAILABLE, 0)
+                if setup is not None:
+                    setup = _status_v2.SetupObservation(setup.state, int(time.monotonic() - observed_at))
+                raw = _status_v2.encode(_status_v2.build_status(now_utc_seconds=int(time.time()),
+                    setup=setup, connector=connector, runtime=runtime))
+            except Exception as error:
+                category = error.category if isinstance(error, (Refused, OwnerRefused)) else 'unavailable'
+            settled(raw, category)
+
+        timer = threading.Timer(1.9, finish, (None, 'expired'))
+        timer.daemon = True
+        timer.start()
+        threading.Thread(target=observe, daemon=True).start()
 
     def _uid(self, sender: str) -> int:
         try:
@@ -208,6 +302,9 @@ class RemoteAccessHelper:
                 raise Refused('unknown-method')
             if not sender or not sender.startswith(':'):
                 raise Refused('invalid-request')
+            if method == 'StatusV2':
+                self._status_v2(message, sender)
+                return False
             # Refuse before taking a lock held by an effect or doing bus/file I/O.
             if method in MUTATIONS and (busy_on_arrival or self.inflight is not None):
                 raise Refused('busy')
@@ -301,9 +398,33 @@ class RemoteAccessHelper:
                 if self.clock() >= capture.deadline:
                     self._cancel('expired')
                     return
-                # Connector revalidates the SAME snapshot/record under its trust mutation lock.
-                self.control.mutate(capture.method, capture.snapshot, capture.record, capture.deadline,
-                                    lambda: self._before_commit(capture))
+                # B16 covers only the three already-existing device effects.
+                # I3 must add lifecycle/invite intents at their actual effect boundaries.
+                event = {'ApprovePending': _home_audit.Event.DEVICE_APPROVED,
+                         'RejectPending': _home_audit.Event.DEVICE_REJECTED,
+                         'RevokeSelected': _home_audit.Event.DEVICE_REVOKED}[capture.method]
+                # Local random correlation, never a node ID or digest prefix.
+                label = '-'.join(str(byte) for byte in os.urandom(12))
+                intent = self.audit.intent(event, intent_id='intent-' + label, operation_id='op-' + label)
+                dispatched = False
+                def before_commit() -> None:
+                    nonlocal dispatched
+                    self._before_commit(capture)
+                    dispatched = True  # commit may be sent; loss can no longer prove refusal.
+                try:
+                    self.control.mutate(capture.method, capture.snapshot, capture.record, capture.deadline,
+                                        before_commit)
+                except Exception:
+                    if dispatched:
+                        self.audit.uncertain(intent)
+                    else:
+                        self.audit.outcome(intent, _home_audit.Outcome.REFUSED)
+                    raise
+                try:
+                    self.audit.outcome(intent, _home_audit.Outcome.SUCCEEDED)
+                except Exception:
+                    self.audit.uncertain(intent)
+                    raise
                 self._reply(capture.message, 'ok')
             except Exception as error:
                 if isinstance(error, Refused) and error.category == 'expired':
