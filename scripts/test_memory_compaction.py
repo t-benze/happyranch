@@ -275,6 +275,74 @@ class MemoryCompactionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(added, [{"id": mid, "slug": "surviving-add", "topic": "curation",
                                   "tags": [], "source_task": None}])
 
+    async def test_auto_sweep_audits_eviction_before_later_write_failure(self) -> None:
+        await self.assert_partial_auto_sweep_audited("later-eviction")
+
+    async def test_auto_sweep_audits_evictions_before_index_failure(self) -> None:
+        await self.assert_partial_auto_sweep_audited("sweep-index")
+
+    async def assert_partial_auto_sweep_audited(self, failure: str) -> None:
+        (self.root / "org/config.yaml").write_text("memory_compaction:\n  enabled: false\n")
+        first = await self.add(f"first-{failure}", salience=0)
+        second = await self.add(f"second-{failure}", salience=0)
+        item = self.store.read_entry(first)
+        item.lifecycle = "superseded"
+        self.store.path_for(first, item.slug).write_text(self.store._serialize(item))
+        (self.root / "org/config.yaml").write_text(
+            "memory_compaction:\n  enabled: true\n  auto_trigger_entry_count: 1\n")
+        atomic, regenerate = MemoryStore._atomic_write, MemoryStore.regenerate_index
+        writer = AuditLogger.log_memory_lifecycle_changed
+        index_calls = 0
+        observed = []
+
+        def write(store: MemoryStore, target: Path, content: str) -> None:
+            if failure == "later-eviction" and target.name.startswith(second + "-"):
+                raise OSError("Synthetic later eviction failure")
+            atomic(store, target, content)
+
+        def index(store: MemoryStore) -> None:
+            nonlocal index_calls
+            index_calls += 1
+            if failure == "sweep-index" and index_calls == 1:
+                raise OSError("Synthetic sweep index failure")
+            regenerate(store)
+
+        def audit(logger: AuditLogger, **fields: Any) -> None:
+            observed.append((fields["id"], self.store.read_entry(fields["id"]).lifecycle,
+                             self.org.db_lock.locked(), threading.get_ident()))
+            writer(logger, **fields)
+
+        with patch.object(MemoryStore, "_atomic_write", write), \
+                patch.object(MemoryStore, "regenerate_index", index), \
+                patch.object(AuditLogger, "log_memory_lifecycle_changed", audit), \
+                self.assertLogs(level="WARNING"):
+            mid = await self.add(f"surviving-{failure}", at=NOW)
+        evicted = [first] if failure == "later-eviction" else [first, second]
+        self.assertEqual(self.store.read_entry(first).lifecycle, "evicted")
+        self.assertEqual(self.store.read_entry(second).lifecycle,
+                         "valid" if failure == "later-eviction" else "evicted")
+        self.assertEqual(self.store.read_entry(mid).lifecycle, "valid")
+        index_text = (self.store.root / "_index.md").read_text()
+        self.assertIn(mid, index_text)
+        for retired in evicted:
+            self.assertNotIn(retired, index_text)
+        rows = self.db.get_audit_logs("AGENT-synthetic")
+        self.assertEqual([r["payload"] for r in rows if r["action"] == "memory_added"
+                          and r["payload"]["id"] == mid], [{
+            "id": mid, "slug": f"surviving-{failure}", "topic": "curation",
+            "tags": [], "source_task": None}])
+        transitions = [r for r in rows if r["action"] == "memory_lifecycle_changed"
+                       and r["payload"]["id"] in (first, second)]
+        self.assertEqual([r["payload"] for r in transitions], [{
+            "id": retired, "from_lifecycle": "superseded" if retired == first else "valid",
+            "to_lifecycle": "evicted", "reason": "compaction (auto_trigger)",
+            "source": "compaction"} for retired in evicted])
+        self.assertTrue(all(r["task_id"] == "AGENT-synthetic" and r["agent"] == "synthetic"
+                            for r in transitions))
+        self.assertEqual([row[0] for row in observed], evicted)
+        self.assertTrue(all(state == "evicted" and locked and thread != threading.get_ident()
+                            for _, state, locked, thread in observed))
+
     async def test_auto_audit_failure_preserves_add_and_add_audit(self) -> None:
         prior = await self.add("audit-failure-target", salience=0)
         (self.root / "org/config.yaml").write_text(
@@ -391,6 +459,91 @@ class MemoryCompactionTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(payloads, [] if failure else [{
                     "id": prior, "from_lifecycle": "valid", "to_lifecycle": "evicted",
                     "reason": "compaction (auto_trigger)", "source": "compaction"}])
+
+    async def test_dream_cancellation_drains_entire_completion_under_lock(self) -> None:
+        (self.root / "org/config.yaml").write_text("memory_compaction:\n  enabled: false\n")
+        did = "DREAM-synthetic-cancel"
+        self.db.insert_dream(DreamRecord(id=did, agent_name="synthetic", local_date="2026-11-16",
+            scheduled_for=NOW, window_end=NOW, status=DreamStatus.RUNNING))
+        body = dreams.DreamCompleteBody(summary="Synthetic completion", learnings=[
+            dreams.DreamLearningBody(slug=f"reflection-{n}", title=f"Reflection {n}",
+                                     topic="curation", body=f"Synthetic note {n}.") for n in (1, 2)],
+            kb_candidates=[dreams.DreamKbCandidateBody(slug="candidate", title="Candidate",
+                topic="curation", rationale="Synthetic rationale", body_markdown="Synthetic candidate.")])
+        entered, release = threading.Event(), threading.Event()
+        write, index = MemoryStore.write_entry, MemoryStore.regenerate_index
+        transcript = dreams.DreamStore.write_transcript
+        completed = AuditLogger.log_dream_completed
+        observed = []
+        loop = asyncio.get_running_loop()
+
+        def record(step: str) -> None:
+            observed.append((step, self.org.db_lock.locked(), threading.get_ident()))
+
+        def reflection(store: MemoryStore, item: MemoryItem, agent: str) -> MemoryItem:
+            record(item.slug)
+            if item.slug == "reflection-1":
+                entered.set()
+                self.assertTrue(release.wait(3), "first reflection was not released")
+            else:
+                # Repeated request cancellation must also drain the admitted batch.
+                loop.call_soon_threadsafe(task.cancel)
+            return write(store, item, agent)
+
+        def regenerate(store: MemoryStore) -> None:
+            record("index")
+            index(store)
+
+        def write_transcript(store: dreams.DreamStore, **fields: Any) -> Path:
+            record("transcript")
+            return transcript(store, **fields)
+
+        def audit(logger: AuditLogger, *args: Any, **fields: Any) -> None:
+            record("completed-audit")
+            completed(logger, *args, **fields)
+
+        with patch.object(MemoryStore, "write_entry", reflection), \
+                patch.object(MemoryStore, "regenerate_index", regenerate), \
+                patch.object(dreams.DreamStore, "write_transcript", write_transcript), \
+                patch.object(AuditLogger, "log_dream_completed", audit):
+            task = asyncio.create_task(dreams.complete_dream("synthetic", did, body, self.org, None))
+            try:
+                async with asyncio.timeout(2):
+                    while not entered.is_set():
+                        await asyncio.sleep(0.001)
+                task.cancel()
+                await asyncio.sleep(0)
+                self.assertTrue(self.org.db_lock.locked())
+                self.assertFalse(task.done())
+                release.set()
+                with self.assertRaises(asyncio.CancelledError):
+                    await task
+            finally:
+                release.set()
+                await asyncio.gather(task, return_exceptions=True)
+        self.assertEqual([step for step, _, _ in observed],
+                         ["reflection-1", "reflection-2", "index", "transcript", "completed-audit"])
+        self.assertTrue(all(locked for _, locked, _ in observed))
+        self.assertTrue(all(thread != threading.get_ident() for step, _, thread in observed
+                            if step != "completed-audit"))
+        self.assertFalse(self.org.db_lock.locked())
+        for n in (1, 2):
+            item = self.store.read_entry(f"reflection-{n}")
+            self.assertEqual(item.body, f"Synthetic note {n}.\n")
+            self.assertIn(item.id, (self.store.root / "_index.md").read_text())
+        dream = self.db.get_dream(did)
+        self.assertEqual(dream.status, DreamStatus.COMPLETED)
+        self.assertEqual(dream.new_learnings_count, 2)
+        self.assertEqual(dream.kb_candidate_count, 1)
+        self.assertEqual(dream.summary, body.summary)
+        self.assertIsNotNone(dream.ended_at)
+        self.assertIn(body.summary, Path(dream.transcript_path).read_text())
+        self.assertEqual([c.slug for c in self.db.list_dream_kb_candidates(dream_id=did)], ["candidate"])
+        self.assertEqual([r["action"] for r in self.db.get_audit_logs(did)], ["dream_completed"])
+        # A retry sees the terminal dream instead of conflicting with a partial note.
+        with self.assertRaises(dreams.HTTPException) as retry:
+            await dreams.complete_dream("synthetic", did, body, self.org, None)
+        self.assertEqual(retry.exception.detail["code"], "dream_not_running")
 
     async def test_old_note_lowered_salience_evicts_and_restores(self) -> None:
         mid = await self.add("old-note")

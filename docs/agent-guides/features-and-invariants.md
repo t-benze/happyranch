@@ -2793,6 +2793,8 @@ the same `AGENT-{agent}` / `memory_lifecycle_changed` row and five payload keys
 as manual apply, with its original valid/superseded lifecycle and
 `source: compaction`, after eviction persistence. Sweep or audit errors after
 the note write are logged without aborting the add or preventing its add audit.
+Automatic callers audit each persisted eviction before the next candidate or
+final index can fail; manual callers still audit after the sweep returns.
 Each compaction run parses the selection inventory once and indexes related,
 supersedes and body-token references from non-evicted entries. Apply rereads each
 candidate, refreshes its reference contributions and removes them on eviction;
@@ -2811,8 +2813,10 @@ on the event loop across an await; the worker does not need a loop callback to
 release it. This is in-process serialization, not an external filesystem fence.
 Updates and Instill inherited imports do not trigger compaction. Dream
 reflections use ordinary `write_entry`, including auto-compaction and the same
-audit observer, in worker threads with cancellation draining and workspace
-locking; dreaming's enablement is unchanged.
+audit observer, in a worker thread with workspace locking. Cancellation drains
+the entire admitted dream completion (all reflections, index, KB candidates,
+transcript, terminal status and audits) before releasing `org.db_lock`;
+dreaming's enablement is unchanged.
 See the memory design spec's **Memory compaction and retirement (THR-366 PR-B)**
 section for defaults, protections, supersession grace and reversible retirement.
 The S3a Instill owner also preserves `inherited_from` and the separate

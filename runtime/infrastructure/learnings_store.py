@@ -517,12 +517,8 @@ class MemoryStore:
                         superseded_grace_days=cc.superseded_grace_days,
                         max_evictions_per_run=cc.max_evictions_per_run,
                     )
-                    result = self.compact(dry_run=False, policy=policy)
-                    # The caller owns auditing; the store has no database.
-                    # Persist evictions before notifying it, inside the same
-                    # best-effort boundary as the optional sweep.
-                    if self._on_auto_compaction is not None:
-                        self._on_auto_compaction(result)
+                    self.compact(dry_run=False, policy=policy,
+                                 on_eviction=self._on_auto_compaction)
             except Exception:
                 logging.getLogger(__name__).warning("Automatic memory compaction or audit failed after memory write")
 
@@ -1266,12 +1262,15 @@ class MemoryStore:
         dry_run: bool,
         now: datetime | None = None,
         policy: MemoryCompactionPolicy | None = None,
+        on_eviction: Callable[[MemoryCompactionResult], None] | None = None,
     ) -> MemoryCompactionResult:
         """Manual compaction dry-run or apply.
 
         dry_run=True: compute candidates and reasons, write nothing, return result.
         dry_run=False: re-evaluate under serialization boundary, evict eligible
         entries, regenerate index, return summary. Idempotent on rerun.
+        on_eviction notifies automatic callers after each persisted eviction;
+        observer failures warn and do not stop the remaining sweep.
 
         No hard deletes, no renumbering, no history rewrite, no automatic
         scheduling.
@@ -1363,8 +1362,18 @@ class MemoryStore:
             stamped.updated_at = now_str
             target = self.path_for(existing.id, existing.slug)
             self._atomic_write(target, self._serialize(stamped))
-            references.replace(target, stamped)
             evicted.append(cand.id)
+            # Automatic callers audit each persisted eviction before another
+            # candidate or the final index can fail. Manual callers still audit
+            # the full result only after compact returns.
+            if on_eviction is not None:
+                try:
+                    on_eviction(MemoryCompactionResult(
+                        dry_run=False, candidates=[recheck], evicted=[cand.id]))
+                except Exception:
+                    logging.getLogger(__name__).warning(
+                        "Automatic memory compaction audit failed after eviction")
+            references.replace(target, stamped)
 
         # Regenerate index after all writes
         self.regenerate_index()

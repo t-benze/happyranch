@@ -177,70 +177,82 @@ async def complete_dream(slug: str, dream_id: str, body: DreamCompleteBody, org:
                 composed_from_dream_id=dream_id,
             )
 
-        # THR-032 Phase R: dream reflections are memory items. Migrate a legacy
-        # learnings/ workspace forward first (idempotent), then write to memory/.
-        workspace = org.root / "workspaces" / dream.agent_name
-        migrate_workspace(workspace)
-        memory_dir = workspace / "memory"
-        memory_dir.mkdir(parents=True, exist_ok=True)
-        store = MemoryStore(
-            memory_dir, compaction_config=load_org_config(OrgPaths(root=org.root)).memory_compaction,
-            on_auto_compaction=partial(AuditLogger(org.db).log_memory_compaction,
-                                       agent=dream.agent_name, reason="compaction (auto_trigger)"),
-        )
-        for learning in body.learnings:
-            await _finish_consumer_write(asyncio.to_thread(
-                _memory_workspace_write, store, store.write_entry, MemoryItem(
+        def finish_completion() -> None:
+            # THR-032 Phase R: dream reflections are memory items. Migrate a legacy
+            # learnings/ workspace forward first (idempotent), then write to memory/.
+            workspace = org.root / "workspaces" / dream.agent_name
+            migrate_workspace(workspace)
+            memory_dir = workspace / "memory"
+            memory_dir.mkdir(parents=True, exist_ok=True)
+            store = MemoryStore(
+                memory_dir, compaction_config=load_org_config(OrgPaths(root=org.root)).memory_compaction,
+                on_auto_compaction=partial(AuditLogger(org.db).log_memory_compaction,
+                                           agent=dream.agent_name, reason="compaction (auto_trigger)"),
+            )
+            for learning in body.learnings:
+                _memory_workspace_write(store, store.write_entry, MemoryItem(
                     id=store.next_id(),
                     slug=learning.slug,
                     title=learning.title,
                     topic=learning.topic,
                     body=learning.body if learning.body.endswith("\n") else learning.body + "\n",
                     source_task=dream_id,
-                ), agent=dream.agent_name))
-        if body.learnings:
-            await _finish_consumer_write(asyncio.to_thread(
-                _memory_workspace_write, store, store.regenerate_index))
+                ), agent=dream.agent_name)
+            if body.learnings:
+                _memory_workspace_write(store, store.regenerate_index)
 
-        for candidate in body.kb_candidates:
-            org.db.insert_dream_kb_candidate(DreamKbCandidate(
+            for candidate in body.kb_candidates:
+                org.db.insert_dream_kb_candidate(DreamKbCandidate(
+                    dream_id=dream_id,
+                    agent_name=dream.agent_name,
+                    slug=candidate.slug,
+                    title=candidate.title,
+                    topic=candidate.topic,
+                    rationale=candidate.rationale,
+                    body_markdown=candidate.body_markdown,
+                ))
+
+            now = datetime.now(timezone.utc)
+            transcript_path = _store(org).write_transcript(
                 dream_id=dream_id,
                 agent_name=dream.agent_name,
-                slug=candidate.slug,
-                title=candidate.title,
-                topic=candidate.topic,
-                rationale=candidate.rationale,
-                body_markdown=candidate.body_markdown,
-            ))
+                local_date=dream.local_date,
+                window_start=dream.window_start.isoformat() if dream.window_start else None,
+                window_end=dream.window_end.isoformat(),
+                summary=body.summary,
+                transcript_markdown=body.summary,
+                new_learnings_count=len(body.learnings),
+                kb_candidate_count=len(body.kb_candidates),
+                founder_thread_id=founder_thread_id,
+            )
+            org.db.update_dream(
+                dream_id,
+                status=DreamStatus.COMPLETED,
+                ended_at=now,
+                summary=body.summary,
+                transcript_path=str(transcript_path),
+                new_learnings_count=len(body.learnings),
+                kb_candidate_count=len(body.kb_candidates),
+                founder_thread_id=founder_thread_id,
+            )
 
-        now = datetime.now(timezone.utc)
-        transcript_path = _store(org).write_transcript(
-            dream_id=dream_id,
-            agent_name=dream.agent_name,
-            local_date=dream.local_date,
-            window_start=dream.window_start.isoformat() if dream.window_start else None,
-            window_end=dream.window_end.isoformat(),
-            summary=body.summary,
-            transcript_markdown=body.summary,
-            new_learnings_count=len(body.learnings),
-            kb_candidate_count=len(body.kb_candidates),
-            founder_thread_id=founder_thread_id,
-        )
-        org.db.update_dream(
-            dream_id,
-            status=DreamStatus.COMPLETED,
-            ended_at=now,
-            summary=body.summary,
-            transcript_path=str(transcript_path),
-            new_learnings_count=len(body.learnings),
-            kb_candidate_count=len(body.kb_candidates),
-            founder_thread_id=founder_thread_id,
-        )
+            if founder_thread_id is not None:
+                AuditLogger(org.db).log_dream_founder_thread_created(
+                    dream_id, dream.agent_name, founder_thread_id=founder_thread_id,
+                )
+            AuditLogger(org.db).log_dream_completed(
+                dream_id,
+                dream.agent_name,
+                new_learnings_count=len(body.learnings),
+                kb_candidate_count=len(body.kb_candidates),
+                founder_thread_id=founder_thread_id,
+            )
+
+        # Drain the whole admitted completion, not individual reflection writes.
+        # All file/index/transcript work stays off-loop while db_lock is held.
+        await _finish_consumer_write(asyncio.to_thread(finish_completion))
 
     if founder_thread_id is not None:
-        AuditLogger(org.db).log_dream_founder_thread_created(
-            dream_id, dream.agent_name, founder_thread_id=founder_thread_id,
-        )
         await _publish_thread_event(
             org, slug,
             thread_id=founder_thread_id, seq=founder_thread_seq,
@@ -248,13 +260,6 @@ async def complete_dream(slug: str, dream_id: str, body: DreamCompleteBody, org:
             preview=founder_thread_preview, status="open",
         )
 
-    AuditLogger(org.db).log_dream_completed(
-        dream_id,
-        dream.agent_name,
-        new_learnings_count=len(body.learnings),
-        kb_candidate_count=len(body.kb_candidates),
-        founder_thread_id=founder_thread_id,
-    )
     return {"dream_id": dream_id, "status": "completed", "founder_thread_id": founder_thread_id}
 
 

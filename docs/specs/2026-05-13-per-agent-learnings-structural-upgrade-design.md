@@ -589,13 +589,16 @@ logged through `log_memory_lifecycle_changed`, just like manual apply:
 `id`, `from_lifecycle` (valid or superseded), `to_lifecycle='evicted'`, `reason`
 and `source='compaction'`. Automatic reason is `compaction (auto_trigger)`;
 manual reason remains unchanged. The store notifies a caller-supplied observer
-with the sweep result and has no database handle. Ordinary and dream write
-callers supply the audit observer; Instill's reserved inherited write bypasses
-ordinary `write_entry` entirely, including retries. Dream writes drain each
-worker's write/audit on cancellation before releasing `org.db_lock`, and share
-the workspace lock with bootstrap. There is no scheduled sweep. The existing
-manual API accepts policy overrides without changing config. This PR does not enable live config
-or curate live memories.
+with a result for each persisted eviction before a later candidate or final
+index can fail, and has no database handle. Manual audit ordering is unchanged:
+it logs after the full sweep returns. Ordinary and dream write callers supply
+the audit observer; Instill's reserved inherited write bypasses ordinary
+`write_entry` entirely, including retries. Dream completion drains the entire
+admitted reconciliation on cancellation before releasing `org.db_lock`: all
+reflections, index, KB candidates, transcript, terminal status and audits run in
+one worker. Memory writes share the workspace lock with bootstrap. There is no
+scheduled sweep. The existing manual API accepts policy overrides without
+changing config. This PR does not enable live config or curate live memories.
 
 Examples (each lifecycle operation requires a nonempty reason):
 
