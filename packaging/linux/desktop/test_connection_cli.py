@@ -196,13 +196,30 @@ class ConnectionCLITests(unittest.TestCase):
             self.assertEqual(self.run_native("revoke-device")[1]["effect"], "none")
         with patch.object(Terminal, "isatty", return_value=False):
             self.assertEqual(self.run_native("revoke-device")[1]["recovery"], "nativePermission")
-        self.bus.calls.clear()
-        self.opens.clear()
-        with patch.object(Terminal, "readline", side_effect=lambda _limit: (setattr(self.bus, "closed", True), "revoke\n")[1]):
-            code, result, _ = self.run_native("revoke-device")
-        self.assertEqual((code, result["effect"]), (1, "none"))
-        self.assertEqual(len(self.opens), 1)
-        self.assertNotIn("RevokeSelected", [call[3] for call in self.bus.calls])
+        for closure in ("before_cli_check", "between_checks"):
+            with self.subTest(closure=closure):
+                self.bus.calls.clear()
+                self.opens.clear()
+                self.bus.snapshot["selected"] = None
+                replacement = Bus()
+                replacement.error = "ai.happyranch.RemoteAccess1.Error.changed"
+
+                def select_revoke(_limit: int) -> str:
+                    # Gio may publish closure after the CLI's check but before
+                    # the shared owner decides whether to open a connection.
+                    observations = iter((False, True) if closure == "between_checks" else (True,))
+                    closed_check.side_effect = lambda: next(observations, True)
+                    return "revoke\n"
+
+                with patch.object(self.bus, "is_closed", side_effect=lambda: self.bus.closed) as closed_check, \
+                        patch.object(Terminal, "readline", side_effect=select_revoke), \
+                        patch.object(Gio.DBusConnection, "new_for_address_finish",
+                                     side_effect=lambda _result: self.bus if len(self.opens) == 1 else replacement):
+                    code, result, _ = self.run_native("revoke-device")
+                self.assertEqual((len(self.opens), [call[3] for call in self.bus.calls],
+                                  [call[3] for call in replacement.calls]),
+                                 (1, ["Status", "NextDevice"], []))
+                self.assertEqual((code, result["code"], result["effect"]), (1, "unavailable", "none"))
 
 
 if __name__ == "__main__":

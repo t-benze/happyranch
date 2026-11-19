@@ -56,7 +56,8 @@ class Host:
             outcome.append((result, code, effect))
             loop.quit()
 
-        contract.request_host(self, method, finish, lambda: True, lambda _snapshot: None)
+        contract.request_host(self, method, finish, lambda: True, lambda _snapshot: None,
+                              allow_reconnect=False)
         if not outcome:
             loop.run()
         result, code, effect = outcome[0]

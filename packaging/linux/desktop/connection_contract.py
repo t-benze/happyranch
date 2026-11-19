@@ -345,7 +345,8 @@ class Protocol:
                     inviteState="unknown", expiresAt=None, host=snapshot, client=None)
 
 
-def request_host(self: object, method: str, complete: object, current: object, observe: object) -> None:
+def request_host(self: object, method: str, complete: object, current: object, observe: object,
+                 *, allow_reconnect: bool = True) -> None:
     """Fixed helper transaction shared by the window and standalone CLI owner.
 
     The caller owns lifetime/admission; this owner owns the dedicated bus,
@@ -433,6 +434,10 @@ def request_host(self: object, method: str, complete: object, current: object, o
     try:
         if self.connection is not None and not self.connection.is_closed():
             call(method)
+        elif self.connection is not None and not allow_reconnect:
+            # A CLI selection belongs to its initial bus, even if Gio closes it
+            # after the caller's admission check. Never dispatch on a new bus.
+            complete(None, "unavailable")
         else:
             self.Gio.DBusConnection.new_for_address("unix:path=/run/dbus/system_bus_socket",
                 self.Gio.DBusConnectionFlags.AUTHENTICATION_CLIENT |
