@@ -287,18 +287,22 @@ struct ContentView: View {
 private struct HomeSessionStatus: View {
     @EnvironmentObject var appDelegate: AppDelegate
     @ObservedObject var model: HomeInviteModel
+    private func copy(_ en: String, _ zh: String) -> String {
+        Locale.preferredLanguages.first?.hasPrefix("zh") == true ? zh : en
+    }
     var body: some View {
         if model.phase != .connected || model.saveFailure != nil {
             HStack {
                 if model.phase != .connected { Text(model.phase.message) }
-                if let failure = model.saveFailure {
-                    Text("Access was not saved").foregroundStyle(.red)
-                    Text(failure.localizedDescription).font(.caption)
-                    if failure == .identityChanged {
-                        Button("Manage saved access…") { appDelegate.showRemoteAccess = true }
-                    } else {
-                        Button("Retry saving") { model.retrySave() }
+                if model.saveFailure != nil {
+                    VStack(alignment: .leading) {
+                        Text(copy("Access was not saved", "访问权限未保存")).foregroundStyle(.red)
+                        Text(copy("Reopening may need a new invite. Review saved access in Connection.",
+                                  "重新打开可能需要新邀请。请在“连接”中查看已保存的访问权限。"))
+                            .font(.caption)
                     }
+                    Button(copy("Retry save…", "重试保存…")) { appDelegate.showConnection() }
+                        .accessibilityHint(copy("Opens the packaged Connection controls", "打开应用内置的连接控制页"))
                 }
             }
             .padding(10)

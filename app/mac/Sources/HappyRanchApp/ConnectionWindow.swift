@@ -36,7 +36,8 @@ final class ConnectionWindow: NSWindowController, NSWindowDelegate, WKNavigation
     private let catalog = ConnectionComputerCatalog()
     private var ledger = ConnectionMutationLedger()
     private var mutationLifetime: HomeInviteModel.Lifetime?
-    private var pendingMutation: (id: String, reply: CheckedContinuation<String, Never>)?
+    private var pendingMutations: [String: CheckedContinuation<String, Never>] = [:]
+    private var activeSheet: NSAlert?
 
     init(app: AppDelegate) {
         self.app = app
@@ -107,12 +108,15 @@ final class ConnectionWindow: NSWindowController, NSWindowDelegate, WKNavigation
         guard live else { return }
         live = false; admitted = false; admitting = false; generation = UUID()
         observations.removeAll(); wantsEvents = false; admittedFrame = nil
-        if let pending = pendingMutation {
-            pendingMutation = nil
-            ledger.timedOut(pending.id)
-            pending.reply.resume(returning: ConnectionRequest.reply(id: pending.id,
+        if let sheet = activeSheet, let parent = sheet.window.sheetParent {
+            parent.endSheet(sheet.window, returnCode: .alertFirstButtonReturn)
+        }
+        for (id, reply) in pendingMutations {
+            ledger.timedOut(id)
+            reply.resume(returning: ConnectionRequest.reply(id: id,
                 error: .init(.documentChanged, effect: .unknown, recovery: .explicitRetry)))
         }
+        pendingMutations.removeAll()
         if let mutationLifetime, app?.homeInvite.lifetime == mutationLifetime { app?.homeInvite.documentDidChange() }
         if registered {
             content.removeScriptMessageHandler(forName: "connection", contentWorld: Self.world)
@@ -266,7 +270,7 @@ final class ConnectionWindow: NSWindowController, NSWindowDelegate, WKNavigation
                          replyHandler: @escaping @MainActor @Sendable (Any?, String?) -> Void) {
         if let outcome = ledger.recorded(request) { replyHandler(outcome.reply(id: request.id), nil); return }
         let cancelling = request.command == "client.cancelAttempt"
-        guard request.isMutation ? (cancelling ? cancellations < 1 : mutations < 1) : reads < 8 else {
+        guard request.isMutation ? (cancelling || mutations < 1) : reads < 8 else {
             replyHandler(ConnectionRequest.reply(id: request.id, error: .init(.busy)), nil); return
         }
         if !request.isMutation { reads += 1 }
@@ -309,62 +313,273 @@ final class ConnectionWindow: NSWindowController, NSWindowDelegate, WKNavigation
             // A read observes native cadence only. It cannot retry, prompt,
             // reconnect, replace the originating action or declare Connected.
             return ConnectionRequest.reply(id: request.id, result: ConnectionClientProjection.health(model, now: Date()))
-        case "client.connectSaved", "client.removeSaved":
-            catalog.update(model.savedHomes)
-            guard let ref = request.args["computerRef"]?.string, catalog.resolve(ref, in: model) != nil else {
-                return ConnectionRequest.reply(id: request.id, error: .init(.stateChanged))
-            }
-            return ConnectionRequest.reply(id: request.id) // native consent is 3b-2b
-        case "client.retrySave": break
-        default:
-            // Includes web Cancel and Retry: native target/default-Cancel
-            // confirmations land in 3b-2b. No unsafe no-sheet shortcut.
+        default: break
+        }
+        guard ConnectionClientProjection.backedCommands.contains(request.command) else {
             return ConnectionRequest.reply(id: request.id)
         }
-        switch ledger.begin(request) {
+        if request.command == "client.cancelAttempt", let outcome = ledger.pendingCancellation() {
+            activeSheet?.window.makeKeyAndOrderFront(nil)
+            return outcome.reply(id: request.id)
+        }
+        if request.command == "client.cancelAttempt", let sheet = activeSheet {
+            // Only an app-owned sheet is observable/focusable. It keeps its
+            // own Cancel; OS Keychain UI is never inspected or manipulated.
+            sheet.window.makeKeyAndOrderFront(nil)
+            return ConnectionRequest.reply(id: request.id,
+                result: ConnectionClientProjection.savedAction(model, catalog: catalog, effect: "none"))
+        }
+        let captured = model.lifetime
+        switch ledger.begin(request, cancelling: model.bridgeCanCancel ? captured.attempt : nil) {
         case .replay(let outcome): return outcome.reply(id: request.id)
         case .start: break
         }
-        guard !model.busy, !model.bridgeHasConfirmation, ledger.reservePrompt(for: request.id) else {
-            let outcome = ConnectionOutcome.failure(.init(.busy))
-            ledger.finish(request.id, outcome: outcome); return outcome.reply(id: request.id)
-        }
-        guard model.bridgeCanRetrySave else {
-            let outcome = ConnectionOutcome.failure(.init(model.needsReplacementConsent || model.saveFailure == .identityChanged ? .unavailable : .stateChanged,
-                                                          recovery: .nativeRecovery))
-            ledger.finish(request.id, outcome: outcome); return outcome.reply(id: request.id)
-        }
-        let lifetime = model.lifetime
-        mutationLifetime = lifetime
-        ledger.markDispatched(request.id)
         return await withCheckedContinuation { continuation in
-            pendingMutation = (request.id, continuation)
+            pendingMutations[request.id] = continuation
             let deadline = Task { @MainActor [weak self] in
                 do { try await Task.sleep(for: .seconds(130)) } catch { return }
-                guard let self, let pending = self.pendingMutation, pending.id == request.id else { return }
-                self.pendingMutation = nil
+                guard let self, let reply = self.pendingMutations.removeValue(forKey: request.id) else { return }
                 self.ledger.timedOut(request.id)
-                pending.reply.resume(returning: ConnectionOutcome.failure(.init(.outcomeUnknown,
+                reply.resume(returning: ConnectionOutcome.failure(.init(.outcomeUnknown,
                     effect: .unknown, recovery: .explicitRetry)).reply(id: request.id))
             }
             Task { @MainActor [self] in
-                let settlement = await model.bridgeRetrySave()
+                let outcome = await clientAction(request, model: model, token: token, context: captured)
                 deadline.cancel()
-                let outcome: ConnectionOutcome
-                switch settlement {
-                case .saved: outcome = .result(ConnectionClientProjection.savedAction(model, catalog: catalog))
-                case .refused: outcome = .failure(.init(.stateChanged))
-                case .changed: outcome = .failure(.init(.outcomeUnknown, effect: .unknown, recovery: .explicitRetry))
-                case .failed(let failure): outcome = .failure(ConnectionClientProjection.saveError(failure))
-                }
                 ledger.finish(request.id, outcome: outcome)
-                mutationLifetime = nil
-                guard let pending = pendingMutation, pending.id == request.id else { return }
-                pendingMutation = nil
-                guard live, admitted, generation == token else { return }
-                pending.reply.resume(returning: outcome.reply(id: request.id))
+                if !model.busy { mutationLifetime = nil }
+                guard let reply = pendingMutations.removeValue(forKey: request.id) else { return }
+                reply.resume(returning: outcome.reply(id: request.id))
             }
         }
+    }
+
+    private func current(_ token: UUID, _ context: HomeInviteModel.Lifetime, _ model: HomeInviteModel) -> Bool {
+        live && admitted && generation == token && app?.connectionRole == openingRole
+            && app?.clientLane == .managed && model.lifetime == context
+    }
+
+    /// Default Keep/Cancel, no queue. The OS-owned Keychain dialog never owns
+    /// this slot: SecItem exposes only its eventual result, not prompt state.
+    private func sheet(_ request: ConnectionRequest, title: String, detail: String, action: String,
+                       input: NSSecureTextField? = nil) async -> Bool {
+        guard activeSheet == nil, let window, window.attachedSheet == nil,
+              ledger.reservePrompt(for: request.id) else { return false }
+        defer { ledger.releasePrompt(request.id) }
+        let alert = NSAlert()
+        alert.messageText = title; alert.informativeText = detail
+        alert.addButton(withTitle: Self.copy("Keep / Cancel", "保持现状 / 取消"))
+        alert.addButton(withTitle: action)
+        alert.buttons[0].keyEquivalent = "\r"
+        alert.buttons[1].keyEquivalent = ""
+        if let input { alert.accessoryView = input }
+        activeSheet = alert
+        let timeout = Task { @MainActor [weak self, weak alert] in
+            do { try await Task.sleep(for: .seconds(120)) } catch { return }
+            guard let self, let alert, self.activeSheet === alert, let parent = alert.window.sheetParent else { return }
+            parent.endSheet(alert.window, returnCode: .alertFirstButtonReturn)
+        }
+        let answer: NSApplication.ModalResponse = await withCheckedContinuation { reply in
+            alert.beginSheetModal(for: window) { response in reply.resume(returning: response) }
+            if let input { alert.window.makeFirstResponder(input) }
+        }
+        timeout.cancel()
+        if activeSheet === alert { activeSheet = nil }
+        return answer == .alertSecondButtonReturn
+    }
+
+    private func targetDescription(_ trust: SavedHomeTrust?) -> String {
+        guard let trust else { return Self.copy("the current computer", "当前电脑") }
+        // Native identity details never cross into a bridge payload or log.
+        return [trust.homeEndpoint, trust.homeID, trust.controlPlaneID, trust.caSHA256]
+            .map(ConnectionClientProjection.displayText).joined(separator: "\n")
+    }
+
+    private func clientAction(_ request: ConnectionRequest, model: HomeInviteModel, token: UUID,
+                              context: HomeInviteModel.Lifetime) async -> ConnectionOutcome {
+        guard current(token, context, model) else { return .failure(.init(.stateChanged)) }
+        defer { model.endConfirmation(for: context) }
+        @MainActor func unchanged() -> Bool { current(token, context, model) }
+        @MainActor func action(_ effect: String = "confirmed", cleanup: String = "notApplicable") -> ConnectionOutcome {
+            .result(ConnectionClientProjection.savedAction(model, catalog: catalog, effect: effect, localCleanup: cleanup))
+        }
+        @MainActor func hold() -> Bool { model.beginConfirmation(for: context) }
+        switch request.command {
+        case "client.cancelAttempt", "client.disconnect":
+            let cancelling = request.command == "client.cancelAttempt"
+            guard cancelling ? model.bridgeCanCancel : model.phase == .connected else { return .failure(.init(.stateChanged)) }
+            guard hold() else { return .failure(.init(.busy)) }
+            let target = model.target
+            let yes = await sheet(request, title: Self.copy("Stop this connection attempt?", "停止此次连接？"),
+                detail: targetDescription(target) + "\n" + Self.copy(
+                    "This stops only this device's local connection. Saved access remains; Host approval is not revoked. A storage write/readback cannot be interrupted; stopping waits for it to finish.",
+                    "仅停止此设备的本地连接。已保存的访问权限会保留，不会撤销主机批准。存储写入和读回不能中断，停止操作会等待其完成。"),
+                action: Self.copy("Stop local connection", "停止本地连接"))
+            guard unchanged() else { return .failure(.init(.stateChanged)) }
+            guard yes else { return action("none") }
+            ledger.markDispatched(request.id)
+            model.cancel() // invalidates now; storage teardown waits at its safe point
+            mutationLifetime = model.lifetime
+            let stopped = model.lifetime
+            await model.bridgeSettle()
+            guard live, generation == token, model.lifetime == stopped else {
+                return .failure(.init(.outcomeUnknown, effect: .unknown, recovery: .explicitRetry))
+            }
+            guard model.phase == .idle, model.removalFailures.isEmpty, model.saveFailure != .deletionFailed else {
+                return .failure(.init(.outcomeUnknown, effect: .unknown, recovery: .nativeRecovery))
+            }
+            return action(cleanup: "confirmed")
+        case "client.retrySave":
+            guard !model.bridgeHasConfirmation, model.bridgeCanRetrySave else {
+                if model.bridgeCanReplace { return .failure(.init(.identityChanged, recovery: .nativeRecovery)) }
+                return .failure(.init(model.busy ? .busy : .stateChanged, recovery: .nativeRecovery))
+            }
+            return await save(request, model: model, replacing: false)
+        case "client.removeSaved", "client.connectSaved":
+            catalog.update(model.savedHomes)
+            guard let ref = request.args["computerRef"]?.string, let id = catalog.resolve(ref, in: model),
+                  let target = model.savedHomes.first(where: { $0.id == id }) else { return .failure(.init(.stateChanged)) }
+            return await savedTarget(request, model: model, target: target, token: token,
+                                     removing: request.command == "client.removeSaved")
+        case "client.retry":
+            guard !model.busy else { return .failure(.init(.busy)) }
+            if let target = model.bridgeRemovalTarget {
+                return await savedTarget(request, model: model, target: target, token: token, removing: true)
+            }
+            if model.bridgeHasUnsavedAccess {
+                guard hold(), let target = model.bridgeReplacementTarget else { return .failure(.init(.stateChanged)) }
+                let replacing = model.bridgeCanReplace
+                let yes = await sheet(request, title: Self.copy(replacing ? "Replace saved access?" : "Retry saving access?",
+                    replacing ? "替换已保存的访问权限？" : "重试保存访问权限？"),
+                    detail: targetDescription(target.trust) + "\n" + Self.copy(
+                        replacing ? "Replace only this local item with the freshly approved device. The old Host grant remains revocable on the Host. Failed or unknown deletion is not successful replacement." : "Retry the delivered access in login Keychain. No Host approval or network membership is changed.",
+                        replacing ? "仅以刚获批准的设备替换此本地项目。旧主机授权仍可在主机上撤销。删除失败或结果未知不代表替换成功。" : "在登录钥匙串中重试保存已交付的访问权限。不会改变主机批准或网络成员关系。"),
+                    action: Self.copy(replacing ? "Replace local access" : "Retry save", replacing ? "替换本地访问权限" : "重试保存"))
+                guard unchanged(), model.bridgeReplacementTarget == target,
+                      replacing ? model.bridgeCanReplace : model.bridgeCanRetrySave else { return .failure(.init(.stateChanged)) }
+                guard yes else { return action("none") }
+                model.endConfirmation(for: context)
+                return await save(request, model: model, replacing: replacing)
+            }
+            if !model.bridgeNeedsNewInvite, let target = model.savedHomes.first(where: { $0.id == model.selectedHomeID }) {
+                return await savedTarget(request, model: model, target: target, token: token, removing: false)
+            }
+            fallthrough
+        case "client.acceptInvite":
+            guard model.bridgeCanAccept else { return .failure(.init(.busy)) }
+            // Discovery is an explicit action here, never a hello/read side effect.
+            if !model.discoveryComplete {
+                model.prepare(reconnectSingle: false)
+                mutationLifetime = model.lifetime
+                await model.bridgeSettle()
+                guard unchanged(), model.bridgeCanAccept else { return .failure(.init(.stateChanged)) }
+            }
+            guard hold() else { return .failure(.init(.busy)) }
+            let input = NSSecureTextField(frame: NSRect(x: 0, y: 0, width: 440, height: 24))
+            input.placeholderString = Self.copy("Paste one invite from Linux", "粘贴一份 Linux 邀请")
+            input.setAccessibilityLabel(Self.copy("Private invite", "私密邀请"))
+            defer { input.stringValue = "" }
+            guard await sheet(request, title: Self.copy("Accept a home invite", "接受家庭邀请"),
+                detail: Self.copy("Paste explicitly here. Trust an invite only from your home computer. The invite stays in native memory.",
+                                  "请在此明确粘贴。仅信任来自您家庭电脑的邀请。邀请仅保留在原生内存中。"),
+                action: Self.copy("Validate invite", "验证邀请"), input: input) else { return action("none") }
+            guard unchanged() else { return .failure(.init(.stateChanged)) }
+            var raw = input.stringValue; input.stringValue = ""
+            defer { raw.removeAll() }
+            guard raw.utf8.count <= 5500 else { return .failure(.init(.invalidInvite, recovery: .newInviteOnHost)) }
+            let parsed: RemoteInvite
+            do { parsed = try await Task.detached { [raw] in try RemoteInvite.parse(raw) }.value }
+            catch { return .failure(.init((error as? RemoteInviteError) == .time ? .expired : .invalidInvite, recovery: .newInviteOnHost)) }
+            guard unchanged() else { return .failure(.init(.stateChanged)) }
+            let replacement = model.needsReplacementConsent
+            let yes = await sheet(request, title: Self.copy("Connect to this computer?", "连接此电脑？"),
+                detail: targetDescription(parsed.trust) + "\n" + Self.copy(
+                    replacement ? "Saved access could not be opened. Continue only with fresh Host approval. Obsolete local access is never silently replaced; its old Host grant remains revocable there. Saving uses login Keychain and its existing permission rules." : "Connect and request Host approval. Delivered access will be saved in login Keychain using its existing permission rules. If saving fails, this session may continue, but reopening may need a new invite.",
+                    replacement ? "无法打开已保存的访问权限。仅在重新获得主机批准后继续。不会静默替换旧本地访问权限；旧主机授权仍可在主机上撤销。保存使用登录钥匙串及其现有权限规则。" : "连接并请求主机批准。交付的访问权限将按现有权限规则保存在登录钥匙串中。若保存失败，本次会话仍可继续，但重新打开可能需要新邀请。"),
+                action: Self.copy("Connect and save access", "连接并保存访问权限"))
+            guard unchanged(), model.bridgeCanAccept, model.needsReplacementConsent == replacement else { return .failure(.init(.stateChanged)) }
+            guard yes else { return action("none") }
+            guard Date() < parsed.expiresAt else { return .failure(.init(.expired, recovery: .newInviteOnHost)) }
+            ledger.markDispatched(request.id)
+            model.accept(raw, replacementConsent: replacement)
+            raw.removeAll(); mutationLifetime = model.lifetime
+            let started = model.lifetime
+            await model.bridgeSettle()
+            return settled(model, context: started, token: token)
+        default: return .failure(.init(.unavailable))
+        }
+    }
+
+    private func savedTarget(_ request: ConnectionRequest, model: HomeInviteModel, target: HomeInviteModel.SavedHome,
+                             token: UUID, removing: Bool) async -> ConnectionOutcome {
+        let context = model.lifetime
+        guard model.bridgeRemovalTarget == nil || model.bridgeRemovalTarget == target else { return .failure(.init(.stateChanged)) }
+        guard !model.busy, model.bridgeActiveComputerID == nil || model.bridgeActiveComputerID == target.id,
+              removing || model.bridgeCanAccept, model.beginConfirmation(for: context) else { return .failure(.init(.busy)) }
+        defer { model.endConfirmation(for: context) }
+        let yes = await sheet(request, title: Self.copy(removing ? "Remove local saved access?" : "Connect with saved access?",
+            removing ? "移除本地已保存的访问权限？" : "使用已保存的访问权限连接？"),
+            detail: targetDescription(target.trust) + "\n" + Self.copy(
+                removing ? "Stop this local session and erase only this computer's local credential, trust and owned network state. This does not revoke Host approval. Incomplete removal remains visible for explicit retry." : "Reread this exact saved binding and trust from login Keychain, then reconnect without an invite. Keychain permissions are unchanged.",
+                removing ? "停止此本地会话，仅删除此电脑的本地凭据、信任和所属网络状态。不会撤销主机批准。移除不完整时会保留提示，需明确重试。" : "从登录钥匙串重新读取此精确绑定和信任，然后无需邀请即可重新连接。钥匙串权限保持不变。"),
+            action: Self.copy(removing ? "Remove local access" : "Connect", removing ? "移除本地访问权限" : "连接"))
+        guard current(token, context, model), model.savedHomes.contains(target) || model.bridgeRemovalTarget == target else {
+            return .failure(.init(.stateChanged))
+        }
+        guard yes else { return .result(ConnectionClientProjection.savedAction(model, catalog: catalog, effect: "none")) }
+        model.selectedHomeID = target.id
+        ledger.markDispatched(request.id)
+        if removing { model.removeSavedComputer(expected: target) } else { model.reconnect() }
+        mutationLifetime = model.lifetime
+        let started = model.lifetime
+        await model.bridgeSettle()
+        if removing {
+            guard live, generation == token, model.lifetime == started,
+                  model.bridgeRemovalTarget == nil, !model.savedHomes.contains(target), model.removalFailures.isEmpty else {
+                return .failure(.init(.removalIncomplete, effect: .unknown, recovery: .nativeRecovery))
+            }
+            return .result(ConnectionClientProjection.savedAction(model, catalog: catalog, localCleanup: "confirmed"))
+        }
+        return settled(model, context: started, token: token)
+    }
+
+    private func save(_ request: ConnectionRequest, model: HomeInviteModel, replacing: Bool) async -> ConnectionOutcome {
+        ledger.markDispatched(request.id)
+        mutationLifetime = model.lifetime
+        switch await model.bridgeRetrySave(replacing: replacing) {
+        case .saved: return .result(ConnectionClientProjection.savedAction(model, catalog: catalog))
+        case .refused: return .failure(.init(.stateChanged))
+        case .changed: return .failure(.init(.outcomeUnknown, effect: .unknown, recovery: .explicitRetry))
+        case .failed(let failure): return .failure(ConnectionClientProjection.saveError(failure))
+        }
+    }
+
+    private func settled(_ model: HomeInviteModel, context: HomeInviteModel.Lifetime, token: UUID) -> ConnectionOutcome {
+        guard current(token, context, model) else { return .failure(.init(.outcomeUnknown, effect: .unknown, recovery: .explicitRetry)) }
+        if model.phase == .connected {
+            // Connection succeeded; custody is an independent observed dimension.
+            // The persistent native banner retains any failed save outcome.
+            return .result(ConnectionClientProjection.savedAction(model, catalog: catalog))
+        }
+        if let failure = model.saveFailure { return .failure(ConnectionClientProjection.saveError(failure)) }
+        if case .keychain(let failure) = model.phase { return .failure(ConnectionClientProjection.saveError(failure)) }
+        if case .failed(let failure) = model.phase {
+            let code: ConnectionError.Code
+            switch failure {
+            case .malformedInvite: code = .invalidInvite
+            case .expiredInvite: code = .expired
+            case .identityChanged, .addressChanged: code = .trustMismatch
+            case .identityUnavailable: code = .identityChanged
+            case .reapprovalRequired, .authorizationIncomplete, .joinDenied: code = .newInviteRequired
+            case .approvalDenied: code = .accessDenied
+            case .revoked: code = .revokedConfirmed
+            case .daemonUnavailable: code = .runtimeUnavailable
+            case .cleanupIncomplete: code = .outcomeUnknown
+            default: code = .networkUnavailable
+            }
+            return .failure(.init(code, effect: .unknown, recovery: .explicitRetry))
+        }
+        return .failure(.init(.outcomeUnknown, effect: .unknown, recovery: .explicitRetry))
     }
 
     private func setEventSubscription() {

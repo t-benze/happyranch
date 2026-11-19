@@ -409,7 +409,14 @@ export class ClientView {
       // The state's own Paste invite action follows; no duplicate control here.
       nodes.push(this.notice(this.t('newInviteHint'), 'neutral', 'hint'));
     }
-    if (error.recovery === 'nativeRecovery' || error.recovery === 'operatorRecovery') nodes.push(this.notice(this.t('nativeRecoveryHint'), 'neutral', 'hint'));
+    if (error.recovery === 'nativeRecovery' || error.recovery === 'operatorRecovery') {
+      nodes.push(this.notice(this.t('nativeRecoveryHint'), 'neutral', 'hint'));
+      // Ordinary save never replaces custody. This explicit recovery requests
+      // native captured-target replacement consent for the retained delivery.
+      if (outcome.command === 'client.retrySave' && error.code === 'identityChanged' && this.snapshot?.stage === 'connected' && this.has('client.retry')) {
+        recovery.push(this.button('client.retry', 'retryAttempt'));
+      }
+    }
     nodes.push(...this.actions(recovery, false));
     return nodes;
   }

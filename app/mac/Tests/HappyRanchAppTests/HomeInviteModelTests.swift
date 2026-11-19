@@ -31,6 +31,8 @@ private actor HomeStoreFixture: SavedHomeCredentialStore {
     var readFailure: SavedAccessFailure?
     var discoveryFailures: [SavedAccessFailure] = []
     func setDiscoveryFailures(_ failures: [SavedAccessFailure]) { discoveryFailures = failures }
+    var saveFailure: SavedAccessFailure?
+    func setSaveFailure(_ failure: SavedAccessFailure) { saveFailure = failure }
     var saveFails = false
     var deleteFails = false
     private(set) var refreshes = 0
@@ -47,6 +49,7 @@ private actor HomeStoreFixture: SavedHomeCredentialStore {
     func save(_ credential: SavedDeviceCredential) async throws {
         saves += 1
         await gate.pause("save")
+        if let saveFailure { throw saveFailure }
         if saveFails { throw SavedAccessFailure.saveFailed }
         credentials.removeAll { $0.binding == credential.binding }; credentials.append(credential)
     }
@@ -594,6 +597,71 @@ struct HomeInviteModelTests {
         #expect(await store.saves == 2)
         #expect(await model.bridgeRetrySave() == .refused)
         if !cancel { model.cancel(); #expect(await eventually { !model.busy }) }
+    }
+
+    @Test("OS Keychain cancellation/denial is a save outcome, never attempt cancellation",
+          arguments: [SavedAccessFailure.cancelled, .denied, .locked, .unavailable])
+    func keychainResultDoesNotCancelAttempt(_ failure: SavedAccessFailure) async throws {
+        let store = HomeStoreFixture(), session = HomeSessionFixture()
+        await store.setSaveFailure(failure); await session.approve()
+        let model = HomeInviteModel(store: store, makeSession: { session })
+        model.accept(try invite())
+        #expect(await eventually { model.webURL != nil })
+        let context = model.lifetime
+        #expect(model.phase == .opening && model.saveFailure == failure)
+        #expect(await session.stops == 0)
+        model.webLoaded(url: try #require(model.webURL), lifetime: context)
+        #expect(model.phase == .connected && model.lifetime == context)
+        #expect(ConnectionClientProjection.savedAccess(model) == (failure == .unavailable ? "unknown" : "needsPermission"))
+        model.cancel(); #expect(await eventually { !model.busy })
+        #expect(model.saveFailure == failure)
+    }
+
+    @Test("Saved reconnect rereads the exact bearer after target consent")
+    func changedSavedBearerRefusesReconnect() async throws {
+        let trust = try RemoteInvite.parse(invite()).trust
+        let binding = try SavedDeviceBinding(homeID: trust.homeID, controlPlaneID: trust.controlPlaneID,
+                                             stableNodeID: "synthetic-stable-node")
+        let id = UUID(), store = HomeStoreFixture(), session = HomeSessionFixture()
+        try await store.save(SavedDeviceCredential(binding: binding, trust: trust,
+            deliveredBearer: Data("SYNTHETIC-ORIGINAL".utf8), networkProfileID: id))
+        let model = HomeInviteModel(store: store, makeSession: { session })
+        model.prepare(reconnectSingle: false)
+        #expect(await eventually { model.discoveryComplete && !model.busy })
+        #expect(await session.joins == 0)
+        try await store.save(SavedDeviceCredential(binding: binding, trust: trust,
+            deliveredBearer: Data("SYNTHETIC-CHANGED".utf8), networkProfileID: id))
+        model.reconnect()
+        #expect(await eventually { !model.busy })
+        #expect(model.phase == .keychain(.identityChanged))
+        #expect(await session.joins == 0)
+        #expect(model.webURL == nil)
+    }
+
+    @Test("Replacement cancellation waits for deletion and retains an incomplete outcome")
+    func replacementCancellationRetainsPartialEffect() async throws {
+        let gate = HomeAwaitGate(), store = HomeStoreFixture(gate: gate), session = HomeSessionFixture()
+        await store.setSaveFailure(.identityChanged); await session.approve()
+        let model = HomeInviteModel(store: store, makeSession: { session })
+        model.accept(try invite())
+        #expect(await eventually { model.webURL != nil })
+        let url = try #require(model.webURL)
+        model.webLoaded(url: url, lifetime: model.lifetime)
+        #expect(await eventually { !model.busy })
+        #expect(model.bridgeCanReplace && !model.bridgeCanRetrySave)
+        await gate.arm("delete")
+        let replacement = Task { await model.bridgeRetrySave(replacing: true) }
+        try #require(await gate.waitFor("delete"))
+        model.cancel()
+        #expect(model.phase == .stopping)
+        #expect(await session.stops == 0)
+        await gate.release()
+        #expect(await replacement.value == .changed)
+        #expect(await eventually { !model.busy })
+        #expect(model.phase == .idle && model.saveFailure == .deletionFailed)
+        #expect(await store.saves == 1)
+        #expect(model.webURL == nil)
+        #expect(ConnectionClientProjection.savedAccess(model) == "unknown")
     }
 
     @Test("Revoked unsaved B cannot erase the selected saved computer A")

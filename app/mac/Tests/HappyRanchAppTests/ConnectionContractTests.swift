@@ -189,7 +189,30 @@ struct ConnectionContractTests {
         #expect(ledger.originatingAction == "client.retrySave")
     }
 
-    @Test("Hello omits consent-dependent actions and every host capability")
+    @Test("Released app sheet leaves Cancel reachable through storage and stopping")
+    func cancellationAfterSheetRelease() throws {
+        var ledger = ConnectionMutationLedger()
+        let connect = try ConnectionRequest(request("client.connectSaved", args: "{\"computerRef\":\"c1\"}"))
+        guard case .start = ledger.begin(connect) else { Issue.record("connect refused"); return }
+        #expect(ledger.reservePrompt(for: connect.id))
+        ledger.releasePrompt(connect.id)
+        ledger.markDispatched(connect.id)
+        #expect(ledger.mutationID == connect.id && ledger.promptID == nil)
+        let cancel = try ConnectionRequest(request("client.cancelAttempt", id: "cancel"))
+        let attempt = UUID()
+        guard case .start = ledger.begin(cancel, cancelling: attempt) else { Issue.record("Cancel unreachable"); return }
+        #expect(ledger.reservePrompt(for: cancel.id))
+        let repeated = try ConnectionRequest(request("client.cancelAttempt", id: "again"))
+        #expect(try error(ledger.begin(repeated, cancelling: attempt))?["code"] == .string("busy"))
+        ledger.releasePrompt(cancel.id); ledger.markDispatched(cancel.id)
+        // Confirmed stop has invalidated the model attempt; it is now stopping.
+        #expect(try error(ledger.begin(repeated))?["effect"] == .string("unknown"))
+        #expect(ledger.promptID == nil && ledger.mutationID == connect.id)
+        ledger.finish(cancel.id, outcome: .failure(.init(.outcomeUnknown, effect: .unknown)))
+        #expect(try error(ledger.begin(repeated, cancelling: attempt))?["effect"] == .string("unknown"))
+    }
+
+    @Test("Hello advertises all ten backed client commands and no host capability")
     @MainActor
     func backedCapabilities() throws {
         let previous = UserDefaults.standard.object(forKey: "connectionRolePreference")
@@ -200,7 +223,8 @@ struct ConnectionContractTests {
         let app = AppDelegate(); app.connectionRolePreference = .client; app.clientLane = .managed
         let hello = ConnectionClientProjection.hello(app: app, catalog: ConnectionComputerCatalog())
         let commands = Set((hello["capabilities"] as? [[String: String]] ?? []).compactMap { $0["command"] })
-        #expect(commands == ["client.status", "client.savedComputers", "client.health", "client.retrySave"])
+        #expect(commands == ["client.status", "client.savedComputers", "client.health", "client.retrySave",
+            "client.acceptInvite", "client.connectSaved", "client.removeSaved", "client.disconnect", "client.cancelAttempt", "client.retry"])
         #expect(hello["roles"] as? [String] == ["client"])
         #expect(!commands.contains { $0.hasPrefix("host.") })
         #expect(try ConnectionJSON.parse(ConnectionRequest.reply(id: "r1")).object?["error"]?.object ==
