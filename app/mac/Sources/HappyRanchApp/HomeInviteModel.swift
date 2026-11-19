@@ -662,8 +662,19 @@ final class HomeInviteModel: ObservableObject {
         monitor?.cancel(); navigationDeadline?.cancel(); expiryTask?.cancel()
         webURL = nil; unsaved = nil; comparisonPhrase = nil; expiresAt = nil
         phase = .stopping; removalFailures = []
+        let candidate = session
         operation = Task {
             defer { if lifetime == token { operation = nil } }
+            // Local teardown does not depend on Keychain read permission.
+            // Keep the captured removal target for retry if custody is unreadable.
+            do {
+                try await candidate?.stop()
+                try check(token)
+                session = nil; activeCredential = nil
+            } catch {
+                guard lifetime == token else { return }
+                removalFailures = ["Local session could not be confirmed stopped"]; phase = .failed(.cleanupIncomplete); return
+            }
             // The web sheet captured this exact native record. Reread its
             // binding/trust/profile/bearer before the first destructive effect.
             if expected != nil {
@@ -678,15 +689,6 @@ final class HomeInviteModel: ObservableObject {
                         return
                     }
                 }
-            }
-            do {
-                let candidate = session
-                try await candidate?.stop()
-                try check(token)
-                session = nil
-            } catch {
-                guard lifetime == token else { return }
-                removalFailures = ["Local session could not be confirmed stopped"]; phase = .failed(.cleanupIncomplete); return
             }
             do {
                 try await Task.detached { try HomeNetworkState.remove(id) }.value

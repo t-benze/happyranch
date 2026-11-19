@@ -185,6 +185,7 @@ struct ConnectionMutationLedger {
         }
     }
     private var entries: [String: Entry] = [:]
+    private var cancellationReplays: [String: Entry] = [:]
     private var cancellation: (attempt: UUID, entry: Entry)?
     private(set) var mutationID: String?
     private(set) var promptID: String?
@@ -192,7 +193,8 @@ struct ConnectionMutationLedger {
     var count: Int { entries.count }
 
     func recorded(_ request: ConnectionRequest) -> ConnectionOutcome? {
-        if let previous = entries[request.id] ?? (cancellation?.entry.request.id == request.id ? cancellation?.entry : nil) {
+        if let previous = entries[request.id] ?? cancellationReplays[request.id]
+            ?? (cancellation?.entry.request.id == request.id ? cancellation?.entry : nil) {
             return previous.request.hasSameBody(as: request) ? previous.current : .failure(.init(.invalidRequest))
         }
         return nil
@@ -205,7 +207,16 @@ struct ConnectionMutationLedger {
                     ? cancellation.entry.current : .failure(.init(.stateChanged)))
             }
             guard let attempt else { return .replay(.failure(.init(.stateChanged))) }
-            if let cancellation, cancellation.attempt == attempt { return .replay(cancellation.entry.current) }
+            if let cancellation, cancellation.attempt == attempt {
+                // Keep (including sheet expiry) settles this intent, not the
+                // attempt. A later explicit Cancel needs its own confirmation.
+                guard case .result(let result) = cancellation.entry.current,
+                      result["effect"] as? String == "none" else { return .replay(cancellation.entry.current) }
+            }
+            if let cancellation {
+                // Preserve exact-ID replies even after a new intent is admitted.
+                cancellationReplays[cancellation.entry.request.id] = cancellation.entry
+            }
             cancellation = (attempt, Entry(request: request))
             return .start // separate record; exhaustion and mutation busy cannot hide Cancel
         }

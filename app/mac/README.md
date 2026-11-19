@@ -96,7 +96,9 @@ The per-document ledger retains 64 mutation IDs/outcomes without eviction,
 refuses same-ID/different-body, and admits one ordinary mutation and one native
 app-owned prompt without a queue. Its separate attempt-cancellation record is
 exempt from ordinary saturation/busy but never from confirmation; repeated
-Cancel shares that record through storage and stopping. Retry
+Cancel shares that record through storage and stopping. After settled Keep or
+sheet expiry, a new request ID admits a fresh default-Keep confirmation for the
+same attempt; exact-ID replies retain their original outcomes. Retry
 save invokes the existing non-replacement save path and awaits write/readback;
 it does not delete or replace access after an identity/consent failure. Genuine
 Keychain consent remains native. A 130-second transport deadline reports
@@ -117,8 +119,11 @@ user paste; invites never enter JS. `client.connectSaved` resolves an opaque ref
 confirms native binding/CA details, then rereads exact trust/profile/bearer before
 joining without an invite. `client.removeSaved` uses default-Cancel native
 consent and staged native-state/Keychain deletion with verified absence; partial
-removal remains removalIncomplete/unknown. `client.retry` confirms the retained
-removal target, eligible saved reconnect, fresh invite, or freshly delivered
+removal remains removalIncomplete/unknown. The captured local session stops
+before the custody reread, even if access is denied, cancelled, locked, changed
+or missing. A failed reread authorizes no deletion and retains the exact target
+for explicit Retry removal without stopping the settled session again.
+`client.retry` confirms the retained removal target, eligible saved reconnect, fresh invite, or freshly delivered
 replacement as applicable. Ordinary Retry save refuses identity replacement; its closed identityChanged
 result offers an explicit Retry into native replacement consent. Failed deletion
 cannot become a successful replacement. No spent invite is replayed.

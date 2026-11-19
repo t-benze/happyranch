@@ -204,14 +204,31 @@ struct ConnectionContractTests {
         #expect(ledger.reservePrompt(for: cancel.id))
         let repeated = try ConnectionRequest(request("client.cancelAttempt", id: "again"))
         #expect(try error(ledger.begin(repeated, cancelling: attempt))?["code"] == .string("busy"))
-        ledger.releasePrompt(cancel.id); ledger.markDispatched(cancel.id)
+        // Keep and expiry both settle the sheet with effect:none. Neither
+        // consumes a later explicit Cancel for this unchanged attempt.
+        let kept = ConnectionOutcome.result(["effect": "none"])
+        ledger.finish(cancel.id, outcome: kept)
+        guard case .start = ledger.begin(repeated, cancelling: attempt) else { Issue.record("Cancel after Keep refused"); return }
+        #expect(ledger.reservePrompt(for: repeated.id))
+        #expect(ledger.recorded(cancel)?.reply(id: cancel.id) == kept.reply(id: cancel.id))
+        #expect(try error(ledger.begin(ConnectionRequest(request("client.retrySave", id: cancel.id))))?["code"] == .string("invalidRequest"))
+        let later = try ConnectionRequest(request("client.cancelAttempt", id: "after-expiry"))
+        #expect(try error(ledger.begin(later, cancelling: attempt))?["code"] == .string("busy"))
+        ledger.finish(repeated.id, outcome: kept)
+        guard case .start = ledger.begin(later, cancelling: attempt) else { Issue.record("Cancel after expiry refused"); return }
+        #expect(ledger.reservePrompt(for: later.id))
+        #expect(ledger.recorded(repeated)?.reply(id: repeated.id) == kept.reply(id: repeated.id))
+        #expect(ledger.recorded(cancel)?.reply(id: cancel.id) == kept.reply(id: cancel.id))
+        ledger.releasePrompt(later.id); ledger.markDispatched(later.id)
+        let stopping = try ConnectionRequest(request("client.cancelAttempt", id: "stopping"))
         // Confirmed stop has invalidated the model attempt; it is now stopping.
-        #expect(try error(ledger.begin(repeated))?["effect"] == .string("unknown"))
+        #expect(try error(ledger.begin(stopping))?["effect"] == .string("unknown"))
         #expect(ledger.promptID == nil && ledger.mutationID == connect.id)
-        ledger.timedOut(cancel.id)
-        #expect(try error(ledger.begin(repeated))?["effect"] == .string("unknown"))
-        ledger.finish(cancel.id, outcome: .failure(.init(.outcomeUnknown, effect: .unknown)))
-        #expect(try error(ledger.begin(repeated, cancelling: attempt))?["effect"] == .string("unknown"))
+        ledger.timedOut(later.id)
+        #expect(try error(ledger.begin(stopping))?["effect"] == .string("unknown"))
+        ledger.finish(later.id, outcome: .failure(.init(.outcomeUnknown, effect: .unknown)))
+        #expect(try error(ledger.begin(stopping, cancelling: attempt))?["effect"] == .string("unknown"))
+        #expect(ledger.recorded(cancel)?.reply(id: cancel.id) == kept.reply(id: cancel.id))
     }
 
     @Test("Hello advertises all ten backed client commands and no host capability")
