@@ -314,7 +314,7 @@ function SubtaskRow({ node, depth = 0 }: SubtaskRowProps): JSX.Element {
   const summary = snippet(node.output_summary, 96);
   return (
     <div className={`${ml}`}>
-      <div className="border-border-default flex flex-wrap items-start gap-2 border-l-2 py-1.5 pl-3 text-sm sm:flex-nowrap">
+      <div className="flex flex-wrap items-start gap-2 py-1.5 pl-3 text-sm sm:flex-nowrap">
         <span
           className={`mt-1.5 inline-block h-2 w-2 shrink-0 rounded-full ${
             node.status === 'completed'
