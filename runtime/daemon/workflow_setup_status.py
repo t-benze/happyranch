@@ -117,24 +117,32 @@ def _attempt_record(home: Path, runtime_root: Path, key: str, slug: str, deadlin
     root = home / 'backups' / 'workflow-sequential' / key / slug
     total = 0
     outcomes = []
+    hold = None
     with open_directory(root, deadline) as namespace:
         names = _names(namespace, 64, deadline)
-        if names == ['hold.json']:
-            value, _, _ = _record(namespace, 'hold.json', deadline)
-            if (set(value) != {'format', 'runtime_key', 'org_slug', 'reason', 'state', 'attempt_time'}
-                    or value['format'] != 'workflow-setup-hold@1'
+        if 'hold.json' in names:
+            value, _, size = _record(namespace, 'hold.json', deadline)
+            total += size
+            old_hold = value.get('format') == 'workflow-setup-hold@1'
+            if (set(value) != {'format', 'runtime_key', 'org_slug', 'reason', 'state', 'attempt_time'} | (set() if old_hold else {'predecessor'})
+                    or value['format'] not in ('workflow-setup-hold@1', 'workflow-setup-hold@2')
                     or (value['runtime_key'], value['org_slug']) != (key, slug)
-                    or value['state'] not in ('unknown', 'not_installed')
+                    or value['state'] not in (('unknown', 'not_installed') if old_hold else ('unknown', 'installed_unverified'))
                     or value['reason'] not in ('writer_exclusion_unproven', 'startup_upgrade_budget_unavailable',
                         'history_check_failed', 'integrity_check_failed', 'backup_verification_failed',
                         'registration_failed', 'install_incomplete', 'default_load_budget_exceeded', 'commit_uncertain')
                     or _names(namespace, 64, deadline) != names):
                 raise ValueError('attempt_hold_invalid')
-            return dict(state=value['state'], reason=value['reason'], phase='held',
-                        attempt_time=_utc(value['attempt_time']), backup_path=None)
+            hold = dict(value, phase='held', attempt_time=_utc(value['attempt_time']), backup_path=None)
+            if old_hold:
+                if names != ['hold.json']:
+                    raise ValueError('attempt_hold_invalid')
+                return hold
+            if names == ['hold.json'] and hold['predecessor'] is None:
+                return hold
         if not 0 < len(names) <= 64:
             raise ValueError('attempt_namespace_unavailable')
-        for name in sorted(names):
+        for name in sorted(set(names) - {'hold.json'}):
             check(deadline)
             if not re.fullmatch(r'[a-zA-Z0-9-]{1,128}', name):
                 raise ValueError('attempt_identity_invalid')
@@ -152,10 +160,11 @@ def _attempt_record(home: Path, runtime_root: Path, key: str, slug: str, deadlin
                     total += size
                     if total > 4 * 1024 * 1024:
                         raise ValueError('attempt_bytes_exceeded')
+                    old_event = value.get('format') == 'workflow-setup-event@1'
                     if (set(value) != {'format', 'runtime_key', 'org_slug', 'attempt_id', 'sequence',
                             'previous_digest', 'phase', 'state', 'reason', 'attempt_time', 'backup_path',
-                            'db_identity', 'source_inventory_digest', 'backup_sha256', 'target_version'}
-                            or value['format'] != 'workflow-setup-event@1'
+                            'db_identity', 'source_inventory_digest', 'backup_sha256', 'target_version'} | (set() if old_event else {'predecessor'})
+                            or value['format'] not in ('workflow-setup-event@1', 'workflow-setup-event@2')
                             or (value['runtime_key'], value['org_slug'], value['attempt_id']) != (key, slug, name)
                             or type(value['sequence']) is not int or value['sequence'] != sequence
                             or value['previous_digest'] != previous):
@@ -164,7 +173,7 @@ def _attempt_record(home: Path, runtime_root: Path, key: str, slug: str, deadlin
                     if (type(db_identity) is not dict or set(db_identity) != {'path', 'device', 'inode'}
                             or db_identity['path'] != str(runtime_root / 'orgs' / slug / 'happyranch.db')
                             or any(type(db_identity[field]) is not int or db_identity[field] < 0 for field in ('device', 'inode'))
-                            or type(value['target_version']) is not int or value['target_version'] != 1
+                            or type(value['target_version']) is not int or value['target_version'] != (1 if old_event else 2)
                             or type(value['source_inventory_digest']) is not str
                             or not re.fullmatch(r'[0-9a-f]{64}', value['source_inventory_digest'])
                             or (value['backup_sha256'] is not None and (type(value['backup_sha256']) is not str
@@ -180,20 +189,24 @@ def _attempt_record(home: Path, runtime_root: Path, key: str, slug: str, deadlin
                         'committed': ('installed_unverified', 'installation_unverified'),
                         'verified': ('installed_unverified', 'installation_unverified'),
                         'registered': ('installed_verified', 'registered'),
-                        'not_installed': ('not_installed', 'not_installed')}
+                        'not_installed': ('not_installed', 'not_installed'),
+                        'not_upgraded': ('installed_unverified', 'installation_unverified')}
                     if phase_state.get(value['phase']) != (value['state'], value['reason']):
                         raise ValueError('attempt_state_invalid')
                     phases = ('intent', 'backup_verified', 'pre_commit', 'committed', 'verified', 'registered')
-                    if value['phase'] != 'not_installed' and (sequence >= len(phases) or value['phase'] != phases[sequence]):
+                    if old_event and value['phase'] == 'not_upgraded':
                         raise ValueError('attempt_phase_invalid')
-                    if value['phase'] not in ('intent', 'not_installed') and (value['backup_path'] is None or value['backup_sha256'] is None):
+                    if value['phase'] not in ('not_installed', 'not_upgraded') and (sequence >= len(phases) or value['phase'] != phases[sequence]):
+                        raise ValueError('attempt_phase_invalid')
+                    if value['phase'] not in ('intent', 'not_installed', 'not_upgraded') and (value['backup_path'] is None or value['backup_sha256'] is None):
                         raise ValueError('attempt_backup_unproven')
-                    if value['phase'] == 'not_installed' and (last is None or last['phase'] not in ('intent', 'backup_verified', 'pre_commit')):
+                    if value['phase'] in ('not_installed', 'not_upgraded') and (last is None or last['phase'] not in ('intent', 'backup_verified', 'pre_commit')):
                         raise ValueError('attempt_absence_unproven')
                     if last is not None and (_utc(value['attempt_time']) != last['attempt_time']
-                            or last['phase'] in ('registered', 'not_installed')
+                            or last['phase'] in ('registered', 'not_installed', 'not_upgraded')
                             or any(value[field] != last[field] for field in
-                                ('db_identity', 'source_inventory_digest', 'target_version', 'backup_path'))
+                                ('format', 'db_identity', 'source_inventory_digest', 'target_version', 'backup_path'))
+                            or value.get('predecessor') != last.get('predecessor')
                             or last['backup_sha256'] is not None and value['backup_sha256'] != last['backup_sha256']):
                         raise ValueError('attempt_terminal_invalid')
                     previous, last = digest, value
@@ -202,22 +215,40 @@ def _attempt_record(home: Path, runtime_root: Path, key: str, slug: str, deadlin
                     info = os.stat('before.db', dir_fd=parent, follow_symlinks=False)
                     if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or stat.S_IMODE(info.st_mode) != 0o600:
                         raise ValueError('attempt_backup_unsafe')
-                outcomes.append(last)
+                outcomes.append(dict(last, record_digest=previous))
                 if _names(parent, 17, deadline) != entries:
                     raise ValueError('attempt_changed')
         if _names(namespace, 64, deadline) != names:
             raise ValueError('attempt_namespace_changed')
     check(deadline)
-    # Multiple attempts require the future bootstrap owner's reconciliation;
-    # timestamps alone do not select an authoritative attempt.
-    if len(outcomes) != 1:
+    # Only one explicitly linked 1 -> 2 transition is supported. Never select
+    # attempts by time/name, discard an unfinished attempt, or admit a retry.
+    if not 1 <= len(outcomes) <= 2:
         raise ValueError('attempt_selection_unavailable')
-    return outcomes[0]
+    outcomes.sort(key=lambda value: value['target_version'])
+    first, current = outcomes[0], outcomes[-1]
+    predecessor = None
+    if len(outcomes) == 2:
+        if (first['target_version'] != 1 or first['phase'] != 'registered'
+                or current['target_version'] != 2 or first['db_identity'] != current['db_identity']):
+            raise ValueError('attempt_selection_unavailable')
+        predecessor = dict(attempt_id=first['attempt_id'], digest=first['record_digest'])
+    if current.get('predecessor') != predecessor:
+        raise ValueError('attempt_predecessor_invalid')
+    if hold is not None:
+        if (len(outcomes) != 1 or current['target_version'] != 1 or current['phase'] != 'registered'
+                or hold['predecessor'] != dict(attempt_id=current['attempt_id'], digest=current['record_digest'])):
+            raise ValueError('attempt_hold_invalid')
+        return hold
+    return current
 
 
 def _attempt(home: Path, runtime_root: Path, key: str, slug: str, deadline: float) -> dict:
     value = _attempt_record(home, runtime_root, key, slug, deadline)
-    return {field: value[field] for field in ('state', 'reason', 'attempt_time', 'backup_path')}
+    projected = {field: value[field] for field in ('state', 'reason', 'attempt_time', 'backup_path')}
+    if value.get('target_version') == 1 and value['phase'] == 'registered':
+        projected.update(state='installed_unverified', reason='installation_unverified')
+    return projected
 
 
 def read_setup_status(home: Path, runtime_root: Path, slug: str,

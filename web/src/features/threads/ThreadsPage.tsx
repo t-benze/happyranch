@@ -20,6 +20,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { Avatar } from '@/design-system/primitives/Avatar';
 import { Button } from '@/design-system/primitives/Button';
 import { PageTitle } from '@/design-system/patterns/PageTitle';
+import { TopbarActions } from '@/design-system/layouts/AppShell/TopbarSlots';
 import { Input } from '@/design-system/primitives/Input';
 import { SegmentedControl } from '@/design-system/primitives/SegmentedControl';
 import { Composer } from '@/design-system/patterns/Composer';
@@ -822,16 +823,14 @@ export function ThreadsPage(): JSX.Element {
     last: tr('threads.page.row.last'),
   });
   const inbox = (
-      <aside className="bg-surface-sunken flex h-full flex-col">
-        {/* THR-099 a-threads list cap: the pinned header and the scroll body
-            each REUSE <ContentWrap> so their inner content aligns at the shared
-            1180 `max-w-content` cap with 26px padding (ds.css .content+.wrap).
-            The header stays pinned — shrink-0, ContentWrap's overflow-y-auto is
-            inert on a content-height header; the body owns the scroll. Mirrors
-            TasksPage/AuditPage (Slice 3a/3b): no hand-rolled arbitrary
-            max-width at the feature layer (eslint no-arbitrary-value). */}
-        <header className="border-border-default shrink-0 border-b">
-          <ContentWrap>
+      <aside className="bg-surface-sunken h-full">
+        {/* THR-099 a-threads list cap + THR-376 r2 A13: ONE <ContentWrap> is
+            the page's single scroll owner (1180 `max-w-content` cap, 26px pad).
+            The header scrolls with the rows, like TasksPage — no pinned header
+            over a second inner list scroller. The scroll ref/onScroll (scroll
+            restoration + infinite-load sentinel root) stay on this owner. */}
+        <ContentWrap scrollRef={setListScrollRef} onScroll={observeListScroll}>
+        <header className="border-border-default mb-4 border-b pb-4">
           {/* THREADS-04: uppercase eyebrow (org-wide thread + dream-opened
               counts) + page title (THR-376 PageTitle). */}
           <PageTitle
@@ -841,17 +840,18 @@ export function ThreadsPage(): JSX.Element {
               dream: formatCountFor(locale, dreamOpenedCount ?? 0),
             }) : t('threads.page.list.unknown')}
             title={t('threads.page.title')}
-            actions={
-              <Button
-                size="sm"
-                onClick={openNew}
-                aria-label={t('threads.page.newThreadAria')}
-                title={t('threads.page.newThreadTitle')}
-              >
-                {t('threads.page.newThread')}
-              </Button>
-            }
           />
+          {/* THR-376 r2 A1b: the page primary action lives in the AppBar. */}
+          <TopbarActions>
+            <Button
+              size="sm"
+              onClick={openNew}
+              aria-label={t('threads.page.newThreadAria')}
+              title={t('threads.page.newThreadTitle')}
+            >
+              {t('threads.page.newThread')}
+            </Button>
+          </TopbarActions>
           {/* THR-099: segmented All/Open/Archived pills on the LEFT, compact
               live-text Filter right-aligned on the SAME row (a-threads `.seg`
               row). The filter keeps its working substring match — just compact
@@ -895,16 +895,9 @@ export function ThreadsPage(): JSX.Element {
               {t(listQuery.isStale ? 'threads.page.list.stale' : 'threads.page.list.updating')}
             </p>
           )}
-          </ContentWrap>
         </header>
           {/* THR-209: visible pin-failure banner (optimistic rollback). */}
           <PinErrorBanner message={pinError ? t(pinError) : null} />
-        {/* Scroll body — same <ContentWrap> cap as the pinned header so the
-            list column sits directly under the header at the 1180
-            `max-w-content` cap with 26px padding. The flex sizer owns the
-            height; ContentWrap owns the scroll. */}
-        <div className="min-h-0 flex-1">
-          <ContentWrap scrollRef={setListScrollRef} onScroll={observeListScroll}>
           {/* Loading skeleton */}
           {bucketLoading && <InboxSkeleton />}
 
@@ -1018,8 +1011,7 @@ export function ThreadsPage(): JSX.Element {
               </Button>
             </div>
           )}
-          </ContentWrap>
-        </div>
+        </ContentWrap>
       </aside>
   );
 

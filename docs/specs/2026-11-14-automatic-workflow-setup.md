@@ -7,6 +7,52 @@ loads. The approved design is TASK-16078 design v6 (SHA256
 reviewed in TASK-16087. Root TASK-16061's `i1-split-ruling.md` separates the
 install gates (I1a) from the daily read-only advisory report (I1b).
 
+## S2b automatic schema2 qualification
+
+The existing A4 startup owner now targets schema2 through the S2a installer.
+Absent sequential storage creates schema2 directly. Validated schema1 with zero
+runs and zero history first receives a new verified backup, then upgrades inside
+the original owning transaction. Definitions, settings and original-save
+operations/evidence retain their exact SQL, typed cells and rowids. Any @1 run,
+including finished history, refuses upgrade visibly and stays on its original
+reader; no historical run is adopted, repaired or completed. Already-schema2
+selection performs no installation, backup, setup audit or registration DML.
+The separate positively fresh POST `/orgs` A2 schema1 initializer and historical
+offline default are unchanged by S2b.
+
+New `workflow-setup-event@2` records target version 2. When a registered schema1
+attempt exists, every new phase pins that attempt ID and final-record SHA-256
+in `predecessor`; both backup/phase chains remain intact. Only that one linked
+1→2 transition is selectable, never a timestamp-selected retry. Schema1-only
+registered evidence projects `installed_unverified` for the current target.
+A pre-intent schema1 refusal uses `workflow-setup-hold@2`, linked to the original
+registered attempt when present. Only positively proven no-effect holds report
+`installed_unverified`; uncertain original closure persists and serves `unknown`,
+with or without that predecessor, and later selection refuses fallback.
+A positively proven unchanged writer refusal uses terminal `not_upgraded`,
+also `installed_unverified`. Unknown/unfinished attempts stay unknown and are
+never replayed. Legacy absent-storage holds keep
+their original meaning. All startup evidence traversals retain native custody.
+
+Backup directories remain 0700 and backup files 0600. Full integrity, exact
+preservation, actual writable FIRST/NEXT, default target validation and the
+original parent's single permit still precede COMMIT. No ordinary or installer
+cap, FK/authority/history predicate, 5s read deadline or startup window changes.
+Coding remains Disabled by default and public @2 admission stays closed.
+
+Focused private proof uses
+`WORKFLOW_SCHEMA_PYTHON=3.14 bash scripts/test-workflow-schema-load.sh --automatic-schema2=CASE`
+with `absent_schema2`, `installed_empty`, `installed_history`,
+`qualification_failure`, `next_load`, `startup_budget`, `unknown_close_registered`,
+or `unknown_close_unregistered`; Python3.12 uses the same command with
+`WORKFLOW_SCHEMA_PYTHON=3.12`.
+`bash scripts/test-daemon-startup-timing.sh --startup_budget` selects the same
+three-org production-shaped first/next load case. The existing SQL observer
+records actual A/B/C/L and logical charges, full FK checks and zero physical
+load scans. This private org-load timing does not certify a serving listener or
+live-org acceptance. Full verification runs once at the final reviewed head.
+No live install, deploy, restart, setup/Allow or pilot run is authorized.
+
 ## A4 startup and R2 amendment — THR-336 msg250/251 (A4:2)
 
 This is the current A4 contract and amends design v2 **R2**, retained by v6.
@@ -22,9 +68,10 @@ not certify its closure or settle retained native history.
 
 `__main__._build_state` mounts `BootstrapStartup` before ordinary org attachment,
 startup recovery and serving. Runtime switching does not invoke this automatic
-upgrade. SH discovery routes installed storage to ordinary complete validation
-without installer, inventory, physical scan or backup work. Absent storage is
-rediscovered under EX. The parent rechecks the original EX and source binding
+upgrade. SH discovery routes already-schema2 storage to ordinary complete validation
+without installer, inventory, physical scan or backup work. Absent storage and
+schema1 upgrade candidates are rediscovered under EX. The parent rechecks the
+original EX and source binding
 before intent and before its one bound COMMIT permission. The child checks full
 source/backup integrity, exact preservation, original native-writer history and
 current workflow publication/profile/recovery ownership predicates.
@@ -45,12 +92,13 @@ ordinary attachment begin under fresh SH. An exact installed second start does
 no installation, backup or definition-registration DML and adds no setup audit.
 
 A refused setup with proven no source effect (`absent`/`held` discovery and no
-worker, or a positively closed worker with no COMMIT permit sent) is
-`not_installed`. After positive original discovery/descriptor closure, ordinary
+worker, or a positively closed worker with no COMMIT permit sent) permits
+current-layout fallback: absent storage reports `not_installed`, while schema1
+reports `installed_unverified` for schema2. After positive original custody closure, ordinary
 loading uses a fresh A1 SH fence on the current layout. The org does not enter
 `broken_orgs` for that refusal; the existing workflow-setup status surface and
 daemon log expose its reason. Normal loader validation still applies.
-A validated prior `hold.json` with state `not_installed` selects `held`, preserves
+A validated no-effect `hold.json` or `not_upgraded` record selects `held`, preserves
 its reason and bytes, and loads through the same fallback without another install
 attempt. No latch is removed or rewritten. Unknown source effects, permit sent,
 registration mismatch, worker in flight or unknown close remain broken as before.

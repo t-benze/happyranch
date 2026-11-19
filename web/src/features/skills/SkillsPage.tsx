@@ -21,6 +21,8 @@ import { Link, useParams } from 'react-router-dom';
 import { Activity, Info, Package, Plus, Sparkles, TriangleAlert } from 'lucide-react';
 import { EmptyState } from '@/design-system/patterns/EmptyState';
 import { PageTitle } from '@/design-system/patterns/PageTitle';
+import { TopbarActions } from '@/design-system/layouts/AppShell/TopbarSlots';
+import { Button } from '@/design-system/primitives/Button';
 import { SegmentedControl } from '@/design-system/primitives/SegmentedControl';
 import { isCustomSkillForbidden, useCustomSkillsCatalog } from '@/hooks/custom-skills';
 import { useTranslation } from '@/hooks/i18n';
@@ -134,18 +136,21 @@ export function SkillsPage(): JSX.Element {
               <Activity size={15} aria-hidden="true" />
               {t('skills.catalog.runtimeValidation')}
             </Link>
-            {(!customSelected || !removed) && (
-              <Link
-                to={`/orgs/${slug ?? ''}/skills/custom/new`}
-                className="bg-accent-soft text-accent-text hover:bg-accent-soft/80 text-body-sm inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 font-semibold"
-              >
-                <Plus size={15} aria-hidden="true" />
-                {t('skills.addCustom')}
-              </Link>
-            )}
           </div>
           }
         />
+        {/* THR-376 r2 A1b: "Add custom skill" is the page primary action — a
+            solid primary btn-sm in the AppBar (review: not a soft chip). */}
+        {(!customSelected || !removed) && (
+          <TopbarActions>
+            <Button asChild size="sm">
+              <Link to={`/orgs/${slug ?? ''}/skills/custom/new`}>
+                <Plus aria-hidden="true" />
+                {t('skills.addCustom')}
+              </Link>
+            </Button>
+          </TopbarActions>
+        )}
 
         {/* Guidance-only global warning */}
         <div className="border-border-default bg-surface-sunken text-text-secondary text-body-sm mb-6 flex items-center gap-2.5 rounded-md border px-3 py-2.5">

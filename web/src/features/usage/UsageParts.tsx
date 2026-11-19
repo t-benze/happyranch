@@ -112,7 +112,9 @@ export function UsageSection({
     // `relative` contains the absolutely positioned sr-only status below, so it
     // cannot escape ContentWrap's scroller and make the whole window scroll.
     <section aria-labelledby={headingId} className="relative mb-12">
-      <h2 id={headingId} className="font-display text-display text-text-primary">
+      {/* THR-376 r2 U3: one section-heading size — the Pasture `.h1` 26px
+          scale (`text-page-title`), not the 30px Home `display` size. */}
+      <h2 id={headingId} className="font-display text-page-title text-text-primary">
         {title}
       </h2>
       <p className="text-body text-text-secondary mt-1">{question}</p>

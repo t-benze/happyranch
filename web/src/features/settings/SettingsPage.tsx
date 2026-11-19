@@ -1,5 +1,5 @@
 /**
- * SettingsPage — full page (not dialog) with sticky left sub-nav + field panel.
+ * SettingsPage — full page (not dialog) with left sub-nav + field panel.
  *
  * Sub-nav: Capacity · Organization · Executors · Coding · Preferences.
  * (THR-061 seq79: the Usage sub-tab was removed — token usage now lives on
@@ -44,6 +44,7 @@ import { useSettings } from '@/hooks/settings';
 import { useTranslation } from '@/hooks/i18n';
 import type { MessageKey } from '@/lib/i18n';
 import { PageTitle } from '@/design-system/patterns/PageTitle';
+import { ContentWrap } from '@/design-system/layouts/ContentWrap/ContentWrap';
 
 const SECTIONS = [
   { key: 'daemon-capacity', labelKey: 'settings.nav.daemonCapacity', icon: Gauge },
@@ -99,39 +100,39 @@ export function SettingsPage(): JSX.Element {
   );
 
   return (
-    <div className="bg-surface-canvas flex h-full flex-col">
-      <header className="border-border-default border-b p-4">
-        <PageTitle title={t('settings.page.title')} lede={t('settings.page.meta')} />
-      </header>
+    <div className="bg-surface-canvas h-full">
+      <ContentWrap className="max-w-content-narrow">
+        <PageTitle className="mb-6" title={t('settings.page.title')} />
 
-      <Routes>
-        {/* Default, legacy and unknown routes resolve before the API gate. */}
-        <Route index element={<Navigate to={`/orgs/${slug}/settings/daemon-capacity`} replace />} />
-        <Route path="assistant" element={<Navigate to={`/orgs/${slug}/settings/daemon-capacity`} replace />} />
-        <Route path="system" element={<Navigate to={`/orgs/${slug}/settings/daemon-capacity`} replace />} />
-        <Route path="agents" element={<Navigate to={`/orgs/${slug}/settings/daemon-capacity`} replace />} />
-        {/* Client-only Preferences: outside the settings-API gate. */}
-        <Route
-          path="preferences"
-          element={
-            <SettingsContent>
-              <PreferencesPanel />
-            </SettingsContent>
-          }
-        />
-        <Route
-          path="coding"
-          element={
-            <SettingsContent>
-              <CodingPanel key={slug} />
-            </SettingsContent>
-          }
-        />
-        <Route path="daemon-capacity" element={gated(<DaemonCapacityPanel />)} />
-        <Route path="organization" element={gated(settingsQuery.data && <OrganizationPanel org={settingsQuery.data.org} />)} />
-        <Route path="executors" element={gated(<ExecutorsPanel />)} />
-        <Route path="*" element={<Navigate to={`/orgs/${slug}/settings/daemon-capacity`} replace />} />
-      </Routes>
+        <Routes>
+          {/* Default, legacy and unknown routes resolve before the API gate. */}
+          <Route index element={<Navigate to={`/orgs/${slug}/settings/daemon-capacity`} replace />} />
+          <Route path="assistant" element={<Navigate to={`/orgs/${slug}/settings/daemon-capacity`} replace />} />
+          <Route path="system" element={<Navigate to={`/orgs/${slug}/settings/daemon-capacity`} replace />} />
+          <Route path="agents" element={<Navigate to={`/orgs/${slug}/settings/daemon-capacity`} replace />} />
+          {/* Client-only Preferences: outside the settings-API gate. */}
+          <Route
+            path="preferences"
+            element={
+              <SettingsContent>
+                <PreferencesPanel />
+              </SettingsContent>
+            }
+          />
+          <Route
+            path="coding"
+            element={
+              <SettingsContent>
+                <CodingPanel key={slug} />
+              </SettingsContent>
+            }
+          />
+          <Route path="daemon-capacity" element={gated(<DaemonCapacityPanel />)} />
+          <Route path="organization" element={gated(settingsQuery.data && <OrganizationPanel org={settingsQuery.data.org} />)} />
+          <Route path="executors" element={gated(<ExecutorsPanel />)} />
+          <Route path="*" element={<Navigate to={`/orgs/${slug}/settings/daemon-capacity`} replace />} />
+        </Routes>
+      </ContentWrap>
     </div>
   );
 }
@@ -140,11 +141,11 @@ export function SettingsPage(): JSX.Element {
 function SettingsContent({ children }: { children: ReactNode }): JSX.Element {
   return (
     <div
-      className="max-w-content-narrow mx-auto flex min-h-0 min-w-0 w-full flex-1 flex-col overflow-hidden sm:flex-row"
+      className="mx-auto flex min-w-0 w-full flex-col sm:flex-row"
       data-testid="settings-content"
     >
       <SettingsSubNav />
-      <main className="min-h-0 min-w-0 flex-1 overflow-y-auto">{children}</main>
+      <main className="min-w-0 flex-1">{children}</main>
     </div>
   );
 }
@@ -161,7 +162,7 @@ function SettingsSubNav(): JSX.Element {
   const sections = [...SECTIONS, CODING_SECTION, PREFERENCES_SECTION];
 
   return (
-    <aside className="border-border-default bg-surface-sunken w-full min-w-0 shrink-0 overflow-y-auto border-b p-3 sm:w-50 sm:border-r sm:border-b-0">
+    <aside className="border-border-default bg-surface-sunken w-full min-w-0 shrink-0 border-b p-3 sm:w-50 sm:border-r sm:border-b-0">
       <h3 className="text-overline text-text-secondary mb-2 tracking-wider uppercase">
         {t('settings.nav.heading')}
       </h3>

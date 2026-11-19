@@ -15,7 +15,7 @@
  */
 import { useState } from 'react';
 import { ContentWrap } from '@/design-system/layouts/ContentWrap/ContentWrap';
-import { PageTitle } from '@/design-system/patterns/PageTitle';
+import { TopbarStatus } from '@/design-system/layouts/AppShell/TopbarSlots';
 import { EfficiencySection } from './EfficiencySection';
 import { WorkloadSection } from './WorkloadSection';
 import { useEfficiencyOptions, useWorkload } from './useUsageData';
@@ -79,13 +79,17 @@ export function UsagePage(): JSX.Element {
   const [compare, setCompare] = useState(false);
   return (
     <ContentWrap>
-      <header className="mb-8">
-        <PageTitle
-          title={t('usage.title')}
-          lede={<PeriodLabel compare={compare} />}
-          actions={<CompareSwitch checked={compare} onChange={setCompare} />}
-        />
-      </header>
+      {/* THR-376 r2 U1/A2: the AppBar already names the page, so the visible
+          h1 is dropped (kept for assistive tech) and the window label plus the
+          Compare toggle move into the AppBar status slot; the page starts at
+          the first section. */}
+      <h1 className="sr-only">{t('usage.title')}</h1>
+      <TopbarStatus>
+        <span className="text-caption text-text-muted min-w-0 leading-tight">
+          <PeriodLabel compare={compare} />
+        </span>
+        <CompareSwitch checked={compare} onChange={setCompare} />
+      </TopbarStatus>
       <WorkloadSection compare={compare} />
       <EfficiencySection compare={compare} />
     </ContentWrap>

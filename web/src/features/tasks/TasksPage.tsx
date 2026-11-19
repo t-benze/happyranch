@@ -2,6 +2,7 @@ import { useAgentsList } from '@/hooks/agents';
 import { useIdentityOptions, useIdentityPresentation, usePreflightAddresses, namingAddressError } from '@/hooks/identities';
 import { RecipientsInput } from '@/design-system/patterns/RecipientsInput';
 import { PageTitle } from '@/design-system/patterns/PageTitle';
+import { TopbarActions } from '@/design-system/layouts/AppShell/TopbarSlots';
 import { renderThreadErrorDetail, type ThreadErrorDetail } from '@/lib/threadErrors';
 /**
  * Tasks list — Direction-A Pasture, roots-only dense list.
@@ -453,12 +454,15 @@ function TasksList({ groupBy, setGroupBy, filters, setFilters }: {
           <Button variant="ghost" size="sm" aria-expanded={filterOpen} onClick={() => setFilterOpen(!filterOpen)}>
             <Filter size={14} aria-hidden /> {t('tasks.page.filter')}
           </Button>
-          <Button size="sm" onClick={() => setNewTaskOpen(true)}>
-            <Plus size={14} aria-hidden /> {t('tasks.page.newTask')}
-          </Button>
           </div>
           }
         />
+        {/* THR-376 r2 A1b: the page primary action lives in the AppBar. */}
+        <TopbarActions>
+          <Button size="sm" onClick={() => setNewTaskOpen(true)}>
+            <Plus size={14} aria-hidden /> {t('tasks.page.newTask')}
+          </Button>
+        </TopbarActions>
         {filterOpen && (
           <form aria-label={t('tasks.filters.label')} className="mb-4 flex flex-wrap items-end gap-3" onSubmit={async (event) => {
             event.preventDefault();
