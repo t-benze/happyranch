@@ -716,6 +716,19 @@ otherwise retain the locked nologin account and say so. Keep package/helper, non
 unrelated data; destroy quarantined secrets after successful replacement or disable. Any
 stop/ownership uncertainty aborts removal and reports partial state.
 
+I2a supplies an unmounted receipt-bound B6 installer cleanup executor; existing
+operator CLI/uninstall calls retain their pre-activation scope. It requires
+trusted expected identities/generation and all owned services already quiescent,
+removes only the fixed per-type live-state/receipted members, and explicitly
+destroys the owned CA private key. Public Disable/revocation/stop wiring remains
+deferred. Key fences, nonempty issuer journals and transaction evidence remain
+retained with incomplete cleanup until a B7/B11 proof-and-audit retirement owner
+is delivered. Accounts continue to follow A–E without a new account rule.
+The B6 exception destroys only the root CA signing key: other root-only CA
+staging files are outside its fixed deletion list and remain with incomplete
+cleanup and retained receipts. This executor alone cannot report a completed
+Turn off while that staging or uncertain evidence remains.
+
 Upgrades preserve protected installation IDs/pins and revocations, validate the old version, stop
 admission, migrate under the same trust lock, reload exact system units and verify loaded
 fragments/drop-ins/READY before reopening. Unknown or torn state refuses; no trust reset. V1
