@@ -2292,6 +2292,21 @@ checks inspect the normalized model. The curator brief requires any item flagged
 one non-empty warning stating the caveat; for `historical`, it must state that the
 item describes past state and may no longer hold. This clarifies the existing
 `curation_warning_missing` check without inventing, inserting or defaulting warnings.
+The brief also requires `open_work.as_of` and any other date field to use only
+a valid calendar date `YYYY-MM-DD` or datetime `YYYY-MM-DDTHH:MM:SS` (hours 00-23)
+followed by `+HH:MM`, `-HH:MM` or `Z` (e.g. `2026-11-18`,
+`2026-11-18T09:00:00+08:00`, `2026-11-18T09:00:00-08:00` or `2026-11-18T01:00:00Z`),
+or null when unknown; never ordinal/week dates, prose or relative/approximate
+dates. Exact captured `authored_at` and `observed_at`/`CAPTURE_CUTOFF` requirements
+take precedence. `founder_ruling`
+must be the exact literal `THR-N seqN` or `THR-N#N` appearing verbatim in the
+cited `founder_ruling_reference` captured body or JSON-serialized metadata;
+that reference must be among the item's references. Otherwise both fields must
+be null, and `founder_decision_preference` items without a cited ruling must
+carry `attribution_unverified` and the exact warning
+`source reports a Founder preference; attribution unverified`. These producer
+instructions preserve the existing validator and result schema, without
+date/citation coercion or warning synthesis.
 Task, claim/audit and
 operation binding commit together; a rollback may leave an unclaimed file under
 the persisted operation's stable snapshot key for redispatch. Publication still
