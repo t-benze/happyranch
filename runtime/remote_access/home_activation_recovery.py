@@ -1,4 +1,4 @@
-"""Unmounted B7 fresh-auth recovery; no effect execution or production caller."""
+"""B7 fresh-auth recovery, privately mounted by Enable; no effect execution."""
 from __future__ import annotations
 
 import secrets
@@ -70,7 +70,7 @@ class HomeActivationRecovery(HomeActivationCoordinator):
 
     def recover(self, *, expected_generation: int, expected_operation_id: str,
                 fresh_authenticated: bool, observation_owner: ObservationOwner) -> HomeActivationReceipt:
-        """Fresh auth is an owner's precondition; production polkit wiring is G2-E.
+        """Fresh auth is a precondition supplied by the private Enable owner.
 
         Every refusal retains current bytes. Only Ruling 7 terminal markers may
         mutate a matching nonterminal pair; that call never enters B7 recovery.

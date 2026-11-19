@@ -740,9 +740,9 @@ class ManagedInstaller:
     def begin_replacement(self, *, expected_release_uid: int, expected_generation: str) -> None:
         """Bind inventory and derived release owner before the additive first intent.
 
-        Only the future fresh-auth helper lifecycle owner may supply expectations.
+        Only the fresh-auth helper lifecycle owner may supply expectations.
         Existing v1 journals already have a first intent and resume unchanged.
-        This entry is deliberately absent from the operator CLI and D-Bus helper.
+        This entry is absent from the operator CLI and public D-Bus methods.
         """
         candidate = self.replacement_inventory()
         generation = candidate.journal_generation or candidate.inventory_generation
@@ -2201,9 +2201,9 @@ class ManagedInstaller:
 
     def _cleanup_home_headscale(
         self, release_uid: int, home_id: str, control_plane_id: str, connector_id: str,
-        generation: int,
+        generation: int, operation_id: str | None = None,
     ) -> dict[str, str]:
-        """Unmounted B6 executor. The lifecycle caller supplies trusted expectations.
+        """Receipt-bound B6 executor. The lifecycle caller supplies trusted expectations.
 
         The caller stops all owned services first. The activation-directory lock
         serializes existing cooperative activation writers; sampled native state
@@ -2228,6 +2228,8 @@ class ManagedInstaller:
             transactions = HomeActivationTransactionStore(root=self.root, root_owner=self.root_owner)
             with transactions.locked():
                 current = store.read(expected_generation=generation)
+                if operation_id is not None and current.operation_id != operation_id:
+                    raise InstallerError("home operation changed")
                 if (current.release_uid, current.home_id, current.control_plane_id, current.connector_id) != (
                         release_uid, home_id, control_plane_id, connector_id):
                     raise InstallerError("home binding")
@@ -2483,7 +2485,7 @@ class ManagedInstaller:
     def cleanup_headscale(
         self, *, expected_release_uid: int | None = None, expected_home_id: str | None = None,
         expected_control_plane_id: str | None = None, expected_connector_id: str | None = None,
-        expected_generation: int | None = None,
+        expected_generation: int | None = None, expected_operation_id: str | None = None,
     ) -> dict[str, str]:
         """Remove only proven custody; explicit trusted expectations select B6.
 
@@ -2493,8 +2495,8 @@ class ManagedInstaller:
         """
         expected = (expected_release_uid, expected_home_id, expected_control_plane_id,
                     expected_connector_id, expected_generation)
-        if any(value is not None for value in expected):
-            return self._cleanup_home_headscale(*expected)
+        if any(value is not None for value in (*expected, expected_operation_id)):
+            return self._cleanup_home_headscale(*expected, operation_id=expected_operation_id)
         if self.layout != "deb":
             raise headscale.HeadscaleServiceError("deb-layout-required")
         self._headscale_preparing = True

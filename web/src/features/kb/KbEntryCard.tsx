@@ -1,5 +1,6 @@
 import { Link } from 'react-router-dom';
-import { toneClass } from '@/design-system/patterns/semanticTone';
+import { StatusBadge } from '@/design-system/patterns/StatusBadge';
+import { TONE_CLASS, toneFor } from '@/design-system/patterns/semanticTone';
 import { cn } from '@/lib/utils';
 import type { KBEntry } from '@/lib/api/types';
 import type { KBEntrySummary } from '@/hooks/kb';
@@ -16,7 +17,7 @@ type Density = 'comfortable' | 'compact';
 function FileBadge({ className }: { className?: string }): JSX.Element {
   return (
     <svg
-      className={cn('text-text-muted inline-block shrink-0', className)}
+      className={cn('inline-block shrink-0', className)}
       width="14"
       height="14"
       viewBox="0 0 24 24"
@@ -50,51 +51,66 @@ export function KbEntryCard({
 }: KbEntryCardProps): JSX.Element {
   const { t, locale } = useTranslation();
   const pad = density === 'compact' ? 'p-2' : 'p-3';
+  // THR-376 r2 K2: the 38px icon tile takes the entry type's tone fill (same
+  // tile recipe as the Skills catalog); unknown/neutral types use the sunken
+  // surface rather than the neutral badge's outline.
+  const tone = toneFor(entry.type);
+  const tileTint = tone === 'neutral' ? 'bg-surface-sunken text-text-secondary' : TONE_CLASS[tone];
   return (
     <Link
       to={to}
       className={cn(
-        'border-border-default bg-surface-raised block rounded-lg border shadow-pasture-sm',
+        'border-border-default bg-surface-raised flex gap-3 rounded-lg border shadow-pasture-sm',
         pad,
         active && 'ring-accent-ring border-accent-default ring-2',
         'hover:bg-surface-raised/80 transition-shadow hover:shadow-pasture',
       )}
     >
-      <div className="flex items-center gap-1.5">
-        <FileBadge className="h-3 w-3" />
-        <span className="text-text-muted font-mono text-xs tabular-nums">{entry.slug}</span>
+      <div
+        aria-hidden="true"
+        className={cn('flex size-9.5 shrink-0 items-center justify-center rounded-md', tileTint)}
+      >
+        <FileBadge className="h-4.5 w-4.5" />
       </div>
-      <div className="text-text-primary mt-0.5 flex flex-wrap items-baseline gap-2">
+      <div className="min-w-0 flex-1">
+        {/* THR-376 r2 K2: badge row above the title — the semantic type badge
+            (SOP green / reference blue / ruling amber via the shared tone map;
+            other types neutral), then the slug and relative age in mono. */}
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+          <StatusBadge tone={tone} label={entry.type} />
+          {/* nbsp keeps the separator on the slug's line when the row wraps. */}
+          <span className="text-text-muted font-mono text-xs tabular-nums">
+            {entry.slug}{'\u00a0· '}{relativeKbAge(entry.updated_at, locale, t)}
+          </span>
+        </div>
         {/* THR-376 r2 K2: row titles use Hanken 600 (serif is for h1/h2/display numbers only). */}
-        <span className="text-body font-semibold">{entry.title}</span>
-        {/* Semantic type badge — SOP green / reference blue / ruling amber via
-            the shared colour map (THR-099 Batch 1 proof-of-render). Other
-            types fall back to the neutral grey tone. */}
-        <span
-          className={cn(
-            'inline-flex items-center rounded-full px-2 py-0.5 text-2xs font-semibold tracking-wide',
-            toneClass(entry.type),
-          )}
-        >
-          {entry.type}
-        </span>
-        <span className="text-text-muted font-mono text-xs tabular-nums">· {relativeKbAge(entry.updated_at, locale, t)}</span>
+        <div className="text-text-primary text-body mt-1 font-semibold">{entry.title}</div>
+        {snippet && <p className="text-text-muted mt-1.5 text-sm">{snippet}</p>}
+        {/* THR-376 r2 K3: tags as one inline mono meta line (was one pill per
+            tag). Display only — tag filtering lives in the rail. Tags are
+            freeform, so a long unbroken tag breaks anywhere instead of
+            overflowing the card (QA-1). */}
+        {density === 'comfortable' && entry.tags.length > 0 && (
+          <ul
+            aria-label={t('kb.railTagsSection')}
+            className="text-text-muted text-task-meta mt-1.5 font-mono wrap-anywhere"
+          >
+            {entry.tags.map((tag, i) => (
+              <li key={tag} className="inline">
+                {tag}
+                {/* nbsp binds the separator to the preceding tag so a wrapped
+                    line never starts with "·". */}
+                {i < entry.tags.length - 1 && <span aria-hidden="true">{'\u00a0· '}</span>}
+              </li>
+            ))}
+          </ul>
+        )}
+        {viewCount !== undefined && (
+          <div className="text-text-muted mt-1.5 font-mono text-xs tabular-nums">
+            {t('kb.viewedLabel', { count: viewCount, number: formatCountFor(locale, viewCount) })}
+          </div>
+        )}
       </div>
-      {snippet && <p className="text-text-muted mt-1.5 text-sm">{snippet}</p>}
-      {density === 'comfortable' && entry.tags.length > 0 && (
-        <div className="mt-1.5 flex flex-wrap gap-1.5">
-          {entry.tags.map((t) => (
-            <span key={t} className="bg-surface-sunken text-text-muted border-border-subtle inline-flex items-center rounded-full border px-2 py-0.5 text-xs">
-              {t}
-            </span>
-          ))}
-        </div>
-      )}
-      {viewCount !== undefined && (
-        <div className="text-text-muted mt-1.5 font-mono text-xs tabular-nums">
-          {t('kb.viewedLabel', { count: viewCount, number: formatCountFor(locale, viewCount) })}
-        </div>
-      )}
     </Link>
   );
 }

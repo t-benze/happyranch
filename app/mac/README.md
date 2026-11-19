@@ -70,12 +70,13 @@ They are NOT RUN on the Linux maker host. The existing unsigned
 Swift tests. Native terminal/signal behavior, Keychain consent/unsigned reopen,
 helper integration and home/different-network acceptance remain NOT RUN.
 
-### THR-379 slice 3b-2a: static Mac client bridge contract
+### THR-379 slices 3b-2a/3b-2b: static Mac client bridge contract
 
 The separate packaged Connection view asynchronously dispatches `bridge.hello`,
 `client.status`, `client.savedComputers`, `client.health` and ordinary
-`client.retrySave`. Hello advertises only those backed client capabilities;
-Mac host commands are unavailable. Status, saved-computer lists, health and
+`client.retrySave`, plus the 3b-2b consent-dependent commands below. Hello
+advertises all ten v1 client capabilities in the managed lane; Mac host commands
+are unavailable. Status, saved-computer lists, health and
 subscriptions read existing native memory only: they never start discovery,
 Keychain prompts, retries or a connection. Health observes the existing native
 cadence, becomes stale after ten seconds, and never grants Connected. The
@@ -91,14 +92,23 @@ ref remains. Native custody/discovery is uncapped, partial valid discovery and
 ordinary startup reconnect are unchanged. A stale/unresolvable ref refuses
 `stateChanged` with effect none. Read/subscribe cannot refresh protected discovery.
 
-The per-document ledger retains 64 mutation IDs/outcomes without eviction,
-refuses same-ID/different-body, and admits one ordinary mutation and one native
-prompt without a queue. It also has a separate attempt-cancellation record for
-3b-2b, exempt from ordinary saturation/busy but never from confirmation. Retry
+The per-document ledger retains up to 64 mutation IDs/outcomes, including
+archived cancellation replays, without eviction. It refuses same-ID/different-body
+and admits one ordinary mutation and one native app-owned prompt without a queue.
+The current attempt-cancellation record has a separate slot, exempt from ordinary
+saturation/busy but never from confirmation; repeated Cancel shares that record
+through storage and stopping. After settled Keep or sheet expiry, a new request
+ID admits a fresh default-Keep confirmation for the same attempt only if archiving
+the previous cancellation fits within the shared 64-entry bound. At saturation,
+ordinary mutations and new cancellation IDs requiring archival refuse with
+`busy`/`effect:none`/`recovery:refresh`; retained exact IDs still replay and body
+conflicts still refuse. No entry is evicted. Closing the Connection window or
+using the existing native app Disconnect remains available outside the journal. Retry
 save invokes the existing non-replacement save path and awaits write/readback;
 it does not delete or replace access after an identity/consent failure. Genuine
 Keychain consent remains native. A 130-second transport deadline reports
-unknown effect and keeps the mutation/prompt slot until native settlement.
+unknown effect and keeps mutation ownership until native settlement. The app
+prompt slot covers actual app-owned sheets, not an in-flight SecItem call.
 Document loss fences bridge-owned work, retains observed storage outcomes and
 discards stale delivery. Reads do not acquire ownership of existing sessions.
 
@@ -108,13 +118,46 @@ starts/stops one native observation stream. Events use structured arguments to
 `callAsyncJavaScript` in the admitted main frame/named world, with fresh native
 generation and document checks; runtime content receives no bridge.
 
-`client.acceptInvite`, `client.connectSaved`, `client.removeSaved`,
-`client.disconnect`, **`client.cancelAttempt`** and reconnecting `client.retry`
-remain unadvertised and unavailable (effect none) until 3b-2b supplies native
-paste/target/default-Cancel sheets. That PR also owns persistent native
-save-warning → static Retry save routing and the complete RELEASE UI load gate
-on every entry. Existing native screens remain. Swift/native GUI/Keychain
-execution is not established by this source delivery or an unsigned build.
+`client.acceptInvite` opens native secure paste, offline validation and a
+separate captured-target/save confirmation. Clipboard access requires explicit
+user paste; invites never enter JS. `client.connectSaved` resolves an opaque ref,
+confirms native binding/CA details, then rereads exact trust/profile/bearer before
+joining without an invite. `client.removeSaved` uses default-Cancel native
+consent and staged native-state/Keychain deletion with verified absence; partial
+removal remains removalIncomplete/unknown. The captured local session stops
+before the custody reread, even if access is denied, cancelled, locked, changed
+or missing. A failed reread authorizes no deletion and retains the exact target
+for explicit Retry removal without stopping the settled session again.
+`client.retry` confirms the retained removal target, eligible saved reconnect, fresh invite, or freshly delivered
+replacement as applicable. Ordinary Retry save refuses identity replacement; its closed identityChanged
+result offers an explicit Retry into native replacement consent. Failed deletion
+cannot become a successful replacement. No spent invite is replayed.
+
+`client.disconnect` retains saved access. `client.cancelAttempt` captures the
+current attempt and admitted generation and opens a native window-modal
+confirmation on Connection, default Keep, with captured-computer/local-only
+wording. Only existing **app-owned** sheets are focused; their own Cancel is
+used without stacking or queueing. **An OS-owned Keychain ACL/unlock dialog is
+not app-observable.** The store returns final SecItem results only; no prompt
+observation exists. The saving rule applies unconditionally during Keychain
+write/readback: the app's cancellation confirmation stays reachable and explains
+that storage cannot be interrupted. Any concurrent OS dialog is left alone;
+its answer is a save outcome, never attempt cancellation. Confirmation invalidates
+the token immediately and shows Stopping; teardown waits for the SecItem safe
+point and retains observed save and incomplete/unknown cleanup outcomes. Only
+confirmed teardown reports effect confirmed. Dismissal keeps the attempt with
+effect none and releases only a still-current native loaded-UI gate.
+
+The persistent, accessible native-chrome save warning over the runtime explains
+that reopening may need a new invite. Its bilingual Retry save action opens the
+packaged Connection view even after that view was closed; runtime content gets
+no bridge and cannot mutate custody. The native RELEASE UI load gate remains
+the only route to Connected. Existing native screens remain until qualified
+cutover. This source delivery and unsigned app build do not establish native
+GUI/Keychain execution or cross-device acceptance. Focused Swift tests on an
+authorized Mac: `swift test --package-path app/mac --filter 'ConnectionContractTests|HomeInviteModelTests'`.
+They are NOT RUN on the Linux maker host and are not compiled by the unsigned
+workflow.
 
 ### THR-327 slice 5: home invite UI, saved reconnect and address recovery
 
@@ -137,7 +180,7 @@ invite-expiry countdown and cancel fencing. Native load callbacks capture both
 identities, including on saved reconnect. A native confirmation hold defers
 Connected until dismissal and a still-current authorized load; direct Cancel in
 the native attempt form needs no second confirmation. The static contract layer
-above reuses these seams; web-initiated confirmations remain in 3b-2b. `ManagedHomeInviteSession`
+above reuses these seams; 3b-2b supplies web-initiated confirmations. `ManagedHomeInviteSession`
 uses the 5b helper and the existing managed peer-only bridge for every ceremony, health and product request. Native/helper
 join has a 120-second bound, each ceremony request and opening navigation a
 10-second bound, and approval cannot outlive the invite. Cancel forgets draft,

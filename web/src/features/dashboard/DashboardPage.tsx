@@ -22,10 +22,12 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useDashboardSummary } from '@/hooks/dashboard';
 import { useTokensToday, useTokensWeek } from '@/hooks/tokens';
 import { Button } from '@/design-system/primitives/Button';
+import { Card } from '@/design-system/primitives/Card';
 import { ContentWrap } from '@/design-system/layouts/ContentWrap/ContentWrap';
 import { CrescentMoonBadge } from '@/design-system/patterns/CrescentMoonBadge';
 import { EmptyState } from '@/design-system/patterns/EmptyState';
 import { IdBadge } from '@/design-system/patterns/IdBadge';
+import { List, Row, RowAction } from '@/design-system/patterns/List';
 import { StatValue } from '@/design-system/patterns/StatValue';
 import { StatusBadge } from '@/design-system/patterns/StatusBadge';
 import type { Tone } from '@/design-system/patterns/semanticTone';
@@ -86,28 +88,53 @@ interface PanelProps {
   children: ReactNode;
 }
 
-/** Direction-A Pasture card — matches ds.css .card (bg-surface-raised, rounded-lg 18px, soft shadow). */
+type PanelHeaderProps = Omit<PanelProps, 'children'>;
+
+function PanelHeader({ title, meta, variant = 'eyebrow' }: PanelHeaderProps): JSX.Element {
+  return (
+    // Wraps instead of squeezing: in the narrow lg rail (1024-1279px) a long
+    // eyebrow + meta pair no longer fits one line (THR-376 D2).
+    <header className="mb-4 flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+      {variant === 'title' ? (
+        // THR-376 r2 G3: card title Newsreader 18/500.
+        <h2 className="font-display text-h2 text-text-primary font-medium">
+          {title}
+        </h2>
+      ) : (
+        // THR-376 r2 G4: Pasture `.eyebrow` recipe (11/600, .07em, ink-3).
+        <h2 className="text-eyebrow text-text-muted uppercase">
+          {title}
+        </h2>
+      )}
+      {meta ? (
+        <span className="text-text-muted font-mono text-xs whitespace-nowrap">{meta}</span>
+      ) : null}
+    </header>
+  );
+}
+
+/** Direction-A Pasture card — the shared `Card` (ds.css .card, `.card-pad` 20px; THR-376 r2 G2). */
 function Panel({ title, meta, variant = 'eyebrow', children }: PanelProps): JSX.Element {
   return (
-    <section className="border-border-default bg-surface-raised shadow-pasture-sm rounded-lg border p-6">
-      {/* Wraps instead of squeezing: in the narrow lg rail (1024-1279px) a long
-          eyebrow + meta pair no longer fits one line (THR-376 D2). */}
-      <header className="mb-4 flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
-        {variant === 'title' ? (
-          <h2 className="font-display text-h3 text-text-primary font-medium">
-            {title}
-          </h2>
-        ) : (
-          <h2 className="text-text-secondary text-xs font-semibold tracking-wider uppercase">
-            {title}
-          </h2>
-        )}
-        {meta ? (
-          <span className="text-text-muted font-mono text-xs whitespace-nowrap">{meta}</span>
-        ) : null}
-      </header>
+    <Card as="section">
+      <PanelHeader title={title} meta={meta} variant={variant} />
       {children}
-    </section>
+    </Card>
+  );
+}
+
+/**
+ * One group inside the right-rail card (THR-376 r2 L1): a divider `Row` of the
+ * shared `List`, padded like `.card-pad` (20px, G2), with an eyebrow header.
+ */
+function RailSection({ title, meta, children }: Omit<PanelProps, 'variant'>): JSX.Element {
+  return (
+    <Row padding="none" className="p-5">
+      <section>
+        <PanelHeader title={title} meta={meta} />
+        {children}
+      </section>
+    </Row>
   );
 }
 
@@ -241,17 +268,18 @@ export function DashboardPage(): JSX.Element {
             </span>
           )}
         </p>
-        <h1 className="font-display text-display text-text-primary mb-16 font-medium">
+        <h1 className="font-display text-display text-text-primary mb-5.5 font-medium">
           {statusSummary(locale, pendingCount)}
         </h1>
 
         {/* Direction-A a-dashboard layout: a wide MAIN column (Waiting-on-you
             queue + Recent-activity feed) beside a narrower RIGHT RAIL of
-            secondary cards (Today / Org pulse / token cards). THR-030 HOME-03. */}
-        <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+            secondary cards (Today / Org pulse / token cards). THR-030 HOME-03.
+            THR-376 r2 G1: main column 1fr beside a fixed 340px rail, gap 22px. */}
+        <div className="flex flex-col gap-5.5 lg:flex-row lg:items-start">
           {/* MAIN COLUMN — Waiting-on-you queue on top, Recent-activity feed below */}
           <div
-            className="space-y-4 lg:col-span-2"
+            className="min-w-0 space-y-4 lg:flex-1"
             data-testid="dashboard-main"
             aria-label={t('dashboard.column.main')}
           >
@@ -314,38 +342,57 @@ export function DashboardPage(): JSX.Element {
                   {s.recent_activity.map((r, i) => (
                     <li
                       key={`${r.timestamp}-${i}`}
-                      className="flex items-baseline gap-2"
+                      className="flex items-baseline gap-x-1.5"
                     >
-                      <span className="text-text-muted">
+                      {/* THR-376 r2 D6: every row starts with a pill in a
+                          fixed-width slot, and the age has a fixed-width slot,
+                          so agent names line up. Rows with no verdict (e.g.
+                          session_start) get a neutral "—" pill (the dashboard's
+                          "none" mark), not a made-up word. The agent name,
+                          event kind and ID share one flexible column that
+                          wraps within itself, so the agent-name column stays
+                          the same at every width (1100, mobile). The age slot
+                          (60px) fits the widest age ("23 小时前", 58px) and the
+                          6px gaps leave a 390px row room for a full
+                          engineering_manager-length name. */}
+                      <span className="flex w-12 shrink-0">
+                        {r.verdict ? (
+                          <ActivityVerdictPill verdict={r.verdict} />
+                        ) : (
+                          <StatusBadge tone="neutral" label="—" />
+                        )}
+                      </span>
+                      <span className="text-text-muted w-15 shrink-0 whitespace-nowrap">
                         {t('dashboard.ago', {
                           age: formatAge(locale, secondsSince(r.timestamp, now)),
                         })}
                       </span>
-                      {r.verdict && <ActivityVerdictPill verdict={r.verdict} />}
-                      <span className="text-text-primary">{r.who}</span>
-                      {/* Raw audit machine value — rendered byte-for-byte. */}
-                      <span className="text-text-muted">{r.event_kind}</span>
-                      {r._thread_dream_id && (
-                        <CrescentMoonBadge
-                          className="h-3 w-3"
-                          label={t('dashboard.dreamBadge')}
-                        />
-                      )}
-                      {r.task_id && (
-                        <span className="ml-auto">
-                          <IdBadge
-                            id={r.task_id}
-                            kind={r.task_id.startsWith('THR-') ? 'thread' : 'task'}
-                            to={
-                              slug
-                                ? r.task_id.startsWith('THR-')
-                                  ? `/orgs/${slug}/threads/${r.task_id}`
-                                  : `/orgs/${slug}/tasks/${r.task_id}`
-                                : undefined
-                            }
+                      <span className="flex min-w-0 flex-1 flex-wrap items-baseline gap-x-2 gap-y-1">
+                        <span className="text-text-primary wrap-anywhere">{r.who}</span>
+                        {/* Raw audit machine value — rendered byte-for-byte. */}
+                        <span className="text-text-muted">{r.event_kind}</span>
+                        {r._thread_dream_id && (
+                          <CrescentMoonBadge
+                            className="h-3 w-3"
+                            label={t('dashboard.dreamBadge')}
                           />
-                        </span>
-                      )}
+                        )}
+                        {r.task_id && (
+                          <span className="ml-auto">
+                            <IdBadge
+                              id={r.task_id}
+                              kind={r.task_id.startsWith('THR-') ? 'thread' : 'task'}
+                              to={
+                                slug
+                                  ? r.task_id.startsWith('THR-')
+                                    ? `/orgs/${slug}/threads/${r.task_id}`
+                                    : `/orgs/${slug}/tasks/${r.task_id}`
+                                  : undefined
+                              }
+                            />
+                          </span>
+                        )}
+                      </span>
                     </li>
                   ))}
                 </ul>
@@ -353,155 +400,189 @@ export function DashboardPage(): JSX.Element {
             </Panel>
           </div>
 
-          {/* RIGHT RAIL — Today / Org pulse / token cards */}
-          <div
-            className="space-y-4"
-            data-testid="dashboard-rail"
-            aria-label={t('dashboard.column.rail')}
-          >
-            <Panel title={t('dashboard.today.title')} meta={t('dashboard.today.meta')}>
-              <Heartbeat data={s.heartbeat} nowIdx={nowHour} />
-              <div className="mt-3">
-                <NarrativeParagraph
-                  counts={s.narrative_counts}
-                  escalationCount={pendingCount}
-                />
-              </div>
-              {/* Counter tiles — ds.css display-num / mono pattern. Five equal
-                  columns collapsed to 32px at 1100 and 53px at 1440, so labels
-                  collided or wrapped (THR-376 D4). Three columns fit every label
-                  on one line; the narrow lg rail (1024-1279px) uses two. */}
-              <div className="border-border-default mt-6 grid grid-cols-3 items-end gap-x-3 gap-y-4 border-t pt-4 lg:grid-cols-2 xl:grid-cols-3">
-                <div className="text-center">
-                  <div className="font-display text-h1 text-text-primary font-medium tabular-nums">
-                    {s.narrative_counts.completed_today}
-                  </div>
-                  <div className="text-text-muted text-overline mt-1">{t('dashboard.today.completed')}</div>
+          {/* RIGHT RAIL — Today / Org pulse / token cards. THR-376 r2 L1: one
+              card (the shared List) with a divider Row per group, not a stack
+              of separate cards; fixed 340px wide from lg (G1). */}
+          <div className="lg:w-85 lg:shrink-0" data-testid="dashboard-rail">
+            <List aria-label={t('dashboard.column.rail')}>
+              <RailSection title={t('dashboard.today.title')} meta={t('dashboard.today.meta')}>
+                <Heartbeat data={s.heartbeat} nowIdx={nowHour} />
+                <div className="mt-3">
+                  <NarrativeParagraph
+                    counts={s.narrative_counts}
+                    escalationCount={pendingCount}
+                  />
                 </div>
-                <div className="text-center">
-                  <div
-                    className={
-                      s.narrative_counts.failed_today
-                        ? 'font-display text-h1 text-tier-red font-medium tabular-nums'
-                        : 'font-display text-h1 text-text-muted font-medium tabular-nums'
-                    }
-                  >
-                    {s.narrative_counts.failed_today}
+                {/* Counter tiles — ds.css display-num / mono pattern. Five equal
+                    columns collapsed to 32px at 1100 and 53px at 1440, so labels
+                    collided or wrapped (THR-376 D4). Three columns fit every label
+                    on one line, including in the fixed 340px rail (THR-376 r2
+                    G1), so the old two-column narrow-rail step is gone.
+                    THR-376 r2 G10: numbers 20px (tokens 15px); Completed in
+                    accent-text. */}
+                <div className="border-border-default mt-6 grid grid-cols-3 items-end gap-x-3 gap-y-4 border-t pt-4">
+                  <div className="text-center">
+                    <div className="font-display text-accent-text text-xl font-medium tabular-nums">
+                      {s.narrative_counts.completed_today}
+                    </div>
+                    <div className="text-text-muted text-overline mt-1">{t('dashboard.today.completed')}</div>
                   </div>
-                  <div className="text-text-muted text-overline mt-1">{t('dashboard.today.failed')}</div>
-                </div>
-                <div className="text-center">
-                  <div className="font-display text-h1 text-text-primary font-medium tabular-nums">
-                    {s.narrative_counts.agents_active_now}
+                  <div className="text-center">
+                    <div
+                      className={
+                        s.narrative_counts.failed_today
+                          ? 'font-display text-tier-red text-xl font-medium tabular-nums'
+                          : 'font-display text-text-muted text-xl font-medium tabular-nums'
+                      }
+                    >
+                      {s.narrative_counts.failed_today}
+                    </div>
+                    <div className="text-text-muted text-overline mt-1">{t('dashboard.today.failed')}</div>
                   </div>
-                  <div className="text-text-muted text-overline mt-1">{t('dashboard.today.active')}</div>
-                </div>
-                <div className="text-center">
-                  <div className="font-display text-h1 text-text-primary font-medium tabular-nums">
-                    +{s.narrative_counts.kb_added_today}
+                  <div className="text-center">
+                    <div className="font-display text-text-primary text-xl font-medium tabular-nums">
+                      {s.narrative_counts.agents_active_now}
+                    </div>
+                    <div className="text-text-muted text-overline mt-1">{t('dashboard.today.active')}</div>
                   </div>
-                  <div className="text-text-muted text-overline mt-1">{t('dashboard.today.kbEntries')}</div>
-                </div>
-                <div className="text-center">
-                  {/* Tokens-today holds a compact token SUM (e.g. "346.1K")
-                      which is wider than a raw count. It steps down to text-h2
-                      (vs the sibling counts' text-h1) so the value fits its 1/5
-                      column without colliding with the card edge (THR-099
-                      number-overflow: overflow-11.24.21), and renders via the
-                      overflow-safe StatValue so full precision stays in the
-                      title. Honest tile: show the real summed total ONLY once
-                      the /tokens query has succeeded with a defined figure;
-                      while pending, disabled, or errored the value is unknown so
-                      we show the dashboard's neutral em-dash placeholder rather
-                      than a fabricated 0 (THR-030 HOME-04). */}
-                  <div className="font-display text-h2 text-text-primary font-medium tabular-nums">
-                    {tokensTodayQ.data !== undefined && !tokensTodayQ.isError ? (
-                      <StatValue value={tokensTodayQ.data} align="inline" locale={locale} />
-                    ) : (
-                      '—'
-                    )}
+                  <div className="text-center">
+                    <div className="font-display text-text-primary text-xl font-medium tabular-nums">
+                      +{s.narrative_counts.kb_added_today}
+                    </div>
+                    <div className="text-text-muted text-overline mt-1">{t('dashboard.today.kbEntries')}</div>
                   </div>
-                  <div className="text-text-muted text-overline mt-1">{t('dashboard.today.tokensToday')}</div>
+                  <div className="text-center">
+                    {/* Tokens-today holds a compact token SUM (e.g. "346.1K")
+                        which is wider than a raw count. It steps down to 15px
+                        (vs the sibling counts' 20px) so the value fits its 1/5
+                        column without colliding with the card edge (THR-099
+                        number-overflow: overflow-11.24.21), and renders via the
+                        overflow-safe StatValue so full precision stays in the
+                        title. Honest tile: show the real summed total ONLY once
+                        the /tokens query has succeeded with a defined figure;
+                        while pending, disabled, or errored the value is unknown so
+                        we show the dashboard's neutral em-dash placeholder rather
+                        than a fabricated 0 (THR-030 HOME-04). */}
+                    <div className="font-display text-body-lg text-text-primary font-medium tabular-nums">
+                      {tokensTodayQ.data !== undefined && !tokensTodayQ.isError ? (
+                        <StatValue value={tokensTodayQ.data} align="inline" locale={locale} />
+                      ) : (
+                        '—'
+                      )}
+                    </div>
+                    <div className="text-text-muted text-overline mt-1">{t('dashboard.today.tokensToday')}</div>
+                  </div>
                 </div>
-              </div>
-            </Panel>
+              </RailSection>
 
-            <Panel title={t('dashboard.pulse.title')} meta={t('dashboard.pulse.meta')}>
-              <OrgPulseTable rows={s.org_pulse} />
-            </Panel>
+              <RailSection title={t('dashboard.pulse.title')} meta={t('dashboard.pulse.meta')}>
+                <OrgPulseTable rows={s.org_pulse} />
+              </RailSection>
 
-            {/* This week's burn — glance card deep-linking to Spend (THR-030
-                HOME-06). The figure is the honest 7d token total from the same
-                /tokens rollup the Tokens-today tile rides; tokens are the unit
-                (dollar burn is deferred). While the query is pending/errored
-                the value is unknown, so we paint the neutral em-dash, never a
-                fabricated 0. The chevron drills into the Spend page's
-                same-window number. */}
-            <Panel title={t('dashboard.burn.title')} meta={t('dashboard.burn.meta')}>
+              {/* This week's burn — glance card deep-linking to Spend (THR-030
+                  HOME-06). The figure is the honest 7d token total from the same
+                  /tokens rollup the Tokens-today tile rides; tokens are the unit
+                  (dollar burn is deferred). While the query is pending/errored
+                  the value is unknown, so we paint the neutral em-dash, never a
+                  fabricated 0. The chevron drills into the Spend page's
+                  same-window number. THR-376 r2 G11: the whole group row is the
+                  link (RowAction), not only the inner figure. */}
               {slug ? (
-                <Link
-                  to={`/orgs/${slug}/spend`}
-                  aria-label={t('dashboard.burn.link')}
-                  className="group flex items-end justify-between"
-                >
+                <Row padding="none">
+                  <RowAction asChild>
+                    <Link
+                      to={`/orgs/${slug}/spend`}
+                      aria-label={t('dashboard.burn.link')}
+                      className="group block p-5"
+                    >
+                      <PanelHeader title={t('dashboard.burn.title')} meta={t('dashboard.burn.meta')} />
+                      <div className="flex items-end justify-between">
+                        <div>
+                          <div className="font-display text-h1 text-text-primary font-medium tabular-nums">
+                            {weekBurnDisplay}
+                          </div>
+                          <div className="text-text-muted text-overline mt-1">{t('dashboard.burn.tokens')}</div>
+                        </div>
+                        <ChevronRight
+                          size={20}
+                          aria-hidden="true"
+                          className="text-text-muted group-hover:text-text-primary shrink-0"
+                        />
+                      </div>
+                    </Link>
+                  </RowAction>
+                </Row>
+              ) : (
+                <RailSection title={t('dashboard.burn.title')} meta={t('dashboard.burn.meta')}>
                   <div>
                     <div className="font-display text-h1 text-text-primary font-medium tabular-nums">
                       {weekBurnDisplay}
                     </div>
                     <div className="text-text-muted text-overline mt-1">{t('dashboard.burn.tokens')}</div>
                   </div>
-                  <ChevronRight
-                    size={20}
-                    aria-hidden="true"
-                    className="text-text-muted group-hover:text-text-primary shrink-0"
-                  />
-                </Link>
-              ) : (
-                <div>
-                  <div className="font-display text-h1 text-text-primary font-medium tabular-nums">
-                    {weekBurnDisplay}
-                  </div>
-                  <div className="text-text-muted text-overline mt-1">{t('dashboard.burn.tokens')}</div>
-                </div>
+                </RailSection>
               )}
-            </Panel>
 
-            {/* Self-contained cost-oversight card — fetches its own
-                /tokens?group_by=thread data, not DashboardSummaryResponse. */}
-            <TopTokenThreadsPanel />
+              {/* Self-contained cost-oversight group — fetches its own
+                  /tokens?group_by=thread data, not DashboardSummaryResponse. */}
+              <Row padding="none" className="p-5">
+                <TopTokenThreadsPanel />
+              </Row>
 
-            <Panel title={t('dashboard.updates.title')}>
-              {s.updates_this_week.length === 0 ? (
-                <p className="text-text-muted text-sm">{t('dashboard.updates.empty')}</p>
-              ) : (
-                <ul className="space-y-1 font-mono text-xs">
-                  {s.updates_this_week.map((u, i) => (
-                    <li
-                      key={`${u.timestamp}-${i}`}
-                      className="flex items-baseline gap-2"
-                    >
-                      <span
-                        className={
-                          u.marker === 'add'
-                            ? 'text-tier-green'
-                            : u.marker === 'warn'
-                            ? 'text-tier-yellow'
-                            : 'text-text-muted'
-                        }
+              <RailSection title={t('dashboard.updates.title')}>
+                {s.updates_this_week.length === 0 ? (
+                  <p className="text-text-muted text-sm">{t('dashboard.updates.empty')}</p>
+                ) : (
+                  <ul className="space-y-1 font-mono text-xs">
+                    {s.updates_this_week.map((u, i) => (
+                      <li
+                        key={`${u.timestamp}-${i}`}
+                        className="flex items-baseline gap-2"
                       >
-                        {u.marker === 'add'
-                          ? '+'
-                          : u.marker === 'warn'
-                          ? '!'
-                          : '·'}
-                      </span>
-                      <span className="text-text-primary">{u.text}</span>
-                      <span className="text-text-muted">{u.meta}</span>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </Panel>
+                        <span
+                          className={
+                            u.marker === 'add'
+                              ? 'text-tier-green'
+                              : u.marker === 'warn'
+                              ? 'text-tier-yellow'
+                              : 'text-text-muted'
+                          }
+                        >
+                          {u.marker === 'add'
+                            ? '+'
+                            : u.marker === 'warn'
+                            ? '!'
+                            : '·'}
+                        </span>
+                        {/* THR-376 r2 G13: "KB: <title>" in ink, then a muted
+                            age; one line (truncated, full text in the title) so
+                            long slugs no longer wrap at 1100. KB rows carry only
+                            the entry slug, so the slug stands in for the title. */}
+                        {u.marker === 'add' ? (
+                          <span
+                            className="text-text-primary min-w-0 flex-1 truncate"
+                            title={u.meta}
+                          >
+                            {t('dashboard.updates.kbEntry', { title: u.meta })}
+                          </span>
+                        ) : (
+                          <span
+                            className="min-w-0 flex-1 truncate"
+                            title={`${u.text} ${u.meta}`}
+                          >
+                            <span className="text-text-primary">{u.text}</span>{' '}
+                            <span className="text-text-muted">{u.meta}</span>
+                          </span>
+                        )}
+                        <span className="text-text-muted shrink-0 whitespace-nowrap">
+                          {formatAge(locale, secondsSince(u.timestamp, now))}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </RailSection>
+            </List>
           </div>
         </div>
     </ContentWrap>

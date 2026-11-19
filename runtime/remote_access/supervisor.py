@@ -65,6 +65,7 @@ from runtime.remote_access.identity import (
     SingleUseGuard,
     StaticProofVerifier,
 )
+from runtime.remote_access.invite_control import InviteControl
 from runtime.remote_access.lab_provider import (
     LAB_ONLY_BANNER,
     LabProviderAdapter,
@@ -276,6 +277,23 @@ class _HelperOperations:
         if manager is None:
             raise helper_control.Refused('unavailable')
         return manager.mutation_lock()
+
+    def _invites(self) -> InviteControl:
+        # Resolve the serving owner on each call: runtime rotation replaces it.
+        # This adapter never constructs another manager, store or listener.
+        manager = self.supervisor._pinned_pairing_manager
+        if manager is None:
+            raise helper_control.Refused('unavailable')
+        return InviteControl(manager)
+
+    def reserve_invite(self, generation: int, digest: str, expires_at: int, *, deadline: float) -> int:
+        return self._invites().reserve_invite(generation, digest, expires_at, deadline=deadline)
+
+    def invalidate_invite(self, generation: int, *, deadline: float) -> int:
+        return self._invites().invalidate_invite(generation, deadline=deadline)
+
+    def revoke_all(self, generation: int, *, deadline: float) -> int:
+        return self._invites().revoke_all(generation, deadline=deadline)
 
     def _state(self) -> tuple[TrustState, int]:
         store = self.supervisor.state_store

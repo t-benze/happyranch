@@ -3753,6 +3753,35 @@ checks change systemd hardening, required CI selection or workflow triggers.
 
 ## Fixed remote-access helper
 
+I3a supervisor B10 wiring uses the retained standalone venue:
+`PYTHONPATH=$PWD uv run --frozen pytest scripts/test_invite_control.py -v --tb=short`.
+Its supervisor cases use a real private control listener, the serving pinned
+pairing manager, anchored files and stream registry. Only root-peer credentials
+and the protected release record are simulated, as in the bound helper venue.
+They cover digest reservation, all three ceremony phases, absent-owner refusal,
+transaction deadline forwarding, removed-owner stream closure (including failure),
+and denied admission after runtime rotation and connector restart. No host
+systemd, system bus or installed polkit acceptance is exercised.
+
+I3a lifecycle mounting uses the retained standalone venue:
+`PYTHONPATH=$PWD uv run --frozen --no-sync pytest scripts/test_helper_mount.py -v --tb=short`.
+Test-side Gio/child transport seams run the shipping private mount, native-auth
+callback, B9 capture/slot/deadlines and real B16 file writer when no compatible
+Gio+pytest interpreter exists. Protected-store/backend cases use temporary roots;
+fixed service calls are simulated. They cover R1–R4+R7 order, failed revoke still
+stopping, no B6 without stop proof, retained un-revoked trust state, closed results,
+G/O/UID/owner changes before effects, fresh per-action auth and B17 store expectations.
+This does not prove installed system bus/polkit, dialogs or real service effects.
+`/usr/bin/python3 -I` can separately import the fixed helper with real Gio without
+bus registration. The original Gio helper/lifecycle venue remains applicable where
+its existing interpreter is available; no dependencies need be installed.
+B6 operation-CAS coverage lives next to existing custody tests in
+`scripts/test_headscale_custody.py`. Payload additions also require
+`/usr/bin/python3 -B packaging/linux/test_build_deb.py -v`.
+The existing managed-admission reconcile test at line 463 fails on base with
+"home control binding not provisioned; requires slice 3b-2"; preserve it unchanged
+and record it as pre-existing. I5 owns the enabling/provisioning checkpoint.
+
 The slice 3b-1 token-reader sub-part uses the existing standalone venue:
 `uv run --frozen pytest scripts/test_installer_token_custody.py -v --tb=short`.
 It drives real temp-root provisioning, install admission and drift with a fake

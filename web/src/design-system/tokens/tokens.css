@@ -448,10 +448,12 @@
   --color-info:         oklch(0.72 0.10 245);
 }
 
-/* Opt-in Tasks standalone-list type metrics. They stay here because Tailwind */
+/* Opt-in list type metrics, introduced for the Tasks standalone list        */
+/* (THR-376 PR5). `--text-task-meta` (11.5px) is also the shared mono        */
+/* metadata/tag-chip size (Knowledge entry tag lines and rail tag chips,     */
+/* THR-376 r2 PR-K; see DESIGN_SYSTEM.md). They stay here because Tailwind   */
 /* only builds `text-task-*` utilities from @theme in this root stylesheet;  */
-/* the page-local `.tasks-*` rules live in src/features/tasks/tasks.css,     */
-/* imported by the Tasks feature (THR-376 PR5).                              */
+/* the page-local `.tasks-*` rules live in src/features/tasks/tasks.css.     */
 @theme {
   --text-task-title: 13.5px;
   --text-task-meta: 11.5px;
