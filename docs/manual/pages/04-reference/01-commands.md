@@ -68,7 +68,19 @@ Exit 0 means completed read/action or cancelled selection, 1 a closed error, and
 `host enable`, `turn-off` and `create-invite` return unavailable without dispatch.
 `host cancel-invite`, `replace-failed`, `refresh-home-address` and
 `retry-policy-renewal` also return closed unavailable without dispatch.
-Client CLI is not registered yet; Mac host is deferred/unavailable.
+Linux `connection client` registers `status`, `accept-invite`, `saved-computers`,
+`connect-saved`, `remove-saved`, `disconnect`, `cancel-attempt`, `retry`, `retry-save`
+and `health`. Hidden terminal invite entry requires explicit target consent;
+saved connect/remove use bounded selection, exact binding reread and confirmation.
+Remove confirms only local saved-access deletion.
+No invite/device/path/credential flags exist. Login-keyring custody and explicit
+session-only warnings apply. Connections live in the foreground; Ctrl-C/SIGTERM
+cancels/disconnects with bounded cleanup and truthful `cleanupIncomplete`.
+Authenticated health yields `runtimeReachable` and a terminal-only loopback URL;
+loaded RELEASE UI is unverified, so CLI never reports Connected. Separate control/
+retry/health actions return `unavailable/notOwned`, effect none, exit 1. Status
+observes only this invocation, not global health. No new IPC or GUI/other-process
+control exists. Mac host and Mac Client CLI are deferred/unavailable.
 See the [Linux release handbook](../../../operations/linux-release-handbook.md#linux-host-cli-fallback-slice-5a).
 
 ## Per-org
