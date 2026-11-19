@@ -43,6 +43,7 @@ from runtime.orchestrator.executors import (
     PiExecutor,
 )
 from runtime.orchestrator.task_scratch import (
+    ScratchRootCreation,
     TaskScratchError,
     activate_task_scratch,
     prepare_task_scratch,
@@ -1484,47 +1485,57 @@ class Orchestrator:
             self._db.insert_audit_log(task_id, agent_name, action, payload)
 
         timeout_seconds = timeout_seconds_override if timeout_seconds_override is not None else self._resolve_session_timeout(agent_name, task_id=task_id)
+        scratch_creation = ScratchRootCreation()
         try:
-            scratch = prepare_task_scratch(
-                workspace=workspace,
-                task_id=task_id,
-                producer_kind="agent",
-                producer_id=session_id,
-            )
-        except TaskScratchError as exc:
-            from runtime.workflows.recovery import SEQUENTIAL_HELD_KINDS, classify_task
-            # Sequential rows belong to their workflow writer; the existing
-            # audit records this refusal without a forbidden generic mutation.
-            if classify_task(self._db, task_id, org_slug=self._slug).kind not in SEQUENTIAL_HELD_KINDS:
-                self._db.update_task(task_id, note=f"Task scratch containment refused launch: {exc}")
-            self._db.insert_audit_log(
-                task_id, agent_name, "task_scratch_containment_failed", {"error": str(exc)}
-            )
-            return ExecutorResult(
-                success=False, duration_seconds=0, session_id=session_id, error=str(exc)
-            ), None
-        scratch_token = activate_task_scratch(scratch)
-        try:
-            result = self._launch_agent_with_scratch(
-                task_id=task_id,
-                agent_name=agent_name,
-                workspace=workspace,
-                provider=provider,
-                model_name=model_name, reasoning_effort=reasoning_effort,
-                executor=executor,
-                session_id=session_id,
-                full_prompt=full_prompt,
-                timeout_seconds=timeout_seconds,
-                on_started=_on_started,
-                on_throttle_event=_on_throttle_event,
-                pre_launch_integrity_validator=_pre_launch_integrity_validator,
-                recovery_launch_validator=_recovery_launch_validator,
-                resume_session_id=resume_session_id,
-                recovery_deadline_monotonic=recovery_deadline_monotonic,
-                recovery=recovery,
-            )
+            try:
+                scratch = prepare_task_scratch(
+                    workspace=workspace,
+                    task_id=task_id,
+                    producer_kind="agent",
+                    producer_id=session_id,
+                    creation=scratch_creation,
+                )
+            except TaskScratchError as exc:
+                from runtime.workflows.recovery import SEQUENTIAL_HELD_KINDS, classify_task
+                # Sequential rows belong to their workflow writer; the existing
+                # audit records this refusal without a forbidden generic mutation.
+                if classify_task(self._db, task_id, org_slug=self._slug).kind not in SEQUENTIAL_HELD_KINDS:
+                    self._db.update_task(task_id, note=f"Task scratch containment refused launch: {exc}")
+                self._db.insert_audit_log(
+                    task_id, agent_name, "task_scratch_containment_failed", {"error": str(exc)}
+                )
+                return ExecutorResult(
+                    success=False, duration_seconds=0, session_id=session_id, error=str(exc)
+                ), None
+            scratch_token = activate_task_scratch(scratch)
+            try:
+                result = self._launch_agent_with_scratch(
+                    task_id=task_id,
+                    agent_name=agent_name,
+                    workspace=workspace,
+                    provider=provider,
+                    model_name=model_name, reasoning_effort=reasoning_effort,
+                    executor=executor,
+                    session_id=session_id,
+                    full_prompt=full_prompt,
+                    timeout_seconds=timeout_seconds,
+                    on_started=_on_started,
+                    on_throttle_event=_on_throttle_event,
+                    pre_launch_integrity_validator=_pre_launch_integrity_validator,
+                    recovery_launch_validator=_recovery_launch_validator,
+                    resume_session_id=resume_session_id,
+                    recovery_deadline_monotonic=recovery_deadline_monotonic,
+                    recovery=recovery,
+                )
+            finally:
+                reset_task_scratch(scratch_token)
         finally:
-            reset_task_scratch(scratch_token)
+            # Native admission commits session_start before any possible launch.
+            # Legacy calls already logged it before scratch preparation. This
+            # compensation never clears reservation or Pause uncertainty.
+            scratch_creation.discard_if_unstarted(
+                session_started=pause_invocation is None or pause_invocation.admitted,
+            )
         if pause_invocation is not None:
             pause_invocation.phase("unknown" if pause_invocation.unsettled else "result_processing",
                                    started_at=None, captured_generation=None)

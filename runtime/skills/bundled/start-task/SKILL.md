@@ -1224,6 +1224,15 @@ only the actual current task/SID report-completion as this skill's final action.
 
 ## Native launch-refusal outcomes
 
+THR307 seq388/389 adds runtime-only pre-session scratch compensation: a task
+attempt may remove only its own newly created, identity-matching empty root
+before session admission commits, using no-follow `rmdir`. Existing/nonempty/
+replaced/symlinked roots remain; cleanup errors are logged without changing the
+refusal. After admission the root remains even if launch fails. Manifests/locks,
+reserved SID, audit shapes, three-attempt budget and all unknown preparation/
+reservation evidence remain unchanged. This grants agents no manual cleanup
+authority and changes no nightly sweeper ownership/classification rule.
+
 Optional pull diagnostic labels describe advisory wording only; absent labels or historical exit128 remain unknown and grant no cleanup or retry authority.
 
 Ordinary native prelaunch refusals have a durable maximum of three consecutive

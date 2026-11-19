@@ -1,5 +1,16 @@
 # Local CI
 
+## Focused pre-session task scratch cleanup (THR-307 seq388/389)
+
+`uv run --frozen pytest scripts/test_task_scratch_launch.py -v --tb=short`
+uses the existing synthetic-org venue and real task admission/refusal writers.
+It refuses prelaunch integrity before session start and checks empty-only
+compensation, retained pre-existing/nonempty/replaced/symlink roots and ancestors,
+cleanup errors and unchanged refusal audits. It also covers returned validation
+failure, manifest failure after mkdir, and retained roots/audits after admission.
+No provider or serving daemon runs; retired units, general integration and Product
+E2E remain excluded.
+
 ## Focused A4 carry-forward, no-effect refusal and live owners
 
 `uv run --frozen pytest scripts/test_workflow_bootstrap.py -v --tb=short`
