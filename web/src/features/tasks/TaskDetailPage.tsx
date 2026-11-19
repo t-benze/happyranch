@@ -1268,12 +1268,12 @@ export function TaskDetailPage(): JSX.Element {
             )}
             {(escalationPrimary || escalationSecondary) && (
               <div
-                className="bg-tier-yellow-tint text-status-escalated mt-3 rounded-md px-3 py-2 text-sm"
+                className="bg-attention-soft text-text-primary text-body mt-3 rounded-md px-3 py-2"
               >
                 {escalationPrimary && (
                   <p>
                     <span className="font-semibold">{t('tasks.detail.escalationReason')}</span>{' '}
-                    <span className="font-mono">{escalationPrimary}</span>
+                    <span>{escalationPrimary}</span>
                   </p>
                 )}
                 {escalationSecondary && (
