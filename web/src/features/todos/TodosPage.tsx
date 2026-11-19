@@ -11,6 +11,7 @@ import { AlertCircle, Clock, RefreshCw } from 'lucide-react'
 import { ContentWrap } from '@/design-system/layouts/ContentWrap/ContentWrap'
 import { PageTitle } from '@/design-system/patterns/PageTitle'
 import { Button } from '@/design-system/primitives/Button'
+import { SegmentedControl } from '@/design-system/primitives/SegmentedControl'
 import { EmptyState } from '@/design-system/patterns/EmptyState'
 import { cn } from '@/lib/utils'
 import { useTranslation } from '@/hooks/i18n'
@@ -83,23 +84,13 @@ export function TodosPage(): JSX.Element {
       </div>
 
       <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
-        <div className="bg-surface-sunken inline-flex rounded-lg p-1">
-          {FILTER_GROUPS.map((fg) => (
-            <button
-              key={fg.key}
-              type="button"
-              onClick={() => setActiveFilter(fg.key)}
-              className={cn(
-                'rounded-md px-3 py-1.5 text-sm font-medium transition-colors',
-                activeFilter === fg.key
-                  ? 'bg-surface-raised text-text-primary shadow-pasture-sm'
-                  : 'text-text-secondary hover:text-text-primary',
-              )}
-            >
-              {t(fg.labelKey)}
-            </button>
-          ))}
-        </div>
+        {/* THR-376 r2 To7: shared accent-soft SegmentedControl (was a custom white-chip group). */}
+        <SegmentedControl
+          aria-label={t('todos.filter.statusLabel')}
+          value={activeFilter}
+          onValueChange={setActiveFilter}
+          options={FILTER_GROUPS.map((fg) => ({ value: fg.key, label: t(fg.labelKey) }))}
+        />
 
         <div className="flex items-center gap-3">
           {agentNames.length > 0 && (

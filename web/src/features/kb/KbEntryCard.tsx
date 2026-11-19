@@ -65,7 +65,8 @@ export function KbEntryCard({
         <span className="text-text-muted font-mono text-xs tabular-nums">{entry.slug}</span>
       </div>
       <div className="text-text-primary mt-0.5 flex flex-wrap items-baseline gap-2">
-        <span className="font-display font-medium">{entry.title}</span>
+        {/* THR-376 r2 K2: row titles use Hanken 600 (serif is for h1/h2/display numbers only). */}
+        <span className="text-body font-semibold">{entry.title}</span>
         {/* Semantic type badge — SOP green / reference blue / ruling amber via
             the shared colour map (THR-099 Batch 1 proof-of-render). Other
             types fall back to the neutral grey tone. */}

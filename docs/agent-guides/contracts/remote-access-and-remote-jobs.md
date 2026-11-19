@@ -3064,7 +3064,8 @@ existing activation-directory lock, B5 disable/absence gate, full owned-unit
 quiescence and C's UID snapshot before deletion and fresh checks before effects.
 Existing no-argument CLI/uninstall calls retain D exactly; the future lifecycle
 caller must close admission, revoke and stop services first. No public Disable,
-Enable or ReplaceFailed is mounted here. B17 remains I2b.
+Enable or ReplaceFailed is mounted here. I2b now supplies B17's separate unmounted
+first-intent entry described below.
 
 The executor unlinks only validated fixed members (including the separately
 publication-receipted leaf/key handoff), explicitly unlinks the root-custodied
@@ -3267,8 +3268,9 @@ runs the zero-argument read entry with empty environment, no stdin and the suppl
 remaining timeout. It returns only the closed bounded snapshot, never full receipt,
 node identity or secrets. No installer effect runs; root/sandbox ownership is unchanged.
 I2a supplies only the unmounted installer B6 executor described above. Native
-lifecycle-auth wiring, B17 and mounted lifecycle step executors remain DEFERRED to
-I2b/I3. Lifecycle/activation audit intents must be placed at those actual future effect
+lifecycle-auth wiring and mounted lifecycle step executors remain DEFERRED to
+I3; I2b supplies only B17's unmounted installer entry. Lifecycle/activation audit
+intents must be placed at those actual future effect
 boundaries; no synthetic lifecycle outcome is recorded by I1. Focused verification
 uses the existing private-bus
 venue: `uv run --frozen --python /usr/bin/python3 pytest scripts/test_helper_lifecycle.py scripts/test_remote_access_helper.py -v --tb=short`.
@@ -3574,9 +3576,16 @@ parsing. Every successfully acknowledged record is a complete JSON line.
 Why no founder: the approved nonsecret retained audit, with bounded storage.
 
 **B17 — First replacement intent for recognized failed installation.**
-Inside fresh-auth `ReplaceFailed()`, capture the complete fixed inventory and
-bind the derived validated release owner before writing new
-`replacement-intent@2`, then hand off to the existing per-intent recovery owner.
+I2b delivers only the **unmounted** `ManagedInstaller.begin_replacement` entry.
+The future fresh-auth `ReplaceFailed()` owner (I3) must supply an explicit expected
+release UID and exact observed generation. The installer captures the complete fixed
+inventory, binds the derived validated release owner, then publishes/fsyncs the new
+`replacement-intent@2` at `install-transaction.json` before handing off to the existing
+per-intent recovery owner. No helper or CLI caller selects this capability.
+An existing exact v1 journal already has its first intent: the entry validates its
+expected generation/release UID and resumes that journal without converting it.
+This entry independently revalidates every remaining original/quarantined config's
+schema and cross-config bindings, including when v1 provenance digests match.
 The admitted historical classes are the existing validated
 `replacement_inventory`/`known-failed-or-partial` shapes: (1) recognized complete
 legacy/manual or modern configs/units with an observed failed owned unit;
@@ -3591,10 +3600,31 @@ bytes, owners/modes/no-follow/single-link and loaded-fragment/drop-in checks
 must validate. Existing 64 KiB config/unit and 64-entry shallow-directory bounds
 remain; opaque state gets metadata checks only, never execution or restoration.
 
-Missing digests are recorded as `absent`, never synthesized. New first-admission
-authority is additive: v1 meanings/recovery stay unchanged, and current
-unjournaled mutation refusal stays until implementation. Recognized source
-renderings refer only to `/opt/happyranch/venv/bin/python` and
+Missing digests are recorded as `absent`, never synthesized. The closed canonical
+v2 record has exactly `format`, `version=2`, `layout`, `phase`, `digests`, `release`
+and `inventory`. Its six digest slots use SHA-256 or literal `absent`; the complete
+fixed-key inventory captures no-follow metadata, file digests and exact link targets.
+Opaque state has metadata only. Directory identity/custody is captured without
+mutable directory times. This is not a caller-supplied path manifest.
+Owner selection follows spec §1: a validated root-owned release record, otherwise
+the expected UID's passwd home plus `.local/share/happyranch`; the fixed source token
+passes the existing same-FD UID/custody reader before intent publication or stop.
+The first writer revalidates inventory, owner, pending inode and literal parents
+before no-replace publication. An interrupted first publication without a final
+journal remains a conflict, never unjournaled recovery authority.
+For unit-only remnants whose config directory is absent, creating the fixed journal
+parent additionally requires existing full quiescence; it never stops services before
+the first intent or creates an arbitrary parent. An unproved stop retains those remnants.
+
+New first-admission authority is additive: v1 meanings/recovery stay unchanged,
+and all other paths retain their unjournaled mutation refusal. V2 uses the existing
+quarantine/removal/staging/closure owner, preserving each originally absent config
+and each legacy config's admitted mode. Removed state and unit entries must still
+match their inventoried metadata. A v2-only `replacement-stage-release` intent can
+publish the derived release record when an interrupted writer never reached it;
+its original digest remains `absent` until that fresh publication intent. Successful
+closure produces ordinary modern staged-inert inventory, never activation.
+Recognized source renderings refer only to `/opt/happyranch/venv/bin/python` and
 `/opt/happyranch/bin/happyranch-tsnet-sidecar`; any legacy objects removed there
 must be inventoried and match the listed shape exactly, never a recursive prefix
 purge. Clean/healthy/manual, modern staged-inert/recorded or unknown installations

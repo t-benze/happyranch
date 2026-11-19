@@ -707,6 +707,27 @@ dpkg prefix, foreign files, custom units or unknown drop-ins. Unsafe/unrecognize
 recipe for the user. Interrupted replacement stays off; next authenticated ReplaceFailed resumes
 only the exact journal generation. Do not roll back revoked credentials into service.
 
+I2b supplies only the unmounted `ManagedInstaller.begin_replacement` first-intent
+entry for B17; public ReplaceFailed/helper/CLI wiring remains I3. It requires the
+expected release UID and exact observed inventory/journal generation, captures
+the full fixed inventory, validates the release owner under §1 and the same-FD
+source token, then durably publishes additive `replacement-intent@2` before stop
+and per-intent recovery. It admits only recognized failed complete installs,
+validated incomplete fixed sets (including generated-writer prefixes/partial
+legacy provenance), or the existing exact v1 recovery journals. Existing v1
+journals resume without conversion. Stopped intact manual, healthy, modern
+staged-inert/recorded and unknown shapes remain non-candidates.
+The closed v2 record retains exact metadata/digests/link targets for the fixed
+inventory, with literal `absent` for missing digests and metadata only for opaque
+state. Safe unrecorded 0600/0640/0644 config modes remain admissible; recorded
+provisioning stays exactly 0640. V2 preserves missing originals through quarantine
+and uses a separate `replacement-stage-release` intent when the interrupted
+writer never published its derived release record. Recovery closes into fresh
+modern staged-inert files without activating services. All existing no-follow,
+single-link, cross-config/provenance, exact-unit/loaded-fragment/drop-in checks,
+64 KiB file and 64-entry directory bounds and PR1632's pending-discard exception
+remain. This source capability grants no live installation or service action.
+
 Disable closes admission/revokes first, confirms connector/sidecar/verifier and owned local
 Headscale stopped, then removes only positively owned units, configs, enrollment sources/links,
 socket/runtime files and secret/trust state; reloads systemd and confirms absence. Local runtime

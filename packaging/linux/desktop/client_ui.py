@@ -88,7 +88,7 @@ class ClientUI:
         entry.show()
         entry.grab_focus()
 
-    def target(self, invite: object, callback: object) -> None:
+    def target(self, invite: object, callback: object, *, fresh: bool = False) -> None:
         fields = [_model.plain(value) for value in
                   (invite.home_id, invite.control_plane_id, invite.home_endpoint)]
         fingerprint = hashlib.sha256(invite.ca_der).hexdigest()
@@ -96,12 +96,24 @@ class ClientUI:
             "Save access in this computer's login keyring for reconnecting",
             "将访问权限保存在此电脑的登录密钥环中，以便重新连接"))
         dialog = self.dialog(self.tr("Confirm computer", "确认电脑"),
-            self.tr("Connect this device to this exact Host? Verify its identity with the Host owner.",
+            (self.tr("Saved access could not be verified. Connecting requires fresh Host approval.",
+                     "无法验证已保存的访问权限。连接需要主机重新批准。") + "\n\n" if fresh else "")
+            + self.tr("Connect this device to this exact Host? Verify its identity with the Host owner.",
                     "允许此设备连接到这台主机吗？请与主机所有者核对其身份。")
             + "\n\n" + "\n".join(fields) + "\nSHA-256: " + fingerprint,
             self.tr("Connect this device", "连接此设备"), lambda yes: callback(yes, save.get_active()))
         dialog.get_content_area().add(save)
         save.show()
+
+    def recovery_target(self, invite: object, callback: object) -> None:
+        fields = [_model.plain(value, 1024) for value in (invite.home_id, invite.control_plane_id,
+                  invite.control_url, invite.dial_ip, invite.home_endpoint)]
+        self.dialog(self.tr("Confirm updated address", "确认更新后的地址"),
+            self.tr("Use saved access at this updated target? The invitation will not be redeemed. "
+                    "The same device and live Host approval must still be verified before saving.",
+                    "使用已保存的访问权限连接更新后的目标吗？不会兑换此邀请。保存前仍须验证同一设备及有效的主机批准。")
+            + "\n\n" + "\n".join(fields) + "\nSHA-256: " + hashlib.sha256(invite.ca_der).hexdigest(),
+            self.tr("Confirm updated target", "确认更新后的目标"), callback)
 
     def saved_target(self, record: object, remove: bool, callback: object) -> None:
         fields = [_model.plain(value) for value in

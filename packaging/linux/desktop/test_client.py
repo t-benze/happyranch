@@ -265,6 +265,56 @@ class ClientTests(unittest.TestCase):
         with self.assertRaisesRegex(client.ClientError, "^revoked$"):
             resumed.health()
 
+    def test_address_recovery_frame_identity_and_grant(self) -> None:
+        self.session.join(self.invite, save_intent=True)
+        self.session.pair()
+        self.session.complete()
+        self.session.complete()
+        record = self.session.saved_record()
+        self.session.stop()
+        values = {name: getattr(self.invite, name) for name in self.invite.__slots__}
+        changed = client._codec.DecodedInvite(**(values | dict(dial_ip="192.168.1.41",
+            control_url=self.invite.control_url + "/", home_endpoint="100.64.0.11:443")))
+        before = len(self.requests())
+        self.session = client.ClientSession(self.prefix)
+        self.session.recover_address(record, changed)
+        launch = json.loads((self.prefix / "launch").read_text())["cfg"]
+        self.assertEqual((launch["dialIP"], launch["controlURL"], launch["target"]),
+                         (changed.dial_ip, changed.control_url, changed.home_endpoint))
+        self.assertNotIn("joinKey", launch)
+        self.assertNotIn("recovery", launch)
+        self.assertEqual(base64.b64decode(launch["networkState"]), record.network_state)
+        updated = self.session.saved_record()
+        for field in ("bearer", "stable_node_id", "profile_id", "hostname", "ca_der", "fingerprint"):
+            self.assertEqual(getattr(updated, field), getattr(record, field))
+        self.assertEqual(self.session._pair_secret, "")
+        self.assertEqual(len(self.requests()[before:]), 1)
+        self.assertTrue(self.requests()[-1]["head"].startswith("GET /api/v1/health "))
+        self.session.stop()
+        for field, value in (("home_id", "other"), ("control_plane_id", "other"),
+                             ("connector_id", "other"), ("ca_der", b"other-ca")):
+            with self.subTest(identity=field):
+                (self.prefix / "launch").unlink(missing_ok=True)
+                candidate = client.ClientSession(self.prefix)
+                with self.assertRaisesRegex(client.ClientError, "^identityMismatch$"):
+                    candidate.recover_address(record, client._codec.DecodedInvite(**(values | {field: value})))
+                self.assertFalse((self.prefix / "launch").exists())
+        for mode in ("identity-refused", "identity-changed"):
+            with self.subTest(mode=mode):
+                (self.prefix / "mode").write_text(mode)
+                candidate = client.ClientSession(self.prefix)
+                with self.assertRaisesRegex(client.ClientError, "^identityMismatch$"):
+                    candidate.recover_address(record, changed)
+                with self.assertRaises(client.ClientError):
+                    candidate.saved_record()
+        (self.prefix / "mode").unlink()
+        (self.prefix / "reply").write_bytes(b'HTTP/1.1 403 Refused\r\nContent-Length: 30\r\n\r\n{"error": "revocation_denied"}')
+        candidate = client.ClientSession(self.prefix)
+        with self.assertRaisesRegex(client.ClientError, "^revoked$"):
+            candidate.recover_address(record, changed)
+        with self.assertRaises(client.ClientError):
+            candidate.saved_record()
+
     def test_saved_state_refusals_and_identity(self) -> None:
         self.session.join(self.invite, save_intent=True)
         self.session.pair()

@@ -27,7 +27,8 @@ import { CrescentMoonBadge } from '@/design-system/patterns/CrescentMoonBadge';
 import { EmptyState } from '@/design-system/patterns/EmptyState';
 import { IdBadge } from '@/design-system/patterns/IdBadge';
 import { StatValue } from '@/design-system/patterns/StatValue';
-import { TONE_CLASS, type Tone } from '@/design-system/patterns/semanticTone';
+import { StatusBadge } from '@/design-system/patterns/StatusBadge';
+import type { Tone } from '@/design-system/patterns/semanticTone';
 import type { ActivityVerdict } from '@/lib/api/types';
 import { useOrgSlugOptional } from '@/lib/orgSlug';
 import { useTranslation } from '@/hooks/i18n';
@@ -66,13 +67,8 @@ const VERDICT_LABEL_KEY: Record<ActivityVerdict, MessageKey> = {
 
 function ActivityVerdictPill({ verdict }: { verdict: ActivityVerdict }): JSX.Element {
   const { t } = useTranslation();
-  return (
-    <span
-      className={`inline-flex items-center rounded-full px-2 py-0.5 font-medium ${TONE_CLASS[VERDICT_TONE[verdict]]}`}
-    >
-      {t(VERDICT_LABEL_KEY[verdict])}
-    </span>
-  );
+  // THR-376 r2 A10: the shared StatusBadge (.tag 11/600, body font), not an inherited mono 12/500 pill.
+  return <StatusBadge tone={VERDICT_TONE[verdict]} label={t(VERDICT_LABEL_KEY[verdict])} />;
 }
 
 interface PanelProps {

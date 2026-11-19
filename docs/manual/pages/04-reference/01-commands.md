@@ -72,6 +72,13 @@ Linux `connection client` registers `status`, `accept-invite`, `saved-computers`
 `connect-saved`, `remove-saved`, `disconnect`, `cancel-attempt`, `retry`, `retry-save`
 and `health`. Hidden terminal invite entry requires explicit target consent;
 saved connect/remove use bounded selection, exact binding reread and confirmation.
+On Linux, accept-invite recognizes a unique saved same-home/control-plane/CA/connector
+with changed address metadata. The terminal shows the updated control URL, dial IP
+and endpoint and requires typing `update` (default Cancel). It verifies the saved
+node and live grant without redeeming the invite, then saves/readbacks the updated
+record. Failed validation requires separate fresh consent and normal Host approval;
+declining update launches nothing. No Client result claims Host-wide invite invalidation.
+Real-network C19 acceptance is slice 7 NOT RUN.
 Remove confirms only local saved-access deletion.
 No invite/device/path/credential flags exist. Login-keyring custody and explicit
 session-only warnings apply. Connections live in the foreground; Ctrl-C/SIGTERM
