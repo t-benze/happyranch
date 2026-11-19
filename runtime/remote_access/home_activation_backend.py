@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Callable, Iterator
 
 from runtime.remote_access.home_activation import (
-    ACTIVATION_PATH, INVITE_CONFIG_PATH, HomeActivationReceipt, HomeActivationStore, _generation,
+    ACTIVATION_PATH, IDENTITY_KEYS, INVITE_CONFIG_PATH, HomeActivationReceipt, HomeActivationStore, _generation,
 )
 from runtime.remote_access.home_activation_coordinator import ActivationRefused, HomeActivationCoordinator
 from runtime.remote_access.home_activation_owner import HomeActivationOwner
@@ -106,14 +106,20 @@ class HomeActivationBackend:
                         or receipt.local_node_stable_id is not None or receipt.home_endpoint is not None):
                     raise ActivationRefused()
                 if transaction is not None:
-                    if not transaction.matches(receipt):
+                    if transaction.matches(receipt):
+                        coordinator, _, _ = self._compose(receipt)
+                        # Ruling 17: retain the actual protected binding.
+                        coordinator._pending()
+                        coordinator._fail(receipt)
+                        raise ActivationRefused("failed_uncertain")
+                    # B7's fresh prepared generation reaches the coordinator's
+                    # existing first-intent replacement; all other pairs refuse.
+                    if not (receipt.phase == "prepared"
+                            and transaction.phase == "failed_uncertain"
+                            and transaction.activation_generation < receipt.activation_generation
+                            and all(getattr(transaction, key) == getattr(receipt, key) for key in IDENTITY_KEYS)
+                            and transaction.operation_id != receipt.operation_id):
                         raise ActivationRefused()
-                    coordinator, _, _ = self._compose(receipt)
-                    # Ruling 17: use the actual protected binding, never a
-                    # fabricated prepared receipt or the forward run entry.
-                    coordinator._pending()
-                    coordinator._fail(receipt)
-                    raise ActivationRefused("failed_uncertain")
                 if receipt.phase != "prepared":
                     raise ActivationRefused()
                 coordinator, _, observer = self._compose(receipt)
@@ -275,7 +281,7 @@ class HelperLifecycleBackend:
                 configuration = hashlib.sha256(data).hexdigest()
             if config.release_uid != uid:
                 raise ActivationRefused()
-            generation = config.activation_generation
+            generation = 0
         if method == 'ReplaceFailed':
             candidate = self.io.replacement_inventory()
             replacement = candidate.journal_generation or candidate.inventory_generation

@@ -134,10 +134,10 @@ class Venue:
         self.transactions = HomeActivationTransactionStore(root=self.root, root_owner=self.owner_ids)
         for name in MEMBER_PATHS:
             put(self.root / name.lstrip("/"), ("synthetic " + name).encode())
-        config = dict(format="home-invite-config@1", release_uid=os.getuid(), home_id="home",
-                      control_plane_id="control", connector_id="connector", activation_generation=7,
+        config = dict(format="home-invite-config@2", release_uid=os.getuid(), home_id="home",
+                      control_plane_id="control", connector_id="connector",
                       ca_der_sha256="c" * 64, dial_ip="192.168.1.40",
-                      control_url="https://control.happyranch.invalid:8443", home_endpoint="100.64.0.10:443")
+                      control_url="https://control.happyranch.invalid:8443")
         config_bytes = json.dumps(config).encode()
         HomeInviteConfigRecord.parse(config_bytes)
         put(self.root / "etc/happyranch/invite-issuer.json", config_bytes)
@@ -162,8 +162,9 @@ class Venue:
         monkeypatch.setattr(home_admin, "mint_local_node", self.mint)
 
     def preflight(self, ip: str) -> None:
-        assert self.transactions.read_optional().effects == (Effect("preflight", "intent", {}),)
-        assert self.receipts.read(expected_generation=7).phase == "activating"
+        transaction = self.transactions.read_optional()
+        assert transaction.effects == (Effect("preflight", "intent", {}),)
+        assert self.receipts.read(expected_generation=transaction.activation_generation).phase == "activating"
         self.port_checks.append(ip)
 
     def mint(self, operation_id: str, expires_at: datetime) -> MintedKey:

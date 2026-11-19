@@ -46,21 +46,20 @@ def encoded(record: dict) -> bytes:
 
 
 def config_record() -> dict:
-    return dict(format="home-invite-config@1", release_uid=1000, home_id="home", control_plane_id="control",
-                connector_id="connector", activation_generation=7, ca_der_sha256="a" * 64,
-                dial_ip="192.168.1.40", control_url="https://control.happyranch.invalid:8443",
-                home_endpoint="100.64.0.10:443")
+    return dict(format="home-invite-config@2", release_uid=1000, home_id="home", control_plane_id="control",
+                connector_id="connector", ca_der_sha256="a" * 64,
+                dial_ip="192.168.1.40", control_url="https://control.happyranch.invalid:8443")
 
 
 def receipt_record(phase: str = "prepared") -> dict:
     config = config_record()
     result = {key: value for key, value in config.items() if key not in ("control_url", "home_endpoint")}
-    result.update(format="home-activation@1", operation_id="b" * 32,
+    result.update(format="home-activation@1", activation_generation=7, operation_id="b" * 32,
                   member_digests={path: "c" * 64 for path in DIGEST_MEMBERS},
                   local_node_stable_id=None, home_endpoint=None, phase=phase, ownership=copy.deepcopy(OWNERSHIP))
     result["member_digests"]["/" + CONFIG] = hashlib.sha256(encoded(config)).hexdigest()
     if phase in ("joined", "ready"):
-        result.update(local_node_stable_id="synthetic-local-node", home_endpoint=config["home_endpoint"])
+        result.update(local_node_stable_id="synthetic-local-node", home_endpoint="100.64.0.10:443")
     return result
 
 
@@ -314,7 +313,7 @@ def spoof_metadata(monkeypatch: pytest.MonkeyPatch, path: Path, field: str) -> N
 def test_protected_reader_custody(store: HomeActivationStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
                                  path: str, case: str) -> None:
     put_pair(tmp_path)
-    assert load_config(tmp_path).activation_generation == 7
+    assert load_config(tmp_path).home_id == "home"
     final = tmp_path / path
     original = final.read_bytes()
     if case == "mode": final.chmod(0o644)
@@ -353,7 +352,7 @@ def test_protected_reader_custody(store: HomeActivationStore, tmp_path: Path, mo
 def test_reader_revalidates_swapped_paths(store: HomeActivationStore, tmp_path: Path,
                                         monkeypatch: pytest.MonkeyPatch, path: str, swap: str) -> None:
     put_pair(tmp_path)
-    assert load_config(tmp_path).activation_generation == 7
+    assert load_config(tmp_path).home_id == "home"
     final = tmp_path / path
     original_read = activation.ManagedInstaller._read_file
     swapped = False
@@ -470,9 +469,9 @@ def test_config_read_is_frozen_effect_free_and_redacted(store: HomeActivationSto
         monkeypatch.setattr(activation.os, name, no_effect)
     monkeypatch.setattr(activation.ManagedInstaller, "_rename_provision_entry", no_effect)
     result = load_config(tmp_path)
-    assert result.home_endpoint == "100.64.0.10:443"
-    assert result.activation_generation == 7
-    with pytest.raises(FrozenInstanceError): result.home_endpoint = "100.64.0.11:443"
+    assert result.control_url == "https://control.happyranch.invalid:8443"
+    assert not hasattr(result, "activation_generation") and not hasattr(result, "home_endpoint")
+    with pytest.raises(FrozenInstanceError): result.home_id = "other"
     after = sorted((str(path.relative_to(tmp_path)), path.read_bytes()) for path in tmp_path.rglob("*") if path.is_file())
     assert after == before
     assert repr(result) == "HomeInviteConfigRecord(<redacted>)"
@@ -539,3 +538,21 @@ def test_helper_snapshot_is_closed_and_read_only(store: HomeActivationStore, tmp
     assert json.loads(activation.helper_snapshot()) == {
         'generation': 7, 'operation': 'b' * 32, 'release_uid': 1000, 'phase': 'prepared'}
     assert path.read_bytes() == original
+
+
+@pytest.mark.parametrize("case", ["current", "rollover", "old-format", "old-fields"])
+def test_stable_config_receipt_generation(store: HomeActivationStore, tmp_path: Path, case: str) -> None:
+    config = config_record()
+    current = receipt_record("ready")
+    if case == "rollover": current["activation_generation"] = 8
+    if case in ("old-format", "old-fields"):
+        config["format"] = "home-invite-config@1" if case == "old-format" else "home-invite-config@2"
+        config.update(activation_generation=7, home_endpoint="100.64.0.10:443")
+    data = encoded(config)
+    current["member_digests"]["/" + CONFIG] = hashlib.sha256(data).hexdigest()
+    put(tmp_path, CONFIG, data)
+    put(tmp_path, RECEIPT, encoded(current))
+    if case in ("old-format", "old-fields"):
+        with pytest.raises(IssuerError): load_config(tmp_path)
+    else:
+        assert load_config(tmp_path, current["activation_generation"]).home_id == "home"

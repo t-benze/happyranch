@@ -4179,6 +4179,74 @@ class ManagedInstaller:
                     os.close(descriptor)
             os.fsync(parent)
 
+    def publish_invite_config(self) -> None:
+        """Publish the stable protected home identity; no public/CLI caller.
+
+        Only a complete staged-inert generation and protected Headscale
+        publication supply fields. Exact bytes are read-only reuse; all other
+        existing or pending entries refuse. No repair or deletion is owned here.
+        """
+        from runtime.remote_access.home_activation import (
+            CONTROL_URL, INVITE_CONFIG_PATH, HomeActivationStore, _encode_record,
+        )
+        from runtime.remote_access.home_activation_txn import HomeActivationTransactionStore
+        from runtime.remote_access.invite_issuer import HomeInviteConfigRecord
+
+        if self.layout != "deb":
+            raise InstallerError("deb layout required")
+        store = HomeActivationStore(root=self.root, root_owner=self.root_owner)
+        with HomeActivationTransactionStore(root=self.root, root_owner=self.root_owner).locked() as activation_parent:
+            for name in ("home-activation.json", "home-activation-txn.json"):
+                self._headscale_no_pending(activation_parent, name)
+            self._refuse_install_transaction()
+            self._service_owner = self._account(create=False)
+            self._headscale_owner = self._headscale_shape()
+            if self._service_owner is None or self._headscale_owner is None:
+                raise InstallerError("home publication accounts missing")
+            with self._publication_parent() as (parent, check):
+                def derive() -> bytes:
+                    for name in ("connector.json", "sidecar.json", "policy.json",
+                                 "release-daemon.json", "daemon.token", "provision.json"):
+                        self._headscale_no_pending(parent, name)
+                    provenance = self._read_file(parent, "provision.json", owner=self.root_owner, mode=0o600)
+                    self._validate_install_record("provision.json", provenance)
+                    record = self._json(provenance)
+                    if record.get("version") != 1:
+                        raise InstallerError("home publication requires identity provenance")
+                    self._home_unit_provisioning(parent, record, reuse=False)
+                    release = self._check_release_record()
+                    connector = self._json(self._read_file(parent, "connector.json",
+                        owner=(self.root_owner[0], self._service_owner[1]), mode=0o640))
+                    if connector["managed"].get("profile") != "linux-managed-identity-v1":
+                        raise InstallerError("home publication requires identity profile")
+                    publication = self._headscale_publication()
+                    status = self._headscale_materializer("status")
+                    if (publication is None or "directories" not in publication
+                            or status["renewal_due"] or not status["leaf_not_after"]):
+                        raise InstallerError("home publication requires prepared Headscale")
+                    ca_owner, ca_mode = self._headscale_members()["/etc/happyranch/control-ca.pem"]
+                    ca = self._read_file(parent, "control-ca.pem", owner=ca_owner, mode=ca_mode)
+                    if hashlib.sha256(ssl.PEM_cert_to_DER_cert(ca.decode("ascii"))).hexdigest() != status["ca_fingerprint"]:
+                        raise InstallerError("home publication CA binding drift")
+                    data = _encode_record(dict(format="home-invite-config@2", release_uid=release["uid"],
+                        home_id=connector["home_id"], control_plane_id=connector["managed"]["control_plane_id"],
+                        connector_id=connector["connector_id"], ca_der_sha256=status["ca_fingerprint"],
+                        dial_ip=publication["dial_ip"], control_url=CONTROL_URL))
+                    HomeInviteConfigRecord.parse(data)
+                    check()
+                    return data
+
+                data = derive()
+                with store._record(INVITE_CONFIG_PATH, allow_absent=True) as existing:
+                    if existing is not None and existing != data:
+                        raise InstallerError("differing home invite configuration")
+                if derive() != data:
+                    raise InstallerError("home publication source drift")
+                check()
+                if existing is None:
+                    store._publish_record(INVITE_CONFIG_PATH, data, expected=None, parse=HomeInviteConfigRecord.parse)
+                check()
+
     def publish_home_units(self) -> None:
         """Publish inert identity fragments; no public caller or service activation.
 

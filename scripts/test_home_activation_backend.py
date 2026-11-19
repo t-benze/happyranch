@@ -60,7 +60,7 @@ def venue(live_venue: Venue, monkeypatch: pytest.MonkeyPatch) -> Venue:
         else:
             txn = v.transactions.read_optional()
             receipt_path = v.path(ACTIVATION_PATH)
-            phase = v.receipts.read(expected_generation=7).phase if receipt_path.exists() else None
+            phase = v.receipts.current().phase if receipt_path.exists() else None
             v.audit.append((args[1:], phase, txn.effects[-1] if txn else None, v.path(SIDECAR).read_bytes()))
             # Independent descriptor must be excluded even between coordinator
             # contexts, including Prepare's reload and publish_ready's observer.
@@ -68,7 +68,10 @@ def venue(live_venue: Venue, monkeypatch: pytest.MonkeyPatch) -> Venue:
             if args[1] == "enable" and args[2] == adapters._HEADSCALE:
                 link = v.path(OWNED_LINK)
                 link.parent.mkdir(mode=0o755, exist_ok=True)
-                link.symlink_to(OWNED_LINK_TARGET)
+                if link.is_symlink():
+                    assert os.readlink(link) == OWNED_LINK_TARGET
+                else:
+                    link.symlink_to(OWNED_LINK_TARGET)
             if args[1] == "start" and args[2] == adapters._HEADSCALE:
                 v.active = True
             if args[1:] == ["start", adapters._TARGET]:
@@ -123,7 +126,7 @@ def observations(v: Venue) -> Iterator[list[bytes]]:
                         request += chunk
                     requests.append(request)
                     assert_locked(v)
-                    receipt = v.receipts.read(expected_generation=7)
+                    receipt = v.receipts.current()
                     conn.sendall(json.dumps(reply(receipt)).encode())
                 except BaseException as error:
                     errors.append(error)
@@ -135,6 +138,7 @@ def observations(v: Venue) -> Iterator[list[bytes]]:
         stop.set()
         thread.join(2)
         listener.close()
+        path.unlink()
         os.close(parent)
         assert not thread.is_alive() and not errors
 
@@ -164,10 +168,18 @@ def test_prepare_order_and_exact_home_retry(venue: Venue) -> None:
 
 
 @pytest.mark.parametrize("case", ["receipt", "txn", "receipt-pending", "txn-pending", "unit-pending",
-    "wrong-G", "nonroot", "unauthenticated", "running", "link", "foreign-unit", "source",
+    "caller-G", "nonroot", "unauthenticated", "running", "link", "foreign-unit", "source",
     "member", "provision", "sidecar-unit"])
-def test_prepare_refusals(venue: Venue, monkeypatch: pytest.MonkeyPatch, case: str) -> None:
+def test_prepare_admission(venue: Venue, monkeypatch: pytest.MonkeyPatch, case: str) -> None:
     v = venue
+    if case == "caller-G":
+        generation, operation = v.backend._prepare.prepare(expected_generation=8, authenticated=True)
+        prepared = v.receipts.read(expected_generation=8)
+        assert (generation, operation) == (8, prepared.operation_id)
+        assert prepared.phase == 'prepared' and v.transactions.read_optional() is None
+        assert v.path(SIDECAR).read_bytes() == v.legacy
+        assert v.audit == [(['daemon-reload'], None, None, v.legacy)]
+        return
     if case == "receipt": v.path(ACTIVATION_PATH).write_bytes(v.prepared.to_bytes())
     if case == "txn": v.path(TRANSACTION_PATH).write_bytes(b"{}")
     if case.endswith("pending"):
@@ -195,7 +207,7 @@ def test_prepare_refusals(venue: Venue, monkeypatch: pytest.MonkeyPatch, case: s
         assert v.transactions.read_optional() is None
     else:
         with pytest.raises(ActivationRefused):
-            v.backend._prepare.prepare(expected_generation=8 if case == "wrong-G" else 7,
+            v.backend._prepare.prepare(expected_generation=7,
                                        authenticated=case != "unauthenticated")
         if case not in ("member", "provision"):
             assert v.path(MEMBER_PATHS[0]).read_bytes() == before[MEMBER_PATHS[0]]
@@ -282,11 +294,22 @@ def test_backend_admission(venue: Venue, monkeypatch: pytest.MonkeyPatch, case: 
                     fresh_authenticated=case != "recover-auth")
             assert (v.records(), v.audit, v.admin.calls) == before
     else:
+        composed = []
+        if case == "enable-G":
+            v.backend._prepare.prepare(expected_generation=7, authenticated=True)
+            before = v.records()
+            v.audit.clear()
+            def forbidden(receipt: HomeActivationReceipt) -> None:
+                composed.append(receipt)
+                raise AssertionError('stale generation reached composition')
+            monkeypatch.setattr(v.backend, '_compose', forbidden)
         if case == "enable-root": monkeypatch.setattr(h.os, "geteuid", lambda: 1000)
         with pytest.raises(ActivationRefused):
             v.backend.enable(expected_generation=8 if case == "enable-G" else 7,
                              authenticated=case != "enable-auth")
         assert not v.audit and not v.path(TRANSACTION_PATH).exists()
+        assert composed == []
+        if case == "enable-G": assert v.records() == before
 
 
 @pytest.mark.parametrize("case", ["sidecar-reload", "sidecar-start", "source-after-sidecar"])
@@ -559,23 +582,24 @@ def test_private_helper_enable_persists_ready_and_ready_is_inspect_only(
     v = venue
     lifecycle = h.HelperLifecycleBackend(v.backend._io)
     expected = lifecycle.capture('Enable', v.prepared.release_uid)
+    assert json.loads(expected)['generation'] == 0
     with observations(v) as requests:
         assert lifecycle.dispatch('Enable', v.prepared.release_uid, 'enable', expected) == {
             'outcome': 'ready', 'residue': []}
-        ready = v.receipts.read(expected_generation=7)
+        ready = v.receipts.read(expected_generation=0)
         assert ready.phase == 'ready' and ready.local_node_stable_id == 'self-stable'
         assert ready.operation_id != '0' * 32 and requests
         before = list(v.audit)
         policy_before = v.path('/etc/happyranch/policy.json').read_bytes()
         observed = lifecycle.capture('Enable', v.prepared.release_uid)
         assert lifecycle.dispatch('Enable', v.prepared.release_uid, 'enable', observed)['outcome'] == 'ready'
-        assert v.receipts.read(expected_generation=7) == ready and v.audit == before
+        assert v.receipts.read(expected_generation=0) == ready and v.audit == before
         assert v.path('/etc/happyranch/policy.json').read_bytes() == policy_before
         if case == 'ready':
             v.source.write_bytes(b'synthetic source-token rotation')
             with pytest.raises(ActivationRefused):
                 lifecycle.dispatch('Enable', v.prepared.release_uid, 'enable', observed)
-            assert v.receipts.read(expected_generation=7) == ready and v.audit == before
+            assert v.receipts.read(expected_generation=0) == ready and v.audit == before
             return
 
         failed = replace(ready, phase='failed_uncertain')
@@ -591,9 +615,9 @@ def test_private_helper_enable_persists_ready_and_ready_is_inspect_only(
             with monkeypatch.context() as patch:
                 patch.setattr(HomeActivationStore, '_publish_record', crash)
                 with pytest.raises(Crash):
-                    v.backend.recover(expected_generation=7, expected_operation_id=ready.operation_id,
+                    v.backend.recover(expected_generation=0, expected_operation_id=ready.operation_id,
                                       fresh_authenticated=True)
-            assert v.receipts.read(expected_generation=7) == failed
+            assert v.receipts.read(expected_generation=0) == failed
             txn = v.transactions.read_optional()
             assert txn.phase == 'joined' and txn.recovery_observation is not None
         if case == 'rollover':
@@ -626,7 +650,7 @@ def test_private_helper_enable_persists_ready_and_ready_is_inspect_only(
             phase = 'prepared' if case == 'rollover' else 'ready'
             assert lifecycle.dispatch('Enable', v.prepared.release_uid, 'enable', observed) == {
                 'outcome': phase, 'residue': []}
-            recovered = v.receipts.read(expected_generation=8 if case == 'rollover' else 7)
+            recovered = v.receipts.read(expected_generation=1 if case == 'rollover' else 0)
             assert recovered.phase == phase
             if case == 'rollover':
                 assert recovered.operation_id != ready.operation_id
@@ -639,3 +663,193 @@ def test_private_helper_enable_persists_ready_and_ready_is_inspect_only(
                 if case == 'half-published':
                     assert v.transactions.read_optional() == txn
         assert v.audit == before and effects == [] and unit_config_bytes(v) == units
+
+
+def rollover_after_lost_reply(v: Venue, monkeypatch: pytest.MonkeyPatch) -> HomeActivationReceipt:
+    """Real B4 failure and B7; only native reply/admin inventory are simulated."""
+    generation = v.receipts.current().activation_generation if v.receipts.current() else 7
+    start = v.receipts._io.manager.start
+    def lost(name: str, **kwargs: Any) -> None:
+        start(name, **kwargs)
+        if name == adapters._TARGET:
+            raise OSError("synthetic lost target-start reply")
+    with monkeypatch.context() as patch:
+        patch.setattr(v.receipts._io.manager, "start", lost)
+        with observations(v), pytest.raises(ActivationRefused):
+            v.backend.enable(expected_generation=generation, authenticated=True)
+    failed = v.receipts.read(expected_generation=generation)
+    assert failed.phase == "failed_uncertain"
+    old = v.transactions.read_optional()
+    assert next(e for e in old.effects if e.name == "home_config").state == "done"
+    invite = v.path('/etc/happyranch/invite-issuer.json').read_bytes()
+    live = unit_config_bytes(v)
+    enrollment = v.path('/etc/happyranch/enrollment.key')
+    link = v.path('/etc/credstore/happyranch-tsnet-enrollment')
+    assert enrollment.is_file() and link.is_symlink()
+    with monkeypatch.context() as patch:
+        patch.setattr(v.admin, "list_pre_auth_keys", lambda **kw: ())
+        nodes = v.admin.nodes
+        v.admin.nodes = ()
+        prepared = v.backend.recover(expected_generation=generation,
+            expected_operation_id=failed.operation_id, fresh_authenticated=True)
+        v.admin.nodes = nodes
+    assert prepared.phase == "prepared" and prepared.activation_generation == generation + 1
+    assert prepared.member_digests == failed.member_digests
+    assert v.transactions.read_optional() == old
+    assert unit_config_bytes(v) == {key: value for key, value in live.items()
+                                   if key != 'etc/happyranch/enrollment.key'}
+    assert v.path('/etc/happyranch/invite-issuer.json').read_bytes() == invite
+    assert not enrollment.exists() and not link.is_symlink()
+    v.admin.key = replace(v.admin.key, used=False)
+    return prepared
+
+
+@pytest.mark.parametrize("double", [False, True])
+def test_b7_live_config_rollover_reaches_ready(venue: Venue, monkeypatch: pytest.MonkeyPatch, double: bool) -> None:
+    v = venue
+    prepared = rollover_after_lost_reply(v, monkeypatch)
+    if double:
+        # Next generation fails at headscale start, before home_config intent.
+        start = v.receipts._io.manager.start
+        def lost(name: str, **kwargs: Any) -> None:
+            start(name, **kwargs)
+            if name == adapters._HEADSCALE:
+                raise OSError("synthetic early lost reply")
+        with monkeypatch.context() as patch:
+            patch.setattr(v.receipts._io.manager, "start", lost)
+            with pytest.raises(ActivationRefused):
+                v.backend.enable(expected_generation=8, authenticated=True)
+        failed = v.receipts.read(expected_generation=8)
+        assert failed.phase == "failed_uncertain"
+        assert all(e.name != "home_config" for e in v.transactions.read_optional().effects)
+        with monkeypatch.context() as patch:
+            patch.setattr(v.admin, "list_pre_auth_keys", lambda **kw: ())
+            nodes, v.admin.nodes = v.admin.nodes, ()
+            prepared = v.backend.recover(expected_generation=8,
+                expected_operation_id=failed.operation_id, fresh_authenticated=True)
+            v.admin.nodes = nodes
+        assert prepared.phase == "prepared" and prepared.activation_generation == 9
+    invite = v.path('/etc/happyranch/invite-issuer.json').read_bytes()
+    retained = v.transactions.read_optional()
+    replacements = []
+    publish = HomeActivationTransactionStore._publish_record
+    def replace_at_intent(store: Any, path: str, data: bytes, **kwargs: Any) -> None:
+        raw = json.loads(data)
+        if (path == TRANSACTION_PATH and raw['activation_generation'] == prepared.activation_generation
+                and raw['effects'] == [dict(name='preflight', state='intent', member_digests={})]):
+            assert store.read_optional() == retained and kwargs['expected'] == retained
+            replacements.append(raw['operation_id'])
+        publish(store, path, data, **kwargs)
+    monkeypatch.setattr(HomeActivationTransactionStore, '_publish_record', replace_at_intent)
+    with observations(v):
+        ready = h.HomeActivationBackend(io=v.receipts._io).enable(
+            expected_generation=prepared.activation_generation, authenticated=True)
+    assert ready.phase == "ready" and ready.activation_generation == (9 if double else 8)
+    assert ready.home_endpoint == "100.64.0.10:443"
+    sidecar = json.loads(v.path('/etc/happyranch/sidecar.json').read_bytes())
+    assert sidecar['home_binding']['activation_generation'] == ready.activation_generation
+    assert v.path('/etc/happyranch/invite-issuer.json').read_bytes() == invite
+    assert ready.member_digests == prepared.member_digests
+    assert replacements == [prepared.operation_id]
+    txn = v.transactions.read_optional()
+    assert txn.matches(ready) and txn.phase == 'joined'
+    assert not v.path('/etc/happyranch/enrollment.key').exists()
+    assert not v.path('/etc/credstore/happyranch-tsnet-enrollment').is_symlink()
+
+
+@pytest.mark.parametrize("case", ["same-G", "future-G", "unknown-G", "boolean-G", "negative-G", "float-G", "foreign-tail",
+    "strip-mismatch", "connector-mismatch", "old-digest", "old-G", "old-intent", "pending", "custody",
+    "activating-receipt", "joined-receipt", "ready-receipt"])
+def test_b7_live_config_rollover_refuses_without_effects(
+        venue: Venue, monkeypatch: pytest.MonkeyPatch, case: str) -> None:
+    from runtime.remote_access.home_live_config import HomeLiveConfigOwner
+    v = venue
+    prepared = rollover_after_lost_reply(v, monkeypatch)
+    path = v.path('/etc/happyranch/sidecar.json')
+    data = path.read_bytes()
+    if case in ("same-G", "future-G", "unknown-G", "boolean-G", "negative-G", "float-G", "foreign-tail"):
+        replacement = {"same-G": b'8', "future-G": b'9', "unknown-G": b'null',
+                       "boolean-G": b'true', "negative-G": b'-1', "float-G": b'7.0',
+                       "foreign-tail": b'7,"foreign":true'}[case]
+        path.write_bytes(data.replace(b'"activation_generation":7', b'"activation_generation":' + replacement))
+    if case == "strip-mismatch": path.write_bytes(b' ' + data)
+    if case == "connector-mismatch":
+        connector = v.path('/etc/happyranch/connector.json')
+        connector.write_bytes(connector.read_bytes() + b' ')
+    if case in ("old-digest", "old-G", "old-intent"):
+        txn = v.transactions.read_optional()
+        if case == "old-G": txn = replace(txn, activation_generation=6)
+        else:
+            effect = next(e for e in txn.effects if e.name == 'home_config')
+            effects = list(txn.effects)
+            if case == "old-digest":
+                effects[effects.index(effect)] = replace(effect,
+                    member_digests={key: 'a' * 64 for key in effect.member_digests})
+            else:
+                effects = effects[:effects.index(effect)] + [Effect('home_config', 'intent', {})]
+            txn = replace(txn, effects=tuple(effects))
+        put(v.path(TRANSACTION_PATH), txn.to_bytes())
+    if case == "pending": put(path.with_name('.sidecar.json.pending'), b'synthetic pending')
+    if case == "custody": path.chmod(0o666)
+    if case.endswith('-receipt'):
+        phase = case.split('-')[0]
+        prepared = replace(prepared, phase=phase, **(dict(local_node_stable_id='self-stable',
+            home_endpoint='100.64.0.10:443') if phase == 'ready' else {}))
+        put(v.path(ACTIVATION_PATH), prepared.to_bytes())
+    before = {str(p): (p.read_bytes(), p.stat().st_mode, p.stat().st_mtime_ns)
+              for p in v.root.rglob('*') if p.is_file()}
+    calls = len(v.native.calls)
+    # Observe actual write attempts, including ephemeral pending entries.
+    from scripts.test_installer_token_custody import home_unit_writes
+    writes = home_unit_writes(monkeypatch, v.root)
+    config = HomeLiveConfigOwner(io=v.receipts._io, expected_generation=8,
+                                expected_operation_id=prepared.operation_id)
+    assert not config.verify('preflight', prepared), case
+    assert writes == []
+    assert {str(p): (p.read_bytes(), p.stat().st_mode, p.stat().st_mtime_ns)
+            for p in v.root.rglob('*') if p.is_file()} == before
+    assert all(call[1] == 'show' for call in v.native.calls[calls:])
+
+
+@pytest.mark.parametrize('case', ['same-G', 'future-G', 'active-txn', 'same-operation',
+    'release_uid', 'home_id', 'control_plane_id', 'connector_id', 'ca_der_sha256', 'dial_ip',
+    'activating-receipt', 'joined-receipt', 'ready-receipt', 'matching'])
+def test_b7_backend_pair_refuses_without_forward_effects(
+        venue: Venue, monkeypatch: pytest.MonkeyPatch, case: str) -> None:
+    v = venue
+    prepared = rollover_after_lost_reply(v, monkeypatch)
+    txn = v.transactions.read_optional()
+    if case in ('same-G', 'future-G'):
+        txn = replace(txn, activation_generation=8 if case == 'same-G' else 9)
+    if case == 'active-txn': txn = replace(txn, phase='activating')
+    if case == 'same-operation': txn = replace(txn, operation_id=prepared.operation_id)
+    if case in h.IDENTITY_KEYS:
+        value = {'release_uid': prepared.release_uid + 1, 'ca_der_sha256': 'a' * 64,
+                 'dial_ip': '192.168.1.41'}.get(case, 'foreign')
+        txn = replace(txn, **{case: value})
+    if case.endswith('-receipt'):
+        phase = case.split('-')[0]
+        prepared = replace(prepared, phase=phase, **(dict(local_node_stable_id='self-stable',
+            home_endpoint='100.64.0.10:443') if phase == 'ready' else {}))
+        put(v.path(ACTIVATION_PATH), prepared.to_bytes())
+    if case == 'matching':
+        txn = replace(txn, activation_generation=prepared.activation_generation,
+                      operation_id=prepared.operation_id)
+    put(v.path(TRANSACTION_PATH), txn.to_bytes())
+    before, units = v.records(), unit_config_bytes(v)
+    native, admin = list(v.native.calls), list(v.admin.calls)
+    calls = forbid_reentry_work(v, monkeypatch)
+    from scripts.test_installer_token_custody import home_unit_writes
+    writes = home_unit_writes(monkeypatch, v.root)
+    with pytest.raises(ActivationRefused):
+        v.backend.enable(expected_generation=8, authenticated=True)
+    if case == 'matching':
+        # Ruling 17 permits only a terminal receipt marker, never forward work.
+        assert v.receipts.read(expected_generation=8) == replace(prepared, phase='failed_uncertain')
+        assert v.transactions.read_optional() == txn
+        # One write-open plus fchown/fchmod on that same pending inode.
+        assert writes == ['var/lib/happyranch-remote-access/.home-activation.json.pending'] * 3
+    else:
+        assert v.records() == before and writes == []
+    assert unit_config_bytes(v) == units and calls == []
+    assert v.native.calls == native and v.admin.calls == admin

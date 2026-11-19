@@ -11,7 +11,7 @@ from typing import Callable
 from runtime.remote_access import home_admin, invite_recovery
 from runtime.remote_access.helper_control import ControlClient
 from runtime.remote_access.home_activation import (
-    BINDING_KEYS, INVITE_CONFIG_PATH, HomeActivationStore,
+    IDENTITY_KEYS, INVITE_CONFIG_PATH, HomeActivationStore,
 )
 from runtime.remote_access.installer import HOME_ISSUER, ManagedInstaller
 from runtime.remote_access.invite_issuer import HomeInviteConfig, HomeInviteConfigRecord, HomeInviteIssuer, IssuerError
@@ -25,12 +25,11 @@ class HelperInviteBackend:
 
     def _config(self, uid: int) -> tuple[dict, HomeInviteConfig]:
         receipt = self.store.current()
-        if receipt is None or receipt.release_uid != uid:
+        if receipt is None or receipt.phase != "ready" or receipt.release_uid != uid:
             raise ValueError('refused')
         with self.store._record(INVITE_CONFIG_PATH) as raw:
             config = HomeInviteConfigRecord.parse(raw)
-            if (any(getattr(config, key) != getattr(receipt, key) for key in BINDING_KEYS)
-                    or config.home_endpoint != receipt.home_endpoint
+            if (any(getattr(config, key) != getattr(receipt, key) for key in IDENTITY_KEYS)
                     or hashlib.sha256(raw).hexdigest() != receipt.member_digests[INVITE_CONFIG_PATH]):
                 raise ValueError('refused')
         # Reuse installer custody, never read the CA private key or discover a path.
@@ -50,7 +49,7 @@ class HelperInviteBackend:
         token = dict(uid=uid, generation=receipt.activation_generation, operation=receipt.operation_id,
                      configuration=receipt.member_digests[INVITE_CONFIG_PATH], ca=receipt.ca_der_sha256)
         return token, HomeInviteConfig(home_id=config.home_id, control_plane_id=config.control_plane_id,
-            connector_id=config.connector_id, ca_der=der, dial_ip=config.dial_ip, home_endpoint=config.home_endpoint)
+            connector_id=config.connector_id, ca_der=der, dial_ip=config.dial_ip, home_endpoint=receipt.home_endpoint)
 
     def capture(self, uid: int) -> str:
         token, _ = self._config(uid)

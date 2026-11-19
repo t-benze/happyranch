@@ -10,7 +10,7 @@ from dataclasses import dataclass
 
 from runtime.remote_access import invite_v2
 from runtime.remote_access.home_activation import (
-    ACTIVATION_PATH, BINDING_KEYS, CONTROL_URL, INVITE_CONFIG_PATH, MEMBER_PATHS,
+    ACTIVATION_PATH, IDENTITY_KEYS, CONTROL_URL, INVITE_CONFIG_PATH, MEMBER_PATHS,
     HomeActivationReceipt, HomeActivationStore,
 )
 from runtime.remote_access.home_activation_owner import HomeTokenSourceVerifier
@@ -214,8 +214,7 @@ class HomeProfileAdmission:
                     raise InstallerError("home member drift")
                 if path == INVITE_CONFIG_PATH:
                     config = HomeInviteConfigRecord.parse(data)
-                    if (any(getattr(config, key) != getattr(receipt, key) for key in BINDING_KEYS)
-                            or (receipt.phase == "ready" and config.home_endpoint != receipt.home_endpoint)):
+                    if any(getattr(config, key) != getattr(receipt, key) for key in IDENTITY_KEYS):
                         raise InstallerError("home invite binding drift")
                 if path.endswith("control-ca.pem") and _hash(ssl.PEM_cert_to_DER_cert(data.decode("ascii"))) != receipt.ca_der_sha256:
                     raise InstallerError("home CA drift")
