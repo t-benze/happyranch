@@ -3584,6 +3584,8 @@ inventory, binds the derived validated release owner, then publishes/fsyncs the 
 per-intent recovery owner. No helper or CLI caller selects this capability.
 An existing exact v1 journal already has its first intent: the entry validates its
 expected generation/release UID and resumes that journal without converting it.
+This entry independently revalidates every remaining original/quarantined config's
+schema and cross-config bindings, including when v1 provenance digests match.
 The admitted historical classes are the existing validated
 `replacement_inventory`/`known-failed-or-partial` shapes: (1) recognized complete
 legacy/manual or modern configs/units with an observed failed owned unit;

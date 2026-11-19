@@ -1021,14 +1021,45 @@ def test_first_replacement_rebinds_before_publication(
         assert (parent / ".install-transaction.json.pending").read_bytes() == b"synthetic-substitution"
 
 
-def test_first_replacement_keeps_v1_handoff(fixture: Fixture) -> None:
+@pytest.mark.parametrize("phase,next_phase", [("prepared", "replacement-stopped"),
+    ("replacement-stopped", "replacement-quarantined"), ("replacement-quarantined", "replacement-state-removed")])
+def test_first_replacement_keeps_v1_handoff(fixture: Fixture, phase: str, next_phase: str) -> None:
     _, parent, prepared = prepared_replacement(fixture)
-    with pytest.raises(module.InstallerError, match="replacement paused after stop intent"):
+    for _ in range(3):
+        if json.loads((parent / "install-transaction.json").read_bytes())["phase"] == phase:
+            break
+        with pytest.raises(module.InstallerError, match="replacement paused after"):
+            fixture.installer.replace_failed()
+    journal = (parent / "install-transaction.json").read_bytes()
+    assert json.loads(journal)["phase"] == phase
+    with pytest.raises(module.InstallerError, match="replacement paused after"):
         fixture.installer.begin_replacement(expected_release_uid=os.getuid(),
-            expected_generation=hashlib.sha256(prepared).hexdigest())
+            expected_generation=hashlib.sha256(journal).hexdigest())
     record = json.loads((parent / "install-transaction.json").read_bytes())
-    assert record == {**json.loads(prepared), "phase": "replacement-stopped"}
+    assert record == {**json.loads(prepared), "phase": next_phase}
     assert record["version"] == 1 and "format" not in record
+
+
+def test_first_replacement_v1_validates_cross_config_bindings(fixture: Fixture) -> None:
+    manager, parent, prepared = prepared_replacement(fixture)
+    sidecar = json.loads((parent / "sidecar.json").read_bytes())
+    sidecar["ConnectorAddr"] = "127.0.0.1:19443"
+    (parent / "sidecar.json").write_bytes(json.dumps(sidecar).encode())
+    provenance = json.loads((parent / "provision.json").read_bytes())
+    provenance["configs"]["sidecar.json"] = hashlib.sha256((parent / "sidecar.json").read_bytes()).hexdigest()
+    (parent / "provision.json").write_bytes(json.dumps(provenance).encode())
+    record = json.loads(prepared)
+    for name in ("sidecar.json", "provision.json"):
+        record["digests"][name] = hashlib.sha256((parent / name).read_bytes()).hexdigest()
+    journal = json.dumps(record, sort_keys=True).encode()
+    (parent / "install-transaction.json").write_bytes(journal)
+    before = staged_inventory(fixture)
+    manager.calls.clear()
+    with pytest.raises(module.InstallerError):
+        fixture.installer.begin_replacement(expected_release_uid=os.getuid(),
+            expected_generation=hashlib.sha256(journal).hexdigest())
+    assert staged_inventory(fixture) == before
+    assert all(call[0] == "show" for call in manager.calls)
 
 
 def test_first_replacement_opaque_state_is_metadata_only(

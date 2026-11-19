@@ -745,20 +745,23 @@ class ManagedInstaller:
                 or candidate.installation.state != "known-failed-or-partial"):
             raise InstallerError("replacement expectations or candidate changed")
         try:
-            if candidate.journal_generation is None:
-                configs = {}
-                try:
-                    with self._directory("etc/happyranch") as parent:
-                        for name in _QUARANTINE_CONFIGS:
+            configs = {}
+            try:
+                with self._directory("etc/happyranch") as parent:
+                    for name in _QUARANTINE_CONFIGS:
+                        for entry in (name, ".replacement-" + name):
                             try:
-                                info = os.stat(name, dir_fd=parent, follow_symlinks=False)
-                                configs[name] = self._read_file(parent, name,
-                                    owner=(self.root_owner[0], self._service_owner[1]), mode=stat.S_IMODE(info.st_mode))
+                                info = os.stat(entry, dir_fd=parent, follow_symlinks=False)
+                                data = self._read_file(parent, entry,
+                                    owner=(info.st_uid, info.st_gid), mode=stat.S_IMODE(info.st_mode))
                             except FileNotFoundError:
-                                pass
-                except FileNotFoundError:
-                    pass
-                self._validate_configs(configs, staged=True, partial=True, require_current=False)
+                                continue
+                            if name in configs:
+                                raise InstallerError("duplicate replacement config placement")
+                            configs[name] = data
+            except FileNotFoundError:
+                pass
+            self._validate_configs(configs, staged=True, partial=True, require_current=False)
             if candidate.journal_generation is not None:
                 with self._directory("etc/happyranch") as parent:
                     transaction = self._read_file(parent, "install-transaction.json", owner=self.root_owner, mode=0o600)
