@@ -20,6 +20,7 @@ import { useSearchParams } from 'react-router-dom';
 import { Check } from 'lucide-react';
 import { Button } from '@/design-system/primitives/Button';
 import { PageTitle } from '@/design-system/patterns/PageTitle';
+import { TopbarActions } from '@/design-system/layouts/AppShell/TopbarSlots';
 import { SegmentedControl } from '@/design-system/primitives/SegmentedControl';
 import { ContentWrap } from '@/design-system/layouts/ContentWrap/ContentWrap';
 import { cn } from '@/lib/utils';
@@ -168,12 +169,13 @@ export function AuditPage(): JSX.Element {
         <PageTitle
           eyebrow={t('audit.page.eyebrow')}
           title={t('audit.page.title')}
-          actions={
-            <Button variant="secondary" size="sm" onClick={handleExport}>
-              {t('audit.page.export')}
-            </Button>
-          }
         />
+        {/* THR-376 r2 A1b: the page primary action lives in the AppBar. */}
+        <TopbarActions>
+          <Button variant="secondary" size="sm" onClick={handleExport}>
+            {t('audit.page.export')}
+          </Button>
+        </TopbarActions>
 
         {/* Time window chips (SegmentedControl, THR-376 PR8). */}
         <SegmentedControl

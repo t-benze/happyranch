@@ -83,7 +83,7 @@ export function ThreadHeader({
   labels,
 }: ThreadHeaderProps): JSX.Element {
   const L = {
-    statusOpen: labels?.statusOpen ?? 'active',
+    statusOpen: labels?.statusOpen ?? 'open',
     statusArchived: labels?.statusArchived ?? 'archived',
     noParticipants: labels?.noParticipants ?? 'no participants',
     archiveSummary: labels?.archiveSummary ?? 'Archive summary:',
