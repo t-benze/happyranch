@@ -61,6 +61,15 @@ if len(sys.argv) == 2 and sys.argv[1].startswith('--returned-storage='):
     returned_case = sys.argv[1].split('=', 1)[1]
     sys.argv[1:] = ['--returned-storage']
 
+automatic_schema2_case = None
+AUTOMATIC_SCHEMA2_CASES = ('absent_schema2', 'installed_empty', 'installed_history',
+    'qualification_failure', 'next_load', 'startup_budget',
+    'unknown_close_registered', 'unknown_close_unregistered')
+if len(sys.argv) == 2 and sys.argv[1].startswith('--automatic-schema2='):
+    automatic_schema2_case = sys.argv[1].split('=', 1)[1]
+    assert automatic_schema2_case in ('all', *AUTOMATIC_SCHEMA2_CASES)
+    sys.argv[1:] = ['--automatic-schema2']
+
 schema2_case = None
 SCHEMA2_CASES = ('two_runs_one_result', 'schema1_preserved', 'empty_upgrade', 'nonempty_upgrade_refused', 'rollback', 'one_outstanding')
 if len(sys.argv) == 2 and sys.argv[1].startswith('--schema2='):
@@ -189,7 +198,7 @@ if len(sys.argv) == 2 and sys.argv[1].startswith('--retained-corruption-phase=')
         uncommitted='between uncommitted')[sys.argv[1].split('=', 1)[1]]
     sys.argv[1:] = ['--retained-corruption']
 
-assert sys.argv[1:] in ([], ['--schema2'], ['--generic-abi'], ['--start-compose'], ['--start-context'], ['--bundled-catalog'], ['--returned-storage'], ['--bootstrap-startup'], ['--bootstrap-worker'], ['--bootstrap-owners'], ['--bootstrap-discovery'], ['--bootstrap-selection'], ['--bootstrap-install'], ['--bootstrap-rehearsal'], ['--bootstrap-backup'], ['--bootstrap-journal'], ['--bootstrap-precommit'], ['--startup-isolation'], ['--fresh-catalog'], ['--org-access-fence'], ['--org-access-openers'], ['--org-access-native'], ['--org-access-guardian'], ['--org-access-profile'], ['--setup-status'], ['--daily-integrity'], ['--install-integrity'], ['--bounded-acquisition'], ['--trace-custody'], ['--sequential-reuse'], ['--sequential-load'], ['--sequential-freshness'], ['--sequential-faults'], ['--sequential-sql-exhaustion'], ['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--coding-authority-corruption'], ['--document-native-corruption'], ['--author-handoff-corruption'], ['--document-revision-corruption'], ['--coding-history-corruption'], ['--physical-corruption'], ['--sequential-uncommitted'], ['--i2-cutover'], ['--i2-native']), 'unknown schema-load selection'
+assert sys.argv[1:] in ([], ['--automatic-schema2'], ['--schema2'], ['--generic-abi'], ['--start-compose'], ['--start-context'], ['--bundled-catalog'], ['--returned-storage'], ['--bootstrap-startup'], ['--bootstrap-worker'], ['--bootstrap-owners'], ['--bootstrap-discovery'], ['--bootstrap-selection'], ['--bootstrap-install'], ['--bootstrap-rehearsal'], ['--bootstrap-backup'], ['--bootstrap-journal'], ['--bootstrap-precommit'], ['--startup-isolation'], ['--fresh-catalog'], ['--org-access-fence'], ['--org-access-openers'], ['--org-access-native'], ['--org-access-guardian'], ['--org-access-profile'], ['--setup-status'], ['--daily-integrity'], ['--install-integrity'], ['--bounded-acquisition'], ['--trace-custody'], ['--sequential-reuse'], ['--sequential-load'], ['--sequential-freshness'], ['--sequential-faults'], ['--sequential-sql-exhaustion'], ['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--coding-authority-corruption'], ['--document-native-corruption'], ['--author-handoff-corruption'], ['--document-revision-corruption'], ['--coding-history-corruption'], ['--physical-corruption'], ['--sequential-uncommitted'], ['--i2-cutover'], ['--i2-native']), 'unknown schema-load selection'
 
 
 print('SCHEMA_RUNTIME', json.dumps(dict(python=sys.version, executable=sys.executable, sqlite=sqlite3.sqlite_version,
@@ -512,6 +521,15 @@ def sequential_fixture(*, schema_version=1, trace=True):
         finally:
             db.close()
 
+def schema2_routing_fixture(db):
+    """Existing A4 routing keepers now start from the installed schema2 target."""
+    from runtime.infrastructure import workflow_schema as schema
+    with schema._schema_snapshot(db._conn):
+        identity = schema._coding_org_identity(db._conn, expected_org_slug='scratch', expected_path=str(db.db_path))
+        inventory = schema.sequential_storage_inventory(db._conn)
+    assert schema.install_sequential_schema(db._conn, expected_org_slug='scratch', expected_path=str(db.db_path),
+        source_identity=identity, source_inventory=inventory, offline_check=lambda: None, schema_version=2) == 'upgraded'
+
 # Synthetic storage only: compiler/parser and the unmodified public reader
 # validate the nonempty graph. These rows confer no execution authority.
 def populate_sequential(db, *, settled=False):
@@ -668,8 +686,8 @@ def populate_returned(db):
     populate_sequential(db, settled=True)
     conn = db._conn
     one = lambda table: dict(conn.execute('SELECT * FROM ' + table).fetchone())
-    run, visit, definition = (one(table) for table in
-        ('workflow_seq_runs', 'workflow_seq_visits', 'workflow_seq_definitions'))
+    run, visit = (one(table) for table in ('workflow_seq_runs', 'workflow_seq_visits'))
+    definition = dict(conn.execute('SELECT * FROM workflow_seq_definitions WHERE id=?', (run['definition_id'],)).fetchone())
     compiled = compile_definition(definition['definition_bytes'], source_digest=definition['source_digest'])
     start = parse_start(run['start_bytes'])
     envelope = parse_result(visit['result_bytes'])
@@ -1903,7 +1921,7 @@ if sys.argv[1:] in ([], ['--bootstrap-startup']):
         assert all(any(keyword.arg == 'directory_reader' and isinstance(keyword.value, (ast.Name, ast.Attribute))
                        for keyword in node.keywords)
                    for node in evidence_calls), 'A4-M startup evidence call omits custodied reader'
-        assert len(evidence_calls) == 1, 'A4-M startup evidence reads bypass the single custody path'
+        assert len(evidence_calls) == 2, 'A4-M startup selection/hold evidence reads bypass retained custody'
         print('PASS A4-M mechanical startup evidence custody', flush=True)
 
     # Mounted keepers for discovery count and pre/post-worker close faults.
@@ -3709,6 +3727,305 @@ def inline_sql_observation(case, *, collected_failures=None):
            if reads else 'physical=0; no sequential complete reader in this case'), flush=True)
 
 
+# S2b extends the A4 private startup venue, using its real coordinator/helper,
+# installer, complete readers and registrar; no listener or executor starts.
+if sys.argv[1:] in ([], ['--automatic-schema2']):
+    from runtime.daemon.routes.orgs import _seed_skeleton
+    from runtime.daemon.workflow_setup_status import read_setup_status
+    from runtime.infrastructure import workflow_sequential_bootstrap as bootstrap
+    from runtime.infrastructure import workflow_schema as schema
+    from runtime.infrastructure.workflow_sequential_schema import SEQUENTIAL_RETAINED_TABLES
+    from runtime.orchestrator.org_config import initialize_fresh_reviewer_agents
+
+    def automatic_inventory(path):
+        with closing(sqlite3.connect(path.as_uri()+'?mode=ro', uri=True)) as conn:
+            conn.execute('BEGIN')
+            return schema.sequential_storage_inventory(conn, allowance=schema.SequentialInstallAllowance(deadline=time.monotonic()+5))
+
+    def historical_setup_evidence(home, runtime, root):
+        # Historical @1 journal fixture. These literal records are input to the
+        # production reader, never a substitute for installation or qualification.
+        key = hashlib.sha256(str(runtime).encode()).hexdigest()
+        attempt = home/'backups/workflow-sequential'/key/root.name/'schema1-original'
+        attempt.mkdir(parents=True, mode=0o700)
+        for parent in (attempt.parent, attempt.parent.parent, attempt.parent.parent.parent, attempt.parent.parent.parent.parent):
+            parent.chmod(0o700)
+        path, backup = root/'happyranch.db', attempt/'before.db'
+        with closing(sqlite3.connect(path)) as conn, closing(sqlite3.connect(backup)) as copy:
+            conn.backup(copy)
+        backup.chmod(0o600)
+        info, previous = path.stat(), None
+        for sequence, phase in enumerate(('intent', 'backup_verified', 'pre_commit', 'committed', 'verified', 'registered')):
+            state, reason = bootstrap._STATES[phase]
+            value = dict(format='workflow-setup-event@1', runtime_key=key, org_slug=root.name,
+                attempt_id=attempt.name, sequence=sequence, previous_digest=previous,
+                phase=phase, state=state, reason=reason, attempt_time='2026-11-19T00:00:00+00:00',
+                backup_path=str(backup), db_identity=dict(path=str(path), device=info.st_dev, inode=info.st_ino),
+                source_inventory_digest='a'*64, backup_sha256=None if sequence == 0 else hashlib.sha256(backup.read_bytes()).hexdigest(),
+                target_version=1)
+            raw = json.dumps(value, sort_keys=True, separators=(',', ':')).encode()
+            record = attempt/f'{sequence:02}.json'
+            record.write_bytes(raw)
+            record.chmod(0o600)
+            previous = hashlib.sha256(raw).hexdigest()
+        return {file: file.read_bytes() for file in attempt.iterdir()}
+
+    scenarios = [(case, prior) for case in AUTOMATIC_SCHEMA2_CASES
+                 for prior in ((True, False) if case in ('installed_empty', 'installed_history', 'qualification_failure') else (case != 'unknown_close_unregistered',))]
+    for case, with_prior in scenarios:
+        unknown_close = case in ('unknown_close_registered', 'unknown_close_unregistered')
+        if automatic_schema2_case not in (None, 'all', case):
+            continue
+        with tempfile.TemporaryDirectory(prefix='s2b-automatic-') as scratch, ExitStack() as stack:
+            home = Path(scratch).resolve()
+            runtime = home/'runtime'
+            stack.enter_context(patch.dict(os.environ, {'HAPPYRANCH_DAEMON_HOME': str(home)}))
+            if case == 'startup_budget':
+                from runtime.daemon import __main__ as entry
+                from runtime.runtime import RuntimeDir
+                from runtime.platform.passthrough_backend import PassthroughBackend
+                RuntimeDir.init(runtime)
+                (home/'runtimes.yaml').write_text(json.dumps(dict(active=str(runtime), registered=[str(runtime)])))
+                stack.enter_context(patch('runtime.platform.backend_factory.select_session_backend', return_value=PassthroughBackend()))
+            roots, retained_evidence = [], {}
+            slugs = ('happyranch', 'danze', 'family') if case == 'startup_budget' else ('scratch',)
+            for slug in slugs:
+                root = runtime/'orgs'/slug
+                _seed_skeleton(root, from_example=None)
+                db = Database(root/'happyranch.db')
+                schema.initialize_complete_org_schema(db, expected_org_slug=slug, layout='J')
+                install_pause_schema(db, org_slug=slug)
+                install_task_ownership(db, org_slug=slug)
+                initialize_fresh_reviewer_agents(OrgPaths(root), db)
+                db.close()
+                org = OrgState.load(slug=slug, root=root, settings=Settings())
+                org.close()
+                path = root/'happyranch.db'
+                if case != 'absent_schema2':
+                    conn = sqlite3.connect(path)
+                    conn.row_factory = sqlite3.Row
+                    conn.execute('PRAGMA foreign_keys=ON')
+                    with schema._schema_snapshot(conn):
+                        identity = schema._coding_org_identity(conn, expected_org_slug=slug, expected_path=str(path))
+                        inventory = schema.sequential_storage_inventory(conn)
+                    assert schema.install_sequential_schema(conn, expected_org_slug=slug, expected_path=str(path),
+                        source_identity=identity, source_inventory=inventory, offline_check=lambda: None) == 'installed'
+                    conn.close()
+                    org = OrgState.load(slug=slug, root=root, settings=Settings())
+                    try:
+                        if case in ('installed_empty', 'qualification_failure'):
+                            # Reuse the nearest valid settings/original-save fixture,
+                            # stopping before its first run rather than reproducing it.
+                            org.db._conn.set_authorizer(lambda action, table, *_: sqlite3.SQLITE_DENY
+                                if action == sqlite3.SQLITE_INSERT and table == 'workflow_seq_runs' else sqlite3.SQLITE_OK)
+                            try:
+                                populate_sequential(org.db)
+                            except sqlite3.DatabaseError as exc:
+                                assert str(exc) == 'not authorized', exc
+                            else:
+                                raise AssertionError('S2b empty fixture created a run')
+                            finally:
+                                org.db._conn.set_authorizer(None)
+                            org.db._conn.commit()
+                        elif case == 'installed_history' or unknown_close:
+                            populate_returned(org.db)
+                        elif case == 'startup_budget':
+                            # Production-shaped retained native payload/ownership:
+                            # three orgs, each 2048 ended tasks and >8MiB briefs.
+                            for n in range(2048):
+                                org.db.insert_task(TaskRecord(id=f'TASK-sized-{n}', brief='x'*4096, status='completed'))
+                    finally:
+                        org.close()
+                    if with_prior:
+                        retained_evidence.update(historical_setup_evidence(home, runtime, root))
+                roots.append((slug, root))
+            original = {slug: automatic_inventory(root/'happyranch.db') for slug, root in roots}
+            original_bytes = {slug: (root/'happyranch.db').read_bytes() for slug, root in roots}
+            runner = home/'qualification-fault.py'
+            if case == 'qualification_failure' or unknown_close:
+                # Existing test-side private-helper technique; no production seam.
+                if unknown_close:
+                    # Refuse real @1 history before attempt allocation, then
+                    # lose positive original source-close proof as in F1.
+                    runner.write_text("import sys\nfrom runtime.infrastructure import workflow_sequential_bootstrap as b\n"
+                        "original_close = b.BootstrapSource.close\ndef unknown_close(self):\n"
+                        "    original_close(self)\n    raise OSError('synthetic source native close uncertainty')\n"
+                        "b.BootstrapSource.close = unknown_close\nraise SystemExit(b.bootstrap_helper_main(sys.argv[1:]))\n")
+                else:
+                    # Refuse the actual default target reader inside the writer
+                    # transaction before durable pre_commit/parent permit/COMMIT.
+                    runner.write_text("import sys\nfrom runtime.infrastructure import workflow_sequential_bootstrap as b\n"
+                        "def refuse(self, conn):\n    assert conn.in_transaction\n    raise b.BootstrapEvidenceError('workflow_setup_history_synthetic_target')\n"
+                        "b.BootstrapInstall._default_target = refuse\nraise SystemExit(b.bootstrap_helper_main(sys.argv[1:]))\n")
+                import asyncio
+                actual_spawn = asyncio.create_subprocess_exec
+                async def fault_spawn(*args, **kwargs):
+                    if '--workflow-sequential-bootstrap-helper' in args:
+                        offset = args.index('--workflow-sequential-bootstrap-helper')
+                        args = (args[0], str(runner), *args[offset+1:])
+                    return await actual_spawn(*args, **kwargs)
+                stack.enter_context(patch.object(asyncio, 'create_subprocess_exec', fault_spawn))
+            setup = bootstrap.BootstrapStartup(home=home, runtime_root=runtime)
+            setup.run(tuple(roots), Settings())
+            for discovery in setup.discoveries.values():
+                discovery.close()
+            setup.require_closed()
+            if unknown_close:
+                slug, root = roots[0]
+                worker = setup.workers[0]
+                assert worker.result['state'] == 'unknown' and not worker.closed and worker.reaped, worker.result
+                assert worker.result['attempt_id'] is None and not worker.permit_sent, worker.result
+                assert worker.result['reason'] == 'history_check_failed', worker.result
+                assert setup.hold_states[slug] == 'unknown', f'F1 {case}: lost original close uncertainty'
+                key = hashlib.sha256(str(runtime).encode()).hexdigest()
+                hold = json.loads((home/'backups/workflow-sequential'/key/slug/'hold.json').read_text())
+                assert (hold['format'], hold['state']) == ('workflow-setup-hold@2', 'unknown'), f'F1 {case}: durable unknown hold became fallbackable: {hold}'
+                assert (hold['predecessor'] is not None) == with_prior
+                status = read_setup_status(home, runtime, slug)
+                assert (status.state, status.reason) == ('unknown', 'history_check_failed'), f'F1 {case}: served unknown hold lost its state/cause: {status}'
+                assert automatic_inventory(root/'happyranch.db') == original[slug]
+                assert (root/'happyranch.db').read_bytes() == original_bytes[slug]
+                assert all(file.read_bytes() == raw for file, raw in retained_evidence.items())
+                latched = {file: file.read_bytes() for file in (home/'backups').rglob('*') if file.is_file()}
+                # A later startup has positively closed discovery and no worker.
+                # It must still refuse the durable unknown before ordinary SH.
+                next_setup = bootstrap.BootstrapStartup(home=home, runtime_root=runtime)
+                next_setup.run(tuple(roots), Settings())
+                for discovery in next_setup.discoveries.values():
+                    discovery.close()
+                next_setup.require_closed()
+                assert not next_setup.workers and next_setup.hold_states.get(slug) == 'unknown', f'F1 {case}: later startup permitted fallback'
+                discovery = next_setup.discoveries[root]
+                assert discovery.failed and discovery.result is None, f'F1 {case}: selector accepted unknown as held'
+                assert str(discovery.primary) == 'workflow_setup_attempt_latched', discovery.primary
+                try:
+                    next_setup.take_shared(root)
+                except bootstrap.BootstrapEvidenceError as exc:
+                    assert str(exc) == 'workflow_setup_discovery_transfer_refused', exc
+                else:
+                    raise AssertionError(f'F1 {case}: uncertain original attached under fresh SH')
+                assert {file: file.read_bytes() for file in (home/'backups').rglob('*') if file.is_file()} == latched
+                assert (root/'happyranch.db').read_bytes() == original_bytes[slug]
+                status = read_setup_status(home, runtime, slug)
+                assert (status.state, status.reason) == ('unknown', 'history_check_failed'), status
+                print('PASS S2b F1', case, 'durable=unknown status=unknown later_fallback=refused', 'prior_schema1_journal='+str(with_prior), flush=True)
+                continue
+            for slug, root in roots:
+                path = root/'happyranch.db'
+                after = automatic_inventory(path)
+                status = read_setup_status(home, runtime, slug)
+                if case in ('installed_history', 'qualification_failure'):
+                    assert slug in setup.holds, f'S2b {case}: missing visible refusal'
+                    assert after == original[slug] and path.read_bytes() == original_bytes[slug], f'S2b {case}: changed source on refusal'
+                    assert status.state == 'installed_unverified', f'S2b {case}: schema1 falsely reported schema2 verified: {status}'
+                    if case == 'qualification_failure':
+                        worker = setup.workers[0]
+                        assert not worker.permit_sent and worker.closed and worker.reaped
+                        assert worker.result['reason'] == 'history_check_failed', worker.result
+                        assert status.backup_path and Path(status.backup_path).is_file(), 'S2b qualification_failure: original backup omitted'
+                        backup = Path(status.backup_path)
+                        assert automatic_inventory(backup) == original[slug], 'S2b qualification_failure: backup not original'
+                        assert not (backup.parent/'02.json').exists() or json.loads((backup.parent/'02.json').read_text())['phase'] == 'not_upgraded'
+                    else:
+                        assert status.reason == 'history_check_failed', status
+                else:
+                    assert not setup.holds, f'S2b {case}: upgrade refused: {setup.holds}'
+                    with closing(sqlite3.connect(path)) as conn:
+                        assert conn.execute('SELECT version FROM workflow_seq_schema_versions').fetchone() == (2,), f'S2b {case}: automatic target is not schema2'
+                        assert conn.execute('PRAGMA foreign_key_check').fetchone() is None
+                    assert (status.state, status.reason) == ('installed_verified', 'registered'), status
+                    backup = Path(status.backup_path)
+                    assert automatic_inventory(backup) == original[slug], f'S2b {case}: backup not original'
+                    event = json.loads((backup.parent/'01.json').read_text())
+                    assert event['target_version'] == 2 and hashlib.sha256(backup.read_bytes()).hexdigest() == event['backup_sha256']
+                    assert all(stat.S_IMODE(parent.stat().st_mode) == 0o700 for parent in
+                        (backup.parent, backup.parent.parent, backup.parent.parent.parent, backup.parent.parent.parent.parent, backup.parent.parent.parent.parent.parent))
+                    for table, rows in original[slug][1].items():
+                        if not table.startswith('workflow_seq_') or table in SEQUENTIAL_RETAINED_TABLES:
+                            assert after[1][table] == rows, f'S2b {case}: changed retained {table}'
+                    assert json.loads((backup.parent/'02.json').read_text())['phase'] == 'pre_commit'
+            assert all(file.read_bytes() == raw for file, raw in retained_evidence.items()), 'S2b rewrote historical setup evidence/backup'
+            if case == 'startup_budget':
+                started = time.monotonic()
+                with inline_sql_observation('S2b startup_budget first'):
+                    state = entry._build_state(Settings())
+                    try:
+                        assert set(state._all_orgs_snapshot()) == set(slugs) and not state.broken_orgs
+                        assert not state._workflow_bootstrap.workers, 'S2b first load repeated installation'
+                    finally:
+                        import asyncio
+                        asyncio.run(state.close_all())
+                        state.metrics_store.close()
+                first_seconds = time.monotonic()-started
+                assert first_seconds <= 10, f'S2b startup_budget: first all-org load exceeded 10s: {first_seconds}'
+                print(f'S2b startup_budget first_all_org_seconds={first_seconds:.3f} orgs={len(roots)} rows_per_org=2048 brief_bytes_per_org=8388608', flush=True)
+            if case in ('installed_history', 'qualification_failure'):
+                latched = {file: file.read_bytes() for file in (home/'backups').rglob('*') if file.is_file()}
+                next_setup = bootstrap.BootstrapStartup(home=home, runtime_root=runtime)
+                next_setup.run(tuple(roots), Settings())
+                for discovery in next_setup.discoveries.values():
+                    discovery.close()
+                next_setup.require_closed()
+                assert not next_setup.workers and set(next_setup.holds) == set(slugs), 'S2b refusal replayed installer'
+                assert {file: file.read_bytes() for file in (home/'backups').rglob('*') if file.is_file()} == latched, 'S2b refusal rewrote or added latch/backup'
+                assert all((root/'happyranch.db').read_bytes() == original_bytes[slug] for slug, root in roots), 'S2b refusal next load changed original'
+            if case in ('next_load', 'startup_budget'):
+                before = {slug: automatic_inventory(root/'happyranch.db') for slug, root in roots}
+                images = {slug: (root/'happyranch.db').read_bytes() for slug, root in roots}
+                setup_files = {file: file.read_bytes() for file in (home/'backups').rglob('*') if file.is_file()}
+                audit_bytes = (home/'runtime-audit.db').read_bytes()
+                next_setup = bootstrap.BootstrapStartup(home=home, runtime_root=runtime)
+                started = time.monotonic()
+                next_setup.run(tuple(roots), Settings())
+                for discovery in next_setup.discoveries.values():
+                    discovery.close()
+                assert not next_setup.workers and not next_setup.holds, 'S2b next_load: reinstalled or held schema2'
+                assert {file: file.read_bytes() for file in (home/'backups').rglob('*') if file.is_file()} == setup_files, 'S2b next_load: setup journal/backup writes'
+                assert (home/'runtime-audit.db').read_bytes() == audit_bytes, 'S2b next_load: setup audit writes'
+                assert all((root/'happyranch.db').read_bytes() == images[slug] for slug, root in roots), 'S2b next_load: automatic setup wrote'
+                with inline_sql_observation('S2b '+case+' next'):
+                    if case == 'startup_budget':
+                        state = entry._build_state(Settings())
+                        try:
+                            assert set(state._all_orgs_snapshot()) == set(slugs) and not state.broken_orgs
+                            assert not state._workflow_bootstrap.workers, 'S2b next load repeated installation'
+                        finally:
+                            asyncio.run(state.close_all())
+                            state.metrics_store.close()
+                    else:
+                        for slug, root in roots:
+                            org = OrgState.load(slug=slug, root=root, settings=Settings())
+                            org.close()
+                    for slug, root in roots:
+                        assert automatic_inventory(root/'happyranch.db') == before[slug], 'S2b next_load: durable rows changed'
+                seconds = time.monotonic()-started
+                assert seconds <= 10, f'S2b startup_budget: all-org next load exceeded 10s: {seconds}'
+                print(f'S2b {case} ordinary_all_org_seconds={seconds:.3f} orgs={len(roots)}', flush=True)
+            if case == 'installed_empty' and with_prior:
+                # A syntactically valid complete chain cannot repoint the old
+                # backup/attempt. Rehashing is test input corruption only.
+                backup = Path(read_setup_status(home, runtime, 'scratch').backup_path)
+                records = {file: file.read_bytes() for file in backup.parent.glob('*.json')}
+                previous = None
+                for file in sorted(records):
+                    value = json.loads(records[file])
+                    value['predecessor']['digest'] = '0'*64
+                    value['previous_digest'] = previous
+                    raw = json.dumps(value, sort_keys=True, separators=(',', ':')).encode()
+                    file.write_bytes(raw)
+                    previous = hashlib.sha256(raw).hexdigest()
+                try:
+                    status = read_setup_status(home, runtime, 'scratch')
+                    assert status.state == 'unknown' and status.backup_path is None, 'S2b installed_empty: accepted repointed predecessor'
+                finally:
+                    for file, raw in records.items():
+                        file.write_bytes(raw)
+                        assert file.read_bytes() == raw
+                assert read_setup_status(home, runtime, 'scratch').state == 'installed_verified'
+            print('PASS S2b', case, 'prior_schema1_journal='+str(with_prior), flush=True)
+    if sys.argv[1:] == ['--automatic-schema2']:
+        raise SystemExit(0)
+
 if sys.argv[1:] in ([], ['--fresh-catalog']):
     import asyncio
     import inspect
@@ -4374,8 +4691,8 @@ if sys.argv[1:] in ([], ['--setup-status']):
                         record.write_bytes(raw); record.chmod(0o600)
                         prior = hashlib.sha256(raw).hexdigest()
                     status = await client.get(path + 'scratch', headers=auth)
-                    assert status.json()['state'] == 'installed_verified', status.text
-                    print('PASS A3 complete setup chain: independent installed evidence', flush=True)
+                    assert (status.json()['state'], status.json()['reason']) == ('installed_unverified', 'installation_unverified'), status.text
+                    print('PASS A3 complete schema1 chain: preserved evidence, schema2 unverified', flush=True)
                     original_records = {item.name: item.read_bytes() for item in attempt.glob('*.json')}
                     for length in (1, 2, 3):
                         for item in attempt.glob('*.json'):
@@ -4412,13 +4729,13 @@ if sys.argv[1:] in ([], ['--setup-status']):
                         record.write_bytes(saved_event)
                         assert record.read_bytes() == saved_event
                         print('PASS A3 attempt refusal:', case, 'unknown; exact fixture restore', flush=True)
-                    assert (await client.get(path + 'scratch', headers=auth)).json()['state'] == 'installed_verified'
+                    assert (await client.get(path + 'scratch', headers=auth)).json()['state'] == 'installed_unverified'
                     # Native corrupt history, not a mocked reader or setup permission.
                     org.db._conn.execute('DELETE FROM workflow_task_ownership WHERE task_id=?', ('TASK-A3',))
                     org.db._conn.commit()
                     value = await client.get(task_path, headers=auth)
                     assert value.status_code == 409, ('A3 corrupt history must remain error', value.status_code, value.text)
-                    assert (await client.get(path + 'scratch', headers=auth)).json()['state'] == 'installed_verified'
+                    assert (await client.get(path + 'scratch', headers=auth)).json()['state'] == 'installed_unverified'
                     assert (await client.get('/api/v1/orgs/scratch/tasks/TASK-missing/sequential-workflow', headers=auth)).status_code == 404
                     print('PASS A3 corrupt history: real 409; absent native task 404', flush=True)
                     # Inject a negative existing role-authority refusal, never a successful grant.
@@ -5151,6 +5468,8 @@ if sys.argv[1:] in ([], ['--bootstrap-discovery']):
             installed = fault in ('present', 'installed_expired', 'transfer', 'load', 'load_fault', 'foreign_fence')
             db = schema.initialize_fresh_org_database(path, expected_org_slug='scratch') if installed else Database(path)
             try:
+                if installed:
+                    schema2_routing_fixture(db)
                 if not installed:
                     schema.initialize_complete_org_schema(db, expected_org_slug='scratch', layout='J')
                 install_pause_schema(db, org_slug='scratch')
@@ -5438,6 +5757,8 @@ if sys.argv[1:] in ([], ['--bootstrap-selection']):
             installed_fixture = fault in ('present', 'registered', 'registered_identity')
             db = schema.initialize_fresh_org_database(path, expected_org_slug='scratch') if installed_fixture else Database(path)
             try:
+                if installed_fixture:
+                    schema2_routing_fixture(db)
                 if not installed_fixture:
                     schema.initialize_complete_org_schema(db, expected_org_slug='scratch', layout='J')
                 if fault == 'partial':
@@ -5874,7 +6195,7 @@ if sys.argv[1:] in ([], ['--bootstrap-install']):
                                     installed = conn.execute('SELECT version FROM workflow_seq_schema_versions').fetchall()
                                 except sqlite3.DatabaseError:
                                     installed = None
-                                assert installed == [(1,)], 'A4-W automatically restored a committed source'
+                                assert installed == [(2,)], 'A4-W automatically restored a committed source'
                         if fault == 'writer_close':
                             assert cleanup is not None and len(close_faults) == 1, 'A4-W unknown original close retried'
                             assert close_faults[0].execute('SELECT 1').fetchone()[0] == 1, 'A4-W lost unclosed original writer'
@@ -6010,7 +6331,7 @@ if sys.argv[1:] in ([], ['--bootstrap-rehearsal']):
                     assert 'ownership_sql_limit' not in kwargs and 'deadline' not in kwargs, 'A4-R nondefault writable load'
                     private_path = kwargs['root']/'happyranch.db'
                     with closing(sqlite3.connect(private_path)) as probe:
-                        assert probe.execute("SELECT version FROM workflow_seq_schema_versions").fetchone()[0] == 1, 'A4-R load before private candidate install'
+                        assert probe.execute("SELECT version FROM workflow_seq_schema_versions").fetchone()[0] == 2, 'A4-R load before private schema2 candidate install'
                         value = probe.execute('SELECT v FROM a4_rehearsal_sentinel WHERE id=37').fetchone()[0]
                     index = len(load_calls)
                     assert value == (b'original\0typed' if index == 0 else b'writable-FIRST-survives-NEXT'), 'A4-R NEXT replaced the FIRST image'

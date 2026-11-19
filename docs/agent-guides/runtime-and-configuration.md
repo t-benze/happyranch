@@ -14,8 +14,9 @@ workflow owner predicates, A1 EX and before-COMMIT gates remain. Concurrent
 pre-A1/old-code daemons are a documented cooperative limitation. No clean-shutdown
 receipt exists.
 
-Installed orgs take cheap SH selection and ordinary complete validation, with no
-installer/backup/inventory work. Absent orgs rediscover under EX, retain the backup
+Already-schema2 orgs take cheap SH selection and ordinary complete validation,
+with no installer/backup/inventory work. Absent sequential storage and schema1
+upgrade candidates rediscover under EX, retain the backup
 at `<daemon_home>/backups/workflow-sequential/<runtime-key>/<org>/<attempt-id>/before.db`,
 rehearse actual writable FIRST/NEXT, install, reopen and run the actual A2 qualified
 registrar under original EX. Positive close and a workflow-free machine runtime
@@ -23,10 +24,28 @@ audit precede registered status and ordinary SH attachment. No pre-COMMIT source
 checkpoint occurs. Settings/roles/Allow remain unchanged; missing settings stay
 Disabled. Runtime switching does not mount this startup-only upgrade.
 
-A setup refusal with proven no source effect reports `not_installed` and loads
-the org on its current (old) layout under fresh SH after positive original custody
-closure; ordinary loader validation still applies. A validated prior
-`not_installed` hold falls back without retry or latch modification. Unknown-effect
+S2b targets schema2 through the existing S2a installer: absent sequential tables
+create schema2 directly; schema1 upgrades only with zero runs/history and exact
+definition/settings/original-save SQL, cells and rowids preserved. Any @1 history
+refuses visibly and retains its original reader. New version-2 phase records
+link the one original registered schema1 attempt ID/final-record digest; neither
+old records nor backups are rewritten. Schema1-only registered evidence projects
+`installed_unverified` for schema2. Only positively proven no-effect schema1 holds
+and unchanged `not_upgraded` refusals retain that state. Uncertain original close
+persists and serves `unknown` in version-2 holds, with or without an original
+registered journal; later startup selection refuses fallback.
+Backup directory parents must be 0700 and files 0600. Already-schema2 automatic
+setup writes zero on the next load, including setup audits and registration.
+The distinct positively fresh POST `/orgs` A2 initializer and historical offline
+default remain schema1. Coding defaults remain Disabled; public @2 stays closed.
+The private schema shell's `--automatic-schema2=CASE` and timing shell's
+`--startup_budget` observe first/next org-load budgets, not live serving acceptance.
+
+A setup refusal with proven no source effect loads the current layout under
+fresh SH after positive original custody closure; ordinary validation still
+applies. Absent-storage refusals report `not_installed`; schema1 refusals report
+`installed_unverified` for schema2. Validated no-effect holds and `not_upgraded`
+fall back without retry or latch modification. Unknown-effect
 refusals (sent COMMIT permit, COMMIT/close uncertainty or unknown latch), in-flight
 workers and registration mismatch still keep the org broken without fallback.
 Closed pre-intent reasons may be retained in private `hold.json`; original attempt
