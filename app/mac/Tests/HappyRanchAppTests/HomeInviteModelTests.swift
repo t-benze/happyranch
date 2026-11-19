@@ -343,10 +343,10 @@ struct HomeInviteModelTests {
         await session.approve()
         let model = HomeInviteModel(store: store, makeSession: { session })
         model.accept(try invite())
-        try #require(await eventually { model.webURL != nil && !model.busy })
+        try #require(await eventually { model.webURL != nil })
         let url = try #require(model.webURL), old = model.lifetime
         model.webLoaded(url: url, lifetime: old)
-        try #require(model.phase == .connected)
+        try #require(await eventually { model.phase == .connected && !model.busy })
         let target = try #require(model.savedHomes.first)
         let credential = try #require(try await store.savedHomes().credentials.first)
         await store.configure(read: readFailure, deleteFails: readFailure == nil)
