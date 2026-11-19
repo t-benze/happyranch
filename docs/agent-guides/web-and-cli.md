@@ -6,7 +6,7 @@ It emits `web/dist-connection/`, never the runtime SPA's `web/dist/`.
 Native loading is packaged separately. Slice 5a adds the Linux host fallback:
 `happyranch connection status` and `connection host --help`. Slice 5b adds Linux
 `connection client --help` with terminal consent, foreground ownership and honest
-`runtimeReachable` state. Slice 5c supplies the same foreground client grammar through the packaged Mac executable and its existing Keychain/native services; see [Mac CLI usage](../../app/mac/README.md#thr-379-slice-5c-foreground-mac-client-cli). Host lifecycle/recovery parity and native/live acceptance remain pending. See the [Linux handbook](../operations/linux-release-handbook.md#linux-host-cli-fallback-slice-5a).
+`runtimeReachable` state. Slice 5c supplies the same foreground client grammar through the packaged Mac executable and its existing Keychain/native services; see [Mac CLI usage](../../app/mac/README.md#thr-379-slice-5c-foreground-mac-client-cli). I5b delivers the seven Linux host lifecycle/invite CLI mappings with terminal-only invites and replacement confirmation; address refresh remains B13-deferred. Native/live acceptance remains pending. See the [Linux handbook](../operations/linux-release-handbook.md#linux-host-cli-fallback-slice-5a).
 
 ## Older document-review transports removed — THR-336 msg157, P1a/P1b
 

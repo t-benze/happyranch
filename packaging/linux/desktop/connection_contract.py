@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 import hashlib
+from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
 import re
 import stat
+import time
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -24,6 +26,10 @@ HOST_METHODS = {"host.status": "Status", "host.nextDevice": "NextDevice",
                 "host.approveDevice": "ApprovePending", "host.rejectDevice": "RejectPending",
                 "host.revokeDevice": "RevokeSelected"}
 HOST_MUTATIONS = frozenset({"ApprovePending", "RejectPending", "RevokeSelected"})
+# CLI opt-in only; the v1 window's method/capability maps stay unchanged.
+CLI_LIFECYCLE_TIMEOUTS = {"Enable": 482000, "ReplaceFailed": 482000, "Disable": 302000,
+                          "IssueInvite": 122000, "CancelInvite": 122000,
+                          "RecoverInvite": 122000, "RetryPolicyRenewal": 122000}
 
 
 class Requests:
@@ -346,17 +352,20 @@ class Protocol:
 
 
 def request_host(self: object, method: str, complete: object, current: object, observe: object,
-                 *, allow_reconnect: bool = True) -> None:
+                 *, allow_reconnect: bool = True, cli_lifecycle: bool = False,
+                 display_invite: object = None) -> None:
     """Fixed helper transaction shared by the window and standalone CLI owner.
 
     The caller owns lifetime/admission; this owner owns the dedicated bus,
     closed projection, acknowledgement and loss semantics. Never retry mutations.
     """
-    if method not in HOST_METHODS.values():
+    lifecycle = cli_lifecycle and method in CLI_LIFECYCLE_TIMEOUTS
+    if method not in HOST_METHODS.values() and not lifecycle:
         complete(None, "unavailable")
         return
-    mutation = method in HOST_MUTATIONS
+    mutation = method in HOST_MUTATIONS or lifecycle
     acknowledged = False
+    deadline = None
 
     def failed(error: Exception, dispatched: bool) -> None:
         if not current():
@@ -394,6 +403,47 @@ def request_host(self: object, method: str, complete: object, current: object, o
             return
         try:
             raw, = connection.call_finish(result).unpack()
+            if lifecycle:
+                if time.monotonic() >= deadline:
+                    raise ValueError("late helper reply")
+                if method == "IssueInvite":
+                    frame = parse_json(raw, 6144)
+                    now = time.time()
+                    if (type(frame) is not dict or set(frame) != {"result", "invite", "expires_at"}
+                            or frame["result"] != "complete" or type(frame["invite"]) is not str
+                            or len(frame["invite"]) > 5500
+                            or re.fullmatch(r"hrinvite2:[A-Za-z0-9_-]+", frame["invite"]) is None
+                            or type(frame["expires_at"]) is not int
+                            or not now < frame["expires_at"] <= now + 300 or display_invite is None):
+                        raise ValueError("invalid helper invite")
+                    projection = self.protocol.result("host.createInvite", dict(
+                        effect="confirmed", hostDenial="notApplicable", hostCleanup="notApplicable",
+                        localCleanup="notApplicable", networkCleanup="notApplicable", inviteState="issued",
+                        expiresAt=datetime.fromtimestamp(frame["expires_at"], timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                        host=None, client=None))
+                    if time.monotonic() >= deadline or time.time() >= frame["expires_at"]:
+                        raise ValueError("late helper invite")
+                    display_invite(frame["invite"])
+                    complete(projection)
+                else:
+                    # The public reply is admission-only ("accepted"), before
+                    # worker outcome/residue. It proves neither success nor
+                    # denial/cleanup, even if a later read happens to be ready.
+                    if parse_json(raw, 32768) != "accepted":
+                        raise ValueError("invalid helper admission")
+
+                    def held() -> bool:
+                        self.wait_source = None
+                        if current():
+                            complete(None, "outcomeUnknown", "unknown")
+                        return False
+
+                    # Effects revalidate the live caller. Do not disconnect on
+                    # admission: keep the bus through the original budget plus
+                    # margin, without polling or dispatching another mutation.
+                    self.wait_source = self.GLib.timeout_add(
+                        max(1, int((deadline - time.monotonic()) * 1000)), held)
+                return
             if called in HOST_MUTATIONS:
                 if parse_json(raw, 32768) != "ok":
                     raise ValueError("invalid helper acknowledgement")
@@ -409,12 +459,15 @@ def request_host(self: object, method: str, complete: object, current: object, o
             failed(error, True)
 
     def call(called: str) -> None:
+        nonlocal deadline
         try:
+            if lifecycle:
+                deadline = time.monotonic() + CLI_LIFECYCLE_TIMEOUTS[called] / 1000
             self.connection.call("ai.happyranch.RemoteAccess1", "/ai/happyranch/RemoteAccess1",
                 "ai.happyranch.RemoteAccess1", called, None, self.GLib.VariantType.new("(s)"),
-                self.Gio.DBusCallFlags.ALLOW_INTERACTIVE_AUTHORIZATION if called in HOST_MUTATIONS
+                self.Gio.DBusCallFlags.ALLOW_INTERACTIVE_AUTHORIZATION if mutation and called == method
                 else self.Gio.DBusCallFlags.NONE,
-                122000 if called in HOST_MUTATIONS else 3000,
+                CLI_LIFECYCLE_TIMEOUTS[called] if lifecycle else 122000 if called in HOST_MUTATIONS else 3000,
                 self.cancellable, replied, called)
         except Exception as error:
             failed(error, False)

@@ -410,27 +410,52 @@ happyranch connection host next-device
 happyranch connection host approve-device
 happyranch connection host reject-device
 happyranch connection host revoke-device
+happyranch connection host enable
+happyranch connection host turn-off
+happyranch connection host create-invite
+happyranch connection host cancel-invite
+happyranch connection host replace-failed
+happyranch connection host recover-invite
+happyranch connection host retry-policy-renewal
 ```
 
 Status reports closed nonsecret observations; the top-level status reports only
 platform/role availability. Every invocation owns one dedicated system-bus
-connection and shares the window's fixed zero-input methods, closed validation,
-3-second reads and 122-second mutation deadline. Mutations require a reachable
+connection and the shared fixed zero-input transport and closed validation.
+Reads allow 3 seconds and device mutations 122 seconds. I5b's CLI-only lifecycle
+calls allow 482 seconds for Enable/ReplaceFailed, 302 for Disable and 122 for
+invite/policy methods, covering the original helper budgets plus 2 seconds.
+Mutations require a reachable
 desktop and fresh interactive polkit authorization. No desktop returns
 `unavailable`, effect `none`, recovery `nativePermission`, before bus access.
 Revoke also requires a terminal: inspect the helper-selected snapshot, type
 `next`, `revoke` or `cancel` (default Cancel). Selection is bounded to 32 choices
 and 120 seconds; Status, NextDevice and RevokeSelected stay in that process on
 that same connection. A separate next-device command does not save selection.
-No device ID or configuration arguments are accepted. Fingerprints, invite bytes
-and backend diagnostics are never printed. A lost mutation reply is unknown,
+No device ID or configuration arguments are accepted. Fingerprints and backend
+diagnostics are never printed. A lost mutation reply is unknown,
 with no retry; confirmed host denial never promises network cleanup.
 
 Exit 0: completed read/action or cancelled selection with effect `none` (read
 observations may explicitly be unavailable). Exit 1: closed error. Exit 2:
-invalid command/arguments. Enable/turn-off/create-invite return unavailable
-without dispatch. Recovery placeholders `cancel-invite`, `replace-failed`, `refresh-home-address`
-and `retry-policy-renewal` also return closed unavailable without dispatch.
+invalid command/arguments. `create-invite` first requires a controlling terminal
+(`/dev/tty`), validates the exact terminal invite frame,
+then displays the invite only there. Stdout JSON carries only the existing
+nonsecret action fields, including invite state and UTC expiry. Malformed,
+expired or lost replies report `outcomeUnknown` / effect `unknown`, with no
+invite display or redispatch. No terminal refuses before dispatch, effect `none`.
+`replace-failed` also requires terminal confirmation: exactly
+“Replace failed remote access; existing pairings will be lost”, followed by
+`Continue? [y/N] `. Only `y` or `yes` dispatches; no tty, EOF or any other answer
+dispatches nothing, effect `none`. `turn-off` adds no CLI prompt to fresh polkit
+authorization. Enable/Disable/ReplaceFailed/CancelInvite/RecoverInvite/
+RetryPolicyRenewal acknowledge `accepted` before effects. The CLI keeps its
+dedicated bus alive through the operation budget plus margin for the helper's
+live-caller revalidation, then reports
+`outcomeUnknown` / effect `unknown`, exit 1, rather than inventing completion,
+host denial or cleanup from admission. Private outcomes/residue are not a public
+terminal receipt. No polling or automatic retry follows. Only
+`refresh-home-address` remains closed unavailable without dispatch (B13).
 Linux foreground Client CLI is documented below. Mac host remains deferred/unavailable;
 the [Mac foreground client CLI](../../app/mac/README.md#thr-379-slice-5c-foreground-mac-client-cli) is separate. There is no connector, DIY, installer or admin fallback.
 
