@@ -1,6 +1,7 @@
-"""Unmounted B5 unit inventory; no installer/supervisor admission or service call.
+"""B5 receipt-aware unit inventory; no lifecycle or service effect.
 
-The inert installer's scanner stays untouched. This receipt-aware policy uses
+E2a admission/inventory composes this policy. Inert preparation retains its own
+scanner. This receipt-aware policy uses
 the same load roots, no-follow readers and shared 65536-entry/32-depth bounds.
 Like that scanner, it assumes cooperative systemd generators/root writers;
 successful sampled inventory is not a racing-writer fence or activation grant.

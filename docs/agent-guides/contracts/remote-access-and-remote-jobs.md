@@ -850,12 +850,14 @@ The v1 provision record carries real fixed-file SHA-256 digests and the existing
 `provisioned` phase (staging only), with no secrets or paths. Generation creates
 no transaction file and grants no transaction consumption/recovery operation.
 
-Install/uninstall (including purge), check-drift and unit publication refuse the
-modern profile before any unit write, backup creation/restoration or service
-call with `home control binding not provisioned; requires slice 3b-2`, leaving
+The inert staged modern profile still refuses install/uninstall (including
+purge), check-drift and unit publication before any unit write, backup
+creation/restoration or service call with `home control binding not provisioned; requires slice 3b-2`, leaving
 inventory unchanged. Alternate supervisor install/uninstall/start/stop/restart/
-enable/disable/upgrade/rollback/run entries enforce the same refusal. Legacy
-omitted/empty profiles retain upgrade/rollback behavior; read-only service status
+enable/disable/upgrade/rollback/run entries refuse that inert bundle. E2a below
+adds only the protected ready ordinary-lifecycle and fixed-account foreground
+exceptions under Rulings 15/15a; uninstall and other deferred lifecycle still
+refuse home profiles. Legacy omitted/empty profiles retain upgrade/rollback behavior; read-only service status
 and diagnostics remain available. Modern service admission
 remains unavailable even with a supplied URL. Render-only
 `managed_units(connector_config=...)` selects the existing identity renderer
@@ -1111,7 +1113,7 @@ residue remains refusal-only. Racing root writers and actual machine-power-loss
 durability remain unverified. Until journal retirement,
 ordinary inventory/stop/provision/install/uninstall/drift and all ten fixed legacy
 system supervisor lifecycle entries retain their final/pending transaction
-refusals. Modern activation still refuses exactly `home control binding not provisioned; requires slice 3b-2`.
+refusals. Inert modern activation still refuses exactly `home control binding not provisioned; requires slice 3b-2`; E2a below governs already-activated ordinary admission.
 No CLI/helper/D-Bus/package caller is added. Disable/account cleanup, token
 rotation/repair, 3b-1d and 3b-2 remain outside this sub-part. All five unit strings
 in both layouts/profiles and `SidecarUnitSpec.home_transport=False` are unchanged.
@@ -1451,7 +1453,9 @@ prepare-headscale --layout deb` calls `ManagedInstaller.prepare_headscale`.
 It only prepares fixed local custody and an inert unit. It never runs Headscale,
 creates database users, enables/starts/reloads a unit, or changes the staged
 connector bundle. Both exact `home control binding not provisioned; requires
-slice 3b-2` activation refusals and `SidecarUnitSpec.home_transport=False` remain.
+slice 3b-2` refusals remain for inert staging; E2a below admits only the validated
+already-ready ordinary profile and fixed-account foreground serving. First unit
+publication/selection remains E2b and the default home_transport stays false.
 The separate root operator `disable-headscale --layout deb` entry and legacy
 `uninstall --layout deb` call `ManagedInstaller.cleanup_headscale`. They stop and
 disable only the exact owned Headscale unit, then remove the inert custody and
@@ -2377,8 +2381,10 @@ transport, minter policy and durable reservation store for fixed
 memory, enforces at most five minutes, single-use/non-reusable, non-ephemeral and
 no ACL tags, and retains existing/partial reservations without reuse. No installer,
 enable or helper path calls it; activation remains 3b-2g-2.
-Both exact 3b-2 activation refusals, all unit bytes and home_transport=False
-remain unchanged; no enable/start/reload, control_tls write or new IPC occurs.
+This inert admin slice changes no unit bytes, default home_transport flag or
+activation caller. E2a below supersedes its blanket admission deferral for
+validated ready lifecycle and foreground custody only; first activation remains
+E2b. The admin transport itself performs no service or control_tls effect.
 Native root/Headscale/systemd and installed acceptance remain NOT RUN.
 
 ### Home-network engineering settlements B1-B18 (THR-327 seq577)
@@ -2697,8 +2703,8 @@ post-intent Rulings 6/7 failed_uncertain. Re-hash the exact captured input bytes
 immediately before rendering and publish only from those bytes. Done verification
 compares fresh live bytes to renderer output and transaction member digests;
 B7 recovery uses transaction digests, not provision.json. Do not write provenance.
-After home_config, the existing installer intentionally reports drift/refuses
-the live profile until E2. G+1 with already-live configs likewise refuses without
+At the E1 boundary the installer intentionally reported drift/refused the live
+profile; E2a below adds the protected validated-state exception. G+1 with already-live configs likewise refuses without
 effect until B6 restoration/Turn off/ReplaceFailed; E1 adds no restoration path.
 Why no founder: implements settled B4 using an existing protected record with
 stricter cross-checks, without schema, dependency, user, UX or check relaxation.
@@ -2734,8 +2740,8 @@ It never uses provision.json as live/recovery authority. No prepared config or
 secret digest is added to B1/B4. The standalone temp-root/fake-native composition
 reaches home_config done; installed acceptance remains unverified.
 
-Accepted fail-closed consequences: after home_config done, existing installer
-validation reports provisioned-config drift/refuses the live profile until E2.
+E1b's original fail-closed boundary reported provisioned-config drift/refused the
+live profile after home_config done. E2a below supplies the validated exception.
 A G+1 rollover with already-live configs refuses the prepared precondition without
 config effects until B6 restoration/Turn off/ReplaceFailed. E1b grants no
 restoration or public Enable path. Installer/supervisor admission, provenance,
@@ -2786,6 +2792,127 @@ renderings here are comparisons only. No caller, CLI/D-Bus/helper entry, public
 Enable, installer/supervisor validator/admission/provenance/drift change or
 installer home_transport selection is mounted. Existing install remains inert.
 
+**Manager Ruling 15 (G2-E2, privilege-separated admission), refined by 15a/16:**
+Ordinary root installer install/start/restart/enable and supervisor per-unit
+start/restart/enable require euid 0 and complete protected admission. Expected G
+comes from live sidecar.json's closed home_binding and must equal both the ready
+home-activation@1 receipt (Ruling 9 reader semantics) and matching txn. Require
+home_config done; live connector/sidecar bytes equal the shared
+render_home_live_configs output from versioned provision.json-bound prepared
+inputs (13a), with SHA-256 equal to the txn member digests; and the B5 single
+fragment/link gate. Unprovisioned, partial, forged, stale/foreign, pending,
+caller-URL-only, failed_uncertain and joined-not-ready refuse. A non-root ordinary
+home lifecycle command has no foreground fallback.
+
+Unprivileged foreground supervisor.run and the Linux sidecar instead require the
+fixed non-root happyranch account and existing config custody: root-owned,
+single-link regular files without group/other write, literal no-follow root-owned
+parents. The closed live profile (ControlURL, control_tls, home_binding under
+11/13) must parse with consistent IDs in both configs. The serving process never
+reads protected receipt/txn/provision records. There is no credential copy, IPC,
+ExecStartPre, extra unit line or permission change. Root alone publishes these
+bytes through the receipt/txn-bound Ruling 13 owner; B2 independently checks the
+serving node before ready and invite issuance still requires a ready receipt.
+Absent enrollment input or the existing consumed/empty-key state serves without
+mint/rekey. Present input uses only the existing enrollment rules, never a new
+mint. Pinned pairing and per-device revocation remain unchanged.
+
+Accepted residual 15(3): systemd restart/boot can re-serve already-published,
+root-custodied, txn-verified bytes after a receipt becomes failed_uncertain. It
+cannot issue invites, retains pinned per-request pairing/revocation, and B15
+reports the condition. Retirement belongs to B6 Turn off/ReplaceFailed; no stop
+is added to failure paths (Ruling 7). This explicit residual is not a ready claim.
+
+**Manager Ruling 15a (phase scope):**
+Ready-only admission applies to ordinary lifecycle outside activation, valid
+restart and the owned-activated classification. Activate/Enable instead retains
+the merged coordinator's admission unchanged: root, authenticated expected G/O,
+prepared receipt with no txn (or Ruling 12's replaceable older failed txn),
+same-FD RELEASE-source checks and operation lock. Effects inside the run require
+activating receipt plus the matching exact effect intent at G/O, durable before
+effect and independently verified before done (6/7), with the first unit
+publication order refined by 16 below. They never use the ordinary lifecycle
+path. After joined, publish_ready retains Ruling 8's preconditions. If ready is
+not reached, started services remain as they are and ordinary lifecycle refuses;
+foreground admission and residual 15(3) govern serving.
+
+Recover retains 12/12a: root, fresh authentication and expected G/O, failed pair
+or exact half-published target; resume verifies/publishes only, while rollover
+publishes prepared(G+1,new O) only. Later activation is a new operation. Recover
+gets no selection/start exception. Non-ready inventory follows Ruling 9: a parsed
+current receipt may own its home fragment/link, and live configs with home_config
+done must match txn digests. Such entries are owned with phase, not drift or
+adoptable. Only ready is owned-activated; reporting grants no lifecycle effect.
+All other drift checks remain. These rulings add no privileged entry, caller,
+OS-user, permission, dependency, Track B/C or customer-visible behavior change.
+
+**Manager Ruling 16 (first inert-to-home unit publication order):**
+The Headscale fragment is a B1 member. Prepare, a step of the backend Enable
+entry (item 5), writes render_headscale_unit(home_transport=True) BEFORE computing
+the six member digests and publishing prepared(G,O). B4's prepared members never
+change afterward. Prepare requires root, authenticated expected G, the existing
+nonblocking activation-directory lock spanning Prepare → run → publish_ready,
+no receipt/txn/pending (first activation only), same-FD RELEASE checks, Headscale
+stopped through the existing observation, and no B5 link. Current fragment bytes
+must be exactly inert or exactly home for an idempotent crash retry. Use existing
+A5 exclusive pending, fsync and no-follow rename; only inert→home replacement is
+allowed. Daemon-reload is then permitted, never enable/start/link. Validate the
+other five members with existing readers, compute all six digests, generate O
+under the existing 32-lowercase-hex predicate and publish prepared through G2-A.
+Backend calls run with that same G/O under the same lock. G+1 after failure comes
+only from Ruling 12 rollover over already-home bytes.
+
+Crash residual 16(1): home fragment with no receipt is not admitted by B5 and is
+drift. Ordinary lifecycle refuses until Enable is retried (exact home bytes
+accepted) or B6 Turn off runs. No other path adopts, repairs or deletes it.
+
+The sidecar unit is not a B1 member. SSL_CERT lines must never be published in
+Prepare, because a systemd restart could change a running v1 sidecar's trust.
+The minimal E1a amendment belongs to item 3: preflight accepts only exact legacy
+or exact home sidecar rendering, still loaded with no drop-ins and
+NeedDaemonReload=no on every check; connector/target remain exact. After fsynced
+managed_services intent and source revalidation, that effect alone publishes
+home sidecar bytes through A5 (replace exact legacy or no-op on exact home),
+daemon-reloads, then performs the existing fixed enable/start. Verification
+before managed_services done and joined/ready requires exact home bytes.
+At/after-intent failure is failed_uncertain with bytes left as they are, no
+restore/stop. Non-ready inventory reports the receipt-bound home sidecar as owned
+with phase, never drift or adoptable. Coordinator code is unchanged: its B1
+pre-intent check sees the prepared home fragment and repeated preflight accepts
+either exact sidecar rendering. Existing prepublished-home E1a fixtures remain;
+legacy-start and Prepare cases are additive in E2b. No check is loosened: the
+replacement has the listed preconditions and the sidecar set contains only two
+exact root-custodied renderings. No new privileged entry/caller/user/permission,
+dependency, Track B/C or customer-visible change is authorized.
+
+**G2-E2a delivered boundary and assumptions:**
+The roughly 1500-line split places items 1/2/4 here. home_admission.py composes
+existing readers, protected provenance, shared renderer and HomeUnitGate. It
+inverts only the shared exact insertion, authenticates the reconstructed prepared
+bytes against provision.json, then rerenders and checks complete live txn bytes.
+Ready ordinary install is a keyless re-enable/start of already-validated existing
+units, without unit rewriting, key staging or minting. Supervisor start/restart/
+enable requires the fixed on-disk connector config to equal its parsed config;
+foreground run uses the separate fixed-account custody boundary. Legacy inert
+config and unit renderings are unchanged. Existing non-start lifecycle refusals
+remain until their separately owned work lands.
+
+Inventory's protected current receipt supplies phase/G for observation of inert
+prepared configs; installation IDs and release UID are independently bound through
+versioned prepared provenance. Live ordinary admission always takes G from the
+sidecar binding. This observation is never an activation/adoption grant. Fixed
+home CA/invite/config-directory entries and observe.sock are recognized only with
+that binding; unknown config/state/unit/link entries continue to refuse. Before
+managed_services done inventory accepts either exact sidecar rendering; after done
+it requires home. This comparison performs no publication or unit selection.
+
+E2b retains items 3/5: Prepare plus backend Enable/Recover composition, E1a's
+Ruling-16 managed-services publication amendment, their additive tests, and first
+home unit publication/selection. No HomeActivationBackend entry or caller exists
+in E2a, no public Enable/CLI/helper/D-Bus/app/web caller is added, and all live-host
+operations remain unverified. The complete 15/15a/16 contract above governs E2b;
+recording its required behavior does not claim that deferred code is delivered.
+
 **B5 — Home-only Headscale boot/stop dependency and inventory gates.**
 Only the home Headscale rendering adds
 `Before=happyranch-tsnet-sidecar.service` and
@@ -2835,8 +2962,9 @@ receipt deletion in this primitive. Missing links need no disable operation.
 The gate retains the inert scanner's load roots, literal-reference checks,
 65536-entry shared bound, 32-depth bound and 65536-byte foreign-policy bound,
 using literal no-follow parents/readers and revalidating sampled metadata.
-Existing installer/supervisor inventory and drift admission remain untouched;
-G2-E owns wiring. No production installation caller selects the home rendering.
+E2a now wires this gate into protected ordinary admission and phase-aware
+inventory. E2b retains first unit publication/selection; no installation writer
+selects or publishes the home rendering in E2a.
 Why no founder: boot persistence for an already-approved service, unchanged UX.
 
 **B6 — Live-state ownership and per-type deletion.**
