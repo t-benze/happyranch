@@ -432,7 +432,9 @@ export function AgentDetailPane({ agentName, onClose, onStartThread, onRetired }
       </header>
 
       {/* --- Editable fields — Pasture card sections --- */}
-      <div className="flex-1 space-y-6 overflow-y-auto px-6 py-4">
+      {/* THR-376 r2 A13: no inner scroller from md up — AgentsPage owns the
+          page's single scroll. Below md the stacked pane keeps its own. */}
+      <div className="flex-1 space-y-6 px-6 py-4 max-md:overflow-y-auto">
         <AddressableNameEditor canonicalId={agentName} />
         {isEligiblePolicyManager(
           policyAgent,

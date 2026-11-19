@@ -20,12 +20,17 @@ import {
   type ParsedHistoryRow,
 } from '@/hooks/metrics';
 import { PageTitle } from '@/design-system/patterns/PageTitle';
+import { StatusBadge } from '@/design-system/patterns/StatusBadge';
+import { TopbarStatus } from '@/design-system/layouts/AppShell/TopbarSlots';
 import { Sparkline } from '@/design-system/patterns/Sparkline';
 import { SegmentedControl } from '@/design-system/primitives/SegmentedControl';
 import { formatCount } from '@/lib/format';
 import { cn } from '@/lib/utils';
 import { useTranslation } from '@/hooks/i18n';
 import type { MessageKey, MessageParams } from '@/lib/i18n';
+
+/** Mirrors `useMetrics()` refetchInterval (15_000 ms) in src/hooks/metrics.ts. */
+const METRICS_POLL_SECONDS = 15;
 
 type Translate = (key: MessageKey, params?: MessageParams) => string;
 
@@ -570,6 +575,14 @@ export function HealthPage(): JSX.Element {
 
   return (
     <div className="bg-surface-canvas h-full overflow-y-auto">
+      {/* THR-376 r2 A2: AppBar page-status chip. Shown only while the live
+          snapshot is loaded and not failing; the interval is useMetrics()'s
+          existing refetchInterval (15_000 ms, src/hooks/metrics.ts). */}
+      {snapshot && !liveQ.isError && (
+        <TopbarStatus>
+          <StatusBadge tone="positive" dot label={t('health.topbar.live', { seconds: METRICS_POLL_SECONDS })} />
+        </TopbarStatus>
+      )}
       {/* a-health hl-wrap: 1120 centered cap (THR-099 Slice 7). */}
       <div className="max-w-content-wide mx-auto p-8">
         <header className="mb-8">

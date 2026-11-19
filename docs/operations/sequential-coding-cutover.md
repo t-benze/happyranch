@@ -43,6 +43,29 @@ admitted replay precedes fresh gates and preserves original pins. Source deliver
 grants no live operation or genuine execution acceptance. See the
 [U9 compatibility table and caller inventory](../specs/2026-11-12-sequential-coding-u9.md).
 
+## Schema2 automatic storage qualification (S2b)
+
+Before ordinary startup attachment, A4 now creates schema2 for absent sequential
+storage or upgrades validated schema1 with zero runs/history. It uses a new
+verified backup in 0700 directories, the S2a owning transaction, actual default
+FIRST/NEXT qualification before COMMIT, and exact definition/settings/original-save
+preservation. The original schema1 backup/journal stays intact and the single
+schema2 attempt links its original final-record digest. Any @1 history refuses
+upgrade visibly while preserving its original reader. Subsequent schema2 loads
+do no install/backup/setup-audit/registration writes. Schema1-only evidence and
+proven unchanged upgrade refusals report `installed_unverified` for schema2.
+Unknown original closure persists and serves `unknown` in version-2 holds even
+with an original registered schema1 journal; later startup refuses fallback.
+See the [storage runbook](sequential-workflow-storage.md#automatic-schema2-target-s2b).
+
+This storage change neither admits @2 nor changes saved Coding settings, roles
+or Allow. The separate fresh-org A2 initializer and offline default remain
+schema1. Existing read/startup limits remain unchanged. Deploy/restart, live
+installation, Coding setup/admission and the genuine pilot remain separately
+Founder-owned; source delivery supplies none of those actions. Backout preserves
+admitted history and requires a binary that can read schema2, never an automatic
+restore or downgrade to a schema1-only reader.
+
 ## Install and setup sequence
 
 A2 source (2026-11-17) creates combined storage for positively fresh POST
@@ -52,8 +75,8 @@ mismatch refuses. No settings/admission/roles/runs/tasks are allocated, so missi
 defaults remain Disabled and roles unset. Existing saved state stays exact.
 The explicit offline registration operator below remains available under its
 existing authority/backup rules and shares exact immutable-row selection.
-Existing-org storage installation remains separately owned until A4; a missing
-DB on startup never qualifies as fresh. These changes grant no live operating
+Existing-org startup storage belongs to A4; a missing DB on startup never
+qualifies as fresh. These changes grant no live operating
 authority or genuine Coding execution acceptance.
 
 1. Obtain separate authority naming actual runtime/org/source and cooperative

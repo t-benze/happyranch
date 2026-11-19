@@ -199,9 +199,9 @@ function ArtifactCard({
       <ThumbnailHeader type={type} />
 
       <div className="flex flex-1 flex-col p-4">
-        {/* Title — font-display heading; canonical name on hover. */}
+        {/* Title — Hanken row title; canonical name on hover. */}
         <h3
-          className="font-display text-text-primary text-sm font-medium break-words"
+          className="font-sans text-text-primary text-sm font-semibold break-words"
           title={name}
         >
           {title}
@@ -352,7 +352,7 @@ function FolderRow({
         <Folder size={19} aria-hidden="true" />
       </span>
       <span className="min-w-0">
-        <span className="font-display text-text-primary block truncate text-sm font-semibold">
+        <span className="font-mono text-text-primary text-nav block truncate font-semibold">
           {folder.name}/
         </span>
         <span className="text-text-muted block text-xs">

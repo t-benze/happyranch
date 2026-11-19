@@ -18,8 +18,8 @@
  *
  *   - `thread`  — THR-099 id-first grouped-list row (a-threads `.thread`): a
  *     leading STATUS-driven dot (open=green accent, archived=grey), then the
- *     mono thread id, the serif subject, the status BADGE routed through the
- *     shared `semanticTone` vocabulary (open→info/blue, archived→neutral/grey),
+ *     mono thread id, the Hanken 14/600 subject, the status BADGE routed through
+ *     the shared `semanticTone` vocabulary (open→info/blue, archived→neutral/grey),
  *     an inline `from dream` pill, and `last <last_speaker>`; the relative
  *     timestamp (`meta`) is right-aligned. Line-2 renders backed current
  *     participant names supplied by the bounded list response.
@@ -141,7 +141,7 @@ export function InboxRow({
           />
           <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-1">
             <IdBadge id={threadId} kind="thread" />
-            <span className="font-display text-body-sm text-text-primary truncate font-medium">
+            <span className="font-sans text-sm text-text-primary truncate font-semibold">
               {subject}
             </span>
             <span

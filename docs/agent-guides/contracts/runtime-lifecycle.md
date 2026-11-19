@@ -14,23 +14,26 @@ a documented cooperative limitation; no per-org closure receipt is introduced.
 predecessor proof. Retained history is neither reconciled nor rewritten.
 
 The source/frozen private helper retains original subprocess/socket/inherited EX
-custody. Installed SH discovery performs no install/backup/inventory work. Absent
-storage is rediscovered under EX before intent. Full source/backup/target checks,
+custody. Already-schema2 SH discovery performs no install/backup/inventory work.
+Absent storage and schema1 upgrade candidates are rediscovered under EX before
+intent; validated zero-run, zero-history schema1 upgrades through the S2a installer.
+Full source/backup/target checks,
 actual writable FIRST/NEXT rehearsal, one parent permit and independent reopen
 precede the actual A2 qualified source registrar. Source checkpoint occurs only
 after known COMMIT. The never-served registrar uses a duplicate of the same EX;
 positive original close and the empty-task/daemon runtime registration audit
 precede final registered publication. Only then does normal SH attachment start.
 
-A refused setup with proven no source effect is `not_installed`: discovery is
-absent/held and the worker is absent or positively closed without a COMMIT permit.
+A refused setup with proven no source effect is `not_installed` for absent storage
+or `installed_unverified` for schema1: discovery is absent/held and the worker is
+absent or positively closed without a COMMIT permit.
 Positive original discovery/descriptor closure permits ordinary current-layout
 loading under a fresh SH fence, without entering `broken_orgs`. The existing
 workflow-setup status and daemon log report the refusal reason. A validated prior
-`not_installed` hold selects held and falls back without retrying or rewriting the
-latch. Unknown effects/close, in-flight workers, permit sent and registration
-mismatch remain broken. Pre-intent holds may publish private external latches;
-existing phases are never overwritten. The writer predicate reuses only the
+no-effect hold or `not_upgraded` refusal selects held and falls back without
+retrying or rewriting the latch. Unknown effects/close, in-flight workers, permit
+sent and registration mismatch remain broken. Pre-intent holds may publish private
+external latches; existing phases are never overwritten. The writer predicate reuses only the
 historical UNKNOWN empty-scope disk-sweep exemption with an empty live-owner set
 under startup EX.
 
@@ -88,9 +91,9 @@ one-shot cleanup path, including when another org's original spawn is pending.
 That other worker's unresolved custody and EX remain retained; reap alone grants
 no release, replay or automatic restore. Both orgs keep their visible HOLD.
 
-Every startup attempt-evidence read uses one selection-owned custodied path,
-including the final registered read after the helper returns. Each newly opened
-child is retained before the fallible parent close. A close fault retains the
+Startup selection/final-registration reads and schema1 hold reconciliation use
+the same complete attempt-evidence reader with their respective retained directory
+custody. Each newly opened child is retained before the fallible parent close. A close fault retains the
 FIRST error and original EX, visibly holds the org and refuses repeated shutdown
 without retrying the failed close. A committed installation and its registration
 remain intact; this fault grants no restore, undo or new attempt. The advisory
