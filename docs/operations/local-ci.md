@@ -3841,3 +3841,15 @@ Citations removed from the body, with the section they supported:
 - `THR-368` — Focused founder initial-name coverage (original line 3471).
 - `THR-327 slice 3a` — Fixed remote-access helper (original line 3521).
 - `THR-203 step 1A` — Focused skill-use observation checks (original line 3566).
+
+THR-378 PR3 focused account-helper verification (existing standalone venues):
+
+```bash
+uv run --frozen --python /usr/bin/python3 pytest scripts/test_remote_access_helper.py scripts/test_invite_control.py scripts/test_invite_issuer.py scripts/test_home_minter.py scripts/test_home_admin.py scripts/test_invite_recovery.py scripts/test_pinned_pairing.py scripts/test_home_activation.py -v --tb=short
+/usr/bin/python3 -B packaging/linux/test_build_deb.py -v
+```
+
+The helper uses a real private bus/socket and the serving supervisor's pairing
+owner; external authority/providers and root ownership are isolated fixtures.
+This adds no required CI checks, Product E2E dispatch or general integration run.
+Full real-polkit/MySQL/Headscale LOCAL release-load acceptance remains PR4.

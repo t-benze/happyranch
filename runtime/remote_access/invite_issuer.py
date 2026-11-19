@@ -20,24 +20,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Iterator, Protocol
 
-from runtime.remote_access import invite_v2
-from runtime.remote_access.home_activation import (
-    ACTIVATION_PATH, BINDING_KEYS, CONTROL_URL, INVITE_CONFIG_PATH,
-    HomeActivationError, HomeActivationReceipt, HomeActivationStore,
-    _decode_record, _endpoint, _generation, _validate_binding,
+from . import invite_v2
+from .home_invite_records import (
+    ACTIVATION_PATH, BINDING_KEYS, INVITE_CONFIG_PATH, HomeActivationError, HomeActivationReceipt,
+    _generation, _OUTCOMES, IssuerError as IssuerError, HomeInviteConfigRecord as HomeInviteConfigRecord,
 )
-from runtime.remote_access.pairing import PinnedPairingManager
-
-_OUTCOMES = frozenset(("minting", "issued", "refused", "uncertain", "expired",
-                       "encoding", "pairing", "recovered"))
-_CODES = _OUTCOMES | {"configuration", "state", "busy", "rate_limited", "already_issued", "superseded"}
-
-
-class IssuerError(Exception):
-    """Only fixed categories cross the core boundary; no library error chains."""
-
-    def __init__(self, code: str) -> None:
-        super().__init__(code if type(code) is str and code in _CODES else "state")
 
 
 class MintRefused(Exception):
@@ -51,6 +38,10 @@ class MintedKey:
 
     def __repr__(self) -> str:
         return "MintedKey(<redacted>)"
+
+
+class InvitePairing(Protocol):
+    def issue_invite_record(self, digest: str, expires_at: datetime) -> int: ...
 
 
 class JoinKeyMinter(Protocol):
@@ -77,43 +68,6 @@ class HomeInviteConfig:
         return "HomeInviteConfig(<redacted>)"
 
 
-@dataclass(frozen=True, repr=False)
-class HomeInviteConfigRecord:
-    """B1 disk binding; separate from the DER-bearing issuance-core input."""
-
-    release_uid: int
-    home_id: str
-    control_plane_id: str
-    connector_id: str
-    activation_generation: int
-    ca_der_sha256: str
-    dial_ip: str
-    control_url: str
-    home_endpoint: str
-
-    def __post_init__(self) -> None:
-        try:
-            _validate_binding(self)
-            _endpoint(self.home_endpoint)
-            if type(self.control_url) is not str or self.control_url != CONTROL_URL:
-                raise HomeActivationError()
-        except HomeActivationError:
-            raise IssuerError("configuration") from None
-
-    def __repr__(self) -> str:
-        return "HomeInviteConfigRecord(<redacted>)"
-
-    @classmethod
-    def parse(cls, data: bytes) -> HomeInviteConfigRecord:
-        try:
-            record = _decode_record(data, frozenset(("format", *BINDING_KEYS, "control_url", "home_endpoint")),
-                                    "home-invite-config@1")
-        except HomeActivationError:
-            raise IssuerError("configuration") from None
-        record.pop("format")
-        return cls(**record)
-
-
 def read_home_invite_config(*, expected_generation: int, root: Path = Path("/"),
                             root_owner: tuple[int, int] = (0, 0)) -> HomeInviteConfigRecord:
     """Read only: require one ready, current-generation, digest-matching B1 pair.
@@ -122,6 +76,7 @@ def read_home_invite_config(*, expected_generation: int, root: Path = Path("/"),
     The coordinator supplies current generation; matching stale files cannot
     declare themselves current. Both parents/leaves stay pinned across the read.
     """
+    from .home_activation import HomeActivationStore
     try:
         _generation(expected_generation)
         store = HomeActivationStore(root=root, root_owner=root_owner)
@@ -202,7 +157,7 @@ class HomeInviteIssuer:
     """
 
     def __init__(self, *, config: HomeInviteConfig, minter: JoinKeyMinter,
-                 pairing: PinnedPairingManager, state_dir: Path,
+                 pairing: InvitePairing, state_dir: Path,
                  now_fn: Callable[[], datetime] | None = None) -> None:
         self._config, self._minter, self._pairing = config, minter, pairing
         self._state_dir = state_dir

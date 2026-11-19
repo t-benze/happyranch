@@ -267,7 +267,9 @@ def venue(tmp_path: Any, request: Any, monkeypatch: Any) -> Any:
     ('ApprovePending', INTERFACE, None, True, 'invalid-request'),
     *[(method, INTERFACE, None, False, 'unknown-method') for method in
       ('EnableOwnServer', 'IssueOwnServerInvite', 'Enable', 'Disable', 'ReplaceFailed',
-       'RefreshHomeAddress', 'IssueInvite', 'RetryPolicyRenewal', 'Bogus')],
+       'RefreshHomeAddress', 'RetryPolicyRenewal', 'Bogus')],
+    *[(method, INTERFACE, None, False, 'unavailable') for method in
+      ('IssueInvite', 'CancelInvite', 'RecoverInvite')],
     ('ApprovePending', 'untrusted.Override', None, False, 'unknown-method'),
     ('ApprovePending', INTERFACE, GLib.Variant('(a{ss})', ({'env': 'SECRET'},)), False, 'invalid-request'),
 ])
@@ -447,8 +449,8 @@ def test_polkit_policy_shape() -> None:
     root = ET.parse(path).getroot()
     actions = root.findall('action')
     assert {a.attrib['id'] for a in actions} == {'ai.happyranch.remote-access.' + suffix for suffix in
-        ('approve-pending', 'reject-pending', 'revoke-selected')}
-    assert len(actions) == 3
+        ('approve-pending', 'reject-pending', 'revoke-selected', 'issue-invite', 'cancel-invite', 'recover-invite')}
+    assert len(actions) == 6
     for action in actions:
         assert {element.tag: element.text for element in action.find('defaults')} == {
             'allow_any': 'no', 'allow_inactive': 'no', 'allow_active': 'auth_admin'}
@@ -1475,3 +1477,409 @@ def test_status_v2_responds_while_mutation_context_is_busy(venue: Any, monkeypat
     finally:
         release.set()
     assert not authority.calls and not operations.effects
+
+
+@pytest.fixture
+def account_venue(venue: Any, tmp_path: Path, monkeypatch: Any) -> Any:
+    """Real bus/listener/supervisor/issuer/minter; isolate only root custody and providers."""
+    import base64
+    import hashlib
+    import ssl
+    from datetime import datetime, timedelta, timezone
+    from scripts.test_home_activation import config_record, receipt_record, encoded
+    from scripts.test_invite_v2 import SWIFT_CA
+    module = HELPER._invite
+    account = module.account
+    helper, authority, _, caller, new = venue
+    state, admin_state = tmp_path / 'issuer', tmp_path / 'admin'
+    state.mkdir(mode=0o700)
+    admin_state.mkdir(mode=0o700)
+    monkeypatch.setattr(account, 'STATE', state)
+    config = config_record()
+    config.update(release_uid=os.getuid(), control_plane_id='protected-control',
+                  ca_der_sha256=hashlib.sha256(SWIFT_CA).hexdigest())
+    receipt = receipt_record('ready')
+    receipt.update({key: config[key] for key in module.BINDING_KEYS})
+    receipt['member_digests'][module.INVITE_CONFIG_PATH] = hashlib.sha256(encoded(config)).hexdigest()
+    receipt['member_digests']['/etc/happyranch/control-ca.pem'] = hashlib.sha256(
+        ssl.DER_cert_to_PEM_cert(SWIFT_CA).encode()).hexdigest()
+    bid = 'bind_' + base64.b32encode(b'B' * 16).decode().lower().rstrip('=')
+    eid = 'enr_' + base64.b32encode(b'E' * 16).decode().lower().rstrip('=')
+    token = base64.urlsafe_b64encode(b'S' * 32).decode().rstrip('=')
+    protected = {key: config[key] for key in module.BINDING_KEYS}
+    protected.update(format='account-invite@1', enabled=True, environment='TEST',
+                     services_origin='https://services.test.invalid', binding_id=bid)
+    fixed = {account.CREDENTIAL: token.encode(), account.SERVICES_CA: ssl.DER_cert_to_PEM_cert(SWIFT_CA).encode(),
+             Path(module.ACTIVATION_PATH): encoded(receipt), Path(module.INVITE_CONFIG_PATH): encoded(config),
+             Path('/etc/happyranch/control-ca.pem'): ssl.DER_cert_to_PEM_cert(SWIFT_CA).encode()}
+    reads = []
+    real_read = account.private_read
+    def root_read(path, **kwargs):
+        if path == account.CONFIG:
+            return encoded(protected)
+        if path in fixed:
+            return fixed[path]
+        if path.name == 'request.json':
+            reads.append(path)
+        return real_read(path, **{**kwargs, 'uid': os.getuid()})
+    monkeypatch.setattr(account, 'private_read', root_read)
+    owner = helper._binding(os.getuid())
+    mailbox = owner.data_home / 'account-invite'
+    mailbox.mkdir(mode=0o700)
+    request_file = mailbox / 'request.json'
+    request_file.write_text(json.dumps(dict(enrollment_id=eid, permit=token, verifier=token)))
+    request_file.chmod(0o600)
+    # Emulate only root ownership/chown for the existing real durable provider store.
+    real_fstat = os.fstat
+    admin_inode = admin_state.stat().st_ino
+    def root_fstat(fd):
+        info = real_fstat(fd)
+        if info.st_ino == admin_inode:
+            return SimpleNamespace(st_mode=info.st_mode, st_uid=0, st_gid=0)
+        return info
+    monkeypatch.setattr(account.os, 'fstat', root_fstat)
+    monkeypatch.setattr(account.os, 'fchown', lambda *args: None)
+    monkeypatch.setattr(account, 'admin_directory', lambda: os.open(admin_state, os.O_RDONLY | os.O_DIRECTORY))
+    external = SimpleNamespace(mode='ok', creates=0, rows=[], posts=[], events=[],
+        protected=protected, mailbox=request_file, state=state, reads=reads, eid=eid, bid=bid, token=token)
+    class Admin:
+        def list_pre_auth_keys(self, *, user, timeout_s):
+            assert user == 'happyranch-invite' and 0 < timeout_s <= 5
+            return tuple(external.rows)
+        def expire_pre_auth_key(self, *, user, key, timeout_s):
+            external.rows = [replace(row, expiration=datetime.now(timezone.utc) - timedelta(seconds=1))
+                             if row.key == key else row for row in external.rows]
+        def create_pre_auth_key(self, *, user, reusable, ephemeral, expiration, timeout_s):
+            external.creates += 1
+            external.events.append('create')
+            assert user == 'happyranch-invite' and reusable is ephemeral is False and 0 < timeout_s <= 5
+            record = account.HeadscaleJoinKeyMinter.__module__
+            cls = sys.modules[record].PreAuthKey
+            row = cls(user, '123', 'a1' * 24, False, False, False, expiration,
+                      datetime.now(timezone.utc), ())
+            external.rows.append(row)
+            if external.mode == 'create-loss':
+                raise OSError(token)
+            return row
+    monkeypatch.setattr(account, 'RootHeadscaleAdminOperations', Admin)
+    original_post = account.ServicesClient.post
+    def post(client, verb, body, deadline):
+        external.posts.append((verb, body))
+        external.events.append(verb)
+        assert deadline > time.monotonic()
+        if verb == 'admit':
+            assert body['enrollment_id'] == eid and body['permit'] == body['verifier'] == token
+            assert 'requested_expiry' in body and 'binding_id' not in body
+            if external.mode == 'deny':
+                raise account.MintRefused('refused')
+            if external.mode == 'admission-loss':
+                raise OSError(token)
+            expiry = body['requested_expiry']
+            external.operation, external.expiry = body['operation_id'], expiry
+            ack = dict(binding_id=bid, enrollment_id=eid, operation_id=body['operation_id'],
+                       state='admitted', mint_allowed=True, key_expires_at=expiry)
+            if external.mode in ('binding', 'enrollment', 'operation'):
+                ack[external.mode + '_id'] = 'mismatch'
+            elif external.mode == 'replay':
+                ack['mint_allowed'] = False
+            elif external.mode == 'late':
+                clock = helper.clock
+                helper.clock = lambda: clock() + 121
+            return ack
+        assert 'permit' not in body and 'verifier' not in body and 'join_key' not in body
+        if external.mode in ('settlement-loss', 'recovery-loss'):
+            raise OSError(token)
+        outcome = body.get('outcome', 'issued')
+        return dict(binding_id=bid, enrollment_id=eid, operation_id=body['operation_id'],
+                    state=outcome, mint_allowed=False, key_expires_at=body.get('actual_expiry') or external.expiry)
+    monkeypatch.setattr(account.ServicesClient, 'post', post)
+    with bound_control(monkeypatch) as (client, supervisor, path):
+        helper.control = HELPER.ControlClient(client.path)
+        external.supervisor, external.original_post = supervisor, original_post
+        external.owner = supervisor._pinned_pairing_manager
+        yield helper, authority, caller, new, external
+
+
+def test_account_invite_serving_owner_and_separate_actual_approval(account_venue: Any, caplog: Any) -> None:
+    from datetime import datetime, timezone
+    helper, authority, caller, _, external = account_venue
+    module = HELPER._invite
+    text = Call(caller, 'IssueInvite').finish()
+    assert text.startswith('hrinvite2:') and external.events == ['admit', 'create', 'settle']
+    assert external.creates == 1 and len(external.reads) == 1
+    invitation = sys.modules[module.HomeInviteIssuer.__module__].invite_v2.decode(text, now=int(time.time()))
+    manager = external.supervisor._pinned_pairing_manager
+    assert manager is external.owner
+    state = external.supervisor.state_store.load()
+    assert state.invite_record is not None and not state.devices
+    # Transfer is allowed; the actual foreign Client tuple still needs its own fresh approval.
+    pending = manager.redeem(invitation.pair_secret, 'foreign-node', 'protected-control', datetime.now(timezone.utc))
+    assert pending is not None and not external.supervisor.state_store.load().devices
+    assert Call(caller, 'ApprovePending').finish() == 'ok'
+    assert {row.stable_node_id for row in external.supervisor.state_store.load().devices.values()} == {'foreign-node'}
+    assert [row[1] for row in authority.calls] == [HELPER.ACTION_PREFIX + 'issue-invite', HELPER.ACTION_PREFIX + 'approve-pending']
+    assert len({row[-1] for row in authority.calls}) == 2
+    assert manager.redeem(invitation.pair_secret, 'other', 'protected-control', datetime.now(timezone.utc)) is None
+    raw = b''.join(path.read_bytes() for path in external.state.iterdir() if path.is_file()) + caplog.text.encode()
+    for value in (text, invitation.join_key, invitation.pair_secret, external.token):
+        assert value.encode() not in raw
+    assert Call(caller, 'Status').finish()['ready']
+    assert text not in json.dumps(Call(caller, 'Status').finish())
+
+
+@pytest.mark.parametrize('fault', ['deny', 'admission-loss', 'binding', 'enrollment', 'operation', 'replay', 'late'])
+def test_account_admission_denial_loss_mismatch_never_creates(account_venue: Any, fault: str) -> None:
+    helper, authority, caller, _, external = account_venue
+    external.mode = fault
+    Call(caller, 'IssueInvite').finish('unavailable')
+    assert external.posts[0][0] == 'admit' and external.creates == 0
+    assert len(authority.calls) == 1 and not external.supervisor.state_store.load().devices
+    if fault != 'deny':
+        external.mode = 'ok'
+        Call(caller, 'IssueInvite').finish('unavailable')
+        assert len(external.posts) == 1 and external.creates == 0
+
+
+@pytest.mark.parametrize('fault', ['deny', 'disconnect', 'drift', 'config', 'expiry', 'busy'])
+def test_account_fresh_auth_and_revalidation_no_create(account_venue: Any, fault: str) -> None:
+    helper, authority, caller, new, external = account_venue
+    authority.mode = 'delay'
+    call = Call(caller, 'IssueInvite')
+    eventually(lambda: len(authority.waiting) == 1)
+    if fault == 'deny':
+        _, invocation = authority.waiting.pop()
+        invocation.return_value(GLib.Variant('((bba{ss}))', ((False, False, {}),)))
+        call.finish('denied')
+    elif fault == 'disconnect':
+        caller.close_sync(None)
+        eventually(lambda: bool(authority.cancels))
+    else:
+        if fault == 'drift':
+            external.supervisor.state_store.save(external.supervisor.state_store.load())
+        elif fault == 'config':
+            external.protected['binding_id'] = external.eid
+        elif fault == 'expiry':
+            clock = helper.clock
+            helper.clock = lambda: clock() + 121
+        else:
+            Call(new(), 'CancelInvite').finish('busy')
+        authority.grant()
+        call.finish('changed' if fault == 'drift' else 'expired' if fault == 'expiry' else
+                    'unavailable' if fault == 'config' else None)
+    assert external.creates == (1 if fault == 'busy' else 0)
+    assert len(authority.calls) == 1
+    assert not external.posts if fault != 'busy' else external.posts
+
+
+@pytest.mark.parametrize('fault', ['create-loss', 'settlement-loss', 'final-reserve-loss', 'reply-loss'])
+def test_account_secret_loss_requires_fresh_recovery(account_venue: Any, monkeypatch: Any, fault: str) -> None:
+    helper, authority, caller, _, external = account_venue
+    external.mode = fault
+    original = helper.control.reserve_invite
+    calls = []
+    def reserve(*args, **kwargs):
+        committed = original(*args, **kwargs)
+        calls.append(committed)
+        if fault == 'final-reserve-loss' and len(calls) == 2:
+            raise HELPER.Refused('unavailable')
+        return committed
+    monkeypatch.setattr(helper.control, 'reserve_invite', reserve)
+    original_reply = helper._reply
+    if fault == 'reply-loss':
+        def lose(message, value):
+            if isinstance(value, str) and value.startswith('hrinvite2:'):
+                raise OSError('synthetic transport failure')
+            original_reply(message, value)
+        monkeypatch.setattr(helper, '_reply', lose)
+    Call(caller, 'IssueInvite').finish('unavailable')
+    assert external.creates == 1
+    external.mode = 'ok'
+    monkeypatch.setattr(helper, '_reply', original_reply)
+    Call(caller, 'IssueInvite').finish('unavailable')
+    assert external.creates == 1
+    recovered = Call(caller, 'RecoverInvite').finish()
+    assert recovered == {'outcome': 'complete', 'invite': 'recovered', 'cleanup': 'complete'}
+    assert external.creates == 1
+    assert json.loads((external.state / 'invite-issuer.json').read_bytes())['outcome'] == 'recovered'
+    assert external.posts[-1][0] == 'settle' and external.posts[-1][1]['outcome'] == 'recovered'
+    assert authority.calls[-1][1] == HELPER.ACTION_PREFIX + 'recover-invite'
+
+
+def test_account_cancel_outage_reports_cleanup_and_keeps_fence(account_venue: Any) -> None:
+    _, authority, caller, _, external = account_venue
+    Call(caller, 'IssueInvite').finish()
+    external.mode = 'recovery-loss'
+    result = Call(caller, 'CancelInvite').finish()
+    assert result == {'outcome': 'partial_cleanup', 'invite': 'cancelled', 'cleanup': 'complete'}
+    assert external.creates == 1 and external.supervisor.state_store.load().invite_record is None
+    Call(caller, 'IssueInvite').finish('unavailable')
+    assert external.creates == 1
+    external.mode = 'ok'
+    assert Call(caller, 'RecoverInvite').finish()['outcome'] == 'complete'
+    assert [row[1].split('.')[-1] for row in authority.calls] == [
+        'issue-invite', 'cancel-invite', 'issue-invite', 'recover-invite']
+
+
+@pytest.mark.parametrize('setting', ['off', 'production', 'staging', 'unspecified'])
+def test_account_composition_default_off(account_venue: Any, setting: str) -> None:
+    _, authority, caller, _, external = account_venue
+    if setting == 'off':
+        external.protected['enabled'] = False
+    else:
+        external.protected['environment'] = setting
+    for method in ('IssueInvite', 'CancelInvite', 'RecoverInvite'):
+        Call(caller, method).finish('unavailable')
+    assert not authority.calls and not external.posts and external.creates == 0
+
+
+@pytest.mark.parametrize('fault', ['symlink', 'hardlink', 'parent-alias', 'mode', 'parent-mode', 'oversize',
+                                 'duplicate', 'extra', 'wrong-owner', 'missing'])
+def test_account_mailbox_custody_closed_schema(tmp_path: Path, monkeypatch: Any, fault: str) -> None:
+    import base64
+    module = HELPER._invite
+    home = tmp_path / 'home'
+    directory = home / 'account-invite'
+    directory.mkdir(parents=True, mode=0o700)
+    path = directory / 'request.json'
+    value = dict(enrollment_id='enr_' + base64.b32encode(b'E' * 16).decode().lower().rstrip('='),
+                 permit='Uw' + 'M' * 40 + 'A', verifier='Uw' + 'M' * 40 + 'A')
+    # Use canonical random256-bit synthetic values, including zero pad bits.
+    value['permit'] = value['verifier'] = base64.urlsafe_b64encode(b'S' * 32).decode().rstrip('=')
+    path.write_text(json.dumps(value))
+    path.chmod(0o600)
+    assert dict(module.read_permit(home, os.getuid())) == value
+    if fault in ('symlink', 'hardlink'):
+        actual = directory / 'actual'
+        path.rename(actual)
+        path.symlink_to(actual) if fault == 'symlink' else os.link(actual, path)
+    elif fault == 'parent-alias':
+        directory.rename(home / 'actual')
+        directory.symlink_to(home / 'actual')
+    elif fault == 'mode':
+        path.chmod(0o640)
+    elif fault == 'parent-mode':
+        directory.chmod(0o750)
+    elif fault == 'oversize':
+        raw = json.dumps(value).encode()
+        path.write_bytes(b' ' * (1025 - len(raw)) + raw)
+    elif fault == 'duplicate':
+        path.write_text(path.read_text()[:-1] + ',"permit":"duplicate"}')
+    elif fault == 'extra':
+        path.write_text(json.dumps({**value, 'path': '/untrusted'}))
+    elif fault == 'wrong-owner':
+        real = os.fstat
+        def foreign(fd):
+            info = real(fd)
+            return SimpleNamespace(**{key: getattr(info, key) for key in
+                ('st_dev', 'st_ino', 'st_gid', 'st_mode', 'st_nlink', 'st_size', 'st_mtime_ns', 'st_ctime_ns')},
+                st_uid=info.st_uid + 1)
+        monkeypatch.setattr(module.account.os, 'fstat', foreign)
+    else:
+        path.unlink()
+    with pytest.raises(Exception):
+        module.read_permit(home, os.getuid())
+
+
+def test_account_services_wire_is_scoped_and_secret_free_settlement(monkeypatch: Any) -> None:
+    import base64
+    import http.client
+    import ssl
+    from scripts.test_invite_v2 import SWIFT_CA
+    account = HELPER._invite.account
+    calls = []
+    response = {'binding_id': 'b', 'enrollment_id': 'e', 'operation_id': 'o',
+                'state': 'admitted', 'mint_allowed': True, 'key_expires_at': '2026-11-19T00:00:00Z'}
+    class Connection:
+        sock = SimpleNamespace(settimeout=lambda _: None, shutdown=lambda _: None)
+        def __init__(self, host, port, **kwargs):
+            assert (host, port) == ('services.test.invalid', 443)
+            assert kwargs['context'].verify_mode == ssl.CERT_REQUIRED and kwargs['context'].check_hostname
+        def request(self, method, path, body, headers):
+            calls.append((method, path, json.loads(body), headers))
+        def connect(self):
+            pass
+        def getresponse(self):
+            return SimpleNamespace(status=200, read=lambda _: json.dumps(response).encode(), close=lambda: None)
+        def close(self):
+            pass
+    monkeypatch.setattr(http.client, 'HTTPSConnection', Connection)
+    token = base64.urlsafe_b64encode(b'S' * 32).decode().rstrip('=')
+    bid = 'bind_' + base64.b32encode(b'B' * 16).decode().lower().rstrip('=')
+    client = account.ServicesClient('https://services.test.invalid', bid, token, ssl.DER_cert_to_PEM_cert(SWIFT_CA))
+    body = dict(enrollment_id='e', operation_id='o', permit=token, verifier=token, requested_expiry='deadline')
+    assert client.post('admit', body, time.monotonic() + 20) == response
+    client.post('settle', {'enrollment_id': 'e', 'operation_id': 'o', 'outcome': 'uncertain',
+                          'provider_key_id': '', 'actual_expiry': ''}, time.monotonic() + 20)
+    assert [row[:2] for row in calls] == [('POST', '/internal/remote/enrollments/admit'),
+                                        ('POST', '/internal/remote/enrollments/settle')]
+    for _, _, _, headers in calls:
+        assert headers == {'Authorization': 'Bearer ' + token, 'X-HR-Binding': bid, 'Content-Type': 'application/json'}
+    assert token not in json.dumps(calls[1][2])
+
+
+@pytest.mark.parametrize('fault', ['lost-ack', 'cas', 'unavailable'])
+def test_account_initial_reservation_refusal_makes_zero_create(account_venue: Any, monkeypatch: Any, fault: str) -> None:
+    helper, _, caller, _, external = account_venue
+    original = helper.control.reserve_invite
+    def reserve(*args, **kwargs):
+        if fault == 'cas':
+            external.supervisor.state_store.save(external.supervisor.state_store.load())
+        if fault == 'unavailable':
+            raise HELPER.Refused('unavailable')
+        result = original(*args, **kwargs)
+        if fault == 'lost-ack':
+            raise HELPER.Refused('unavailable')
+        return result
+    monkeypatch.setattr(helper.control, 'reserve_invite', reserve)
+    Call(caller, 'IssueInvite').finish('unavailable')
+    assert not external.posts and external.creates == 0
+    Call(caller, 'IssueInvite').finish('unavailable')
+    assert not external.posts and external.creates == 0
+
+
+@pytest.mark.parametrize('fault', ['owner', 'mode', 'parent-mode', 'symlink', 'hardlink', 'oversize'])
+def test_account_root_credential_custody(tmp_path: Path, monkeypatch: Any, fault: str) -> None:
+    account = HELPER._invite.account
+    directory = tmp_path / 'etc/happyranch/account-invite'
+    directory.mkdir(parents=True, mode=0o700)
+    (tmp_path / 'etc').chmod(0o755)
+    (tmp_path / 'etc/happyranch').chmod(0o755)
+    path = directory / 'binding.credential'
+    path.write_bytes(b'S' * 43)
+    path.chmod(0o600)
+    real_open, real_stat, real_fstat = os.open, os.stat, os.fstat
+    target_inode = path.stat().st_ino
+    foreign = False
+    def owned(info):
+        return SimpleNamespace(**{key: getattr(info, key) for key in
+            ('st_dev', 'st_ino', 'st_mode', 'st_nlink', 'st_size', 'st_mtime_ns', 'st_ctime_ns')},
+            st_uid=1 if foreign and info.st_ino == target_inode else 0, st_gid=0)
+    monkeypatch.setattr(account.os, 'open', lambda path, flags, *a, **kw:
+                        real_open(tmp_path if path == '/' else path, flags, *a, **kw))
+    monkeypatch.setattr(account.os, 'stat', lambda *a, **kw: owned(real_stat(*a, **kw)))
+    monkeypatch.setattr(account.os, 'fstat', lambda fd: owned(real_fstat(fd)))
+    assert account.private_read(account.CREDENTIAL, uid=0, limit=43) == b'S' * 43
+    if fault == 'owner':
+        foreign = True
+    elif fault == 'mode':
+        path.chmod(0o640)
+    elif fault == 'parent-mode':
+        directory.chmod(0o755)
+    elif fault in ('symlink', 'hardlink'):
+        actual = directory / 'actual'
+        path.rename(actual)
+        path.symlink_to(actual) if fault == 'symlink' else os.link(actual, path)
+    else:
+        path.write_bytes(b'S' * 44)
+    with pytest.raises((OSError, ValueError)):
+        account.private_read(account.CREDENTIAL, uid=0, limit=43)
+
+
+def test_account_recovery_while_connector_not_ready(account_venue: Any) -> None:
+    _, authority, caller, _, external = account_venue
+    Call(caller, 'IssueInvite').finish()
+    external.supervisor._control_incomplete = True
+    result = Call(caller, 'RecoverInvite').finish()
+    assert result == {'outcome': 'complete', 'invite': 'recovered', 'cleanup': 'complete'}
+    assert external.creates == 1 and external.supervisor.state_store.load().invite_record is None
+    assert authority.calls[-1][1] == HELPER.ACTION_PREFIX + 'recover-invite'

@@ -17,4 +17,19 @@
     <message>Authenticate to revoke this device</message>
     <defaults><allow_any>no</allow_any><allow_inactive>no</allow_inactive><allow_active>auth_admin</allow_active></defaults>
   </action>
+  <action id="ai.happyranch.remote-access.issue-invite">
+    <description>Issue the current HappyRanch test invitation</description>
+    <message>Authenticate to issue this invitation</message>
+    <defaults><allow_any>no</allow_any><allow_inactive>no</allow_inactive><allow_active>auth_admin</allow_active></defaults>
+  </action>
+  <action id="ai.happyranch.remote-access.cancel-invite">
+    <description>Cancel the current HappyRanch test invitation</description>
+    <message>Authenticate to cancel this invitation</message>
+    <defaults><allow_any>no</allow_any><allow_inactive>no</allow_inactive><allow_active>auth_admin</allow_active></defaults>
+  </action>
+  <action id="ai.happyranch.remote-access.recover-invite">
+    <description>Recover the current HappyRanch test invitation</description>
+    <message>Authenticate to recover this invitation</message>
+    <defaults><allow_any>no</allow_any><allow_inactive>no</allow_inactive><allow_active>auth_admin</allow_active></defaults>
+  </action>
 </policyconfig>

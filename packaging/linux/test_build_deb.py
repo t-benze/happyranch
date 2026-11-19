@@ -454,7 +454,9 @@ class DebPackageTests(unittest.TestCase):
             'bin/happyranch-remote-access-helper': (BUILDER.parent / 'bin/happyranch-remote-access-helper').read_text(),
         }
         for name in ('remote_access_helper', 'helper_owner', 'helper_control', 'release_verifier',
-                     'status_v2', 'home_audit', 'helper_generation'):
+                     'status_v2', 'home_audit', 'helper_generation',
+                     'helper_invite', 'account_enrollment', 'home_invite_records', 'invite_v2',
+                     'invite_issuer', 'home_minter', 'home_admin', 'invite_recovery', 'service_manager'):
             files['libexec/remote-access/' + name + '.py'] = (
                 BUILDER.parents[2] / 'runtime/remote_access' / (name + '.py')).read_text()
         for launcher in ('happyranch', 'happyranch-daemon', 'happyranch-app'):
@@ -487,6 +489,19 @@ class DebPackageTests(unittest.TestCase):
         # A restrictive caller umask must not make the installed package private.
         return subprocess.run(['bash', BUILDER, archive, '--dist-dir', self.work / 'dist'],
                               text=True, capture_output=True, umask=0o077)
+
+    def test_isolated_account_helper_import(self) -> None:
+        script = """
+import runpy, sys
+runpy.run_path(sys.argv[1], run_name='isolated_import_check')
+assert not any(n == 'runtime' or n.startswith('runtime.') or n == 'pydantic' for n in sys.modules)
+assert 'happyranch_fixed_invites.helper_invite' in sys.modules
+assert 'happyranch_fixed_invites.home_activation' not in sys.modules
+"""
+        result = subprocess.run(['/usr/bin/python3', '-I', '-c', script,
+                                 str(BUILDER.parents[2] / 'runtime/remote_access/remote_access_helper.py')],
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_packaged_helper_directives(self) -> None:
         self.assertEqual((BUILDER.parent / 'dbus/ai.happyranch.RemoteAccess1.service').read_text().splitlines(), [
@@ -650,7 +665,9 @@ class DebPackageTests(unittest.TestCase):
                     self.assertEqual(list((installed / 'var/lib/happyranch-remote-access').iterdir()), [])
                     self.assertFalse((installed / 'etc/systemd/system').exists(), 'no enablement links')
                     for name in ('remote_access_helper', 'helper_owner', 'helper_control', 'release_verifier',
-                                 'status_v2', 'home_audit', 'helper_generation'):
+                                 'status_v2', 'home_audit', 'helper_generation',
+                                 'helper_invite', 'account_enrollment', 'home_invite_records', 'invite_v2',
+                                 'invite_issuer', 'home_minter', 'home_admin', 'invite_recovery', 'service_manager'):
                         source = BUILDER.parents[2] / 'runtime/remote_access' / (name + '.py')
                         shipped = installed / 'opt/happyranch-desktop/libexec/remote-access' / (name + '.py')
                         self.assertEqual(shipped.read_bytes(), source.read_bytes())
@@ -733,7 +750,16 @@ class DebPackageTests(unittest.TestCase):
                                          'libexec/remote-access/happyranch-home-admin',
                                          'libexec/remote-access/status_v2.py',
                                          'libexec/remote-access/home_audit.py',
-                                         'libexec/remote-access/helper_generation.py')):
+                                         'libexec/remote-access/helper_generation.py',
+                                         'libexec/remote-access/helper_invite.py',
+                                         'libexec/remote-access/account_enrollment.py',
+                                         'libexec/remote-access/home_invite_records.py',
+                                         'libexec/remote-access/invite_v2.py',
+                                         'libexec/remote-access/invite_issuer.py',
+                                         'libexec/remote-access/home_minter.py',
+                                         'libexec/remote-access/home_admin.py',
+                                         'libexec/remote-access/invite_recovery.py',
+                                         'libexec/remote-access/service_manager.py')):
             with self.subTest(missing=missing):
                 archive = self.payload(version=f'0.3.{index}')
                 root = self.work / f'happyranch-0.3.{index}-linux-x86_64'

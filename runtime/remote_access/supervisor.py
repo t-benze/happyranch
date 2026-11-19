@@ -34,7 +34,7 @@ import uuid
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Callable, ContextManager
+from typing import TYPE_CHECKING, Callable, ContextManager
 
 from pydantic import ValidationError
 
@@ -99,6 +99,9 @@ from runtime.remote_access.state_store import (
 from runtime.remote_access.streams import StreamCloseError, StreamRegistry
 from runtime.remote_access.stripping import CredentialScanner
 from runtime.remote_access.systemd_unit import ConnectorUnitSpec, render_connector_unit
+
+if TYPE_CHECKING:
+    from runtime.remote_access.invite_control import InviteControl
 
 DEFAULT_UNIT_NAME = "happyranch-connector.service"
 DEFAULT_STATE_DIR = "happyranch-connector"
@@ -380,6 +383,31 @@ class _HelperOperations:
                 or record.expires_at != pending.expires_at.timestamp()):
             raise helper_control.Refused('changed')
         return pending
+
+    def _invites(self) -> InviteControl:
+        from runtime.remote_access.invite_control import InviteControl
+        manager = self.supervisor._pinned_pairing_manager
+        if manager is None:
+            raise helper_control.Refused('unavailable')
+        return InviteControl(manager)
+
+    def invite_binding(self) -> dict[str, str]:
+        config = self.supervisor.config
+        if config.managed is None:
+            raise helper_control.Refused('unavailable')
+        return {'home_id': config.home_id, 'connector_id': config.connector_id,
+                'control_plane_id': config.managed.control_plane_id}
+
+    def reserve_invite(self, generation: int, digest: str, expires_at: int, *, deadline: float) -> int:
+        if not self.status().ready:
+            raise helper_control.Refused('unavailable')
+        return self._invites().reserve_invite(generation, digest, expires_at, deadline=deadline)
+
+    def invalidate_invite(self, generation: int, *, deadline: float) -> int:
+        return self._invites().invalidate_invite(generation, deadline=deadline)
+
+    def revoke_all(self, generation: int, *, deadline: float) -> int:
+        return self._invites().revoke_all(generation, deadline=deadline)
 
     def approve_pending(self, record: helper_control.Device, generation: int) -> None:
         if not self.status().ready:

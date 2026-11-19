@@ -2111,8 +2111,8 @@ cursors disappear on disconnect. Status
 contains only bounded public summaries. Error/log categories are closed.
 Custom-server URL/key intake methods do not exist and are not planned; outside-home access
 uses a fixed build-configured server (see [Outside-home access (fixed operator server)](../../specs/2026-11-16-one-click-remote-access.md#outside-home-access-fixed-operator-server)).
-IssueInvite and all install/lifecycle methods are absent, so invite issuance's
-one-per-minute rate limit and policy-renewal installation belong to later slices.
+The default-off THR-378 TEST composition adds IssueInvite/CancelInvite/RecoverInvite as described below.
+Install/lifecycle methods and policy-renewal installation remain deferred.
 
 `helper_control.OperationAPI` defines status, approve_pending, reject_pending,
 and revoke_device plus the shared trust mutation lock. The new root-only Unix
@@ -3217,9 +3217,9 @@ descriptor-relative no-follow traversal: a real directory owned by the UID,
 not group/world-writable, outside passwd-home/`.happyranch`, `/`, `/etc` and
 `/var`. Missing/invalid evidence refuses `release_home_invalid`; no username
 or path crosses the boundary. These five bootstrap refusal codes are closed.
-The packaged entry retains only Status/StatusV2/NextDevice/ApprovePending/RejectPending/
-RevokeSelected; installer-backed lifecycle effects remain deferred to serial
-integration. Focused bootstrap/package verification uses
+The packaged entry retains Status/StatusV2/NextDevice/ApprovePending/RejectPending/
+RevokeSelected and the default-off TEST invite methods below; installer-backed lifecycle
+effects remain deferred to serial integration. Focused bootstrap/package verification uses
 `/usr/bin/python3 -B packaging/linux/test_build_deb.py -v`; the existing
 standalone `scripts/test_remote_access_helper.py` private-bus command also
 checks refusal before connector reads/auth. These focused checks do not install
@@ -3312,8 +3312,8 @@ the trust flock. Cleanup failure on any owner does not prevent revoking the rest
 and yields `unavailable`; a racing writer refuses `changed`, preserving any prior
 denies. Expiry refuses `expired` before new writes, while necessary cleanup of
 committed work completes; bulk refusal can follow partial durable effects and
-never claims rollback. Supervisor and issuer wiring remain
-serial integration work.
+never claims rollback. The THR-378 TEST composition below wires supervisor and issuer through this capability;
+ordinary local/DIY issuance and lifecycle activation remain separate.
 
 Why no founder: fixed operations on existing root-only private IPC.
 
@@ -3368,14 +3368,15 @@ rate limit. Recovery mints nothing; only a later separately authorized
 IssueInvite creates fresh authority. Returned results contain no operation IDs
 or invitation/key material.
 
-Deferred integration: Track B owns zero-input D-Bus methods and fresh polkit
-actions; serial integration supplies the one helper mutation slot, protected
+THR-378 TEST integration below supplies zero-input D-Bus methods, fresh polkit
+actions and the one helper mutation slot, protected
 issuer/config/generation selection, live-caller hook, existing invite-user lock
 and protected admin/store inputs for `HeadscaleRecoveryMinter`, serving supervisor
 `InviteControl` capability and issuer B10 wiring
-(including durable uncertainty after lost reserve replies), and B15 observation
-projection. No helper, supervisor, service, timer, package or public call is wired
-by this backend. Focused standalone checks:
+(including durable uncertainty after lost reserve replies). B15 invite observations
+remain unknown; action results carry the closed recovery outcomes. The backend
+itself adds no timer or service; the default-off account composition
+uses the existing helper and serving supervisor. Focused standalone checks:
 `uv run --frozen --python /usr/bin/python3 pytest scripts/test_invite_recovery.py`.
 
 **B12 — Bounded recorded-node cleanup.**
@@ -3730,3 +3731,87 @@ Standalone synthetic verification: `uv run --frozen pytest
 scripts/test_home_minter.py scripts/test_invite_issuer.py -v`. Fake operations
 model the tagged fields/expiration semantics; they do not establish protected
 socket custody, real server execution, Linux/Mac integration or installed access.
+
+## THR-378 account-linked LOCAL issuance (PR3)
+
+This TEST/development-only composition defaults OFF. It does not enable native
+sign-in, production issuance, outside-home acceptance or account-bound redemption.
+An invitation remains transferable and single use; Host approval of the actual
+Client control-plane/StableID tuple is a separate fresh-auth call. The account,
+active target membership and explicit test grant gate issuance at Services admit;
+withdrawal before admit denies, while an admitted attempt may finish within its
+original bounds. Existing approved devices retain their separate lifetimes.
+
+The fixed root helper exports zero-input IssueInvite, CancelInvite and RecoverInvite.
+Each uses its own `ai.happyranch.remote-access.{issue,cancel,recover}-invite`
+`auth_admin` action, without cached authorization, under the existing one-dialog
+slot and original <=120s deadline. It captures and rechecks bus identity, release
+owner, protected binding/receipt and connector generation. Status never contains
+an invitation. Busy/denied/disconnected/late/changed requests cannot mint.
+
+Operator preparation in a disposable venue supplies root:root0700
+`/etc/happyranch/account-invite/` containing root:root0600 `config.json`,
+`binding.credential` (exactly43 base64url characters, random256-bit scoped Host
+credential, no newline) and `services-ca.pem`. The config is a closed object:
+`format:"account-invite@1"`, `enabled:true`, `environment:"TEST"` or
+`"development"`, `services_origin` (HTTPS origin only), `binding_id` (Services
+opaque bind ID), and all B1 `BINDING_KEYS`. They must match the current ready
+activation receipt and digest-bound invite config. Staging/production/unspecified
+refuse. Neither environment variables nor D-Bus arguments enable or select it.
+Root:root0700 `/var/lib/happyranch-remote-access/account-invite/` holds only
+nonsecret issuer/provider/Services operation metadata. Preparation does not run
+through these methods and is not authorized by this documentation.
+
+The LOCAL driver writes only `{enrollment_id,permit,verifier}` to
+`<Owner.data_home>/account-invite/request.json` (owner0700 parent, single-link
+owner0600 regular file, <=1024bytes). Root derives the owner from bus credentials,
+opens every component no-follow, checks metadata/signatures, and reads once into
+immutable memory. Duplicate/extra keys, aliases, unsafe ownership/modes and
+oversize input refuse. Root never writes that user directory; the driver deletes
+the handoff after the call/expiry. Same-UID access remains the local trust limit.
+
+HomeInviteIssuer fsyncs minting and its durable60s limiter before B10 reservation.
+Only the serving supervisor's sole PinnedPairingManager changes the anchored
+trust state; root uses a digest/deadline/generation proxy. A matching positive
+original Services admit acknowledgement alone permits one Headscale create.
+The existing complete-inventory/late-create fences, dedicated invite-user lock,
+insert-only provider reservation and <=5s clipped admin deadlines remain.
+Issued settlement sends only provider ID/actual expiry/outcome and must be
+acknowledged before final digest reservation, consumed delivery and private reply.
+No permit, verifier, join key, invite or daemon bearer crosses connector IPC.
+
+Lost admit/create/settle/reservation/reply never authorizes remint or redelivery.
+Before replacing any consumed/uncertain delivery, use separately authenticated
+Cancel/Recover; the original60s issue limiter still applies. Recovery fences the
+current journal, acknowledges connector invalidation, expires and completely
+re-lists the dedicated user's keys, then observes/settles Services metadata.
+Services outage leaves issuance fenced even when network cleanup is complete;
+the returned invite/cleanup/outcome axes describe those effects separately.
+Recovery accepts no operation ID, never creates, and needs no active grant.
+Only a later fresh IssueInvite can create authority.
+
+Shared validators live in stdlib-only `home_invite_records.py` and retain their
+original owners' imports and wire meaning. System Python -I loads a fixed empty
+private namespace of packaged siblings without the runtime package initializer,
+bundled site-packages or user code. Unit hardening is unchanged. Daemon remains
+loopback-only; bearer injection stays solely on the connector's loopback hop.
+No account-linked failure falls back to the account-free local/DIY path.
+
+Focused verification (temporary private bus/socket, synthetic external providers):
+`uv run --frozen --python /usr/bin/python3 pytest scripts/test_remote_access_helper.py scripts/test_invite_control.py scripts/test_invite_issuer.py scripts/test_home_minter.py scripts/test_home_admin.py scripts/test_invite_recovery.py scripts/test_pinned_pairing.py scripts/test_home_activation.py -v --tb=short`.
+Packaging/import isolation: `/usr/bin/python3 -B packaging/linux/test_build_deb.py -v`.
+These do not prove real polkit, MySQL/Services/Headscale LOCAL acceptance or a
+packaged release UI load. Those are PR4's disposable-venue acceptance, NOT RUN
+here. General integration remains SKIPPED, Python units RETIRED, and Product E2E
+is not dispatched. Audit of canonical bundled skills found no affected enrollment
+guidance; no materialized skill or agent permission surface changes.
+
+Account composition additionally observes `invite-binding@1` on that same root-only
+socket: closed `{method}` request, closed `{target,generation}` reply with target
+`{home_id,control_plane_id,connector_id}`. It must match the protected receipt and
+captured generation. Account reserve/invalidate requests include that nonsecret
+`target`; the connector compares it under the serving manager lock before ready
+and after commit, then performs the existing anchored CAS. Existing B10 requests
+without target retain their wire/behavior compatibility; an old connector without
+this capability refuses account issuance. Cleanup requires owned control state,
+not issuance readiness. No second listener or pairing owner is introduced.

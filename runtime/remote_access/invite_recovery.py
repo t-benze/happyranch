@@ -1,4 +1,4 @@
-"""Inert B11 backend; the authenticated helper holds its mutation slot throughout.
+"""B11 backend; the authenticated helper holds its mutation slot throughout.
 
 Lock order is helper slot -> short issuer journal transaction -> IPC, with no
 journal/trust flock held across IPC or minter calls. Durable uncertain intent
@@ -11,14 +11,13 @@ import math
 import time
 from dataclasses import dataclass
 from datetime import datetime
-from enum import StrEnum
 from typing import Callable, Protocol
 
-from runtime.remote_access.home_minter import (
+from .home_minter import (
     HeadscaleAdminOperations, HeadscaleJoinKeyMinter, OperationRecordStore, PreAuthKey,
 )
-from runtime.remote_access.invite_issuer import HomeInviteIssuer, IssuerError
-from runtime.remote_access.status_v2 import CleanupState, InvitePhase
+from .invite_issuer import HomeInviteIssuer, IssuerError
+from .status_v2 import CleanupState, InvitePhase, _StringEnum
 
 
 class InviteControlClient(Protocol):
@@ -92,7 +91,7 @@ class HeadscaleRecoveryMinter:
             return False
 
 
-class RecoveryOutcome(StrEnum):
+class RecoveryOutcome(_StringEnum):
     COMPLETE = 'complete'
     REFUSED = 'refused'
     UNCERTAIN = 'uncertain'
@@ -115,7 +114,8 @@ def _check_deadline(deadline: float) -> None:
 
 def _operate(*, issuer: HomeInviteIssuer, control: InviteControlClient,
              minter: RecoveryMinter, generation: int, deadline: float,
-             before_commit: Callable[[], None], terminal: InvitePhase) -> RecoveryResult:
+             before_commit: Callable[[], None], terminal: InvitePhase,
+             after_cleanup: Callable[[str], None] | None) -> RecoveryResult:
     # Even unavailable/expired transport after dispatch cannot imply no change.
     outcome = RecoveryOutcome.REFUSED
     invite, cleanup = InvitePhase.UNKNOWN, CleanupState.UNKNOWN
@@ -153,6 +153,8 @@ def _operate(*, issuer: HomeInviteIssuer, control: InviteControlClient,
             return RecoveryResult(outcome, invite, cleanup)
         _check_deadline(deadline)
         cleanup = CleanupState.COMPLETE
+        if after_cleanup is not None:
+            after_cleanup(record['operation_id'])
         revalidate()
         with issuer._recovery_record() as (parent, current):
             _check_deadline(deadline)
@@ -172,15 +174,19 @@ def _operate(*, issuer: HomeInviteIssuer, control: InviteControlClient,
 
 def cancel_invite(*, issuer: HomeInviteIssuer, control: InviteControlClient,
                   minter: RecoveryMinter, generation: int, deadline: float,
-                  before_commit: Callable[[], None]) -> RecoveryResult:
+                  before_commit: Callable[[], None],
+                  after_cleanup: Callable[[str], None] | None = None) -> RecoveryResult:
     """Invalidate CURRENT ceremony first, then prove key expiry; never mint."""
     return _operate(issuer=issuer, control=control, minter=minter, generation=generation,
-                    deadline=deadline, before_commit=before_commit, terminal=InvitePhase.CANCELLED)
+                    deadline=deadline, before_commit=before_commit, terminal=InvitePhase.CANCELLED,
+                    after_cleanup=after_cleanup)
 
 
 def recover_invite(*, issuer: HomeInviteIssuer, control: InviteControlClient,
                    minter: RecoveryMinter, generation: int, deadline: float,
-                   before_commit: Callable[[], None]) -> RecoveryResult:
+                   before_commit: Callable[[], None],
+                   after_cleanup: Callable[[str], None] | None = None) -> RecoveryResult:
     """Consume CURRENT ceremony and reconcile keys; fresh issuance is separate."""
     return _operate(issuer=issuer, control=control, minter=minter, generation=generation,
-                    deadline=deadline, before_commit=before_commit, terminal=InvitePhase.RECOVERED)
+                    deadline=deadline, before_commit=before_commit, terminal=InvitePhase.RECOVERED,
+                    after_cleanup=after_cleanup)

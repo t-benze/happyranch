@@ -12,6 +12,7 @@ import html
 import json
 import math
 import os
+import re
 import socket
 import stat
 import struct
@@ -89,8 +90,24 @@ class InviteOperationAPI(Protocol):
     def revoke_all(self, generation: int, *, deadline: float) -> int: ...
 
 
+@runtime_checkable
+class InviteBindingAPI(Protocol):
+    def invite_binding(self) -> dict[str, str]: ...
+
+
+def _invite_target(value: object) -> dict[str, str]:
+    if (type(value) is not dict or value.keys() != {'home_id', 'control_plane_id', 'connector_id'}
+            or any(type(v) is not str or re.fullmatch('[A-Za-z0-9_-]{1,128}', v) is None
+                   for v in value.values())):
+        raise Refused('invalid-request')
+    return value
+
+
 def _invite_request(request: dict) -> tuple[int, float]:
     keys = {'method', 'expected_generation', 'deadline'}
+    if 'target' in request:
+        keys.add('target')
+        _invite_target(request['target'])
     if request['method'] == 'invite-reserve@1':
         keys |= {'digest', 'expires_at'}
     if set(request) != keys:
@@ -240,12 +257,23 @@ class ControlHandler:
                         raise Refused('expired')
                     operation(record, captured.generation)
                     response = {'result': 'ok'}
+                elif method == 'invite-binding@1':
+                    if (request.keys() != {'method'} or not current.owned
+                            or not isinstance(self.operations, InviteBindingAPI)):
+                        raise Refused('unavailable')
+                    response = {'target': _invite_target(self.operations.invite_binding()),
+                                'generation': current.generation}
                 elif isinstance(method, str) and method in INVITE_MUTATIONS:
                     generation, deadline = _invite_request(request)
                     if not isinstance(self.operations, InviteOperationAPI):
                         raise Refused('unavailable')
                     if not current.owned or current.generation != generation:
                         raise Refused('changed')
+                    def check_target() -> None:
+                        if 'target' in request and (not isinstance(self.operations, InviteBindingAPI)
+                                or self.operations.invite_binding() != request['target']):
+                            raise Refused('changed')
+                    check_target()
                     # Only the manager RLock spans IPC, never a trust-file flock.
                     _send(connection, {'result': 'ready'})
                     commit = _receive(connection)
@@ -255,6 +283,7 @@ class ControlHandler:
                         raise Refused('expired')
                     if self.operations.status() != current:
                         raise Refused('changed')
+                    check_target()
                     # Status can block. Recheck all time bounds immediately
                     # before the actual operation's anchored CAS admission.
                     _invite_request(request)
@@ -315,6 +344,13 @@ class ControlClient:
     def status(self) -> Snapshot:
         return snapshot_from(self._call({'method': 'status'}).get('snapshot'))
 
+    def invite_binding(self, generation: int) -> dict[str, str]:
+        reply = self._call({'method': 'invite-binding@1'})
+        if (reply.keys() != {'target', 'generation'} or type(reply['generation']) is not int
+                or reply['generation'] != generation):
+            raise Refused('changed')
+        return _invite_target(reply['target'])
+
     def mutate(self, method: str, snapshot: Snapshot, record: Device, deadline: float,
                before_commit: Callable[[], None]) -> None:
         if method not in MUTATIONS:
@@ -335,14 +371,20 @@ class ControlClient:
         return reply['generation']
 
     def reserve_invite(self, generation: int, digest: str, expires_at: int, deadline: float,
-                       before_commit: Callable[[], None]) -> int:
+                       before_commit: Callable[[], None], *, target: dict[str, str] | None = None) -> int:
         """A lost reply is UNCERTAIN, never 'no change'; caller needs B11 recovery."""
-        return self._invite_mutate({'method': 'invite-reserve@1', 'expected_generation': generation,
-                                    'digest': digest, 'expires_at': expires_at, 'deadline': deadline}, before_commit)
+        request = {'method': 'invite-reserve@1', 'expected_generation': generation,
+                   'digest': digest, 'expires_at': expires_at, 'deadline': deadline}
+        if target is not None:
+            request['target'] = target
+        return self._invite_mutate(request, before_commit)
 
-    def invalidate_invite(self, generation: int, deadline: float, before_commit: Callable[[], None]) -> int:
-        return self._invite_mutate({'method': 'invite-invalidate@1', 'expected_generation': generation,
-                                    'deadline': deadline}, before_commit)
+    def invalidate_invite(self, generation: int, deadline: float, before_commit: Callable[[], None],
+                          *, target: dict[str, str] | None = None) -> int:
+        request = {'method': 'invite-invalidate@1', 'expected_generation': generation, 'deadline': deadline}
+        if target is not None:
+            request['target'] = target
+        return self._invite_mutate(request, before_commit)
 
     def revoke_all(self, generation: int, deadline: float, before_commit: Callable[[], None]) -> int:
         return self._invite_mutate({'method': 'revoke-all@1', 'expected_generation': generation,

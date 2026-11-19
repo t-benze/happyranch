@@ -1120,3 +1120,22 @@ No validation cap, diagnostic grant, notice/source selection or complete-build
 context/reopen accounting changes, and no native stall/cap-fix claim follows.
 
 </details>
+
+### THR-378 TEST account-linked issuance
+
+PR3 adds default-off protected TEST/development account-linked IssueInvite,
+CancelInvite and RecoverInvite in the existing Linux root helper. Each uses its
+own fresh auth_admin dialog. The fixed private owner permit file is read once;
+Services admission gates the existing one-shot Headscale minter. Digest, expiry,
+generation and fixed nonsecret target IDs reach its sole pairing owner. Lost
+replies never remint/redeliver; fresh recovery fences issuance until network
+cleanup and Services settlement are proved. Invitation transfer remains allowed;
+Host approval of the actual Client tuple remains separately authenticated.
+The daemon stays loopback-only and local/DIY account-free operation stays separate.
+No native sign-in, real LOCAL acceptance, outside-home or production readiness is
+claimed. Config paths, closed fields, custody, focused commands and limitations:
+[account-linked contract](../docs/agent-guides/contracts/remote-access-and-remote-jobs.md#thr-378-account-linked-local-issuance-pr3).
+Linux payload/deb packaging includes only the helper's fixed stdlib sibling
+closure; its isolated import/policy/payload checks run with
+`/usr/bin/python3 -B packaging/linux/test_build_deb.py -v`. Full disposable
+LOCAL acceptance belongs to PR4; this text authorizes no host/server action.

@@ -15,12 +15,12 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Iterator
 
-from runtime.remote_access.headscale_service import INVITE_USER, NODE_USER
-from runtime.remote_access.home_minter import (
+from .home_invite_records import INVITE_USER, NODE_USER
+from .home_minter import (
     AdminRefused, CreationWindow, HeadscaleJoinKeyMinter, MintUncertain, PreAuthKey,
 )
-from runtime.remote_access.invite_issuer import MintedKey, MintRefused
-from runtime.remote_access.service_manager import _default_run
+from .invite_issuer import MintedKey, MintRefused
+from .service_manager import _default_run
 
 _RUNNER = '/opt/happyranch-desktop/libexec/remote-access/happyranch-home-admin'
 _STATE = '/var/lib/happyranch-remote-access/home-minter'
@@ -439,7 +439,7 @@ class DurableOperationRecordStore:
 def read_local_node_window(operation_id: str, *, root: Path = Path("/"),
                            root_owner: tuple[int, int] = (0, 0)) -> CreationWindow:
     """Read only the existing node reservation. No mkdir, repair or reservation write."""
-    from runtime.remote_access.home_activation import HomeActivationStore, _signature
+    from .home_activation import HomeActivationStore, _signature
     try:
         if type(operation_id) is not str or re.fullmatch("[0-9a-f]{32}", operation_id) is None:
             raise ValueError

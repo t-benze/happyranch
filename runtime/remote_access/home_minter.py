@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Callable, Protocol
 
-from runtime.remote_access.invite_issuer import MintedKey, MintRefused
+from .invite_issuer import MintedKey, MintRefused
 
 _TIMEOUT_S = 5.0
 _MAX_CLEANUP_KEYS = 128

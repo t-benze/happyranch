@@ -1,0 +1,269 @@
+"""Shared stdlib-only home record validators; re-exported by their original owners."""
+from __future__ import annotations
+
+import json
+import re
+from dataclasses import dataclass, field
+from types import MappingProxyType
+from typing import Any, Mapping
+
+from . import invite_v2
+
+NODE_USER = "happyranch-node"
+INVITE_USER = "happyranch-invite"
+
+class StateStoreError(Exception):
+    """Raised when the trust-state store is unusable (missing, unreadable,
+    loose permissions, symlinked path, write failure)."""
+
+
+class CorruptTrustStateError(StateStoreError):
+    """Raised when a present trust-state file is corrupt or violates the
+    envelope/payload contract. Fail closed: corruption could erase a
+    revocation, so corrupt state is never treated as a valid earlier state."""
+
+
+def _require_identity_text(value: Any) -> str:
+    if not isinstance(value, str) or not value or len(value) > 256 or any(ord(c) < 32 or ord(c) == 127 or 0xD800 <= ord(c) <= 0xDFFF for c in value):
+        raise CorruptTrustStateError("trust state identity invalid")
+    return value
+
+
+MAX_RECORD_BYTES = 16 * 1024
+ACTIVATION_PATH = "/var/lib/happyranch-remote-access/home-activation.json"
+INVITE_CONFIG_PATH = "/etc/happyranch/invite-issuer.json"
+# B4 fixes the format only. G2-C owns the transaction's closed member set and I/O.
+TRANSACTION_FORMAT = "home-activation-txn@1"
+MEMBER_PATHS = (
+    "/etc/systemd/system/happyranch-headscale.service",
+    "/etc/happyranch/headscale/config.yaml",
+    "/etc/happyranch/headscale/derp.yaml",
+    "/etc/happyranch/headscale/policy.hujson",
+    "/etc/happyranch/control-ca.pem",
+    INVITE_CONFIG_PATH,
+)
+LIVE_MEMBERS = (
+    "/var/lib/happyranch-headscale/db.sqlite",
+    "/var/lib/happyranch-headscale/db.sqlite-wal",
+    "/var/lib/happyranch-headscale/db.sqlite-shm",
+    "/var/lib/happyranch-headscale/noise.key",
+    "/var/lib/happyranch-headscale/derp.key",
+    "/run/happyranch-headscale/headscale.sock",
+    "/run/happyranch-tsnet-sidecar/observe.sock",
+    "/var/lib/happyranch-headscale/acme-unused",
+)
+OWNED_LINK = "/etc/systemd/system/happyranch-managed.target.wants/happyranch-headscale.service"
+OWNED_LINK_TARGET = MEMBER_PATHS[0]
+CONTROL_URL = "https://control.happyranch.invalid:8443"
+BINDING_KEYS = (
+    "release_uid", "home_id", "control_plane_id", "connector_id",
+    "activation_generation", "ca_der_sha256", "dial_ip",
+)
+_RECEIPT_KEYS = frozenset((
+    "format", *BINDING_KEYS, "operation_id", "member_digests",
+    "local_node_stable_id", "home_endpoint", "phase", "ownership",
+))
+_PHASES = ("prepared", "activating", "joined", "ready", "failed_uncertain")
+
+
+class HomeActivationError(ValueError):
+    """Closed, input-free diagnostics, including underlying filesystem errors."""
+
+    def __init__(self, category: str = "record") -> None:
+        super().__init__(category if type(category) is str and category in
+                         {"record", "state", "transition", "binding"} else "record")
+
+
+def _unique_pairs(items: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in items:
+        if key in result:
+            raise HomeActivationError()
+        result[key] = value
+    return result
+
+
+def _not_integer(token: str) -> int:
+    raise HomeActivationError()
+
+
+def _decode_record(data: bytes, keys: frozenset[str], format_name: str) -> dict:
+    if type(data) is not bytes or not 0 < len(data) <= MAX_RECORD_BYTES:
+        raise HomeActivationError()
+    try:
+        record = json.loads(data.decode("utf-8"), object_pairs_hook=_unique_pairs,
+                            parse_float=_not_integer, parse_constant=_not_integer)
+        if type(record) is not dict or record.keys() != keys or record["format"] != format_name:
+            raise HomeActivationError()
+        return record
+    except (ValueError, UnicodeError, RecursionError):
+        raise HomeActivationError() from None
+
+
+def _encode_record(record: dict) -> bytes:
+    try:
+        data = json.dumps(record, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    except (ValueError, TypeError, UnicodeError):
+        raise HomeActivationError() from None
+    if not 0 < len(data) <= MAX_RECORD_BYTES:
+        raise HomeActivationError()
+    return data
+
+
+def _generation(value: object) -> None:
+    if type(value) is not int or value < 0:
+        raise HomeActivationError()
+
+
+def _digest(value: object) -> None:
+    if type(value) is not str or re.fullmatch(r"[0-9a-f]{64}", value) is None:
+        raise HomeActivationError()
+
+
+def _validate_binding(record: Any) -> None:
+    if type(record.release_uid) is not int or not 0 < record.release_uid < 2**32 - 1:
+        raise HomeActivationError()
+    for name in ("home_id", "control_plane_id", "connector_id"):
+        value = getattr(record, name)
+        if type(value) is not str or re.fullmatch(r"[A-Za-z0-9_-]{1,128}", value) is None:
+            raise HomeActivationError()
+    _generation(record.activation_generation)
+    _digest(record.ca_der_sha256)
+    if type(record.dial_ip) is not str or not invite_v2._canonical_dial_ip(record.dial_ip):
+        raise HomeActivationError()
+
+
+def _endpoint(value: object) -> None:
+    if type(value) is not str or not invite_v2._endpoint_valid(value):
+        raise HomeActivationError()
+
+
+@dataclass(frozen=True, repr=False)
+class OwnershipInventory:
+    """The B6 list and B5 link are literals, never caller-defined paths."""
+
+    def __repr__(self) -> str:
+        return "OwnershipInventory(<fixed>)"
+
+    def to_dict(self) -> dict:
+        return {"members": list(LIVE_MEMBERS), "links": {OWNED_LINK: OWNED_LINK_TARGET}}
+
+    @classmethod
+    def parse(cls, value: object) -> OwnershipInventory:
+        if (type(value) is not dict or value.keys() != {"members", "links"}
+                or type(value["members"]) is not list
+                or any(type(item) is not str for item in value["members"])
+                or len(value["members"]) != len(LIVE_MEMBERS)
+                or set(value["members"]) != set(LIVE_MEMBERS)
+                or type(value["links"]) is not dict
+                or value["links"] != {OWNED_LINK: OWNED_LINK_TARGET}):
+            raise HomeActivationError()
+        return cls()
+
+
+@dataclass(frozen=True, repr=False)
+class HomeActivationReceipt:
+    release_uid: int
+    home_id: str
+    control_plane_id: str
+    connector_id: str
+    activation_generation: int
+    operation_id: str
+    ca_der_sha256: str
+    dial_ip: str
+    member_digests: Mapping[str, str]
+    local_node_stable_id: str | None
+    home_endpoint: str | None
+    phase: str
+    ownership: OwnershipInventory = field(default_factory=OwnershipInventory)
+
+    def __post_init__(self) -> None:
+        _validate_binding(self)
+        if (type(self.operation_id) is not str or re.fullmatch(r"[0-9a-f]{32}", self.operation_id) is None
+                or type(self.phase) is not str or self.phase not in _PHASES
+                or type(self.ownership) is not OwnershipInventory
+                or not isinstance(self.member_digests, Mapping)
+                or self.member_digests.keys() != set(MEMBER_PATHS)):
+            raise HomeActivationError()
+        for value in self.member_digests.values():
+            _digest(value)
+        object.__setattr__(self, "member_digests", MappingProxyType(dict(self.member_digests)))
+        observed = self.local_node_stable_id is not None
+        if (observed != (self.home_endpoint is not None)
+                or (self.phase in ("prepared", "activating") and observed)
+                or (self.phase == "ready" and not observed)):
+            raise HomeActivationError()
+        if observed:
+            try:
+                _require_identity_text(self.local_node_stable_id)
+            except CorruptTrustStateError:
+                raise HomeActivationError() from None
+            _endpoint(self.home_endpoint)
+
+    def __repr__(self) -> str:
+        return "HomeActivationReceipt(<redacted>)"
+
+    def to_bytes(self) -> bytes:
+        record = {key: getattr(self, key) for key in (*BINDING_KEYS, "operation_id",
+                  "local_node_stable_id", "home_endpoint", "phase")}
+        record.update(format="home-activation@1", member_digests=dict(self.member_digests),
+                      ownership=self.ownership.to_dict())
+        return _encode_record(record)
+
+    @classmethod
+    def parse(cls, data: bytes) -> HomeActivationReceipt:
+        record = _decode_record(data, _RECEIPT_KEYS, "home-activation@1")
+        record.pop("format")
+        record["ownership"] = OwnershipInventory.parse(record["ownership"])
+        if type(record["member_digests"]) is not dict:
+            raise HomeActivationError()
+        return cls(**record)
+
+
+_OUTCOMES = frozenset(("minting", "issued", "refused", "uncertain", "expired",
+                       "encoding", "pairing", "recovered"))
+_CODES = _OUTCOMES | {"configuration", "state", "busy", "rate_limited", "already_issued", "superseded"}
+
+
+class IssuerError(Exception):
+    """Only fixed categories cross the core boundary; no library error chains."""
+
+    def __init__(self, code: str) -> None:
+        super().__init__(code if type(code) is str and code in _CODES else "state")
+
+
+@dataclass(frozen=True, repr=False)
+class HomeInviteConfigRecord:
+    """B1 disk binding; separate from the DER-bearing issuance-core input."""
+
+    release_uid: int
+    home_id: str
+    control_plane_id: str
+    connector_id: str
+    activation_generation: int
+    ca_der_sha256: str
+    dial_ip: str
+    control_url: str
+    home_endpoint: str
+
+    def __post_init__(self) -> None:
+        try:
+            _validate_binding(self)
+            _endpoint(self.home_endpoint)
+            if type(self.control_url) is not str or self.control_url != CONTROL_URL:
+                raise HomeActivationError()
+        except HomeActivationError:
+            raise IssuerError("configuration") from None
+
+    def __repr__(self) -> str:
+        return "HomeInviteConfigRecord(<redacted>)"
+
+    @classmethod
+    def parse(cls, data: bytes) -> HomeInviteConfigRecord:
+        try:
+            record = _decode_record(data, frozenset(("format", *BINDING_KEYS, "control_url", "home_endpoint")),
+                                    "home-invite-config@1")
+        except HomeActivationError:
+            raise IssuerError("configuration") from None
+        record.pop("format")
+        return cls(**record)

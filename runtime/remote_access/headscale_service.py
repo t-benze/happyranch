@@ -11,10 +11,10 @@ import time
 
 from runtime.remote_access.home_headscale import LANDefaultRoute, LANInterface, _dial_ip_valid
 
+from .home_invite_records import NODE_USER as NODE_USER, INVITE_USER as INVITE_USER
+
 ACCOUNT = "happyranch-headscale"
 UNIT = "happyranch-headscale.service"
-NODE_USER = "happyranch-node"
-INVITE_USER = "happyranch-invite"
 POLICY_PATH = "/etc/happyranch/headscale/policy.hujson"
 RECEIPT = "headscale-account.json"
 CUSTODY = ("etc/happyranch/headscale", "var/lib/happyranch-headscale", "run/happyranch-headscale")

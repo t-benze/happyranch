@@ -1,11 +1,13 @@
 """Fixed no-input Gio service, intended for system Python -I as root.
 
 The installed entry binds each authenticated sender to its validated release
-home before connector reads or authorization. Lifecycle effects remain absent.
+home before connector reads or authorization. Account invites are TEST-gated;
+installer lifecycle effects remain absent.
 """
 from __future__ import annotations
 
 import importlib.util
+import importlib
 import json
 import logging
 import os
@@ -16,6 +18,7 @@ import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from types import ModuleType
 from typing import TYPE_CHECKING, Callable, Iterator
 
 from gi.repository import Gio, GLib
@@ -50,6 +53,16 @@ for _name in ('status_v2', 'home_audit', 'helper_generation'):
     _spec.loader.exec_module(_module)
     globals()['_' + _name] = _module
 
+# An empty private namespace loads only root-owned stdlib siblings. It never
+# executes runtime.remote_access.__init__ or searches bundled/user packages.
+_package = ModuleType('happyranch_fixed_invites')
+_package.__path__ = [str(Path(__file__).parent)]
+sys.modules[_package.__name__] = _package
+sys.modules[_package.__name__ + '.helper_control'] = _control
+sys.modules[_package.__name__ + '.status_v2'] = _status_v2
+_invite = importlib.import_module(_package.__name__ + '.helper_invite')
+MUTATIONS = {**MUTATIONS, **_invite.MUTATIONS}
+
 SYSTEM_BUS_ADDRESS = 'unix:path=/run/dbus/system_bus_socket'
 BUS_NAME = 'ai.happyranch.RemoteAccess1'
 OBJECT_PATH = '/ai/happyranch/RemoteAccess1'
@@ -71,10 +84,11 @@ class Capture:
     uid: int
     owner: Owner
     snapshot: Snapshot
-    record: Device
+    record: Device | None
     deadline: float
     cancellation_id: str
     message: Gio.DBusMessage
+    invite: _invite.Request | None = None
 
 
 class RemoteAccessHelper:
@@ -293,6 +307,7 @@ class RemoteAccessHelper:
 
     def _dispatch(self, message: Gio.DBusMessage, busy_on_arrival: bool = False) -> bool:
         self.last_activity = self.clock()
+        operation_deadline = self.clock() + self.deadline
         try:
             fds = message.get_unix_fd_list()
             if message.get_signature() or (fds is not None and fds.get_length()):
@@ -330,22 +345,31 @@ class RemoteAccessHelper:
                         'pending': snapshot.pending.public() if snapshot.pending else None,
                         'selected': selected.public() if selected else None})
                     return False
-                record = self._target(method, sender, snapshot)
-                capture = Capture(method, sender, uid, owner, snapshot, record, self.clock() + self.deadline,
-                                  uuid.uuid4().hex, message)
+                invite = _invite.capture(owner, snapshot, method, self.control) if method in _invite.MUTATIONS else None
+                record = None if invite is not None else self._target(method, sender, snapshot)
+                capture = Capture(method, sender, uid, owner, snapshot, record, operation_deadline,
+                                  uuid.uuid4().hex, message, invite)
                 self.inflight, self.cancelled = capture, False
                 self.authorization_terminal = False
-                public = record.public()
-                verb = {'ApprovePending': 'Approve device', 'RejectPending': 'Reject device',
-                        'RevokeSelected': 'Revoke device'}[method]
-                details = {'polkit.message': f'{verb}: {public["label"]}; stable-ID fingerprint '
-                           f'{public["fingerprint"]}; comparison phrase {public["comparison_phrase"]}.'}
-                self.timer = GLib.timeout_add(max(1, int(self.deadline * 1000)), self._expired)
+                if invite is not None:
+                    details = {'polkit.message': {'IssueInvite': 'Issue an account-linked test invitation.',
+                        'CancelInvite': 'Cancel the current test invitation.',
+                        'RecoverInvite': 'Recover the current test invitation.'}[method]}
+                else:
+                    public = record.public()
+                    verb = {'ApprovePending': 'Approve device', 'RejectPending': 'Reject device',
+                            'RevokeSelected': 'Revoke device'}[method]
+                    details = {'polkit.message': f'{verb}: {public["label"]}; stable-ID fingerprint '
+                               f'{public["fingerprint"]}; comparison phrase {public["comparison_phrase"]}.'}
+                remaining = operation_deadline - self.clock()
+                if remaining <= 0:
+                    raise Refused('expired')
+                self.timer = GLib.timeout_add(max(1, int(remaining * 1000)), self._expired)
             # No store/helper lock is held while polkit waits for authentication.
             self.authority.call('CheckAuthorization', GLib.Variant('((sa{sv})sa{ss}us)', (
                 ('system-bus-name', {'name': GLib.Variant('s', sender)}), ACTION_PREFIX + MUTATIONS[method],
                 details, 1, capture.cancellation_id)), Gio.DBusCallFlags.NONE,
-                int(self.deadline * 1000) + 2000, None, self._authorized, capture)
+                int(remaining * 1000) + 2000, None, self._authorized, capture)
         except Exception as error:
             if isinstance(self.inflight, Capture) and self.inflight.message == message:
                 self._cancel('unavailable')
@@ -393,16 +417,18 @@ class RemoteAccessHelper:
                 if self._binding(capture.uid) != capture.owner:
                     raise Refused('changed')
                 current = self._snapshot(capture.uid)
-                if current != capture.snapshot or self._target(capture.method, capture.sender, current) != capture.record:
+                if (current != capture.snapshot or (capture.invite is None
+                        and self._target(capture.method, capture.sender, current) != capture.record)):
                     raise Refused('changed')
                 if self.clock() >= capture.deadline:
                     self._cancel('expired')
                     return
-                # B16 covers only the three already-existing device effects.
-                # I3 must add lifecycle/invite intents at their actual effect boundaries.
                 event = {'ApprovePending': _home_audit.Event.DEVICE_APPROVED,
                          'RejectPending': _home_audit.Event.DEVICE_REJECTED,
-                         'RevokeSelected': _home_audit.Event.DEVICE_REVOKED}[capture.method]
+                         'RevokeSelected': _home_audit.Event.DEVICE_REVOKED,
+                         'IssueInvite': _home_audit.Event.INVITE_ISSUED,
+                         'CancelInvite': _home_audit.Event.INVITE_CANCELLED,
+                         'RecoverInvite': _home_audit.Event.INVITE_RECOVERED}[capture.method]
                 # Local random correlation, never a node ID or digest prefix.
                 label = '-'.join(str(byte) for byte in os.urandom(12))
                 intent = self.audit.intent(event, intent_id='intent-' + label, operation_id='op-' + label)
@@ -412,8 +438,19 @@ class RemoteAccessHelper:
                     self._before_commit(capture)
                     dispatched = True  # commit may be sent; loss can no longer prove refusal.
                 try:
-                    self.control.mutate(capture.method, capture.snapshot, capture.record, capture.deadline,
-                                        before_commit)
+                    if capture.invite is not None:
+                        outcome = _invite.execute(capture.invite, method=capture.method, uid=capture.uid,
+                            snapshot=capture.snapshot, control=self.control, deadline=capture.deadline,
+                            before_commit=before_commit)
+                        if isinstance(outcome, dict) and outcome['outcome'] != 'complete':
+                            self.audit.uncertain(intent)
+                            self._reply(capture.message, outcome)
+                            self._clear()
+                            return
+                    else:
+                        self.control.mutate(capture.method, capture.snapshot, capture.record, capture.deadline,
+                                            before_commit)
+                        outcome = 'ok'
                 except Exception:
                     if dispatched:
                         self.audit.uncertain(intent)
@@ -425,7 +462,8 @@ class RemoteAccessHelper:
                 except Exception:
                     self.audit.uncertain(intent)
                     raise
-                self._reply(capture.message, 'ok')
+                self._before_commit(capture)
+                self._reply(capture.message, outcome)
             except Exception as error:
                 if isinstance(error, Refused) and error.category == 'expired':
                     self._cancel('expired')
@@ -436,7 +474,8 @@ class RemoteAccessHelper:
     def _before_commit(self, capture: Capture) -> None:
         """Runs while BOTH helper and connector trust mutation locks are held."""
         if (self.clock() >= capture.deadline
-                or (capture.method != 'RevokeSelected' and capture.record.expires_at <= time.time())):
+                or (capture.record is not None and capture.method != 'RevokeSelected'
+                    and capture.record.expires_at <= time.time())):
             raise Refused('expired')
         if self._uid(capture.sender) != capture.uid:
             raise Refused('wrong-uid')

@@ -79,6 +79,11 @@ from typing import Any, Iterator
 
 import fcntl
 
+from .home_invite_records import (
+    StateStoreError as StateStoreError, CorruptTrustStateError as CorruptTrustStateError,
+    _require_identity_text as _require_identity_text,
+)
+
 from runtime.remote_access.authorization import (
     DeviceAuthorization, InviteRecord, PendingApproval, PendingPairing, TrustState,
 )
@@ -154,17 +159,6 @@ _DEVICE_REQUIRED_KEYS = _DEVICE_KEYS - {"credential_digest", "control_plane_id",
 _PENDING_KEYS = frozenset({"code_digest", "expires_at", "consumed"})
 
 
-class StateStoreError(Exception):
-    """Raised when the trust-state store is unusable (missing, unreadable,
-    loose permissions, symlinked path, write failure)."""
-
-
-class CorruptTrustStateError(StateStoreError):
-    """Raised when a present trust-state file is corrupt or violates the
-    envelope/payload contract. Fail closed: corruption could erase a
-    revocation, so corrupt state is never treated as a valid earlier state."""
-
-
 def _require_int(payload: dict, key: str) -> int:
     value = payload.get(key)
     # bool is an int subclass — a bool epoch must be rejected, never cast.
@@ -199,12 +193,6 @@ def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
             raise CorruptTrustStateError("trust state duplicate key")
         result[key] = value
     return result
-
-
-def _require_identity_text(value: Any) -> str:
-    if not isinstance(value, str) or not value or len(value) > 256 or any(ord(c) < 32 or ord(c) == 127 or 0xD800 <= ord(c) <= 0xDFFF for c in value):
-        raise CorruptTrustStateError("trust state identity invalid")
-    return value
 
 
 def _digest(value: Any) -> str:

@@ -594,3 +594,51 @@ def test_wire_bulk_expiry_preserves_committed_cleanup_and_stops_later_write(owne
         with pytest.raises(StreamClosed):
             stream.receive()
     assert streams[2].receive() == b'synthetic-live-frame'
+
+
+@pytest.mark.parametrize('method', ['reserve', 'invalidate'])
+def test_serving_facade_anchored_cas_and_owner(monkeypatch, method):
+    from scripts.test_remote_access_helper import bound_control
+    from runtime.remote_access.helper_invite import PairingProxy
+    with bound_control(monkeypatch) as (client, supervisor, _):
+        manager = supervisor._pinned_pairing_manager
+        before = client.status().generation
+        proxy = PairingProxy(client, before, time.monotonic() + 30, lambda: None)
+        expiry = datetime.now(timezone.utc) + timedelta(seconds=120)
+        assert proxy.issue_invite_record(DIGEST, expiry) == client.status().generation > before
+        assert supervisor.state_store.load().invite_record.secret_digest == DIGEST
+        assert supervisor._pinned_pairing_manager is manager
+        original = manager.issue_invite_record if method == 'reserve' else manager.invalidate_invite
+        def racing(*args, **kwargs):
+            supervisor.state_store.save(supervisor.state_store.load())
+            return original(*args, **kwargs)
+        monkeypatch.setattr(manager, 'issue_invite_record' if method == 'reserve' else 'invalidate_invite', racing)
+        with pytest.raises(control.Refused, match='changed'):
+            if method == 'reserve':
+                proxy.issue_invite_record('b' * 64, expiry)
+            else:
+                proxy.invalidate_invite(proxy.generation, time.monotonic() + 30, lambda: None)
+        assert supervisor.state_store.load().invite_record.secret_digest == DIGEST
+        assert proxy.generation < client.status().generation
+
+
+@pytest.mark.parametrize('phase', ['capture', 'ready', 'generation'])
+def test_serving_invite_target_binding(monkeypatch, phase):
+    from runtime.remote_access.supervisor import _HelperOperations
+    from scripts.test_remote_access_helper import bound_control
+    with bound_control(monkeypatch) as (client, supervisor, _):
+        generation = client.status().generation
+        expected = {'home_id': 'home', 'control_plane_id': 'protected-control', 'connector_id': 'connector'}
+        assert client.invite_binding(generation) == expected
+        before = supervisor.state_store.snapshot()
+        if phase == 'generation':
+            with pytest.raises(control.Refused, match='changed'):
+                client.invite_binding(generation + 1)
+        else:
+            def change():
+                if phase == 'ready':
+                    monkeypatch.setattr(_HelperOperations, 'invite_binding', lambda self: {**expected, 'home_id': 'wrong'})
+            with pytest.raises(control.Refused, match='changed'):
+                client.reserve_invite(generation, DIGEST, int(time.time()) + 120, time.monotonic() + 30,
+                    change, target={**expected, 'home_id': 'wrong'} if phase == 'capture' else expected)
+        assert supervisor.state_store.snapshot() == before
