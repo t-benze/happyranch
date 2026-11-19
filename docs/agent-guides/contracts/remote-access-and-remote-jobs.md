@@ -2886,6 +2886,31 @@ replacement has the listed preconditions and the sidecar set contains only two
 exact root-custodied renderings. No new privileged entry/caller/user/permission,
 dependency, Track B/C or customer-visible change is authorized.
 
+**Manager Ruling 17 (G2-E2b backend crash re-entry):**
+Under the held activation-directory flock, Enable classifies the protected current
+pair for the expected G/O before Prepare or forward work. A prepared receipt with
+no txn keeps its existing admission. A matching txn with a nonterminal receipt
+(prepared at preflight intent, activating at any intent/completed prefix, or joined,
+including joined txn plus activating receipt) takes only the coordinator's existing
+Ruling 7 terminal-marker path: binding-checked failed_uncertain, txn first and
+receipt second, exempt from source validation, then refusal. A failed publication
+retains the remaining bytes; later attempts repeat only this terminal path.
+
+Ready or both failed_uncertain refuse unchanged: ordinary admission owns ready,
+and Ruling 12/12a Recover owns failed pairs. Stale/mismatched G/O, unknown/unsafe
+records or pending residue refuse unchanged without adoption. This backend gate
+also refuses a prepared receipt paired with an older failed txn; it narrows the
+earlier backend rollover assumption without changing the coordinator's Ruling 12
+rollover admission or the existing Recover entry. No re-entry can Prepare, replay
+an effect, create O/G, restore/rollback units, start/stop/reload services, mint,
+call admin APIs, probe ports or publish configs.
+
+The backend passes the actual protected receipt to the unchanged coordinator's
+_pending/_fail handling after classifying the pair. _fail independently rereads
+and checks both bindings before terminal publication. No prepared receipt is
+fabricated, no coordinator entry is added, and run/forward logic stays unchanged.
+This remains an inert backend with no production caller or public Enable.
+
 **G2-E2a delivered boundary and assumptions:**
 The roughly 1500-line split places items 1/2/4 here. home_admission.py composes
 existing readers, protected provenance, shared renderer and HomeUnitGate. It
@@ -2928,9 +2953,10 @@ receipt-bound home sidecar with phase; no duplicate inventory gate is added.
 publish_ready with E1a/E1b owners and B2 observer. One thread-owned adapter borrows
 the same held activation-directory flock for the coordinator's nested lock
 contexts; other threads and independent descriptors/processes still refuse
-nonblocking. Assumption: an already-prepared expected G (including Ruling 12
-rollover) enters only the unchanged coordinator admission, without rerunning
-Prepare or rewriting B1 members. It cannot resume an existing current txn.
+nonblocking. An already-prepared expected G with no txn enters unchanged
+coordinator admission without rerunning Prepare or rewriting B1 members.
+Ruling 17 classifies existing pairs first and routes matching nonterminal pairs
+only to the unchanged terminal-marker path; no existing txn is resumed.
 `recover(expected_generation, expected_operation_id, fresh_authenticated)` uses
 the unchanged Ruling 12/12a recovery with the same production owners; no effect
 is executed by recovery. Authentication/freshness and expected G/O are trusted

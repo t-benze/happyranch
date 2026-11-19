@@ -15,9 +15,9 @@ from typing import Any, Iterator
 import pytest
 
 from runtime.remote_access import home_activation_backend as h, home_activation_owner as adapters
-from runtime.remote_access.home_activation import ACTIVATION_PATH, MEMBER_PATHS, OWNED_LINK, OWNED_LINK_TARGET, HomeActivationReceipt
+from runtime.remote_access.home_activation import ACTIVATION_PATH, MEMBER_PATHS, OWNED_LINK, OWNED_LINK_TARGET, HomeActivationReceipt, HomeActivationStore
 from runtime.remote_access.home_activation_coordinator import ActivationRefused
-from runtime.remote_access.home_activation_txn import EFFECTS, TRANSACTION_PATH, Effect
+from runtime.remote_access.home_activation_txn import EFFECTS, TRANSACTION_PATH, Effect, HomeActivationTransactionStore
 from runtime.remote_access.home_admin import HeadscaleNode, HeadscaleUser
 from runtime.remote_access.home_unit_gate import HomeUnitGate, HomeUnitGateError
 from runtime.remote_access.installer import managed_units
@@ -25,7 +25,7 @@ from runtime.remote_access.service_manager import SystemdServiceManager
 from runtime.remote_access.systemd_unit import render_headscale_unit
 from scripts.test_home_activation_owner import consumed, venue as owner_venue
 from scripts.test_home_live_config import venue as live_venue
-from scripts.test_home_activation_txn import Venue, put
+from scripts.test_home_activation_txn import Crash, Venue, put
 from scripts.test_home_observer import reply
 
 SIDECAR = "/etc/systemd/system/happyranch-tsnet-sidecar.service"
@@ -351,3 +351,199 @@ def test_legacy_sidecar_preflight_stays_exact(venue: Venue, case: str) -> None:
     assert v.transactions.read_optional() is None
     assert v.path(SIDECAR).read_bytes() == (v.legacy + b"\n# foreign" if case == "foreign" else v.legacy)
     assert len(v.audit) == 1 and v.audit[0][0] == ["daemon-reload"]
+
+
+def crash_checkpoint(v: Venue, monkeypatch: pytest.MonkeyPatch, checkpoint: str) -> None:
+    """Interrupt real forward work after the selected durable/effect boundary."""
+    with monkeypatch.context() as mp:
+        publish_txn = HomeActivationTransactionStore.publish
+        publish_receipt = HomeActivationStore.publish
+        start = v.receipts._io.manager.start
+
+        def transaction(store: HomeActivationTransactionStore, value: Any, **kwargs: Any) -> None:
+            publish_txn(store, value, **kwargs)
+            if ((checkpoint == "preflight-intent" and value.effects == (Effect("preflight", "intent", {}),))
+                    or (checkpoint == "credential-done" and value.effects[-1] == Effect("credential_staging", "done", {}))
+                    or (checkpoint == "joined-activating" and value.phase == "joined")):
+                raise Crash()
+
+        def receipt(store: HomeActivationStore, value: HomeActivationReceipt, **kwargs: Any) -> None:
+            publish_receipt(store, value, **kwargs)
+            if checkpoint == "joined-joined" and value.phase == "joined":
+                raise Crash()
+
+        def service(name: str, **kwargs: Any) -> None:
+            start(name, **kwargs)
+            if checkpoint == "headscale-start" and name == adapters._HEADSCALE:
+                raise Crash()
+
+        mp.setattr(HomeActivationTransactionStore, "publish", transaction)
+        mp.setattr(HomeActivationStore, "publish", receipt)
+        mp.setattr(v.receipts._io.manager, "start", service)
+        with observations(v), pytest.raises(Crash):
+            v.backend.enable(expected_generation=7, authenticated=True)
+    txn = v.transactions.read_optional()
+    current = v.receipts.read(expected_generation=7)
+    expected = {
+        "preflight-intent": ("prepared", "activating", Effect("preflight", "intent", {})),
+        "headscale-start": ("activating", "activating", Effect("headscale_start_verify", "intent", {})),
+        "credential-done": ("activating", "activating", Effect("credential_staging", "done", {})),
+        "joined-activating": ("activating", "joined", Effect("joined", "done", {})),
+        "joined-joined": ("joined", "joined", Effect("joined", "done", {})),
+    }
+    assert (current.phase, txn.phase, txn.effects[-1]) == expected[checkpoint]
+
+
+def forbid_reentry_work(v: Venue, monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Count even read-only native/admin calls, including caught refusal errors."""
+    calls: list[str] = []
+
+    def forbidden(*args: Any, **kwargs: Any) -> Any:
+        calls.append("forbidden")
+        raise AssertionError("fresh Enable attempted forward/native/admin/source work")
+
+    monkeypatch.setattr(v.receipts._io, "_run", forbidden)
+    monkeypatch.setattr(v.receipts._io.manager, "_run", forbidden)
+    monkeypatch.setattr(adapters.home_admin, "mint_local_node", forbidden)
+    monkeypatch.setattr(adapters.headscale_service, "preflight_ports", forbidden)
+    for name in ("list_users", "create_user", "list_pre_auth_keys", "list_nodes"):
+        monkeypatch.setattr(v.admin, name, forbidden)
+    monkeypatch.setattr(h.HomeActivationPrepare, "prepare", forbidden)
+    monkeypatch.setattr(h.HomeActivationCoordinator, "_source", forbidden)
+    monkeypatch.setattr(h.HomeActivationOwner, "verify", forbidden)
+    monkeypatch.setattr(h.HomeActivationOwner, "perform", forbidden)
+    return calls
+
+
+def unit_config_bytes(v: Venue) -> dict[str, bytes]:
+    return {str(p.relative_to(v.root)): p.read_bytes()
+            for directory in ("etc/happyranch", "etc/systemd/system", "etc/credstore")
+            for p in v.path("/" + directory).rglob("*") if p.is_file() and not p.is_symlink()}
+
+
+@pytest.mark.parametrize("checkpoint", ["preflight-intent", "headscale-start", "credential-done",
+                                       "joined-activating", "joined-joined"])
+@pytest.mark.parametrize("source_valid", [True, False])
+def test_backend_crash_reentry_terminal_only(venue: Venue, monkeypatch: pytest.MonkeyPatch,
+                                            checkpoint: str, source_valid: bool) -> None:
+    v = venue
+    crash_checkpoint(v, monkeypatch, checkpoint)
+    if not source_valid:
+        v.source.write_bytes(b"synthetic rotated source")
+    before_units = unit_config_bytes(v)
+    before_calls = list(v.audit), list(v.native.calls), list(v.admin.calls)
+    calls = forbid_reentry_work(v, monkeypatch)
+    published: list[str] = []
+    original = HomeActivationStore._publish_record
+
+    def publish(store: HomeActivationStore, path: str, data: bytes, **kwargs: Any) -> None:
+        assert_locked(v)
+        assert json.loads(data)["phase"] == "failed_uncertain"
+        if path == ACTIVATION_PATH:
+            assert v.transactions.read_optional().phase == "failed_uncertain"
+        original(store, path, data, **kwargs)
+        published.append(path)
+
+    monkeypatch.setattr(HomeActivationStore, "_publish_record", publish)
+    fresh = h.HomeActivationBackend(io=v.receipts._io)
+    with pytest.raises(ActivationRefused):
+        fresh.enable(expected_generation=7, authenticated=True)
+    assert v.transactions.read_optional().phase == "failed_uncertain"
+    assert v.receipts.read(expected_generation=7).phase == "failed_uncertain"
+    assert published == [TRANSACTION_PATH, ACTIVATION_PATH]
+    terminal = v.records()
+    with pytest.raises(ActivationRefused):
+        h.HomeActivationBackend(io=v.receipts._io).enable(expected_generation=7, authenticated=True)
+    assert v.records() == terminal and published == [TRANSACTION_PATH, ACTIVATION_PATH]
+    assert unit_config_bytes(v) == before_units
+    assert (v.audit, v.native.calls, v.admin.calls) == before_calls and calls == []
+
+
+@pytest.mark.parametrize("destination", [TRANSACTION_PATH, ACTIVATION_PATH])
+def test_backend_reentry_marker_failure(venue: Venue, monkeypatch: pytest.MonkeyPatch,
+                                       destination: str) -> None:
+    v = venue
+    crash_checkpoint(v, monkeypatch, "headscale-start")
+    before = v.records()
+    units = unit_config_bytes(v)
+    calls = forbid_reentry_work(v, monkeypatch)
+    attempts: list[str] = []
+    original = HomeActivationStore._publish_record
+
+    def publish(store: HomeActivationStore, path: str, data: bytes, **kwargs: Any) -> None:
+        assert_locked(v)
+        attempts.append(path)
+        if path == destination:
+            raise OSError("synthetic still-failing terminal publication")
+        original(store, path, data, **kwargs)
+
+    monkeypatch.setattr(HomeActivationStore, "_publish_record", publish)
+    for _ in range(2):
+        with pytest.raises(ActivationRefused):
+            h.HomeActivationBackend(io=v.receipts._io).enable(expected_generation=7, authenticated=True)
+        assert v.records()[0] == before[0]
+        if destination == TRANSACTION_PATH:
+            assert v.records() == before
+        else:
+            assert v.transactions.read_optional().phase == "failed_uncertain"
+            assert v.transactions.read_optional().effects[-1] == Effect("headscale_start_verify", "intent", {})
+        assert unit_config_bytes(v) == units and calls == []
+    assert attempts == ([TRANSACTION_PATH, TRANSACTION_PATH] if destination == TRANSACTION_PATH
+                        else [TRANSACTION_PATH, ACTIVATION_PATH, ACTIVATION_PATH])
+
+
+@pytest.mark.parametrize("case", ["ready", "failed", "stale-G", "mismatched-G", "mismatched-O",
+    "older-failed", "receipt-pending", "txn-pending", "unsafe-receipt", "unknown-txn", "missing-txn"])
+def test_backend_existing_pair_refusal(venue: Venue, monkeypatch: pytest.MonkeyPatch, case: str) -> None:
+    v = venue
+    if case == "ready":
+        with observations(v):
+            v.backend.enable(expected_generation=7, authenticated=True)
+    else:
+        crash_checkpoint(v, monkeypatch, "headscale-start")
+        txn = v.transactions.read_optional()
+        receipt = v.receipts.read(expected_generation=7)
+        if case == "failed":
+            put(v.path(TRANSACTION_PATH), replace(txn, phase="failed_uncertain").to_bytes())
+            put(v.path(ACTIVATION_PATH), replace(receipt, phase="failed_uncertain").to_bytes())
+        if case == "mismatched-G":
+            put(v.path(TRANSACTION_PATH), replace(txn, activation_generation=6).to_bytes())
+        if case == "mismatched-O":
+            put(v.path(TRANSACTION_PATH), replace(txn, operation_id="e" * 32).to_bytes())
+        if case == "older-failed":
+            put(v.path(TRANSACTION_PATH), replace(txn, activation_generation=6, phase="failed_uncertain").to_bytes())
+            put(v.path(ACTIVATION_PATH), replace(receipt, phase="prepared").to_bytes())
+        if case.endswith("pending"):
+            path = v.path(ACTIVATION_PATH if case == "receipt-pending" else TRANSACTION_PATH)
+            path.with_name("." + path.name + ".pending").write_bytes(b"uncertain")
+        if case == "unsafe-receipt":
+            v.path(ACTIVATION_PATH).chmod(0o644)
+        if case == "unknown-txn":
+            v.path(TRANSACTION_PATH).write_bytes(b"{}")
+        if case == "missing-txn":
+            v.path(TRANSACTION_PATH).unlink()
+    before, units = v.records(), unit_config_bytes(v)
+    pending = {p.name: p.read_bytes() for p in v.path("/var/lib/happyranch-remote-access").glob(".*.pending")}
+    calls = forbid_reentry_work(v, monkeypatch)
+    for _ in range(2):
+        with pytest.raises(ActivationRefused):
+            h.HomeActivationBackend(io=v.receipts._io).enable(
+                expected_generation=8 if case == "stale-G" else 7, authenticated=True)
+        assert v.records() == before and unit_config_bytes(v) == units and calls == []
+        assert {p.name: p.read_bytes() for p in v.path("/var/lib/happyranch-remote-access").glob(".*.pending")} == pending
+
+
+def test_backend_prepared_without_txn(venue: Venue, monkeypatch: pytest.MonkeyPatch) -> None:
+    v = venue
+    v.backend._prepare.prepare(expected_generation=7, authenticated=True)
+    prepared = v.receipts.read(expected_generation=7)
+    assert v.transactions.read_optional() is None
+
+    def prepare(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("existing prepared receipt must not run Prepare")
+
+    monkeypatch.setattr(h.HomeActivationPrepare, "prepare", prepare)
+    with observations(v):
+        ready = h.HomeActivationBackend(io=v.receipts._io).enable(expected_generation=7, authenticated=True)
+    assert ready.phase == "ready"
+    assert (ready.activation_generation, ready.operation_id) == (7, prepared.operation_id)

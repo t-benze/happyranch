@@ -88,13 +88,28 @@ class HomeActivationBackend:
                     else:
                         exists = True
                     check()
+                transaction = self._transactions.read_optional()
                 if not exists:
+                    if transaction is not None:
+                        raise ActivationRefused()
                     self._prepare.prepare(expected_generation=expected_generation, authenticated=authenticated)
-                # An already-prepared binding (including B7 rollover) goes only
-                # through unchanged coordinator admission, never through Prepare.
-                prepared = receipts.read(expected_generation=expected_generation)
-                coordinator, _, observer = self._compose(prepared)
-                coordinator.run(prepared)
+                receipt = receipts.read(expected_generation=expected_generation)
+                if (receipt.phase not in ("prepared", "activating", "joined")
+                        or receipt.local_node_stable_id is not None or receipt.home_endpoint is not None):
+                    raise ActivationRefused()
+                if transaction is not None:
+                    if not transaction.matches(receipt):
+                        raise ActivationRefused()
+                    coordinator, _, _ = self._compose(receipt)
+                    # Ruling 17: use the actual protected binding, never a
+                    # fabricated prepared receipt or the forward run entry.
+                    coordinator._pending()
+                    coordinator._fail(receipt)
+                    raise ActivationRefused("failed_uncertain")
+                if receipt.phase != "prepared":
+                    raise ActivationRefused()
+                coordinator, _, observer = self._compose(receipt)
+                coordinator.run(receipt)
                 return coordinator.publish_ready(expected_generation=expected_generation, observer=observer)
         except Exception:
             raise ActivationRefused() from None
