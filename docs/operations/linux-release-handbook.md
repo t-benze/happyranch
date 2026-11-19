@@ -421,7 +421,9 @@ with no retry; confirmed host denial never promises network cleanup.
 Exit 0: completed read/action or cancelled selection with effect `none` (read
 observations may explicitly be unavailable). Exit 1: closed error. Exit 2:
 invalid command/arguments. Enable/turn-off/create-invite return unavailable
-without dispatch. Recovery actions and Client CLI are not registered; Mac host
+without dispatch. Recovery placeholders `cancel-invite`, `replace-failed`, `refresh-home-address`
+and `retry-policy-renewal` also return closed unavailable without dispatch.
+Client CLI is not registered; Mac host
 is deferred/unavailable. There is no connector, DIY, installer or admin fallback.
 
 The packaged connection window now exposes session-only client status, invite,

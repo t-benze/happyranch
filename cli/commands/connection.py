@@ -8,7 +8,8 @@ from pathlib import Path
 import sys
 
 HOST_ACTIONS = ("status", "devices", "next-device", "approve-device", "reject-device", "revoke-device")
-UNAVAILABLE = ("enable", "turn-off", "create-invite")
+UNAVAILABLE = ("enable", "turn-off", "create-invite", "cancel-invite", "replace-failed",
+               "refresh-home-address", "retry-policy-renewal")
 
 
 def native_entry() -> Path:

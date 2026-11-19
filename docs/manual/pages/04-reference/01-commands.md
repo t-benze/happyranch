@@ -66,7 +66,9 @@ Exit 0 means completed read/action or cancelled selection, 1 a closed error, and
 2 invalid syntax. An unavailable read observation stays explicit.
 
 `host enable`, `turn-off` and `create-invite` return unavailable without dispatch.
-Recovery and Client CLI are not registered yet; Mac host is deferred/unavailable.
+`host cancel-invite`, `replace-failed`, `refresh-home-address` and
+`retry-policy-renewal` also return closed unavailable without dispatch.
+Client CLI is not registered yet; Mac host is deferred/unavailable.
 See the [Linux release handbook](../../../operations/linux-release-handbook.md#linux-host-cli-fallback-slice-5a).
 
 ## Per-org

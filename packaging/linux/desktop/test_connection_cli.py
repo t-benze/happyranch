@@ -107,11 +107,14 @@ class ConnectionCLITests(unittest.TestCase):
                 command.cmd_connection(parser.parse_args(["connection", "host", "devices"]))
             self.assertEqual(execute.call_args.args, ("/usr/bin/python3", ["/usr/bin/python3", "-I", str(command.native_entry()), "devices"]))
             for action in command.UNAVAILABLE:
-                with redirect_stdout(io.StringIO()), self.assertRaises(SystemExit) as stopped:
-                    command.cmd_connection(parser.parse_args(["connection", "host", action]))
-                self.assertEqual(stopped.exception.code, 1)
+                with self.subTest(action=action):
+                    out = io.StringIO()
+                    with redirect_stdout(out), self.assertRaises(SystemExit) as stopped:
+                        command.cmd_connection(parser.parse_args(["connection", "host", action]))
+                    self.assertEqual(stopped.exception.code, 1)
+                    self.assertEqual(json.loads(out.getvalue()), dict(code="unavailable", effect="none", recovery="nativeRecovery"))
             self.assertEqual(execute.call_count, 1)
-        for args in (("client", "status"), ("host", "revoke-device", "--device-id", "synthetic"), ("host", "replace-failed")):
+        for args in (("client", "status"), ("host", "revoke-device", "--device-id", "synthetic"), ("host", "unknown-action")):
             with self.subTest(args=args), redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as stopped:
                 parser.parse_args(["connection", *args])
             self.assertEqual(stopped.exception.code, 2)
