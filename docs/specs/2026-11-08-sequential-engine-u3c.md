@@ -1,5 +1,9 @@
 # Sequential engine U3c — inert lifecycle source
 
+The separate inactive S4a @2 hold/control source is described in
+[reusable workflow contracts](../agent-guides/contracts/reusable-workflows.md#s4a-held-and-controls-2-inactive-consumer).
+This U3c record continues to describe unchanged @1 bytes and lifecycle.
+
 2026-11-08 · TASK-14681 · engineering_manager ROOT TASK-14640.
 Append-only source record; not installed/runtime or V3 acceptance.
 

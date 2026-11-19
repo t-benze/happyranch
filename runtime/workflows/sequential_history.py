@@ -145,6 +145,10 @@ class _ReadBudget(_Budget):
     sql_steps: int = 0
     sql_limit: int = 2000000
     _sql_exhaustion: ClassVar[ReadExhaustion | None] = None
+    # Snapshot-local native @2 payloads: charged/acquired once, never shared
+    # between reads or writer transactions. Ownership/proofs are still checked
+    # at every reference. The reservation includes retained bytes and parsing.
+    generic_callbacks: dict[int, tuple[bytes, str]] = field(default_factory=dict)
 
     @property
     def remaining_bytes(self) -> int:
@@ -811,11 +815,47 @@ def _legacy_history(conn: sqlite3.Connection, org_slug: str, budget: _ReadBudget
     return retained
 
 
+def _reserve_generic_cancellation(data: dict[str, list[dict]], budget: _ReadBudget) -> None:
+    """Non-cancel commit headroom, charged AFTER the entire combined read.
+
+    Per unfinished @2 run, 16 MiB covers the max 1414488-byte native carrier
+    (5*n+512 digest charge), two 16 KiB original proofs including their two
+    auxiliary decodes, two 48 KiB events and a 48 KiB control/receipt, raw rows,
+    native lookups and projection/container overhead. 128 copies of the known
+    source/visit identity bytes additionally cover repeated native ownership
+    checks, without assuming small externally assigned task/principal/SIDs.
+    History payloads have already been charged in full: their sizes/counts do
+    not enter this future delta. All unfinished runs reserve, so another run's
+    non-cancel write cannot spend this run's cancellation space.
+    """
+    visits = {row['id']: row for row in data['workflow_seq_visits']}
+    for run in data['workflow_seq_runs']:
+        if run['engine_version'] != 2 or run['state'] not in ('running', 'held'):
+            continue
+        identity = sum(len(run[key].encode('utf8')) for key in (
+            'id', 'source_task_id', 'source_principal', 'source_session_id', 'carrier_task_id'))
+        visit = visits.get(run['active_visit_id'])
+        if visit is not None:
+            identity += sum(len(visit[key].encode('utf8')) for key in (
+                'id', 'task_id', 'principal', 'session_id') if visit[key] is not None)
+        budget.reserve(16 * 1048576 + 128 * identity)
+        # The finite row/traversal ledgers also retain room for the two events,
+        # one control, original proofs and their fixed-shape reconstruction.
+        budget.work(4096)
+        for _ in range(32):
+            budget.candidate()
+        budget.sql_steps += 65536
+        _budget_check(budget.sql_steps <= budget.sql_limit,
+                      lambda ok: _require(ok, 'read_sql_exhausted'), budget,
+                      'sql', 65536, budget.sql_limit - budget.sql_steps + 65536)
+
+
 def read_sequential_history(conn: sqlite3.Connection, *, expected_org_slug: str,
                             retained_budget: _Budget | None = None,
                             deadline: float | None = None,
                             ownership_sql_limit: int = 32000000,
-                            task_id: str | None = None) -> SequentialHistory:
+                            task_id: str | None = None,
+                            reserve_cancellation: bool = False) -> SequentialHistory:
     """Validate all sequential rows and complete combined schema in one snapshot.
 
     Empty/absent storage is explicitly unavailable. A readable inventory is not
@@ -860,11 +900,12 @@ def read_sequential_history(conn: sqlite3.Connection, *, expected_org_slug: str,
                      'schema_marker_invalid')
             for table in tables:
                 _require(conn.execute('PRAGMA foreign_key_check(' + table + ')').fetchone() is None, 'foreign_key_invalid')
-            # S3 accepts only inert @2 first-admission assignments. Later
-            # control/counter/wait/inbox/lifecycle rows still refuse explicitly.
+            # S4a additionally authenticates inactive @2 holds/controls/counters.
+            # Wait/inbox and mounted acceptance remain unavailable here.
             if layout.schema_version == 2:
                 _require(all(not data[table] for table in tables
-                             if table not in (*SEQUENTIAL_TABLES, 'workflow_seq_assignments')),
+                             if table not in (*SEQUENTIAL_TABLES, 'workflow_seq_assignments',
+                                              'workflow_seq_controls', 'workflow_seq_node_counters')),
                          'schema2_runtime_history_unavailable')
                 _require(all(row['engine_version'] == 1 for row in data['workflow_seq_outputs']),
                          'schema2_runtime_history_unavailable')
@@ -926,6 +967,9 @@ def read_sequential_history(conn: sqlite3.Connection, *, expected_org_slug: str,
             if layout.schema_version == 2:
                 _require(all(row['run_id'] in runs and runs[row['run_id']]['engine_version'] == 2
                              for row in data['workflow_seq_assignments']), 'assignment_owner_conflict')
+                _require(all(row['run_id'] in runs and runs[row['run_id']]['engine_version'] == 2
+                             for table in ('workflow_seq_controls', 'workflow_seq_node_counters')
+                             for row in data[table]), 'control_owner_conflict')
             _auxiliary(conn, data, runs, visits, events, budget, definitions)
             if layout.ownership:
                 validate_sequential_ownership(conn, org_slug=expected_org_slug, budget=budget,
@@ -938,6 +982,8 @@ def read_sequential_history(conn: sqlite3.Connection, *, expected_org_slug: str,
                 validate_sequential_ownership_guards(conn, budget=budget)
             retained = _legacy_history(conn, expected_org_slug, budget, data,
                                        retained_budget=retained_budget)
+        if reserve_cancellation:
+            _reserve_generic_cancellation(data, budget)
         budget.check()
         ready = bool(definitions and settings and layout.ownership == 2)
         result = SequentialHistory(layout, 'storage readable' if ready else 'new-engine unavailable',

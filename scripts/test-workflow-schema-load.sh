@@ -57,6 +57,18 @@ from runtime.orchestrator.agent_def import AgentDef, render_agent_text
 # A focused phase selects the same retained corruption rows/assertions. The
 # default/full matrix remains all four phases; no case is skipped or weakened.
 assignment_case = None
+S4A_CASES = ('empty_summary_hold', 'empty_summary_cancel', 'document_retry_history', 'document_history_refusal', 'document_variable_refusal', 'document_history_sweep', 'timeout_no_result', 'bad_shape', 'oversize', 'unknown_outcome', 'unavailable',
+    'exhausted', 'retry_cas', 'rebrief_history', 'reassign_eligible', 'replay_conflict',
+    'control_state_action_matrix', 'cancel_never_held', 'cancel_resumed_running', 'stale_hold_event',
+    'held_retry_replay_running', 'cancel_replay_finished', 'control_cas_race',
+    'start_replay_held', 'start_replay_retry', 'start_replay_cancel_boundary',
+    'v1_hold_unchanged', 'v1_cancel_unchanged', 'capacity_running_cancel', 'capacity_held_cancel',
+    'capacity_no_result_hold', 'capacity_running_refusal', 'capacity_cancel_defensive', 'capacity_result_hold')
+s4a_case = None
+if len(sys.argv) == 2 and sys.argv[1].startswith('--s4a='):
+    s4a_case = sys.argv[1].split('=', 1)[1]
+    assert s4a_case in ('all', *S4A_CASES)
+    sys.argv[1:] = ['--assignments']  # Reuse the S3 private fixture setup below.
 ASSIGNMENT_CASES = ('role_override', 'default_precedence', 'independence', 'model_omit',
                     'model_null', 'invalid_pair', 'executor_drift')
 if len(sys.argv) == 2 and sys.argv[1].startswith('--assignments='):
@@ -1993,16 +2005,16 @@ if sys.argv[1:] in ([], ['--assignments']):
                         role_overrides=[], step_overrides=[], lower_limits=compiled.definition.limits.model_dump(mode='json', exclude_unset=True))
                     setting = dict(conn.execute("SELECT * FROM workflow_seq_settings WHERE id='s3-settings'").fetchone())
                     claim = RetryClaim.from_task(source, result_row_id=result)
-                    def admit(value):
+                    def admit(value, *, task_suffix=''):
                         raw = assignment_bytes(value)
                         # Task IDs/principal are prospective inputs. The writer
                         # independently resolves/validates all roles and nodes.
                         chosen = next((item['principal'] for item in value['role_overrides'] if item['role']=='developer'),
                             next((item['principal'] for item in (defaults or []) if item['role']=='developer'),
                                  dict(compiled.definition.roles)['developer'].default_agent))
-                        carrier = TaskRecord(id='s3-carrier', parent_task_id=source.id, assigned_agent=source.assigned_agent,
+                        carrier = TaskRecord(id='s3-carrier' + task_suffix, parent_task_id=source.id, assigned_agent=source.assigned_agent,
                             team=source.team, task_type='subtask', brief='Private inert carrier')
-                        visit = TaskRecord(id='s3-visit-task', parent_task_id=carrier.id, assigned_agent=chosen,
+                        visit = TaskRecord(id='s3-visit-task' + task_suffix, parent_task_id=carrier.id, assigned_agent=chosen,
                             team='other' if chosen == 's3_other' else 'engineering', task_type='subtask', brief='Private inert entry',
                             model_override=source.model_override, reasoning_effort_override=source.reasoning_effort_override, override_source='manager')
                         from runtime.orchestrator import task_selection
@@ -2068,7 +2080,7 @@ if sys.argv[1:] in ([], ['--assignments']):
         assert fixture.db.get_task('s3-source') == fixture.source, 'S3 changed the source before S5'
         return resolved, fixture.db.get_task(ids.visit_task_id)
 
-    for case in ASSIGNMENT_CASES:
+    for case in (() if s4a_case else ASSIGNMENT_CASES):
         if assignment_case not in (None, 'all', case):
             continue
         if case == 'default_precedence':
@@ -2180,7 +2192,858 @@ if sys.argv[1:] in ([], ['--assignments']):
                     f.org.workflow_authority.publish_current(publisher='private-s3-executor-drift')
                     s3_refuse(f, command, 'invalid_selection', 'develop')
         print('PASS S3', case, 'real authority/selection/native rows; provider NOT RUN; launch recheck UNMOUNTED', flush=True)
-    if sys.argv[1:] == ['--assignments']:
+    if sys.argv[1:] == ['--assignments'] and not s4a_case:
+        raise SystemExit(0)
+
+if s4a_case or not sys.argv[1:]:
+    import base64
+    from threading import Barrier, Event, Thread
+    from runtime.workflows.sequential_business_hold import hold_generic_uncommitted
+    from runtime.workflows.sequential_control import (
+        apply_control_uncommitted, finish_cancellation_uncommitted, parse_control, prepare_control,
+    )
+    from runtime.workflows.sequential_dispatch import _evidence
+    from runtime.workflows.sequential_definition import SequentialContractError
+    from runtime.workflows.sequential_reducer import GenericStorageCapacityError
+
+    def s4bytes(value):
+        # Expected bytes/digests never use the production encoder.
+        return json.dumps(value, sort_keys=True, separators=(',', ':'), ensure_ascii=False, allow_nan=False).encode('utf8')
+
+    def s4row(f, table, key):
+        return dict(f.conn.execute('SELECT * FROM ' + table + ' WHERE id=?', (key,)).fetchone())
+
+    def s4snap(f):
+        tables = ('workflow_seq_runs', 'workflow_seq_visits', 'workflow_seq_events', 'workflow_seq_controls',
+                  'workflow_seq_assignments', 'workflow_seq_node_counters', 'workflow_seq_outbox', 'tasks')
+        return {table: tuple(tuple(row) for row in f.conn.execute('SELECT * FROM ' + table + ' ORDER BY rowid')) for table in tables}
+
+    @contextmanager
+    def s4fixture(*, events=8, document=False):
+        definition = s3_definition()
+        if document:
+            for node in definition['nodes']:
+                node['output_contract']['type'] = 'immutable-document@1'
+        definition['limits'].update(max_visits=12, max_events=events, max_recoveries=6)
+        if events == 1:
+            definition['nodes'][0]['outcomes']['finish'] = dict(action='terminal', condition='early')
+            definition['terminal_conditions']['early'] = dict(output='develop_output')
+        for node in definition['nodes']:
+            node['limits'].update(attempts=8, recoveries=6)
+        definition['nodes'][0]['outcomes']['pause'] = dict(action='hold', owner='initiator', remedy='no_automatic_retry')
+        definition['nodes'][0]['outcomes']['revise'] = dict(action='next', node='develop',
+            consume_counter='node_revisions', invalidate_dependents=True)
+        with s3_fixture(definition=definition) as f:
+            f.ids = f.admit(f.command)
+            f.actor = RetryClaim.from_task(f.source, result_row_id=f.conn.execute(
+                'SELECT source_result_id FROM workflow_seq_runs WHERE id=?', (f.ids.run_id,)).fetchone()[0])
+            with ExitStack() as f.cursor_patches:
+                yield f
+
+    def s4closed(f, visit_id, *, summary=None, terminal='timeout', positive=True):
+        visit = s4row(f, 'workflow_seq_visits', visit_id)
+        sid = 'private-session-' + str(visit['ordinal'])
+        f.conn.execute("UPDATE workflow_seq_visits SET session_id=?,state='running' WHERE id=?", (sid, visit_id))
+        f.conn.execute("UPDATE tasks SET current_session_id=?,status=?,completed_at=? WHERE id=?",
+            (sid, 'completed' if summary is not None else 'failed', '2026-11-19T00:00:00+00:00', visit['task_id']))
+        callback = None
+        if summary is not None:
+            result = f.conn.execute('INSERT INTO task_results(task_id,agent,session_id,status,output_summary,created_at) VALUES (?,?,?,?,?,?)',
+                (visit['task_id'], visit['principal'], sid, 'completed', summary, '2026-11-19T00:00:00+00:00')).lastrowid
+            callback = dict(task_id=visit['task_id'], principal=visit['principal'], session_id=sid,
+                result_id=result, status='completed', carrier_digest=hashlib.sha256(summary.encode('utf8')).hexdigest())
+        common = dict(task_id=visit['task_id'], principal=visit['principal'], session_id=sid)
+        invocation = 'private-invocation-' + str(visit['ordinal'])
+        _evidence(f.conn, f.ids.run_id, visit_id, 'terminal', dict(format='workflow-sequential-terminal@1',
+            invocation_id=invocation, **common, classification='success' if callback else 'unknown',
+            request=dict(org='scratch', logical_id=visit['task_id'], agent_id=visit['principal'], retry_attempt=0),
+            handle_digest='1' * 64, receipt=dict(backend='linux-systemd-cgroup-v2', terminal_reason=terminal,
+                cleanup_status='clean', quiescent=True, survivors=[]), callback=callback))
+        if positive:
+            _evidence(f.conn, f.ids.run_id, visit_id, 'outer', dict(format='workflow-sequential-outer@1',
+                invocation_id=invocation, **common, callback=callback, positive=True, tracker_clear=True,
+                native_phase='result_processing', close_removed=True, release_removed=True,
+                release_owner=invocation, execution_unknown=False))
+        f.conn.commit()
+
+    def s4hold(f, *, visit_id=None, unavailable=False):
+        run = s4row(f, 'workflow_seq_runs', f.ids.run_id)
+        capture = f.org.workflow_authority.capture_admission()
+        try:
+            with f.org.workflow_authority.admission_writer(capture) as writer:
+                return hold_generic_uncommitted(writer, f.db, org_slug='scratch', run_id=run['id'],
+                    visit_id=visit_id or run['active_visit_id'], expected_cas=run['cas'], compiled=f.compiled,
+                    authority=f.org.workflow_authority, capture=capture, unavailable=unavailable)
+        except (ValueError, RuntimeError) as exc:
+            raise AssertionError(case + ': required no-result/rejection Held was refused: ' + str(exc)) from exc
+
+    def s4command(f, action='retry', **changes):
+        run = s4row(f, 'workflow_seq_runs', f.ids.run_id)
+        value = dict(format='workflow-sequential-control@2', run_id=run['id'],
+            operation_key='private-' + action + '-' + str(run['cas']), expected_cas=run['cas'],
+            expected_held_event_id=run['held_event_id'], action=action, reason='Private control evidence')
+        if action == 'rebrief':
+            value['supplement'] = 'Replacement step supplement'
+        if action == 'reassign':
+            value['target_agent_id'] = 's3_alt'
+        value.update(changes)
+        return value
+
+    def s4apply(f, value, *, prepared=None, task_id=None):
+        capture = prepared or prepare_control(f.org, command_bytes=s4bytes(value), compiled=f.compiled)
+        assignment = capture.assignment
+        task = None if assignment is None else TaskRecord(id=task_id or 'private-task-' + value['operation_key'],
+            parent_task_id=f.ids.carrier_task_id, assigned_agent=assignment['principal'], team='engineering',
+            task_type='subtask', brief='Original request and responsibilities; supplement=' + str(value.get('supplement')))
+        with f.org.workflow_authority.admission_writer(capture.authority) as writer:
+            return apply_control_uncommitted(writer, f.db, org_slug='scratch', compiled=f.compiled,
+                actor=f.actor, capture=capture, authority=f.org.workflow_authority, replacement_task=task)
+
+    def s4refuses(f, action, code):
+        before = s4snap(f)
+        try:
+            action()
+        except (ValueError, RuntimeError) as exc:
+            assert str(exc) in (code, 'workflow_seq_' + code), (code, str(exc))
+        else:
+            raise AssertionError('S4a expected refusal: ' + code)
+        assert s4snap(f) == before, 'S4a refusal changed business/native rows: ' + code
+
+    def s4held(f):
+        s4closed(f, f.ids.visit_id)
+        event = s4hold(f)
+        run = s4row(f, 'workflow_seq_runs', f.ids.run_id)
+        visit = s4row(f, 'workflow_seq_visits', f.ids.visit_id)
+        assert (run['state'], run['progress'], run['active_visit_id'], run['held_event_id'], visit['selected']) == ('held', None, None, event, 0)
+        assert f.conn.execute('SELECT count(*) FROM workflow_seq_visits').fetchone()[0] == 1
+        return event
+
+    def s4document(size):
+        return '' if size == 0 else s4bytes(dict(format='workflow-sequential-callback@2', outcome='unknown',
+            content_base64=base64.b64encode(b'x' * size).decode('ascii'), findings=[])).decode('utf8')
+
+    def s4tryhold(f):
+        run = s4row(f, 'workflow_seq_runs', f.ids.run_id)
+        capture = f.org.workflow_authority.capture_admission()
+        with f.org.workflow_authority.admission_writer(capture) as writer:
+            return hold_generic_uncommitted(writer, f.db, org_slug='scratch', run_id=run['id'],
+                visit_id=run['active_visit_id'], expected_cas=run['cas'], compiled=f.compiled,
+                authority=f.org.workflow_authority, capture=capture)
+
+    def s4budgetcancel(f, label):
+        run = s4row(f, 'workflow_seq_runs', f.ids.run_id)
+        visits, recoveries, count = run['visit_count'], run['recovery_count'], run['event_count']
+        counters = tuple(tuple(row) for row in f.conn.execute('SELECT * FROM workflow_seq_node_counters ORDER BY rowid'))
+        s4apply(f, s4command(f, 'cancel'))
+        fenced = s4row(f, 'workflow_seq_runs', f.ids.run_id)
+        if run['active_visit_id'] is not None:
+            assert (fenced['state'], fenced['progress'], fenced['active_visit_id'], fenced['event_count']) == (
+                'running', 'cancelling', run['active_visit_id'], count + 1), label + ': cancellation fence missing'
+            try:
+                s4finish(f)
+            except (ValueError, RuntimeError) as exc:
+                raise AssertionError(label + ': cancellation finish at maximal history must commit: ' + str(exc)) from exc
+        stopped = s4row(f, 'workflow_seq_runs', f.ids.run_id)
+        assert (stopped['state'], stopped['progress'], stopped['terminal_outcome'], stopped['active_visit_id']) == (
+            'finished', None, 'cancelled', None), label + ': terminal cancellation missing'
+        assert stopped['event_count'] == count + (2 if run['active_visit_id'] is not None else 1), label + ': wrong cancellation event count'
+        assert (stopped['visit_count'], stopped['recovery_count']) == (visits, recoveries), label + ': cancellation spent allowance'
+        assert tuple(tuple(row) for row in f.conn.execute('SELECT * FROM workflow_seq_node_counters ORDER BY rowid')) == counters, label + ': cancellation changed node counters'
+        assert f.conn.execute('SELECT count(*) FROM workflow_seq_visits WHERE result_id IS NOT NULL').fetchone()[0] == 0, label + ': synthetic acceptance'
+        assert f.conn.execute('SELECT count(*) FROM workflow_seq_visits WHERE selected=1').fetchone()[0] == 0, label + ': outstanding visit'
+        assert f.conn.execute("SELECT count(*) FROM workflow_seq_events WHERE kind='transition'").fetchone()[0] == 0, label + ': accepted refused result'
+        assert f.conn.execute('SELECT count(*) FROM workflow_seq_outputs').fetchone()[0] == 0, label + ': produced output'
+        try:
+            history = read_sequential_history(f.conn, expected_org_slug='scratch')
+        except ValueError as exc:
+            raise AssertionError(label + ': complete terminal history must remain readable: ' + str(exc)) from exc
+        assert f.ids.run_id in history.run_ids, label + ': terminal history missing'
+
+    def s4budgethistory(pattern, finals, *, expected=None):
+        # Discover the maximal real-writer Running prefix for this size mix,
+        # stopping only at a no-effect byte refusal or the original recovery cap.
+        # No count injection, reader patch, or production budget override.
+        committed = 0
+        with s4fixture(document=True) as probe, closing(sqlite3.connect(':memory:')) as checkpoint:
+            # Branch only the private DB from a real-writer-produced prefix;
+            # each final callback drives the actual fence/finish/complete reader.
+            probe.conn.backup(checkpoint)
+            for size in pattern:
+                visit = s4row(probe, 'workflow_seq_runs', probe.ids.run_id)['active_visit_id']
+                s4closed(probe, visit, summary=s4document(size), terminal='success')
+                before = s4snap(probe)
+                try:
+                    s4tryhold(probe)
+                except ValueError as exc:
+                    assert str(exc) == 'workflow_seq_read_bytes_exhausted', (case, str(exc))
+                    assert s4snap(probe) == before, case + ': hold reservation refusal changed rows'
+                    break
+                before = s4snap(probe)
+                try:
+                    s4apply(probe, s4command(probe))
+                except ValueError as exc:
+                    assert str(exc) == 'workflow_seq_read_bytes_exhausted', (case, str(exc))
+                    assert s4snap(probe) == before, case + ': retry reservation refusal changed rows'
+                    break
+                committed += 1
+                probe.conn.backup(checkpoint)
+                assert probe.ids.run_id in read_sequential_history(probe.conn, expected_org_slug='scratch').run_ids
+            if expected is not None:
+                assert committed == expected, case + ': cancellation reservation boundary must refuse without spending headroom'
+            run = s4row(probe, 'workflow_seq_runs', probe.ids.run_id)
+            if run['active_visit_id'] is not None and s4row(probe, 'workflow_seq_visits', run['active_visit_id'])['session_id'] is None:
+                s4closed(probe, run['active_visit_id'], summary=s4document(1048576), terminal='success')
+                if case == 'document_variable_refusal':
+                    s4refuses(probe, lambda: s4tryhold(probe), 'read_bytes_exhausted')
+            s4budgetcancel(probe, case + ': refusal boundary ' + str(pattern))
+            for final in finals:
+                label = case + ': prefix=' + str(pattern[:committed]) + ' final=' + str(final)
+                checkpoint.backup(probe.conn)
+                f = probe
+                visit = s4row(f, 'workflow_seq_runs', f.ids.run_id)['active_visit_id']
+                summary = s4document(final)
+                s4closed(f, visit, summary=summary, terminal='success')
+                # The large candidate must still roll back atomically when its
+                # resulting complete history cannot preserve cancellation room.
+                if final == 1048576 and committed < len(pattern):
+                    s4refuses(f, lambda: s4tryhold(f), 'read_bytes_exhausted')
+                s4budgetcancel(f, label)
+                native_task = s4row(f, 'workflow_seq_visits', visit)['task_id']
+                try:
+                    f.conn.execute('UPDATE task_results SET output_summary=? WHERE task_id=?', (summary + ' ', native_task))
+                    f.conn.commit()
+                    s4refuses(f, lambda: read_sequential_history(f.conn, expected_org_slug='scratch'), 'hold_callback_conflict')
+                finally:
+                    f.conn.execute('UPDATE task_results SET output_summary=? WHERE task_id=?', (summary, native_task))
+                    f.conn.commit()
+                assert f.ids.run_id in read_sequential_history(f.conn, expected_org_slug='scratch').run_ids
+                print('PASS S4a budget', label, 'maximal committed retries=' + str(committed), flush=True)
+
+    def s4spent(f):
+        from runtime.workflows.sequential_contracts import GenericCounters, GenericNodeCounters
+        from runtime.workflows.sequential_definition import parse_generic_result
+        from runtime.workflows.sequential_reducer import GenericActiveVisit, GenericAuthenticatedResult, GenericRunState, reduce_generic_result
+        summary = s4bytes(dict(format='workflow-sequential-callback@2', outcome='pause', content_base64='', findings=['Private pause'])).decode('utf8')
+        s4closed(f, f.ids.visit_id, summary=summary, terminal='success')
+        visit = s4row(f, 'workflow_seq_visits', f.ids.visit_id)
+        result_id = f.conn.execute('SELECT id FROM task_results WHERE task_id=?', (visit['task_id'],)).fetchone()[0]
+        envelope = parse_generic_result(s4bytes(dict(format='workflow-sequential-result@2', run_id=f.ids.run_id,
+            visit_id=visit['id'], definition_digest=f.compiled.pin.definition_digest,
+            input_selection_digest=visit['input_selection_digest'], outcome='pause', outputs=[],
+            findings=[dict(source_visit=visit['id'], source_result=result_id, text='Private pause')])))
+        state = GenericRunState(run_id=f.ids.run_id, definition_digest=f.compiled.pin.definition_digest,
+            original_limits=f.compiled.definition.limits, lower_limits=f.compiled.definition.limits,
+            counters=GenericCounters(visits=1, events=0, recoveries=0, nodes={node.id: GenericNodeCounters(
+                revisions=0, recoveries=0, attempts=int(node.id == 'develop')) for node in f.compiled.definition.nodes}),
+            active_visit=GenericActiveVisit(node='develop', visit_id=visit['id'], task_id=visit['task_id'],
+                session_id=visit['session_id'], ordinal=1, input_selection_digest=visit['input_selection_digest']),
+            selections=(), findings=(), receipts=())
+        decision = reduce_generic_result(f.compiled, state, GenericAuthenticatedResult(task_id=visit['task_id'],
+            session_id=visit['session_id'], result_id=result_id, envelope=envelope, content=b'', settled=True))
+        assert decision.after.events == 1 and decision.edge.action == 'hold'
+        # Accepted-result storage is S4b's later producer. This private state
+        # fixture uses the real S1 reducer, native row and closure, never a
+        # mocked result counter, to supply its already-spent boundary to S4a.
+        prior = s4row(f, 'workflow_seq_events', f.ids.event_id)['event_digest']
+        event_id = 'private-accepted-result-event'
+        raw = s4bytes(dict(format='workflow-sequential-storage-event@2', kind='transition', run_id=f.ids.run_id,
+            sequence=2, operation_key='accepted-pause', prior_digest=prior, decision=decision.model_dump(mode='json')))
+        result_raw = s4bytes(envelope.model_dump(mode='json'))
+        f.conn.execute('PRAGMA defer_foreign_keys=ON')
+        f.conn.execute('INSERT INTO workflow_seq_events (id,run_id,engine_version,sequence,operation_key,kind,prior_digest,event_bytes,event_digest,source_visit_id,source_result_id) VALUES (?,?,2,2,?,?,?,?,?,?,?)',
+            (event_id, f.ids.run_id, 'accepted-pause', 'transition', prior, raw, hashlib.sha256(raw).hexdigest(), visit['id'], result_id))
+        f.conn.execute("UPDATE workflow_seq_visits SET state='held',selected=0,result_id=?,result_bytes=?,result_digest=?,generic_checks_bytes=? WHERE id=?",
+            (result_id, result_raw, hashlib.sha256(result_raw).hexdigest(), s4bytes(dict(settled=True)), visit['id']))
+        f.conn.execute("UPDATE workflow_seq_runs SET state='held',progress=NULL,active_visit_id=NULL,held_node_id='develop',held_event_id=?,last_event_id=?,event_count=2,cas=1 WHERE id=?",
+            (event_id, event_id, f.ids.run_id))
+        f.conn.commit()
+
+    def s4cursor(f, count):
+        # Isolated persisted-cursor boundary, not a fabricated complete history.
+        # Valid boundary states obey the reservation invariant. Only the named
+        # defensive case seeds an invalid Running count of 4095.
+        f.conn.execute('UPDATE workflow_seq_runs SET event_count=?,cas=? WHERE id=?',
+                       (count, count - 1, f.ids.run_id))
+        f.conn.commit()
+        def incomplete_cursor_history(conn, **kwargs):
+            try:
+                return read_sequential_history(conn, **kwargs)
+            except ValueError as exc:
+                assert str(exc) == 'workflow_seq_generic_history_order', (case, str(exc))
+        # This existing fixture intentionally supplies no immutable high-count
+        # prefix. Keep all storage-guard, writer and persisted-state assertions;
+        # isolate only the new whole-history postcondition's missing-prefix
+        # refusal. Full-history document cases never use this cursor fixture.
+        f.cursor_patches.enter_context(patch(
+            'runtime.workflows.sequential_history.read_sequential_history', incomplete_cursor_history))
+
+    def s4stored_event(f, event_id, sequence, kind):
+        row = s4row(f, 'workflow_seq_events', event_id)
+        body = json.loads(row['event_bytes'])
+        assert (row['sequence'], row['kind'], body['run_id'], body['sequence'], body['kind']) == (
+            sequence, kind, f.ids.run_id, sequence, kind), case + ': persisted boundary event identity changed'
+        assert row['event_bytes'] == s4bytes(body) and hashlib.sha256(row['event_bytes']).hexdigest() == row['event_digest']
+        return body
+
+    def s4storage_refuses(f, action, count, ceiling, slots=1):
+        before = s4snap(f)
+        try:
+            action()
+        except GenericStorageCapacityError as exc:
+            assert str(exc) == exc.cause == 'storage_capacity'
+            assert (exc.event_count, exc.post_append_limit, exc.required_slots) == (count, ceiling, slots)
+            assert exc.remaining == dict(storage=4096-count, running=max(0, 4094-count), held=max(0, 4095-count)), case + ': wrong visible remaining capacity'
+        else:
+            run = s4row(f, 'workflow_seq_runs', f.ids.run_id)
+            raise AssertionError(case + ': forbidden persisted state/count after capacity control: ' + str((run['state'], run['event_count'])))
+        assert s4snap(f) == before, case + ': capacity refusal changed persisted event/task/counter/control rows'
+
+    def s4finish(f):
+        capture = f.org.workflow_authority.capture_admission()
+        with f.org.workflow_authority.admission_writer(capture) as writer:
+            return finish_cancellation_uncommitted(writer, f.db, org_slug='scratch', run_id=f.ids.run_id,
+                expected_cas=s4row(f, 'workflow_seq_runs', f.ids.run_id)['cas'], compiled=f.compiled,
+                authority=f.org.workflow_authority, capture=capture)
+
+    def s4outer(f, visit_id):
+        terminal = json.loads(f.conn.execute("SELECT evidence_bytes FROM workflow_seq_evidence WHERE visit_id=? AND kind='terminal'", (visit_id,)).fetchone()[0])
+        _evidence(f.conn, f.ids.run_id, visit_id, 'outer', dict(format='workflow-sequential-outer@1',
+            invocation_id=terminal['invocation_id'], task_id=terminal['task_id'], principal=terminal['principal'],
+            session_id=terminal['session_id'], callback=terminal['callback'], positive=True, tracker_clear=True,
+            native_phase='result_processing', close_removed=True, release_removed=True,
+            release_owner=terminal['invocation_id'], execution_unknown=False))
+        f.conn.commit()
+
+    def s4capacity(case):
+        if case == 'capacity_running_cancel':
+            for resumed in (False, True):
+                with s4fixture() as f:
+                    visit = f.ids.visit_id
+                    if resumed:
+                        s4held(f)
+                        visit = json.loads(s4apply(f, s4command(f)))['new_visit_id']
+                    s4closed(f, visit, positive=False)
+                    s4cursor(f, 4094)
+                    before = s4snap(f)
+                    value = s4command(f, 'cancel')
+                    receipt = s4apply(f, value)
+                    run = s4row(f, 'workflow_seq_runs', f.ids.run_id)
+                    assert (run['event_count'], run['cas'], run['state'], run['progress'], run['active_visit_id']) == (4095, 4094, 'running', 'cancelling', visit), case + ': fence failed at 4095'
+                    assert s4row(f, 'workflow_seq_visits', visit)['selected'] == 1
+                    assert s4snap(f)['tasks'] == before['tasks'] and s4snap(f)['workflow_seq_node_counters'] == before['workflow_seq_node_counters']
+                    s4stored_event(f, json.loads(receipt)['event_id'], 4095, 'control')
+                    s4refuses(f, lambda: s4finish(f), 'business_hold_proof_invalid')
+                    s4outer(f, visit)
+                    finished = s4finish(f)
+                    s4stored_event(f, finished, 4096, 'cancellation_finished')
+                    run = s4row(f, 'workflow_seq_runs', f.ids.run_id)
+                    assert (run['event_count'], run['cas'], run['state'], run['terminal_outcome'], run['active_visit_id']) == (4096, 4095, 'finished', 'cancelled', None), case + ': positive-closure finish failed at 4096'
+                    assert s4row(f, 'workflow_seq_visits', visit)['selected'] == 0
+                    assert len(s4snap(f)['workflow_seq_events']) == len(before['workflow_seq_events']) + 2
+                    assert len(s4snap(f)['workflow_seq_controls']) == len(before['workflow_seq_controls']) + 1
+                    after = s4snap(f)
+                    assert s4apply(f, value) == receipt and s4snap(f) == after, case + ': final-slot replay changed rows/bytes'
+        elif case in ('capacity_held_cancel', 'capacity_running_refusal'):
+            count = 4095 if case == 'capacity_held_cancel' else 4094
+            with s4fixture() as f:
+                s4held(f)
+                s4cursor(f, count)
+                for action in ('retry', 'rebrief', 'reassign'):
+                    s4storage_refuses(f, lambda: s4apply(f, s4command(f, action)), count, 4094)
+                if case == 'capacity_held_cancel':
+                    receipt = json.loads(s4apply(f, s4command(f, 'cancel')))
+                    s4stored_event(f, receipt['event_id'], 4096, 'cancellation_finished')
+                    run = s4row(f, 'workflow_seq_runs', f.ids.run_id)
+                    assert (run['event_count'], run['state'], run['terminal_outcome']) == (4096, 'finished', 'cancelled'), case + ': Held cancel lost final slot'
+            if case == 'capacity_running_refusal':
+                for action in ('retry', 'rebrief', 'reassign'):
+                    with s4fixture() as f:
+                        s4held(f)
+                        s4cursor(f, 4093)
+                        receipt = json.loads(s4apply(f, s4command(f, action)))
+                        s4stored_event(f, receipt['event_id'], 4094, 'control')
+                        run = s4row(f, 'workflow_seq_runs', f.ids.run_id)
+                        assert (run['event_count'], run['state'], run['active_visit_id']) == (4094, 'running', receipt['new_visit_id']), case + ': permitted 4094 replacement refused'
+        elif case == 'capacity_no_result_hold':
+            for summary in (None, '{}'):
+                with s4fixture() as f:
+                    s4closed(f, f.ids.visit_id, summary=summary)
+                    s4cursor(f, 4094)
+                    before = s4snap(f)
+                    event_id = s4hold(f)
+                    body = s4stored_event(f, event_id, 4095, 'held')
+                    assert body['cause'] == ('task_timed_out_without_result' if summary is None else 'result_bad_shape')
+                    run = s4row(f, 'workflow_seq_runs', f.ids.run_id)
+                    assert (run['event_count'], run['cas'], run['state'], run['held_event_id'], run['active_visit_id']) == (4095, 4094, 'held', event_id, None), case + ': Running 4094 did not hold at 4095'
+                    after = s4snap(f)
+                    assert after['tasks'] == before['tasks'] and after['workflow_seq_controls'] == before['workflow_seq_controls']
+                    assert after['workflow_seq_node_counters'] == before['workflow_seq_node_counters'] and len(after['workflow_seq_visits']) == 1
+                    assert s4row(f, 'workflow_seq_visits', f.ids.visit_id)['result_id'] is None
+                    assert f.conn.execute('SELECT count(*) FROM workflow_seq_outputs').fetchone()[0] == 0
+        elif case == 'capacity_cancel_defensive':
+            with s4fixture() as f:
+                s4closed(f, f.ids.visit_id, positive=False)
+                s4cursor(f, 4095)  # Invalid: no valid writer can leave this Running.
+                s4storage_refuses(f, lambda: s4apply(f, s4command(f, 'cancel')), 4095, 4095, 2)
+        else:
+            from runtime.workflows.sequential_contracts import GenericCounters, GenericNodeCounters
+            from runtime.workflows.sequential_definition import parse_generic_result
+            from runtime.workflows.sequential_reducer import GenericActiveVisit, GenericAuthenticatedResult, GenericRunState, reduce_generic_result
+            with s4fixture() as f:
+                content = b'{}'
+                s4closed(f, f.ids.visit_id, summary=s4bytes(dict(format='workflow-sequential-callback@2',
+                    outcome='ready', content_base64=base64.b64encode(content).decode('ascii'), findings=[])).decode('utf8'), terminal='success')
+                visit = s4row(f, 'workflow_seq_visits', f.ids.visit_id)
+                result_id = f.conn.execute('SELECT id FROM task_results WHERE task_id=?', (visit['task_id'],)).fetchone()[0]
+                state = GenericRunState(run_id=f.ids.run_id, definition_digest=f.compiled.pin.definition_digest,
+                    original_limits=f.compiled.definition.limits, lower_limits=f.compiled.definition.limits,
+                    counters=GenericCounters(visits=1, events=0, recoveries=0, nodes={node.id: GenericNodeCounters(
+                        revisions=0, recoveries=0, attempts=int(node.id == 'develop')) for node in f.compiled.definition.nodes}),
+                    active_visit=GenericActiveVisit(node='develop', visit_id=visit['id'], task_id=visit['task_id'],
+                        session_id=visit['session_id'], ordinal=1, input_selection_digest=visit['input_selection_digest']), selections=(), findings=(), receipts=())
+                envelope = parse_generic_result(s4bytes(dict(format='workflow-sequential-result@2', run_id=f.ids.run_id,
+                    visit_id=visit['id'], definition_digest=f.compiled.pin.definition_digest, input_selection_digest=visit['input_selection_digest'],
+                    outcome='ready', outputs=[dict(slot='develop_output', contract='canonical-json-object@1', version=1,
+                        producer_visit=visit['id'], task_id=visit['task_id'], session_id=visit['session_id'], result_id=result_id,
+                        digest=hashlib.sha256(content).hexdigest())], findings=[])))
+                result = GenericAuthenticatedResult(task_id=visit['task_id'], session_id=visit['session_id'],
+                    result_id=result_id, envelope=envelope, content=content, settled=True)
+                for count in (4093, 4094):
+                    s4cursor(f, count)
+                    before = s4snap(f)
+                    decision = reduce_generic_result(f.compiled, state, result,
+                        storage_event_count=s4row(f, 'workflow_seq_runs', f.ids.run_id)['event_count'])
+                    if count == 4093:
+                        assert decision.edge.action == 'next' and decision.activation is not None
+                    else:
+                        assert (decision.edge.action, decision.reason, decision.activation, decision.after.visits) == ('hold', 'exhausted', None, 1), case + ': storage-exhausted acceptance allocated a successor'
+                        assert decision.after.events == 1 and dict(decision.after.nodes)['review'].attempts == 0
+                    assert s4snap(f) == before, case + ': pure reduction wrote acceptance state reserved for S4b'
+        print('PASS S4a', case, 'private persisted-cursor boundary; real writers/reducer; complete high-count history NOT RUN', flush=True)
+
+    def s4v1(f, case):
+        from runtime.workflows.sequential_business_hold import BusinessHoldCause
+        from runtime.workflows.sequential_engine import cancel_fence_uncommitted
+        # Reuse the existing independently reader-validated @1 storage fixture.
+        # Copy it into this real authority's private org before the writer runs;
+        # the unaccepted visit models the actual business-hold input boundary.
+        with sequential_fixture() as (old, _, _):
+            populate_sequential(old)
+            tables = ('tasks', 'task_results', 'workflow_seq_definitions', 'workflow_seq_settings',
+                'workflow_seq_settings_operations', 'workflow_seq_runs', 'workflow_seq_visits',
+                'workflow_seq_events', 'workflow_seq_outbox', 'workflow_task_ownership')
+            copied = {table: [dict(row) for row in old._conn.execute('SELECT * FROM ' + table)] for table in tables}
+        result_ids = {}
+        f.conn.execute('PRAGMA defer_foreign_keys=ON')
+        for table in tables:
+            for row in copied[table]:
+                if table == 'tasks':
+                    if row['id'] == 'source':
+                        row.update(status='in_progress', current_session_id='source-session')
+                    elif row['id'] == 'visit-task':
+                        row.update(status='completed', current_session_id='visit-session', completed_at='2026-11-19T00:00:00+00:00')
+                elif table == 'task_results':
+                    old_id = row.pop('id')
+                    row.update(status='completed', confidence_score=0, output_summary='malformed-private-result')
+                elif table == 'workflow_seq_runs':
+                    row['source_result_id'] = result_ids[row['source_result_id']]
+                elif table == 'workflow_seq_visits':
+                    row.update(state='running', result_id=None, result_bytes=None, result_digest=None, verified_checks_bytes=None)
+                columns = ','.join(row)
+                cursor = f.conn.execute('INSERT INTO ' + table + ' (' + columns + ') VALUES (' + ','.join('?' for _ in row) + ')', tuple(row.values()))
+                if table == 'task_results':
+                    result_ids[old_id] = cursor.lastrowid
+        f.conn.commit()
+        dispatcher = SequentialDispatcher(f.org)
+        run = s4row(f, 'workflow_seq_runs', 'run')
+        visit = s4row(f, 'workflow_seq_visits', 'visit')
+        before_events = tuple(tuple(row) for row in f.conn.execute("SELECT * FROM workflow_seq_events WHERE run_id='run'"))
+        if case == 'v1_hold_unchanged':
+            result_id = f.conn.execute("SELECT id FROM task_results WHERE task_id='visit-task'").fetchone()[0]
+            callback = dict(task_id='visit-task', principal='synthetic-author', session_id='visit-session', result_id=result_id,
+                status='completed', carrier_digest=hashlib.sha256(b'malformed-private-result').hexdigest())
+            common = dict(task_id='visit-task', principal='synthetic-author', session_id='visit-session')
+            terminal = dict(format='workflow-sequential-terminal@1', invocation_id='v1-private', **common,
+                classification='success', request=dict(org='scratch', logical_id='visit-task', agent_id='synthetic-author', retry_attempt=0),
+                handle_digest='1' * 64, receipt=dict(backend='linux-systemd-cgroup-v2', terminal_reason='success',
+                    cleanup_status='clean', quiescent=True, survivors=[]), callback=callback)
+            outer = dict(format='workflow-sequential-outer@1', invocation_id='v1-private', **common, callback=callback,
+                positive=True, tracker_clear=True, native_phase='result_processing', close_removed=True,
+                release_removed=True, release_owner='v1-private', execution_unknown=False)
+            _evidence(f.conn, 'run', 'visit', 'terminal', terminal)
+            _evidence(f.conn, 'run', 'visit', 'outer', outer)
+            f.conn.commit()
+            body = dispatcher._record_business_hold(run, visit, result_id, BusinessHoldCause.MALFORMED_OUTPUT)
+            event = s4row(f, 'workflow_seq_events', 'event')
+            pin = s4row(f, 'workflow_seq_definitions', 'definition')
+            expected = dict(format='workflow-sequential-business-hold@1', run_id='run', visit_id='visit', node='author', role='author',
+                principal='synthetic-author', task_id='visit-task', session_id='visit-session', result_id=result_id, epoch=1,
+                definition_digest=pin['definition_digest'], start_digest=run['start_digest'], input_selection_digest=visit['input_selection_digest'],
+                callback=callback, terminal_digest=hashlib.sha256(s4bytes(terminal)).hexdigest(), outer_digest=hashlib.sha256(s4bytes(outer)).hexdigest(),
+                cas=0, event_count=1, last_event_id='event', last_event_digest=event['event_digest'], cause='sequential_carrier_invalid',
+                next_owner='accountable_manager', action='no_automatic_retry', limitation='no_output_or_successor; lifecycle_resume_unavailable')
+            assert body == expected, 'v1_hold_unchanged: persisted contract changed'
+            raw, digest = f.conn.execute("SELECT evidence_bytes,evidence_digest FROM workflow_seq_evidence WHERE kind='observation'").fetchone()
+            assert raw == s4bytes(expected) and digest == hashlib.sha256(s4bytes(expected)).hexdigest()
+            assert tuple(tuple(row) for row in f.conn.execute("SELECT * FROM workflow_seq_events WHERE run_id='run'")) == before_events
+            assert s4row(f, 'workflow_seq_runs', 'run')['state'] == 'held'
+        else:
+            capture = f.org.workflow_authority.capture_admission()
+            before_tasks = tuple(tuple(row) for row in f.conn.execute('SELECT * FROM tasks ORDER BY rowid'))
+            with f.org.workflow_authority.admission_writer(capture) as writer:
+                ids = cancel_fence_uncommitted(writer, f.db, org_slug='scratch', run_id='run', operation_key='v1-cancel',
+                    expected_cas=0, compiled=dispatcher._entry(writer, 'visit-task')[2], authority=f.org.workflow_authority, capture=capture)
+            expected = dict(format='workflow-sequential-storage-event@1', kind='cancelled', run_id='run', sequence=2,
+                operation_key='v1-cancel', prior_digest=s4row(f, 'workflow_seq_events', 'event')['event_digest'])
+            event = s4row(f, 'workflow_seq_events', ids.event_id)
+            assert event['event_bytes'] == s4bytes(expected) and event['event_digest'] == hashlib.sha256(s4bytes(expected)).hexdigest(), 'v1_cancel_unchanged: event bytes changed'
+            assert ids.event_id == 'seq-event-' + hashlib.sha256(s4bytes(['run', '2'])).hexdigest()
+            stopped = s4row(f, 'workflow_seq_runs', 'run')
+            assert (stopped['state'], stopped['active_visit_id'], stopped['visit_count'], stopped['content_returns'], stopped['epoch']) == ('cancelled', None, 1, 0, 1)
+            assert tuple(tuple(row) for row in f.conn.execute('SELECT * FROM tasks ORDER BY rowid')) == before_tasks
+        assert f.conn.execute("SELECT count(*) FROM workflow_seq_visits WHERE run_id='run'").fetchone()[0] == 1
+        print('PASS S4a', case, 'real @1 writer; independently encoded expected bytes; no shared @1 code changed', flush=True)
+
+    def s4startreplay(f, command, *, later):
+        before = s4snap(f)
+        writes = []
+        def observe(sql):
+            words = sql.lower().split()
+            if words and words[0] in ('insert', 'update', 'delete', 'replace') and any(
+                    word.startswith('workflow_seq_') or word in ('tasks', 'task_results', 'workflow_task_ownership')
+                    for word in words[:5]):
+                writes.append(words[0])
+        with f.db.observe_trace(observe):
+            if later:
+                try:
+                    replay = f.admit(command)
+                except ValueError as exc:
+                    assert str(exc) == 'workflow_seq_admission_replay_incomplete', (case, str(exc))
+                else:
+                    raise AssertionError((case, 'later start replay must refuse', f.ids, replay))
+            else:
+                assert f.admit(command) == f.ids, case + ': original admission IDs changed'
+        assert not writes and s4snap(f) == before, (case, 'start replay wrote business/native rows', writes)
+        print('PASS S4a', case, 'later refusal' if later else 'original admission IDs', f.ids, 'zero writes', flush=True)
+
+    for case in S4A_CASES:
+        if s4a_case not in (None, 'all', case):
+            continue
+        if case.startswith('start_replay_'):
+            with s4fixture(document=True) as f:
+                command = f.command
+                s4startreplay(f, command, later=False)
+                if case == 'start_replay_cancel_boundary':
+                    # Exact reviewer prefix: four full documents, then 300000
+                    # bytes, all finished by the real Held/cancel writers.
+                    for index, size in enumerate((1048576, 1048576, 1048576, 1048576, 300000)):
+                        if index:
+                            command = dict(f.command, operation_key='history-' + str(index))
+                            f.ids = f.admit(command, task_suffix='-' + command['operation_key'])
+                        s4closed(f, f.ids.visit_id, summary=s4document(size), terminal='success')
+                        s4tryhold(f)
+                        s4apply(f, s4command(f, 'cancel'))
+                    command = dict(f.command, operation_key='replayed-start')
+                    f.ids = f.admit(command, task_suffix='-replayed-start')
+                    s4startreplay(f, command, later=False)
+                    s4closed(f, f.ids.visit_id, summary=s4document(1048576), terminal='success')
+                    cancel = s4command(f, 'cancel')
+                    receipt = s4apply(f, cancel)
+                    assert s4apply(f, cancel) == receipt
+                    assert s4row(f, 'workflow_seq_runs', f.ids.run_id)['progress'] == 'cancelling'
+                else:
+                    s4held(f)
+                    if case == 'start_replay_retry':
+                        assert json.loads(s4apply(f, s4command(f)))['new_visit_id'] is not None
+                assert f.ids.run_id in read_sequential_history(f.conn, expected_org_slug='scratch').run_ids
+                s4startreplay(f, command, later=True)
+                if case == 'start_replay_cancel_boundary':
+                    s4finish(f)
+                    assert s4row(f, 'workflow_seq_runs', f.ids.run_id)['terminal_outcome'] == 'cancelled'
+                    s4startreplay(f, command, later=True)
+                assert f.ids.run_id in read_sequential_history(f.conn, expected_org_slug='scratch').run_ids
+            continue
+        if case.startswith('capacity_'):
+            s4capacity(case)
+            continue
+        if case.startswith('v1_'):
+            with s3_fixture() as f:
+                s4v1(f, case)
+            continue
+        if case == 'document_history_refusal':
+            s4budgethistory((1048576,) * 6, (1048576,), expected=4)
+            continue
+        if case == 'document_variable_refusal':
+            s4budgethistory((960 * 1024,) * 6, (1048576,))
+            continue
+        if case == 'document_history_sweep':
+            for pattern in ((960 * 1024,) * 6, (1048576,) * 6, (65536, 262144, 524288, 1048576, 1048576, 1048576),
+                            (1048575, 1048576, 1048574, 1048576, 1048575, 1048576),
+                            (131072,) * 6):
+                s4budgethistory(pattern, (0, 524288, 1048576))
+            continue
+        with s4fixture(events=1 if case == 'exhausted' else 8, document=case == 'document_retry_history') as f:
+            if case == 'empty_summary_cancel':
+                s4held(f)
+                visit = json.loads(s4apply(f, s4command(f)))['new_visit_id']
+                s4closed(f, visit, summary='', terminal='success')
+                s4apply(f, s4command(f, 'cancel'))
+                assert s4row(f, 'workflow_seq_runs', f.ids.run_id)['progress'] == 'cancelling'
+                s4finish(f)
+                run = s4row(f, 'workflow_seq_runs', f.ids.run_id)
+                assert (run['state'], run['terminal_outcome'], run['active_visit_id']) == ('finished', 'cancelled', None), case + ': positive empty closure did not finish cancellation'
+                assert s4row(f, 'workflow_seq_visits', visit)['result_id'] is None, case + ': synthetic result acceptance'
+                assert f.conn.execute('SELECT count(*) FROM workflow_seq_outputs').fetchone()[0] == 0
+            elif case == 'document_retry_history':
+                summary = s4bytes(dict(format='workflow-sequential-callback@2', outcome='unknown',
+                    content_base64=base64.b64encode(b'x' * 1048576).decode('ascii'), findings=[])).decode('utf8')
+                for attempt in range(1, 4):
+                    visit = s4row(f, 'workflow_seq_runs', f.ids.run_id)['active_visit_id']
+                    s4closed(f, visit, summary=summary, terminal='success')
+                    s4hold(f)
+                    assert f.ids.run_id in read_sequential_history(f.conn, expected_org_slug='scratch').run_ids, case + ': Held history missing'
+                    s4apply(f, s4command(f))
+                    run = s4row(f, 'workflow_seq_runs', f.ids.run_id)
+                    assert (run['event_count'], run['visit_count'], run['recovery_count']) == (2 * attempt + 1, attempt + 1, attempt), case + ': wrong real-writer history'
+                    try:
+                        read_sequential_history(f.conn, expected_org_slug='scratch')
+                    except ValueError as exc:
+                        raise AssertionError(case + ': writer-produced history refused after retry ' + str(attempt) + ': ' + str(exc)) from exc
+                assert f.conn.execute("SELECT count(*) FROM workflow_seq_events WHERE kind='transition'").fetchone()[0] == 0, case + ': result allowance spent'
+            elif case in ('empty_summary_hold', 'timeout_no_result', 'bad_shape', 'oversize', 'unknown_outcome'):
+                summaries = dict(empty_summary_hold='', timeout_no_result=None, bad_shape='{}',
+                    oversize=s4bytes(dict(format='workflow-sequential-callback@2', outcome='ready',
+                        content_base64=base64.b64encode(b'x' * 49153).decode('ascii'), findings=[])).decode('utf8'),
+                    unknown_outcome=s4bytes(dict(format='workflow-sequential-callback@2', outcome='unknown',
+                        content_base64=base64.b64encode(b'{}').decode('ascii'), findings=[])).decode('utf8'))
+                s4closed(f, f.ids.visit_id, summary=summaries[case], terminal='timeout' if case == 'timeout_no_result' else 'success')
+                key = s4hold(f)
+                expected = dict(empty_summary_hold='result_bad_shape', timeout_no_result='task_timed_out_without_result', bad_shape='result_bad_shape',
+                                oversize='result_too_large', unknown_outcome='unknown_outcome')[case]
+                event = s4row(f, 'workflow_seq_events', key)
+                assert json.loads(event['event_bytes'])['cause'] == expected, case + ': wrong persisted cause'
+                assert hashlib.sha256(event['event_bytes']).hexdigest() == event['event_digest']
+                assert s4row(f, 'workflow_seq_runs', f.ids.run_id)['state'] == 'held', case + ': no Held'
+                assert f.conn.execute('SELECT count(*) FROM tasks').fetchone()[0] == 3, case + ': successor allocated'
+                assert f.conn.execute('SELECT count(*) FROM workflow_seq_outputs').fetchone()[0] == 0
+                assert s4row(f, 'workflow_seq_visits', f.ids.visit_id)['result_id'] is None, case + ': synthetic acceptance'
+            elif case == 'unavailable':
+                changed = replace(f.agents['s3_author'], executor='opencode', model='provider/model', reasoning_effort=None)
+                (f.root / 'org/agents/s3_author.md').write_text(render_agent_text(changed))
+                f.coordinator.synchronize_all_dependencies()
+                f.org.workflow_authority.publish_current(publisher='private-s4a-drift')
+                key = s4hold(f, unavailable=True)
+                assert json.loads(s4row(f, 'workflow_seq_events', key)['event_bytes'])['cause'] == 'assignee_unavailable'
+                assert s4row(f, 'workflow_seq_visits', f.ids.visit_id)['selected'] == 0
+            elif case == 'control_state_action_matrix':
+                for held in (False, True):
+                    if held:
+                        s4held(f)
+                    for action in ('retry', 'rebrief', 'reassign', 'cancel'):
+                        value = s4command(f, action)
+                        missing = dict(value)
+                        missing.pop('expected_held_event_id')
+                        s4refuses(f, lambda: s4apply(f, missing), 'invalid_control')
+                        if action == 'cancel':
+                            s4refuses(f, lambda: s4apply(f, dict(value, model=None)), 'invalid_control')
+                        elif action == 'rebrief':
+                            absent_supplement = dict(value)
+                            absent_supplement.pop('supplement')
+                            s4refuses(f, lambda: s4apply(f, absent_supplement), 'invalid_control')
+                        wrong = dict(value, expected_held_event_id=None if held else 'old-event')
+                        s4refuses(f, lambda: s4apply(f, wrong), 'held_event_conflict')
+                        s4refuses(f, lambda: s4apply(f, dict(value, expected_cas=999)),
+                                  'control_cas_conflict' if held or action == 'cancel' else 'run_not_held')
+                        if not held and action != 'cancel':
+                            s4refuses(f, lambda: s4apply(f, value), 'run_not_held')
+                s4apply(f, s4command(f, 'cancel'))
+                for action in ('retry', 'rebrief', 'reassign', 'cancel'):
+                    s4refuses(f, lambda: s4apply(f, s4command(f, action)), 'run_finished')
+            elif case in ('cancel_never_held', 'cancel_replay_finished'):
+                value = s4command(f, 'cancel')
+                assert value['expected_held_event_id'] is None
+                receipt = s4apply(f, value)
+                after = s4snap(f)
+                assert s4apply(f, value) == receipt and s4snap(f) == after, case + ': replay changed original receipt/rows'
+                run = s4row(f, 'workflow_seq_runs', f.ids.run_id)
+                assert (run['state'], run['terminal_outcome'], run['visit_count'], run['recovery_count']) == ('finished', 'cancelled', 1, 0)
+                assert f.conn.execute('SELECT count(*) FROM tasks').fetchone()[0] == 3
+            else:
+                old_hold = s4held(f)
+                value = s4command(f, 'rebrief' if case == 'rebrief_history' else 'reassign' if case == 'reassign_eligible' else 'retry')
+                if case == 'rebrief_history':
+                    value.update(model=None, reasoning_effort='low')
+                if case == 'exhausted':
+                    # Persisted sequence=2 already exceeds max_events=1. It must
+                    # never gate metadata. A separate accepted-result fixture
+                    # below establishes the spent result allowance.
+                    assert s4row(f, 'workflow_seq_runs', f.ids.run_id)['event_count'] == 2
+                    s4apply(f, s4command(f, 'cancel'))
+                    assert s4row(f, 'workflow_seq_runs', f.ids.run_id)['terminal_outcome'] == 'cancelled'
+                    with s4fixture(events=1) as spent:
+                        s4spent(spent)
+                        for action in ('retry', 'rebrief', 'reassign'):
+                            s4refuses(spent, lambda: s4apply(spent, s4command(spent, action)), 'exhausted')
+                        try:
+                            s4apply(spent, s4command(spent, 'cancel'))
+                        except (ValueError, RuntimeError) as exc:
+                            raise AssertionError('exhausted: cancellation wrongly gated by spent result allowance: ' + str(exc)) from exc
+                        assert s4row(spent, 'workflow_seq_runs', spent.ids.run_id)['terminal_outcome'] == 'cancelled', 'exhausted: cancel incorrectly spent result allowance'
+                        assert spent.conn.execute('SELECT count(*) FROM workflow_seq_visits').fetchone()[0] == 1
+                        try:
+                            assert spent.ids.run_id in read_sequential_history(spent.conn, expected_org_slug='scratch').run_ids
+                        except ValueError as exc:
+                            raise AssertionError('exhausted: persisted result/control event identity was not authenticated: ' + str(exc)) from exc
+                    with s4fixture() as capped:
+                        s4held(capped)
+                        # Direct persisted-sequence boundary fixture. This is
+                        # not a claim of a reachable 4095-event short history.
+                        s4cursor(capped, 4095)
+                        s4refuses(capped, lambda: s4apply(capped, s4command(capped)), 'storage_capacity')
+                        s4apply(capped, s4command(capped, 'cancel'))
+                        stopped = s4row(capped, 'workflow_seq_runs', capped.ids.run_id)
+                        assert (stopped['event_count'], stopped['state'], stopped['terminal_outcome']) == (4096, 'finished', 'cancelled'), 'exhausted: final slot not available to cancel'
+                        s4refuses(capped, lambda: s4apply(capped, s4command(capped, 'cancel')), 'run_finished')
+                    with s4fixture() as revised:
+                        summary = s4bytes(dict(format='workflow-sequential-callback@2', outcome='revise',
+                            content_base64=base64.b64encode(b'{}').decode('ascii'), findings=[])).decode('utf8')
+                        s4closed(revised, revised.ids.visit_id, summary=summary, terminal='success')
+                        event = s4hold(revised)
+                        assert json.loads(s4row(revised, 'workflow_seq_events', event)['event_bytes'])['cause'] == 'revision_limit_exhausted'
+                        for action in ('retry', 'rebrief', 'reassign'):
+                            s4refuses(revised, lambda: s4apply(revised, s4command(revised, action)), 'exhausted')
+                elif case == 'reassign_eligible':
+                    for target, cause, role in (('s3_review', 'independence', 'reviewer'),
+                        ('s3_other', 'team_scope', 'developer'), ('s3_manager', 'role_ineligible', 'developer'),
+                        ('missing-agent', 'principal_unavailable', 'developer')):
+                        before = s4snap(f)
+                        try:
+                            s4apply(f, dict(value, target_agent_id=target))
+                        except AssignmentRefusal as exc:
+                            assert (exc.cause, exc.role) == (cause, role)
+                        else:
+                            raise AssertionError('reassign_eligible: invalid target accepted')
+                        assert s4snap(f) == before
+                    receipt = json.loads(s4apply(f, value))
+                    assert f.db.get_task(receipt['new_task_id']).assigned_agent == 's3_alt'
+                    assert json.loads(s4row(f, 'workflow_seq_runs', f.ids.run_id)['assignment_snapshot_bytes'])['roles'][0]['principal'] == 's3_author'
+                elif case == 'control_cas_race':
+                    # Both operations capture the same real held cursor before
+                    # either writer. Test-side barriers control only ordering.
+                    own = prepare_control(f.org, command_bytes=s4bytes(value), compiled=f.compiled)
+                    other_value = dict(value, operation_key='other-key')
+                    other = prepare_control(f.org, command_bytes=s4bytes(other_value), compiled=f.compiled)
+                    barrier = Barrier(3)
+                    results = []
+                    def compete(command, captured):
+                        barrier.wait(timeout=10)
+                        try:
+                            results.append(('won', s4apply(f, command, prepared=captured)))
+                        except (ValueError, RuntimeError) as exc:
+                            results.append(('lost', str(exc)))
+                    threads = [Thread(target=compete, args=pair) for pair in ((value, own), (other_value, other))]
+                    for thread in threads:
+                        thread.start()
+                    barrier.wait(timeout=10)
+                    for thread in threads:
+                        thread.join(timeout=10)
+                    assert all(not thread.is_alive() for thread in threads) and len(results) == 2
+                    assert sorted(result[0] for result in results) == ['lost', 'won'], ('control_cas_race: not one winner', results)
+                    assert next(result[1] for result in results if result[0] == 'lost') == 'held_event_conflict', results
+                    assert f.conn.execute('SELECT count(*) FROM workflow_seq_controls').fetchone()[0] == 1
+                    assert f.conn.execute('SELECT count(*) FROM workflow_seq_visits').fetchone()[0] == 2
+                    assert f.conn.execute('SELECT count(*) FROM workflow_seq_events').fetchone()[0] == 3
+                    assert s4row(f, 'workflow_seq_runs', f.ids.run_id)['recovery_count'] == 1
+                else:
+                    receipt = s4apply(f, value)
+                    selected = json.loads(receipt)
+                    new_visit = selected['new_visit_id']
+                    assert selected['new_task_id'] != f.ids.visit_task_id
+                    run = s4row(f, 'workflow_seq_runs', f.ids.run_id)
+                    assert (run['state'], run['active_visit_id'], run['held_event_id'], run['visit_count'], run['recovery_count']) == ('running', new_visit, None, 2, 1)
+                    if case in ('retry_cas', 'held_retry_replay_running'):
+                        before = s4snap(f)
+                        assert s4apply(f, value) == receipt and s4snap(f) == before, case + ': replay checked current state before original identity'
+                        s4refuses(f, lambda: s4apply(f, dict(value, operation_key='new-stale-key')), 'held_event_conflict')
+                    elif case == 'replay_conflict':
+                        s4refuses(f, lambda: s4apply(f, dict(value, reason='Different bytes')), 'control_operation_conflict')
+                    elif case == 'rebrief_history':
+                        body = json.loads(s4row(f, 'workflow_seq_events', selected['event_id'])['event_bytes'])
+                        assert body['supplement'] == value['supplement']
+                        assert body['original_brief_digest'] == hashlib.sha256(f.db.get_task(f.ids.visit_task_id).brief.encode('utf8')).hexdigest()
+                        assert body['new_brief_digest'] == hashlib.sha256(f.db.get_task(selected['new_task_id']).brief.encode('utf8')).hexdigest()
+                        created = f.db.get_task(selected['new_task_id'])
+                        data = json.loads(created.brief)
+                        assert data['original_request'] == f.command['request'] and data['supplement'] == value['supplement']
+                        assert data['responsibilities'] == list(f.compiled.definition.nodes[0].responsibilities)
+                        assert (created.model_override, created.reasoning_effort_override, created.override_source) == (None, 'low', 'manager')
+                        s4closed(f, new_visit)
+                        s4hold(f)
+                        carried = json.loads(s4apply(f, s4command(f)))
+                        carried_task = f.db.get_task(carried['new_task_id'])
+                        assert (carried_task.model_override, carried_task.reasoning_effort_override, carried_task.override_source) == (None, 'low', 'manager')
+                        assert json.loads(carried_task.brief)['supplement'] == value['supplement']
+                        s4closed(f, carried['new_visit_id'])
+                        s4hold(f)
+                        changed = json.loads(s4apply(f, s4command(f, 'rebrief', supplement='Only the new supplement', reasoning_effort=None)))
+                        changed_task = f.db.get_task(changed['new_task_id'])
+                        assert (changed_task.model_override, changed_task.reasoning_effort_override, changed_task.override_source) == (None, None, None)
+                        assert json.loads(changed_task.brief)['supplement'] == 'Only the new supplement'
+                        assert f.db.get_task(f.ids.visit_task_id).brief == 'Private inert entry'
+                    elif case == 'cancel_resumed_running':
+                        s4closed(f, new_visit, positive=False)
+                        cancel = s4command(f, 'cancel')
+                        assert cancel['expected_held_event_id'] is None
+                        old_cas = cancel['expected_cas']
+                        barrier, cancelled = Barrier(2), Event()
+                        settlement_results = []
+                        captured = f.org.workflow_authority.capture_admission()
+                        def late_settlement():
+                            barrier.wait(timeout=10)
+                            assert cancelled.wait(timeout=10)
+                            with f.db._lock:
+                                terminal = _evidence(f.conn, f.ids.run_id, new_visit, 'terminal')
+                                outer = dict(format='workflow-sequential-outer@1', invocation_id=terminal['invocation_id'],
+                                    task_id=terminal['task_id'], principal=terminal['principal'], session_id=terminal['session_id'],
+                                    callback=terminal['callback'], positive=True, tracker_clear=True, native_phase='result_processing',
+                                    close_removed=True, release_removed=True, release_owner=terminal['invocation_id'], execution_unknown=False)
+                                _evidence(f.conn, f.ids.run_id, new_visit, 'outer', outer)
+                                f.conn.commit()
+                            try:
+                                with f.org.workflow_authority.admission_writer(captured) as writer:
+                                    hold_generic_uncommitted(writer, f.db, org_slug='scratch', run_id=f.ids.run_id,
+                                        visit_id=new_visit, expected_cas=old_cas, compiled=f.compiled,
+                                        authority=f.org.workflow_authority, capture=captured)
+                            except ValueError as exc:
+                                settlement_results.append(str(exc))
+                        thread = Thread(target=late_settlement)
+                        thread.start()
+                        barrier.wait(timeout=10)
+                        s4apply(f, cancel)
+                        assert s4row(f, 'workflow_seq_runs', f.ids.run_id)['progress'] == 'cancelling'
+                        s4refuses(f, lambda: s4apply(f, s4command(f, 'cancel')), 'control_in_progress')
+                        cancelled.set()
+                        thread.join(timeout=10)
+                        assert not thread.is_alive() and settlement_results == ['workflow_seq_hold_cas_conflict'], 'cancel_resumed_running: late settlement crossed fence'
+                        capture = f.org.workflow_authority.capture_admission()
+                        with f.org.workflow_authority.admission_writer(capture) as writer:
+                            finish_cancellation_uncommitted(writer, f.db, org_slug='scratch', run_id=f.ids.run_id,
+                                expected_cas=s4row(f, 'workflow_seq_runs', f.ids.run_id)['cas'], compiled=f.compiled,
+                                authority=f.org.workflow_authority, capture=capture)
+                        assert s4row(f, 'workflow_seq_runs', f.ids.run_id)['terminal_outcome'] == 'cancelled'
+                    elif case == 'stale_hold_event':
+                        s4closed(f, new_visit)
+                        new_hold = s4hold(f)
+                        assert new_hold != old_hold
+                        s4refuses(f, lambda: s4apply(f, s4command(f, expected_held_event_id=old_hold)), 'held_event_conflict')
+            # Full persisted-history authentication is independent of writer return values.
+            try:
+                persisted = read_sequential_history(f.conn, expected_org_slug='scratch')
+            except ValueError as exc:
+                raise AssertionError(case + ': persisted event/native identity or projection was not authenticated: ' + str(exc)) from exc
+            assert f.ids.run_id in persisted.run_ids, case + ': run missing from authenticated history'
+        print('PASS S4a', case, 'real private writers/native rows; no provider or live cancellation', flush=True)
+    if s4a_case:
         raise SystemExit(0)
 
 # A4-M drives the real daemon build before any listener, using only private orgs.

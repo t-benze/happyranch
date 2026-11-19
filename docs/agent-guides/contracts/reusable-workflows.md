@@ -1,5 +1,104 @@
 # Reusable workflow contracts
 
+## S4a: Held and controls @2 (inactive consumer)
+
+The closed `workflow-sequential-control@2` command requires run ID, stable
+operation key, expected CAS and a required nullable held-event ID. Fresh
+retry/rebrief/reassign require the current Held event; Running cancellation
+requires null. Finished refuses fresh controls, and cancelling permits only
+the original cancellation replay. Replay authenticates the original INTEGER
+result/task/principal/session and exact command bytes before current-state
+preconditions, returning original receipt bytes and IDs after later transitions.
+Start replay remains admission-only: before any later lifecycle event it returns
+the original admission IDs without writes. After any later lifecycle event,
+including Held, retry or a cancellation fence, the identical original start
+refuses with `admission_replay_incomplete`, without writes or a fresh-write
+cancellation reservation. Complete history reads still accept those histories.
+
+Original `max_events` is the accepted-result transition allowance, including a
+terminal result. Successor allocation adds no event. Admission, no-result or
+rejected-result holds, recovery controls and cancellation completion are
+persisted metadata and do not consume that allowance. Persisted `event_count`
+and sequence retain their distinct storage meaning and cap of 4096. Every
+non-cancel append whose resulting state is Running with an outstanding visit
+(queued or launched) requires post-append `event_count <= 4094`. Every non-cancel
+append whose resulting state is Held requires post-append `event_count <= 4095`.
+Violation raises the closed `storage_capacity` refusal with the current
+`event_count`, `post_append_limit`, `required_slots` and `remaining` counts
+(`storage`, `running`, `held`); no event, task, counter, CAS or control row changes.
+
+Launched Running cancellation (never-held or resumed) persists its fence at
+most at 4095, retains the outstanding visit while original native/outer closure
+is unknown, and records `cancellation_finished` only after positive closure, at
+most at 4096. Those two slots are always available under the invariant. Held or
+pristine queued cancellation finishes immediately in one slot, including Held
+at 4095. The launched-cancel two-slot refusal is defensive for invalid histories
+already outside the invariant, never an additional refusal for valid writers.
+Retry/rebrief/reassign from Held refuse without effect if their resulting
+Running count would exceed 4094; no-result/rejection holds from valid Running
+always fit through 4095. Replacement requires at least one remaining original
+result event as well as visit/attempt/recovery/revision capacity. Nothing resets
+or replenishes an allowance; max_events=1 definitions remain valid.
+
+S4b's @2 acceptance writer must pass the original persisted count as
+`storage_event_count` to `reduce_generic_result`, independent of result counters.
+When accepting a result would leave Running above 4094, the reducer returns
+Held with cause `exhausted`, no activation and no successor-counter spend. The
+acceptance writer must persist that single Held result event rather than
+allocate a successor, and honor the Held ceiling of 4095 in the same transaction.
+Pure S1 calls without storage may omit the count; omission is not a persisted
+acceptance contract. This S4a change does not mount or edit S4b's producer.
+
+The inactive writers require the caller's current-authority transaction and
+original positive terminal/outer proof for launched visits. Uncertain closure
+retains the outstanding visit. Empty native output text is authenticated with
+its empty-text digest as closure evidence, classified as a rejected bad-shape
+carrier for Held, and does not prevent completion of a fenced cancellation.
+Closure never requires a valid business result. The complete reader acquires
+and charges each bounded native callback payload once per snapshot, reusing it
+for historical hold/replacement references while rechecking native ownership
+and terminal/outer proofs. Caches are local to one read or writer observation
+and are never reused by later operations.
+Cancellation-only closure instead authenticates a bounded UTF8-validated byte
+stream against the same native callback digest, charging raw bytes and validation
+copies without reserving business-content parsing copies it never creates. A
+callback refused by Held is not accepted or parsed as business content by
+cancellation. Non-cancel admission, hold and replacement writers additionally
+reserve cancellation space after validating the **entire combined history**,
+including retained families and other runs. Each unfinished @2 run reserves
+16MiB plus 128 copies of its known source/current-visit identity bytes inside
+the unchanged 64MiB allowance, plus 32 row acquisitions, 4096 traversal steps
+and 65536 SQL steps inside the original finite ledgers. This covers worst-case fence, finish, bounded
+original proofs and a maximum 1MiB document callback (including its base64 carrier),
+independently of prior document sizes and committed visit/recovery counts.
+A candidate that cannot preserve that headroom refuses with
+`read_bytes_exhausted`, rolling back all allocations, rows, counters and CAS;
+cancellation stays available. Fence/finish consume the reservation without
+business-content acceptance. A cancelling run keeps its reservation against
+other runs' non-cancel writes. The rule can refuse a hold/retry before the
+ordinary reader itself exhausts; it is not a callback-size or event-cap increase.
+This cancellation-headroom guarantee is preserved across all @2 writers only.
+Unchanged @1 writers on the same org, such as
+`SequentialDispatcher._record_business_hold`, are not budget-aware and can
+consume that headroom against the shared 64MiB complete-read cap. This is a
+pre-existing cross-family limitation: @1 growth can equally exhaust the complete
+reader for all families. Consequently an @2 cancellation fence may commit while
+finish refuses `read_bytes_exhausted`, leaving the run running/cancelling with
+one outstanding visit until budget relief. Family-scoped read budgets or @1
+retirement must resolve this in follow-up work; that resolution is outside S4a.
+The TASK-17807 Round-5 decision specifically overrides R4-F1 on this basis.
+The native digest, INTEGER result/task/principal/SID/status and original positive
+terminal/outer proofs remain mandatory. Start grammar/limits are unchanged.
+Fresh admission/hold/control/cancellation-finish writers run the complete reader
+on their resulting uncommitted state with unchanged budgets and the operation's
+original deadline; cancellation omits only the future headroom reservation.
+No-result holds create
+no synthetic result, output or successor. Running cancel fences progression;
+only positive closure permits its completion. Native cancellation delivery belongs to S6b;
+native producers/dispatch mounting belong to S4b, and initiator wakes/inbox to
+S5. No public @2 consumer, route, CLI or admission is mounted; Coding stays
+Disabled. @1 hold/cancel/result/settlement owners and bytes remain unchanged.
+
 ## S3: resolved assignments @2 (inert)
 
 `sequential_assignments.py` resolves each role in this order: explicit run
@@ -30,8 +129,8 @@ The private admission state is deliberately limited to an owned queued entry
 and inert carrier. It leaves the ordinary source unchanged: S5 owns source wait
 membership/continuation. Internal settings@2 storage permits partial org role
 defaults; it creates no public settings-save or start surface. Complete and
-selected history readers accept only this S3 admission state for @2 and refuse
-later lifecycle/control/inbox data. Historical @1 readers retain their original
+selected history readers additionally authenticate the inactive S4a holds and
+controls described above; inbox data remains unavailable. Historical @1 readers retain their original
 semantics, including when stored under schema2.
 
 `recheck_launch_assignment` is a pure, **unmounted** current-executor/options

@@ -256,14 +256,24 @@ def validate_selected_run_uncommitted(conn: sqlite3.Connection, *, org_slug: str
         run = data['workflow_seq_runs'][0]
         _require(run['org_slug'] == org_slug, 'run_pin_invalid')
         if run.get('engine_version', 1) == 2:
+            # The complete reader accepts later S4a history; admission replay
+            # must refuse it before returning a later event ID or reserving writes.
+            _require(run['event_count'] == 1, 'admission_replay_incomplete')
             compiled, setting, snapshot = _original_pins(conn, metadata, org_slug=org_slug,
                 definition_id=run['definition_id'], settings_id=run['settings_id'], budget=budget)
             generic = {table: _read_selected(conn, metadata, table, budget, 'run_id=?', (run_id,))
                 for table in ('workflow_seq_assignments', 'workflow_seq_visits', 'workflow_seq_events',
-                              'workflow_seq_outbox', 'workflow_seq_outputs', 'workflow_seq_evidence')}
+                              'workflow_seq_outbox', 'workflow_seq_outputs', 'workflow_seq_evidence',
+                              'workflow_seq_controls', 'workflow_seq_node_counters')}
             _require(not evidence_ids, 'generic_lifecycle_unavailable')
             _generic_admission_history(conn, org_slug=org_slug, run=run, compiled=compiled, settings=setting,
                 snapshot=snapshot, data=generic, budget=budget)
+            # Admission is a non-cancel writer too. Validate the complete org,
+            # including retained families and every other unfinished @2 run,
+            # before committing any allocation. Start grammar/limits are unchanged.
+            from runtime.workflows.sequential_control import validate_control_write
+            validate_control_write(conn, org_slug=org_slug, deadline=budget.deadline,
+                                   reserve_cancellation=True)
             budget.check()
             return budget
         compiled, settings, snapshot = _original_pins(conn, metadata, org_slug=org_slug,
@@ -596,7 +606,7 @@ def _validate_lifecycle(conn: sqlite3.Connection, *, org_slug: str, run_id: str,
 def _generic_admission_history(conn: sqlite3.Connection, *, org_slug: str, run: dict,
                                compiled: object, settings: dict, snapshot: object,
                                data: dict[str, list[dict]], budget: _ReadBudget) -> None:
-    """Only the inert S3 admission state, not S4 lifecycle or S5 wait sets."""
+    """Inert S3 admission and S4a lifecycle; no S5 wait-set authority."""
     from runtime.infrastructure.workflow_task_ownership import selected_owner
     from runtime.workflows.sequential_assignments import validate_assignment_snapshot
     from runtime.workflows.sequential_contracts import GenericLimits
@@ -604,8 +614,10 @@ def _generic_admission_history(conn: sqlite3.Connection, *, org_slug: str, run: 
     from runtime.workflows.sequential_engine import _identity
     from runtime.workflows.sequential_history import GenericStorageSettings
 
-    _require(isinstance(snapshot, GenericStorageSettings) and run['engine_version'] == 2,
-             'generic_admission_pin_conflict')
+    # Schema-only @2 reference rows pinned to @1 settings remain unsupported;
+    # permitting S4a counters must not change their explicit refusal contract.
+    _require(isinstance(snapshot, GenericStorageSettings), 'schema2_runtime_history_unavailable')
+    _require(run['engine_version'] == 2, 'generic_admission_pin_conflict')
     start = _parse(_hashed(run['start_bytes'], run['start_digest']), parse_generic_start, budget)
     original = GenericLimits.model_validate(_decode(run['original_limits_bytes'], budget))
     validate_generic_start(start, compiled, original_limits=original)
@@ -620,6 +632,10 @@ def _generic_admission_history(conn: sqlite3.Connection, *, org_slug: str, run: 
     resolved = _decode(raw, budget)
     _require(_bytes(resolved) == raw, 'assignment_snapshot_canonical')
     validate_assignment_snapshot(resolved, compiled, start, defaults=snapshot.bindings, org_slug=org_slug)
+    if run['event_count'] > 1:
+        _generic_control_history(conn, org_slug=org_slug, run=run, compiled=compiled,
+                                 data=data, resolved=resolved, budget=budget)
+        return
     selected = {}
     for table in ('workflow_seq_visits', 'workflow_seq_events', 'workflow_seq_assignments', 'workflow_seq_outbox'):
         budget.work(len(data[table]))
@@ -681,3 +697,206 @@ def _generic_admission_history(conn: sqlite3.Connection, *, org_slug: str, run: 
             expected['model_override'], expected['reasoning_effort_override'], expected['override_source'])], 'generic_native_selection_conflict')
     _auxiliary(conn, {**selected, 'workflow_seq_evidence': []}, {run['id']: run}, {visit['id']: visit},
                {event['id']: event}, budget, {run['definition_id']: compiled})
+
+
+def _generic_control_history(conn: sqlite3.Connection, *, org_slug: str, run: dict, compiled: object,
+                             data: dict[str, list[dict]], resolved: dict, budget: _ReadBudget) -> None:
+    """Authenticate immutable holds/controls and reconstruct their mutable projection."""
+    import hashlib
+    from runtime.infrastructure.workflow_task_ownership import selected_owner
+    from runtime.workflows.sequential_business_hold import generic_callback_bytes, generic_closed_visit, generic_hold_cause
+    from runtime.workflows.sequential_control import _validate_control_assignment, parse_control, result_counters
+    from runtime.workflows.sequential_contracts import GenericLimits
+    from runtime.workflows.sequential_definition import generic_limits, parse_generic_start
+    from runtime.workflows.sequential_engine import _identity
+    from runtime.workflows.sequential_reducer import reduce_generic_control, require_generic_event_capacity
+    selected = {table: [row for row in rows if row.get('run_id') == run['id']] for table, rows in data.items()}
+    visits = sorted(selected['workflow_seq_visits'], key=lambda row: row['ordinal'])
+    events = sorted(selected['workflow_seq_events'], key=lambda row: row['sequence'])
+    controls = selected['workflow_seq_controls']
+    assignments = {row['id']: row for row in selected['workflow_seq_assignments']}
+    for initial in resolved['nodes']:
+        key = _identity('assignment', run['id'], initial['node'], '1')
+        row = assignments.get(key)
+        _require(row is not None and (row['node_id'], row['generation'], row['principal'], row['predecessor_id']) ==
+            (initial['node'], 1, initial['principal'], None)
+            and _hashed(row['snapshot_bytes'], row['snapshot_digest']) == _bytes(initial), 'assignment_row_conflict')
+    _require(0 < len(visits) <= 64 and 0 < len(events) <= 4096
+        and [row['ordinal'] for row in visits] == list(range(1, len(visits) + 1))
+        and [row['sequence'] for row in events] == list(range(1, len(events) + 1)), 'generic_history_order')
+    first = visits[0]
+    start = parse_generic_start(run['start_bytes'])
+    entry = next(row for row in resolved['nodes'] if row['node'] == compiled.definition.entry_node)
+    _require((first['node_id'], first['principal'], first['predecessor_event_id']) == (entry['node'], entry['principal'], None)
+        and first['input_selection_bytes'] == _bytes(dict(outputs=[])), 'generic_entry_visit_invalid')
+    current = dict(run, state='running', progress='queued', active_visit_id=first['id'], held_node_id=None,
+        held_event_id=None, terminal_outcome=None, cas=0, event_count=1, visit_count=1, recovery_count=0,
+        assignment_generation=1, last_event_id=events[0]['id'])
+    limits = generic_limits(compiled, GenericLimits.model_validate(_decode(run['original_limits_bytes'], budget)), start.lower_limits)
+    seen_visits, seen_events, seen_controls = [first], [], []
+    prior = '0' * 64
+    for event in events:
+        budget.step()
+        cancel_append = event['kind'] == 'cancellation_finished'
+        body = _decode(_hashed(event['event_bytes'], event['event_digest']), budget)
+        _require(event['engine_version'] == 2 and event['prior_digest'] == prior
+            and body['format'] == 'workflow-sequential-storage-event@2' and body['run_id'] == run['id']
+            and body['kind'] == event['kind'] and body['sequence'] == event['sequence']
+            and body['operation_key'] == event['operation_key'] and body['prior_digest'] == prior
+            and _bytes(body) == event['event_bytes'], 'generic_event_conflict')
+        prior = event['event_digest']
+        if event['sequence'] == 1:
+            _require(body == dict(format='workflow-sequential-storage-event@2', kind='admitted', run_id=run['id'],
+                sequence=1, operation_key=start.operation_key, prior_digest='0' * 64,
+                assignment_snapshot_digest=run['assignment_snapshot_digest']), 'generic_admitted_event_invalid')
+        elif event['kind'] == 'transition':
+            # S4a may encounter an already accepted declared-Hold result. It
+            # authenticates that result-only allowance without supplying S4b's
+            # acceptance/advancement producer or authorizing an output.
+            from runtime.workflows.sequential_definition import parse_generic_callback, parse_generic_result
+            from runtime.workflows.sequential_reducer import (
+                GenericActiveVisit, GenericAuthenticatedResult, GenericRunState, reduce_generic_result,
+            )
+            visit = next((row for row in visits if row['id'] == event['source_visit_id']), None)
+            _require(visit is not None and current['state'] == 'running'
+                and current['active_visit_id'] == visit['id'] and current['progress'] != 'cancelling', 'generic_result_conflict')
+            envelope = _parse(_hashed(visit['result_bytes'], visit['result_digest']), parse_generic_result, budget)
+            _result(conn, event['source_result_id'], visit['task_id'], visit['principal'], visit['session_id'], budget)
+            proof = generic_closed_visit(conn, run=run, visit=visit, budget=budget)
+            _require(proof['result_id'] == visit['result_id'] == event['source_result_id'] and not envelope.outputs,
+                     'generic_result_conflict')
+            payload = generic_callback_bytes(conn, visit['result_id'], budget)
+            _require(payload is not None, 'generic_result_conflict')
+            node = next(node for node in compiled.definition.nodes if node.id == visit['node_id'])
+            callback = parse_generic_callback(payload[0], contract=node.output_contract.type)
+            _require(callback.outcome == envelope.outcome and not callback.content_base64
+                and list(callback.findings) == [finding.text for finding in envelope.findings], 'generic_result_conflict')
+            counts = result_counters(current, compiled, seen_visits, seen_events, seen_controls, [])
+            state = GenericRunState(run_id=run['id'], definition_digest=compiled.pin.definition_digest,
+                original_limits=limits, lower_limits=limits, counters=counts,
+                active_visit=GenericActiveVisit(node=visit['node_id'], visit_id=visit['id'], task_id=visit['task_id'],
+                    session_id=visit['session_id'], ordinal=visit['ordinal'], input_selection_digest=visit['input_selection_digest']),
+                selections=(), findings=(), receipts=())
+            decision = reduce_generic_result(compiled, state, GenericAuthenticatedResult(task_id=visit['task_id'],
+                session_id=visit['session_id'], result_id=visit['result_id'], envelope=envelope, content=b'', settled=True),
+                storage_event_count=current['event_count'])
+            _require(body['decision'] == decision.model_dump(mode='json') and decision.edge.action == 'hold'
+                and decision.activation is None and visit['state'] == 'held' and visit['selected'] == 0,
+                'generic_result_conflict')
+            current.update(state='held', progress=None, active_visit_id=None, held_node_id=visit['node_id'], held_event_id=event['id'], hold_cause=decision.reason)
+        elif event['kind'] == 'held':
+            visit = next((row for row in visits if row['id'] == body.get('visit_id')), None)
+            _require(visit is not None and current['state'] == 'running' and current['progress'] != 'cancelling'
+                and current['active_visit_id'] == visit['id'] and body['node'] == visit['node_id']
+                and visit['selected'] == 0 and visit['state'] in ('held', 'cancelled'), 'generic_hold_state_conflict')
+            cause, proof = generic_hold_cause(conn, run=run, visit=visit, compiled=compiled, budget=budget,
+                                             unavailable=body['cause'] == 'assignee_unavailable')
+            _require((body['cause'], body['closure'], event['source_visit_id'], event['source_result_id']) ==
+                (cause, proof, visit['id'], proof['result_id']), 'generic_hold_proof_conflict')
+            current.update(state='held', progress=None, active_visit_id=None, held_node_id=visit['node_id'], held_event_id=event['id'], hold_cause=cause)
+        elif event['kind'] in ('control', 'cancellation_finished'):
+            rows = [row for row in controls if row['event_id'] == event['id']]
+            if rows:
+                _require(len(rows) == 1, 'control_receipt_conflict')
+                row = rows[0]
+                command = parse_control(_hashed(row['request_bytes'], row['request_digest']))
+                cancel_append = command.action == 'cancel'
+                _require((row['run_id'], row['operation_key'], row['expected_cas'], row['expected_held_event_id'], row['action']) ==
+                    (command.run_id, command.operation_key, command.expected_cas, command.expected_held_event_id, command.action),
+                    'control_identity_conflict')
+                _result(conn, row['actor_result_id'], row['actor_task_id'], row['actor_principal'], row['actor_session_id'], budget)
+                _require(conn.execute('SELECT status FROM task_results WHERE id=?', (row['actor_result_id'],)).fetchone()[0] == 'completed',
+                         'control_actor_conflict')
+                _require((row['actor_task_id'], row['actor_principal']) == (run['source_task_id'], run['source_principal'])
+                    and body['actor'] == dict(task_id=row['actor_task_id'], principal=row['actor_principal'],
+                        session_id=row['actor_session_id'], result_id=row['actor_result_id'])
+                    and body['command_digest'] == row['request_digest'], 'control_actor_conflict')
+                counts = result_counters(current, compiled, seen_visits, seen_events, seen_controls, [])
+                _require(body['before_counters'] == counts.model_dump(mode='json'), 'control_counter_conflict')
+                disposition = reduce_generic_control(compiled, command, run=current, counters=counts, limits=limits)
+                new_visit = next((visit for visit in visits if visit['id'] == row['new_visit_id']), None)
+                expected_receipt = dict(format='workflow-sequential-control-receipt@2', run_id=run['id'], event_id=event['id'],
+                    new_visit_id=row['new_visit_id'], new_task_id=None if new_visit is None else new_visit['task_id'])
+                _require(_hashed(row['receipt_bytes'], row['receipt_digest']) == _bytes(expected_receipt), 'control_receipt_conflict')
+                if disposition == 'replace':
+                    previous = next(visit for visit in seen_visits if visit['id'] == body['replaced_visit_id'])
+                    generic_closed_visit(conn, run=run, visit=previous, budget=budget)
+                    _require(new_visit is not None and new_visit['node_id'] == current['held_node_id']
+                        and new_visit['predecessor_event_id'] == event['id'] and body['new_visit_id'] == new_visit['id']
+                        and (new_visit['input_selection_bytes'], new_visit['input_selection_digest']) ==
+                            (previous['input_selection_bytes'], previous['input_selection_digest']), 'control_replacement_conflict')
+                    assignment = assignments.get(new_visit['assignment_id'])
+                    _require(assignment is not None and _hashed(assignment['snapshot_bytes'], assignment['snapshot_digest']) ==
+                        _bytes(body['assignment']['value']) and new_visit['principal'] == assignment['principal']
+                        and assignment['predecessor_id'] == previous['assignment_id']
+                        and assignment['generation'] == previous['assignment_generation'] + 1, 'control_assignment_conflict')
+                    predecessor = assignments[previous['assignment_id']]
+                    _validate_control_assignment(command, compiled=compiled,
+                        previous=_decode(_hashed(predecessor['snapshot_bytes'], predecessor['snapshot_digest']), budget),
+                        value=body['assignment']['value'], authority=body['assignment']['authority'], run=run,
+                        history=list(assignments.values()))
+                    old_native = conn.execute('SELECT brief FROM tasks WHERE id=?', (previous['task_id'],)).fetchone()
+                    new_native = conn.execute('SELECT brief FROM tasks WHERE id=?', (new_visit['task_id'],)).fetchone()
+                    _require(old_native is not None and new_native is not None
+                        and hashlib.sha256(old_native[0].encode('utf8')).hexdigest() == body['original_brief_digest']
+                        and hashlib.sha256(new_native[0].encode('utf8')).hexdigest() == body['new_brief_digest'], 'control_brief_conflict')
+                    current.update(state='running', progress='queued', active_visit_id=new_visit['id'], held_node_id=None,
+                        held_event_id=None, visit_count=current['visit_count'] + 1, recovery_count=current['recovery_count'] + 1,
+                        assignment_generation=current['assignment_generation'] + 1)
+                    seen_visits.append(new_visit)
+                elif event['kind'] == 'cancellation_finished':
+                    if current['active_visit_id'] is not None:
+                        visit = next(visit for visit in visits if visit['id'] == current['active_visit_id'])
+                        generic_closed_visit(conn, run=run, visit=visit, budget=budget, cancellation=True)
+                    current.update(state='finished', terminal_outcome='cancelled', active_visit_id=None,
+                                   held_node_id=None, held_event_id=None, progress=None)
+                else:
+                    _require(current['state'] == 'running', 'control_cancel_conflict')
+                    current['progress'] = 'cancelling'
+                seen_controls.append(row)
+            else:
+                _require(event['kind'] == 'cancellation_finished' and current['progress'] == 'cancelling', 'control_missing')
+                visit = next(visit for visit in visits if visit['id'] == current['active_visit_id'])
+                _require(body['closure'] == generic_closed_visit(conn, run=run, visit=visit, budget=budget,
+                    cancellation=True), 'control_cancel_proof')
+                current.update(state='finished', terminal_outcome='cancelled', active_visit_id=None,
+                               held_node_id=None, held_event_id=None, progress=None)
+        else:
+            _require(False, 'generic_lifecycle_unavailable')
+        if event['sequence'] > 1:
+            require_generic_event_capacity(current['event_count'], resulting_state=current['state'], cancel=cancel_append)
+            current.update(cas=current['cas'] + 1, event_count=current['event_count'] + 1, last_event_id=event['id'])
+        seen_events.append(event)
+    _require(all(run[key] == current[key] for key in ('state', 'progress', 'active_visit_id', 'held_node_id', 'held_event_id',
+        'terminal_outcome', 'cas', 'event_count', 'visit_count', 'recovery_count', 'assignment_generation', 'last_event_id'))
+        and len(seen_visits) == len(visits) and len(seen_controls) == len(controls), 'generic_projection_conflict')
+    _require([visit['id'] for visit in visits if visit['selected']] ==
+        ([] if run['active_visit_id'] is None else [run['active_visit_id']]), 'generic_outstanding_conflict')
+    _require(len(assignments) == len(resolved['nodes']) + sum(row['new_visit_id'] is not None for row in controls),
+             'assignment_row_conflict')
+    for row in selected['workflow_seq_node_counters']:
+        _require(row['node_id'] in {node.id for node in compiled.definition.nodes}
+            and row['visits'] == sum(visit['node_id'] == row['node_id'] for visit in visits)
+            and row['revisions'] == 0, 'control_counter_conflict')
+    for visit in visits:
+        _require(visit['engine_version'] == 2 and visit['epoch'] is None
+            and (visit['result_id'] is None or any(event['kind'] == 'transition' and event['source_visit_id'] == visit['id']
+                                                 and event['source_result_id'] == visit['result_id'] for event in events))
+            and _hashed(visit['input_selection_bytes'], visit['input_selection_digest']) == first['input_selection_bytes'],
+            'generic_visit_conflict')
+        _require(selected_owner(conn, visit['task_id'], org_slug) == ('seq_visit', visit['id'], visit['state']), 'ownership_relation_conflict')
+        assignment = assignments.get(visit['assignment_id'])
+        _require(assignment is not None and assignment['node_id'] == visit['node_id']
+            and assignment['generation'] == visit['assignment_generation'] and assignment['principal'] == visit['principal'],
+            'control_assignment_conflict')
+        value = _decode(_hashed(assignment['snapshot_bytes'], assignment['snapshot_digest']), budget)
+        native = _native_rows(conn, 'tasks', ('parent_task_id', 'assigned_agent', 'team', 'task_type',
+            'current_session_id', 'model_override', 'reasoning_effort_override', 'override_source'),
+            (('text',), ('text',), ('text',), ('text',), ('text', 'null'), ('text', 'null'), ('text', 'null'), ('text', 'null')),
+            visit['task_id'], budget)
+        _require(native == [(run['carrier_task_id'], visit['principal'], resolved['team'], 'subtask', visit['session_id'],
+            value['selection']['model_override'], value['selection']['reasoning_effort_override'], value['selection']['override_source'])],
+            'generic_native_selection_conflict')
+    _require(not selected['workflow_seq_outputs'], 'generic_lifecycle_unavailable')
+    _auxiliary(conn, selected, {run['id']: run}, {visit['id']: visit for visit in visits},
+               {event['id']: event for event in events}, budget, {run['definition_id']: compiled})
