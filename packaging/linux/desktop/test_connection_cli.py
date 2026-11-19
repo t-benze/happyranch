@@ -97,7 +97,7 @@ class ConnectionCLITests(unittest.TestCase):
                 out = io.StringIO()
                 with redirect_stdout(out):
                     command.cmd_connection(parser.parse_args(["connection", "status"]))
-                self.assertEqual(json.loads(out.getvalue())["roles"], dict(host=host, client="unavailable"))
+                self.assertEqual(json.loads(out.getvalue())["roles"], dict(host=host, client=host))
                 if platform != "linux":
                     with redirect_stdout(io.StringIO()), self.assertRaises(SystemExit) as stopped:
                         command.cmd_connection(parser.parse_args(["connection", "host", "approve-device"]))
@@ -114,7 +114,7 @@ class ConnectionCLITests(unittest.TestCase):
                     self.assertEqual(stopped.exception.code, 1)
                     self.assertEqual(json.loads(out.getvalue()), dict(code="unavailable", effect="none", recovery="nativeRecovery"))
             self.assertEqual(execute.call_count, 1)
-        for args in (("client", "status"), ("host", "revoke-device", "--device-id", "synthetic"), ("host", "unknown-action")):
+        for args in (("client", "unknown-action"), ("host", "revoke-device", "--device-id", "synthetic"), ("host", "unknown-action")):
             with self.subTest(args=args), redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as stopped:
                 parser.parse_args(["connection", *args])
             self.assertEqual(stopped.exception.code, 2)

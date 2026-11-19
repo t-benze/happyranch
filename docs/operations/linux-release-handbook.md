@@ -423,8 +423,55 @@ observations may explicitly be unavailable). Exit 1: closed error. Exit 2:
 invalid command/arguments. Enable/turn-off/create-invite return unavailable
 without dispatch. Recovery placeholders `cancel-invite`, `replace-failed`, `refresh-home-address`
 and `retry-policy-renewal` also return closed unavailable without dispatch.
-Client CLI is not registered; Mac host
-is deferred/unavailable. There is no connector, DIY, installer or admin fallback.
+Linux foreground Client CLI is documented below. Mac host and Mac Client CLI
+are deferred/unavailable. There is no connector, DIY, installer or admin fallback.
+
+### Linux foreground client CLI fallback (slice 5b)
+
+The payload ships `client_cli.py` beside the existing ClientSession, RuntimeProxy,
+ClientModel projection and login-only SecretStore owners. Fixed system Python
+`/usr/bin/python3 -I` needs neither WebKit nor a healthy local daemon. No new IPC,
+control socket, daemon route, service, dependency or credential path is added;
+the existing per-session runtime proxy is unchanged.
+
+```sh
+happyranch connection client --help
+happyranch connection client status
+happyranch connection client accept-invite
+happyranch connection client saved-computers
+happyranch connection client connect-saved
+happyranch connection client remove-saved
+```
+
+Invites are hidden and read only from the controlling terminal, never argv,
+environment, files or piped stdin. Target/comparison phrase stay only on that
+terminal; type `connect` for target consent. Saving requires typing `save`;
+default is session-only. Existing login-only Secret Service custody/readback is
+unchanged. Locked/denied/unavailable/readback failure shows an explicit not-saved,
+session-only warning, with no plaintext fallback. Saved listing uses the app's
+closed generic labels. Connect/remove select at most 32 records, reread the exact
+current binding after consent and require explicit `connect`/`remove` confirmation.
+Remove confirms only local saved-access deletion.
+Each input is limited to 120 seconds; empty/invalid selection or timeout cancels
+without mutation. Missing terminal fails closed before launch. No invite/device/
+path/credential flags exist.
+
+Connections live only in this foreground invocation. Authenticated native health
+yields `runtimeReachable`, never `Connected`: CLI cannot observe the GUI's loaded
+RELEASE UI. Open the loopback URL printed only on the terminal and keep CLI
+running. Ctrl-C/SIGTERM cancels/disconnects this owner with bounded cleanup.
+Unfinished save/readback reaches its existing safe point before teardown;
+unconfirmed cleanup reports `cleanupIncomplete`, effect unknown.
+
+`client status` observes only this fresh invocation (`notOwned`, observation
+unavailable), never another session. Registered `disconnect`, `cancel-attempt`,
+`retry`, `retry-save`, `health` from a separate invocation return closed
+`unavailable/notOwned`, effect none, exit 1. They cannot control GUI/other CLI
+processes. Retry with a fresh accept/connect invocation and consent; no session
+control keys are added. JSON excludes target/phrase/URL, invites, credentials,
+fingerprints, network state and diagnostics. Exit 0 completed/cancelled, 1 closed
+error, 2 grammar. Mac Client CLI is unavailable/deferred pending Mac builds.
+Source tests do not establish packaged/cross-device acceptance.
 
 The packaged connection window now exposes session-only client status, invite,
 cancel, disconnect, retry (fresh invite) and health controls. Native GTK dialogs
